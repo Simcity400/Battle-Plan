@@ -1,5 +1,5 @@
 use super::*;
-use replay_data::{rows::ProductionLineOutputRow, rows::TableRows};
+use replay_data::{rows::ProductionLineOutputRow, rows::Recorded, rows::TableRows};
 use replay_frame::frame::TableView;
 
 /// A publication of `lines` in the census and of output rows `(line, ended)`.
@@ -35,6 +35,7 @@ fn frame(hour: Hour, read: bool, lines: &[u64], output: &[(u64, bool)]) -> Decod
                     since_hour: 100,
                     ended,
                     exact: true,
+                    purpose: Recorded::Value(OutputPurpose::New.raw()),
                     ..Default::default()
                 })
                 .collect(),
@@ -99,5 +100,56 @@ fn restarted_observation_duplicates_and_unavailable_reads_are_not_passed() {
             .limitations
             .keys()
             .any(|key| key.contains("unavailable at a read"))
+    );
+}
+
+/// Each live row's purpose must be one its census line's kind produces; an
+/// unclassified row is a counted limitation, not a pass.
+#[test]
+fn live_row_purposes_follow_their_line_kind() {
+    use engine_native::cequipment_production_line::{
+        KIND_MILITARY, KIND_NAVAL, KIND_RAILWAY_GUN, KIND_SHIP_REFIT,
+    };
+    let with = |kind: u8, purpose: OutputPurpose| {
+        let mut publication = frame(124, true, &[1], &[(1, false)]);
+        let TableView::Complete(TableRows::ProductionLines(lines)) =
+            &mut *publication.tables[TableId::ProductionLines.index()]
+        else {
+            unreachable!()
+        };
+        lines[0].kind = kind;
+        let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+            &mut *publication.tables[TableId::ProductionLineOutput.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].purpose = Recorded::Value(purpose.raw());
+        check(&[publication]).unwrap()
+    };
+    for (kind, purpose, passes) in [
+        (KIND_MILITARY, OutputPurpose::New, true),
+        (KIND_MILITARY, OutputPurpose::Converted, true),
+        (KIND_MILITARY, OutputPurpose::Refit, false),
+        (KIND_NAVAL, OutputPurpose::New, true),
+        (KIND_NAVAL, OutputPurpose::Converted, false),
+        (KIND_RAILWAY_GUN, OutputPurpose::Converted, false),
+        (KIND_SHIP_REFIT, OutputPurpose::Refit, true),
+        (KIND_SHIP_REFIT, OutputPurpose::New, false),
+    ] {
+        let report = with(kind, purpose);
+        assert_eq!(
+            report.differences.is_empty(),
+            passes,
+            "{kind} {purpose:?}: {:?}",
+            report.differences
+        );
+    }
+    let report = with(KIND_SHIP_REFIT, OutputPurpose::Unknown);
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|key| key.contains("could not classify"))
     );
 }

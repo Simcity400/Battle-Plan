@@ -74,6 +74,7 @@ pub const UI_PREPARED_ROUTES: &[&str] = &[
     "trade-flows",
     "production-spending",
     "dockyard-spending",
+    "military-factory-spending",
     "casualty-breakdown",
     "equipment-stockpile",
     "series-next-change",

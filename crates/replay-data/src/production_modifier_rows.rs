@@ -59,7 +59,7 @@ pub struct ProductionLineModifiersRow {
     pub active_factories: i32,
     pub resource_penalty_raw: i64,
     pub organisation_dirty: bool,
-    /// Retired: nothing read it; `conversion_output` keeps its effect.
+    /// Retired at an earlier format; `converting` records the same control.
     pub conversion: RetiredBool,
     pub licensed: bool,
     pub conversion_output: bool,
@@ -68,6 +68,10 @@ pub struct ProductionLineModifiersRow {
     pub naval_output: bool,
     pub bonuses: [i64; 7],
     pub factory_efficiencies: Vec<i64>,
+    /// The line's conversion control at the read: military production
+    /// converts stockpiled equipment into its design while it is set. The
+    /// save writes it as `is_converting`. Historical absence is NotRecorded.
+    pub converting: Recorded<bool>,
 }
 typed_codec!(ProductionLineModifiersRow, 64, |row| row.line as u128,
 |key| Self { line: key as u64, ..Default::default() },
@@ -75,7 +79,7 @@ typed_codec!(ProductionLineModifiersRow, 64, |row| row.line as u128,
   4 => (active_factories): I32, 5 => (resource_penalty_raw): I64, 6 => (organisation_dirty): Bool,
   7 => (conversion): Bool, 8 => (bonuses): Opaque, 9 => (factory_efficiencies): Opaque,
   10 => (naval_efficiency): Bool, 11 => (naval_output): Bool, 12 => (licensed): Bool,
-  13 => (conversion_output): Bool, 14 => (refit_output): Bool },
+  13 => (conversion_output): Bool, 14 => (refit_output): Bool, 15 => (converting): Bool },
 |row| if row.kind > engine_native::cequipment_production_line::KIND_RAILWAY_GUN {
     Err(invalid("production modifier line identity invalid"))
 } else { Ok(()) });

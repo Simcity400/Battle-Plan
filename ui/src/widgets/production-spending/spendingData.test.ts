@@ -16,7 +16,7 @@ import { icDecimals } from '../../dashboard/icDecimals.ts';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
 const leaf = (extra: Partial<ProductionSpendingLeaf> = {}): ProductionSpendingLeaf => ({
-  variant: 'v/1', typeKey: 'mod_mechanised', name: 'Clockwork walkers', domain: 'land', rocket: false, refit: null, unproven: [],
+  variant: 'v/1', typeKey: 'mod_mechanised', name: 'Clockwork walkers', domain: 'land', rocket: false, purpose: null, unproven: [],
   names: [{ firstHour: 100, name: 'Early walker', known: true, design: null }, { firstHour: 148, name: 'Revised walker', known: true, design: null }],
   runs: [known(100, 123, '0'), known(124, 147, '1234567'), known(148, 171, '2000001')], ...extra,
 });

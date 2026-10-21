@@ -253,7 +253,8 @@ fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order
                 requested_factories=-2 equipment_variant_index={id=3 type=70}
                 industrial_manufacturer={id=0 type=79}}
             military_lines={id={id=0 type=56} cost=0 priority=0 amount=1
-                requested_factories=2 equipment_variant_index={id=3 type=70}}
+                requested_factories=2 equipment_variant_index={id=3 type=70}
+                is_converting=yes}
             equipments={allow_zero_entries=no}
         }}}
         equipments={plane={id={id=3 type=70} name="name" position="II"
@@ -273,6 +274,13 @@ fn production_country_wrapper_and_variant_children_preserve_saved_keys_and_order
     assert_eq!(production.lines[0].mio, Some(79));
     assert_eq!(production.lines[0].requested_factories, -2);
     assert_eq!(production.lines[1].mio, None);
+    assert!(!production.lines[0].converting);
+    assert!(production.lines[1].converting);
+    let doc = installed_content_core::parser::parse(
+        b"id={id=0 type=56} cost=0 priority=0 amount=1 requested_factories=2           equipment_variant_index={id=3 type=70} is_converting=no",
+    )
+    .unwrap();
+    assert!(parse_line(0, &doc.items).is_err());
     let variant = &pack.variants.as_ref().unwrap()[&0x3_0000_0046];
     assert_eq!(variant.variant_name.as_deref(), Some(b"II".as_slice()));
     assert_eq!(variant.append_variant_name, Some(false));

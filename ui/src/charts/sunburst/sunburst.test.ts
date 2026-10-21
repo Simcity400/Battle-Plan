@@ -480,6 +480,25 @@ test('exact IC keeps missing-name, language and native-cause notes through group
   assert.equal(sliceTooltip(folded.children[0], folded, text)[0].note, `${missingName} ${language} ${cause}`);
 });
 
+test('incomplete attribution at a hidden level still reaches the whole and every shown ancestor', () => {
+  const parts = [
+    item(['new', 'type', 'design'], 1, { exact: 1n }),
+    // A marker under a purpose: its purpose and type are incompletely attributed.
+    item(['other', 'unresolved'], 0, { exact: 0n, unknownLevels: [true, true, false] }),
+  ];
+  for (const shown of [[true, true, true], [false, false, true], [false, true, false], [true, false, false]]) {
+    assert.equal(groupTree(parts, ROOT, shown).valueUnknown, true, JSON.stringify(shown));
+  }
+  // Only the hidden level's shown ancestors: a shown sibling stays exact.
+  const types = groupTree(parts, ROOT, [false, true, false]);
+  assert.equal(types.children.find(node => node.key === 'type')!.valueUnknown, false);
+  assert.equal(types.children.find(node => node.key === 'unresolved')!.valueUnknown, true);
+  // Local attribution of a hidden ring has no slice to mark.
+  const local = groupTree([item(['new', 'design'], 1, { exact: 1n, localUnknownLevels: [true, false] })], ROOT, [false, true]);
+  assert.equal(local.valueUnknown, false);
+  assert.equal(local.children[0].valueUnknown, false);
+});
+
 test('an independent whole remains exact when content cannot completely attribute its groups', () => {
   const parts = [
     item(['land', 'type', 'design'], 10, { exact: 10n, unknownLevels: [true, true, false], note: 'Unresolved equipment could belong here.' }),

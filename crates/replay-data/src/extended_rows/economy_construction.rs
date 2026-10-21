@@ -77,14 +77,16 @@ pub struct IndustrialOrganisationHistoryRow {
 typed_codec!(IndustrialOrganisationHistoryRow, 128, |row| (row.organisation as u128) << 64 | row.variant as u128, |key| Self { organisation: (key >> 64) as u64, variant: key as u64, ..Default::default() },
  { 0 => (units): I32, 1 => (design_hour): OptionalI32 }, |_row| Ok(()));
 
-/// ProductionLineOutput: key line:ordinal (96 bits), 11 payload mask bits.
+/// ProductionLineOutput: key line:ordinal (96 bits), 12 payload mask bits.
 ///
 /// The units one production line has completed, which the game counts nowhere
 /// per line: the collector observes every production tick (its
 /// `line_output` hooks) and totals them per recording branch. One row per
-/// (country, variant, organisation) tuple the line produced under, `ordinal`
-/// being its first-seen position on the branch (a replay key holds at most
-/// 128 bits, so the tuple is payload); a line's total is the sum of its rows.
+/// (country, variant, organisation, purpose) tuple the line produced under,
+/// `ordinal` being its first-seen position on the branch (a replay key holds
+/// at most 128 bits, so the tuple is payload); a line's total is the sum of
+/// its rows. A line that switches between new production and conversion
+/// therefore keeps each purpose's earlier input in its own row.
 /// `line` is `ProductionLines.handle`, `variant` a variant CID and `mio` the
 /// organisation CID (`ProductionLines.mio`, zero for none). `country` is the
 /// producing country's raw reference read from the line's production status
@@ -131,9 +133,61 @@ pub struct ProductionLineOutputRow {
     pub spent_raw: Recorded<Option<i64>>,
     /// Retired: only the save comparison's self-checks read it.
     pub instant_raw: Recorded<RetiredOptionalI64>,
+    /// [`OutputPurpose::raw`] of every tick in the row. Historical absence
+    /// is NotRecorded; read it through [`Self::purpose`].
+    pub purpose: Recorded<u8>,
 }
 typed_codec!(ProductionLineOutputRow, 96, |row| (row.line as u128) << 32 | row.ordinal as u128, |key| Self { line: (key >> 32) as u64, ordinal: key as u32, ..Default::default() },
- { 0 => (country): U32, 1 => (variant): U64, 2 => (mio): U64, 3 => (units): I64, 4 => (mio_credit): I64, 5 => (since_hour): I32, 6 => (observed_since_creation): Bool, 7 => (ended): Bool, 8 => (exact): Bool, 9 => (spent_raw): OptionalI64, 10 => (instant_raw): OptionalI64 }, |_row| Ok(()));
+ { 0 => (country): U32, 1 => (variant): U64, 2 => (mio): U64, 3 => (units): I64, 4 => (mio_credit): I64, 5 => (since_hour): I32, 6 => (observed_since_creation): Bool, 7 => (ended): Bool, 8 => (exact): Bool, 9 => (spent_raw): OptionalI64, 10 => (instant_raw): OptionalI64, 11 => (purpose): U8 },
+ |row| match row.purpose {
+     Recorded::Value(raw) if OutputPurpose::from_raw(raw).is_none() => Err(invalid("production output purpose invalid")),
+     _ => Ok(()),
+ });
+
+/// What a production tick's applied input was for: the producer the tick's
+/// credit returned to, and for military production whether the line was
+/// converting stockpiled equipment into its design.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum OutputPurpose {
+    /// The collector could not classify the tick, or the recording predates
+    /// the purpose. Never read as new production.
+    #[default]
+    Unknown = 0,
+    /// New equipment: military production that was not converting, naval
+    /// construction or a railway gun.
+    New = 1,
+    /// Military production converting stockpiled equipment.
+    Converted = 2,
+    /// Ship refit production.
+    Refit = 3,
+}
+
+impl OutputPurpose {
+    pub const fn raw(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_raw(raw: u8) -> Option<Self> {
+        Some(match raw {
+            0 => Self::Unknown,
+            1 => Self::New,
+            2 => Self::Converted,
+            3 => Self::Refit,
+            _ => return None,
+        })
+    }
+}
+
+impl ProductionLineOutputRow {
+    /// The row's purpose; Unknown when it was not recorded.
+    pub fn purpose(&self) -> OutputPurpose {
+        match self.purpose {
+            Recorded::Value(raw) => OutputPurpose::from_raw(raw).unwrap_or_default(),
+            Recorded::NotRecorded => OutputPurpose::Unknown,
+        }
+    }
+}
 
 /// Retained rocket totals per country/full design CID, independent of site removal.
 /// Signed fixed5 daily production inputs and signed whole-unit deliveries

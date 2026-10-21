@@ -3793,6 +3793,7 @@ reads: Array<number>,
 observations: Array<number>, warnings: Array<string>, };
 export type ProductionSpendingParams = { branchId: string, tag: string, refits: boolean, };
 export type ProductionSpendingUnknown = "notRecorded" | "spendingUnavailable" | "lostOutput" | "missedPublication" | "recordingGap" | "observationRestarted" | "observationMismatch" | "countryChanged" | "rocketTableUnavailable" | "rocketInputInexact" | "rocketOwnerUnreadable" | "rocketDesignUnreadable" | "preparing";
+export type ProductionPurpose = "new" | "refit" | "converted" | "unknown";
 export type ProductionSpendingRun = { firstHour: number, lastHour: number,
 /**
  * Decimal string of the fixed5 total; null is unknown, never a partial sum.
@@ -3800,14 +3801,15 @@ export type ProductionSpendingRun = { firstHour: number, lastHour: number,
 totalRaw: string | null, reason: ProductionSpendingUnknown | null, };
 export type ProductionSpendingLeaf = { variant: string, typeKey: string, name: string | null, domain: Domain | null, rocket: boolean,
 /**
- * In a reply split by purpose, whether ship refit lines applied this
- * input (one design can have both leaves); null otherwise.
+ * In a reply split by purpose, what this input was for (one design can
+ * have a leaf per purpose); null otherwise.
  */
-refit: boolean | null,
+purpose: ProductionPurpose | null,
 /**
- * The summed magnitudes of the input of lines whose purpose (new or
- * ship refit) is not recorded, which counts as new in `runs`: dated
- * evidence that grows and never cancels; empty when there never was any.
+ * The summed magnitudes of the input of production ticks whose purpose
+ * was not recorded, which counts in `runs` (as new production where the
+ * reply is not split by purpose): dated evidence that
+ * grows and never cancels; empty when there never was any.
  */
 unproven: Array<ProductionSpendingRun>, names: Array<StockVariantName>, runs: Array<ProductionSpendingRun>, };
 export type ProductionPresenceRun = { firstHour: number, lastHour: number,
@@ -3865,7 +3867,18 @@ export type DockyardRepairPart = { variant: string | null,
 typeKey: string, name: string | null, domain: Domain | null, names: Array<StockVariantName>, hour: DockyardAmount, end: DockyardAmount, };
 export type DockyardMonth = { firstHour: number, lastHour: number, newShips: DockyardAmount, refits: DockyardAmount, repairs: DockyardAmount,
 /**
- * Input from a line whose purpose is not proved may be counted as new.
+ * Naval input of production ticks whose purpose was not recorded: it
+ * could be new ships or refits.
+ */
+unrecorded: DockyardAmount,
+/**
+ * Naval input recorded with a purpose naval production never has,
+ * counted in the whole and warned about.
+ */
+other: DockyardAmount,
+/**
+ * Input whose purpose was not recorded joined the month, however it
+ * nets: new ships and refits are not wholly attributed.
  */
 purposeUnproven: boolean,
 /**
@@ -3878,6 +3891,47 @@ export type DockyardSpendingReply = { repairs: DockyardRepairs,
  * The months view's columns, in order; empty in the circle view.
  */
 months: Array<DockyardMonth>, branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
+/**
+ * Production source → content archetype → variant uses these exact leaves.
+ */
+leaves: Array<ProductionSpendingLeaf>,
+/**
+ * The country's total is independent of unresolved type/domain membership.
+ */
+total: Array<ProductionSpendingRun>,
+/**
+ * The equipment source's own total, whatever Rocket coverage holds;
+ * only in a reply split by purpose, empty otherwise.
+ */
+equipmentTotal: Array<ProductionSpendingRun>, rocketTotal: Array<ProductionSpendingRun>, production: Array<ProductionPresenceRun>, warnings: Array<string>, };
+export type MilitaryFactorySpendingParams = { branchId: string, tag: string, view: DockyardView, equipment: FactoryEquipment, };
+export type FactoryEquipment = "air" | "land";
+export type FactoryMonth = { firstHour: number, lastHour: number, new: DockyardAmount, converted: DockyardAmount,
+/**
+ * The domain's input of production ticks whose purpose was not
+ * recorded: it could be new or converted.
+ */
+unrecorded: DockyardAmount,
+/**
+ * The domain's input recorded with a purpose military production never
+ * has, counted in the whole and warned about.
+ */
+other: DockyardAmount,
+/**
+ * Input whose purpose was not recorded joined the month, however it
+ * nets: new and converted input are not wholly attributed.
+ */
+purposeUnproven: boolean,
+/**
+ * A design whose type content cannot resolve spent IC this month, so
+ * the domain's amounts may lack it.
+ */
+unresolved: boolean, };
+export type MilitaryFactorySpendingReply = {
+/**
+ * The months view's columns, in order; empty in the circle view.
+ */
+months: Array<FactoryMonth>, branchId: string, tag: string, decimals: number, reads: Array<number>, observations: Array<number>, equipmentObservations: Array<number>, rocketObservations: Array<number>, equipmentReads: Array<number>, rocketReads: Array<number>, rocketKey: string | null, rocketName: string | null,
 /**
  * Production source → content archetype → variant uses these exact leaves.
  */
@@ -5367,6 +5421,6 @@ export const MAP_CONTROLS_BUSY = "Map controls are busy";
 /** Errors that only say there was no room: the request may be tried again. */
 export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_QUEUE_FULL, MAP_CONTROLS_BUSY] as const;
 /** Products whose replies depend on configured game content. */
-export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
+export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "game-window-artwork", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;

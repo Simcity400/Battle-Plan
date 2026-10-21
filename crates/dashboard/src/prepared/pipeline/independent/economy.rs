@@ -891,7 +891,11 @@ impl Own for Production {
     }
 
     fn gates(&self) -> &'static [&'static str] {
-        &["production-select", "production-spending"]
+        &[
+            "production-select",
+            "production-spending",
+            "military-factory-spending",
+        ]
     }
 
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {

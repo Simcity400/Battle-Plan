@@ -21,11 +21,10 @@
 //! country made before the recording began is not known, so the running total is
 //! what it delivered since then (the reply's `observations`).
 //!
-//! **Refitted ships** are delivered by ship refit lines (`ProductionLines.kind`
-//! `KIND_SHIP_REFIT`): they rebuild a ship the country already had as another
-//! variant, so they count only when the request asks (`refits`). A line no census
-//! listed (made and deleted between two reads) has no recorded kind and counts
-//! as new production.
+//! **Refitted ships** are delivered by ship refit lines (the output's recorded
+//! purpose): they rebuild a ship the country already had as another variant, so
+//! they count only when the request asks (`refits`). A production tick whose
+//! purpose was not recorded counts as new production.
 //!
 //! **Applied IC** (`count: ic`) is the same scan's exact factory IC input: the
 //! `ProductionLineOutput` rows' recorded `spent_raw`, the progress the game's
@@ -270,7 +269,7 @@ pub struct EquipmentProducedReply {
     pub warnings: Vec<String>,
 }
 
-use super::equipment::production::{Entry, VariantType, variant_types_for};
+use super::equipment::production::{Entry, Purpose, VariantType, variant_types_for};
 pub use super::equipment::production::{Named, ScannedProduced, TagHistory, Total, scan};
 
 /// The hour one calendar month before `hour`: the same day and hour of the month
@@ -336,7 +335,9 @@ pub fn country_totals(
             continue;
         };
         let base = bases(track, ProducedMeasure::Total, &scanned.tainted);
-        let equipment = measured(track, &base, true, ProducedCount::Units, |entry| !entry.1)?;
+        let equipment = measured(track, &base, true, ProducedCount::Units, |entry| {
+            entry.1 != Purpose::Refit
+        })?;
         let rocket = scanned.rocket.tags.get(tag);
         let rocket_values = rocket
             .map(|track| {
@@ -441,7 +442,7 @@ pub(crate) fn recording_warnings_with_unnamed(scanned: &ScannedProduced) -> (Vec
     }
     if scanned.unlisted > 0 {
         warnings.push(format!(
-            "{} lines were made and deleted between two reads, so their kind is not recorded; what they delivered counts as new production.",
+            "{} lines produced in ticks whose purpose was not recorded; what they delivered counts as new production.",
             scanned.unlisted
         ));
     }
@@ -808,7 +809,7 @@ impl Grouped {
     /// whatever types are included, and to an arm only when it is itself counted.
     fn could_belong(&self, params: &ProducedParams, entry: &Entry) -> bool {
         self.unresolved.contains(&entry.0)
-            && (params.refits || !entry.1)
+            && (params.refits || entry.1 != Purpose::Refit)
             && match params.grouping {
                 ProducedGrouping::Type => true,
                 ProducedGrouping::Domain => self.of.contains_key(entry),
@@ -821,7 +822,7 @@ impl Grouped {
     fn left_out(&self, params: &ProducedParams, entry: &Entry) -> bool {
         self.includes_resolved
             && self.unresolved.contains(&entry.0)
-            && (params.refits || !entry.1)
+            && (params.refits || entry.1 != Purpose::Refit)
             && !self.of.contains_key(entry)
     }
 }
@@ -842,7 +843,7 @@ fn grouped(
             .chain(scanned.rocket.tags.values().flat_map(|track| {
                 counted_entries(track, params.count).filter(|entry| entry.0 != 0)
             }))
-            .filter(|entry| params.refits || !entry.1)
+            .filter(|entry| params.refits || entry.1 != Purpose::Refit)
             .filter(|entry| {
                 params.included.is_empty()
                     || types

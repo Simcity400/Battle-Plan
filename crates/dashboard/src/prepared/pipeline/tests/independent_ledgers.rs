@@ -10,9 +10,9 @@ use independent::economy::{self, CONSTRUCTION, EXPERIENCE, FUEL, PRODUCTION, STO
 use replay_data::{
     rows::BuildingConstructionRow, rows::BuildingRow, rows::ConstructionLineOutputRow,
     rows::CountryAppearanceRow, rows::CountryExperienceGainRow, rows::CountryExperienceRow,
-    rows::CountryFuelRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
-    rows::ProductionLineRow, rows::ProvinceRow, rows::Recorded, rows::StateRow, rows::StockpileRow,
-    rows::VariantDefinitionRow,
+    rows::CountryFuelRow, rows::LexicalTokenRow, rows::OutputPurpose,
+    rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::ProvinceRow, rows::Recorded,
+    rows::StateRow, rows::StockpileRow, rows::VariantDefinitionRow,
 };
 
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
@@ -202,6 +202,7 @@ fn ledger_frame(branch: u64, hour: i32) -> DecodedFrame {
             observed_since_creation: true,
             exact: true,
             spent_raw: Recorded::Value(Some(50_000 * line_day)),
+            purpose: Recorded::Value(OutputPurpose::New.raw()),
             ..Default::default()
         }]),
     );

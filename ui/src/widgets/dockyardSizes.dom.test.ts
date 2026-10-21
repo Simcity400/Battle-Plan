@@ -30,7 +30,7 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
   });
 }
 
-test('Dockyard spending’s views fit their cards at every size', async context => {
+test('Dockyard and military factory spending’s views fit their cards at every size', async context => {
   const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);

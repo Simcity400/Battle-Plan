@@ -174,6 +174,12 @@
       ]
     },
     {
+      "kind": "military-factory-spending",
+      "requests": [
+        {"product": "military-factory-spending", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "tag": "$tag", "view": "circle", "equipment": "air", "from": null, "hour": "$last", "end": "$last"}}
+      ]
+    },
+    {
       "kind": "occupied-states",
       "requests": [
         {"product": "occupied-states-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},

@@ -336,6 +336,7 @@ const FAMILIES: &[Family] = &[
             "production-select",
             "production-spending",
             "dockyard-spending",
+            "military-factory-spending",
             "scoreboard",
         ],
     },

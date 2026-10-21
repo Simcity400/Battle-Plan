@@ -1003,6 +1003,7 @@ impl Fixture for ProductionLineModifiersRow {
             naval_output: bool::sample(tick + 1),
             conversion_output: bool::sample(tick),
             refit_output: bool::sample(tick + 1),
+            converting: Recorded::Value(bool::sample(tick + 1)),
             bonuses: [tick as i64; 7],
             factory_efficiencies: vec![tick as i64, -(tick as i64)],
         }
@@ -2085,7 +2086,26 @@ impl Fixture for ConstructionLineOutputRow {
         }
     }
 }
-fixture!(ProductionLineOutputRow, |key| {line: (key >> 32) as u64, ordinal: key as u32}, {country: u32, variant: u64, mio: u64, units: i64, mio_credit: RetiredI64, since_hour: i32, observed_since_creation: bool, ended: bool, exact: bool, spent_raw: Recorded<Option<i64>>, instant_raw: Recorded<RetiredOptionalI64>});
+impl Fixture for ProductionLineOutputRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        Self {
+            line: (key >> 32) as u64,
+            ordinal: key as u32,
+            country: u32::sample(tick),
+            variant: u64::sample(tick),
+            mio: u64::sample(tick),
+            units: i64::sample(tick),
+            mio_credit: RetiredI64::sample(tick),
+            since_hour: i32::sample(tick),
+            observed_since_creation: bool::sample(tick),
+            ended: bool::sample(tick + 1),
+            exact: bool::sample(tick),
+            spent_raw: Recorded::<Option<i64>>::sample(tick),
+            instant_raw: Recorded::<RetiredOptionalI64>::sample(tick),
+            purpose: Recorded::Value((tick % 4) as u8),
+        }
+    }
+}
 fixture!(CombatLogEquipmentRow, |key| {country: (key >> 88) as u32, group: (key >> 56) as u32, kind: (key >> 48) as u8, month: (key >> 32) as u16, variant: key as u32}, {date: i32, amount_raw: i64});
 fixture!(DivisionCensusRow, |key| {country: key as u32}, {grouped: u32, ungrouped: u32});
 fixture!(CombatLogStateRow, |_key| {}, {viewing_country_raw: i32, prune_observed: u8});
@@ -4594,6 +4614,8 @@ fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixe
     );
     assert_eq!(old.spent_raw, Recorded::NotRecorded);
     assert_eq!(old.instant_raw, Recorded::NotRecorded);
+    assert_eq!(old.purpose, Recorded::NotRecorded);
+    assert_eq!(old.purpose(), OutputPurpose::Unknown);
     for (spent, instant) in [
         (Some(i64::MIN), Some(i64::MAX)),
         (None, Some(0)),
@@ -4605,6 +4627,87 @@ fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixe
             ..row.clone()
         });
     }
+}
+
+#[test]
+fn output_purpose_appends_after_spending_and_unrecorded_reads_unknown() {
+    let table = crate::rows::TableId::ProductionLineOutput;
+    let format = crate::rows::compatibility::CONVERSION_PURPOSE_FORMAT;
+    assert_eq!(table.last_change().fields(table, format - 1), 11);
+    assert_eq!(table.last_change().fields(table, format), 12);
+    assert!(table.last_change().table_gap(table, format - 1).is_none());
+    let row = ProductionLineOutputRow {
+        line: 7,
+        units: 3,
+        spent_raw: Recorded::Value(Some(-5)),
+        purpose: Recorded::Value(OutputPurpose::Converted.raw()),
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    for kind in &ProductionLineOutputRow::SCHEMA[..11] {
+        kind.decode(&mut input).unwrap();
+    }
+    let prefix = bytes.len() - input.remaining();
+    let mut input = Decoder::new(&bytes[..prefix]);
+    input.recorded_fields = 11;
+    let old = ProductionLineOutputRow::decode_fields(row.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!((old.units, old.spent_raw), (3, Recorded::Value(Some(-5))));
+    // A recording without the purpose never reads as new production.
+    assert_eq!(old.purpose(), OutputPurpose::Unknown);
+    for purpose in [
+        OutputPurpose::Unknown,
+        OutputPurpose::New,
+        OutputPurpose::Converted,
+        OutputPurpose::Refit,
+    ] {
+        assert_eq!(OutputPurpose::from_raw(purpose.raw()), Some(purpose));
+        let row = ProductionLineOutputRow {
+            purpose: Recorded::Value(purpose.raw()),
+            ..row.clone()
+        };
+        round_trip(&row);
+        assert_eq!(row.purpose(), purpose);
+    }
+    // A defaulted row is unclassified, not new.
+    assert_eq!(
+        ProductionLineOutputRow::default().purpose(),
+        OutputPurpose::Unknown
+    );
+    let invalid = ProductionLineOutputRow {
+        purpose: Recorded::Value(4),
+        ..row
+    };
+    assert!(invalid.try_clone().is_err());
+}
+
+#[test]
+fn line_conversion_control_appends_and_older_lines_leave_it_unrecorded() {
+    let table = crate::rows::TableId::ProductionLineModifiers;
+    let format = crate::rows::compatibility::CONVERSION_PURPOSE_FORMAT;
+    assert_eq!(table.last_change().fields(table, format - 1), 15);
+    assert_eq!(table.last_change().fields(table, format), 16);
+    assert!(table.last_change().table_gap(table, format - 1).is_none());
+    let row = ProductionLineModifiersRow {
+        line: 7,
+        converting: Recorded::Value(true),
+        ..Default::default()
+    };
+    round_trip(&row);
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    for kind in &ProductionLineModifiersRow::SCHEMA[..15] {
+        kind.decode(&mut input).unwrap();
+    }
+    let prefix = bytes.len() - input.remaining();
+    let mut input = Decoder::new(&bytes[..prefix]);
+    input.recorded_fields = 15;
+    let old = ProductionLineModifiersRow::decode_fields(row.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(old.converting, Recorded::NotRecorded);
 }
 
 #[test]

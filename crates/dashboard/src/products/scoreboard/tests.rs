@@ -1016,8 +1016,9 @@ fn scoreboard_held_stability_read_at_maximum_hour_stays_disjoint() {
 
 fn multi_measure_frame(hour: i32, read: i32, delivered: Option<i64>) -> DecodedFrame {
     use replay_data::{
-        rows::LexicalTokenRow, rows::NukeRow, rows::ProductionLineOutputRow,
-        rows::ProductionLineRow, rows::RocketProductionOutputRow, rows::VariantDefinitionRow,
+        rows::LexicalTokenRow, rows::NukeRow, rows::OutputPurpose, rows::ProductionLineOutputRow,
+        rows::ProductionLineRow, rows::Recorded, rows::RocketProductionOutputRow,
+        rows::VariantDefinitionRow,
     };
     let mut out = crate::test_fixtures::stability_frame(
         hour,
@@ -1061,6 +1062,7 @@ fn multi_measure_frame(hour: i32, read: i32, delivered: Option<i64>) -> DecodedF
                 since_hour: 100,
                 exact: true,
                 observed_since_creation: true,
+                purpose: Recorded::Value(OutputPurpose::New.raw()),
                 ..Default::default()
             },
         ])),

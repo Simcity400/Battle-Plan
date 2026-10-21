@@ -1,4 +1,5 @@
 use super::*;
+use replay_data::rows::OutputPurpose;
 
 fn observer_frame(countries: u32, invalid_tag: bool) -> DecodedFrame {
     use replay_data::{
@@ -45,6 +46,7 @@ fn observer_frame(countries: u32, invalid_tag: bool) -> DecodedFrame {
                 since_hour: 8,
                 exact: true,
                 spent_raw: Recorded::Value(Some(7)),
+                purpose: Recorded::Value(OutputPurpose::New.raw()),
                 ..Default::default()
             },
         ]));
@@ -118,6 +120,7 @@ fn naming_frame() -> DecodedFrame {
                     since_hour: frame.hour,
                     exact: true,
                     spent_raw: Recorded::Value(Some(7)),
+                    purpose: Recorded::Value(OutputPurpose::New.raw()),
                     ..Default::default()
                 })
                 .collect(),
@@ -664,7 +667,7 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
     ] {
         let track = state.result.tags.get_mut("mod country 1").unwrap();
         track.last.as_mut().unwrap().1 = hour;
-        track.cost_current.get_mut(&(1, false)).unwrap().reason = reason;
+        track.cost_current.get_mut(&(1, Purpose::New)).unwrap().reason = reason;
         // The production observer versions each change to the cost inventory.
         track.cost_taken.as_mut().unwrap().1 += 1;
         state.observe_spent(hour).unwrap();
@@ -708,10 +711,10 @@ fn params() -> ProducedParams {
         refits: false,
     }
 }
-fn amount(variant: u64, units: i128, exact: bool, refit: bool) -> Amount {
+fn amount(variant: u64, units: i128, exact: bool, purpose: Purpose) -> Amount {
     Amount {
         variant: variant.to_string(),
-        refit,
+        purpose,
         units: units.to_string(),
         units_exact: exact,
         spent: units.to_string(),
@@ -761,7 +764,7 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
                     domain: Some(Domain::Land),
                     name: Some("".into()),
                     names: Vec::new(),
-                    seen: [true; 4],
+                    seen: [true; SEEN],
                 },
             ),
             (
@@ -773,7 +776,7 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
                     domain: Some(Domain::Air),
                     name: None,
                     names: Vec::new(),
-                    seen: [true; 4],
+                    seen: [true; SEEN],
                 },
             ),
             (
@@ -785,7 +788,7 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
                     domain: None,
                     name: None,
                     names: Vec::new(),
-                    seen: [true; 4],
+                    seen: [true; SEEN],
                 },
             ),
         ]),
@@ -804,9 +807,9 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits_at_5000
             let mut equipment = source(
                 0,
                 vec![
-                    amount(1, 9_007_199_254_740_993, true, false),
-                    amount(2, -(i128::from(index) + 1), true, false),
-                    amount(1, 500, true, true),
+                    amount(1, 9_007_199_254_740_993, true, Purpose::New),
+                    amount(2, -(i128::from(index) + 1), true, Purpose::New),
+                    amount(1, 500, true, Purpose::Refit),
                 ],
             );
             equipment.slot = index;
@@ -874,7 +877,7 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits_at_5000
 fn unresolved_subsets_and_rocket_absence_preserve_independent_equipment_values() {
     let mut page = page(
         0,
-        vec![amount(1, 10, true, false), amount(3, -3, true, false)],
+        vec![amount(1, 10, true, Purpose::New), amount(3, -3, true, Purpose::New)],
     );
     let mut params = params();
     let result = select(&page, None, None, &params, 0, 10, &AtomicBool::new(false)).unwrap();
@@ -897,8 +900,8 @@ fn unresolved_subsets_and_rocket_absence_preserve_independent_equipment_values()
 
 #[test]
 fn periods_use_exact_read_predecessors_and_never_bridge_holder_or_coverage_breaks() {
-    let before = page(0, vec![amount(1, -4, true, false)]);
-    let mut current = page(24, vec![amount(1, 7, true, false)]);
+    let before = page(0, vec![amount(1, -4, true, Purpose::New)]);
+    let mut current = page(24, vec![amount(1, 7, true, Purpose::New)]);
     let mut params = params();
     params.measure = ProducedMeasure::Day;
     let result = select(
@@ -951,7 +954,7 @@ fn periods_use_exact_read_predecessors_and_never_bridge_holder_or_coverage_break
 
 #[test]
 fn manual_rank_pages_sort_wide_scores_before_paging_and_keep_the_default_request_order() {
-    let mut page = page(0, vec![amount(1, 9_007_199_254_740_992, true, false)]);
+    let mut page = page(0, vec![amount(1, 9_007_199_254_740_992, true, Purpose::New)]);
     let mut second = page.countries[0].clone();
     second.tag = "B".into();
     second.equipment.as_mut().unwrap().slot = 2;
@@ -1006,12 +1009,12 @@ fn cancelled_queries_refuse_before_returning_partial_selection() {
 fn automatic_type_totals_include_off_page_countries_and_keep_type_order() {
     let mut current = page(
         0,
-        vec![amount(1, 10, true, false), amount(2, 7, true, false)],
+        vec![amount(1, 10, true, Purpose::New), amount(2, 7, true, Purpose::New)],
     );
     let mut second = current.countries[0].clone();
     second.tag = "B".into();
     second.equipment.as_mut().unwrap().amounts =
-        vec![amount(1, 2, true, false), amount(2, 20, true, false)];
+        vec![amount(1, 2, true, Purpose::New), amount(2, 20, true, Purpose::New)];
     current.countries.push(second);
     let mut input = params();
     input.tags.push("B".into());
@@ -1047,9 +1050,9 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
     let (recording, root) = crate::test_fixtures::file_source(replay);
     let (store, key) = crate::prepared::files(&recording, None).unwrap();
     let mut state = ProductionAccumulator::new(1, 1, 0);
-    let mut early = page(0, vec![amount(1, 4, true, false)]);
+    let mut early = page(0, vec![amount(1, 4, true, Purpose::New)]);
     early.last_hour = 7;
-    let mut open = page(8, vec![amount(1, 5, true, false)]);
+    let mut open = page(8, vec![amount(1, 5, true, Purpose::New)]);
     open.last_hour = 8;
     state.classifications = open.classifications.clone();
     let eq = open.countries[0].equipment.as_ref().unwrap();
@@ -1122,8 +1125,8 @@ fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     let store = store::Store::local(campaign).unwrap();
     let mut writer = store.replace(key.clone()).unwrap();
-    let first = page(0, vec![amount(1, 7, true, false)]);
-    let mut second = page(0, vec![amount(1, 9, true, false)]);
+    let first = page(0, vec![amount(1, 7, true, Purpose::New)]);
+    let mut second = page(0, vec![amount(1, 9, true, Purpose::New)]);
     second.branch_id = "2".into();
     let mut resumed = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
     let mut other_branch = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 2, 0);
@@ -1210,12 +1213,12 @@ fn endpoint_leaf_events_restore_identical_pages_after_two_commits_resume_append_
         let read = block * 24;
         let mut current = page(
             read,
-            vec![amount(1, wide, true, false), amount(2, -31, false, true)],
+            vec![amount(1, wide, true, Purpose::New), amount(2, -31, false, Purpose::Refit)],
         );
         current.unnamed_before = block as usize * 24;
         current.unnamed_per_hour = 1;
         current.countries[0].rocket.as_mut().unwrap().amounts =
-            vec![amount(0, -wide + i128::from(block), true, false)];
+            vec![amount(0, -wide + i128::from(block), true, Purpose::New)];
         if block >= 1 {
             current.classifications.get_mut(&1).unwrap().names = vec![StockVariantName {
                 first_hour: 24,
@@ -1306,7 +1309,7 @@ fn endpoint_written_bytes_are_flat_at_n_and_ten_n_blocks_and_retired_leaves_are_
     let mut current = page(
         0,
         (1..=128)
-            .map(|variant| amount(variant, i128::from(variant), true, false))
+            .map(|variant| amount(variant, i128::from(variant), true, Purpose::New))
             .collect(),
     );
     let mut writer = fixture.writer();
@@ -1402,7 +1405,7 @@ fn endpoint_changed_payload_stays_flat_when_retired_leaf_history_grows_tenfold()
         current.equipment_read = Some(current.first_hour);
         let equipment = current.countries[0].equipment.as_mut().unwrap();
         equipment.read_hour = current.first_hour;
-        equipment.amounts.push(amount(block, 17, true, false));
+        equipment.amounts.push(amount(block, 17, true, Purpose::New));
         let mut kind = page(0, Vec::new()).classifications.remove(&1).unwrap();
         kind.key = format!("mod variant {block:04}");
         current.classifications.insert(block, kind);
@@ -1453,7 +1456,7 @@ fn endpoint_changed_payload_stays_flat_when_retired_leaf_history_grows_tenfold()
 
 #[test]
 fn null_equipment_design_keeps_units_and_unresolved_attribution() {
-    let mut current = page(0, vec![amount(0, 7, true, false)]);
+    let mut current = page(0, vec![amount(0, 7, true, Purpose::New)]);
     let unresolved = current.classifications[&3].clone();
     current.classifications.insert(0, unresolved);
     let cancelled = AtomicBool::new(false);
@@ -1467,7 +1470,7 @@ fn null_equipment_design_keeps_units_and_unresolved_attribution() {
 
 #[test]
 fn branch_aliases_compare_numerically_and_echo_the_request() {
-    let current = page(0, vec![amount(1, 7, true, false)]);
+    let current = page(0, vec![amount(1, 7, true, Purpose::New)]);
     for alias in ["01", "+1"] {
         let mut request = params();
         request.branch_id = alias.into();
@@ -1488,10 +1491,10 @@ fn branch_aliases_compare_numerically_and_echo_the_request() {
 
 #[test]
 fn global_value_extent_includes_off_page_signed_rows_exactly() {
-    let mut current = page(0, vec![amount(1, 9007199254740993, true, false)]);
+    let mut current = page(0, vec![amount(1, 9007199254740993, true, Purpose::New)]);
     let mut negative = current.countries[0].clone();
     negative.tag = "B".into();
-    negative.equipment.as_mut().unwrap().amounts = vec![amount(1, -7, true, false)];
+    negative.equipment.as_mut().unwrap().amounts = vec![amount(1, -7, true, Purpose::New)];
     current.countries.push(negative);
     let mut request = params();
     request.tags.push("B".into());
@@ -1536,11 +1539,11 @@ fn endpoint_reads_search_each_leaf_directory_once_and_restore_only_requested_lea
                     equipment: Some(source(
                         read,
                         vec![
-                            amount(1, units, true, false),
-                            amount(2, -units, true, false),
+                            amount(1, units, true, Purpose::New),
+                            amount(2, -units, true, Purpose::New),
                         ],
                     )),
-                    rocket: Some(source(read, vec![amount(3, units, true, false)])),
+                    rocket: Some(source(read, vec![amount(3, units, true, Purpose::New)])),
                     rocket_joined: true,
                 }
             })
@@ -1615,6 +1618,7 @@ fn production_spending_projects_equal_inventories_once_and_rebuilds_after_restor
             since_hour: frame.hour,
             exact: true,
             spent_raw: Recorded::Value(Some(7)),
+            purpose: Recorded::Value(OutputPurpose::New.raw()),
             ..Default::default()
         })
         .collect();
@@ -1728,6 +1732,7 @@ fn spending_inventory_visits_follow_changed_holders_across_quiet_spans_and_hourl
                     since_hour: 8,
                     exact: true,
                     spent_raw: Recorded::Value(Some(7)),
+                    purpose: Recorded::Value(OutputPurpose::New.raw()),
                     ..Default::default()
                 })
             })
@@ -1861,6 +1866,7 @@ fn presentation_inventory_work_follows_changed_holders(count: u32) {
                     since_hour: first,
                     exact: true,
                     spent_raw: Recorded::Value(Some(7)),
+                    purpose: Recorded::Value(OutputPurpose::New.raw()),
                     ..Default::default()
                 })
                 .collect(),

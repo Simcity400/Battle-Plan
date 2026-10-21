@@ -2,22 +2,23 @@
 //! the prepared repair rate, through the hours both families have prepared.
 use super::*;
 use crate::Source;
-use crate::prepared::series::Run;
 use crate::prepared_production::ProductionNaming;
-use crate::prepared_production::{self as pages, Classification};
 use crate::products::dockyard_repairs::{RepairPart, RepairReads};
-use crate::products::equipment::production::variant_types_for;
-use crate::products::equipment::{Domain, UNRESOLVED_MARK};
+use crate::products::equipment::Domain;
+use crate::products::equipment::production::{Purpose, variant_types_for};
 use crate::products::production_spending::{
     Purposes,
     prepared::{Answered, Params as SpendingParams, query_with},
 };
+use crate::products::purpose_split::{keep_domain, purpose_months};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+/// The purposes dockyard spending shows.
+const SHOWN: [Purpose; 2] = [Purpose::New, Purpose::Refit];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -77,7 +78,10 @@ pub fn query(
     }
     match input.view {
         DockyardView::Circle => {
-            keep_naval(&mut data)?;
+            let other = keep_domain(&mut data, Domain::Naval, &SHOWN)?;
+            if other > 0 {
+                warn(&mut data, other, "designs")?;
+            }
             // A whole campaign's repairs start where the country's output is
             // first known, named when that is after the recording's start.
             let origin = repairs.origin(&input.tag)?;
@@ -98,7 +102,11 @@ pub fn query(
             data["months"] = json!([]);
         }
         DockyardView::Months => {
-            let months = month_columns(&store, &key, &input.tag, &answered, &mut repairs, cancel)?;
+            let (months, other) =
+                month_columns(&store, &key, &input.tag, &answered, &mut repairs, cancel)?;
+            if other > 0 {
+                warn(&mut data, other, "months")?;
+            }
             data["leaves"] = json!([]);
             data["peaks"] = json!({});
             data["repairs"] = serde_json::to_value(DockyardRepairs {
@@ -195,163 +203,22 @@ fn repair_parts(
     Ok(result)
 }
 
-/// Whether a leaf's design could be naval: its type is naval, or content
-/// cannot resolve it.
-fn possibly_naval(leaf: &Value) -> bool {
-    leaf["rocket"] != true
-        && (leaf["domain"] == json!(Domain::Naval)
-            || leaf["typeKey"]
-                .as_str()
-                .is_some_and(|key| key.starts_with(UNRESOLVED_MARK)))
-}
-
-fn keep_naval(data: &mut Value) -> io::Result<()> {
-    data["leaves"]
+/// Naval input of another purpose than new ships and refits is counted in
+/// the whole as its own part and in the reply's warnings.
+fn warn(data: &mut Value, count: usize, unit: &str) -> io::Result<()> {
+    data["warnings"]
         .as_array_mut()
-        .ok_or_else(|| crate::invalid("Production spending leaves are not a list"))?
-        .retain(possibly_naval);
+        .ok_or_else(|| crate::invalid("Dockyard spending warnings are not a list"))?
+        .push(json!(format!(
+            "{count} naval {unit} had converted input, which is neither new ships nor refits; it is shown apart."
+        )));
     Ok(())
 }
 
-/// A design's spent series through the reply's hour: its new production's
-/// and its combined new and refit input.
-pub(super) struct Design {
-    pub unresolved: bool,
-    pub new: Vec<Run>,
-    pub combined: Vec<Run>,
-    /// Each purpose's cumulative input of lines whose purpose is not
-    /// recorded (new, then refit); empty when it never had any.
-    pub unproven: [Vec<Run>; 2],
-}
-
-fn covering(runs: &[Run], hour: i32) -> Option<&Run> {
-    let index = runs.partition_point(|run| run.last_hour < hour);
-    runs.get(index).filter(|run| run.first_hour <= hour)
-}
-
-/// Where a cumulative series' change over `first..=last` is measured from:
-/// None before the design had any input, `Some(None)` from zero (its first
-/// input in that span, or its observation's start), `Some(Some(hour))` from its
-/// value at `hour`. Err when an hour between cannot be told.
-fn baseline(
-    runs: &[Run],
-    first: i32,
-    last: i32,
-    origins: &[i32],
-) -> Result<Option<Option<i32>>, ProductionSpendingUnknown> {
-    let index = runs.partition_point(|run| run.last_hour < last);
-    match runs.get(index) {
-        Some(run) if run.first_hour <= last => {}
-        // Input that has not begun is none yet; one that ended is unknown.
-        _ if runs.first().is_none_or(|run| run.first_hour > last) => return Ok(None),
-        _ => return Err(ProductionSpendingUnknown::SpendingUnavailable),
-    }
-    let mut at = index;
-    loop {
-        let run = &runs[at];
-        if run.first_hour < first {
-            return Ok(Some(Some(first - 1)));
-        }
-        if run.break_before {
-            return if at == 0 && origins.contains(&run.first_hour) {
-                Ok(Some(None))
-            } else {
-                Err(ProductionSpendingUnknown::CountryChanged)
-            };
-        }
-        if at == 0 {
-            return Ok(Some(None));
-        }
-        if runs[at - 1].last_hour.checked_add(1) != Some(run.first_hour) {
-            return Err(ProductionSpendingUnknown::SpendingUnavailable);
-        }
-        at -= 1;
-    }
-}
-
-/// A cumulative series' value at a baseline, zero where it holds none: a
-/// design's new production has no series until its first new input.
-fn value(runs: &[Run], at: Option<i32>) -> i128 {
-    at.and_then(|hour| covering(runs, hour))
-        .map_or(0, |run| run.value)
-}
-
-/// One design's new and refit input over `first..=last`.
-pub(super) fn design_change(
-    design: &Design,
-    first: i32,
-    last: i32,
-    origins: &[i32],
-) -> Result<(i128, i128), ProductionSpendingUnknown> {
-    let Some(from) = baseline(&design.combined, first, last, origins)? else {
-        return Ok((0, 0));
-    };
-    let overflow = || ProductionSpendingUnknown::SpendingUnavailable;
-    let combined = value(&design.combined, Some(last))
-        .checked_sub(value(&design.combined, from))
-        .ok_or_else(overflow)?;
-    let new = value(&design.new, Some(last))
-        .checked_sub(value(&design.new, from))
-        .ok_or_else(overflow)?;
-    Ok((new, combined.checked_sub(new).ok_or_else(overflow)?))
-}
-
-/// Whether input of lines whose purpose is not recorded joined the design
-/// in `first..=last`, read against the same baseline as its amounts.
-pub(super) fn unproven_in(
-    design: &Design,
-    first: i32,
-    last: i32,
-    origins: &[i32],
-) -> Result<bool, ProductionSpendingUnknown> {
-    let Some(from) = baseline(&design.combined, first, last, origins)? else {
-        return Ok(false);
-    };
-    Ok(design
-        .unproven
-        .iter()
-        .any(|runs| value(runs, Some(last)) != value(runs, from)))
-}
-
-/// When the equipment source's spending is known: from its first read until
-/// the first taint of its observation or its restart.
-pub(super) struct SourceCoverage {
-    first_read: Option<i32>,
-    tainted: Option<(i32, ProductionSpendingUnknown)>,
-    restart: Option<i32>,
-}
-
-impl SourceCoverage {
-    pub(super) fn of(scanned: &crate::products::equipment::production::ScannedProduced) -> Self {
-        Self {
-            first_read: scanned.reads.first().copied(),
-            tainted: scanned
-                .spending_tainted
-                .values()
-                .min_by_key(|(at, _)| *at)
-                .copied(),
-            restart: scanned.observations.get(1).copied(),
-        }
-    }
-
-    /// Whether a month ending at `last` lies where spending is known. A
-    /// month the recording starts in counts from its first read.
-    pub(super) fn month(&self, last: i32) -> Result<(), ProductionSpendingUnknown> {
-        if self.first_read.is_none_or(|read| read > last) {
-            return Err(ProductionSpendingUnknown::NotRecorded);
-        }
-        if let Some((_, reason)) = self.tainted.filter(|(at, _)| *at <= last) {
-            return Err(reason);
-        }
-        if self.restart.is_some_and(|restart| restart <= last) {
-            return Err(ProductionSpendingUnknown::ObservationRestarted);
-        }
-        Ok(())
-    }
-}
-
 /// The calendar months from the window's first hour through its hour, each
-/// with exact new, refit and repair amounts or the reason one is unknown.
+/// with exact new, refit, repair, unrecorded-purpose and other-purpose
+/// amounts or the reason one is unknown, and how many had naval input of
+/// another purpose.
 fn month_columns(
     store: &store::Store,
     key: &store::SourceKey,
@@ -359,97 +226,30 @@ fn month_columns(
     answered: &Answered,
     repairs: &mut RepairReads<'_>,
     cancel: &AtomicBool,
-) -> io::Result<Vec<DockyardMonth>> {
-    let first = answered
-        .from
-        .unwrap_or(answered.bounds.0)
-        .max(answered.bounds.0);
-    let last = answered.hour.min(answered.bounds.1);
-    if first > last {
-        return Ok(Vec::new());
-    }
-    let count = pages::endpoint_count(store, key, answered.branch)?;
-    let mut reads = pages::Endpoints::new(store, key, answered.branch, count, cancel);
-    let Some(catalogue) = reads.catalogue()? else {
-        return Ok(Vec::new());
-    };
-    let scanned = catalogue.spending.scanned(tag);
-    let coverage = SourceCoverage::of(&scanned);
-    let origins = scanned.observations;
-    let classes: BTreeMap<u64, Classification> = catalogue.classifications.clone();
-    let mut keys: BTreeMap<u64, [Option<u64>; 2]> = BTreeMap::new();
-    for (token, &id) in &catalogue.spent_keys {
-        let (owner, rocket, refits, variant): (String, bool, bool, u64) =
-            serde_json::from_str(token)?;
-        if owner == tag && !rocket {
-            keys.entry(variant).or_default()[usize::from(refits)] = Some(id);
-        }
-    }
-    let mut unproven: BTreeMap<u64, [Option<u64>; 2]> = BTreeMap::new();
-    for (token, &id) in &catalogue.unproven_keys {
-        let (owner, variant, refit): (String, u64, bool) = serde_json::from_str(token)?;
-        if owner == tag {
-            unproven.entry(variant).or_default()[usize::from(refit)] = Some(id);
-        }
-    }
-    let reader = reads.reader()?;
-    let mut designs = Vec::new();
-    for (variant, [new, combined]) in keys {
-        cancelled(cancel)?;
-        let class = classes.get(&variant);
-        let unresolved = class.is_none_or(|class| class.ordinal.is_none());
-        if !unresolved && class.and_then(|class| class.domain) != Some(Domain::Naval) {
-            continue;
-        }
-        let Some(combined) = combined else { continue };
-        let mut read = |id: Option<u64>| match id {
-            Some(id) => reader.runs(id, answered.bounds.0, last),
-            None => Ok(Vec::new()),
-        };
-        let [unproven_new, unproven_refit] = unproven.get(&variant).copied().unwrap_or_default();
-        designs.push(Design {
-            unresolved,
-            new: read(new)?,
-            combined: read(Some(combined))?,
-            unproven: [read(unproven_new)?, read(unproven_refit)?],
-        });
-    }
-    let spans = months(first, last);
+) -> io::Result<(Vec<DockyardMonth>, usize)> {
+    let months = purpose_months(store, key, tag, answered, Domain::Naval, cancel)?;
+    let spans: Vec<(i32, i32)> = months
+        .iter()
+        .map(|month| (month.first_hour, month.last_hour))
+        .collect();
     let repaired = repairs.integrals(tag, &spans)?;
-    let mut result = Vec::with_capacity(spans.len());
-    for (&(month_first, month_last), repair) in spans.iter().zip(repaired) {
+    let mut result = Vec::with_capacity(months.len());
+    let mut other = 0;
+    for (month, repair) in months.into_iter().zip(repaired) {
         cancelled(cancel)?;
-        // A month no read covers, or after a taint or restart, is not known,
-        // whatever its designs' series hold.
-        let mut sums = coverage.month(month_last).map(|()| (0_i128, 0_i128));
-        let mut unresolved = false;
-        let mut purpose_unproven = false;
-        for design in &designs {
-            // Unproven input of a design that could be naval, in this month.
-            purpose_unproven |=
-                unproven_in(design, month_first, month_last, &origins).unwrap_or(false);
-            let change = design_change(design, month_first, month_last, &origins);
-            if design.unresolved {
-                unresolved |= change != Ok((0, 0));
-                continue;
-            }
-            sums = match (sums, change) {
-                (Ok((new, refit)), Ok((more_new, more_refit))) => new
-                    .checked_add(more_new)
-                    .zip(refit.checked_add(more_refit))
-                    .ok_or(ProductionSpendingUnknown::SpendingUnavailable),
-                (Err(reason), _) | (_, Err(reason)) => Err(reason),
-            };
-        }
+        let remainder = month.other(&SHOWN);
+        other += usize::from(remainder.is_ok_and(|amount| amount != 0));
         result.push(DockyardMonth {
-            first_hour: month_first,
-            last_hour: month_last,
-            new_ships: DockyardAmount::of(sums.map(|(new, _)| new)),
-            refits: DockyardAmount::of(sums.map(|(_, refit)| refit)),
+            first_hour: month.first_hour,
+            last_hour: month.last_hour,
+            new_ships: DockyardAmount::of(month.part(Purpose::New)),
+            refits: DockyardAmount::of(month.part(Purpose::Refit)),
             repairs: DockyardAmount::of(repair),
-            purpose_unproven,
-            unresolved,
+            unrecorded: DockyardAmount::of(month.part(Purpose::Unknown)),
+            other: DockyardAmount::of(remainder),
+            purpose_unproven: month.purpose_unproven,
+            unresolved: month.unresolved,
         });
     }
-    Ok(result)
+    Ok((result, other))
 }

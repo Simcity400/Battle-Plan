@@ -28,6 +28,9 @@ pub const EVENT_FEED_COLUMNS_FORMAT: u16 = 106;
 pub const EVENT_FEED_OWNER_REFUSALS_FORMAT: u16 = 109;
 /// Stable semantic observer occurrences and independent signed numeric lanes.
 pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
+/// ProductionLineOutput rows carry each tick's purpose and split a line's
+/// buckets by it; ProductionLineModifiers records the conversion control.
+pub const CONVERSION_PURPOSE_FORMAT: u16 = 110;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -963,8 +966,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::RocketProductionOutput.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::ProductionLineOutput.index()] = appended_at(
         TableId::ProductionLineOutput,
-        WIDGET_CAPTURE_FORMAT,
-        "production-spending-inputs",
+        CONVERSION_PURPOSE_FORMAT,
+        "conversion-purpose",
         &[
             AppendedField {
                 index: 9,
@@ -975,6 +978,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 10,
                 name: "instant_raw",
                 introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 11,
+                name: "purpose",
+                introduced: CONVERSION_PURPOSE_FORMAT,
             },
         ],
     );
@@ -2877,10 +2885,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "production-modifiers",
     );
     history[TableId::CountryProductionModifiers.index()].introduced = PRODUCTION_MODIFIERS_FORMAT;
-    history[TableId::ProductionLineModifiers.index()] = table(
+    history[TableId::ProductionLineModifiers.index()] = appended_at(
         TableId::ProductionLineModifiers,
-        PRODUCTION_MODIFIERS_FORMAT,
-        "production-modifiers",
+        CONVERSION_PURPOSE_FORMAT,
+        "conversion-purpose",
+        &[AppendedField {
+            index: 15,
+            name: "converting",
+            introduced: CONVERSION_PURPOSE_FORMAT,
+        }],
     );
     history[TableId::ProductionLineModifiers.index()].introduced = PRODUCTION_MODIFIERS_FORMAT;
     let air_ledgers = [

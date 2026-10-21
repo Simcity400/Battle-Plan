@@ -465,7 +465,8 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         }
         equipment_produced::EquipmentProduced::KEY
         | production_spending::ProductionSpending::KEY
-        | dockyard_spending::DockyardSpending::KEY => {
+        | dockyard_spending::DockyardSpending::KEY
+        | military_factory_spending::MilitaryFactorySpending::KEY => {
             equipment_production_check(content, key, findings)?;
             Ok("Authored equipment types, archetypes, domains and type names checked through shared equipment production preparation; produced/spent totals, costs and variant names require recorded lines, outputs, costs, variants and country identities.".into())
         }

@@ -34,6 +34,7 @@ export const rendererLoaders = {
   'equipment-produced': () => import('./equipment-produced'),
   'production-spending': () => import('./production-spending'),
   'dockyard-spending': () => import('./dockyard-spending'),
+  'military-factory-spending': () => import('./military-factory-spending'),
   'occupied-states': () => import('./occupied-states'),
   'occupation-trend': () => import('./occupation-trend'),
   'air-force-size': () => import('./air-force-size'),

@@ -6,11 +6,14 @@
 //! The delivery site runs only when a production call delivers, with the
 //! units times [`UNIT_SCALE`]; from one of the four equipment production callers
 //! it leaves that amount pending on its thread. The credit site ends every
-//! production call with the count the game credits the line's organisation;
-//! it takes the pending delivery of the same production call and appends the
-//! line's handle, producing country, variant and organisation with both counts
-//! and the exact signed CREDIT input, including ticks with no delivery,
-//! to a bounded lock-free log. A naval line that cannot deploy credits without
+//! production call with the count the game credits the line's organisation.
+//! At its entry it takes the pending delivery of the same production call and
+//! reads the line's handle, producing country, variant and organisation, the
+//! exact signed CREDIT input and the tick's purpose (new, converted or refit),
+//! including ticks with no delivery; on the call's normal return it appends
+//! them to a bounded lock-free log. Nothing is read after the call: CREDIT can
+//! refresh the producer's lines before it returns. Converted is conversion
+//! progress, not proof that a source unit was removed. A naval line that cannot deploy credits without
 //! delivering, so the two counts differ exactly there and on non-positive
 //! counts. Rocket spending comes from daily production, and its delivery
 //! uses the same DELIVERY hook with a distinct return PC.
@@ -38,6 +41,7 @@ use crate::{
     output_log::{DrainCounters, Log},
 };
 use engine_native::Memory;
+use replay_data::rows::OutputPurpose;
 use engine_production::{
     line_output_sites::CREDIT, line_output_sites::DELIVERY, line_output_sites::HookSite,
     line_output_sites::LINE_HANDLE, line_output_sites::LINE_ORGANISATION,
@@ -78,6 +82,7 @@ struct Slot {
     instant: AtomicU64,
     spending_known: AtomicU8,
     kind: AtomicU8,
+    purpose: AtomicU8,
 }
 
 struct Storage {
@@ -200,11 +205,19 @@ static DELIVERY_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_DELIVERY_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 static SPENDING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static FIRST_SPENDING_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+static PURPOSE_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static FIRST_PURPOSE_REFUSAL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Capture and spool arithmetic keep their first refusal and count every loss.
 pub fn refuse_spending(reason: &'static str) {
     SPENDING_REFUSALS.fetch_add(1, Ordering::Relaxed);
     let _ = FIRST_SPENDING_REFUSAL.set(reason);
+}
+
+/// A tick whose purpose cannot be read is Unknown, never new production.
+fn refuse_purpose(reason: &'static str) {
+    PURPOSE_REFUSALS.fetch_add(1, Ordering::Relaxed);
+    let _ = FIRST_PURPOSE_REFUSAL.set(reason);
 }
 
 /// An unsupported normal-return DELIVERY has no authenticated producer. Its
@@ -245,6 +258,9 @@ pub struct Entry {
     /// Rocket spending uses operand completeness; Rocket DELIVERY uses
     /// producer/design coherence independently of signed unit availability.
     pub exact: bool,
+    /// What the tick's input was for; Unknown outside the four equipment
+    /// producers.
+    pub purpose: OutputPurpose,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -395,10 +411,13 @@ fn observe_delivery(caller: usize, variant: usize, amount: i64) {
     });
 }
 
-/// After the credit site returned to `caller`, with the delivery `pending`
-/// before it: append every applied input, including exact zero-unit ticks.
-fn observe_credit(line: usize, speed: i64, count: i32, caller: usize, pending: Pending) {
-    COUNTERS[0].fetch_add(1, Ordering::Relaxed);
+/// At the credit site's entry, with the delivery `pending` before it: the
+/// call's entry, or None when its producer cannot be read. Everything is read
+/// before the original runs, as the production call that made the tick left
+/// it: CREDIT can refresh the producer's lines before it returns (an
+/// organisation's automatic design upgrade reassigns factories), changing a
+/// line's design, organisation or conversion control.
+fn credit_entry(line: usize, speed: i64, count: i32, caller: usize, pending: Pending) -> Option<Entry> {
     let variant = live_u64(line.wrapping_add(LINE_VARIANT)) as usize;
     let producer = producer(&CREDIT, caller);
     let (units, exact) = match pending.producer {
@@ -422,32 +441,33 @@ fn observe_credit(line: usize, speed: i64, count: i32, caller: usize, pending: P
     };
     // The serial native pass keeps the line, status and country alive here.
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let country = match engine_production::line_output_sites::producing_country(
-        &memory,
-        BASE.load(Ordering::Relaxed),
-        line,
-    ) {
-        Ok(country) => country,
-        Err(_) => {
-            COUNTERS[9].fetch_add(1, Ordering::Relaxed);
-            invalidate();
-            return;
-        }
-    };
+    let base = BASE.load(Ordering::Relaxed);
+    let country = engine_production::line_output_sites::producing_country(&memory, base, line).ok()?;
     let spending = producer
         .ok_or("production output producer unsupported")
         .and_then(|producer| {
-            engine_production::line_output_sites::applied_spending(
-                &memory,
-                BASE.load(Ordering::Relaxed),
-                country,
-                producer,
-                speed,
-            )
+            engine_production::line_output_sites::applied_spending(&memory, base, country, producer, speed)
         })
         .map_err(refuse_spending)
         .ok();
-    append(Entry {
+    // Producers in `PRODUCERS` order: only military production converts.
+    let purpose = match producer {
+        Some(0) => match engine_production::line_output_sites::converting(&memory, line) {
+            Ok(true) => OutputPurpose::Converted,
+            Ok(false) => OutputPurpose::New,
+            Err(reason) => {
+                refuse_purpose(reason);
+                OutputPurpose::Unknown
+            }
+        },
+        Some(1 | 2) => OutputPurpose::New,
+        Some(3) => OutputPurpose::Refit,
+        _ => {
+            refuse_purpose("production output producer unsupported");
+            OutputPurpose::Unknown
+        }
+    };
+    Some(Entry {
         kind: OutputKind::Equipment,
         country,
         line: live_u64(line.wrapping_add(LINE_HANDLE)),
@@ -461,7 +481,22 @@ fn observe_credit(line: usize, speed: i64, count: i32, caller: usize, pending: P
         credit: count,
         spending,
         exact,
-    });
+        purpose,
+    })
+}
+
+/// After the credit site returned normally: append the entry its entry froze,
+/// including exact zero-unit ticks; a producer that could not be read ends
+/// the observation.
+fn observe_credit(frozen: Option<Entry>) {
+    COUNTERS[0].fetch_add(1, Ordering::Relaxed);
+    match frozen {
+        Some(entry) => append(entry),
+        None => {
+            COUNTERS[9].fetch_add(1, Ordering::Relaxed);
+            invalidate();
+        }
+    }
 }
 
 /// Store an entry, guarded by [`Log::enter`]. A writer that stalled until writers
@@ -497,6 +532,7 @@ fn append(entry: Entry) {
     slot.spending_known
         .store(u8::from(entry.spending.is_some()), Ordering::SeqCst);
     slot.kind.store(entry.kind.raw(), Ordering::SeqCst);
+    slot.purpose.store(entry.purpose.raw(), Ordering::SeqCst);
     OBSERVATION.finish(index);
 }
 
@@ -521,6 +557,7 @@ fn entry(slot: &Slot) -> Entry {
             )
         }),
         exact: slot.exact.load(Ordering::SeqCst) != 0,
+        purpose: OutputPurpose::from_raw(slot.purpose.load(Ordering::SeqCst)).unwrap_or_default(),
     }
 }
 
@@ -582,6 +619,8 @@ pub fn status() -> impl serde::Serialize {
         "failed_producer_reads": counters[9],
         "spending_refusals": SPENDING_REFUSALS.load(Ordering::Relaxed),
         "first_spending_refusal": FIRST_SPENDING_REFUSAL.get().copied(),
+        "purpose_refusals": PURPOSE_REFUSALS.load(Ordering::Relaxed),
+        "first_purpose_refusal": FIRST_PURPOSE_REFUSAL.get().copied(),
         "native_retention_required": native_retention_required(),
         "rocket_unavailable": rocket_unavailable_reason(),
         "rocket_capture_refusals": rocket_observer::refusals(),
@@ -713,14 +752,14 @@ pub fn produce_for_test(line: usize, producer: usize, count: i32, delivered: Opt
         );
     }
     let pending = PENDING.replace(NOTHING_PENDING);
-    observe_credit(line, 0, count, CREDIT.callers[producer], pending);
+    observe_credit(credit_entry(line, 0, count, CREDIT.callers[producer], pending));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const MILITARY: usize = 0;
+    pub(super) const MILITARY: usize = 0;
     const NAVAL: usize = 1;
 
     #[test]
@@ -764,16 +803,20 @@ mod tests {
 
     /// A line and its variant in owned memory, laid out at the offsets the
     /// detours read.
-    struct Line {
+    pub(super) struct Line {
         line: Vec<u64>,
-        _variant: Vec<u64>,
+        variant: Vec<u64>,
+        _definition: Vec<u64>,
         _status: Vec<u64>,
         country: Vec<u64>,
     }
     impl Line {
-        fn new(handle: u64, variant: u64, mio: u64) -> Self {
-            let mut owned_variant = vec![0_u64; 4];
+        pub(super) fn new(handle: u64, variant: u64, mio: u64) -> Self {
+            let definition = vec![0_u64; 0xc0];
+            let mut owned_variant = vec![0_u64; 0x80];
             owned_variant[VARIANT_HANDLE / 8] = variant;
+            owned_variant[engine_native::cequipment_variant::DEFINITION / 8] =
+                definition.as_ptr() as u64;
             let mut line = vec![0_u64; 0x20];
             let mut status = vec![0_u64; (engine_native::cproduction_status::COUNTRY + 8) / 8];
             let mut country = vec![0_u64; (engine_native::ccountry::PRODUCTION_STATUS + 8) / 8];
@@ -789,13 +832,27 @@ mod tests {
             line[LINE_ORGANISATION / 8] = mio;
             Self {
                 line,
-                _variant: owned_variant,
+                variant: owned_variant,
+                _definition: definition,
                 _status: status,
                 country,
             }
         }
-        fn address(&self) -> usize {
+        pub(super) fn address(&self) -> usize {
             self.line.as_ptr() as usize
+        }
+        /// Sets or clears the conversion control; a set control converts
+        /// into this design, which has a parent design.
+        pub(super) fn set_converting(&mut self, converting: bool) {
+            let bit = 1_u64 << (8 * (engine_production::line_output_sites::LINE_CONVERSION % 8));
+            let word = &mut self.line[engine_production::line_output_sites::LINE_CONVERSION / 8];
+            *word = if converting { *word | bit } else { *word & !bit };
+            self.variant[engine_native::cequipment_variant::PARENT / 8] = 0x1_0000_0046;
+        }
+        /// The design and organisation a line refresh replaced them with.
+        pub(super) fn replace(&mut self, variant: u64, mio: u64) {
+            self.variant[VARIANT_HANDLE / 8] = variant;
+            self.line[LINE_ORGANISATION / 8] = mio;
         }
         fn variant_pointer(&self) -> usize {
             self.line[LINE_VARIANT / 8] as usize
@@ -821,6 +878,7 @@ mod tests {
             credit: 1,
             spending: Some((line as i64, 0)),
             exact: true,
+            purpose: OutputPurpose::New,
         }
     }
 
@@ -991,6 +1049,7 @@ mod tests {
                     credit: 3,
                     spending: None,
                     exact: true,
+                    purpose: OutputPurpose::New,
                 },
                 Entry {
                     kind: OutputKind::Equipment,
@@ -1002,6 +1061,7 @@ mod tests {
                     credit: 0,
                     spending: None,
                     exact: true,
+                    purpose: OutputPurpose::New,
                 },
                 Entry {
                     kind: OutputKind::Equipment,
@@ -1013,6 +1073,7 @@ mod tests {
                     credit: 2,
                     spending: None,
                     exact: true,
+                    purpose: OutputPurpose::New,
                 },
                 Entry {
                     kind: OutputKind::Equipment,
@@ -1024,6 +1085,7 @@ mod tests {
                     credit: 0,
                     spending: None,
                     exact: true,
+                    purpose: OutputPurpose::New,
                 },
                 Entry {
                     kind: OutputKind::Equipment,
@@ -1035,6 +1097,7 @@ mod tests {
                     credit: -1,
                     spending: None,
                     exact: true,
+                    purpose: OutputPurpose::New,
                 },
             ]
         );
@@ -1061,25 +1124,25 @@ mod tests {
         // Even a zero delivery must pair: wrong producer, variant, duplicate,
         // unknown caller, or nonzero credit cannot be excused as a no-op.
         observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), 0);
-        observe_credit(
+        observe_credit(credit_entry(
             a.address(),
             0,
             0,
             CREDIT.callers[MILITARY],
             PENDING.replace(NOTHING_PENDING),
-        );
+        ));
         observe_delivery(DELIVERY.callers[MILITARY], other.variant_pointer(), 0);
-        observe_credit(
+        observe_credit(credit_entry(
             a.address(),
             0,
             0,
             CREDIT.callers[MILITARY],
             PENDING.replace(NOTHING_PENDING),
-        );
+        ));
         observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
         produce_for_test(a.address(), MILITARY, 0, Some(0));
         observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), 0);
-        observe_credit(a.address(), 0, 0, 0x1234, PENDING.replace(NOTHING_PENDING));
+        observe_credit(credit_entry(a.address(), 0, 0, 0x1234, PENDING.replace(NOTHING_PENDING)));
         produce_for_test(a.address(), MILITARY, 1, Some(0));
         produce_for_test(a.address(), MILITARY, 0, Some(UNIT_SCALE));
         produce_for_test(
@@ -1091,6 +1154,38 @@ mod tests {
         let (_, entries) = drained(8);
         assert_eq!(entries.len(), 7);
         assert!(entries.iter().all(|entry| !entry.exact && entry.units == 0));
+        observe_for_test(false);
+    }
+
+    /// A converting military line's ticks are conversion progress, whether
+    /// or not they complete anything; the refit producer's are refits.
+    #[test]
+    fn purposes_follow_the_producer_and_the_conversion_control() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        let mut a = Line::new(0x11_0000_0021, 0x5_0000_0046, 0);
+        a.set_converting(true);
+        produce_for_test(a.address(), MILITARY, 0, None);
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
+        // Only military production converts.
+        produce_for_test(a.address(), 1, 1, Some(UNIT_SCALE));
+        produce_for_test(a.address(), 2, 0, None);
+        produce_for_test(a.address(), 3, 1, Some(UNIT_SCALE));
+        a.set_converting(false);
+        produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
+        let (_, entries) = drained(8);
+        assert_eq!(
+            entries.iter().map(|entry| entry.purpose).collect::<Vec<_>>(),
+            [
+                OutputPurpose::Converted,
+                OutputPurpose::Converted,
+                OutputPurpose::New,
+                OutputPurpose::New,
+                OutputPurpose::Refit,
+                OutputPurpose::New,
+            ]
+        );
+        assert!(entries.iter().all(|entry| entry.exact));
         observe_for_test(false);
     }
 
@@ -1116,7 +1211,7 @@ mod tests {
         observe_for_test(true);
         let a = Line::new(0x21_0000_0021, 0x7_0000_0046, 0);
         let other = Line::new(0x22_0000_0021, 0x8_0000_0046, 0);
-        let inexact = |credit| Entry {
+        let inexact = |credit, purpose| Entry {
             kind: OutputKind::Equipment,
             country: 5001,
             line: 0x21_0000_0021,
@@ -1126,11 +1221,12 @@ mod tests {
             credit,
             spending: None,
             exact: false,
+            purpose,
         };
         // The naval site delivered; the military site credits.
         observe_delivery(DELIVERY.callers[NAVAL], a.variant_pointer(), UNIT_SCALE);
         let pending = PENDING.replace(NOTHING_PENDING);
-        observe_credit(a.address(), 0, 1, CREDIT.callers[MILITARY], pending);
+        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY], pending));
         // Another variant was delivered.
         observe_delivery(
             DELIVERY.callers[MILITARY],
@@ -1138,7 +1234,7 @@ mod tests {
             UNIT_SCALE,
         );
         let pending = PENDING.replace(NOTHING_PENDING);
-        observe_credit(a.address(), 0, 1, CREDIT.callers[MILITARY], pending);
+        observe_credit(credit_entry(a.address(), 0, 1, CREDIT.callers[MILITARY], pending));
         // Two deliveries before one credit.
         observe_delivery(DELIVERY.callers[MILITARY], a.variant_pointer(), UNIT_SCALE);
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE));
@@ -1146,17 +1242,18 @@ mod tests {
         produce_for_test(a.address(), MILITARY, 1, Some(UNIT_SCALE / 2));
         produce_for_test(a.address(), NAVAL, -2, Some(-2 * UNIT_SCALE));
         // A credit from an unknown caller.
-        observe_credit(a.address(), 0, 0, 0x1234, NOTHING_PENDING);
+        observe_credit(credit_entry(a.address(), 0, 0, 0x1234, NOTHING_PENDING));
         let (_, entries) = drained(8);
         assert_eq!(
             entries,
             [
-                inexact(1),
-                inexact(1),
-                inexact(1),
-                inexact(1),
-                inexact(-2),
-                inexact(0)
+                inexact(1, OutputPurpose::New),
+                inexact(1, OutputPurpose::New),
+                inexact(1, OutputPurpose::New),
+                inexact(1, OutputPurpose::New),
+                inexact(-2, OutputPurpose::New),
+                // An unknown caller has no purpose.
+                inexact(0, OutputPurpose::Unknown)
             ]
         );
         observe_for_test(false);

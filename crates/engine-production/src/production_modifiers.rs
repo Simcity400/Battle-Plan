@@ -119,7 +119,7 @@ pub struct Line {
     pub resource_penalty: i64,
     /// the stored bonus; a getter would refresh the bonus cache when nonzero.
     pub organisation_dirty: bool,
-    /// Conversion-selection operand written during production-state refresh.
+    /// The line's conversion control (`is_converting` in saves).
     pub conversion: bool,
     /// Positive variant licensing selects the licence-speed contribution.
     pub licensed: bool,
@@ -232,6 +232,37 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("production modifier address overflow")
 }
+
+/// Whether military production converts into `variant` while its line's
+/// conversion control is set: the native target gate, before the module
+/// restriction the conversion-output bonus adds. A design with a parent, or of
+/// a conversion-family type, is a target unless licensed; any design of a type
+/// with a convert-from list is one. No game function is called.
+pub fn conversion_target(memory: &impl Memory, variant: usize) -> Result<bool, &'static str> {
+    fn operand<T: crate::memory::Raw>(
+        memory: &impl Memory,
+        pointer: usize,
+        offset: usize,
+    ) -> Result<T, &'static str> {
+        pointer
+            .checked_add(offset)
+            .and_then(|address| read(memory, address))
+            .ok_or("conversion target operand unreadable")
+    }
+    if variant == 0 {
+        return Ok(false);
+    }
+    let definition = usize::try_from(operand::<u64>(memory, variant, cequipment_variant::DEFINITION)?)
+        .ok()
+        .filter(|&pointer| pointer != 0)
+        .ok_or("conversion target equipment type null")?;
+    use crate::cequipment_type::{CONVERSION_FAMILY, CONVERT_FROM_COUNT};
+    Ok((operand::<u64>(memory, variant, cequipment_variant::PARENT)? != 0
+        || operand::<u8>(memory, definition, CONVERSION_FAMILY)? != 0)
+        && operand::<i32>(memory, variant, cequipment_variant::ORIGIN_LINK)? <= 0
+        || operand::<i32>(memory, definition, CONVERT_FROM_COUNT)? != 0)
+}
+
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
@@ -600,15 +631,11 @@ fn capture_buffer(
                 cequipment_variant::CLASSIFIER_FLAGS,
             )? & crate::cequipment_type::SHIP_MASK
                 != 0;
-            let conversion = field::<u8>(memory, pointer, 0xec)? != 0;
+            let conversion = field::<u8>(memory, pointer, line::CONVERSION)? != 0;
             let licensed =
                 field::<i32>(memory, variant_pointer, cequipment_variant::ORIGIN_LINK)? > 0;
             // Production-speed operands include the conversion branch.
-            let mut conversion_output = conversion
-                && ((field::<u64>(memory, variant_pointer, 0x3f8)? != 0
-                    || field::<u8>(memory, definition, 0x556)? != 0)
-                    && !licensed
-                    || field::<i32>(memory, definition, 0x49c)? != 0);
+            let mut conversion_output = conversion && conversion_target(memory, variant_pointer)?;
             // Enabled module slots gate the conversion bonus.
             if conversion_output
                 && field::<i32>(memory, definition, crate::cequipment_type::SLOTS_COUNT)? != 0

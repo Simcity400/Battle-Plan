@@ -15,6 +15,11 @@ pub const RESOURCE_DEMANDS_COUNT: usize = 0x64;
 pub const EQUIPMENT_VARIANT: usize = 0x88;
 /// CEquipmentProductionLine industrial organisation CID (type u32 then id u32).
 pub const INDUSTRIAL_ORGANISATION_CID: usize = 0x90;
+/// Conversion control byte. Military production converts stockpiled
+/// equipment into the line's design while it is set and the design is a
+/// conversion target; the save writes it as `is_converting`. Line refresh and
+/// the player's command change it, never the production advance itself.
+pub const CONVERSION: usize = 0xec;
 /// CEquipmentProductionLine requested factory count i32.
 pub const REQUESTED_FACTORIES: usize = 0xe8;
 /// Per-factory efficiency array of signed i64 Q15 values (x32768).

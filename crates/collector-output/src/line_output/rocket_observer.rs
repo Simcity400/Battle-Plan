@@ -2,7 +2,7 @@
 //! only normal assembly return releases a flight. Escaping calls retain storage.
 use super::{
     ACTIVE, BASE, CREDIT, DELIVERY, ENABLED, Entry, NOTHING_PENDING, ORIGINAL, OutputKind, PENDING,
-    Pending, append, invalidate, observe_credit, observe_delivery, refuse_delivery,
+    Pending, append, credit_entry, invalidate, observe_credit, observe_delivery, refuse_delivery,
     refuse_spending,
 };
 use engine_production::{
@@ -58,6 +58,8 @@ struct Context {
     tick: Option<RocketTick>,
     delivery: Option<Delivery>,
     pending: Pending,
+    /// The credit call's entry as its entry read it.
+    credit: Option<Entry>,
 }
 impl Default for Context {
     fn default() -> Self {
@@ -78,6 +80,7 @@ impl Default for Context {
             tick: None,
             delivery: None,
             pending: NOTHING_PENDING,
+            credit: None,
         }
     }
 }
@@ -163,6 +166,15 @@ unsafe extern "system-unwind" fn before(
         if kind == 0 {
             context.pending = PENDING.replace(NOTHING_PENDING);
             context.refused = !context.observing || context.generation.is_none();
+            if !context.refused {
+                context.credit = credit_entry(
+                    receiver,
+                    second as i64,
+                    third as i32,
+                    caller,
+                    context.pending,
+                );
+            }
             return;
         }
         if !context.observing {
@@ -264,8 +276,8 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
         return 0;
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
-        // All rocket payloads were copied before original. Equipment's post
-        // reads also require the same occurrence before following its line.
+        // Every payload was copied before original; equipment's also needs
+        // its delivery from the same occurrence.
         if context.refused
             || !crate::world_lifetime::current(context.generation)
             || context.kind == 0
@@ -290,13 +302,9 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
             return true;
         }
         match context.kind {
-            0 if context.observing && ENABLED.load(Ordering::SeqCst) => observe_credit(
-                context.receiver,
-                context.second as i64,
-                context.third as i32,
-                context.caller,
-                context.pending,
-            ),
+            0 if context.observing && ENABLED.load(Ordering::SeqCst) => {
+                observe_credit(context.credit)
+            }
             1 if context.observing && ENABLED.load(Ordering::SeqCst) => {
                 if context.unknown_delivery {
                     refuse_delivery("production delivery caller unsupported");
@@ -522,6 +530,33 @@ mod tests {
             let mut entries = [Entry::default(); 1];
             assert_eq!(super::super::drain(&mut entries).unwrap().copied, 0);
         }
+        super::super::observe_for_test(false);
+    }
+
+    /// CREDIT can refresh the producer's lines before it returns; the entry
+    /// keeps the line's design, organisation and purpose from its entry.
+    #[test]
+    fn credit_publishes_what_its_entry_read_after_a_nested_refresh() {
+        use super::super::tests::{Line, MILITARY};
+        use replay_data::rows::OutputPurpose;
+        let _lock = super::super::test_lock();
+        super::super::observe_for_test(true);
+        let mut line = Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
+        line.set_converting(true);
+        let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[MILITARY];
+        let mut context = Context::default();
+        unsafe { before(&mut context, line.address(), 7, 0, caller, 0) };
+        // The nested refresh clears the control and replaces the design.
+        line.set_converting(false);
+        line.replace(0x6_0000_0046, 0x8_0000_004f);
+        assert_eq!(unsafe { returned(&mut context) }, 1);
+        let mut entries = [Entry::default(); 2];
+        assert_eq!(super::super::drain(&mut entries).unwrap().copied, 1);
+        assert_eq!(
+            (entries[0].purpose, entries[0].variant, entries[0].mio),
+            (OutputPurpose::Converted, 0x5_0000_0046, 0x9_0000_004f)
+        );
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
         super::super::observe_for_test(false);
     }
 

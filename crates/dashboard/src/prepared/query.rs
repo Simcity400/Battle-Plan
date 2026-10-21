@@ -1225,6 +1225,15 @@ fn query_data(
             cancelled,
         )?
         .unwrap_or(Value::Null),
+        "military-factory-spending" => {
+            crate::products::military_factory_spending::prepared::query(
+                source,
+                request.params.clone(),
+                content,
+                cancelled,
+            )?
+            .unwrap_or(Value::Null)
+        }
 
         "casualty-breakdown" => {
             let params: crate::products::war_casualties::breakdown::CasualtyBreakdownParams =

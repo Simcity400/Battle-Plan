@@ -3,10 +3,12 @@
 //! spent on repairs.
 //!
 //! New ships and refits are Production spending's exact applied input, split
-//! by purpose ([`Purposes::Split`]) and kept to naval designs and designs whose
-//! type content cannot resolve (which could be naval). Refit input belongs to
-//! the target design. Input from a line no census listed has no recorded
-//! purpose: it counts as new, kept apart as dated `unproven` runs.
+//! by its recorded purpose ([`Purposes::Split`]) and kept to naval designs and
+//! designs whose type content cannot resolve (which could be naval). Refit
+//! input belongs to the target design. Input of a production tick whose
+//! purpose was not recorded is its own part, with its dated `unproven`
+//! evidence; naval input of a purpose naval production never has is counted
+//! in the whole as another part.
 //!
 //! Repairs are the dockyards a country uses for repairs times the output one
 //! of its dockyards applies to naval production at that hour, over the hours
@@ -51,7 +53,7 @@ pub struct DockyardAmount {
 }
 
 impl DockyardAmount {
-    fn of(value: Result<i128, ProductionSpendingUnknown>) -> Self {
+    pub(crate) fn of(value: Result<i128, ProductionSpendingUnknown>) -> Self {
         match value {
             Ok(raw) => Self {
                 total_raw: Some(raw.to_string()),
@@ -108,7 +110,14 @@ pub struct DockyardMonth {
     pub new_ships: DockyardAmount,
     pub refits: DockyardAmount,
     pub repairs: DockyardAmount,
-    /// Input from a line whose purpose is not proved may be counted as new.
+    /// Naval input of production ticks whose purpose was not recorded: it
+    /// could be new ships or refits.
+    pub unrecorded: DockyardAmount,
+    /// Naval input recorded with a purpose naval production never has,
+    /// counted in the whole and warned about.
+    pub other: DockyardAmount,
+    /// Input whose purpose was not recorded joined the month, however it
+    /// nets: new ships and refits are not wholly attributed.
     pub purpose_unproven: bool,
     /// A design whose type content cannot resolve spent IC this month, so
     /// the naval amounts may lack it.
@@ -136,39 +145,7 @@ impl super::ReplyWarnings for DockyardSpendingReply {
 /// The hours of a day: the denominator of every repair amount.
 pub const REPAIR_DENOMINATOR: u32 = 24;
 
-/// The first hour of the engine-calendar month holding `hour`, and of the next.
-pub fn month_of(hour: i32) -> (i32, i32) {
-    use engine_native::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
-    const YEAR: i64 = 365 * 24;
-    let elapsed = i64::from(hour) - i64::from(HOUR_EPOCH);
-    let year_start = i64::from(HOUR_EPOCH) + elapsed.div_euclid(YEAR) * YEAR;
-    let mut start = year_start;
-    for days in MONTH_LENGTHS {
-        let next = start + i64::from(days) * 24;
-        if i64::from(hour) < next {
-            let clamp = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
-            return (clamp(start), clamp(next));
-        }
-        start = next;
-    }
-    unreachable!("a year's months cover it")
-}
-
-/// The calendar months overlapping `first..=last`, each clipped to it.
-pub fn months(first: i32, last: i32) -> Vec<(i32, i32)> {
-    let mut result = Vec::new();
-    let mut at = first;
-    while at <= last {
-        let (_, next) = month_of(at);
-        let end = next.saturating_sub(1).min(last);
-        result.push((at, end));
-        if end == i32::MAX {
-            break;
-        }
-        at = end + 1;
-    }
-    result
-}
+pub use super::purpose_split::{month_of, months};
 
 impl Product for DockyardSpending {
     const KEY: &'static str = "dockyard-spending";

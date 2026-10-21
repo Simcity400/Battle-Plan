@@ -15,9 +15,10 @@ use super::output_continuity::{self, Progress, Reasons, State};
 use crate::line_output::{Drained, Entry, OutputKind};
 use crate::table_conversion::unavailable;
 use engine_allocation::{owned_vec, reserve, reserve_exact, reserve_map};
+use engine_native::cequipment_production_line::KIND_SHIP_REFIT;
 use replay_data::{
-    BranchId, rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::Recorded,
-    rows::TableId, rows::TableRows,
+    BranchId, rows::OutputPurpose, rows::ProductionLineOutputRow, rows::ProductionLineRow,
+    rows::Recorded, rows::TableId, rows::TableRows,
 };
 use replay_frame::{frame::TableInput, frame::TableView};
 use std::io;
@@ -44,13 +45,14 @@ impl output_continuity::Observation for Observation {
 }
 pub type Captured = output_continuity::Captured<Observation, N>;
 
-/// What a line produced under one (country, variant, organisation), in
-/// first-seen order: one row.
+/// What a line produced under one (country, variant, organisation, purpose),
+/// in first-seen order: one row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Output {
     country: u32,
     variant: u64,
     mio: u64,
+    purpose: OutputPurpose,
     units: i64,
     spent: Option<i64>,
     exact: bool,
@@ -221,13 +223,19 @@ impl Totals {
                 ended: false,
                 pending: 0,
             });
-            // Every live line has a row, zero until it produces.
+            // Every live line has a row, zero until it produces, with the
+            // purpose its kind builds new equipment for (or refits).
             if line.outputs.is_empty() {
                 reserve(&mut line.outputs, 1)?;
                 line.outputs.push(Output {
                     country: row.country,
                     variant: row.variant,
                     mio: row.mio,
+                    purpose: if row.kind == KIND_SHIP_REFIT {
+                        OutputPurpose::Refit
+                    } else {
+                        OutputPurpose::New
+                    },
                     units: 0,
                     spent: Some(0),
                     exact: true,
@@ -260,6 +268,7 @@ impl Totals {
                     exact: output.exact && delivery_exact,
                     spent_raw: Recorded::Value(output.spent),
                     instant_raw: Recorded::Value(replay_data::rows::RetiredOptionalI64::default()),
+                    purpose: Recorded::Value(output.purpose.raw()),
                 }
             }));
         }
@@ -277,6 +286,7 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
         output.country == entry.country
             && output.variant == entry.variant
             && output.mio == entry.mio
+            && output.purpose == entry.purpose
     }) {
         Some(index) => index,
         None => {
@@ -284,6 +294,7 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
                 country: entry.country,
                 variant: entry.variant,
                 mio: entry.mio,
+                purpose: entry.purpose,
                 units: 0,
                 spent: Some(0),
                 exact: true,
@@ -364,6 +375,7 @@ mod tests {
             credit,
             spending: Some((0, 0)),
             exact: true,
+            purpose: OutputPurpose::New,
         }
     }
 
@@ -448,7 +460,59 @@ mod tests {
             exact: true,
             spent_raw: Recorded::Value(Some(0)),
             instant_raw: no_instant(),
+            purpose: Recorded::Value(OutputPurpose::New.raw()),
         }
+    }
+
+    /// A line that switches between new production and conversion of the
+    /// same design keeps each purpose's input in its own row, so neither
+    /// relabels the other; a refit line's census seed is a refit row.
+    #[test]
+    fn purpose_changes_open_their_own_rows_and_seeds_follow_the_line_kind() {
+        let mut totals = Totals::default();
+        let lines = || {
+            let mut lines = census(&[(LINE_A, TANK, ORG), (LINE_B, SHIP, 0)]);
+            let TableInput::Sampled(TableView::Complete(TableRows::ProductionLines(census))) =
+                &mut lines
+            else {
+                unreachable!()
+            };
+            census[1].kind = KIND_SHIP_REFIT;
+            lines
+        };
+        let seeded = rows(assemble(&mut totals, 7, 100, &frame(1, 0, &[]), lines()));
+        assert_eq!(
+            seeded.iter().map(ProductionLineOutputRow::purpose).collect::<Vec<_>>(),
+            [OutputPurpose::New, OutputPurpose::Refit]
+        );
+        let tick = |purpose, spent| Entry {
+            purpose,
+            spending: Some((spent, 0)),
+            ..entry(LINE_A, TANK, ORG, 1, 1)
+        };
+        let day = frame(
+            1,
+            0,
+            &[
+                tick(OutputPurpose::New, 5),
+                tick(OutputPurpose::Converted, 7),
+                tick(OutputPurpose::New, -2),
+                tick(OutputPurpose::Unknown, 11),
+            ],
+        );
+        let published = rows(assemble(&mut totals, 7, 124, &day, lines()));
+        assert_eq!(
+            published
+                .iter()
+                .filter(|row| row.line == LINE_A)
+                .map(|row| (row.ordinal, row.purpose(), row.units, row.spent_raw))
+                .collect::<Vec<_>>(),
+            [
+                (0, OutputPurpose::New, 2, Recorded::Value(Some(3))),
+                (1, OutputPurpose::Converted, 1, Recorded::Value(Some(7))),
+                (2, OutputPurpose::Unknown, 1, Recorded::Value(Some(11))),
+            ]
+        );
     }
 
     #[test]

@@ -339,6 +339,9 @@ pub struct Line {
     /// `factory_efficiencies` through the /32768 formatter, and only when
     /// the count is positive, so absence is an empty array.
     pub factory_efficiencies: Vec<i64>,
+    /// The line's conversion control: `is_converting` is written only when
+    /// it is set, so absence is false.
+    pub converting: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1161,6 +1164,11 @@ pub fn parse_line(kind: u8, fields: &[Item]) -> io::Result<Line> {
             })
             .transpose()?
             .unwrap_or_default(),
+        converting: match field(fields, b"is_converting")? {
+            None => false,
+            Some(value) if boolean(value)? => true,
+            Some(_) => return Err(invalid("saved is_converting is written only when set")),
+        },
     })
 }
 

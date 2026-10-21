@@ -1471,10 +1471,69 @@ fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_ope
     }]);
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("active_factories"));
+    // The save omits is_converting when the control is clear.
+    let report = check(vec![ProductionLineModifiersRow {
+        converting: replay_data::rows::Recorded::Value(true),
+        ..row.clone()
+    }]);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("converting"));
+    let report = check(vec![ProductionLineModifiersRow {
+        converting: replay_data::rows::Recorded::NotRecorded,
+        ..row.clone()
+    }]);
+    assert!(report.differences.is_empty());
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("conversion control"))
+    );
     let mut extra = row.clone();
     extra.line = (2 << 32) | 56;
     assert_eq!(check(vec![row, extra]).differences.len(), 1);
     assert_eq!(check(vec![]).differences.len(), 1);
+}
+
+#[test]
+fn modifier_oracle_compares_a_converting_line_with_its_saved_control() {
+    use replay_data::rows::ProductionLineModifiersRow;
+    let saved = production::parse(
+        &parser::parse(
+            br#"countries={MAK={production={military_lines={
+        id={id=1 type=56} cost=0 priority=0 amount=1
+        equipment_variant_index={id=9 type=70} requested_factories=1
+        is_converting=yes
+    }}}}"#,
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let producer = CountryRow {
+        id: 5,
+        tag: b"MAK".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(5001, &producer)]);
+    let check = |converting| {
+        let mut frame = output_frame(124, true, &[], &[]);
+        *frame.tables[TableId::ProductionLineModifiers.index()] =
+            TableView::Complete(TableRows::ProductionLineModifiers(vec![
+                ProductionLineModifiersRow {
+                    line: (1 << 32) | 56,
+                    country: 5001,
+                    variant: (9 << 32) | 70,
+                    converting: replay_data::rows::Recorded::Value(converting),
+                    ..Default::default()
+                },
+            ]));
+        let mut report = Report::default();
+        compare_modifiers(&frame, &saved, &links, &mut report).unwrap();
+        report.differences
+    };
+    assert!(check(true).is_empty());
+    assert_eq!(check(false).len(), 1);
 }
 
 #[test]

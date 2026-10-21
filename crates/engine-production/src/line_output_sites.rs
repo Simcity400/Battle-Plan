@@ -53,8 +53,10 @@ pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refi
 
 /// Credit entry: RCX is the line, RDX the signed progress input and R8D the
 /// completed count. A set, resolving organisation handle selects the variant's
-/// history increment. The call reads the line without changing it. Its entry
-/// instruction spills RBX to the stack.
+/// history increment. The call itself does not write the line, but crediting
+/// the organisation can unlock its automatic design upgrade, which reassigns
+/// factories and refreshes the producer's lines before it returns: read the
+/// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
     rva: 0x0192_0af0,
@@ -162,6 +164,34 @@ pub const LINE_VARIANT: usize = cequipment_production_line::EQUIPMENT_VARIANT;
 pub const LINE_ORGANISATION: usize = cequipment_production_line::INDUSTRIAL_ORGANISATION_CID;
 /// The variant's CID, the key of the organisation's history slot.
 pub const VARIANT_HANDLE: usize = cequipment_variant::TYPE;
+/// The line's conversion control, which only military production reads.
+pub const LINE_CONVERSION: usize = cequipment_production_line::CONVERSION;
+
+/// Whether a military production call converts stockpiled equipment into
+/// `line`'s design: its conversion control is set and the design is a
+/// conversion target ([`crate::production_modifiers::conversion_target`]).
+/// The call takes its conversion branch on exactly these operands, so read
+/// them at CREDIT entry: CREDIT can refresh the producer's lines before it
+/// returns (an organisation's automatic design upgrade reassigns factories),
+/// which may clear the control or replace the design. Such a call's whole
+/// input is conversion progress, including ticks that complete nothing; it
+/// does not prove a source unit was removed. Naval, railway-gun and refit
+/// production have no conversion branch. No game function is called.
+pub fn converting(memory: &impl Memory, line: usize) -> Result<bool, &'static str> {
+    let control = line
+        .checked_add(LINE_CONVERSION)
+        .and_then(|address| read::<u8>(memory, address))
+        .ok_or("production line conversion control unreadable")?;
+    if control == 0 {
+        return Ok(false);
+    }
+    let variant = line
+        .checked_add(LINE_VARIANT)
+        .and_then(|address| read::<u64>(memory, address))
+        .and_then(|pointer| usize::try_from(pointer).ok())
+        .ok_or("production line design unreadable")?;
+    crate::production_modifiers::conversion_target(memory, variant)
+}
 
 /// Console flag tested by naval and railway-gun production.
 pub const INSTANT_ARMY_TRAINING: usize = 0x0331_725b;
@@ -468,6 +498,10 @@ mod spending_tests;
 #[cfg(test)]
 #[path = "line_output_sites/rocket_tests.rs"]
 mod rocket_tests;
+
+#[cfg(test)]
+#[path = "line_output_sites/conversion_tests.rs"]
+mod conversion_tests;
 
 #[cfg(test)]
 mod tests {

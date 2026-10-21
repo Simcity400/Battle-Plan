@@ -51,6 +51,7 @@ export const PAGES = [
     ['equipment-designs', 0, 102, 6, 10],
     ['convoy-health', 0, 112, 12, 8],
     ['dockyard-spending', 0, 120, 12, 10],
+    ['military-factory-spending', 0, 130, 12, 10],
   ] },
   { id: 'research', label: 'Research', icon: 'flask', panels: [
     ['active-research', 0, 0, 7, 9], ['research', 0, 9, 7, 13],

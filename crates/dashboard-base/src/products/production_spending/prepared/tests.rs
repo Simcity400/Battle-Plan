@@ -3,8 +3,50 @@ use super::*;
 use crate::prepared::series::tests::Fixture;
 use crate::prepared::series::{Accumulator, Run};
 use replay::container::Replay;
-use replay_data::{rows::TableId, rows::TableRows};
+use replay_data::{
+    rows::OutputPurpose, rows::ProductionLineOutputRow, rows::Recorded, rows::TableId,
+    rows::TableRows,
+};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
+
+/// `row` with its recorded purpose.
+pub(crate) fn with(
+    mut row: ProductionLineOutputRow,
+    purpose: OutputPurpose,
+) -> ProductionLineOutputRow {
+    row.purpose = Recorded::Value(purpose.raw());
+    row
+}
+
+/// Prepares `frames` as the production family does, typing designs through
+/// `named`: every page published, then the state and catalogue written.
+pub(crate) fn prepared(
+    frames: &[DecodedFrame],
+    named: Named<'_>,
+    flag: &AtomicBool,
+) -> (Replay, Fixture) {
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(1, frames.to_vec())],
+    )
+    .unwrap();
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    let mut state = pages::ProductionAccumulator::new(replay.format.version(), 1, hour(0));
+    for frame in frames {
+        if let Some(page) = state
+            .ingest(replay.format, frame, named, flag)
+            .unwrap()
+        {
+            pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
+        }
+    }
+    let page = state.flush().unwrap();
+    pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
+    pages::write_state(&mut writer, &mut state).unwrap();
+    writer.commit().unwrap();
+    (replay, fixture)
+}
 
 fn at(runs: &Value, hour: i32) -> Option<(Value, Value)> {
     runs.as_array()
@@ -215,7 +257,7 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
             &input,
             date,
             hour(3) + 23,
-            Purposes::New,
+            Purposes::WithoutRefits,
             &flag,
         )
         .unwrap()
@@ -412,17 +454,17 @@ fn production_spending_extrema_clip_partial_ranges_and_resolve_wide_integer_ties
 #[test]
 fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_distinct() {
     let flag = AtomicBool::new(false);
-    let mut refit = line(8, 1, 100_000);
-    refit.kind = engine_native::cequipment_production_line::KIND_SHIP_REFIT;
+    let refit = |line, units, spent| with(applied(line, 1, units, spent), OutputPurpose::Refit);
+    let lines = vec![line(7, 1, 100_000), line(8, 1, 100_000)];
     let mut frames = day(
         0,
-        vec![line(7, 1, 100_000), refit.clone()],
-        Some(vec![applied(7, 1, 1, 8_000), applied(8, 1, 1, -3_000)]),
+        lines.clone(),
+        Some(vec![applied(7, 1, 1, 8_000), refit(8, 1, -3_000)]),
     );
     frames.extend(day(
         1,
-        vec![line(7, 1, 100_000), refit],
-        Some(vec![applied(7, 1, 2, 9_000), applied(8, 1, 2, -5_000)]),
+        lines,
+        Some(vec![applied(7, 1, 2, 9_000), refit(8, 2, -5_000)]),
     ));
     for frame in &mut frames {
         let later = frame.hour >= hour(1);
@@ -443,27 +485,8 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             });
         }
     }
-    let replay = Replay::from_records(
-        crate::test_fixtures::CAMPAIGN.into(),
-        &[crate::test_fixtures::records(1, frames.clone())],
-    )
-    .unwrap();
+    let (replay, fixture) = prepared(&frames, Named::default(), &flag);
     let oracle = production::scan(&replay, 1, &flag).unwrap();
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let mut state = pages::ProductionAccumulator::new(replay.format.version(), 1, hour(0));
-    for frame in &frames {
-        if let Some(page) = state
-            .ingest(replay.format, frame, Named::default(), &flag)
-            .unwrap()
-        {
-            pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
-        }
-    }
-    let page = state.flush().unwrap();
-    pages::publish_endpoint(&mut writer, &mut state, &page).unwrap();
-    pages::write_state(&mut writer, &mut state).unwrap();
-    writer.commit().unwrap();
     for refits in [false, true] {
         let params = ProductionSpendingParams {
             branch_id: "1".into(),
@@ -508,6 +531,109 @@ fn production_spending_shared_runs_keep_new_refit_and_rocket_source_extrema_dist
             "2500"
         );
     }
+}
+
+#[test]
+fn production_spending_split_restores_converted_endpoints_and_leaves_their_peak_out() {
+    let flag = AtomicBool::new(false);
+    // Line 7 builds design 1 new, then converts to it; line 9 builds design 2.
+    let converted = |units, spent| {
+        let mut row = with(applied(7, 1, units, spent), OutputPurpose::Converted);
+        row.ordinal = 1;
+        row
+    };
+    let lines = vec![line(7, 1, 100_000), line(9, 2, 100_000)];
+    let mut frames = day(
+        0,
+        lines.clone(),
+        Some(vec![applied(7, 1, 1, 8_000), applied(9, 2, 1, 4_000)]),
+    );
+    frames.extend(day(
+        1,
+        lines,
+        Some(vec![
+            applied(7, 1, 1, 8_000),
+            converted(2, 6_000),
+            applied(9, 2, 2, 7_000),
+        ]),
+    ));
+    let (replay, fixture) = prepared(&frames, Named::default(), &flag);
+    let oracle = production::scan(&replay, 1, &flag).unwrap();
+    let params = ProductionSpendingParams {
+        branch_id: "1".into(),
+        tag: "opaque|tag".into(),
+        refits: true,
+    };
+    let expected = serde_json::to_value(
+        reply_inner(
+            &oracle,
+            &params,
+            Named::default(),
+            Vec::new(),
+            &flag,
+            None,
+            Purposes::Split,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let last = hour(1) + 23;
+    let input = Params {
+        branch_id: params.branch_id.clone(),
+        tag: params.tag.clone(),
+        refits: true,
+        from: None,
+        hour: Some(last),
+        end: Some(last),
+    };
+    let actual = read_pages(
+        &fixture.store,
+        &fixture.key,
+        1,
+        (hour(0), last),
+        &input,
+        last,
+        last,
+        Purposes::Split,
+        &flag,
+    )
+    .unwrap()
+    .unwrap();
+    let leaves = |reply: &Value| {
+        reply["leaves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|leaf| {
+                let value = at(&leaf["runs"], last).map(|(total, _)| total.to_string());
+                (leaf["variant"].to_string(), leaf["purpose"].to_string(), value)
+            })
+            .collect::<BTreeSet<_>>()
+    };
+    let restored = leaves(&actual);
+    assert_eq!(restored, leaves(&expected));
+    let leaf = |variant: &str, purpose: &str, total: &str| {
+        (
+            json!(variant).to_string(),
+            json!(purpose).to_string(),
+            Some(json!(total).to_string()),
+        )
+    };
+    assert_eq!(
+        restored,
+        BTreeSet::from([
+            leaf("1", "new", "8000"),
+            leaf("1", "converted", "6000"),
+            leaf("2", "new", "7000"),
+        ])
+    );
+    // The series without refits of design 1 also holds its conversions, so
+    // its new leaf has no peak; design 2's has its own.
+    let peak = |variant: &str| {
+        actual["peaks"][serde_json::to_string(&(variant, false)).unwrap()].clone()
+    };
+    assert_eq!(peak("1"), Value::Null);
+    assert_eq!(peak("2"), json!("7000"));
 }
 
 #[test]

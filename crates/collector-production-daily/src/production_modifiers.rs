@@ -345,6 +345,7 @@ impl Part {
             refit_output: line.refit_output,
             naval_efficiency: line.naval_efficiency,
             naval_output: line.naval_output,
+            converting: replay_data::rows::Recorded::Value(line.conversion),
             factory_efficiencies: owned_vec(copy_vec(
                 &self.efficiencies.first
                     [line.efficiencies[0]..line.efficiencies[0] + line.efficiencies[1]],
@@ -775,6 +776,7 @@ mod tests {
             handle: 22,
             country: 9,
             efficiencies: [0, 2],
+            conversion: true,
             ..Default::default()
         };
         captured.first.lines.len = 1;
@@ -813,6 +815,7 @@ mod tests {
             panic!("missing line projection");
         };
         assert_eq!(lines[0].factory_efficiencies, [-123, 456]);
+        assert_eq!(lines[0].converting, replay_data::rows::Recorded::Value(true));
     }
 
     /// The tables of a capture split in two are the whole capture's though

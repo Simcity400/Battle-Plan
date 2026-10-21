@@ -225,6 +225,18 @@ fn compare_modifiers(
                 row.factory_efficiencies.as_slice(),
                 expected.factory_efficiencies.as_slice(),
             );
+            match row.converting {
+                replay_data::rows::Recorded::Value(converting) => equal(
+                    report,
+                    format!("{label}.converting"),
+                    converting,
+                    expected.converting,
+                ),
+                replay_data::rows::Recorded::NotRecorded => report.limitation(
+                    "the line's conversion control is not recorded at this recording's format",
+                    "ProductionLineModifiers.converting",
+                ),
+            }
             matched += 1;
         }
     }

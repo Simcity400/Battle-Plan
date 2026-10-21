@@ -310,7 +310,7 @@ fn produced_selections_follow_the_recorded_countries_and_types() {
                         starts: vec![true],
                         identities: vec![(country, country, 0)],
                         changes: BTreeMap::from([(
-                            (u64::from(country) % types.len() as u64, false),
+                            (u64::from(country) % types.len() as u64, Purpose::New),
                             vec![(
                                 0,
                                 Total {
@@ -467,13 +467,13 @@ fn produced_reply_propagates_group_and_total_codec_refusals() {
         .collect();
     for (changes, reason) in [
         (
-            BTreeMap::from([((10, false), vec![(0, total(i64::MIN))])]),
+            BTreeMap::from([((10, Purpose::New), vec![(0, total(i64::MIN))])]),
             "A production total is too large to reply exactly",
         ),
         (
             BTreeMap::from([
-                ((10, false), vec![(0, total(MAX_EXACT)), (1, total(0))]),
-                ((20, false), vec![(0, total(0)), (1, total(-2))]),
+                ((10, Purpose::New), vec![(0, total(MAX_EXACT)), (1, total(0))]),
+                ((20, Purpose::New), vec![(0, total(0)), (1, total(-2))]),
             ]),
             "A production delta is too large to reply exactly",
         ),
@@ -510,11 +510,11 @@ fn produced_groups_widen_signed_updates_before_adding_and_subtracting() {
     let track = TagHistory {
         changes: BTreeMap::from([
             (
-                (10, false),
+                (10, Purpose::New),
                 vec![(0, exact(i64::MAX)), (1, exact(i64::MIN))],
             ),
-            ((20, false), vec![(0, exact(i64::MAX))]),
-            ((30, false), vec![(0, exact(-i64::MAX))]),
+            ((20, Purpose::New), vec![(0, exact(i64::MAX))]),
+            ((30, Purpose::New), vec![(0, exact(-i64::MAX))]),
         ]),
         ..Default::default()
     };
@@ -537,7 +537,7 @@ fn produced_groups_widen_signed_updates_before_adding_and_subtracting() {
 fn produced_groups_refuse_an_overflowing_widened_update() {
     let track = TagHistory {
         changes: BTreeMap::from([(
-            (10, false),
+            (10, Purpose::New),
             vec![
                 (
                     0,
@@ -573,8 +573,8 @@ fn produced_measure_refuses_an_out_of_range_aggregate_instead_of_saturating() {
     };
     let track = TagHistory {
         changes: BTreeMap::from([
-            ((10, false), vec![(0, exact(i64::MAX))]),
-            ((20, false), vec![(0, exact(1))]),
+            ((10, Purpose::New), vec![(0, exact(i64::MAX))]),
+            ((20, Purpose::New), vec![(0, exact(1))]),
         ]),
         ..Default::default()
     };
@@ -660,8 +660,8 @@ fn produced_frame(
     output: Option<&[OutputFixture]>,
 ) -> DecodedFrame {
     use replay_data::{
-        rows::LexicalTokenRow, rows::ProductionLineOutputRow, rows::ProductionLineRow,
-        rows::VariantDefinitionRow,
+        rows::LexicalTokenRow, rows::OutputPurpose, rows::ProductionLineOutputRow,
+        rows::ProductionLineRow, rows::Recorded, rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -719,6 +719,7 @@ fn produced_frame(
                         observed_since_creation: true,
                         ended,
                         exact,
+                        purpose: Recorded::Value(OutputPurpose::New.raw()),
                         ..Default::default()
                     }
                 })
@@ -997,7 +998,7 @@ fn produced_scan_widens_signed_row_corrections_and_keeps_applied_ic_independent(
     let source = produced_source(frames);
     let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(
-        scanned.tags["GER"].changes[&(10, false)]
+        scanned.tags["GER"].changes[&(10, Purpose::New)]
             .iter()
             .map(|(sample, total)| (*sample, total.units, total.inexact))
             .collect::<Vec<_>>(),
@@ -1053,7 +1054,7 @@ fn produced_scan_retains_multiline_totals_above_unit_transport_and_keeps_applied
     let source = produced_source(frames);
     let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(
-        scanned.tags["GER"].current[&(10, false)],
+        scanned.tags["GER"].current[&(10, Purpose::New)],
         Total {
             units: i128::from(i64::MAX) * 3,
             inexact: 0
@@ -1482,9 +1483,26 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
         LoadContext, Product,
         equipment_produced::{EquipmentProduced, ProducedGrouping, ProducedMeasure},
     };
+    use replay_data::rows::{OutputPurpose, Recorded};
     let since = produced_hour(0);
+    // Line 3's purpose was not recorded and line 4 refits ships.
     let frame = |day, lines: &[(u64, u32, u8, u64)], output: &[OutputFixture]| {
-        produced_day(day, 9001, since, lines, Some(output))
+        let mut frames = produced_day(day, 9001, since, lines, Some(output));
+        for frame in &mut frames {
+            if let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+                &mut *frame.tables[TableId::ProductionLineOutput.index()]
+            {
+                for row in rows {
+                    let purpose = match row.line {
+                        3 => OutputPurpose::Unknown,
+                        4 => OutputPurpose::Refit,
+                        _ => OutputPurpose::New,
+                    };
+                    row.purpose = Recorded::Value(purpose.raw());
+                }
+            }
+        }
+        frames
     };
     let source = produced_source(
         [
@@ -1592,11 +1610,12 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
         );
         assert!(!result.series.iter().any(|series| series.tag == "XXX"));
     }
+    let unrecorded = "1 lines produced in ticks whose purpose was not recorded";
     assert!(
         reply
             .warnings
             .iter()
-            .any(|warning| warning.contains("1 lines were made and deleted")),
+            .any(|warning| warning.contains(unrecorded)),
         "{:?}",
         reply.warnings
     );
@@ -1904,7 +1923,7 @@ fn produced_zero_windows_remain_known_without_any_top_n_member() {
             .unwrap();
     scanned.tags.retain(|tag, _| tag == "GER");
     scanned.tags.get_mut("GER").unwrap().changes.insert(
-        (10, false),
+        (10, crate::products::equipment::production::Purpose::New),
         vec![(
             0,
             crate::products::equipment_produced::Total {

@@ -10,7 +10,7 @@ use super::{
     LoadContext, Product,
     equipment::{
         Domain, EQUIPMENT_DECIMALS, StockVariantName, Texts,
-        production::{self, CostTotal, Entry, Named, ScannedProduced, TagHistory},
+        production::{self, CostTotal, Entry, Named, Purpose, ScannedProduced, TagHistory},
     },
     validate_tag,
 };
@@ -56,12 +56,13 @@ pub struct ProductionSpendingLeaf {
     pub name: Option<String>,
     pub domain: Option<Domain>,
     pub rocket: bool,
-    /// In a reply split by purpose, whether ship refit lines applied this
-    /// input (one design can have both leaves); null otherwise.
-    pub refit: Option<bool>,
-    /// The summed magnitudes of the input of lines whose purpose (new or
-    /// ship refit) is not recorded, which counts as new in `runs`: dated
-    /// evidence that grows and never cancels; empty when there never was any.
+    /// In a reply split by purpose, what this input was for (one design can
+    /// have a leaf per purpose); null otherwise.
+    pub purpose: Option<Purpose>,
+    /// The summed magnitudes of the input of production ticks whose purpose
+    /// was not recorded, which counts in `runs` (as new production where the
+    /// reply is not split by purpose): dated evidence that
+    /// grows and never cancels; empty when there never was any.
     pub unproven: Vec<ProductionSpendingRun>,
     pub names: Vec<StockVariantName>,
     pub runs: Vec<ProductionSpendingRun>,
@@ -137,26 +138,30 @@ type CostSeries = Vec<(u32, CostTotal)>;
 /// Which applied input a reply counts, and how it keys its leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Purposes {
-    /// New production only, one leaf per design.
-    New,
-    /// New production and ship refits, one leaf per design.
+    /// New production and conversions, without ship refits, one leaf per design.
+    WithoutRefits,
+    /// Every purpose, one leaf per design.
     Combined,
-    /// New production and ship refits, one leaf per design and purpose.
+    /// Every purpose, one leaf per design and purpose.
     Split,
 }
 
 impl Purposes {
     /// What a reply counts with refits included or not.
     fn counting(refits: bool) -> Self {
-        if refits { Self::Combined } else { Self::New }
+        if refits {
+            Self::Combined
+        } else {
+            Self::WithoutRefits
+        }
     }
 
     /// The leaf an entry's input belongs to, if the reply counts it.
-    fn leaf(self, (variant, refit): Entry) -> Option<Entry> {
+    fn leaf(self, (variant, purpose): Entry) -> Option<Entry> {
         match self {
-            Self::New => (!refit).then_some((variant, false)),
-            Self::Combined => Some((variant, false)),
-            Self::Split => Some((variant, refit)),
+            Self::WithoutRefits => (purpose != Purpose::Refit).then_some((variant, Purpose::New)),
+            Self::Combined => Some((variant, Purpose::New)),
+            Self::Split => Some((variant, purpose)),
         }
     }
 }
@@ -736,7 +741,7 @@ fn reply_inner(
         warnings.push("The output observation restarted; applied IC across the restart is not known, so the campaign total remains Not known.".into());
     }
     if scanned.unlisted > 0 {
-        warnings.push(format!("{} lines have no recorded census kind; as Equipment produced does, they count as new production.", scanned.unlisted));
+        warnings.push(format!("{} lines produced in ticks whose purpose was not recorded; as Equipment produced does, they count as new production.", scanned.unlisted));
     }
     warnings
         .push("Instant progress is recorded separately and excluded from factory spending.".into());
@@ -752,7 +757,7 @@ fn reply_inner(
                 .get(&entry.0)
                 .map(|kind| (kind.ordinal.unwrap_or(usize::MAX), kind.key.clone(), *entry))
         });
-        for entry @ (variant, refit) in entries {
+        for entry @ (variant, purpose) in entries {
             cancelled(cancel)?;
             let Some(kind) = types.get(&variant) else {
                 continue;
@@ -764,7 +769,7 @@ fn reply_inner(
                 name: type_name(variant, &kind.key),
                 domain: kind.domain,
                 rocket: false,
-                refit: (purposes == Purposes::Split).then_some(refit),
+                purpose: (purposes == Purposes::Split).then_some(purpose),
                 unproven: unproven_runs(track, &coverage, values, cancel)?,
                 names: names(variant),
                 runs: runs(track, &coverage, values, cancel)?,
@@ -807,14 +812,14 @@ fn reply_inner(
                 name: type_name(variant, &kind.key),
                 domain: kind.domain,
                 rocket: true,
-                refit: None,
+                purpose: None,
                 unproven: Vec::new(),
                 names: names(variant),
                 runs: runs(
                     rocket,
                     &coverage,
                     history
-                        .get(&(variant, false))
+                        .get(&(variant, Purpose::New))
                         .map(Vec::as_slice)
                         .unwrap_or(&[]),
                     cancel,
@@ -906,6 +911,7 @@ impl Product for ProductionSpending {
         vec![
             ProductionSpendingParams::decl(),
             ProductionSpendingUnknown::decl(),
+            Purpose::decl(),
             ProductionSpendingRun::decl(),
             ProductionSpendingLeaf::decl(),
             ProductionPresenceRun::decl(),
@@ -963,4 +969,4 @@ impl Product for ProductionSpending {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

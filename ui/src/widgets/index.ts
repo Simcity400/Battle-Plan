@@ -38,6 +38,7 @@ const renderers = {
   'equipment-produced': lazyWidget('equipment-produced', ['render', 'countryChip']),
   'production-spending': lazyWidget('production-spending', ['render']),
   'dockyard-spending': lazyWidget('dockyard-spending', ['render']),
+  'military-factory-spending': lazyWidget('military-factory-spending', ['render']),
   'occupied-states': lazyWidget('occupied-states', ['render']),
   'occupation-trend': lazyWidget('occupation-trend', ['render']),
   'air-force-size': lazyWidget('air-force-size', ['render', 'countryChip']),

@@ -7,10 +7,12 @@ import { firstHourOfMonth } from '../../dashboard/calendar.ts';
 import { groupTree } from '../../charts/sunburst/layout.ts';
 import { unresolvedTypeName } from '../../dashboard/equipment.ts';
 
+const purposeSum = (items: readonly { path: readonly { id: string }[]; exact?: bigint | null }[], id: string) =>
+  items.filter(item => item.path[0].id === id).reduce((sum, item) => sum + (item.exact ?? 0n), 0n);
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
 const amount = (totalRaw: string | null): DockyardAmount => ({ totalRaw, reason: totalRaw == null ? 'recordingGap' : null });
 const leaf = (extra: Partial<ProductionSpendingLeaf>): ProductionSpendingLeaf => ({
-  variant: '11', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', rocket: false, refit: false, unproven: [],
+  variant: '11', typeKey: 'mod_hull_a', name: 'Hull A', domain: 'naval', rocket: false, purpose: 'new', unproven: [],
   names: [{ firstHour: 100, name: 'Sea Wolf', known: true, design: null }],
   runs: [known(100, 123, '0'), known(124, 171, '3000000')], ...extra,
 });
@@ -23,7 +25,7 @@ const reply = (): DockyardSpendingReply => ({
   leaves: [
     leaf({}),
     // The same design refitted to: its own leaf under Refits.
-    leaf({ refit: true, runs: [known(100, 147, '0'), known(148, 171, '500000')] }),
+    leaf({ purpose: 'refit', runs: [known(100, 147, '0'), known(148, 171, '500000')] }),
     leaf({ variant: '12', typeKey: 'mod_hull_b', name: 'Hull B', names: [], runs: [known(100, 171, '0')] }),
   ],
   total: [known(100, 123, '0'), known(124, 147, '3000000'), known(148, 171, '3500000')],
@@ -36,7 +38,7 @@ test('a dockyard reply needs purpose-split naval leaves, repairs and ordered mon
   const good = reply();
   assert.equal(validateDockyardSpendingReply(good), good);
   const bad: ((value: DockyardSpendingReply) => void)[] = [
-    value => { value.leaves[0].refit = null; },
+    value => { value.leaves[0].purpose = null; },
     value => { value.leaves[0].rocket = true; },
     value => { value.repairs.hour = { totalRaw: null, reason: null }; },
     value => { value.repairs.end = { totalRaw: '1.5', reason: null }; },
@@ -76,11 +78,13 @@ test('an unresolved design or an unproven line marks attribution incomplete, and
   const refit = items.find(item => item.path[0].id === 'refit' && item.present)!;
   assert.deepEqual(refit.unknownLevels, [false, false, false], 'the unresolved design has no refit input');
 
-  // Unlisted input joins the new leaf from hour 124 and stops by 148.
+  // Unrecorded-purpose input of the design from hour 124: 500000 by 148.
   const unproven = reply();
-  unproven.leaves[0].unproven = [known(100, 123, '0'), known(124, 171, '1000000')];
+  unproven.leaves.push(leaf({ purpose: 'unknown', runs: [known(100, 123, '0'), known(124, 171, '500000')],
+    unproven: [known(100, 123, '0'), known(124, 171, '500000')] }));
+  unproven.total = unproven.equipmentTotal = [known(100, 123, '0'), known(124, 147, '3500000'), known(148, 171, '4000000')];
   const marked = dockyardItems(unproven, { from: null, hour: 171, end: 171 });
-  const purposeParts = marked.filter(item => item.path[0].id !== 'repair' && item.present);
+  const purposeParts = marked.filter(item => ['new', 'refit'].includes(item.path[0].id) && item.present);
   assert.ok(purposeParts.every(item => item.localUnknownLevels?.[0] && !item.unknownLevels?.[0]),
     'purpose uncertainty stays on New ships and Refits');
   // Before the input joined nothing is uncertain now, but the end still is.
@@ -90,12 +94,18 @@ test('an unresolved design or an unproven line marks attribution incomplete, and
   // A range after the input joined holds none of it.
   const later = dockyardItems(unproven, { from: 148, hour: 171, end: 171 }).find(item => item.path[0].id === 'refit')!;
   assert.equal(later.localUnknownLevels?.[0], false);
-  // The whole stays known: purpose only splits New ships and Refits.
+  // The whole stays known: purpose only splits it.
   const tree = groupTree(marked, { id: 'all', label: 'All' });
   assert.equal(tree.valueUnknown, false);
-  // New, refit and the repairs (250000 over 24 hours), exactly.
-  assert.equal(tree.exact! * 24n, (3_500_000n * 24n + 250_000n) * (tree.exactDenominator ?? 1n));
-  assert.equal(tree.children.find(node => node.key === 'new')!.valueUnknown, true);
+  // New, refit, unrecorded and the repairs (250000 over 24 hours), exactly.
+  assert.equal(tree.exact! * 24n, (4_000_000n * 24n + 250_000n) * (tree.exactDenominator ?? 1n));
+  const node = (key: string) => tree.children.find(child => child.key === key)!;
+  assert.equal(node('new').valueUnknown, true);
+  // New ships keep only recorded new input; the rest is its own part. Both
+  // nodes are uncertain, so their designs carry the exact amounts.
+  assert.equal(node('purpose-unrecorded').valueUnknown, true);
+  assert.equal(purposeSum(marked, 'new'), 3_000_000n);
+  assert.equal(purposeSum(marked, 'purpose-unrecorded'), 500_000n);
 
   const gap = reply();
   gap.repairs.hour = amount(null);
@@ -107,17 +117,21 @@ test('an unresolved design or an unproven line marks attribution incomplete, and
 
 function month(firstHour: number, lastHour: number, extra: Partial<DockyardMonth> = {}): DockyardMonth {
   return { firstHour, lastHour, newShips: amount('100000'), refits: amount('-20000'), repairs: amount('5'),
-    purposeUnproven: false, unresolved: false, ...extra };
+    unrecorded: amount('0'), other: amount('0'), purposeUnproven: false, unresolved: false, ...extra };
 }
 
 test('months become columns in purpose order, and an unknown part leaves the total unknown', () => {
   const months = [month(0, 9), month(10, 19, { repairs: amount(null), unresolved: true })];
   // Repairs are numerators over the hours of a day.
   assert.deepEqual(monthColumns(months, 5, 24), [
-    { firstHour: 0, lastHour: 9, values: [1, -0.2, 5 / 24 / 100_000], uncertain: [false, false, false] },
-    { firstHour: 10, lastHour: 19, values: [1, -0.2, null], uncertain: [true, true, false] },
+    { firstHour: 0, lastHour: 9, values: [1, -0.2, 5 / 24 / 100_000, 0, 0], uncertain: [false, false, false, false, false] },
+    { firstHour: 10, lastHour: 19, values: [1, -0.2, null, 0, 0], uncertain: [true, true, false, false, false] },
   ]);
   assert.deepEqual(monthTotal(months[0], 24), { exact: 80_000n * 24n + 5n, reason: null, denominator: 24n });
+  // Unrecorded and other-purpose input are bands of their own in the whole.
+  const remainders = month(0, 9, { unrecorded: amount('30000'), other: amount('2000'), purposeUnproven: true });
+  assert.deepEqual(monthColumns([remainders], 5, 24)[0].uncertain, [true, true, false, true, false]);
+  assert.deepEqual(monthTotal(remainders, 24), { exact: 112_000n * 24n + 5n, reason: null, denominator: 24n });
   assert.deepEqual(monthTotal(months[1], 24), { exact: null, reason: 'unresolved' });
   assert.deepEqual(monthTotal({ ...months[1], unresolved: false }, 24), { exact: null, reason: 'recordingGap' });
   assert.equal(nearestInteger(80_000n * 24n + 5n, 24n), 80_000n);
@@ -233,19 +247,53 @@ test('dockyard IC is rounded once from the exact amount, in both views', () => {
   assert.equal(formatExactIc(total.exact!, total.denominator!, 5, 0), '0');
 });
 
-test('unrecorded-purpose input stays present and uncertain even where a design nets to zero', () => {
+test('unrecorded-purpose input stays present and uncertain even where it nets to zero', () => {
   const value = reply();
-  // Unlisted input up and proved input down by as much: the new leaf nets to zero.
-  value.leaves = [leaf({ runs: [known(100, 171, '0')], unproven: [known(100, 123, '0'), known(124, 171, '100000')] })];
+  // Unrecorded input up and down by as much: its leaf nets to zero.
+  value.leaves = [leaf({}), leaf({ purpose: 'unknown', runs: [known(100, 171, '0')],
+    unproven: [known(100, 123, '0'), known(124, 171, '100000')] })];
   value.repairs = { hour: amount('0'), end: amount('0'), denominator: 24, since: null, parts: [] };
   const items = dockyardItems(value, { from: null, hour: 171, end: 171 });
   const present = items.filter(item => item.present);
   assert.deepEqual(present.map(item => item.path.map(part => part.id)).sort(),
-    [['new', 'mod_hull_a', '11'], ['new', 'purpose-unrecorded'], ['refit', 'purpose-unrecorded']].sort());
+    [['new', 'mod_hull_a', '11'], ['purpose-unrecorded', 'mod_hull_a', '11']].sort());
+  const unrecorded = present.find(item => item.path[0].id === 'purpose-unrecorded')!;
+  assert.deepEqual(unrecorded.localUnknownLevels, [true, true, true], 'uncertain down its subtree');
   const tree = groupTree(items, { id: 'all', label: 'All' });
   assert.equal(tree.valueUnknown, false, 'the whole stays known');
-  assert.equal(tree.exact, 0n);
-  for (const key of ['new', 'refit']) assert.equal(tree.children.find(node => node.key === key)?.valueUnknown, true, key);
+  assert.equal(tree.exact, 3_000_000n * (tree.exactDenominator ?? 1n));
+  assert.equal(tree.children.find(node => node.key === 'new')?.valueUnknown, true);
+  assert.equal(purposeSum(items, 'new'), 3_000_000n);
+});
+
+test('an unresolved design of a purpose naval production never has leaves the whole uncertain', () => {
+  const value = reply();
+  // 1 IC new and 2 IC of conversions of a design content cannot type.
+  value.leaves = [leaf({ runs: [known(100, 171, '100000')] }),
+    leaf({ variant: '99', typeKey: ':mod_unknown', name: null, domain: null, names: [], purpose: 'converted', runs: [known(100, 171, '200000')] })];
+  value.repairs = { hour: amount('0'), end: amount('0'), denominator: 24, since: null, parts: [] };
+  const items = dockyardItems(value, { from: null, hour: 171, end: 171 });
+  const marker = items.find(item => item.path[0].id === 'other-purpose')!;
+  assert.deepEqual(marker.path.map(part => part.id), ['other-purpose', 'unresolved']);
+  assert.ok(marker.present && marker.unknownLevels?.[0]);
+  const tree = groupTree(items, { id: 'all', label: 'All' });
+  assert.equal(tree.valueUnknown, true, 'never an exact 1 IC');
+  // Whichever rings are hidden, the whole stays uncertain.
+  for (const shown of [[false, false, true], [false, true, false]]) {
+    assert.equal(groupTree(items, { id: 'all', label: 'All' }, shown).valueUnknown, true, JSON.stringify(shown));
+  }
+});
+
+test('naval input of a purpose naval production never has stays in the whole as Other purposes', () => {
+  const value = reply();
+  // 1 IC new and 2 IC recorded as conversions of a naval design.
+  value.leaves = [leaf({ runs: [known(100, 171, '100000')] }), leaf({ purpose: 'converted', runs: [known(100, 171, '200000')] })];
+  value.repairs = { hour: amount('0'), end: amount('0'), denominator: 24, since: null, parts: [] };
+  const items = dockyardItems(value, { from: null, hour: 171, end: 171 });
+  assert.deepEqual(items.filter(item => item.present).map(item => [item.path[0].label, item.exact]),
+    [['New ships', 100_000n], ['Other purposes', 200_000n]]);
+  const tree = groupTree(items, { id: 'all', label: 'All' });
+  assert.equal(tree.exact, 300_000n * (tree.exactDenominator ?? 1n), 'the whole counts it');
 });
 
 test('unread equipment spending is unknown under both purposes, not hidden behind known repairs', () => {

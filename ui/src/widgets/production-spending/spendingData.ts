@@ -41,6 +41,8 @@ export const unknownLabel = (reason: string) => UNKNOWN_LABELS[reason as Product
   ?? (reason === 'observationChanged' ? 'Campaign total unavailable.' : 'Spending unavailable at this time.');
 
 const RAW = /^-?\d{1,39}$/;
+/** What a reply split by purpose keys its leaves by. */
+const PURPOSES: readonly unknown[] = ['new', 'refit', 'converted', 'unknown'];
 const int = (value: unknown): value is number => Number.isSafeInteger(value);
 const text = (value: unknown) => value === null || typeof value === 'string';
 const hours = (value: unknown): value is number[] => Array.isArray(value) && value.every((hour, index) => int(hour)
@@ -66,7 +68,7 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
     && Array.isArray(reply.leaves) && reply.leaves.every(leaf => typeof leaf === 'object' && leaf != null
       && typeof leaf.variant === 'string' && leaf.variant.length > 0 && typeof leaf.typeKey === 'string' && leaf.typeKey.length > 0 && text(leaf.name)
       && (leaf.domain === null || DOMAINS.includes(leaf.domain)) && typeof leaf.rocket === 'boolean' && runs(leaf.runs)
-      && (leaf.refit === null || typeof leaf.refit === 'boolean') && runs(leaf.unproven)
+      && (leaf.purpose === null || PURPOSES.includes(leaf.purpose)) && runs(leaf.unproven)
       && Array.isArray(leaf.names) && leaf.names.every((name, index) => typeof name === 'object' && name != null && int(name.firstHour)
         && text(name.name) && text(name.design) && typeof name.known === 'boolean' && (index === 0 || leaf.names[index - 1].firstHour < name.firstHour)))
     && new Set(reply.leaves.map(leafKey)).size === reply.leaves.length
@@ -81,7 +83,7 @@ export function validateProductionSpendingReply(data: unknown): ProductionSpendi
 }
 
 /** A leaf's identity: its design and source, and its purpose in a reply split by purpose. */
-export const leafKey = (leaf: ProductionSpendingLeaf) => JSON.stringify([leaf.variant, leaf.rocket, leaf.refit]);
+export const leafKey = (leaf: ProductionSpendingLeaf) => JSON.stringify([leaf.variant, leaf.rocket, leaf.purpose]);
 
 export interface SpendingAmount { exact: bigint | null; reason: UnknownReason | null }
 
@@ -150,7 +152,7 @@ export function spendingFinals(reply: ProductionSpendingReply, from: number | nu
     let maximum = 0n;
     const baseline = from == null || observations.includes(from) ? 0n : spendingAt(leaf.runs, from - 1).exact;
     // A reply split by purpose has new production's peaks only.
-    const peak = leaf.refit ? undefined : (reply as PreparedProductionSpendingReply).peaks?.[JSON.stringify([leaf.variant, leaf.rocket])];
+    const peak = leaf.purpose != null && leaf.purpose !== 'new' ? undefined : (reply as PreparedProductionSpendingReply).peaks?.[JSON.stringify([leaf.variant, leaf.rocket])];
     if (peak !== undefined) {
       const candidate = baseline === null ? 0n : BigInt(peak) - baseline;
       return { exact: null, geometry: Number(candidate > 0n ? candidate : 0n) };

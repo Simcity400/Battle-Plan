@@ -7689,6 +7689,7 @@ mod tests {
                     credit: 2,
                     spending: None,
                     exact: true,
+                    purpose: replay_data::rows::OutputPurpose::New,
                 };
                 ticks
             ];
@@ -7851,6 +7852,7 @@ mod tests {
                     credit: 1,
                     spending: None,
                     exact: true,
+                    purpose: replay_data::rows::OutputPurpose::New,
                 };
                 ticks
             ];

@@ -48,7 +48,8 @@ pub(crate) struct Answered {
 
 /// [`query`] for a product gated as `gate`, counting `purposes`. A reply split
 /// by purpose has one leaf per design and purpose, and its `peaks` hold new
-/// production's only.
+/// production's only, none for a design with converted or unrecorded-purpose
+/// input.
 pub(crate) fn query_with(
     source: &Source,
     input: Params,
@@ -284,20 +285,33 @@ fn read_pages(
     };
     let mut inventory: BTreeMap<bool, BTreeSet<u64>> = BTreeMap::new();
     let mut selected = Vec::new();
+    // A design with converted or unrecorded-purpose input has no peak of its
+    // new leaf alone in a split reply: its series without refits holds them.
+    let mut separate = BTreeSet::new();
+    if purposes == Purposes::Split {
+        for token in catalogue.purpose_keys.keys() {
+            let (tag, variant, _): (String, u64, Purpose) = serde_json::from_str(token)?;
+            if tag == input.tag {
+                separate.insert(variant);
+            }
+        }
+    }
     for (token, &id) in &catalogue.spent_keys {
         let (tag, rocket, refits, variant): (String, bool, bool, u64) =
             serde_json::from_str(token)?;
         if tag != input.tag {
             continue;
         }
-        // The combined key lists every design; new production's lists those
-        // with a new-build entry.
-        if refits == (rocket || purposes != Purposes::New) {
+        // The combined key lists every design; the key without refits lists
+        // those with new or converted input.
+        if refits == (rocket || purposes != Purposes::WithoutRefits) {
             inventory.entry(rocket).or_default().insert(variant);
         }
-        // A split reply's peaks are new production's: a refit-only maximum is
-        // no difference of two maxima.
-        if refits == (rocket || purposes == Purposes::Combined) {
+        // A split reply's peaks are new production's, from the series without
+        // refits: a refit-only maximum is no difference of two maxima.
+        if refits == (rocket || purposes == Purposes::Combined)
+            && (rocket || !separate.contains(&variant))
+        {
             selected.push((rocket, variant, id));
         }
     }
@@ -324,7 +338,7 @@ fn read_pages(
         };
         let track = tags.entry(input.tag.clone()).or_default();
         for &variant in variants {
-            track.cost_changes.entry((variant, false)).or_default();
+            track.cost_changes.entry((variant, Purpose::New)).or_default();
         }
     }
     for kind in classes.values_mut() {
@@ -399,7 +413,7 @@ fn read_pages(
                     .parse::<u64>()
                     .map_err(|_| crate::invalid("Invalid production variant"))?;
                 entries.insert(
-                    (variant, amount.refit),
+                    (variant, amount.purpose),
                     CostTotal {
                         raw: amount
                             .spent
@@ -415,7 +429,7 @@ fn read_pages(
             }
             for &variant in inventory.get(&rocket).into_iter().flatten() {
                 if !entries.keys().any(|&(id, _)| id == variant) {
-                    entries.insert((variant, false), CostTotal::default());
+                    entries.insert((variant, Purpose::New), CostTotal::default());
                 }
             }
             for (entry, value) in entries {
@@ -501,4 +515,4 @@ fn read_pages(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

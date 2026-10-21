@@ -2,13 +2,13 @@ use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
 use replay::container::Replay;
 use replay_data::{
-    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ProductionLineOutputRow,
-    rows::ProductionLineRow, rows::Recorded, rows::RocketProductionOutputRow, rows::TableId,
-    rows::TableRows, rows::VariantDefinitionRow,
+    rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::OutputPurpose,
+    rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::Recorded,
+    rows::RocketProductionOutputRow, rows::TableId, rows::TableRows, rows::VariantDefinitionRow,
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
-pub(super) fn hour(day: i32) -> i32 {
+pub(crate) fn hour(day: i32) -> i32 {
     let replay_data::cadence::Cadence::Daily(slot) =
         replay_data::cadence::cadence(TableId::ProductionLineOutput)
     else {
@@ -17,7 +17,7 @@ pub(super) fn hour(day: i32) -> i32 {
     day * replay_data::cadence::STAGGER_PERIOD + i32::try_from(slot).unwrap()
 }
 
-pub(super) fn line(handle: u64, variant: u64, cost_raw: i64) -> ProductionLineRow {
+pub(crate) fn line(handle: u64, variant: u64, cost_raw: i64) -> ProductionLineRow {
     ProductionLineRow {
         handle,
         country: 1,
@@ -32,7 +32,7 @@ fn output(line: u64, variant: u64, units: i64) -> ProductionLineOutputRow {
     applied(line, variant, units, units * 100_000)
 }
 
-pub(super) fn applied(
+pub(crate) fn applied(
     line: u64,
     variant: u64,
     units: i64,
@@ -46,11 +46,12 @@ pub(super) fn applied(
         since_hour: hour(0),
         exact: true,
         spent_raw: Recorded::Value(Some(spent_raw)),
+        purpose: Recorded::Value(OutputPurpose::New.raw()),
         ..Default::default()
     }
 }
 
-pub(super) fn day(
+pub(crate) fn day(
     day: i32,
     lines: Vec<ProductionLineRow>,
     outputs: Option<Vec<ProductionLineOutputRow>>,
@@ -127,7 +128,7 @@ fn scan(frames: Vec<DecodedFrame>) -> ScannedProduced {
     production::scan(&replay, 1, &AtomicBool::new(false)).unwrap()
 }
 
-fn units() -> installed_content_core::equipment::Database {
+pub(crate) fn units() -> installed_content_core::equipment::Database {
     installed_content_core::equipment::fixture::load(&[(
         "common/units/equipment/mod.txt",
         "equipments = {
@@ -1091,10 +1092,12 @@ fn production_spending_mod_content_domains_and_refit_naval_railway_rules_are_sha
     lines[2].kind = engine_native::cequipment_production_line::KIND_NAVAL;
     lines[3].kind = engine_native::cequipment_production_line::KIND_RAILWAY_GUN;
     lines[4].kind = engine_native::cequipment_production_line::KIND_SHIP_REFIT;
-    let outputs = lines
+    let mut outputs: Vec<_> = lines
         .iter()
         .map(|line| applied(line.handle, line.variant, 1, line.cost_raw))
         .collect();
+    // The output's recorded purpose, not the census kind, makes it a refit.
+    outputs[4].purpose = Recorded::Value(OutputPurpose::Refit.raw());
     let scanned = scan(day(0, lines, Some(outputs)));
     let result = render_result(&scanned, false);
     assert_eq!(
@@ -1159,7 +1162,7 @@ fn production_spending_signed_changes_are_independent_of_units() {
     let mut frames = day(0, vec![line(1, 1, 7)], Some(vec![first]));
     frames.extend(day(1, vec![line(1, 1, -1)], Some(vec![last])));
     let scanned = scan(frames);
-    assert_eq!(scanned.tags["opaque|tag"].current[&(1, false)].inexact, 1);
+    assert_eq!(scanned.tags["opaque|tag"].current[&(1, Purpose::New)].inexact, 1);
     let result = render_result(&scanned, false);
     assert_eq!(
         at(&result.total, hour(0)).unwrap().total_raw,
@@ -1178,8 +1181,8 @@ fn production_spending_refusal_preserves_known_deliveries() {
     let mut row = output(1, 1, 3);
     row.spent_raw = Recorded::Value(None);
     let scanned = scan(day(0, vec![line(1, 1, 100_000)], Some(vec![row])));
-    assert_eq!(scanned.tags["opaque|tag"].current[&(1, false)].units, 3);
-    assert_eq!(scanned.tags["opaque|tag"].current[&(1, false)].inexact, 0);
+    assert_eq!(scanned.tags["opaque|tag"].current[&(1, Purpose::New)].units, 3);
+    assert_eq!(scanned.tags["opaque|tag"].current[&(1, Purpose::New)].inexact, 0);
     assert_eq!(
         render_result(&scanned, false).total[0].reason,
         Some(ProductionSpendingUnknown::SpendingUnavailable)
@@ -1312,7 +1315,7 @@ fn production_spending_many_retired_designs_have_sparse_runs_over_long_history()
     }
     for variant in 1..=1_000 {
         track.changes.insert(
-            (variant, false),
+            (variant, Purpose::New),
             vec![(
                 0,
                 Total {
@@ -1322,7 +1325,7 @@ fn production_spending_many_retired_designs_have_sparse_runs_over_long_history()
             )],
         );
         track.cost_changes.insert(
-            (variant, false),
+            (variant, Purpose::New),
             vec![(
                 0,
                 CostTotal {
@@ -1356,9 +1359,9 @@ fn production_spending_keeps_more_than_300000_changes_and_runs_within_reply_budg
         track.last_hours.push(sample as i32);
         track.identities.push((1, 1, 0));
     }
-    for refit in [false, true] {
+    for purpose in [Purpose::New, Purpose::Refit] {
         track.cost_changes.insert(
-            (1, refit),
+            (1, purpose),
             (0..samples)
                 .map(|sample| {
                     (
@@ -1408,42 +1411,46 @@ fn production_spending_refuses_complete_reply_past_byte_budget() {
 }
 
 #[test]
-fn input_of_unlisted_lines_counts_as_new_and_is_dated_by_non_cancelling_runs() {
-    use engine_native::cequipment_production_line::KIND_SHIP_REFIT;
-    let mut refit = line(5, 3, 100_000);
-    refit.kind = KIND_SHIP_REFIT;
-    let listed = vec![refit, line(6, 3, 100_000)];
-    // Day 0: line 7 has output but no census lists it. Day 1: line 7 is
-    // corrected down by as much as unlisted line 8 adds, so the signed
-    // unlisted input nets to nothing new.
+fn input_of_unrecorded_purpose_is_its_own_entry_and_is_dated_by_non_cancelling_runs() {
+    let with = |mut row: ProductionLineOutputRow, purpose: OutputPurpose| {
+        row.purpose = Recorded::Value(purpose.raw());
+        row
+    };
+    // A census listing line 7 proves nothing about its purpose.
+    let listed = vec![line(5, 3, 100_000), line(6, 3, 100_000), line(7, 3, 100_000)];
+    // Day 0: line 7's purpose is not recorded. Day 1: line 7 is corrected down
+    // by as much as line 8, whose purpose is not recorded either, adds, so the
+    // signed unrecorded input nets to nothing new.
     let mut frames = day(
         0,
         listed.clone(),
         Some(vec![
-            applied(5, 3, 0, 100_000),
+            with(applied(5, 3, 0, 100_000), OutputPurpose::Refit),
             applied(6, 3, 0, 200_000),
-            applied(7, 3, 0, 40_000),
+            with(applied(7, 3, 0, 40_000), OutputPurpose::Unknown),
         ]),
     );
     frames.extend(day(
         1,
         listed,
         Some(vec![
-            applied(5, 3, 0, 150_000),
+            with(applied(5, 3, 0, 150_000), OutputPurpose::Refit),
             applied(6, 3, 0, 300_000),
-            applied(7, 3, 0, 30_000),
-            applied(8, 3, 0, 10_000),
+            with(applied(7, 3, 0, 30_000), OutputPurpose::Unknown),
+            with(applied(8, 3, 0, 10_000), OutputPurpose::Unknown),
         ]),
     ));
     let scanned = scan(frames);
     assert_eq!(scanned.unlisted, 2);
     let track = &scanned.tags["opaque|tag"];
-    assert_eq!(track.cost_current[&(3, true)].raw, 150_000);
-    assert_eq!(track.cost_current[&(3, true)].unproven_raw, 0);
-    // The unlisted line counts as new, and that part is kept apart.
-    assert_eq!(track.cost_current[&(3, false)].raw, 340_000);
+    assert_eq!(track.cost_current[&(3, Purpose::Refit)].raw, 150_000);
+    assert_eq!(track.cost_current[&(3, Purpose::Refit)].unproven_raw, 0);
+    // Unrecorded input is its own entry, never part of new production.
+    assert_eq!(track.cost_current[&(3, Purpose::New)].raw, 300_000);
+    assert_eq!(track.cost_current[&(3, Purpose::New)].unproven_raw, 0);
+    assert_eq!(track.cost_current[&(3, Purpose::Unknown)].raw, 40_000);
     // Magnitudes: 40000, then 10000 down and 10000 up, never cancelling.
-    assert_eq!(track.cost_current[&(3, false)].unproven_raw, 60_000);
+    assert_eq!(track.cost_current[&(3, Purpose::Unknown)].unproven_raw, 60_000);
     let split = reply_inner(
         &scanned,
         &params(true),
@@ -1454,30 +1461,32 @@ fn input_of_unlisted_lines_counts_as_new_and_is_dated_by_non_cancelling_runs() {
         Purposes::Split,
     )
     .unwrap();
-    let new = split
-        .leaves
-        .iter()
-        .find(|leaf| leaf.refit == Some(false))
-        .unwrap();
-    let refits = split
-        .leaves
-        .iter()
-        .find(|leaf| leaf.refit == Some(true))
-        .unwrap();
+    let leaf = |purpose| {
+        split
+            .leaves
+            .iter()
+            .find(|leaf| leaf.purpose == Some(purpose))
+            .unwrap()
+    };
+    let new = leaf(Purpose::New);
+    let unknown = leaf(Purpose::Unknown);
+    assert!(new.unproven.is_empty());
+    let refits = leaf(Purpose::Refit);
     assert!(
         refits.unproven.is_empty(),
-        "a refit leaf with no unlisted input has none"
+        "a refit leaf with no unrecorded input has none"
     );
-    // Dated: a range over day 1 alone still holds unlisted input, although
+    // Dated: a range over day 1 alone still holds unrecorded input, although
     // its signed amount cancels there.
     let value = |runs: &[ProductionSpendingRun], at: i32| {
         runs.iter()
             .find(|run| run.first_hour <= at && at <= run.last_hour)
             .and_then(|run| run.total_raw.clone())
     };
-    assert_eq!(value(&new.unproven, hour(0)), Some("40000".into()));
-    assert_eq!(value(&new.unproven, hour(1)), Some("60000".into()));
-    assert_eq!(value(&new.runs, hour(1)), Some("340000".into()));
+    assert_eq!(value(&unknown.unproven, hour(0)), Some("40000".into()));
+    assert_eq!(value(&unknown.unproven, hour(1)), Some("60000".into()));
+    assert_eq!(value(&unknown.runs, hour(1)), Some("40000".into()));
+    assert_eq!(value(&new.runs, hour(1)), Some("300000".into()));
     let unsplit = reply(
         &scanned,
         &params(true),
@@ -1486,6 +1495,60 @@ fn input_of_unlisted_lines_counts_as_new_and_is_dated_by_non_cancelling_runs() {
         &AtomicBool::new(false),
     )
     .unwrap();
+    // Unsplit, unrecorded input counts with new production, as before.
     assert_eq!(unsplit.leaves.len(), 1);
-    assert_eq!(unsplit.leaves[0].refit, None);
+    assert_eq!(unsplit.leaves[0].purpose, None);
+    assert_eq!(value(&unsplit.leaves[0].runs, hour(1)), Some("490000".into()));
+}
+
+#[test]
+fn converted_input_is_its_own_leaf_and_counts_with_or_without_refits() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let with = |mut row: ProductionLineOutputRow, purpose: OutputPurpose| {
+        row.purpose = Recorded::Value(purpose.raw());
+        row
+    };
+    // One line of design 3 builds new, then converts: two buckets.
+    let mut converted = with(applied(5, 3, 0, 70_000), OutputPurpose::Converted);
+    converted.ordinal = 1;
+    let frames = day(
+        0,
+        vec![line(5, 3, 100_000), line(6, 3, 100_000)],
+        Some(vec![
+            applied(5, 3, 1, 100_000),
+            converted,
+            with(applied(6, 3, 0, 20_000), OutputPurpose::Refit),
+        ]),
+    );
+    let scanned = scan(frames);
+    assert_eq!(scanned.unlisted, 0);
+    let track = &scanned.tags["opaque|tag"];
+    assert_eq!(track.cost_current[&(3, Purpose::Converted)].raw, 70_000);
+    assert_eq!(track.cost_current[&(3, Purpose::Converted)].unproven_raw, 0);
+    let split = reply_inner(
+        &scanned,
+        &params(true),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+        None,
+        Purposes::Split,
+    )
+    .unwrap();
+    let leaf = |purpose| {
+        split
+            .leaves
+            .iter()
+            .find(|leaf| leaf.purpose == Some(purpose))
+            .and_then(|leaf| at(&leaf.runs, hour(0)))
+            .and_then(|run| run.total_raw.clone())
+    };
+    assert_eq!(leaf(Purpose::New), Some("100000".into()));
+    assert_eq!(leaf(Purpose::Converted), Some("70000".into()));
+    assert_eq!(leaf(Purpose::Refit), Some("20000".into()));
+    // Without refits, conversions still count, as Production spending always did.
+    let total = |refits| at(&render_result(&scanned, refits).total, hour(0)).cloned();
+    assert_eq!(total(false).unwrap().total_raw.as_deref(), Some("170000"));
+    assert_eq!(total(true).unwrap().total_raw.as_deref(), Some("190000"));
 }

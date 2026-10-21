@@ -41,7 +41,9 @@ export interface SunburstItem {
    * make every ancestor's total unknown, even beside exact measured parts. */
   unknownValue?: boolean;
   /** Incomplete attribution at particular path levels. The exact leaf can stay
-   * known even when its type or domain cannot have a complete total. */
+   * known even when its type or domain cannot have a complete total. A level
+   * whose ring is hidden still makes its shown ancestors, the whole included,
+   * incomplete. */
   unknownLevels?: readonly boolean[];
   /** Incomplete attribution restricted to these levels when source totals stay known. */
   localUnknownLevels?: readonly boolean[];
@@ -57,7 +59,8 @@ export interface SunburstItem {
   /** The whole total cannot be told. Any numeric `final` is only an ordering
    * weight; Fill shows Share until its denominator is known. */
   finalUnknown?: boolean;
-  /** Incomplete attribution of the whole at particular path levels. */
+  /** Incomplete attribution of the whole at particular path levels, reaching
+   * shown ancestors from hidden rings as `unknownLevels` does. */
   finalUnknownLevels?: readonly boolean[];
   /** Incomplete whole-amount attribution restricted to these levels. */
   localFinalUnknownLevels?: readonly boolean[];
@@ -164,27 +167,33 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
   const measured = new Set<SunburstNode>();
   const notes = new Map<SunburstNode, Set<string>>();
   for (const item of items) {
-    const keys = item.path.map((key, level) => ({ key, level })).filter(({ level }) => shown[level] ?? true);
     let node = top;
     const chain = [top];
     const uncertain = new Set<SunburstNode>();
     const finalUncertain = new Set<SunburstNode>();
-    for (const { key, level } of keys) {
-      const id = `${node.id}${SEPARATOR}${key.id}`;
-      let child = byId.get(id);
-      if (!child) {
-        child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
-          stretch: key.stretch,
-          depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0 };
-        byId.set(id, child);
-        node.children.push(child);
+    for (const [level, key] of item.path.entries()) {
+      const visible = shown[level] ?? true;
+      if (visible) {
+        const id = `${node.id}${SEPARATOR}${key.id}`;
+        let child = byId.get(id);
+        if (!child) {
+          child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
+            stretch: key.stretch,
+            depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), aggregateCount: 0, count: 0 };
+          byId.set(id, child);
+          node.children.push(child);
+        }
+        node = child;
+        chain.push(child);
       }
-      node = child;
-      chain.push(child);
+      // A hidden level's incomplete attribution still reaches every shown
+      // ancestor, the whole included, whichever rings are hidden.
       if (item.unknownLevels?.[level] && item.present !== false) for (const link of chain) uncertain.add(link);
       if (item.finalUnknownLevels?.[level]) for (const link of chain) finalUncertain.add(link);
-      if (item.localUnknownLevels?.[level] && item.present !== false) uncertain.add(child);
-      if (item.localFinalUnknownLevels?.[level]) finalUncertain.add(child);
+      // Local attribution belongs to its own ring's slice alone.
+      if (!visible) continue;
+      if (item.localUnknownLevels?.[level] && item.present !== false) uncertain.add(node);
+      if (item.localFinalUnknownLevels?.[level]) finalUncertain.add(node);
     }
     const present = item.present !== false;
     const value = present ? item.value : null;

@@ -2,8 +2,8 @@
 
 use crate::metadata::{TaggedCountry, slot_read};
 use crate::products::equipment::production::{
-    CostTotal, Entry, Identity, Named, ProductionSpendingUnknown, RocketProduced, TagHistory,
-    Total, variant_types_for,
+    CostTotal, Entry, Identity, Named, ProductionSpendingUnknown, Purpose, RocketProduced,
+    TagHistory, Total, variant_types_for,
 };
 use crate::products::equipment::{
     self, Domain, StockVariantName, Texts, VariantCatalogue, VariantHour, VariantReads,
@@ -70,7 +70,7 @@ pub use dashboard_core::map_pairs;
 struct RowState {
     identity: Option<Identity>,
     entry: Entry,
-    /// A census listed its line, so its purpose is recorded.
+    /// Its purpose was recorded.
     proved: bool,
     units: i64,
     exact: bool,
@@ -130,8 +130,6 @@ pub struct ProductionAccumulator {
     totals: HashMap<Identity, (u64, BTreeMap<Entry, Total>)>,
     #[serde(with = "versioned_pairs")]
     cost_totals: HashMap<Identity, (u64, BTreeMap<Entry, CostTotal>)>,
-    #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_map")]
-    kinds: HashMap<u64, u8>,
     #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_set")]
     seen_production: HashSet<Identity>,
     #[serde(serialize_with = "crate::prepared_production::map_pairs::ordered_set")]
@@ -150,10 +148,15 @@ pub struct ProductionAccumulator {
     pages_written: u64,
     spent: crate::prepared::series::Accumulator,
     spent_keys: BTreeMap<String, u64>,
-    /// Keys of each equipment entry's cumulative input from lines whose
-    /// purpose is not recorded, by (tag, variant, refit); only entries that
-    /// ever had such input.
+    /// Keys of each equipment entry's cumulative input from production ticks
+    /// whose purpose was not recorded, by (tag, variant, purpose); only
+    /// entries that ever had such input.
     unproven_keys: BTreeMap<String, u64>,
+    /// Keys of each equipment design's cumulative input of each
+    /// [`SERIES_PURPOSES`] purpose, by (tag, variant, purpose); only designs
+    /// that ever had input of that purpose. The key also holds that amount's
+    /// endpoint events.
+    purpose_keys: BTreeMap<String, u64>,
     spent_active: BTreeSet<u64>,
     #[serde(skip)]
     spent_holders: [BTreeMap<String, SpentHolder>; 2],
@@ -219,11 +222,11 @@ struct ProductionVariants {
 /// of quantities, supplying dates and country names.
 struct VariantInventory {
     versions: [Option<(Identity, u64)>; 2],
-    members: BTreeMap<u64, [bool; 4]>,
+    members: BTreeMap<u64, [bool; SEEN]>,
 }
 #[derive(Default)]
 struct VariantMembers {
-    seen: [usize; 4],
+    seen: [usize; SEEN],
     selected: usize,
 }
 
@@ -264,18 +267,18 @@ impl ProductionVariants {
                 if let Some(old) = held.remove(tag) {
                     change_members(&mut self.members, &old.members, source, false);
                 }
-                let mut members: BTreeMap<u64, [bool; 4]> = BTreeMap::new();
-                for (cost, &(variant, refit)) in track
+                let mut members: BTreeMap<u64, [bool; SEEN]> = BTreeMap::new();
+                for (measure, &(variant, purpose)) in track
                     .current
                     .keys()
-                    .map(|entry| (0, entry))
-                    .chain(track.cost_current.keys().map(|entry| (2, entry)))
+                    .map(|entry| (UNITS_SEEN, entry))
+                    .chain(track.cost_current.keys().map(|entry| (IC_SEEN, entry)))
                 {
                     #[cfg(test)]
                     {
                         self.inventory_visits += 1;
                     }
-                    members.entry(variant).or_default()[cost + usize::from(refit)] = true;
+                    members.entry(variant).or_default()[measure + purpose.index()] = true;
                 }
                 change_members(&mut self.members, &members, source, true);
                 held.insert(tag.clone(), VariantInventory { versions, members });
@@ -306,7 +309,7 @@ impl ProductionVariants {
 
 fn change_members(
     counts: &mut BTreeMap<u64, VariantMembers>,
-    members: &BTreeMap<u64, [bool; 4]>,
+    members: &BTreeMap<u64, [bool; SEEN]>,
     source: usize,
     add: bool,
 ) {
@@ -328,7 +331,7 @@ fn change_members(
                 count.selected -= 1;
             }
         }
-        if count.seen == [0; 4] {
+        if count.seen == [0; SEEN] {
             counts.remove(&variant);
         }
     }
@@ -341,9 +344,25 @@ pub struct Classification {
     pub domain: Option<Domain>,
     pub name: Option<String>,
     pub names: Vec<StockVariantName>,
-    /// Units/IC inventory, independently for new production and refits.
-    pub seen: [bool; 4],
+    /// Units, then IC, inventory, independently for each purpose: the flag
+    /// at the measure's first index plus [`Purpose::index`].
+    pub seen: [bool; SEEN],
     pub reason: Option<String>,
+}
+
+/// [`Classification::seen`]'s length and each measure's first index.
+pub const SEEN: usize = 2 * Purpose::ALL.len();
+pub const UNITS_SEEN: usize = 0;
+pub const IC_SEEN: usize = Purpose::ALL.len();
+
+impl Classification {
+    /// Whether the measure starting at `inventory` saw the design, ship
+    /// refits counted only with `refits`.
+    fn seen_in(&self, inventory: usize, refits: bool) -> bool {
+        Purpose::ALL.into_iter().any(|purpose| {
+            (refits || purpose != Purpose::Refit) && self.seen[inventory + purpose.index()]
+        })
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -442,11 +461,7 @@ impl ProductionAccumulator {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-            unlisted: self
-                .unlisted
-                .iter()
-                .filter(|line| !self.kinds.contains_key(*line))
-                .count(),
+            unlisted: self.unlisted.len(),
             unread_reason: self.result.unread_reason.clone(),
             spending_tainted: self.result.spending_tainted.clone(),
             rocket,
@@ -536,16 +551,17 @@ impl ProductionAccumulator {
                     continue;
                 }
                 let mut observed = BTreeSet::new();
-                let mut variants: BTreeMap<u64, [Option<CostTotal>; 2]> = BTreeMap::new();
-                for &(variant, refit) in track.current.keys().chain(track.cost_current.keys()) {
+                let mut variants: BTreeMap<u64, [Option<CostTotal>; Purpose::ALL.len()]> =
+                    BTreeMap::new();
+                for &(variant, purpose) in track.current.keys().chain(track.cost_current.keys()) {
                     #[cfg(test)]
                     {
                         self.spent_visits += 1;
                     }
-                    variants.entry(variant).or_default()[usize::from(refit)] = Some(
+                    variants.entry(variant).or_default()[purpose.index()] = Some(
                         track
                             .cost_current
-                            .get(&(variant, refit))
+                            .get(&(variant, purpose))
                             .copied()
                             .unwrap_or_default(),
                     );
@@ -556,7 +572,13 @@ impl ProductionAccumulator {
                     } else {
                         &[false, true][..]
                     } {
-                        if !*refits && amounts[0].is_none() {
+                        // Without refits: designs with input of another purpose.
+                        if !*refits
+                            && Purpose::ALL
+                                .into_iter()
+                                .filter(|&purpose| purpose != Purpose::Refit)
+                                .all(|purpose| amounts[purpose.index()].is_none())
+                        {
                             continue;
                         }
                         let token = serde_json::to_string(&(tag, rocket, refits, variant))?;
@@ -564,23 +586,45 @@ impl ProductionAccumulator {
                             &self.spent_keys,
                             &self.classification_keys,
                             &self.unproven_keys,
+                            &self.purpose_keys,
                         );
                         let key = *self.spent_keys.entry(token).or_insert(next);
-                        let mut amount = 0i128;
-                        let mut reason = scope_reason;
-                        for (refit, value) in
-                            amounts.iter().enumerate().filter_map(|(index, value)| {
-                                value.as_ref().map(|value| (index == 1, value))
-                            })
-                        {
-                            if *refits || !refit {
-                                amount = amount.checked_add(value.raw).ok_or_else(|| {
-                                    io::Error::other("Applied IC exceeds its exact integer range")
-                                })?;
-                                reason = reason.or(value.reason);
+                        let counted = Purpose::ALL
+                            .into_iter()
+                            .filter(|purpose| *refits || *purpose != Purpose::Refit)
+                            .filter_map(|purpose| amounts[purpose.index()].as_ref());
+                        let value = known_sum(scope_reason, counted)?;
+                        if observe_known(
+                            &mut self.spent,
+                            &self.spent_active,
+                            &mut observed,
+                            (key, hour, value, starts),
+                        ) {
+                            #[cfg(any(test, feature = "test-support"))]
+                            {
+                                self.work.emitted += 1;
                             }
                         }
-                        let value = reason.is_none().then_some(amount);
+                    }
+                    if rocket {
+                        continue;
+                    }
+                    // Converted and unrecorded-purpose input, for designs
+                    // that ever had it: months read each apart from new
+                    // production in the series without refits.
+                    for purpose in SERIES_PURPOSES {
+                        let Some(total) = &amounts[purpose.index()] else {
+                            continue;
+                        };
+                        let token = serde_json::to_string(&(tag, variant, purpose))?;
+                        let next = next_key(
+                            &self.spent_keys,
+                            &self.classification_keys,
+                            &self.unproven_keys,
+                            &self.purpose_keys,
+                        );
+                        let key = *self.purpose_keys.entry(token).or_insert(next);
+                        let value = known_sum(scope_reason, [total])?;
                         if observe_known(
                             &mut self.spent,
                             &self.spent_active,
@@ -596,13 +640,10 @@ impl ProductionAccumulator {
                     // Input whose purpose is not recorded, per purpose, for
                     // entries that ever had it: ranges and months read its
                     // change over their own interval.
-                    if rocket {
-                        continue;
-                    }
-                    for (refit, total) in amounts.iter().enumerate().filter_map(|(index, total)| {
-                        total.as_ref().map(|total| (index == 1, *total))
+                    for (purpose, total) in Purpose::ALL.into_iter().filter_map(|purpose| {
+                        amounts[purpose.index()].map(|total| (purpose, total))
                     }) {
-                        let token = serde_json::to_string(&(tag, variant, refit))?;
+                        let token = serde_json::to_string(&(tag, variant, purpose))?;
                         if total.unproven_raw == 0 && !self.unproven_keys.contains_key(&token) {
                             continue;
                         }
@@ -610,6 +651,7 @@ impl ProductionAccumulator {
                             &self.spent_keys,
                             &self.classification_keys,
                             &self.unproven_keys,
+                            &self.purpose_keys,
                         );
                         let key = *self.unproven_keys.entry(token).or_insert(next);
                         let value = scope_reason
@@ -739,7 +781,6 @@ impl ProductionAccumulator {
             live,
             totals,
             cost_totals,
-            kinds,
             seen_production,
             unlisted,
             version,
@@ -795,15 +836,6 @@ impl ProductionAccumulator {
             TableId::ProductionLineOutput,
             decoded.hour,
         );
-        if read && let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
-            for line in lines {
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    work.row_visits += 1;
-                }
-                kinds.insert(line.handle, line.kind);
-            }
-        }
         // An hour the tables cannot tell extends nothing, so nothing continues across it.
         let (Ok(_), Ok(_), Ok(output)) = (
             decoded.complete::<tables::Countries>(),
@@ -930,14 +962,11 @@ impl ProductionAccumulator {
             }
             let key = (row.line, row.ordinal);
             seen.insert(key);
-            let proved = kinds.contains_key(&row.line);
-            let refit = match kinds.get(&row.line) {
-                Some(kind) => *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT,
-                None => {
-                    unlisted.insert(row.line);
-                    false
-                }
-            };
+            let purpose = Purpose::of(row);
+            let proved = purpose != Purpose::Unknown;
+            if !proved {
+                unlisted.insert(row.line);
+            }
             let producer = reads
                 .slots()
                 .get(&row.country)
@@ -949,7 +978,7 @@ impl ProductionAccumulator {
                 }
                 RowState {
                     identity: producer,
-                    entry: (row.variant, refit),
+                    entry: (row.variant, purpose),
                     proved,
                     units: 0,
                     exact: true,
@@ -1105,14 +1134,36 @@ impl ProductionAccumulator {
     }
 }
 
-/// The next series key: spent, classification and unproven keys share one
-/// numbering.
+/// Purposes with their own series beside the spent series: new production is
+/// the series without refits less theirs.
+pub(crate) const SERIES_PURPOSES: [Purpose; 2] = [Purpose::Converted, Purpose::Unknown];
+
+/// The next series key: spent, classification, unproven and purpose keys
+/// share one numbering.
 fn next_key(
     spent: &BTreeMap<String, u64>,
     classifications: &BTreeMap<u64, u64>,
     unproven: &BTreeMap<String, u64>,
+    purposes: &BTreeMap<String, u64>,
 ) -> u64 {
-    (spent.len() + classifications.len() + unproven.len()) as u64
+    (spent.len() + classifications.len() + unproven.len() + purposes.len()) as u64
+}
+
+/// The exact sum of `totals`, unknown when the scope or any of them has a
+/// reason.
+fn known_sum<'a>(
+    scope: Option<ProductionSpendingUnknown>,
+    totals: impl IntoIterator<Item = &'a CostTotal>,
+) -> io::Result<Option<i128>> {
+    let mut amount = 0i128;
+    let mut reason = scope;
+    for total in totals {
+        amount = amount
+            .checked_add(total.raw)
+            .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
+        reason = reason.or(total.reason);
+    }
+    Ok(reason.is_none().then_some(amount))
 }
 
 /// Observes a known value of a holder's key when it is new or changed;
@@ -1223,14 +1274,14 @@ mod versioned_pairs {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Amount {
     pub variant: String,
-    pub refit: bool,
+    pub purpose: Purpose,
     /// Exact signed cumulative accounting quantity, with no frontend ceiling.
     pub units: String,
     pub units_exact: bool,
     pub spent: String,
     pub spending_reason: Option<ProductionSpendingUnknown>,
-    /// The magnitudes of the input of lines whose purpose is not recorded,
-    /// summed: dated evidence that grows and never cancels.
+    /// The magnitudes of the input of production ticks whose purpose was not
+    /// recorded, summed: dated evidence that grows and never cancels.
     pub unproven: String,
 }
 
@@ -1396,7 +1447,7 @@ fn snapshot(
             let spending = track.cost_current.get(&entry).copied().unwrap_or_default();
             Amount {
                 variant: entry.0.to_string(),
-                refit: entry.1,
+                purpose: entry.1,
                 units: units.units.to_string(),
                 units_exact: units.inexact == 0,
                 spent: spending.raw.to_string(),
@@ -1729,7 +1780,7 @@ impl ProductionAccumulator {
                     seen: self
                         .classifications
                         .get(&variant)
-                        .map_or([false; 4], |kind| kind.seen),
+                        .map_or([false; SEEN], |kind| kind.seen),
                     key: kind.key,
                     ordinal: kind.ordinal,
                     domain: kind.domain,
@@ -1874,11 +1925,7 @@ impl ProductionAccumulator {
             unattributed: self.result.unattributed,
             inexact: self.result.inexact,
             lost: self.result.lost,
-            unlisted: self
-                .unlisted
-                .iter()
-                .filter(|line| !self.kinds.contains_key(*line))
-                .count(),
+            unlisted: self.unlisted.len(),
             unread: self.result.unread,
             unread_reason: self.result.unread_reason.clone(),
             unnamed: 0,
@@ -2222,7 +2269,7 @@ fn aggregate(
     source: Option<&SourceEndpoint>,
     before: Option<&SourceEndpoint>,
     params: &ProducedParams,
-    counted: impl Fn(u64, bool) -> bool,
+    counted: impl Fn(u64, Purpose) -> bool,
 ) -> io::Result<Option<i128>> {
     let Some(source) = source else {
         return Ok(None);
@@ -2244,7 +2291,7 @@ fn aggregate(
                     "Invalid recorded variant identity",
                 )
             })?;
-            if !counted(variant, amount.refit) {
+            if !counted(variant, amount.purpose) {
                 continue;
             }
             if check_exact
@@ -2345,8 +2392,8 @@ fn select_ordered(
     let includes_resolved = classes
         .values()
         .any(|kind| kind.ordinal.is_some() && included.contains(kind.key.as_str()));
-    let counted = |variant: u64, refit: bool| {
-        (params.refits || !refit)
+    let counted = |variant: u64, purpose: Purpose| {
+        (params.refits || purpose != Purpose::Refit)
             && classes
                 .get(&variant)
                 .is_some_and(|kind| included.is_empty() || included.contains(kind.key.as_str()))
@@ -2356,24 +2403,24 @@ fn select_ordered(
             .get(&variant)
             .is_none_or(|kind| kind.ordinal.is_none())
     };
-    let outside = |variant: u64, refit: bool| {
+    let outside = |variant: u64, purpose: Purpose| {
         includes_resolved
             && unresolved(variant)
-            && (params.refits || !refit)
-            && !counted(variant, refit)
+            && (params.refits || purpose != Purpose::Refit)
+            && !counted(variant, purpose)
     };
     type GroupOrder = (usize, String, u64);
     type GroupMembers = (String, bool, BTreeSet<u64>);
     let mut groups: BTreeMap<GroupOrder, GroupMembers> = BTreeMap::new();
     let inventory = match params.count {
-        ProducedCount::Units => 0,
-        ProducedCount::Ic => 2,
+        ProducedCount::Units => UNITS_SEEN,
+        ProducedCount::Ic => IC_SEEN,
     };
     for (&variant, kind) in classes {
-        if !(kind.seen[inventory] || params.refits && kind.seen[inventory + 1]) {
+        if !kind.seen_in(inventory, params.refits) {
             continue;
         }
-        if !counted(variant, false) {
+        if !counted(variant, Purpose::New) {
             continue;
         }
         let (order, key, ambiguous) = match params.grouping {
@@ -2440,10 +2487,10 @@ fn select_ordered(
                     _ => true,
                 }
         });
-        let e = |filter: &dyn Fn(u64, bool) -> bool| {
+        let e = |filter: &dyn Fn(u64, Purpose) -> bool| {
             aggregate(Some(equipment), e_before, params, filter)
         };
-        let r = |filter: &dyn Fn(u64, bool) -> bool| aggregate(rocket, r_before, params, filter);
+        let r = |filter: &dyn Fn(u64, Purpose) -> bool| aggregate(rocket, r_before, params, filter);
         let scope_known = r(&|variant, _| variant == 0)?.is_some();
         let rocket_value = |value| if scope_known { value } else { None };
         let e_outside = e(&outside)?;
@@ -2458,15 +2505,15 @@ fn select_ordered(
             };
         let mut values = Vec::new();
         for (key, ambiguous, variants) in groups.values().filter(|_| hydrate) {
-            let group = |variant: u64, refit: bool| {
-                (params.refits || !refit) && variants.contains(&variant)
+            let group = |variant: u64, purpose: Purpose| {
+                (params.refits || purpose != Purpose::Refit) && variants.contains(&variant)
             };
-            let unsure = |variant: u64, refit: bool| {
+            let unsure = |variant: u64, purpose: Purpose| {
                 unresolved(variant)
-                    && (params.refits || !refit)
+                    && (params.refits || purpose != Purpose::Refit)
                     && match params.grouping {
                         ProducedGrouping::Type => true,
-                        ProducedGrouping::Domain => counted(variant, refit),
+                        ProducedGrouping::Domain => counted(variant, purpose),
                         ProducedGrouping::Variant => false,
                     }
             };
@@ -2616,7 +2663,7 @@ fn select_ordered(
             let mut types = BTreeMap::new();
             for kind in classes
                 .values()
-                .filter(|kind| kind.seen[inventory] || kind.seen[inventory + 1])
+                .filter(|kind| kind.seen_in(inventory, true))
             {
                 types
                     .entry((kind.ordinal.unwrap_or(usize::MAX), kind.key.clone()))
@@ -2654,6 +2701,7 @@ pub(crate) struct ProductionCatalogue {
     pub(crate) spent_keys: BTreeMap<String, u64>,
     classification_keys: BTreeMap<u64, u64>,
     pub(crate) unproven_keys: BTreeMap<String, u64>,
+    pub(crate) purpose_keys: BTreeMap<String, u64>,
     pub(crate) spending: SpendingDiagnostics,
     pub(crate) variant_warnings: Vec<String>,
 }
@@ -2861,16 +2909,23 @@ pub fn publish_endpoint_to(
                     .variant
                     .parse()
                     .map_err(|_| io::Error::other("Invalid production variant"))?;
-                // The combined-refit S key holds the native refit endpoint event;
-                // its numeric run remains the already-computed combined amount.
-                let token =
-                    serde_json::to_string(&(&row.tag, rocket, rocket || amount.refit, variant))?;
+                // The combined-refit S key holds the native refit endpoint event
+                // and a purpose key its purpose's; their numeric runs remain
+                // the already-computed combined and purpose amounts.
                 let next = next_key(
                     &state.spent_keys,
                     &state.classification_keys,
                     &state.unproven_keys,
+                    &state.purpose_keys,
                 );
-                let key = *state.spent_keys.entry(token).or_insert(next);
+                let key = if !rocket && SERIES_PURPOSES.contains(&amount.purpose) {
+                    let token = serde_json::to_string(&(&row.tag, variant, amount.purpose))?;
+                    *state.purpose_keys.entry(token).or_insert(next)
+                } else {
+                    let refits = rocket || amount.purpose == Purpose::Refit;
+                    let token = serde_json::to_string(&(&row.tag, rocket, refits, variant))?;
+                    *state.spent_keys.entry(token).or_insert(next)
+                };
                 active.insert(key);
                 state.endpoint_event(key, page.first_hour, &LeafEndpoint { holder, amount })?;
             }
@@ -2889,6 +2944,7 @@ pub fn publish_endpoint_to(
             &state.spent_keys,
             &state.classification_keys,
             &state.unproven_keys,
+            &state.purpose_keys,
         );
         let key = *state.classification_keys.entry(variant).or_insert(next);
         state.endpoint_event(key, page.first_hour, &classification)?;
@@ -2949,6 +3005,7 @@ pub fn write_catalogue(
         spent_keys: state.spent_keys.clone(),
         classification_keys: state.classification_keys.clone(),
         unproven_keys: state.unproven_keys.clone(),
+        purpose_keys: state.purpose_keys.clone(),
         spending: {
             let mut diagnostics: SpendingDiagnostics = state.spending_scan().into();
             diagnostics.equipment_tags = state.first_equipment_holders.keys().cloned().collect();
@@ -3129,15 +3186,16 @@ impl<'a> Endpoints<'a> {
         if self.catalogue.is_none() {
             let catalogue = read_catalogue(self.store, self.key, self.branch)?;
             if let Some(catalogue) = &catalogue {
-                self.tokens = catalogue
-                    .spent_keys
-                    .iter()
-                    .map(|(token, &leaf)| {
-                        let (tag, rocket, _, variant): (String, bool, bool, u64) =
-                            serde_json::from_str(token)?;
-                        Ok((tag, rocket, variant, leaf))
-                    })
-                    .collect::<io::Result<_>>()?;
+                let spent = catalogue.spent_keys.iter().map(|(token, &leaf)| {
+                    let (tag, rocket, _, variant): (String, bool, bool, u64) =
+                        serde_json::from_str(token)?;
+                    Ok((tag, rocket, variant, leaf))
+                });
+                let purposes = catalogue.purpose_keys.iter().map(|(token, &leaf)| {
+                    let (tag, variant, _): (String, u64, Purpose) = serde_json::from_str(token)?;
+                    Ok((tag, false, variant, leaf))
+                });
+                self.tokens = spent.chain(purposes).collect::<io::Result<_>>()?;
             }
             self.catalogue = Some(catalogue);
         }
@@ -3232,7 +3290,7 @@ impl<'a> Endpoints<'a> {
         }
         let keys: Vec<u64> = selected.iter().map(|&(.., leaf)| leaf).collect();
         let rows = self.reader()?.latest_event_rows(&keys, hour)?;
-        let mut amounts: BTreeMap<(usize, bool), BTreeMap<(u64, bool), Amount>> = BTreeMap::new();
+        let mut amounts: BTreeMap<(usize, bool), BTreeMap<Entry, Amount>> = BTreeMap::new();
         for ((index, rocket, variant, _), row) in selected.into_iter().zip(rows) {
             let Some((_, bytes)) = row else {
                 continue;
@@ -3250,7 +3308,7 @@ impl<'a> Endpoints<'a> {
                 amounts
                     .entry((index, rocket))
                     .or_default()
-                    .insert((variant, leaf.amount.refit), leaf.amount);
+                    .insert((variant, leaf.amount.purpose), leaf.amount);
             }
         }
         for ((index, rocket), values) in amounts {

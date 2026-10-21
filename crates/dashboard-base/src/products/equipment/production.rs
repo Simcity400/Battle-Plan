@@ -30,8 +30,52 @@ const CACHED_BRANCHES: usize = 2;
 /// A country identity within one observation: its canonical slot, native id and
 /// the observation (a restart begins another, whose totals start again).
 pub(crate) type Identity = (u32, u32, u32);
-/// What a country produced: a variant, and whether ship refit lines made it.
-pub(crate) type Entry = (u64, bool);
+/// What a country produced: a variant, and what the input was for.
+pub(crate) type Entry = (u64, Purpose);
+
+/// What a production tick's applied input was for, as the collector recorded
+/// it. Input whose purpose was not recorded is its own entry (`Unknown`): a
+/// reply split by purpose never attributes it to another purpose, and replies
+/// that do not split count it with new production, as Equipment produced
+/// does. Its magnitudes are kept as unproven evidence
+/// ([`CostTotal::unproven_raw`]), which never cancels.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize, TS,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "ProductionPurpose")]
+pub enum Purpose {
+    #[default]
+    New,
+    /// Ship refit production.
+    Refit,
+    /// Military production while its line converted stockpiled equipment
+    /// into its design: conversion progress, including ticks that completed
+    /// nothing, not a count of source units removed.
+    Converted,
+    /// The collector could not classify the tick, or the recording predates
+    /// the purpose.
+    Unknown,
+}
+
+impl Purpose {
+    pub const ALL: [Self; 4] = [Self::New, Self::Refit, Self::Converted, Self::Unknown];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    /// A row's recorded purpose.
+    pub(crate) fn of(row: &replay_data::rows::ProductionLineOutputRow) -> Self {
+        use replay_data::rows::OutputPurpose;
+        match row.purpose() {
+            OutputPurpose::New => Self::New,
+            OutputPurpose::Refit => Self::Refit,
+            OutputPurpose::Converted => Self::Converted,
+            OutputPurpose::Unknown => Self::Unknown,
+        }
+    }
+}
 
 /// A country's total of one entry: its units and how many of its rows are not
 /// counted exactly (the total is exact only at zero).
@@ -65,9 +109,9 @@ pub enum ProductionSpendingUnknown {
 pub(crate) struct CostTotal {
     pub raw: i128,
     pub reason: Option<ProductionSpendingUnknown>,
-    /// The input of lines no census listed, whose purpose (new or ship refit)
-    /// is not recorded and which counts as new in `raw`, as the sum of its
-    /// magnitudes: it grows with each such input and never cancels.
+    /// The input of production ticks whose purpose was not recorded (only an
+    /// Unknown entry's), as the sum of its magnitudes: it grows with each such
+    /// input and never cancels.
     pub unproven_raw: i128,
 }
 
@@ -110,7 +154,7 @@ pub struct ScannedProduced {
     pub inexact: usize,
     /// Rows that disappeared without their final count.
     pub lost: usize,
-    /// Lines with output that no census listed, so their kind is not recorded.
+    /// Lines with output whose purpose was not recorded.
     pub unlisted: usize,
     /// Reads of the production lines without a readable output, and why.
     pub unread: usize,
@@ -157,7 +201,7 @@ impl ScannedProduced {
 struct RowState {
     identity: Option<Identity>,
     entry: Entry,
-    /// A census listed its line, so its purpose is recorded.
+    /// Its purpose was recorded.
     proved: bool,
     units: i64,
     exact: bool,
@@ -250,7 +294,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut live: HashSet<(u64, u32)> = HashSet::new();
     let mut totals: HashMap<Identity, (u64, BTreeMap<Entry, Total>)> = HashMap::new();
     let mut cost_totals: HashMap<Identity, (u64, BTreeMap<Entry, CostTotal>)> = HashMap::new();
-    let mut kinds: HashMap<u64, u8> = HashMap::new();
     let mut seen_production: HashSet<Identity> = HashSet::new();
     let mut unlisted: HashSet<u64> = HashSet::new();
     let (mut version, mut observation) = (0u64, 0u32);
@@ -329,11 +372,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         TableId::ProductionLineOutput,
                         decoded.hour,
                     );
-                    if read && let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
-                        for line in lines {
-                            kinds.insert(line.handle, line.kind);
-                        }
-                    }
                     // An hour the tables cannot tell extends nothing, so nothing continues across it.
                     let (Ok(countries), Ok(links), Ok(output)) = (
                         decoded.complete::<tables::Countries>(),
@@ -452,16 +490,11 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     for row in output {
                         let key = (row.line, row.ordinal);
                         seen.insert(key);
-                        let proved = kinds.contains_key(&row.line);
-                        let refit = match kinds.get(&row.line) {
-                            Some(kind) => {
-                                *kind == engine_native::cequipment_production_line::KIND_SHIP_REFIT
-                            }
-                            None => {
-                                unlisted.insert(row.line);
-                                false
-                            }
-                        };
+                        let purpose = Purpose::of(row);
+                        let proved = purpose != Purpose::Unknown;
+                        if !proved {
+                            unlisted.insert(row.line);
+                        }
                         let producer = link_slot(links, row.country)
                             .and_then(|slot| by_slot.get(&slot))
                             .copied();
@@ -471,7 +504,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                             }
                             RowState {
                                 identity: producer,
-                                entry: (row.variant, refit),
+                                entry: (row.variant, purpose),
                                 proved,
                                 units: 0,
                                 exact: true,
@@ -641,10 +674,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             Ok(())
         },
     )?;
-    result.unlisted = unlisted
-        .iter()
-        .filter(|line| !kinds.contains_key(*line))
-        .count();
+    result.unlisted = unlisted.len();
     Ok(result)
 }
 

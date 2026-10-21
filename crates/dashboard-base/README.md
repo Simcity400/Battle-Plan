@@ -565,20 +565,40 @@ restore and reconciles all saved active keys once; rockets without inventory
 versions project on every observation. Published values and continuation layouts
 use the same keys and series.
 
-A line that no census listed has no recorded purpose: its input counts as new,
-as Equipment produced counts it, and each entry also keeps the cumulative input
-of such lines (`unproven`). The production family publishes it as its own
-dated series per tag, design and purpose, beside the spent series, so a range
-or month reads whether such input joined it against its own baseline.
+Each output row records what its input was for: new production, a ship refit
+or a conversion of stockpiled equipment into the target design. Input of a
+production tick whose purpose was not recorded is its own entry (`unknown`): a
+reply split by purpose keeps it apart, and replies that do not split count it
+with new production, as Equipment produced does. That entry also keeps the
+cumulative magnitude of such input (`unproven`), which the production family
+publishes as its own dated series per tag and design, beside the spent series,
+so a range or month reads whether such input joined it against its own
+baseline. Designs that ever had converted or unrecorded-purpose input also get
+that purpose's series (`purpose_keys`), which holds its amount's endpoints; the
+series without refits holds them with new input, so a split reply has no
+new-production peak for such a design.
 
 Dockyard spending ([products/dockyard_spending.rs](src/products/dockyard_spending.rs))
-reads Production spending's prepared endpoints split by purpose (one leaf per
-design and purpose), keeping naval designs and those content cannot resolve.
-Its months view differences production's shared spent series at calendar-month
-ends: a design's new-production key and its combined key, inside one
-observation, from zero before its first input or at its observation's start.
-Repairs integrate the prepared repair rate over the same hours. Both answer
-through the hours the production and repair families have both prepared.
+and Military factory spending ([products/military_factory_spending.rs](src/products/military_factory_spending.rs))
+read Production spending's prepared endpoints split by purpose (one leaf per
+design and purpose), keeping their domain's designs (naval; air or land) and
+those content cannot resolve. They show the purposes the domain has (new
+ships and refits; new and converted) and input whose purpose was not recorded
+as its own part. A purpose the domain never has rules an unresolved design
+out; on one of the domain's own designs it stays in the whole as an Other
+purposes part and is counted in the warnings, never folded into a shown
+purpose. Their months views
+([products/purpose_split.rs](src/products/purpose_split.rs)) difference
+production's shared spent series at calendar-month ends, inside one
+observation, from zero before a design's first input or at its observation's
+start: new production is the input without refits less its converted and
+unrecorded-purpose input, refits the whole input less the input without
+refits, converted and unrecorded-purpose input their own series' change, all
+against the combined series' baseline; each month also carries the input of
+purposes the domain never has. Dockyard
+repairs integrate the prepared repair rate over the same hours. Dockyard
+spending answers through the hours the production and repair families have both
+prepared; Military factory spending through production's.
 
 ## Country identity history
 

@@ -555,7 +555,8 @@ pub fn production_frame(
 ) -> DecodedFrame {
     use replay_data::{
         rows::CountryAppearanceRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
-        rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::VariantDefinitionRow,
+        rows::OutputPurpose, rows::ProductionLineOutputRow, rows::ProductionLineRow,
+        rows::Recorded, rows::VariantDefinitionRow,
     };
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -661,6 +662,7 @@ pub fn production_frame(
                         observed_since_creation: line != 5,
                         ended,
                         exact,
+                        purpose: Recorded::Value(OutputPurpose::New.raw()),
                         ..Default::default()
                     },
                 )

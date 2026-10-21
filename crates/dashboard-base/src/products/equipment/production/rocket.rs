@@ -1,6 +1,6 @@
 //! Independent retained Rocket totals within the shared branch walk.
 
-use super::{CostTotal, Identity, ProductionSpendingUnknown, TagHistory, Total};
+use super::{CostTotal, Entry, Identity, ProductionSpendingUnknown, Purpose, TagHistory, Total};
 use crate::metadata::slot_read;
 use replay_data::{rows::RocketProductionOutputRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -288,8 +288,8 @@ impl RocketProduced {
                 unproven_raw: 0,
             };
         }
-        let mut unit_totals: HashMap<Identity, BTreeMap<(u64, bool), Total>> = HashMap::new();
-        let mut cost_totals: HashMap<Identity, BTreeMap<(u64, bool), CostTotal>> = HashMap::new();
+        let mut unit_totals: HashMap<Identity, BTreeMap<Entry, Total>> = HashMap::new();
+        let mut cost_totals: HashMap<Identity, BTreeMap<Entry, CostTotal>> = HashMap::new();
         let mut present_production = BTreeSet::new();
         for (&key, state) in &mut self.rows {
             #[cfg(any(test, feature = "test-support"))]
@@ -306,7 +306,7 @@ impl RocketProduced {
             if state.present {
                 present_production.insert(identity);
             }
-            let entry = (key.1, false);
+            let entry = (key.1, Purpose::New);
             let units = unit_totals
                 .entry(identity)
                 .or_default()
@@ -348,10 +348,10 @@ impl RocketProduced {
             let mut units = unit_totals.remove(&identity).unwrap_or_default();
             let mut costs = cost_totals.remove(&identity).unwrap_or_default();
             if self.delivery_owner_unknown {
-                units.entry((0, false)).or_default().inexact = 1;
+                units.entry((0, Purpose::New)).or_default().inexact = 1;
             }
             if self.owner_unknown {
-                costs.entry((0, false)).or_default().reason = Some(
+                costs.entry((0, Purpose::New)).or_default().reason = Some(
                     self.rows[&(0, 0)]
                         .cost
                         .reason

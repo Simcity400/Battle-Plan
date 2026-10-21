@@ -63,6 +63,12 @@ pub const IS_ARCHETYPE: usize = 0x555;
 pub const DESIGN_COST_MODIFIER: usize = 0x55c;
 /// CEquipmentType primary category flags u64.
 pub const PRIMARY_CATEGORY_FLAGS: usize = 0x540;
+/// Conversion family byte: while set, an unlicensed design of the type is a
+/// conversion target even without a parent design.
+pub const CONVERSION_FAMILY: usize = 0x556;
+/// Signed i32 count of the type's convert-from list; a nonempty list makes
+/// every variant of the type a conversion target.
+pub const CONVERT_FROM_COUNT: usize = 0x49c;
 /// CEquipmentType secondary category flags u64.
 pub const SECONDARY_CATEGORY_FLAGS: usize = 0x548;
 /// Optional maximum military factories: i32 followed by a has-value byte. Read on the type first,
