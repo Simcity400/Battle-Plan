@@ -297,7 +297,9 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
                 current,
                 layers: Err(reason.into()),
                 laps: Vec::new(),
+                child_laps: Vec::new(),
                 wall: 0.,
+                trace: Default::default(),
             },
         );
         let failed_path = fixture.output.join(format!("failed-hour-{index}.png"));

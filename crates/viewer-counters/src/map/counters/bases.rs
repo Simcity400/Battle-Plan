@@ -234,14 +234,22 @@ impl BuildingIconContent {
     /// hour's template tokens. A refused template with an active building there, or one
     /// without a single token (an unnamed row may be it) ahead of the match, leaves it
     /// undecided.
+    #[cfg(test)]
     fn headquarter<'r>(
         &self,
         rows: &[&'r BuildingRow],
         tokens: &BTreeMap<String, u32>,
     ) -> Result<Option<(&IconTemplate, &'r BuildingRow)>, Refusal> {
+        self.headquarter_rows(rows.iter().copied(), tokens)
+    }
+
+    fn headquarter_rows<'r>(
+        &self,
+        rows: impl Iterator<Item = &'r BuildingRow> + Clone,
+        tokens: &BTreeMap<String, u32>,
+    ) -> Result<Option<(&IconTemplate, &'r BuildingRow)>, Refusal> {
         let active = |token: &u32| {
-            rows.iter()
-                .copied()
+            rows.clone()
                 .find(|row| row.building_type == *token && row.level > 0)
         };
         let mut unnamed = None;
@@ -469,7 +477,7 @@ fn slot(links: &BTreeMap<u32, u32>, raw: u32) -> Result<Option<u32>, ()> {
     links.get(&raw).copied().map(Some).ok_or(())
 }
 
-/// The context [`BaseIcons::read`] needs beyond the frame.
+/// The context [`BaseIcons::read_profiled`] needs beyond the frame.
 pub(super) struct BaseContext<'a> {
     pub(super) content: &'a CounterContent,
     pub(super) vision: &'a Vision,
@@ -480,15 +488,62 @@ pub(super) struct BaseContext<'a> {
     pub(super) order: Option<&'a counter_order::RecordedOrder>,
 }
 
+/// Reconstructed province rows have unique ascending `id` keys. Snapshot,
+/// truncated and delta reconstruction all validate that contract before an hour
+/// reaches the viewer.
+struct ProvinceLookup<'a>(&'a [ProvinceRow]);
+
+impl<'a> ProvinceLookup<'a> {
+    fn get(&self, id: &u32) -> Option<&'a ProvinceRow> {
+        self.0
+            .binary_search_by_key(id, |row| row.id)
+            .ok()
+            .map(|at| &self.0[at])
+    }
+}
+
+/// ProvinceBuildings reconstructs in unique `(location, building_type)` order.
+/// Borrow contiguous location ranges rather than rebuilding an owned index.
+struct BuildingLookup<'a> {
+    rows: &'a [BuildingRow],
+}
+
+impl BuildingLookup<'_> {
+    fn groups(&self) -> impl Iterator<Item = (u32, &[BuildingRow])> {
+        self.rows
+            .chunk_by(|a, b| a.location == b.location)
+            .map(|rows| (rows[0].location, rows))
+    }
+
+    fn get(&self, province: u32) -> &[BuildingRow] {
+        let begin = self.rows.partition_point(|row| row.location < province);
+        let end = begin + self.rows[begin..].partition_point(|row| row.location == province);
+        &self.rows[begin..end]
+    }
+}
+
 impl BaseIcons {
-    pub(super) fn read(frame: &DecodedFrame, context: &BaseContext<'_>) -> io::Result<Self> {
-        let provinces: BTreeMap<u32, &ProvinceRow> = core::<tables::Provinces>(frame)?
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
+    pub(super) fn read_profiled(
+        frame: &DecodedFrame,
+        context: &BaseContext<'_>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<Self> {
+        let provinces = spans.measure(
+            "overlay.tables.counters.native_base_icons.base.provinces",
+            |_| {
+                // Preserve the original core refusal before any other base read.
+                Ok::<_, io::Error>(ProvinceLookup(core::<tables::Provinces>(frame)?))
+            },
+        )?;
         let mut out = Self::default();
-        out.read_naval(frame, context, &provinces)?;
-        out.read_buildings(frame, context, &provinces)?;
+        spans.measure(
+            "overlay.tables.counters.native_base_icons.base.naval",
+            |_| out.read_naval(frame, context, &provinces),
+        )?;
+        spans.measure(
+            "overlay.tables.counters.native_base_icons.base.buildings",
+            |_| out.read_buildings(frame, context, &provinces),
+        )?;
         Ok(out)
     }
 
@@ -498,7 +553,7 @@ impl BaseIcons {
         &mut self,
         frame: &DecodedFrame,
         context: &BaseContext<'_>,
-        provinces: &BTreeMap<u32, &ProvinceRow>,
+        provinces: &ProvinceLookup<'_>,
     ) -> io::Result<()> {
         let BaseContext {
             content,
@@ -618,7 +673,7 @@ impl BaseIcons {
         &mut self,
         frame: &DecodedFrame,
         context: &BaseContext<'_>,
-        provinces: &BTreeMap<u32, &ProvinceRow>,
+        provinces: &ProvinceLookup<'_>,
     ) -> io::Result<()> {
         let BaseContext {
             content,
@@ -635,10 +690,7 @@ impl BaseIcons {
             .collect();
         let buildings = rows::<tables::ProvinceBuildings>(frame)?;
         let complete = buildings.is_complete();
-        let mut by_province: BTreeMap<u32, Vec<&BuildingRow>> = BTreeMap::new();
-        for row in buildings.rows() {
-            by_province.entry(row.location).or_default().push(row);
-        }
+        let by_province = BuildingLookup { rows: buildings.rows() };
         let ours = vision.ours();
         // a positive override, else the province's
         // controller for a province status; compared as `same_country` with the viewer.
@@ -658,12 +710,12 @@ impl BaseIcons {
             Ok([features]) => Some(features.dlc_mask & 0x8000 != 0),
             _ => None,
         };
-        for (&province, rows) in &by_province {
+        for (province, rows) in by_province.groups() {
             if headquarters_enabled == Some(false) {
                 break;
             }
             let decided = icons
-                .headquarter(rows, &tokens)
+                .headquarter_rows(rows.iter(), &tokens)
                 .and_then(|found| {
                     let Some((template, row)) = found else {
                         return Ok(None);
@@ -707,10 +759,8 @@ impl BaseIcons {
             // after each read and whenever a level crosses zero. `ordinal` is its position
             // in the full recorded building list.
             let mut active: Vec<&BuildingRow> = by_province
-                .get(&flag.province)
-                .into_iter()
-                .flatten()
-                .copied()
+                .get(flag.province)
+                .iter()
                 .filter(|row| row.level > 0)
                 .collect();
             active.sort_by_key(|row| row.ordinal);

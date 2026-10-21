@@ -109,6 +109,7 @@ use viewer_foundation::table_access::{TokenKeys, TokenNames};
 
 use engine_air_history::air_kamikaze::window_sum;
 mod launches;
+mod model_inputs;
 mod scenarios;
 use installed_content_core::{
     ResolvedLayers, defines::Defines, map::MapData, map::ProvinceKind, mesh, mesh::Transform,
@@ -116,6 +117,7 @@ use installed_content_core::{
 use installed_content_equipment_graphics::equipment_graphics::aircraft as aircraft_catalogue;
 use installed_content_image::native::Decode;
 use installed_content_regions::regions::StrategicRegion;
+pub use model_inputs::ModelMemo;
 use replay_data::{
     rows::AIR_MISSION_LAY_MINES, rows::AIR_MISSION_NAVAL_PATROL, rows::AIR_MISSION_TRAINING,
     rows::AIR_MISSION_ZERO_PLANE_FLAGS, rows::AirBaseRow, rows::AirCountryRelationRow,
@@ -3432,8 +3434,10 @@ impl AircraftPlan {
             heights,
             defines: flight_defines,
         };
+        let primary = model_inputs::Primary::new(frame);
         let wing_mesh = |wing: u64, raw_country: u32| {
-            let variant = aircraft_model::wing_primary(frame, wing)
+            let variant = primary
+                .get(wing)
                 .map_err(Unresolved::Token)?
                 .ok_or(Unresolved::Identity)?;
             let entity = model(variant, raw_country)

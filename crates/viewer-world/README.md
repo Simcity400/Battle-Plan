@@ -41,6 +41,11 @@ withholds any previously painted border for that target. Later known assignments
 do not cancel an earlier input refusal; this conservative limitation is accepted
 because uncertain control flow must never invent a colour.
 
+Each aircraft plan lazily indexes signed primary-equipment amounts once and
+retains model selection results by variant and raw country for that hour alone,
+including absence and failures. Actor order and per-occurrence diagnostics stay
+unchanged; another hour/content context starts a fresh memo.
+
 Aircraft declaration admission uses `Roster::refused_declaration` for ordinary and lazy bakes, recorded-roster fallbacks, recorded mesh retries and draw counterparts. Fly resolves through that same admission before requiring geometry in the accepted bake, so a plane recovered from the recording can be flown too; meshless actors still retain their events in recorded flights.
 
 The Air and Navy modes fit strategic-region names through the ordinary connected-component name pass. Drawing follows the local `strategic_regions` preference: with it off, a picked province restricts names to its connected name area and a region change restarts the layer fade; with it on, or with no picked province, the native whole layer remains. Sorted component membership stays shared with the cached glyphs, so moving the pointer selects draws without rebuilding placements. This is viewer-local state. Air colours land and water regions from the viewing country's recorded superiority weights and zero-weight active-mission counters; Navy retains the country layer and the sea regions' naval-control and gaining-side effects. Strategic-region attributes join the gradient field by the same nonzero region key as its membership. Missing colour inputs withhold and count the affected regions.
@@ -73,7 +78,21 @@ passes advance the same players and events without computing the unused name-joi
 palette; native source-order actor matrices serve both event resolution and draws and stay
 retained while their pose inputs are unchanged. Playerless and frozen actor-local results
 are shared per immutable rig and frozen-animation choice; instance transforms stay separate,
-and installing meshes clears those results. Other palette consumers retain indexed
+and installing meshes clears those results. Native draw preparation installs exact
+source-order placement routes with field/library changes and refreshes hidden membership
+at its setter. Deferred shader/queue selection and actor-result handles are demanded only
+at the original ordered checks; scratch, descriptor commits and arena staging keep their
+ordinary serial order. Successful effective programs use invocation-local dense binding
+sessions: each draw still stages the same complete constant blocks before resolving its
+actual Arena buffer. Packets own immutable resource handles, while descriptor scratch,
+independent pixel snapshots and final retained constants refer to immutable byte origins.
+Refusals restore only the descriptor's scratch origins, not earlier uploads or texture
+scratch; fatal errors preserve the reached prefix and suppress final retained commits.
+Warm native binds consume ordered full-block source recipes from their successful effective
+program; missing supplies still take the original ordered refusal checks. Caller userdata
+selection is deferred to its ordinary demand, and accepted-part masks retain independent
+pixel and skin origins without constructing a sparse constants table per warm bind.
+Optional routing metadata falls back to the direct walk when it cannot be installed. Other palette consumers retain indexed
 mesh/animation name joins and reuse their sampling buffers. Building groups already applied
 at full scale do no slot work on camera moves inside the near cutoff; hour changes,
 near/far transitions, growth and held mesh-budget creations still run in province order.
@@ -88,7 +107,17 @@ the last presented view before the final hour is installed.
 
 Hour workers prepare immutable railway vertex buffers and province-ordered draw runs. The scene adopts the complete bank at the same hour publication, keeps its static railway pass and fades, and retires the displaced bank off the window thread. Hours built without a device prepare the same immutable bank synchronously at install; direct renders use that same preparation and adoption entry point.
 
+Political fill metadata updates retain the layer's province-to-region slots and
+integer pixel areas only when every source membership word matches. Changed
+membership follows the ordinary synchronous planning and diff on the same frame;
+styles, effects, storage-limit checks and dirty submissions are never skipped.
+
 ## Profiling
+
+`political_find`, `political_acquire`, `political_country`, `political_mode` and
+`political_naval` split show-time fill lookup, ownership and layer updates.
+`political_area` and `political_mapping` are nested layer-update spans, aggregated
+across layers; they must not be added to their inclusive parent laps.
 
 Normal `BATTLE_PLAN_VIEWER_PROFILE` output includes presentation laps by model pass,
 placement/field updates and clocks. The `units_*` spans separate schedule,
@@ -98,9 +127,79 @@ province visits, deferred creations, collection and install-time operand joins
 layout planning from worker evaluation and ordered serial commit. These laps
 share the ordinary profiling switch and add no separate diagnostic mode.
 
+Ordinary PROFILE also reports coarse same-thread wall and cycle CPU totals as
+`mt_history_update`, `mt_unit_place`, `mt_unit_animate`, `mt_building_animate`,
+`mt_city_animate`, `mt_aircraft_animate` and `mt_lights`, each with `_cpu` and
+`_calls`. The renderer uses the shared presentation scopes. History includes
+its interleaved building/unit visits and deferred collection; player wall spans
+include borrowed-work waits, but their CPU excludes helpers. Lights includes
+entity-particle advance, light evaluation, tiles and the original upload call:
+uploads are immediate. These are inclusive source intervals within existing
+frame/render totals, not an additive frame partition. Unreached stages have no
+sample; short/zero samples are retained and unavailable CPU stays distinct.
+`building_field_reused` and `building_field_updated` count the existing optional
+placement result for each reached building pass, not inferred unchanged inputs.
+With PROFILE off these scopes sample no clocks and create no records, counts or
+observation storage. Placement, clocks, helpers, seeds and refusals are unchanged.
+
+Hour-builder `buildings.*` children on the same `PROFILE built` line split vision,
+token memo lookup, links, detection, naval-base membership, row joins/summaries,
+authored slots, supply/floating harbours, city damage, neighbour wait/share and
+warnings. `buildings.damage_validate` and `buildings.damage_map` are included in
+`buildings.city_damage`; short/zero/unavailable samples are not filtered. Ordinary
+entry points use the same body with disabled child scopes. No input, slot, refusal
+or per-hour history is cached or skipped by this attribution.
+
 Scene CPU `pass_*` laps mirror the render-pass boundaries even without GPU
 queries and sum repeated wrap-view labels. They distinguish native model
 encoding from recycling, arena flush, final encoder finish and queue submit.
 `native_lit_prepare` and `native_caster_prepare` time each ordered preparation;
 `native_encode_caller` and `native_turns_finish_wait` separate caller encoding
 from joining borrowed frame turns. All use only normal `BATTLE_PLAN_VIEWER_PROFILE`.
+
+The shared weather entry points report `mt_weather_packets` and
+`mt_weather_prepare_lower`, with `_cpu` and `_calls`, in ordinary PROFILE.
+These are same-thread wall and cycle-derived CPU totals, including every
+reached wrap view and error prefix; packet wall includes borrowed-work waits,
+not the helpers' CPU. The second scope covers retained binds, native packing, staging and immediate
+command recording in their original interleaved order. These scopes are nested
+inside existing frame/render totals, not
+additional costs. Disabled profiling reads neither clock and adds no records.
+
+
+PROFILE's `mt_sprite_upload` measures the immediate sprite upload's caller CPU
+and wall time. Like the other `mt_*` scopes, it retains short/zero and unavailable
+samples and nests inside the frame/render totals.
+
+
+Unit builders retain only the equipment-graphics census keyed by held table
+allocations and availability; current-hour selections and errors remain live.
+The rig source copies only LOD distances, skeleton and locator names;
+the original first-joint-index retention still follows that copy.
+
+Permanent builder PROFILE children split unit ensure reads, registry/name waits,
+shown/recorded loads, write-wait/merge and completion. Bake-worker CPU belongs to
+its child records, not caller CPU; overlapping wall scopes are not additive.
+Bridge/geography and naval inputs/formations/competitors/combats keep their
+ordinary ordered work under their named child spans.
+
+
+Ordinary builder PROFILE includes bounded `units.selection.*` stage totals for
+land selection: template misses, pair classification, both stable sorts, pair
+ranking, graphics rules/conventional resolution, fallback, numbered/transport
+ladders and camouflage. Inclusive `land`, `paired`, `graphics` and `fallback`
+parents are not additive with their children or the lazy bridge/geography reads.
+Each reached stage emits at most one record per hour, in first-completion order;
+no clocks or records are sampled per equipment row. Disabled scopes read no
+clocks and allocate no record storage. Selection order, memo keys, errors and
+live graphics operands are unchanged. These scopes end before ensure and naval
+preparation; shared graphics helpers do not add naval work to land totals.
+
+
+Land selection lazily retains successful variant classification facts for one
+immutable authored catalogue, keyed by held variant-definition/token tables and
+availability. Only equipment/archetype catalogue indices and the pure category
+mask are shared. Current rows and variant lookup, errors, both stable sorts,
+requirements, exclusions, ranking and live graphics answers still run at their
+original demand. Replacing authored content starts an independent bank; clones
+of that immutable content can share facts.

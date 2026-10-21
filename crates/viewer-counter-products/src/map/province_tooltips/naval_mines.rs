@@ -1,6 +1,6 @@
 //! The shared regional mine summary used by Air, Navy and mine controls.
+use super::inputs::Names;
 use super::{Arg, Tooltip, counter_content};
-use installed_content_country_names::country_names::CountryNames;
 use replay_data::{rows::AirCountryRelationRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,7 +56,7 @@ pub fn build(
         vision,
         region,
         links,
-        countries: CountryNames::read(frame, &content.localisation),
+        countries: Names::new(frame, &content.localisation),
     };
     match inputs.summary(include_neutral) {
         Ok((text, penalty)) => {
@@ -76,7 +76,7 @@ struct Inputs<'a> {
     vision: &'a Vision,
     region: u32,
     links: BTreeMap<u32, u32>,
-    countries: CountryNames<'a>,
+    countries: Names<'a>,
 }
 impl Inputs<'_> {
     fn loc(&self, key: &str, args: &[(&str, Arg<'_>)]) -> Fact<String> {
@@ -246,17 +246,14 @@ impl Inputs<'_> {
             }
         }
         for (slot, amount) in neutral {
-            let operands = self
+            let tag = self
                 .countries
-                .operands(slot)
-                .ok_or("mine neutral country naming operands are unavailable")?
-                .as_ref()
-                .map_err(Clone::clone)?;
+                .tag(slot, "mine neutral country naming operands are unavailable")?;
             let name = self.countries.name_with(slot, "_DEF")?;
             let name = format!(
                 "{}{} {}",
                 viewer_foundation::map::native_text::FLAG,
-                operands.tag,
+                tag,
                 installed_content_localisation::localisation::crt_case_text(&name, true, true)
             );
             text.push_str(&self.loc(

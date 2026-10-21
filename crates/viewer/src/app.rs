@@ -216,6 +216,7 @@ fn profile_hover_point(
 /// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
     enabled: bool,
+    frame_cpu: Option<viewer_foundation::profiling::ThreadSpan>,
     start: Instant,
     last: Instant,
     /// Milliseconds between the previous frame's laps ending and these
@@ -239,6 +240,9 @@ impl Laps {
     /// rest of the gap since the previous frame ended is egui's own tessellation
     /// and paint and the present, which these laps do not cover.
     fn new(waited: Duration) -> Self {
+        let enabled = profiling();
+        viewer_foundation::profiling::begin_thread_frame();
+        let frame_cpu = enabled.then(|| viewer_foundation::profiling::thread_span("frame"));
         let now = Instant::now();
         let outside = FRAME_END
             .lock()
@@ -248,7 +252,8 @@ impl Laps {
                 (now.saturating_duration_since(end).saturating_sub(waited)).as_secs_f64() * 1000.0
             });
         Self {
-            enabled: profiling(),
+            enabled,
+            frame_cpu,
             start: now,
             last: now,
             outside,
@@ -3515,7 +3520,7 @@ impl Viewer {
                 .or_else(|| response.interact_pointer_pos())
                 .map(frame_point),
             self.options.profile_pointer,
-            profiling() && self.options.window_dump,
+            profiling(),
             pixels,
             ui_scale,
         );
@@ -3914,6 +3919,7 @@ impl Viewer {
                 .expect("prepared above")
                 .field(&document.unit_models);
             laps.lap("units_field");
+            let units_cpu = viewer_foundation::profiling::thread_span("units_upload");
             scene
                 .set_unit_models(
                     &state.device,
@@ -3923,6 +3929,7 @@ impl Viewer {
                     self.options.window_dump,
                 )
                 .map_err(|error| error.to_string())?;
+            units_cpu.finish();
             laps.lap("units_upload");
             self.unit_field_uploaded = true;
             // The field placed the raid units at the hour's start.
@@ -4075,6 +4082,7 @@ impl Viewer {
         self.fade = Some(name_fade);
         self.hovered_name_region = hovered_name_region;
         laps.lap("names_pick");
+        let overlay_prepare_cpu = viewer_foundation::profiling::thread_span("overlay_prepare");
         // counters: one batch carries the bases, the labels, the counters and
         // the combat icons in the map mode's `<table>_PRIORITY_*` order.
         let overlay_key = OverlayKey {
@@ -4187,6 +4195,21 @@ impl Viewer {
                 );
             }
             if layout_changed || (raids_only && self.prepared_overlay.is_none()) {
+                if profiling() {
+                    use viewer_foundation::profiling::record_count;
+                    // Independent reason bits: one preparation can have several.
+                    record_count("overlay_reprepare", 1);
+                    record_count(
+                        "overlay_reason_key",
+                        u64::from(self.overlay_at.as_ref() != Some(&overlay_key)),
+                    );
+                    record_count("overlay_reason_artwork", u64::from(stale));
+                    record_count("overlay_reason_engagement", u64::from(engaged_arrived));
+                    record_count(
+                        "overlay_reason_raid_missing",
+                        u64::from(raids_only && self.prepared_overlay.is_none()),
+                    );
+                }
                 let tables_key = (
                     document.playback.branch(),
                     document.playback.hour(),
@@ -4258,7 +4281,9 @@ impl Viewer {
                 self.overlay_at = Some(overlay_key);
                 self.overlay_fraction = None;
             }
+            overlay_prepare_cpu.finish();
             laps.lap("overlay_prepare");
+            let overlay_draw_cpu = viewer_foundation::profiling::thread_span("overlay_draw");
             // Display choices only change what the next overlay draw keeps.
             let ours = self.overlay_tables.as_ref().expect("parsed above").3.ours();
             let filtered = self.counter_owners.get(now.frame, &self.counter_filter);
@@ -4525,6 +4550,7 @@ impl Viewer {
                 }
             }
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
+            overlay_draw_cpu.finish();
             laps.lap("overlay_draw");
             let engaged = self
                 .hours
@@ -4682,6 +4708,7 @@ impl Viewer {
             Vec::new()
         };
         laps.lap("diagnostics");
+        let render_cpu = viewer_foundation::profiling::thread_span("render");
         self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
         let overlay = if self.looks.is_some() {
             &self.free_overlay
@@ -4844,6 +4871,11 @@ impl Viewer {
                 },
             )
             .map_err(|e| e.to_string())?;
+        // Both coordinator paths stamp the same submitted scene, before audio,
+        // capture/readback and asynchronous PROFILE output can delay observation.
+        let shown_stamp = presentation::shown_stamp(profiling(), || {
+            (document.playback.branch(), document.playback.hour())
+        });
         // A window capture stays silent; with `BATTLE_PLAN_VIEWER_AUDIO_LOG` it traces
         // the voices it would start without opening a device.
         let trace = self.capture.is_some() && std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some();
@@ -4892,10 +4924,14 @@ impl Viewer {
         }
         // capture: the frame is drawn and the scene still holds it, so the
         // readback is the dump's own.
+        render_cpu.finish();
         laps.lap("render");
         if profiling() {
+            if let Some(cpu) = laps.frame_cpu.take() {
+                cpu.finish();
+            }
             profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {}",
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {} thread {} cpu_hz {} {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -4915,6 +4951,10 @@ impl Viewer {
                     .as_ref()
                     .map_or_else(String::new, |scene| scene.detail_laps()),
                 viewer_foundation::profiling::take_spans(),
+                viewer_foundation::profiling::take_thread_spans(),
+                viewer_foundation::profiling::cpu_clock_hz()
+                    .map_or_else(|| "unavailable".to_owned(), |hz| hz.to_string()),
+                shown_stamp.expect("PROFILE frame sampled its shown stamp"),
             ));
         }
         // A capture waits until every flag and portrait its frame asked for

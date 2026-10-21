@@ -306,3 +306,300 @@ fn a_local_representatives_recorded_need_selects_its_equipment_without_rescoring
         }
     );
 }
+
+#[test]
+fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let content = content();
+    let source = sources(&[]);
+    let template = content
+        .template(&row((2, 0), &[(2, 0, 1), (1, 0, 1)]), &source)
+        .unwrap();
+    let null = content
+        .template(&row((0, 0), &[(2, 0, 1)]), &source)
+        .unwrap();
+    let mut variants = variants();
+    variants.insert(
+        40,
+        Box::leak(Box::new(VariantDefinitionRow {
+            id: 40,
+            equipment_token: 999,
+            ..Default::default()
+        })),
+    );
+    let names = names();
+    let snapshot = |result: io::Result<Option<SelectedPair<'_>>>| {
+        result
+            .map(|pair| pair.map(|pair| (pair.variant.id, pair.subunit.key.clone(), pair.identity)))
+            .map_err(|error| (error.kind(), error.to_string()))
+    };
+    // Repeated stage calls emit one aggregate per stage, never per input row.
+    let stages = profile::Stages::new(true);
+    for frame in 0_usize..128 {
+        let amount = [i64::MIN, -1, 0, 500, i64::MAX][frame % 5];
+        let mut rows = vec![
+            equipment(20, amount, 2),
+            equipment(30, amount, 2),
+            equipment(10, 900, 0),
+        ];
+        if frame.is_multiple_of(2) {
+            rows.reverse();
+        }
+        if frame.is_multiple_of(7) {
+            rows.insert(0, equipment(40, 0, 9));
+        }
+        if frame.is_multiple_of(11) {
+            rows.insert(0, equipment(99, 0, 9));
+        }
+        let refs: Vec<_> = rows.iter().collect();
+        let category = (frame.is_multiple_of(3)).then_some(1 << 2);
+        let excluded: &[u64] = if frame.is_multiple_of(4) { &[20] } else { &[] };
+        let template = if frame.is_multiple_of(13) {
+            &null
+        } else {
+            &template
+        };
+        let ordinary =
+            snapshot(content.select_pair(template, category, excluded, &refs, &variants, &names));
+        let measured = snapshot(content.select_pair_profiled(
+            template, category, excluded, &refs, &variants, &names, &stages,
+        ));
+        assert_eq!(ordinary, measured, "frame {frame}");
+    }
+    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    stages.append_to(&mut spans);
+    assert_eq!(
+        spans
+            .into_records()
+            .iter()
+            .map(|record| record.name)
+            .collect::<Vec<_>>(),
+        [
+            "units.selection.pair_classify",
+            "units.selection.pair_sorts",
+            "units.selection.pair_rank",
+        ]
+    );
+    // Independent witnesses: equal amount+ordinal retains original input order,
+    // even for negative quantities, and excluded rows are read before ranking.
+    for handles in [[20, 30], [30, 20]] {
+        let rows = handles.map(|handle| equipment(handle, -1, 7));
+        let refs: Vec<_> = rows.iter().collect();
+        let pair = content
+            .select_pair(&template, None, &[], &refs, &variants, &names)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pair.variant.id, handles[0]);
+    }
+    let rows = [equipment(40, 0, 9), equipment(99, 0, 0)];
+    let refs: Vec<_> = rows.iter().collect();
+    let stages = profile::Stages::new(true);
+    assert_eq!(
+        content
+            .select_pair_profiled(
+                &template,
+                Some(1 << 2),
+                &[40],
+                &refs,
+                &variants,
+                &names,
+                &stages
+            )
+            .unwrap_err()
+            .to_string(),
+        "variant 40 equipment type: token 999 is not in LexicalTokens"
+    );
+    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    stages.append_to(&mut spans);
+    assert_eq!(
+        spans
+            .into_records()
+            .iter()
+            .map(|record| record.name)
+            .collect::<Vec<_>>(),
+        ["units.selection.pair_classify"]
+    );
+    let stages = profile::Stages::new(true);
+    assert!(
+        content
+            .select_pair_profiled(&null, None, &[], &refs, &variants, &names, &stages)
+            .unwrap()
+            .is_none()
+    );
+    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    stages.append_to(&mut spans);
+    assert!(spans.into_records().is_empty());
+}
+
+#[test]
+fn retained_classification_keeps_multi_hour_keys_failures_ties_and_original_demand() {
+    use replay_data::rows::{TableId, TableRows};
+    use replay_frame::frame::{DecodedFrame, SharedView, TableView};
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("supported installation metadata");
+    let mut content = content();
+    let mut held = DecodedFrame {
+        branch: 1,
+        hour: 0,
+        metrics: Default::default(),
+        tables: std::array::from_fn(|i| {
+            TableView::Complete(TableRows::empty(TableId::ALL[i])).into()
+        }),
+    };
+    let definitions: Vec<_> = variants().values().map(|row| (*row).clone()).collect();
+    let tokens: Vec<_> = [
+        (101, b"rifles_1".as_slice()),
+        (102, b"Tanks_1"),
+        (103, b"tanks_2"),
+        (104, b"trucks"),
+    ]
+    .into_iter()
+    .map(|(token, literal)| LexicalTokenRow {
+        token,
+        literal: literal.to_vec(),
+    })
+    .collect();
+    held.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(definitions.clone())).into();
+    held.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(tokens.clone())).into();
+    let snapshot = |result: io::Result<Option<SelectedPair<'_>>>| {
+        result
+            .map(|pair| pair.map(|pair| (pair.variant.id, pair.subunit.key.clone(), pair.identity)))
+            .map_err(|error| (error.kind(), error.to_string()))
+    };
+    let mut random = 0xe91a_62d3_u64;
+    let mut successful = 0;
+    let mut refused = 0;
+    for hour in 0_usize..384 {
+        random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+        if hour.is_multiple_of(47) {
+            content = content_with(b"");
+        }
+        let mut frame = held.clone();
+        frame.hour = hour as i32;
+        frame.branch = 1 + u64::from(hour > 290);
+        if hour.is_multiple_of(11) {
+            for id in [TableId::VariantDefinitions, TableId::LexicalTokens] {
+                frame.tables[id.index()] = SharedView::from((*frame.tables[id.index()]).clone());
+            }
+        }
+        if hour.is_multiple_of(9) {
+            let mut rows = definitions.clone();
+            rows.push(VariantDefinitionRow {
+                id: 20,
+                equipment_token: 103,
+                ..Default::default()
+            });
+            rows.push(VariantDefinitionRow {
+                id: 40,
+                equipment_token: 999,
+                ..Default::default()
+            });
+            frame.tables[TableId::VariantDefinitions.index()] =
+                TableView::Complete(TableRows::VariantDefinitions(rows)).into();
+        }
+        if hour.is_multiple_of(19) {
+            let mut rows = tokens.clone();
+            rows[1].literal = if hour.is_multiple_of(38) {
+                vec![0xff]
+            } else {
+                b"rifles_1".to_vec()
+            };
+            frame.tables[TableId::LexicalTokens.index()] =
+                TableView::Complete(TableRows::LexicalTokens(rows)).into();
+        }
+        if hour.is_multiple_of(17) {
+            held = frame.clone();
+        }
+        let variants: BTreeMap<_, _> = frame
+            .complete::<replay_data::rows::tables::VariantDefinitions>()
+            .unwrap()
+            .iter()
+            .map(|row| (row.id, row))
+            .collect();
+        let names = TokenNames::new(&frame).unwrap();
+        let requirements = if hour.is_multiple_of(7) {
+            vec![(5, 200_000)]
+        } else {
+            vec![(4, 100_000)]
+        };
+        let sources = sources(&[((7, 1), requirements)]);
+        let template_row = row((2, 0), &[(2, 0, 1), (1, 0, 2)]);
+        let template = content.template(&template_row, &sources).unwrap();
+        let local_row = row((1, 1), &[(1, 1, 1), (2, 0, 1)]);
+        let local = content.template(&local_row, &sources).unwrap();
+        let null_row = row((0, 0), &[(2, 0, 1)]);
+        let null = content.template(&null_row, &sources).unwrap();
+        let facts = content.classification_facts(&frame).unwrap();
+        for query in 0_usize..16 {
+            let amount = [i64::MIN, -1, 0, 500, i64::MAX][(hour + query) % 5];
+            let mut rows = vec![
+                equipment(20, amount, 2),
+                equipment(30, amount, 2),
+                equipment(10, 900, 0),
+            ];
+            if (random + query as u64).is_multiple_of(2) {
+                rows.reverse();
+            }
+            if (hour + query).is_multiple_of(7) {
+                rows.insert(0, equipment(40, 0, 9));
+            }
+            if (hour + query).is_multiple_of(13) {
+                rows.insert(0, equipment(99, 0, 0));
+            }
+            let refs: Vec<_> = rows.iter().collect();
+            let category = (query.is_multiple_of(3)).then_some(1 << 2);
+            let excluded: &[u64] = if query.is_multiple_of(4) {
+                &[20, 40]
+            } else {
+                &[]
+            };
+            let template = match (hour + query) % 17 {
+                0 => &null,
+                1 => &local,
+                _ => &template,
+            };
+            let expected = snapshot(
+                content.select_pair(template, category, excluded, &refs, &variants, &names),
+            );
+            let actual = snapshot(content.select_pair_classified(
+                template,
+                category,
+                excluded,
+                &refs,
+                &variants,
+                &names,
+                &Stages::new(false),
+                Some(&facts),
+            ));
+            assert_eq!(expected, actual, "hour {hour} query {query}");
+            successful += usize::from(actual.as_ref().is_ok_and(Option::is_some));
+            refused += usize::from(actual.is_err());
+        }
+        // The immutable authored clone shares index facts, but replacing Content
+        // above starts a fresh bank even for the same held replay tables.
+        let cloned = content.clone();
+        let facts = cloned.classification_facts(&frame).unwrap();
+        let rows = [equipment(20, 500, 0), equipment(30, 500, 0)];
+        let refs: Vec<_> = rows.iter().collect();
+        assert_eq!(
+            snapshot(content.select_pair(&template, None, &[], &refs, &variants, &names)),
+            snapshot(cloned.select_pair_classified(
+                &template,
+                None,
+                &[],
+                &refs,
+                &variants,
+                &names,
+                &Stages::new(false),
+                Some(&facts)
+            ))
+        );
+    }
+    assert!(
+        successful > 100 && refused > 100,
+        "successful={successful}, refused={refused}"
+    );
+}

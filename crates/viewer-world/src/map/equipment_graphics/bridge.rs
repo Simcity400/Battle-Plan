@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use viewer_foundation::table_access::TokenNames;
 
 use replay_data::{
@@ -23,18 +24,121 @@ use {
 };
 
 pub struct Prepared<'a> {
-    variants: Vec<legacy::Variant<'a>>,
-    /// Indexed by the complete raw VariantDefinitions census. A malformed
-    /// variant with a known, unrelated archetype cannot suppress land models.
+    variants: Variants<'a>,
+    data: Arc<Census>,
+}
+
+#[derive(Clone, Debug)]
+struct Census {
+    /// Indexed by the complete raw definition census, including invalid rows.
     states: Vec<VariantState>,
-    invalid_by_archetype: BTreeMap<&'a str, usize>,
+    invalid_by_archetype: BTreeMap<String, usize>,
     invalid_unknown: Option<usize>,
     by_handle: BTreeMap<u64, usize>,
-    /// (canonical country slot, roster kind) -> native-order raw variant
-    /// indices, repeats included. Kind 0 is primary, 1 foreign, 2 the stored
-    /// best-variant candidates.
+    /// Native-order indices, including repeated variant membership.
     available: BTreeMap<(u32, u8), Vec<usize>>,
     links: BTreeMap<u32, u32>,
+}
+
+enum Variants<'a> {
+    Borrowed(Vec<legacy::Variant<'a>>),
+    Retained(Arc<[OwnedVariant]>),
+}
+
+impl Variants<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Borrowed(rows) => rows.len(),
+            Self::Retained(rows) => rows.len(),
+        }
+    }
+
+    fn get(&self, index: usize) -> legacy::Variant<'_> {
+        match self {
+            Self::Borrowed(rows) => rows[index],
+            Self::Retained(rows) => rows[index].borrowed(),
+        }
+    }
+}
+
+/// Owned successful census. Only scalar joins and authored strings survive;
+/// current country, script limits and selected-model answers are never stored.
+pub(crate) struct Retained {
+    variants: Arc<[OwnedVariant]>,
+    data: Arc<Census>,
+}
+
+struct OwnedVariant {
+    handle: u64,
+    id: u32,
+    creator_reference: i32,
+    creator_slot: i32,
+    upgrade_sum: i32,
+    archetype: String,
+    archetype_ordinal: usize,
+    sprite: String,
+    visual_level: i32,
+    model_priority: i32,
+    parent_depth: i32,
+    has_enabled_module_slots: bool,
+}
+
+impl OwnedVariant {
+    fn new(row: legacy::Variant<'_>) -> Self {
+        let equipment = row.equipment;
+        Self {
+            handle: row.handle,
+            id: row.id,
+            creator_reference: row.creator_reference,
+            creator_slot: row.creator_slot,
+            upgrade_sum: row.upgrade_sum,
+            archetype: equipment.archetype.to_owned(),
+            archetype_ordinal: equipment.archetype_ordinal,
+            sprite: equipment.sprite.to_owned(),
+            visual_level: equipment.visual_level,
+            model_priority: equipment.model_priority,
+            parent_depth: equipment.parent_depth,
+            has_enabled_module_slots: equipment.has_enabled_module_slots,
+        }
+    }
+
+    fn borrowed(&self) -> legacy::Variant<'_> {
+        legacy::Variant {
+            handle: self.handle,
+            id: self.id,
+            creator_reference: self.creator_reference,
+            creator_slot: self.creator_slot,
+            upgrade_sum: self.upgrade_sum,
+            equipment: legacy::Equipment {
+                archetype: &self.archetype,
+                archetype_ordinal: self.archetype_ordinal,
+                sprite: &self.sprite,
+                visual_level: self.visual_level,
+                model_priority: self.model_priority,
+                parent_depth: self.parent_depth,
+                has_enabled_module_slots: self.has_enabled_module_slots,
+            },
+        }
+    }
+}
+
+impl Retained {
+    pub(crate) fn read(frame: &DecodedFrame, content: &Content) -> Result<Self, String> {
+        let prepared = Prepared::read(frame, content)?;
+        Ok(Self {
+            variants: (0..prepared.variants.len())
+                .map(|index| OwnedVariant::new(prepared.variants.get(index)))
+                .collect(),
+            data: prepared.data,
+        })
+    }
+
+    pub(crate) fn prepared(&self) -> Prepared<'static> {
+        Prepared {
+            variants: Variants::Retained(Arc::clone(&self.variants)),
+            data: Arc::clone(&self.data),
+        }
+    }
 }
 
 pub struct Selection<'a> {
@@ -43,6 +147,7 @@ pub struct Selection<'a> {
     pub variant: Option<u64>,
 }
 
+#[derive(Clone, Debug)]
 enum VariantState {
     Ready(usize),
     InvalidKnown { error: String },
@@ -62,22 +167,28 @@ impl VariantState {
 const BEST_CANDIDATES: u8 = 2;
 
 impl<'a> Prepared<'a> {
+    #[cfg(test)]
+    pub(crate) fn comparison_state(&self) -> String {
+        // This census contains only integer operands and strings, no floats.
+        format!("{:?}|{:?}", (0..self.variants.len()).map(|index| self.variants.get(index)).collect::<Vec<_>>(), self.data)
+    }
+
     /// The native A/B roster for the template fallback. Invalid definitions for
     /// any required archetype make the figure unknown.
     pub(crate) fn no_pair_variants(
         &self,
         country_ref: u32,
         required_archetypes: &BTreeSet<&str>,
-    ) -> Result<Vec<legacy::Variant<'a>>, String> {
-        if let Some(index) = self.invalid_unknown {
-            return Err(self.states[index]
+    ) -> Result<Vec<legacy::Variant<'_>>, String> {
+        if let Some(index) = self.data.invalid_unknown {
+            return Err(self.data.states[index]
                 .error()
                 .expect("indexed invalid variant")
                 .to_owned());
         }
         for archetype in required_archetypes {
-            if let Some(&index) = self.invalid_by_archetype.get(archetype) {
-                return Err(self.states[index]
+            if let Some(&index) = self.data.invalid_by_archetype.get(*archetype) {
+                return Err(self.data.states[index]
                     .error()
                     .expect("indexed invalid variant")
                     .to_owned());
@@ -86,9 +197,9 @@ impl<'a> Prepared<'a> {
         let slot = self.canonical_slot(country_ref)?;
         let mut roster = Vec::new();
         for kind in [0, 1] {
-            for &index in self.available.get(&(slot, kind)).into_iter().flatten() {
-                match &self.states[index] {
-                    VariantState::Ready(ready) => roster.push(self.variants[*ready]),
+            for &index in self.data.available.get(&(slot, kind)).into_iter().flatten() {
+                match &self.data.states[index] {
+                    VariantState::Ready(ready) => roster.push(self.variants.get(*ready)),
                     VariantState::InvalidKnown { error }
                     | VariantState::InvalidUnknown { error } => {
                         return Err(error.clone());
@@ -102,7 +213,7 @@ impl<'a> Prepared<'a> {
     pub(crate) fn primary_variants(
         &self,
         country_ref: u32,
-    ) -> Result<Vec<legacy::Variant<'a>>, String> {
+    ) -> Result<Vec<legacy::Variant<'_>>, String> {
         self.listed(country_ref, 0)
     }
 
@@ -110,18 +221,19 @@ impl<'a> Prepared<'a> {
     pub(crate) fn best_candidates(
         &self,
         country_ref: u32,
-    ) -> Result<Vec<legacy::Variant<'a>>, String> {
+    ) -> Result<Vec<legacy::Variant<'_>>, String> {
         self.listed(country_ref, BEST_CANDIDATES)
     }
 
-    fn listed(&self, country_ref: u32, kind: u8) -> Result<Vec<legacy::Variant<'a>>, String> {
+    fn listed(&self, country_ref: u32, kind: u8) -> Result<Vec<legacy::Variant<'_>>, String> {
         let slot = self.canonical_slot(country_ref)?;
-        self.available
+        self.data
+            .available
             .get(&(slot, kind))
             .into_iter()
             .flatten()
-            .map(|&index| match &self.states[index] {
-                VariantState::Ready(ready) => Ok(self.variants[*ready]),
+            .map(|&index| match &self.data.states[index] {
+                VariantState::Ready(ready) => Ok(self.variants.get(*ready)),
                 VariantState::InvalidKnown { error } | VariantState::InvalidUnknown { error } => {
                     Err(error.clone())
                 }
@@ -209,7 +321,9 @@ impl<'a> Prepared<'a> {
                     let index = states.len();
                     states.push(match archetype {
                         Some(archetype) => {
-                            invalid_by_archetype.entry(archetype).or_insert(index);
+                            invalid_by_archetype
+                                .entry(archetype.to_owned())
+                                .or_insert(index);
                             VariantState::InvalidKnown { error }
                         }
                         None => {
@@ -222,13 +336,15 @@ impl<'a> Prepared<'a> {
         }
         let available = join_available(available, &by_handle, &links)?;
         Ok(Self {
-            variants,
-            states,
-            invalid_by_archetype,
-            invalid_unknown,
-            by_handle,
-            available,
-            links,
+            variants: Variants::Borrowed(variants),
+            data: Arc::new(Census {
+                states,
+                invalid_by_archetype,
+                invalid_unknown,
+                by_handle,
+                available,
+                links,
+            }),
         })
     }
 
@@ -278,14 +394,14 @@ impl<'a> Prepared<'a> {
     ) -> Result<Option<String>, String> {
         let slot = self.canonical_slot(country_ref)?;
         if let Some(archetype) = subunit.first_archetype {
-            if let Some(&index) = self.invalid_by_archetype.get(archetype) {
-                return Err(self.states[index]
+            if let Some(&index) = self.data.invalid_by_archetype.get(archetype) {
+                return Err(self.data.states[index]
                     .error()
                     .expect("indexed invalid variant")
                     .to_owned());
             }
-            if let Some(index) = self.invalid_unknown {
-                return Err(self.states[index]
+            if let Some(index) = self.data.invalid_unknown {
+                return Err(self.data.states[index]
                     .error()
                     .expect("indexed invalid variant")
                     .to_owned());
@@ -294,12 +410,13 @@ impl<'a> Prepared<'a> {
         // An invalid definition of another archetype cannot reach this
         // subunit's candidates; one of its own archetype refused above.
         let ready = |kind: u8| -> Vec<_> {
-            self.available
+            self.data
+                .available
                 .get(&(slot, kind))
                 .into_iter()
                 .flatten()
-                .filter_map(|&index| match &self.states[index] {
-                    VariantState::Ready(index) => Some(self.variants[*index]),
+                .filter_map(|&index| match &self.data.states[index] {
+                    VariantState::Ready(index) => Some(self.variants.get(*index)),
                     VariantState::InvalidKnown { .. } | VariantState::InvalidUnknown { .. } => None,
                 })
                 .collect()
@@ -309,11 +426,12 @@ impl<'a> Prepared<'a> {
         let selected = selected_variant
             .map(|handle| {
                 let index = *self
+                    .data
                     .by_handle
                     .get(&handle)
                     .ok_or_else(|| format!("selected equipment variant {handle} is unavailable"))?;
-                match &self.states[index] {
-                    VariantState::Ready(index) => Ok(&self.variants[*index]),
+                match &self.data.states[index] {
+                    VariantState::Ready(index) => Ok(self.variants.get(*index)),
                     VariantState::InvalidKnown { error, .. }
                     | VariantState::InvalidUnknown { error } => Err(error.clone()),
                 }
@@ -324,7 +442,7 @@ impl<'a> Prepared<'a> {
             &legacy::Context {
                 country,
                 subunit,
-                selected,
+                selected: selected.as_ref(),
                 available: &available,
                 best_candidates: &best,
             },
@@ -338,7 +456,8 @@ impl<'a> Prepared<'a> {
     }
 
     fn canonical_slot(&self, reference: u32) -> Result<u32, String> {
-        self.links
+        self.data
+            .links
             .get(&reference)
             .copied()
             .ok_or_else(|| format!("model country {reference} has no CountryLinks row"))
@@ -524,13 +643,15 @@ mod tests {
             .collect();
         let states = (0..variants.len()).map(VariantState::Ready).collect();
         Prepared {
-            variants,
-            states,
-            invalid_by_archetype: BTreeMap::new(),
-            invalid_unknown: None,
-            by_handle,
-            available: BTreeMap::from([((1, 0), vec![0, 1])]),
-            links: BTreeMap::from([(1, 1), (10, 1)]),
+            variants: Variants::Borrowed(variants),
+            data: Arc::new(Census {
+                states,
+                invalid_by_archetype: BTreeMap::new(),
+                invalid_unknown: None,
+                by_handle,
+                available: BTreeMap::from([((1, 0), vec![0, 1])]),
+                links: BTreeMap::from([(1, 1), (10, 1)]),
+            }),
         }
     }
 
@@ -621,8 +742,12 @@ mod tests {
     #[test]
     fn no_pair_roster_concatenates_primary_and_foreign_before_native_sort() {
         let mut bridge = prepared(vec![variant(1, 1), variant(2, 2)]);
-        bridge.available.insert((1, 1), vec![1, 0, 1]);
-        bridge.available.insert((1, BEST_CANDIDATES), vec![1]);
+        Arc::make_mut(&mut bridge.data)
+            .available
+            .insert((1, 1), vec![1, 0, 1]);
+        Arc::make_mut(&mut bridge.data)
+            .available
+            .insert((1, BEST_CANDIDATES), vec![1]);
         let roster = bridge
             .no_pair_variants(10, &BTreeSet::from(["rifles"]))
             .unwrap();
@@ -656,7 +781,9 @@ mod tests {
             |entity: &str| matches!(entity, "GER_infantry_1_entity" | "GER_infantry_3_entity");
         // Without a selected variant, the recorded best entry decides.
         for (best, winner) in [(0, "GER_infantry_1_entity"), (1, "GER_infantry_3_entity")] {
-            bridge.available.insert((1, BEST_CANDIDATES), vec![best]);
+            Arc::make_mut(&mut bridge.data)
+                .available
+                .insert((1, BEST_CANDIDATES), vec![best]);
             assert_eq!(
                 bridge
                     .resolve_operands(10, country, subunit, None, &[], exists)
@@ -688,12 +815,22 @@ mod tests {
     #[test]
     fn invalid_variant_only_blocks_its_archetype_or_an_explicit_selection() {
         let mut bridge = prepared(vec![variant(1, 1), variant(2, 3)]);
-        bridge.states.push(VariantState::InvalidKnown {
-            error: "variant 3: invalid naval module".into(),
-        });
-        bridge.invalid_by_archetype.insert("ship_hull_submarine", 2);
-        bridge.by_handle.insert(handle(3), 2);
-        bridge.available.get_mut(&(1, 0)).unwrap().push(2);
+        Arc::make_mut(&mut bridge.data)
+            .states
+            .push(VariantState::InvalidKnown {
+                error: "variant 3: invalid naval module".into(),
+            });
+        Arc::make_mut(&mut bridge.data)
+            .invalid_by_archetype
+            .insert("ship_hull_submarine".into(), 2);
+        Arc::make_mut(&mut bridge.data)
+            .by_handle
+            .insert(handle(3), 2);
+        Arc::make_mut(&mut bridge.data)
+            .available
+            .get_mut(&(1, 0))
+            .unwrap()
+            .push(2);
         let country = legacy::Country {
             tag: "GER",
             cosmetic: "",
@@ -722,22 +859,24 @@ mod tests {
                 .unwrap_err()
                 .contains("invalid naval module")
         );
-        bridge.states[2] = VariantState::InvalidKnown {
+        Arc::make_mut(&mut bridge.data).states[2] = VariantState::InvalidKnown {
             error: "variant 3: invalid rifle module".into(),
         };
-        bridge.invalid_by_archetype.clear();
-        bridge.invalid_by_archetype.insert("rifles", 2);
+        Arc::make_mut(&mut bridge.data).invalid_by_archetype.clear();
+        Arc::make_mut(&mut bridge.data)
+            .invalid_by_archetype
+            .insert("rifles".into(), 2);
         assert!(
             bridge
                 .resolve_operands(10, country, subunit, Some(handle(1)), &[], exists)
                 .unwrap_err()
                 .contains("invalid rifle module")
         );
-        bridge.states[2] = VariantState::InvalidUnknown {
+        Arc::make_mut(&mut bridge.data).states[2] = VariantState::InvalidUnknown {
             error: "variant 3: unknown equipment archetype".into(),
         };
-        bridge.invalid_by_archetype.clear();
-        bridge.invalid_unknown = Some(2);
+        Arc::make_mut(&mut bridge.data).invalid_by_archetype.clear();
+        Arc::make_mut(&mut bridge.data).invalid_unknown = Some(2);
         assert!(
             bridge
                 .resolve_operands(10, country, subunit, Some(handle(1)), &[], exists)

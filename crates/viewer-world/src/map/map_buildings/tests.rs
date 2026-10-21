@@ -1478,3 +1478,138 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
         assert_eq!(cached.collect(None, 0.), reference.collect(None, 0.));
     }
 }
+/// Repeated positions in one authored bucket, retaining the ordinary field path.
+fn repeated_slot_assets(types: &Buildings) -> MapBuildingAssets {
+    let mut assets = one_slot_assets(types, BTreeMap::new());
+    let slots = assets
+        .slots
+        .get_mut(&(ONE_STATE, "arms_factory".to_owned()))
+        .unwrap();
+    slots.resize(8, slots[0].clone());
+    assets.groups = slot_groups(
+        assets
+            .slots
+            .values()
+            .flatten()
+            .map(|(_, province)| *province),
+        &BTreeMap::from([(ONE_PROVINCE, [0.0, 0.0, 2.0, 2.0])]),
+    );
+    assets
+}
+
+#[test]
+fn missing_building_meshes_are_counted_per_reached_slot() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut types = types();
+    types
+        .types
+        .get_mut("arms_factory")
+        .unwrap()
+        .show_on_map_meshes = 2;
+    let assets = repeated_slot_assets(&types);
+    // An entirely missing mesh/definition still counts every reached slot in
+    // each hour; fog runs first and suppresses that refusal for hidden slots.
+    for (step, (byte, unresolved, fogged)) in [
+        (Some(50), 8, 0),
+        (Some(49), 0, 8),
+        (None, 8, 0),
+        (Some(50), 8, 0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (mut frame, vision) = one_row_frame(
+            BuildingRow {
+                level: 15,
+                healthy_level: 15,
+                ..Default::default()
+            },
+            byte,
+        );
+        frame.hour += step as i32;
+        let (field, summary) = assets.field(&frame, &vision, &no_city()).unwrap();
+        assert_eq!((summary.slots, summary.built, summary.placed), (8, 1, 0));
+        assert_eq!(summary.fogged, fogged);
+        assert_eq!(
+            summary.unresolved_by_type,
+            if unresolved == 0 {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("arms_factory".to_owned(), unresolved)])
+            },
+        );
+        assert!(summary.refused_tokens.is_empty());
+        assert!(summary.missing_by_type.is_empty());
+        assert_eq!(field.slots.len(), 8);
+        for (id, slot) in field.slots.iter().enumerate() {
+            assert_eq!(slot.id, id as u32);
+            assert_eq!(slot.drawn_at_distance, Some(false));
+            assert!(slot.entity.is_none());
+        }
+    }
+}
+
+#[test]
+fn damaged_only_building_meshes_supply_definition_fallback_per_slot() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut types = types();
+    let building = types.types.get_mut("arms_factory").unwrap();
+    building.show_on_map_meshes = 3;
+    building.has_destroyed_mesh = true;
+    let mut assets = repeated_slot_assets(&types);
+    let index = assets.facts.index["arms_factory"];
+    // No ordinary definition exists. The normal damaged mesh supplies the
+    // definition fallback even for the separately drawn destroyed mesh.
+    assets.damaged_entities.insert((index, 1), 21);
+    assets.damaged_entities.insert((index, usize::MAX), 23);
+    let (frame, vision) = one_row_frame(
+        BuildingRow {
+            level: 7,
+            healthy_level: 1,
+            ..Default::default()
+        },
+        Some(50),
+    );
+    let (field, summary) = assets.field(&frame, &vision, &no_city()).unwrap();
+    assert_eq!((summary.slots, summary.built, summary.placed), (8, 1, 8));
+    assert_eq!(
+        (summary.damaged, summary.destroyed, summary.uncertain_damage),
+        (1, 0, 0)
+    );
+    assert!(summary.unresolved_by_type.is_empty());
+    assert_eq!(field.slots.len(), 8);
+    for (id, slot) in field.slots.iter().enumerate() {
+        let entity = slot.entity.as_ref().unwrap();
+        assert_eq!(
+            entity.healthy,
+            Selection {
+                admitted: true,
+                mesh: 21,
+                definition: 21,
+                variant: 1
+            },
+        );
+        assert_eq!(
+            entity.ruined,
+            Selection {
+                admitted: id < 3,
+                mesh: 23,
+                definition: 21,
+                variant: 0
+            },
+        );
+        assert!(!entity.destroyed && entity.damaged && !entity.uncertain);
+        let expected = ModelInstance {
+            position: [1.0, 0.0, 1.0],
+            scale: 1.0,
+            animation_seed: id as u32,
+            ..Default::default()
+        };
+        assert_eq!(
+            bytemuck::bytes_of(&entity.instance),
+            bytemuck::bytes_of(&expected)
+        );
+    }
+}

@@ -34,3 +34,10 @@ Selected Air wings add region-assignment feedback from their current pool bases,
 Navy province hovers show access restrictions, the installed naval terrain and minimum dominance, native control, cached current/target/base values, building and prepared mission source explanations, convoy-cost reduction and control benefits. Air and Navy share the regional mine summary, retaining diplomacy-roster repetitions, mine casualty groups, neutral countries and the scaled installed mine effects. Incident controls summarize the standing training and mine-report groups with their native damage and sunk-count gates. Local selection and prepared source identities remain viewer products.
 
 The occupation percentage control uses the detailed resistance section in both Resistance and Compliance modes. Its marker hover stops after resistance effects and does not require or print the compliance section. Badge icons use their separate definition-specific tooltip product and recorded state or occupation-data scopes.
+
+Province hovers read naming operands only for the named country and its reached
+overlords, retaining aliases, reserved-country names and named refusals. Hour
+workers certify the full temperature pass and checksum once for their immutable
+decoded frame. The hover adopts that frame's immutable values or refusal; a
+missing prepared result synchronously uses the same full derivation, never a
+single-province shortcut that could bypass certification.

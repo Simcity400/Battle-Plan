@@ -1164,6 +1164,7 @@ fn the_initial_gate_uses_the_wings_own_operands() {
 }
 
 mod band;
+mod model_inputs;
 mod launch_effects;
 mod paired;
 mod training;

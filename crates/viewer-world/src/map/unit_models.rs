@@ -72,7 +72,7 @@
 //! division: it has no template, equipment, stored model number or
 //! acclimatization, so steps 1, 2 and 4 have no operands.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -88,6 +88,7 @@ use viewer_foundation::map::province_admission::province_boxes;
 use viewer_foundation::map::province_map::HeightField;
 use viewer_foundation::map::province_map::ProvinceMap;
 use viewer_foundation::movement_timing::Etas;
+use viewer_foundation::profiling::BuilderSpans;
 use viewer_foundation::table_access::TokenNames;
 
 use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
@@ -97,6 +98,8 @@ use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, row
 use replay_frame::frame::DecodedFrame;
 
 mod ships;
+mod retained_bridge;
+use model_selection::profile::{Stage, Stages};
 
 pub use ships::ShipPlaces;
 
@@ -494,6 +497,7 @@ pub struct UnitModelAssets {
     /// Each name owns its bake, including an unsuccessful attempt. The map
     /// lock only locates these slots; cold loads never hold it.
     bakes: Mutex<BTreeMap<String, Arc<Mutex<bool>>>>,
+    conventional: retained_bridge::RetainedBridge,
     roster: Arc<mesh::Roster>,
     /// The content the library bakes from.
     layers: ResolvedLayers,
@@ -654,6 +658,7 @@ impl UnitModelAssets {
             library: RwLock::new(ModelLibrary::default()),
             field_identity: Arc::new(()),
             bakes: Mutex::new(BTreeMap::new()),
+            conventional: retained_bridge::RetainedBridge::default(),
             roster: Arc::new(mesh::Roster::default()),
             layers: ResolvedLayers::default(),
             sub_units: model_selection::Content::default(),
@@ -724,6 +729,7 @@ impl UnitModelAssets {
             library: RwLock::new(ModelLibrary::empty(decode)),
             field_identity: Arc::new(()),
             bakes: Mutex::new(BTreeMap::new()),
+            conventional: retained_bridge::RetainedBridge::default(),
             sub_units,
             gates: Gates::read(defines)?,
             bounds: Arc::new(province_boxes(&ProvinceMap {
@@ -1068,89 +1074,122 @@ impl UnitModelAssets {
     /// Bakes missing registered names in sorted batches. Warm names only read
     /// the library; cold batches wait only for names they share. A failed
     /// attempt is remembered just like a successful one.
+    #[cfg(test)]
     fn ensure(&self, names: &[String]) {
+        self.ensure_with_spans(names, &mut BuilderSpans::new(false));
+    }
+
+    fn ensure_with_spans(&self, names: &[String], spans: &mut BuilderSpans) {
         let missing: Vec<String> = {
-            let library = self.library();
-            names
-                .iter()
-                .filter(|name| {
-                    library.slot(name).is_none()
-                        && self.registered(name)
-                        && self.refusal(name).is_none()
-                })
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect()
+            let library = spans.measure("units.ensure.scan_read_wait", |_| self.library());
+            spans.measure("units.ensure.scan", |_| {
+                names
+                    .iter()
+                    .filter(|name| {
+                        library.slot(name).is_none()
+                            && self.registered(name)
+                            && self.refusal(name).is_none()
+                    })
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            })
         };
         if missing.is_empty() {
             return;
         }
         let slots: Vec<_> = {
-            let mut bakes = self
-                .bakes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            missing
-                .iter()
-                .map(|name| Arc::clone(bakes.entry(name.clone()).or_default()))
-                .collect()
+            let mut bakes = spans.measure("units.ensure.registry_wait", |_| {
+                self.bakes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            });
+            spans.measure("units.ensure.registry", |_| {
+                missing
+                    .iter()
+                    .map(|name| Arc::clone(bakes.entry(name.clone()).or_default()))
+                    .collect()
+            })
         };
         // Always claim names in the same order: overlapping batches can wait
         // for one another without a cycle, while disjoint batches load freely.
-        let mut completed: Vec<_> = slots
-            .iter()
-            .map(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
-            .collect();
-        let missing: Vec<_> = {
-            let library = self.library();
-            missing
-                .into_iter()
-                .zip(&completed)
-                .filter_map(|(name, complete)| {
-                    (!**complete && library.slot(&name).is_none()).then_some(name)
-                })
+        let mut completed: Vec<_> = spans.measure("units.ensure.name_wait", |_| {
+            slots
+                .iter()
+                .map(|slot| slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
                 .collect()
+        });
+        let missing: Vec<_> = {
+            let library = spans.measure("units.ensure.recheck_read_wait", |_| self.library());
+            spans.measure("units.ensure.recheck", |_| {
+                missing
+                    .into_iter()
+                    .zip(&completed)
+                    .filter_map(|(name, complete)| {
+                        (!**complete && library.slot(&name).is_none()).then_some(name)
+                    })
+                    .collect()
+            })
         };
         if missing.is_empty() {
             return;
         }
         let mut warnings = Vec::new();
-        let decode = self.library().decode();
+        let decode = spans
+            .measure("units.ensure.decode_read_wait", |_| self.library())
+            .decode();
         // An entity the visual mods' descriptors leave undecided, though the recording's own do
         // not, is baked from the recording ([`Self::refusal`]).
-        let (recorded, own): (Vec<String>, Vec<String>) = missing
-            .iter()
-            .cloned()
-            .partition(|name| entity_refusal(&self.roster, name).is_some());
-        if let Ok(shard) = ModelLibrary::load(
-            &self.layers,
-            decode,
-            &self.roster.descriptors,
-            &own,
-            &mut warnings,
-        ) {
-            self.library
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .merge(shard);
+        let (recorded, own): (Vec<String>, Vec<String>) =
+            spans.measure("units.ensure.partition", |_| {
+                missing
+                    .iter()
+                    .cloned()
+                    .partition(|name| entity_refusal(&self.roster, name).is_some())
+            });
+        if let Ok(shard) = spans.measure("units.ensure.load_shown", |spans| {
+            ModelLibrary::load_profiled(
+                &self.layers,
+                decode,
+                &self.roster.descriptors,
+                &own,
+                &mut warnings,
+                spans,
+            )
+        }) {
+            let mut library = spans.measure("units.ensure.merge_shown_wait", |_| {
+                self.library
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            });
+            spans.measure("units.ensure.merge_shown", |_| library.merge(shard));
         }
         if !recorded.is_empty()
-            && let Ok(shard) =
-                ModelLibrary::load_recorded(&self.layers, decode, &recorded, |name| {
-                    entity_refusal(&self.roster, name).unwrap_or_default()
-                })
+            && let Ok(shard) = spans.measure("units.ensure.load_recorded", |spans| {
+                ModelLibrary::load_recorded_profiled(
+                    &self.layers,
+                    decode,
+                    &recorded,
+                    |name| entity_refusal(&self.roster, name).unwrap_or_default(),
+                    spans,
+                )
+            })
         {
-            self.library
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .merge(shard);
+            let mut library = spans.measure("units.ensure.merge_recorded_wait", |_| {
+                self.library
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            });
+            spans.measure("units.ensure.merge_recorded", |_| library.merge(shard));
         }
         // An entity a visual mod supplies that does not bake was baked from the recording
         // instead, named, by the library load itself (`ModelLibrary::load`).
-        for complete in &mut completed {
-            **complete = true;
-        }
+        spans.measure("units.ensure.complete", |_| {
+            for complete in &mut completed {
+                **complete = true;
+            }
+        });
     }
 
     /// Why `name` is refused ([`entity_refusal`]), `None` when it is drawn: an entity the
@@ -1172,14 +1211,27 @@ impl UnitModelAssets {
 
     /// A registered entity's slot, baking it first.
     pub(crate) fn bake_slot(&self, name: &str) -> Option<usize> {
+        self.bake_slot_with_spans(name, &mut BuilderSpans::new(false))
+    }
+
+    fn bake_slot_with_spans(&self, name: &str, spans: &mut BuilderSpans) -> Option<usize> {
         if !self.registered(name) || self.refusal(name).is_some() {
             return None;
         }
         if let Some(slot) = self.library().slot(name) {
             return Some(slot);
         }
-        self.ensure(&[name.to_owned()]);
+        self.ensure_with_spans(&[name.to_owned()], spans);
         self.library().slot(name)
+    }
+
+    /// Naval helpers share the current hour's recorder without changing their
+    /// lazy model-selection demand or the ordinary non-builder entry point.
+    fn bake_slot_for_hour(&self, name: &str, hour: Option<&Hour<'_>>) -> Option<usize> {
+        match hour {
+            Some(hour) => self.bake_slot_with_spans(name, &mut hour.spans.borrow_mut()),
+            None => self.bake_slot(name),
+        }
     }
 
     /// Places one figure per land stack of this hour.
@@ -1191,6 +1243,26 @@ impl UnitModelAssets {
     /// an hour on the hour builder; `PreparedModels::field` only advances each
     /// figure's position and heading.
     pub fn prepare(&self, inputs: PrepareInputs<'_>) -> io::Result<PreparedModels> {
+        self.prepare_profiled(inputs, &mut |_| {})
+    }
+
+    /// Builds the same hour, reporting coarse sequential parts to its builder.
+    /// The caller owns clocks and reporting; ordinary preparation samples none.
+    pub fn prepare_profiled(
+        &self,
+        inputs: PrepareInputs<'_>,
+        lap: &mut dyn FnMut(&'static str),
+    ) -> io::Result<PreparedModels> {
+        self.prepare_with_spans(inputs, lap, &mut BuilderSpans::new(false))
+    }
+
+    /// The same preparation with job-local nested scopes on the built line.
+    pub fn prepare_with_spans(
+        &self,
+        inputs: PrepareInputs<'_>,
+        lap: &mut dyn FnMut(&'static str),
+        spans: &mut BuilderSpans,
+    ) -> io::Result<PreparedModels> {
         if let Some(reason) = &self.disabled {
             return Ok(PreparedModels {
                 staged_field: Mutex::new(None),
@@ -1217,7 +1289,9 @@ impl UnitModelAssets {
             ships,
             localisation,
         } = inputs;
-        let hour = Hour::read(self, frame, terrain, limits, localisation)?;
+        let mut hour = Hour::read_profiled(self, frame, terrain, limits, localisation, lap)?;
+        hour.spans = RefCell::new(spans.fork());
+        hour.selection = Stages::new(spans.enabled());
         // The game reads the ordinary route count and movement-target pointer,
         //independently of the displayed route or selected animation state.
         let uv_moving: BTreeSet<_> = rows::<tables::DivisionMovement>(frame)?
@@ -1231,6 +1305,7 @@ impl UnitModelAssets {
                 anchor(id, STANDSTILL)
             })?
             .by_division;
+        lap("um_routes");
         let alternates: BTreeMap<u64, u64> = rows::<tables::ArmyIconInputs>(frame)?
             .rows()
             .iter()
@@ -1295,6 +1370,7 @@ impl UnitModelAssets {
             }
         }
 
+        lap("um_stacks");
         let mut report = ModelReport {
             stacks: stacks.len(),
             ..ModelReport::default()
@@ -1347,17 +1423,17 @@ impl UnitModelAssets {
                     report.error("division acclimatization status is unavailable");
                     continue;
                 };
-                match hour.camouflage.suffix(
-                    &self.camouflage,
-                    hour.sources.tokens,
-                    status,
-                    *province,
-                ) {
-                    Ok(suffix) => {
-                        name = camouflage::entity(&name, suffix, |candidate| {
-                            self.registered(candidate)
+                let camouflaged = hour.selection.measure(Stage::Camouflage, || {
+                    hour.camouflage
+                        .suffix(&self.camouflage, hour.sources.tokens, status, *province)
+                        .map(|suffix| {
+                            camouflage::entity(&name, suffix, |candidate| {
+                                self.registered(candidate)
+                            })
                         })
-                    }
+                });
+                match camouflaged {
+                    Ok(selected) => name = selected,
                     Err(error) => {
                         report.error(error.to_string());
                         continue;
@@ -1366,8 +1442,12 @@ impl UnitModelAssets {
             }
             chosen.push((*province, *owner, stack, level, name, base, key, transport));
         }
+        lap("um_selection");
+        spans.append(hour.spans.replace(spans.fork()));
+        hour.selection.append_to(spans);
         let names: Vec<String> = chosen.iter().map(|chosen| chosen.4.clone()).collect();
-        self.ensure(&names);
+        self.ensure_with_spans(&names, spans);
+        lap("um_ensure");
         let library = self.library();
         let mut placed = Vec::new();
         for (province, owner, stack, level, name, base, key, transport) in chosen {
@@ -1458,7 +1538,8 @@ impl UnitModelAssets {
             ));
         }
         drop(library);
-        let ships = self.prepare_naval(
+        lap("um_targets");
+        let ships = self.prepare_naval_with_spans(
             frame,
             vision,
             anchor,
@@ -1466,12 +1547,17 @@ impl UnitModelAssets {
             ships,
             Some(&hour),
             &mut report,
-        )?;
+            spans,
+        );
+        spans.append(hour.spans.replace(spans.fork()));
+        let ships = ships?;
+        lap("um_naval");
         let owned = core::<tables::Provinces>(frame)?
             .iter()
             .filter(|row| hour.links.get(&row.owner) == Some(&vision.ours()))
             .map(|row| row.id)
             .collect();
+        lap("um_owned");
         Ok(PreparedModels {
             staged_field: Mutex::new(None),
             targets: None,
@@ -1500,6 +1586,9 @@ struct Hour<'a> {
     equipment: Result<Equipment<'a>, String>,
     statuses: BTreeMap<u64, &'a replay_data::rows::DivisionStatusRow>,
     camouflage: camouflage::Context<'a>,
+    spans: RefCell<BuilderSpans>,
+    selection: Stages,
+    classification: OnceCell<Option<model_selection::facts::Hour>>,
     /// Joined on first use: most hours need neither.
     geography: OnceCell<Result<context::Prepared, String>>,
     conventional: OnceCell<Result<bridge::Prepared<'a>, String>>,
@@ -1518,7 +1607,19 @@ impl<'a> Hour<'a> {
         limits: equipment_graphics::Limits<'a>,
         localisation: &'a Localisation,
     ) -> io::Result<Self> {
+        Self::read_profiled(assets, frame, terrain, limits, localisation, &mut |_| {})
+    }
+
+    fn read_profiled(
+        assets: &'a UnitModelAssets,
+        frame: &'a DecodedFrame,
+        terrain: &'a BTreeMap<u32, String>,
+        limits: equipment_graphics::Limits<'a>,
+        localisation: &'a Localisation,
+        lap: &mut dyn FnMut(&'static str),
+    ) -> io::Result<Self> {
         let equipment = Equipment::read(frame)?;
+        lap("um_equipment");
         Ok(Self {
             labels: model_labels::Labels::read(
                 frame,
@@ -1548,7 +1649,15 @@ impl<'a> Hour<'a> {
                 .iter()
                 .map(|row| (row.division, row))
                 .collect(),
-            camouflage: camouflage::Context::read(frame, terrain)?,
+            camouflage: {
+                lap("um_model_joins");
+                let camouflage = camouflage::Context::read(frame, terrain)?;
+                lap("um_camouflage");
+                camouflage
+            },
+            spans: RefCell::new(BuilderSpans::new(false)),
+            selection: Stages::new(false),
+            classification: OnceCell::new(),
             geography: OnceCell::new(),
             conventional: OnceCell::new(),
             assets,
@@ -1559,16 +1668,34 @@ impl<'a> Hour<'a> {
 
     fn geography(&self) -> Result<&context::Prepared, String> {
         self.geography
-            .get_or_init(|| context::Prepared::read(self.frame, &self.assets.geography))
+            .get_or_init(|| {
+                self.spans
+                    .borrow_mut()
+                    .measure("units.selection.geography_read", |_| {
+                        context::Prepared::read(self.frame, &self.assets.geography)
+                    })
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
 
     fn conventional(&self) -> Result<&bridge::Prepared<'a>, String> {
         self.conventional
-            .get_or_init(|| bridge::Prepared::read(self.frame, &self.assets.sub_units))
+            .get_or_init(|| {
+                self.spans
+                    .borrow_mut()
+                    .measure("units.selection.bridge_read", |_| {
+                        self.assets.conventional.read(self.frame, &self.assets.sub_units)
+                    })
+            })
             .as_ref()
             .map_err(Clone::clone)
+    }
+
+    fn classification(&self) -> Option<&model_selection::facts::Hour> {
+        self.classification
+            .get_or_init(|| self.assets.sub_units.classification_facts(self.frame))
+            .as_ref()
     }
 
     fn country(&self, raw: u32) -> Option<&ModelCountry> {
@@ -1599,63 +1726,70 @@ fn graphics_model_for_country(
     first_archetype: Option<&str>,
     raw_country: u32,
 ) -> Result<Option<(Level, String)>, String> {
-    let content = &assets.sub_units;
-    let country = hour
-        .country(raw_country)
-        .ok_or_else(|| format!("model country {raw_country} is unavailable"))?;
-    let equipment_key = content.equipment_key(&hour.tokens, pair.variant)?;
-    let equipment = content
-        .equipment_model(equipment_key)
-        .map_err(|error| error.to_string())?;
-    // The equipment family is the type itself unless another is named.
-    let family = Some((
-        equipment.family,
-        Some(
-            content
-                .equipment_model(equipment.family)
-                .map_err(|error| error.to_string())?
-                .archetype,
-        ),
-    ));
-    let (ideology, culture) =
-        model_multi_fallback::creator_operands(pair.variant, &hour.links, &hour.countries)?;
-    let geography = hour.geography()?.context(raw_country)?;
-    let graphical = assets.graphics.lookup_with_limits(
-        &equipment_graphics::Context {
-            equipment: equipment_key,
-            archetype: Some(equipment.archetype),
-            family,
-            subunit: Some(&pair.subunit.key),
-            ideology,
-            culture,
-            country: geography.map(|country| country.country_tag.as_str()),
-            faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
-            capital_continent: geography.and_then(|country| country.capital_continent.as_deref()),
-        },
-        &hour.limits,
-        |name| assets.registered(name),
-    )?;
-    Ok(hour
-        .conventional()?
-        .resolve(
-            raw_country,
-            country,
-            bridge::Selection {
-                subunit: pair.subunit,
-                first_archetype,
-                variant: Some(pair.variant.id),
-            },
-            &graphical,
-            |name| assets.registered(name),
-        )?
-        .map(|name| {
-            let level = if graphical.iter().any(|candidate| candidate.entity == name) {
-                Level::Graphics
-            } else {
-                Level::Conventional
-            };
-            (level, name)
-        }))
+    hour.selection.measure(Stage::Graphics, || {
+        let content = &assets.sub_units;
+        let country = hour
+            .country(raw_country)
+            .ok_or_else(|| format!("model country {raw_country} is unavailable"))?;
+        let equipment_key = content.equipment_key(&hour.tokens, pair.variant)?;
+        let equipment = content
+            .equipment_model(equipment_key)
+            .map_err(|error| error.to_string())?;
+        // The equipment family is the type itself unless another is named.
+        let family = Some((
+            equipment.family,
+            Some(
+                content
+                    .equipment_model(equipment.family)
+                    .map_err(|error| error.to_string())?
+                    .archetype,
+            ),
+        ));
+        let (ideology, culture) =
+            model_multi_fallback::creator_operands(pair.variant, &hour.links, &hour.countries)?;
+        let geography = hour.geography()?.context(raw_country)?;
+        let graphical = hour.selection.measure(Stage::GraphicsRules, || {
+            assets.graphics.lookup_with_limits(
+                &equipment_graphics::Context {
+                    equipment: equipment_key,
+                    archetype: Some(equipment.archetype),
+                    family,
+                    subunit: Some(&pair.subunit.key),
+                    ideology,
+                    culture,
+                    country: geography.map(|country| country.country_tag.as_str()),
+                    faction_tags: geography.map_or(&[], |country| country.faction_tags.as_slice()),
+                    capital_continent: geography
+                        .and_then(|country| country.capital_continent.as_deref()),
+                },
+                &hour.limits,
+                |name| assets.registered(name),
+            )
+        })?;
+        let conventional = hour.conventional()?;
+        hour.selection.measure(Stage::GraphicsResolve, || {
+            Ok(conventional
+                .resolve(
+                    raw_country,
+                    country,
+                    bridge::Selection {
+                        subunit: pair.subunit,
+                        first_archetype,
+                        variant: Some(pair.variant.id),
+                    },
+                    &graphical,
+                    |name| assets.registered(name),
+                )?
+                .map(|name| {
+                    let level = if graphical.iter().any(|candidate| candidate.entity == name) {
+                        Level::Graphics
+                    } else {
+                        Level::Conventional
+                    };
+                    (level, name)
+                }))
+        })
+    })
 }
 
 /// Every division's equipment rows: the daily census, joined with the hourly
@@ -1753,87 +1887,102 @@ impl<'a> Selector<'a, '_> {
     }
 
     fn transport(&self, stack: &Stack) -> Selected<'a> {
-        let raw = model_owner(stack.roster_owner, stack.expeditionary_owner, true);
-        let Some(country) = self.hour.country(raw) else {
-            return Ok(None);
-        };
-        match resolve_transport(country, |name| self.exists(name)) {
-            Some((level, name)) => Ok(Some((level, name, None))),
-            None if country.original_tag.is_none()
-                || country.original_graphical_culture.is_none() =>
-            {
-                Ok(None)
+        let hour = self.hour;
+        hour.selection.measure(Stage::Transport, || {
+            let raw = model_owner(stack.roster_owner, stack.expeditionary_owner, true);
+            let Some(country) = self.hour.country(raw) else {
+                return Ok(None);
+            };
+            match resolve_transport(country, |name| self.exists(name)) {
+                Some((level, name)) => Ok(Some((level, name, None))),
+                None if country.original_tag.is_none()
+                    || country.original_graphical_culture.is_none() =>
+                {
+                    Ok(None)
+                }
+                None => Err(Missing::Input(format!(
+                    "{PLACEHOLDER_ENTITY} is not registered"
+                ))),
             }
-            None => Err(Missing::Input(format!(
-                "{PLACEHOLDER_ENTITY} is not registered"
-            ))),
-        }
+        })
     }
 
     fn land(&mut self, stack: &Stack, templates: &mut Templates<'a>) -> Selected<'a> {
-        let template = *self
-            .hour
-            .templates
-            .get(&stack.template)
-            .ok_or(Missing::Template)?;
-        if template.model_unreadable != 0 {
-            return Err(Missing::Input(
-                "template model inputs were unreadable this hour".into(),
-            ));
-        }
-        let explicit = std::str::from_utf8(&template.model_entity)
-            .map_err(|_| Missing::Input("template model entity is not UTF-8".into()))?;
-        if !explicit.is_empty() && self.exists(explicit) {
-            return Ok(Some((Level::Template, explicit.to_owned(), None)));
-        }
-        // The game ranks the whole native equipment list.
-        let equipment = self
-            .hour
-            .equipment
-            .as_ref()
-            .map_err(Clone::clone)?
-            .of(stack.oldest)?;
-        let composition = templates.entry(template.template).or_insert_with(|| {
-            self.assets
-                .sub_units
-                .template(template, &self.hour.sources)
-                .map_err(|error| error.to_string())
-        });
-        let composition = composition
-            .as_ref()
-            .map_err(|error| Missing::Input(error.clone()))?;
-        let pair = self.assets.sub_units.select_pair(
-            composition,
-            template.model_category,
-            &template.excluded_variants,
-            equipment,
-            &self.hour.variants,
-            &self.hour.tokens,
-        )?;
-        if let Some(pair) = pair {
-            return self.paired(stack, composition, pair);
-        }
-        if model_multi_fallback::has_qualifying_requirements(template, composition)
-            && let Some(resolved) = self.fallback(template, composition)?
-        {
-            let key = self
-                .assets
-                .sub_units
-                .subunit(&resolved.subunit_key)
-                .map(|unit| unit.key.as_str());
-            let level = if resolved.graphical {
-                Level::Graphics
+        let hour = self.hour;
+        hour.selection.measure(Stage::Land, || {
+            let template = *self
+                .hour
+                .templates
+                .get(&stack.template)
+                .ok_or(Missing::Template)?;
+            if template.model_unreadable != 0 {
+                return Err(Missing::Input(
+                    "template model inputs were unreadable this hour".into(),
+                ));
+            }
+            let explicit = std::str::from_utf8(&template.model_entity)
+                .map_err(|_| Missing::Input("template model entity is not UTF-8".into()))?;
+            if !explicit.is_empty() && self.exists(explicit) {
+                return Ok(Some((Level::Template, explicit.to_owned(), None)));
+            }
+            // The game ranks the whole native equipment list.
+            let equipment = self
+                .hour
+                .equipment
+                .as_ref()
+                .map_err(Clone::clone)?
+                .of(stack.oldest)?;
+            let composition = templates.entry(template.template).or_insert_with(|| {
+                self.hour.selection.measure(Stage::Template, || {
+                    self.assets
+                        .sub_units
+                        .template(template, &self.hour.sources)
+                        .map_err(|error| error.to_string())
+                })
+            });
+            let composition = composition
+                .as_ref()
+                .map_err(|error| Missing::Input(error.clone()))?;
+            let facts = if composition.representative.is_some() && !equipment.is_empty() {
+                hour.classification()
             } else {
-                Level::Conventional
+                None
             };
-            return Ok(Some((level, resolved.entity, key)));
-        }
-        // The representative's numbered ladder; the null object
-        // draws the placeholder.
-        let Some(representative) = &composition.representative else {
-            return self.placeholder();
-        };
-        self.numbered(stack, stack.roster_owner, representative.subunit)
+            let pair = self.assets.sub_units.select_pair_classified(
+                composition,
+                template.model_category,
+                &template.excluded_variants,
+                equipment,
+                &self.hour.variants,
+                &self.hour.tokens,
+                &self.hour.selection,
+                facts,
+            )?;
+            if let Some(pair) = pair {
+                return self.paired(stack, composition, pair);
+            }
+            if model_multi_fallback::has_qualifying_requirements(template, composition)
+                && let Some(resolved) = self.fallback(template, composition)?
+            {
+                let key = self
+                    .assets
+                    .sub_units
+                    .subunit(&resolved.subunit_key)
+                    .map(|unit| unit.key.as_str());
+                let level = if resolved.graphical {
+                    Level::Graphics
+                } else {
+                    Level::Conventional
+                };
+                return Ok(Some((level, resolved.entity, key)));
+            }
+            // The representative's numbered ladder; the null object
+            // draws the placeholder.
+            let Some(representative) = &composition.representative else {
+                return self.placeholder();
+            };
+            self.numbered(stack, stack.roster_owner, representative.subunit)
+        })
     }
 
     fn paired(
@@ -1842,33 +1991,36 @@ impl<'a> Selector<'a, '_> {
         composition: &Template<'a>,
         pair: SelectedPair<'a>,
     ) -> Selected<'a> {
-        let key = Some(pair.subunit.key.as_str());
-        let explicit = std::str::from_utf8(&pair.variant.explicit_entity)
-            .map_err(|_| Missing::Input("variant model entity is not UTF-8".into()))?;
-        if !explicit.is_empty() && self.exists(explicit) {
-            return Ok(Some((Level::Variant, explicit.to_owned(), key)));
-        }
-        let memo = (
-            pair.variant.id,
-            pair.subunit.key.clone(),
-            pair.identity,
-            stack.roster_owner,
-        );
-        if !self.graphical.contains_key(&memo) {
-            let first = composition
-                .groups
-                .iter()
-                .chain(&composition.representative)
-                .find(|group| group.identity == pair.identity)
-                .and_then(Template::first_requirement);
-            let resolved = self.graphical_model(pair, first, stack.roster_owner);
-            self.graphical.insert(memo.clone(), resolved);
-        }
-        if let Some((level, name)) = self.graphical[&memo].clone()? {
-            return Ok(Some((level, name, key)));
-        }
-        let country = model_selection::model_country(pair, stack.roster_owner);
-        self.numbered(stack, country, pair.subunit)
+        let hour = self.hour;
+        hour.selection.measure(Stage::Paired, || {
+            let key = Some(pair.subunit.key.as_str());
+            let explicit = std::str::from_utf8(&pair.variant.explicit_entity)
+                .map_err(|_| Missing::Input("variant model entity is not UTF-8".into()))?;
+            if !explicit.is_empty() && self.exists(explicit) {
+                return Ok(Some((Level::Variant, explicit.to_owned(), key)));
+            }
+            let memo = (
+                pair.variant.id,
+                pair.subunit.key.clone(),
+                pair.identity,
+                stack.roster_owner,
+            );
+            if !self.graphical.contains_key(&memo) {
+                let first = composition
+                    .groups
+                    .iter()
+                    .chain(&composition.representative)
+                    .find(|group| group.identity == pair.identity)
+                    .and_then(Template::first_requirement);
+                let resolved = self.graphical_model(pair, first, stack.roster_owner);
+                self.graphical.insert(memo.clone(), resolved);
+            }
+            if let Some((level, name)) = self.graphical[&memo].clone()? {
+                return Ok(Some((level, name, key)));
+            }
+            let country = model_selection::model_country(pair, stack.roster_owner);
+            self.numbered(stack, country, pair.subunit)
+        })
     }
 
     /// Variant-model selection for a selected pair.
@@ -1887,58 +2039,63 @@ impl<'a> Selector<'a, '_> {
         template: &DivisionTemplateIconRow,
         composition: &Template<'a>,
     ) -> Result<Option<model_multi_fallback::Resolved>, Missing> {
-        if !self.fallbacks.contains_key(&template.template) {
-            let view = self
-                .view
-                .get_or_insert_with(|| {
-                    model_multi_fallback::view_country_ref(self.frame, self.vision)
-                })
-                .clone();
-            let resolved = view.and_then(|view| {
-                model_multi_fallback::resolve(&model_multi_fallback::Inputs {
-                    template,
-                    composition,
-                    content: &self.assets.sub_units,
-                    graphics: &self.assets.graphics,
-                    geography: self.hour.geography()?,
-                    conventional: self.hour.conventional()?,
-                    countries: &self.hour.countries,
-                    links: &self.hour.links,
-                    definitions: &self.hour.variants,
-                    tokens: &self.hour.tokens,
-                    viewing_country_ref: view,
-                    limits: &self.hour.limits,
-                    registered: &self.assets.registered,
-                    labels: &self.hour.labels,
-                })
-            });
-            self.fallbacks.insert(template.template, resolved);
-        }
-        Ok(self.fallbacks[&template.template].clone()?)
+        let hour = self.hour;
+        hour.selection.measure(Stage::Fallback, || {
+            if !self.fallbacks.contains_key(&template.template) {
+                let view = self
+                    .view
+                    .get_or_insert_with(|| {
+                        model_multi_fallback::view_country_ref(self.frame, self.vision)
+                    })
+                    .clone();
+                let resolved = view.and_then(|view| {
+                    model_multi_fallback::resolve(&model_multi_fallback::Inputs {
+                        template,
+                        composition,
+                        content: &self.assets.sub_units,
+                        graphics: &self.assets.graphics,
+                        geography: self.hour.geography()?,
+                        conventional: self.hour.conventional()?,
+                        countries: &self.hour.countries,
+                        links: &self.hour.links,
+                        definitions: &self.hour.variants,
+                        tokens: &self.hour.tokens,
+                        viewing_country_ref: view,
+                        limits: &self.hour.limits,
+                        registered: &self.assets.registered,
+                        labels: &self.hour.labels,
+                    })
+                });
+                self.fallbacks.insert(template.template, resolved);
+            }
+            Ok(self.fallbacks[&template.template].clone()?)
+        })
     }
 
     /// The numbered model ladder with the stored number, for `country`.
     fn numbered(&self, stack: &Stack, country: u32, subunit: &'a SubUnit) -> Selected<'a> {
-        let Some(model_country) = self.hour.country(country) else {
-            return Ok(None);
-        };
-        let status =
-            self.hour.statuses.get(&stack.oldest).ok_or_else(|| {
+        let hour = self.hour;
+        hour.selection.measure(Stage::Numbered, || {
+            let Some(model_country) = self.hour.country(country) else {
+                return Ok(None);
+            };
+            let status = self.hour.statuses.get(&stack.oldest).ok_or_else(|| {
                 Missing::Input("division model number status is unavailable".into())
             })?;
-        // The game sign-extends the stored number's low byte.
-        let number = status.model_number as i8;
-        match resolve_model_numbered(
-            model_country,
-            &subunit.key,
-            Some(&subunit.sprite),
-            number,
-            |name| self.exists(name),
-        ) {
-            Some((level, name)) => Ok(Some((level, name, Some(subunit.key.as_str())))),
-            None if model_country.graphical_culture.is_none() => Ok(None),
-            None => self.placeholder(),
-        }
+            // The game sign-extends the stored number's low byte.
+            let number = status.model_number as i8;
+            match resolve_model_numbered(
+                model_country,
+                &subunit.key,
+                Some(&subunit.sprite),
+                number,
+                |name| self.exists(name),
+            ) {
+                Some((level, name)) => Ok(Some((level, name, Some(subunit.key.as_str())))),
+                None if model_country.graphical_culture.is_none() => Ok(None),
+                None => self.placeholder(),
+            }
+        })
     }
 
     fn placeholder(&self) -> Selected<'a> {

@@ -2,7 +2,11 @@ use super::{
     Laps, OverlayKey, Playhead, ShownHour, Viewer, feed_raids, latest_built_key, present_raids,
     skipped_hours, wait_for_hour,
 };
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::map::presentation::UnitRestart;
 use viewer_foundation::map::presentation::continuity as presentation_continuity;
@@ -10,12 +14,56 @@ use viewer_foundation::map::presentation::crosses_gap;
 use viewer_foundation::map::presentation::unit_restart as presentation_unit_restart;
 use viewer_foundation::profile_writer::profile_print;
 use viewer_foundation::profile_writer::profiling;
+use viewer_foundation::profiling::BuilderSpan;
 use viewer_foundation::retirement::Dropper;
 use viewer_foundation::retirement::Retired;
 use {
     crate::{document::Document, hours},
     viewer_foundation::map::camera::{Camera, MapSize},
 };
+
+/// CPU-side presentation point of a successfully submitted map frame, not a
+/// GPU completion or scanout timestamp. Sampling never follows the log writer.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ShownStamp {
+    ns: u128,
+    branch: replay_data::BranchId,
+    hour: replay_data::Hour,
+}
+
+impl std::fmt::Display for ShownStamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "shown_ns={} shown_branch={} shown_hour={}",
+            self.ns, self.branch, self.hour
+        )
+    }
+}
+
+/// PROFILE-only monotonic time and the installed document, never the playhead.
+/// The independent process-local origin is shared by every map in this process.
+pub(super) fn shown_stamp(
+    enabled: bool,
+    shown: impl FnOnce() -> (replay_data::BranchId, replay_data::Hour),
+) -> Option<ShownStamp> {
+    shown_stamp_with(enabled, shown, || {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        ORIGIN.get_or_init(Instant::now).elapsed().as_nanos()
+    })
+}
+
+fn shown_stamp_with(
+    enabled: bool,
+    shown: impl FnOnce() -> (replay_data::BranchId, replay_data::Hour),
+    clock: impl FnOnce() -> u128,
+) -> Option<ShownStamp> {
+    enabled.then(|| {
+        let ns = clock();
+        let (branch, hour) = shown();
+        ShownStamp { ns, branch, hour }
+    })
+}
 
 /// One built hour's events: its nuclear impacts and its map events for the
 /// viewing country.
@@ -44,6 +92,25 @@ fn presented_events<'a, T>(
         .filter(|_| continuity == Continuity::Continue)
         .chain([presented])
         .collect()
+}
+
+/// Child scopes keep exact zeros and unavailable CPU samples, without the
+/// frame collector's short-span filter. Nested scopes are inclusive.
+fn child_lap_lines(laps: &[BuilderSpan]) -> (String, String) {
+    let wall = laps
+        .iter()
+        .map(|span| format!("{}:{:.3}", span.name, span.ms))
+        .collect::<Vec<_>>()
+        .join(",");
+    let cpu = laps
+        .iter()
+        .map(|span| match span.cpu_ms {
+            Some(ms) => format!("{}:{ms:.3}", span.name),
+            None => format!("{}:unavailable", span.name),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    (wall, cpu)
 }
 
 impl Viewer {
@@ -354,7 +421,9 @@ impl Viewer {
             current,
             layers,
             laps: built_laps,
+            child_laps,
             wall,
+            trace: _,
         } = built;
         if let Some(opened) = self.opened.take()
             && profiling()
@@ -370,8 +439,9 @@ impl Viewer {
         retired.push(document.playback.present(branch, hour, current));
         laps.lap("present");
         if profiling() {
+            let (children, child_cpu) = child_lap_lines(&child_laps);
             profile_print(format!(
-                "PROFILE built frame {} hour {hour} wall {wall:.3} parts {} cpu={}",
+                "PROFILE built frame {} hour {hour} wall {wall:.3} parts {} cpu={} children={children} child_cpu={child_cpu}",
                 self.profile_frame,
                 built_laps
                     .iter()
@@ -743,6 +813,63 @@ mod tests {
     use super::*;
     use viewer_world::map::strike_effects::{Impact, Impacts};
 
+    #[test]
+    fn shown_stamps_preserve_wall_time_and_installed_identity_only_when_enabled() {
+        assert_eq!(
+            shown_stamp_with(
+                false,
+                || panic!("disabled stamp read the shown document"),
+                || panic!("disabled stamp read the clock"),
+            ),
+            None
+        );
+        let samples = [
+            (0, 1, 60827943, "shown_ns=0 shown_branch=1 shown_hour=60827943"),
+            (
+                16_666_667,
+                1,
+                60827943,
+                "shown_ns=16666667 shown_branch=1 shown_hour=60827943",
+            ),
+            (
+                1_333_333_333,
+                9,
+                60828400,
+                "shown_ns=1333333333 shown_branch=9 shown_hour=60828400",
+            ),
+        ];
+        for (ns, branch, hour, expected) in samples {
+            let stamp = shown_stamp_with(true, || (branch, hour), || ns).unwrap();
+            assert_eq!(stamp.ns, ns);
+            assert_eq!((stamp.branch, stamp.hour), (branch, hour));
+            assert_eq!(stamp.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn builder_child_lines_keep_zero_short_and_unavailable_samples() {
+        let laps = [
+            BuilderSpan {
+                name: "fog.intel_build",
+                ms: 0.0,
+                cpu_ms: Some(0.0),
+            },
+            BuilderSpan {
+                name: "fog.intel_lookup",
+                ms: 0.012,
+                cpu_ms: None,
+            },
+        ];
+        assert_eq!(
+            child_lap_lines(&laps),
+            (
+                "fog.intel_build:0.000,fog.intel_lookup:0.012".into(),
+                "fog.intel_build:0.000,fog.intel_lookup:unavailable".into(),
+            )
+        );
+        assert_eq!(child_lap_lines(&[]), (String::new(), String::new()));
+    }
+
     fn hour(id: u64) -> Impacts {
         Impacts {
             impacts: vec![Impact {
@@ -774,4 +901,82 @@ mod tests {
             1
         );
     }
+
+    #[derive(Default)]
+    struct PollHistory {
+        ready: BTreeMap<(u64, i32), u64>,
+        shown: Option<(u64, i32)>,
+        installed: Vec<i32>,
+        bytes: Vec<u8>,
+    }
+    impl PollHistory {
+        fn poll(&mut self, playhead: i32, arrivals: &[i32]) {
+            for &hour in arrivals { self.ready.insert((1, hour), hour as u64); }
+            let Some(key) = super::super::latest_built_key(&self.ready, (1, playhead), |_| true)
+                .filter(|key| self.shown.is_none_or(|shown| key.1 > shown.1)) else { return };
+            let skipped = super::super::skipped_hours(self.shown, key, true, |hour| {
+                self.ready.get(&(1, hour)).map(|id| Some(*id))
+            });
+            let events: Vec<_> = skipped.unwrap_or_default().into_iter().map(hour).collect();
+            let presented = hour(self.ready[&key]);
+            let continuity = if self.shown.is_some() { Continuity::Continue } else { Continuity::Reset };
+            for events in presented_events(events.iter(), &presented, continuity) {
+                for impact in &events.impacts { self.bytes.extend_from_slice(&impact.id.to_le_bytes()); }
+            }
+            self.installed.push(key.1);
+            self.shown = Some(key);
+            self.ready.retain(|key, _| key.1 > self.shown.unwrap().1);
+        }
+    }
+
+    #[test]
+    fn coordinator_ready_poll_permutations_preserve_installs_and_retained_event_bytes() {
+        let mut baseline = None;
+        for first in [[10, 11, 12], [12, 10, 11], [11, 12, 10]] {
+            for second in [[13, 14, 15], [15, 13, 14], [14, 15, 13]] {
+                let mut state = PollHistory::default();
+                state.poll(10, &first); state.poll(14, &second); state.poll(15, &[]);
+                assert_eq!(state.installed, [10, 14, 15]);
+                let value = (state.installed, state.bytes);
+                if let Some(baseline) = &baseline { assert_eq!(&value, baseline); }
+                else { baseline = Some(value); }
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_different_poll_availability_has_valid_not_identical_sequences() {
+        let mut earlier = PollHistory::default();
+        earlier.poll(11, &[10]); earlier.poll(11, &[11]);
+        let mut later = PollHistory::default();
+        later.poll(11, &[11]); later.poll(11, &[10]);
+        assert_eq!(earlier.installed, [10, 11]); assert_eq!(later.installed, [11]);
+        for state in [&earlier, &later] {
+            assert!(state.installed.windows(2).all(|w| w[0] < w[1]));
+            assert!(state.installed.iter().all(|hour| *hour <= 11));
+            // Replay the same installed sequence and same skipped-built inputs
+            // through the unchanged old presentation helpers, not arrival order.
+            let mut old = PollHistory::default();
+            for &hour in &state.installed { old.poll(11, &[hour]); }
+            assert_eq!(state.bytes, old.bytes);
+        }
+    }
+
+    #[test]
+    fn coordinator_retained_oracle_includes_skipped_built_not_just_installed_sequence() {
+        let mut with_skipped = PollHistory::default();
+        with_skipped.poll(10, &[10]); with_skipped.poll(12, &[12, 11]);
+        let mut without_skipped = PollHistory::default();
+        without_skipped.poll(10, &[10]); without_skipped.poll(12, &[12]);
+        assert_eq!(with_skipped.installed, without_skipped.installed);
+        assert_ne!(with_skipped.bytes, without_skipped.bytes);
+        assert_eq!(with_skipped.bytes, [10_u64, 11, 12].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
+        assert_eq!(without_skipped.bytes, [10_u64, 12].into_iter().flat_map(u64::to_le_bytes).collect::<Vec<_>>());
+        // Matching both installed sequence and skipped-built set is invariant
+        // under within-poll delivery permutation, byte for byte.
+        let mut old = PollHistory::default();
+        old.poll(10, &[10]); old.poll(12, &[11, 12]);
+        assert_eq!(with_skipped.bytes, old.bytes);
+    }
+
 }

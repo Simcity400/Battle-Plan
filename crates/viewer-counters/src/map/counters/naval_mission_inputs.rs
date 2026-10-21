@@ -910,12 +910,24 @@ impl<'a> Hour<'a> {
     }
 }
 
-pub(super) fn decorate<'a>(icons: &mut MissionIcons, hour: impl FnOnce() -> Fact<Hour<'a>>) {
+pub(super) fn decorate_profiled<'a>(
+    icons: &mut MissionIcons,
+    spans: &mut viewer_foundation::profiling::BuilderSpans,
+    hour: impl FnOnce() -> Fact<Hour<'a>>,
+) {
     icons.naval_dominance_sources = None;
-    let result = hour().and_then(|mut hour| {
-        icons.naval_dominance_sources = Some(std::sync::Arc::new(hour.dominance_sources()));
-        decorate_inputs(icons, &mut hour)
-    });
+    let result = spans
+        .measure("overlay.tables.counters.missions.build.inputs", |_| hour())
+        .and_then(|mut hour| {
+            icons.naval_dominance_sources = Some(std::sync::Arc::new(spans.measure(
+                "overlay.tables.counters.missions.build.dominance",
+                |_| hour.dominance_sources(),
+            )));
+            spans.measure(
+                "overlay.tables.counters.missions.build.controls_hovers",
+                |_| decorate_inputs(icons, &mut hour),
+            )
+        });
     if let Err(reason) = result {
         if icons.naval_dominance_sources.is_none() {
             icons.naval_dominance_sources = Some(std::sync::Arc::new(Err(reason.clone())));

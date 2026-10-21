@@ -1,5 +1,7 @@
 use super::*;
 
+mod memo_tests;
+
 #[test]
 fn prepared_metadata_inputs_keep_mount_order_and_archive_files_as_single_inputs() {
     let root = std::env::temp_dir().join(format!("prepared-inputs-{}", std::process::id()));

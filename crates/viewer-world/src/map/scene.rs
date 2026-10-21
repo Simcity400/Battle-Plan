@@ -114,6 +114,12 @@ macro_rules! model_passes {
     };
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[path = "scene_proof.rs"]
+mod proof;
+#[cfg(any(test, feature = "test-support"))]
+pub use proof::SceneProof;
+
 /// CPU frame inputs; each compiled adapter uploads its native buffer layout.
 struct FrameInputs {
     frame: FrameConstants,
@@ -2042,6 +2048,7 @@ impl Scene {
             );
         }
         self.detail_laps.lap("events");
+        let lights_profile = viewer_foundation::profiling::thread_span("lights");
         let lights = self
             .weather_effects
             .as_mut()
@@ -2050,6 +2057,7 @@ impl Scene {
             .unwrap_or_default();
         self.point_light_tiles.rebuild(camera, &lights);
         self.point_light_maps.write(queue, &self.point_light_tiles);
+        drop(lights_profile);
         self.detail_laps.lap("lights");
         let mut globals = FrameInputs {
             frame: FrameConstants::try_new(
@@ -2198,6 +2206,7 @@ impl Scene {
         let sprite_camera = viewer_foundation::map::sprites::CameraFrame::new(camera, size);
         self.sprite_pass
             .set_camera_moving(self.sprite_camera.replace(sprite_camera) != Some(sprite_camera));
+        let sprite_cpu = viewer_foundation::profiling::thread_span("sprite_upload");
         self.sprite_pass.upload(
             device,
             queue,
@@ -2206,6 +2215,7 @@ impl Scene {
             size,
             overlay.ui_scale,
         );
+        sprite_cpu.finish();
         self.detail_laps.lap("sprite_upload");
         let prepared = clock.map(|clock| clock.elapsed());
         self.pass_cpu_laps.start(clock.map(|_| Instant::now()));
@@ -3133,6 +3143,8 @@ impl Scene {
                 let (model_draws, buffers) =
                     self.workers
                         .with_admitted(workers, |admitted| -> io::Result<_> {
+                            #[cfg(any(test, feature = "test-support"))]
+                            faults.begin_native(admitted);
                             let mut model_draws = Vec::new();
                             for (model, enabled, alpha, label) in mesh_layers {
                                 if let Some(model) = model.filter(|_| enabled) {
@@ -3169,6 +3181,8 @@ impl Scene {
                                 admitted,
                                 &mut encoder,
                             );
+                            #[cfg(any(test, feature = "test-support"))]
+                            faults.finish_native(buffers.len());
                             cpu_mark("model_encode");
                             Ok((model_draws, buffers))
                         })?;

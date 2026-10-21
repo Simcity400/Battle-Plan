@@ -188,6 +188,28 @@ impl Extents {
         out
     }
 
+    /// Compare every stored float bit, including the wrap width and unused extents.
+    #[cfg(test)]
+    pub(crate) fn assert_same_bits(&self, other: &Self) {
+        let values = |map: &BTreeMap<u32, f32>| {
+            map.iter()
+                .map(|(&id, &value)| (id, value.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        let centres = |map: &BTreeMap<u32, [f32; 3]>| {
+            map.iter()
+                .map(|(&id, &value)| (id, value.map(f32::to_bits)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values(&self.states), values(&other.states));
+        assert_eq!(values(&self.regions), values(&other.regions));
+        assert_eq!(centres(&self.centres), centres(&other.centres));
+        assert_eq!(
+            [self.state_huge, self.strategic_area_huge, self.map_width].map(f32::to_bits),
+            [other.state_huge, other.strategic_area_huge, other.map_width].map(f32::to_bits),
+        );
+    }
+
     /// Whether the state extent exceeds the content's huge-state threshold.
     pub fn state_is_huge(&self, state: u32) -> bool {
         self.states

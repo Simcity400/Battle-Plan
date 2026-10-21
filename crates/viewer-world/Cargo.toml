@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["viewer-foundation/test-support", "dashboard-text/test-support"]
+test-support = ["viewer-foundation/test-support", "dashboard-text/test-support", "shader-pipeline/test-support"]
 
 [dependencies]
 replay.workspace = true

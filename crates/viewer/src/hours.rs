@@ -19,8 +19,10 @@
 //! in the order the window will need them — the playhead, the hours ahead of
 //! it, then the hours just behind it — and at most one pool's worth at a
 //! time, so a seek is answered as soon as the pool drains rather than after a
-//! backlog of hours nobody wants any more. An hour the window no longer wants
-//! is cancelled before its parts start.
+//! backlog of hours nobody wants any more. Only wholly unaccepted, unneeded
+//! targets can be superseded; a pool-accepted target runs all of its parts.
+//! Decode, pool and output readiness arrive as events, so none can keep a
+//! completed hour waiting on a later dispatch.
 //!
 //! Most hours change few of the layers the GPU holds: the political fill and
 //! the border classes change when a province changes hands, the railways and
@@ -34,6 +36,14 @@
 //! For the political part the wait is not about the cheap
 //! region derivation: an equal hour must keep the same political id, because
 //! the border classes are shared, and their upload skipped, only by that id.
+
+mod coordinator;
+mod dispatch_plan;
+mod flow;
+mod source_mailbox;
+mod shared_decoder;
+pub use shared_decoder::SharedDecoder;
+mod trace;
 
 use crate::map_views::CounterView;
 use std::cell::Cell;
@@ -51,6 +61,7 @@ use std::{
 };
 use viewer_foundation::builder_pool::Pool;
 use viewer_foundation::parallel::Workers;
+use viewer_foundation::profiling::{BuilderSpan, BuilderSpans};
 use viewer_foundation::worker_priority::background_priority;
 
 use replay::container::Replay;
@@ -63,7 +74,7 @@ use {
     viewer_foundation::map::camera::Camera, viewer_foundation::map::memo::Keyed,
     viewer_foundation::map::memo::Recent, viewer_foundation::map::name_draw::Placements,
     viewer_foundation::map::perspective, viewer_foundation::map::ribbon_content::OrderField,
-    viewer_foundation::map::tables::Limitations, viewer_foundation::map::textures,
+    viewer_foundation::map::tables::Limitations,
     viewer_foundation::map::textures::IntelMap, viewer_foundation::retirement::builder_count,
     viewer_world::map::aircraft::AircraftPlan, viewer_world::map::border_pass::ClassPlan,
     viewer_world::map::demilitarized::Zone, viewer_world::map::demilitarized::ZonePlan,
@@ -215,7 +226,7 @@ fn neighbour_slots<T>(
 /// full layer build. An unavailable hour breaks the retained-border history.
 fn carry_colour(
     mut colour: Option<Arc<viewer_world::map::map_mode::ColourState>>,
-    frames: Vec<Current>,
+    frames: impl IntoIterator<Item = Current>,
     mut fill: impl FnMut(
         &replay_frame::frame::DecodedFrame,
         Option<&viewer_world::map::map_mode::ColourState>,
@@ -228,6 +239,18 @@ fn carry_colour(
         };
     }
     Ok(colour)
+}
+
+/// Resolve dependent slots before claiming a single-flight cell. FIFO dequeue
+/// alone does not order workers' entry into the memo after preemption.
+fn memo_after_neighbours<K: PartialEq, V, T, E>(
+    memo: &viewer_foundation::map::memo::Recent<K, V>,
+    key: K,
+    neighbours: impl FnOnce() -> Vec<Arc<T>>,
+    build: impl FnOnce(Vec<Arc<T>>) -> Result<Arc<V>, E>,
+) -> Result<Arc<V>, E> {
+    let neighbours = neighbours();
+    memo.get_or_insert_with(key, || build(neighbours))
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -397,6 +420,40 @@ impl MoversLaps {
         }
     }
 
+    /// Nested builder parts share this report without advancing its outer lap.
+    /// Their timings are included in, not additive to, the named outer part.
+    fn split<T>(
+        &mut self,
+        name: &'static str,
+        build: impl FnOnce(&mut dyn FnMut(&'static str)) -> T,
+    ) -> T {
+        let mut last = self.last;
+        let mut previous_cpu = self.cpu;
+        let mut parts = Vec::new();
+        let value = build(&mut |name| {
+            let Some(before) = last else {
+                return;
+            };
+            let now = Instant::now();
+            let cpu = viewer_foundation::profiling::current_thread_cpu_time();
+            parts.push((
+                name,
+                PartTiming {
+                    ms: now.duration_since(before).as_secs_f64() * 1000.0,
+                    cpu_ms: previous_cpu
+                        .zip(cpu)
+                        .and_then(|(before, now)| now.checked_sub(before))
+                        .map(|used| used.as_secs_f64() * 1000.0),
+                },
+            ));
+            last = Some(now);
+            previous_cpu = cpu;
+        });
+        self.lap(name);
+        self.laps.extend(parts);
+        value
+    }
+
     fn lap(&mut self, name: &'static str) {
         let Some(last) = self.last else {
             return;
@@ -459,9 +516,14 @@ pub struct Built {
     pub layers: Result<Layers, String>,
     /// Elapsed and optional thread CPU milliseconds of each part.
     pub laps: Vec<(&'static str, PartTiming)>,
+    /// Completed job-local child scopes in fixed part order; nested scopes are inclusive.
+    pub child_laps: Vec<BuilderSpan>,
     /// Wall milliseconds from dispatch.
     pub wall: f64,
+    pub(crate) trace: trace::TargetTrace,
 }
+
+type PartWork = Box<dyn FnOnce(&HourView<'_>, &mut BuilderSpans) -> Part + Send>;
 
 enum Part {
     Political(io::Result<(Arc<Political>, Arc<Borders>)>),
@@ -644,6 +706,10 @@ impl Memos {
 
 enum Event {
     Shutdown,
+    PoolSpace,
+    ResultSpace,
+    Frame { ticket: u64, key: (BranchId, Hour), reply: source_mailbox::Reply<Current, trace::DecodeSample> },
+    Colour { ticket: u64, key: (BranchId, Hour), folded: Box<dispatch_plan::ColourFolded> },
     Want,
     Part {
         ticket: u64,
@@ -652,6 +718,7 @@ enum Event {
         hour: Hour,
         name: &'static str,
         timing: PartTiming,
+        children: Vec<BuilderSpan>,
         part: Box<Part>,
     },
 }
@@ -692,69 +759,16 @@ impl Resources {
         }
         // The decoder owns Replay, so its address cannot be reused while this
         // weak entry can upgrade. No bytes or decoder are copied per map.
-        let decoder = Arc::new(SharedDecoder(Mutex::new(DecoderState {
-            playback: Playback::unloaded(replay)?,
-            frames: BTreeMap::new(),
-        })));
+        let decoder = Arc::new(SharedDecoder::new(replay)?);
         decoders.insert(key, Arc::downgrade(&decoder));
         Ok(decoder)
-    }
-}
-
-pub struct SharedDecoder(Mutex<DecoderState>);
-
-struct DecoderState {
-    playback: Playback,
-    // Weak entries share frames already held by visible/in-flight maps without
-    // retaining a second historical payload cache. One block/current per source
-    // is held by Playback; the registry itself owns only bounded metadata.
-    frames: BTreeMap<(BranchId, Hour), Weak<replay_frame::frame::DecodedFrame>>,
-}
-
-impl SharedDecoder {
-    pub fn seed(&self, mut playback: Playback) -> io::Result<()> {
-        // Asset/source loaders call this off the UI. Install the host's
-        // committed checkpoint reader before this source serves hour workers.
-        if let Some(source) = playback.checkpoint_source() {
-            match source.open() {
-                Ok(Some(checkpoints)) => playback = playback.with_checkpoints(checkpoints),
-                Ok(None) => {}
-                Err(error) => eprintln!(
-                    "Map checkpoint binding unavailable: {error}; using the replay reader"
-                ),
-            }
-        }
-        let mut decoder = self.0.lock().map_err(|_| stopped())?;
-        if let Current::Frame(frame) = playback.current() {
-            decoder
-                .frames
-                .insert((frame.branch, frame.hour), Arc::downgrade(frame));
-        }
-        decoder.playback = playback;
-        Ok(())
-    }
-
-    fn frame(&self, branch: BranchId, hour: Hour) -> io::Result<Current> {
-        let mut decoder = self.0.lock().map_err(|_| stopped())?;
-        if let Some(frame) = decoder.frames.get(&(branch, hour)).and_then(Weak::upgrade) {
-            return Ok(Current::Frame(frame));
-        }
-        decoder.playback.seek(branch, hour)?;
-        let current = decoder.playback.current().clone();
-        decoder.frames.retain(|_, frame| frame.strong_count() > 0);
-        if decoder.frames.len() >= FRAME_CACHE {
-            decoder.frames.pop_first();
-        }
-        if let Current::Frame(frame) = &current {
-            decoder.frames.insert((branch, hour), Arc::downgrade(frame));
-        }
-        Ok(current)
     }
 }
 
 /// An hour dispatched and not yet assembled.
 struct Pending {
     ticket: u64,
+    trace: trace::TargetTrace,
     current: Current,
     alive: Arc<AtomicBool>,
     started: Instant,
@@ -772,6 +786,7 @@ struct Pending {
     /// same part in the same fixed order whatever arrives first.
     error_rank: Option<u8>,
     laps: Vec<(&'static str, PartTiming)>,
+    child_laps: Vec<(&'static str, Vec<BuilderSpan>)>,
     view: View,
 }
 
@@ -806,6 +821,15 @@ fn lap_rank(name: &str) -> u8 {
     }
 }
 
+/// Flatten completed child scopes in the same fixed part order as parent laps.
+fn ordered_child_laps(mut parts: Vec<(&'static str, Vec<BuilderSpan>)>) -> Vec<BuilderSpan> {
+    parts.sort_by_key(|(name, _)| lap_rank(name));
+    parts
+        .into_iter()
+        .flat_map(|(_, children)| children)
+        .collect()
+}
+
 impl Pending {
     /// Records a part failure only when no higher-priority part has failed,
     /// so concurrent failures name the same part every run.
@@ -821,6 +845,7 @@ impl Pending {
         ticket: u64,
         name: &'static str,
         timing: impl Into<PartTiming>,
+        children: Vec<BuilderSpan>,
         part: Part,
     ) -> bool {
         // A seek may cancel and then request the same hour within one epoch.
@@ -830,6 +855,9 @@ impl Pending {
         }
         self.received += 1;
         self.laps.push((name, timing.into()));
+        if !children.is_empty() {
+            self.child_laps.push((name, children));
+        }
         let rank = part_rank(&part);
         match part {
             Part::Political(result) => match result {
@@ -890,6 +918,7 @@ impl Pending {
             ("fog", Part::Fog(Ok(Arc::clone(&parts.fog)))),
             ("snow", Part::Snow(Ok(Arc::clone(&parts.snow)))),
         ] {
+            self.trace.finish(name, "reused");
             self.take(
                 self.ticket,
                 name,
@@ -897,6 +926,7 @@ impl Pending {
                     ms: 0.0,
                     cpu_ms: Some(0.0),
                 },
+                Vec::new(),
                 part,
             );
         }
@@ -1069,9 +1099,9 @@ impl FrameCache {
 /// Decoding is serial (each hour applies its deltas to the one before), so it
 /// was the coordinator's own work between dispatches: 1–7 ms an hour, a
 /// keyframe 31–34 ms and a block boundary 0.5–1 s, during which no hour was
-/// dispatched. Here the coordinator only takes decoded hours from
-/// [`DecodeLane::frame`], and the lane's [`Playback`] reads the next block
-/// ahead through its [`BlockReader`].
+/// dispatched. The coordinator posts requests to the lane mailbox and receives
+/// readiness events without waiting on the lane.
+/// The lane's [`Playback`] reads the next block ahead through its [`BlockReader`].
 ///
 /// The lane runs below normal priority, as the builders do, so it never
 /// competes with the window's own thread.
@@ -1080,6 +1110,7 @@ struct DecodeLane {
 }
 
 struct LaneShared {
+    mailbox: OnceLock<Arc<SourceMailbox>>,
     state: Mutex<LaneState>,
     changed: Condvar,
 }
@@ -1110,6 +1141,8 @@ struct LaneState {
     /// The hour the coordinator is waiting for, decoded before anything else.
     urgent: Option<(BranchId, Hour)>,
     frames: FrameCache,
+    /// PROFILE metadata follows the same cache lifetime; no allocation when disabled.
+    decode_profile: Option<BTreeMap<(BranchId, Hour), trace::DecodeSample>>,
     /// Set by the lane's owner to stop the thread.
     stop: bool,
     /// Set when the thread has ended, however it ended.
@@ -1149,6 +1182,9 @@ impl LaneState {
     fn evict(&mut self) {
         let spare: BTreeSet<_> = self.window().iter().copied().chain(self.urgent).collect();
         self.frames.evict_except(FRAME_CACHE_BYTES, &spare);
+        if let Some(profile) = &mut self.decode_profile {
+            profile.retain(|key, _| self.frames.contains_key(key));
+        }
     }
 }
 
@@ -1160,15 +1196,27 @@ impl Drop for LaneExit<'_> {
     fn drop(&mut self) {
         DecodeLane::lock(self.0).dead = true;
         self.0.changed.notify_all();
+        if let Some(mailbox) = self.0.mailbox.get() { mailbox.stop(); }
     }
 }
 
 impl DecodeLane {
     fn start(playback: Playback) -> io::Result<Self> {
         let shared = Arc::new(LaneShared {
+            mailbox: OnceLock::new(),
             state: Mutex::new(LaneState::default()),
             changed: Condvar::new(),
         });
+        let weak = Arc::downgrade(&shared);
+        let mailbox = SourceMailbox::new(move |_| {
+            let Some(shared) = weak.upgrade() else { return false };
+            // Same lock as the empty-check/Condvar sleep: no missed request wake.
+            let state = Self::lock(&shared);
+            if state.stop || state.dead { return false }
+            shared.changed.notify_all();
+            true
+        });
+        let _ = shared.mailbox.set(mailbox);
         let lane = Arc::clone(&shared);
         thread::Builder::new()
             .name("hour decoder".into())
@@ -1187,25 +1235,43 @@ impl DecodeLane {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn client(&self) -> Arc<SourceMailbox> {
+        self.shared.mailbox.get().expect("decode mailbox").clone()
+    }
+
     fn run(shared: &LaneShared, mut playback: Playback) {
         'next: loop {
-            let (target, behind) = {
+            let (target, behind, read) = {
                 let mut state = Self::lock(shared);
                 loop {
-                    if state.stop {
-                        return;
+                    if state.stop { return; }
+                    if let Some(read) = shared.mailbox.get().and_then(|mailbox| mailbox.take()) {
+                        let target = read.key;
+                        if let Some(current) = state.frames.get(&target) {
+                            state.served = Some(target);
+                            let sample = state.decode_profile.as_ref().and_then(|p| p.get(&target)).copied();
+                            drop(state);
+                            read.ready(current, sample);
+                            shared.changed.notify_all();
+                            continue 'next;
+                        }
+                        state.urgent = Some(target);
+                        break (target, state.behind, Some(read));
                     }
-                    if let Some(target) = state.next() {
-                        break (target, state.behind);
-                    }
-                    state = shared
-                        .changed
-                        .wait(state)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(target) = state.next() { break (target, state.behind, None); }
+                    state = shared.changed.wait(state).unwrap_or_else(|p| p.into_inner());
                 }
             };
             let (branch, hour) = target;
-            if !Self::walk(shared, &mut playback, target) {
+            let decode_clock = trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
+            let walked = if let Some(read) = &read {
+                Self::walk_for(shared, &mut playback, target, Some(read))
+            } else { Self::walk(shared, &mut playback, target) };
+            if !walked {
+                let mut state = Self::lock(shared);
+                if read.is_some() && state.urgent == Some(target) { state.urgent = None; }
+                drop(state);
+                drop(read); // terminal cancellation acknowledgement retains the credit until here
                 continue 'next;
             }
             let mut passed = Vec::new();
@@ -1215,21 +1281,31 @@ impl DecodeLane {
                 }
             }) {
                 Ok(()) => playback.current().clone(),
-                Err(error) => Current::Gap {
-                    branch,
-                    hour,
-                    reason: error.to_string(),
-                },
+                Err(error) => Current::Gap { branch, hour, reason: error.to_string() },
             };
+            let mut sample = decode_clock.finish(branch, hour);
             let mut state = Self::lock(shared);
+            let mut profile_keys = sample.map(|_| Vec::new());
             for (at, frame) in passed {
                 if !state.frames.contains_key(&(branch, at)) {
                     state.frames.insert((branch, at), frame);
+                    if let Some(keys) = &mut profile_keys { keys.push((branch, at)); }
                 }
             }
-            state.frames.insert(target, current);
+            state.frames.insert(target, current.clone());
+            if let Some(sample) = &mut sample {
+                sample.ready = trace::now(true).expect("enabled");
+                let profile = state.decode_profile.get_or_insert_with(BTreeMap::new);
+                for key in profile_keys.into_iter().flatten() { profile.insert(key, *sample); }
+                profile.insert(target, *sample);
+            }
+            if read.is_some() {
+                state.served = Some(target);
+                if state.urgent == Some(target) { state.urgent = None; }
+            }
             state.evict();
             drop(state);
+            if let Some(read) = read { read.ready(current, sample); }
             shared.changed.notify_all();
         }
     }
@@ -1238,6 +1314,12 @@ impl DecodeLane {
     /// ending with a check that the target is still wanted. False when the
     /// walk was abandoned; the last step is left to the caller.
     fn walk(shared: &LaneShared, playback: &mut Playback, target: (BranchId, Hour)) -> bool {
+        Self::walk_for(shared, playback, target, None)
+    }
+
+    fn walk_for(shared: &LaneShared, playback: &mut Playback, target: (BranchId, Hour),
+        read: Option<&SourceRead>) -> bool {
+        if read.is_some_and(|read| read.cancelled()) { return false }
         let (branch, hour) = target;
         let mut from = playback.walk_start(branch, hour);
         while let Some(at) = from.filter(|at| hour - at > DECODE_STEP) {
@@ -1246,7 +1328,7 @@ impl DecodeLane {
                 break;
             }
             from = Some(step);
-            if !Self::lock(shared).still_wanted(target) {
+            if read.is_some_and(|read| read.cancelled()) || !Self::lock(shared).still_wanted(target) {
                 return false;
             }
         }
@@ -1261,42 +1343,6 @@ impl DecodeLane {
         drop(state);
         self.shared.changed.notify_all();
     }
-
-    /// The decoded hour, waiting for the lane to reach it. The hour asked for
-    /// is decoded first, wanted or not, so the coordinator never waits on an
-    /// hour outside the lane's window; a stopped lane answers with a gap.
-    fn frame(&self, branch: BranchId, hour: Hour) -> Current {
-        let key = (branch, hour);
-        let mut state = Self::lock(&self.shared);
-        loop {
-            if let Some(current) = state.frames.get(&key) {
-                if state.urgent == Some(key) {
-                    state.urgent = None;
-                }
-                state.served = Some(key);
-                drop(state);
-                // The window moved on: decode further ahead.
-                self.shared.changed.notify_all();
-                return current;
-            }
-            if state.dead {
-                return Current::Gap {
-                    branch,
-                    hour,
-                    reason: LANE_STOPPED.to_owned(),
-                };
-            }
-            if state.urgent != Some(key) {
-                state.urgent = Some(key);
-                self.shared.changed.notify_all();
-            }
-            state = self
-                .shared
-                .changed
-                .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-    }
 }
 
 impl Drop for DecodeLane {
@@ -1306,22 +1352,34 @@ impl Drop for DecodeLane {
     }
 }
 
-type Requested = (u64, Want);
+type SourceMailbox = source_mailbox::Mailbox<(BranchId, Hour), Current, trace::DecodeSample>;
+type SourceRead = source_mailbox::Read<(BranchId, Hour), Current, trace::DecodeSample>;
+type SourceHandle = source_mailbox::ReadHandle<(BranchId, Hour), Current, trace::DecodeSample>;
+
+type Requested = (u64, Want, Option<trace::Stamp>);
 
 struct Coordinator {
-    device: Arc<OnceLock<eframe::wgpu::Device>>,
     content: Arc<Content>,
+    state: CoordinatorState,
+}
+
+// Content-independent transport state, moved unchanged so the real Driver can
+// be exercised with controlled source replies and synthetic builder products.
+struct CoordinatorState {
+    device: Arc<OnceLock<eframe::wgpu::Device>>,
     playback: Playback,
     shared_decoder: Option<Arc<SharedDecoder>>,
     /// The playback decode lane, unless a shared decoder serves this view.
     lane: Option<DecodeLane>,
     requested: Arc<Mutex<Option<Requested>>>,
+    profile: trace::CoordinatorProfile,
+    profile_want: Option<trace::Stamp>,
+    profile_received: Option<trace::Stamp>,
     /// The window's engaged-flag index, which the overlay part reads when it
     /// is for the wanted perspective's country; it never starts one.
     engaged: Engaged,
     want: Option<Want>,
     epoch: u64,
-    pending: BTreeMap<(BranchId, Hour), Pending>,
     /// Hours of the current epoch sent to the window, with the order they were
     /// sent in, until the window says it no longer holds them.
     sent: BTreeMap<(BranchId, Hour), u64>,
@@ -1336,112 +1394,21 @@ struct Coordinator {
     parallel: usize,
     events: Sender<Event>,
     outbox: mpsc::SyncSender<Built>,
+    result_space: Arc<AtomicBool>,
 }
 
-impl Coordinator {
-    fn run(mut self, inbox: Receiver<Event>) {
-        let run_started = Instant::now();
-        loop {
-            let event = if self.next_hour().is_some() && self.pending.len() < self.parallel {
-                match inbox.try_recv() {
-                    Ok(event) => Some(event),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => return,
-                }
-            } else {
-                match inbox.recv() {
-                    Ok(event) => Some(event),
-                    Err(_) => return,
-                }
-            };
-            match event {
-                Some(Event::Shutdown) => {
-                    self.invalidate();
-                    return;
-                }
-                Some(Event::Want) => {
-                    let requested = self
-                        .requested
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .take();
-                    if let Some((epoch, want)) = requested {
-                        self.set_want(epoch, want);
-                    }
-                }
-                Some(Event::Part {
-                    ticket,
-                    epoch,
-                    branch,
-                    hour,
-                    name,
-                    timing,
-                    part,
-                }) => {
-                    if epoch == self.epoch
-                        && let Some(pending) = self.pending.get_mut(&(branch, hour))
-                        && pending.take(ticket, name, timing, *part)
-                    {
-                        let pending = self.pending.remove(&(branch, hour)).expect("present");
-                        pending.alive.store(false, Ordering::Relaxed);
-                        // Laps arrive in pool order; report them in fixed
-                        // part order so the profile reads the same.
-                        let mut laps = pending.laps.clone();
-                        laps.sort_by_key(|(name, _)| lap_rank(name));
-                        if let Some(parts) = pending.reusable()
-                            && self
-                                .want
-                                .as_ref()
-                                .is_some_and(|want| want.keeps_reusable((branch, hour)))
-                        {
-                            self.reusable.insert((branch, hour), parts);
-                        }
-                        let view = pending.view;
-                        let current = pending.current.clone();
-                        let started = pending.started;
-                        let layers = pending.layers();
-                        let built = Built {
-                            epoch,
-                            branch,
-                            hour,
-                            view,
-                            current,
-                            wall: started.elapsed().as_secs_f64() * 1000.0,
-                            laps,
-                            layers,
-                        };
-                        if viewer_foundation::profile_writer::profiling() {
-                            viewer_foundation::profile_writer::profile_print(format!(
-                                "PROFILE hour_build hour {hour} wall {:.3} parts_elapsed {:.3} elapsed {:.6}",
-                                built.wall,
-                                built.laps.iter().map(|(_, timing)| timing.ms).sum::<f64>(),
-                                run_started.elapsed().as_secs_f64(),
-                            ));
-                        }
-                        if !self.send(built) {
-                            return;
-                        }
-                    }
-                }
-                None => {}
-            }
-            while self.pending.len() < self.parallel
-                && let Some(hour) = self.next_hour()
-            {
-                if !self.dispatch(hour) {
-                    return;
-                }
-            }
-        }
-    }
+impl std::ops::Deref for Coordinator {
+    type Target = CoordinatorState;
+    fn deref(&self) -> &Self::Target { &self.state }
+}
+impl std::ops::DerefMut for Coordinator {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.state }
+}
 
+impl CoordinatorState {
     /// Starts a new epoch; mode-independent results may still serve its hours.
     fn invalidate(&mut self) {
         self.epoch += 1;
-        for pending in self.pending.values() {
-            pending.alive.store(false, Ordering::Relaxed);
-        }
-        self.pending.clear();
         self.sent.clear();
         self.slots.clear();
     }
@@ -1464,19 +1431,7 @@ impl Coordinator {
             .playback
             .range(want.branch)
             .unwrap_or((want.hour, want.hour));
-        let keep: BTreeSet<(BranchId, Hour)> = want
-            .hours(range)
-            .into_iter()
-            .map(|hour| (want.branch, hour))
-            .collect();
         self.reusable.retain(|key, _| want.keeps_reusable(*key));
-        self.pending.retain(|key, pending| {
-            let wanted = want.keeps_pending(*key, &keep);
-            if !wanted {
-                pending.alive.store(false, Ordering::Relaxed);
-            }
-            wanted
-        });
         // Keep an hour the window holds, or one still on its way to it.
         self.sent.retain(|key, order| {
             want.keeps_reusable(*key)
@@ -1488,7 +1443,7 @@ impl Coordinator {
             .next_back()
             .map(|(key, _)| *key);
         self.slots.retain(|key, _| {
-            want.keeps_reusable(*key) || self.pending.contains_key(key) || Some(*key) == predecessor
+            want.keeps_reusable(*key) || Some(*key) == predecessor
         });
         if let Some(lane) = &self.lane {
             lane.want(
@@ -1506,79 +1461,36 @@ impl Coordinator {
         self.want = Some(want);
     }
 
-    /// Sends a built hour to the window. Returns false when the window has gone.
-    fn send(&mut self, built: Built) -> bool {
-        self.sent.insert((built.branch, built.hour), self.sends);
-        self.sends += 1;
-        self.outbox.send(built).is_ok()
-    }
+}
 
-    /// The first wanted hour neither sent nor pending.
-    fn next_hour(&self) -> Option<Hour> {
-        let want = self.want.as_ref()?;
-        let range = self.playback.range(want.branch)?;
-        want.hours(range).into_iter().find(|hour| {
-            let key = (want.branch, *hour);
-            !self.sent.contains_key(&key)
-                && !self.pending.contains_key(&key)
-                && (want.branch != key.0 || !want.have.contains(hour))
+impl Coordinator {
+    fn run(self, inbox: Receiver<Event>) {
+        coordinator::run(self, inbox);
+    }
+}
+
+impl coordinator::BuildTarget for Coordinator {
+    fn colour_work(&self, plan: &mut dispatch_plan::DispatchPlan, current: Current) -> Box<dyn FnOnce() + Send> {
+        let content = self.content.clone();
+        let mode = plan.want.map_mode.clone();
+        let perspective = plan.want.perspective.clone();
+        plan.colour_work(current, self.events.clone(), move |frame, colour| {
+            Ok(HourView::new(&content, frame, 0.0).map_mode_fill(&mode, &perspective, colour)?.colour)
         })
     }
 
-    /// The decoded hour: from the shared decoder of a dashboard view, or from
-    /// the decode lane, which keeps the hours the want reaches decoded ahead.
-    fn frame(&mut self, branch: BranchId, hour: Hour) -> io::Result<Current> {
-        if let Some(decoder) = &self.shared_decoder {
-            return decoder.frame(branch, hour);
-        }
-        let lane = self.lane.as_ref().ok_or_else(stopped)?;
-        Ok(lane.frame(branch, hour))
-    }
-
-    /// Decodes an hour and hands its parts to the pool. Returns false when the
-    /// window has gone.
-    fn dispatch(&mut self, hour: Hour) -> bool {
-        let want = self.want.clone().expect("next_hour found a want");
+    /// Constructs the target's jobs. No decode, admission or slot wait here.
+    fn prepare(&mut self, plan: dispatch_plan::DispatchPlan, current: Current) -> dispatch_plan::PreparedTarget {
+        use dispatch_plan::{DispatchPlan, HeldJob, PreparedTarget};
+        let DispatchPlan { ticket, want, epoch, hour, started, trace, previous,
+            neighbours, colour, history_timing, .. } = plan;
         let branch = want.branch;
-        let epoch = self.epoch;
-        let started = Instant::now();
-        let nearby = neighbour_slots(&self.slots, branch, hour);
-        let previous = nearby
-            .iter()
-            .find(|(key, _)| key.1 < hour)
-            .map(|(key, slots)| (key.1, Arc::clone(&slots.political)));
-        let neighbours: Vec<Slots> = nearby.into_iter().map(|(_, slots)| slots.clone()).collect();
-        // The playhead may jump past unbuilt hours between wants. Scripted
-        // colours still need their intervening recorded refreshes; other
-        // layers are built only for the current request window.
-        let mut mode_frames = Vec::new();
-        let mode_from = previous.as_ref().map(|(from, _)| from.saturating_add(1));
-        if matches!(
-            &want.map_mode,
-            viewer_world::map::map_mode::MapMode::Scripted(_)
-        ) && let Some(from) = mode_from
-        {
-            for at in from..hour {
-                mode_frames.push(self.frame(branch, at).unwrap_or_else(|error| Current::Gap {
-                    branch,
-                    hour: at,
-                    reason: error.to_string(),
-                }));
-            }
-        }
-        let current = match self.frame(branch, hour) {
-            Ok(current) => current,
-            Err(error) => Current::Gap {
-                branch,
-                hour,
-                reason: error.to_string(),
-            },
-        };
         let frame = match &current {
             Current::Frame(frame) => Arc::clone(frame),
             Current::Gap { reason, .. } => {
                 let reason = reason.clone();
-                return self.send(Built {
+                trace.assembled();
+                return PreparedTarget::Ready(Box::new(Built {
                     epoch,
                     branch,
                     hour,
@@ -1586,16 +1498,18 @@ impl Coordinator {
                     current,
                     layers: Err(reason),
                     laps: Vec::new(),
+                    child_laps: Vec::new(),
                     wall: 0.0,
-                });
+                    trace,
+                }));
             }
         };
         let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
         let alive = Arc::new(AtomicBool::new(true));
-        let ticket = next_id();
         let reusable = self.reusable.get(&(branch, hour)).cloned();
         let mut pending = Pending {
             ticket,
+            trace: trace.clone(),
             current: current.clone(),
             alive: Arc::clone(&alive),
             started,
@@ -1611,12 +1525,15 @@ impl Coordinator {
             error: None,
             error_rank: None,
             laps: vec![("decode", decode_ms.into())],
+            child_laps: Vec::new(),
             view: want.view,
         };
+        if let Some(timing) = history_timing {
+            pending.laps.push(("political_history", timing));
+        }
         if let Some(parts) = &reusable {
             pending.reuse(parts);
         }
-        self.pending.insert((branch, hour), pending);
         let slots = Slots::new();
         if let Some(parts) = &reusable {
             Fill(Arc::clone(&slots.rails)).set(Some(Arc::clone(&parts.rails)));
@@ -1627,35 +1544,44 @@ impl Coordinator {
         // pool therefore took first; a cancelled or panicked part still fills
         // its slots, so no wait is for ever.
         self.slots.insert((branch, hour), slots.clone());
-        let submit = |name: &'static str, work: Box<dyn FnOnce(&HourView<'_>) -> Part + Send>| {
+        let mut jobs = VecDeque::new();
+        let mut submit = |name: &'static str, work: PartWork| {
             let content = Arc::clone(&self.content);
             let frame = Arc::clone(&frame);
             let alive = Arc::clone(&alive);
             let events = self.events.clone();
-            self.pool.submit(Box::new(move || {
+            trace.enqueue(name);
+            let job_trace = trace.clone();
+            jobs.push_back(HeldJob { name, work: Box::new(move || {
+                job_trace.start(name);
                 if !alive.load(Ordering::Relaxed) {
                     // Dropping `work` fills its slots with nothing.
+                    job_trace.finish(name, "cancelled");
                     return;
                 }
                 let started = Instant::now();
                 let view = HourView::new(&content, &frame, 0.0);
-                let cpu_started = viewer_foundation::profile_writer::profiling()
+                let profiling = viewer_foundation::profile_writer::profiling();
+                let mut children = BuilderSpans::new(profiling);
+                let cpu_started = profiling
                     .then(viewer_foundation::profiling::current_thread_cpu_time)
                     .flatten();
                 // A panicking builder must not take its pool thread with it:
                 // enough dead threads would stall every later hour with the
                 // window waiting at the hour boundary. The panic becomes the
                 // hour's error instead, which the window shows.
-                let part =
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&view))) {
-                        Ok(part) => part,
-                        Err(_) => Part::failed(name),
-                    };
+                let part = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    work(&view, &mut children)
+                })) {
+                    Ok(part) => part,
+                    Err(_) => Part::failed(name),
+                };
                 let cpu_ms = cpu_started.and_then(|start| {
                     viewer_foundation::profiling::current_thread_cpu_time()?
                         .checked_sub(start)
                         .map(|used| used.as_secs_f64() * 1000.0)
                 });
+                job_trace.finish(name, "done");
                 let _ = events.send(Event::Part {
                     ticket,
                     epoch,
@@ -1666,9 +1592,10 @@ impl Coordinator {
                         ms: started.elapsed().as_secs_f64() * 1000.0,
                         cpu_ms,
                     },
+                    children: children.into_records(),
                     part: Box::new(part),
                 });
-            }));
+            }) });
         };
         {
             let fill = Fill(Arc::clone(&slots.political));
@@ -1681,22 +1608,16 @@ impl Coordinator {
             // refreshes of skipped recorded hours. With no predecessor the
             // first shown hour starts cold, as a seek does.
             let previous = previous.map(|(_, slot)| slot);
-            let content = Arc::clone(&self.content);
             submit(
                 "political",
-                Box::new(move |view| {
+                Box::new(move |view, _spans| {
                     Part::Political((|| {
                         let naval = view.naval_fill(&political_perspective)?;
-                        let previous = previous.and_then(|slot| slot.wait());
-                        let colour = previous
-                            .as_ref()
-                            .and_then(|political| political.key.mode())
-                            .and_then(|mode| mode.colour.clone());
-                        let colour = carry_colour(colour, mode_frames, |frame, colour| {
-                            Ok(HourView::new(&content, frame, 0.0)
-                                .map_mode_fill(&map_mode, &political_perspective, colour)?
-                                .colour)
-                        })?;
+                        let colour = match colour {
+                            Some(colour) => colour?,
+                            None => previous.and_then(|slot| slot.wait())
+                                .and_then(|political| political.key.mode().and_then(|mode| mode.colour.clone())),
+                        };
                         let mode = view.map_mode_fill(
                             &map_mode,
                             &political_perspective,
@@ -1760,7 +1681,7 @@ impl Coordinator {
         let names_mode = want.map_mode.clone();
         submit(
             "names",
-            Box::new(move |view| {
+            Box::new(move |view, _spans| {
                 Part::Names(view.name_areas(&names_mode).and_then(|areas| {
                     memos.names.get_or_insert_with(areas.clone(), || {
                         Ok(Arc::new(view.place_name_areas(&areas, &memos.placed)))
@@ -1772,6 +1693,7 @@ impl Coordinator {
             (want.view.camera, want.view.viewport, want.view.ui_scale);
         let overlay_perspective = want.perspective.clone();
         let overlay_counters = want.counters.clone();
+        let temperature_frame = Arc::clone(&frame);
         // The window's index when it is for this perspective's country, so a
         // prebuilt hour carries the exact flags once the index covers it.
         let overlay_engaged = self
@@ -1783,30 +1705,42 @@ impl Coordinator {
             .cloned();
         submit(
             "overlay",
-            Box::new(move |view| {
+            Box::new(move |view, spans| {
+                spans.measure("overlay.temperature", |_| {
+                    view.counter_content
+                        .province_hover
+                        .prepare_temperature(&temperature_frame);
+                });
                 Part::Overlay((|| {
                     // Raid icons come from the window's raid lane
                     // ([`crate::raid_lane`]), which chains hours.
-                    let tables = view.hour_tables_with_raids(
-                        &overlay_perspective,
-                        Arc::default(),
-                        overlay_engaged.as_deref(),
-                    )?;
-                    tables.warm_counter_flags(&view.icons.counters);
-                    let overlay = view.prepare_overlay_cached(
-                        camera,
-                        viewport,
-                        ui_scale,
-                        &tables,
-                        &overlay_counters,
-                        &Default::default(),
-                    )?;
+                    let tables = spans.measure("overlay.tables", |spans| {
+                        view.hour_tables_with_raids_profiled(
+                            &overlay_perspective,
+                            Arc::default(),
+                            overlay_engaged.as_deref(),
+                            spans,
+                        )
+                    })?;
+                    spans.measure("overlay.flags_warm", |_| {
+                        tables.warm_counter_flags(&view.icons.counters)
+                    });
+                    let overlay = spans.measure("overlay.projection", |spans| {
+                        view.prepare_overlay_profiled(
+                            camera,
+                            viewport,
+                            ui_scale,
+                            &tables,
+                            &overlay_counters,
+                            spans,
+                        )
+                    })?;
                     Ok(Box::new((overlay, tables)))
                 })())
             }),
         );
         if reusable.is_some() {
-            return true;
+            return PreparedTarget::Parts(Box::new(pending), jobs);
         }
         {
             let fill = Fill(Arc::clone(&slots.rails));
@@ -1815,12 +1749,12 @@ impl Coordinator {
             let device = Arc::clone(&self.device);
             submit(
                 "rails",
-                Box::new(move |view| {
+                Box::new(move |view, _spans| {
                     Part::Rails(RailNetwork::read(view.frame).and_then(|network| {
-                        let rails = memos.rails.get_or_insert_with(network.clone(), || {
+                        let rails = memo_after_neighbours(&memos.rails, network.clone(), || wait_all(near), |near| {
                             let mesh = view.rail_mesh_of(&network);
                             let bridges = view.bridges.field(&mesh);
-                            Rails::share(wait_all(near), (mesh, bridges), device.get())
+                            Rails::share(near, (mesh, bridges), device.get())
                         })?;
                         fill.set(Some(Arc::clone(&rails)));
                         Ok(rails)
@@ -1834,14 +1768,19 @@ impl Coordinator {
             let building_perspective = want.perspective.clone();
             submit(
                 "buildings",
-                Box::new(move |view| {
-                    Part::Buildings(view.map_building_field(&building_perspective).map(
-                        |(field, summary)| {
-                            let buildings = Shared::share(wait_all(near), field);
-                            fill.set(Some(Arc::clone(&buildings)));
-                            (buildings, summary.warnings())
-                        },
-                    ))
+                Box::new(move |view, spans| {
+                    Part::Buildings(
+                        view.map_building_field_profiled(&building_perspective, spans)
+                            .map(|(field, summary)| {
+                                let near = spans.measure("buildings.share_wait", |_| wait_all(near));
+                                let buildings = spans
+                                    .measure("buildings.share", |_| Shared::share(near, field));
+                                fill.set(Some(Arc::clone(&buildings)));
+                                let warnings =
+                                    spans.measure("buildings.warnings", |_| summary.warnings());
+                                (buildings, warnings)
+                            }),
+                    )
                 }),
             );
         }
@@ -1849,15 +1788,16 @@ impl Coordinator {
         let show_allied_plans = want.show_allied_plans;
         submit(
             "movers",
-            Box::new(move |view| {
+            Box::new(move |view, spans| {
                 Part::Movers((|| {
                     let mut laps = MoversLaps::new(epoch, branch, hour);
                     // The raid arrows' units and the trade-route convoys join the unit models.
                     let (orders, convoys) =
                         view.orders_and_convoys(&movers_perspective, show_allied_plans)?;
                     laps.lap("orders_and_convoys");
-                    let mut units = view.prepare_unit_models(&movers_perspective)?;
-                    laps.lap("prepare_unit_models");
+                    let mut units = laps.split("prepare_unit_models", |lap| {
+                        view.prepare_unit_models_with_spans(&movers_perspective, lap, spans)
+                    })?;
                     units.add_raid_units(&view.unit_models, &orders.raid_units);
                     laps.lap("add_raid_units");
                     if let Ok(defines) = &view.trade_routes {
@@ -1895,26 +1835,39 @@ impl Coordinator {
         let memos = Arc::clone(&self.memos);
         submit(
             "fog",
-            Box::new(move |view| {
+            Box::new(move |view, spans| {
                 Part::Fog((|| {
-                    let vision = view.vision(&fog_perspective)?;
+                    let vision = spans.measure("fog.vision", |_| view.vision(&fog_perspective))?;
                     let fog = vision.province_fog();
-                    let intel = memos.intel.get_or_insert_with(fog.cloned(), || {
-                        textures::intel_map(&view.map, fog).map(Arc::new)
+                    let key = spans.measure("fog.intel_key", |_| fog.cloned());
+                    let intel = spans.measure("fog.intel_lookup", |spans| {
+                        memos.intel.get_or_insert_with(key, || {
+                            spans.measure("fog.intel_build", |_| {
+                                view.intel_map_from_visibility(fog).map(Arc::new)
+                            })
+                        })
                     })?;
-                    let limitations = view.limitations_with(&fog_perspective, Some(&intel))?;
-                    let music = view.music_chances(vision.ours()).map(Arc::new);
-                    let battles = view.battle_sounds().map(Arc::new);
+                    let limitations = spans.measure("fog.limitations", |_| {
+                        view.limitations_with(&fog_perspective, Some(&intel))
+                    })?;
+                    let music = spans.measure("fog.music", |_| {
+                        view.music_chances(vision.ours()).map(Arc::new)
+                    });
+                    let battles =
+                        spans.measure("fog.battles", |_| view.battle_sounds().map(Arc::new));
                     Ok(Arc::new(FogPart {
                         intel,
                         limitations,
-                        header: Arc::new(Header {
-                            viewing: view
-                                .vision(&fog_perspective)
-                                .and_then(|vision| view.viewing_tag(&vision))
-                                .ok(),
+                        header: spans.measure("fog.header", |_| {
+                            Arc::new(Header {
+                                viewing: view
+                                    .vision(&fog_perspective)
+                                    .and_then(|vision| view.viewing_tag(&vision))
+                                    .ok(),
+                            })
                         }),
-                        map_text: Arc::new(view.map_text(&vision)),
+                        map_text: spans
+                            .measure("fog.map_text", |_| Arc::new(view.map_text(&vision))),
                         music,
                         battles,
                     }))
@@ -1924,7 +1877,7 @@ impl Coordinator {
         let memos = Arc::clone(&self.memos);
         submit(
             "snow",
-            Box::new(move |view| {
+            Box::new(move |view, _spans| {
                 Part::Snow(view.snow_cells().and_then(|cells| {
                     memos.snow.get_or_build(view.frame, (), |projected| {
                         weather::grid_from_cells(cells, projected).map(|mut snow| {
@@ -1935,7 +1888,7 @@ impl Coordinator {
                 }))
             }),
         );
-        true
+        PreparedTarget::Parts(Box::new(pending), jobs)
     }
 }
 
@@ -1956,6 +1909,7 @@ pub struct Pipeline {
     replay: Arc<Replay>,
     events: Requests,
     results: Receiver<Built>,
+    result_space: Arc<AtomicBool>,
     want: Option<Want>,
     epoch: u64,
     received: Cell<u64>,
@@ -2051,11 +2005,12 @@ impl Pipeline {
         checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
     ) -> io::Result<Self> {
         let (events, inbox) = mpsc::channel();
-        // At most one finished hour waits per hour in flight; a window that
-        // stops taking them holds the coordinator instead of a backlog. The
-        // window dropping `results` releases a coordinator blocked on it.
+        // Keep the original result-channel width. Complete unsent targets retain
+        // live credits, so a window that stops taking them bounds work rather
+        // than parking the event-driven coordinator on a channel send.
         let (outbox, results) = mpsc::sync_channel(parallel);
         let requested = Arc::new(Mutex::new(None));
+        let result_space = Arc::new(AtomicBool::new(false));
         let workers = Workers::new(Arc::clone(&pool) as _);
         let lane = match shared_decoder {
             Some(_) => None,
@@ -2071,16 +2026,19 @@ impl Pipeline {
         let engaged: Engaged = Arc::new(Mutex::new(None));
         let device = Arc::new(OnceLock::new());
         let coordinator = Coordinator {
-            device: Arc::clone(&device),
             content: Arc::clone(&content),
+            state: CoordinatorState {
+            device: Arc::clone(&device),
             playback: Playback::unloaded(Arc::clone(&replay))?,
             shared_decoder,
             lane,
             requested: Arc::clone(&requested),
+            profile: trace::CoordinatorProfile::new(),
+            profile_want: None,
+            profile_received: None,
             engaged: Arc::clone(&engaged),
             want: None,
             epoch: 0,
-            pending: BTreeMap::new(),
             sent: BTreeMap::new(),
             sends: 0,
             slots: BTreeMap::new(),
@@ -2090,6 +2048,8 @@ impl Pipeline {
             parallel,
             events: events.clone(),
             outbox,
+            result_space: result_space.clone(),
+            },
         };
         thread::Builder::new()
             .name("hour coordinator".into())
@@ -2103,6 +2063,7 @@ impl Pipeline {
             replay,
             events: Requests(events),
             results,
+            result_space,
             want: None,
             epoch: 0,
             received: Cell::new(0),
@@ -2194,7 +2155,11 @@ impl Pipeline {
             }
             let mut requested = self.requested.lock().map_err(|_| stopped())?;
             let wake = requested.is_none();
-            *requested = Some((self.epoch, want.clone()));
+            *requested = Some((
+                self.epoch,
+                want.clone(),
+                trace::now(viewer_foundation::profile_writer::profiling()),
+            ));
             drop(requested);
             if wake {
                 self.events.0.send(Event::Want).map_err(|_| stopped())?;
@@ -2211,10 +2176,14 @@ impl Pipeline {
         loop {
             match self.results.try_recv() {
                 Ok(hour) => {
+                    hour.trace.delivered();
                     self.received.set(self.received.get() + 1);
                     built.push(hour);
                 }
-                Err(mpsc::TryRecvError::Empty) => return Ok(built),
+                Err(mpsc::TryRecvError::Empty) => {
+                    if !built.is_empty() { self.results_freed(); }
+                    return Ok(built);
+                }
                 Err(mpsc::TryRecvError::Disconnected) => return Err(stopped()),
             }
         }
@@ -2223,8 +2192,16 @@ impl Pipeline {
     /// The next hour to finish, waiting for it.
     pub fn wait(&self) -> io::Result<Built> {
         let built = self.results.recv().map_err(|_| stopped())?;
+        built.trace.delivered();
         self.received.set(self.received.get() + 1);
+        self.results_freed();
         Ok(built)
+    }
+
+    fn results_freed(&self) {
+        if !self.result_space.swap(true, Ordering::AcqRel) {
+            let _ = self.events.0.send(Event::ResultSpace);
+        }
     }
 }
 
@@ -2326,6 +2303,7 @@ mod mode_tests {
     fn reused_part_deliveries_preserve_identity_and_wait_for_the_three_mode_parts() {
         let mut pending = Pending {
             ticket: 7,
+            trace: Default::default(),
             current: Current::Gap {
                 branch: 1,
                 hour: 10,
@@ -2345,6 +2323,7 @@ mod mode_tests {
             error: None,
             error_rank: None,
             laps: Vec::new(),
+            child_laps: Vec::new(),
             view: want().view,
         };
         let rails = Arc::new(Rails {
@@ -2352,16 +2331,22 @@ mod mode_tests {
             value: Default::default(),
             geometry: None,
         });
-        assert!(!pending.take(7, "rails", 0.0, Part::Rails(Ok(Arc::clone(&rails)))));
+        assert!(!pending.take(
+            7,
+            "rails",
+            0.0,
+            Vec::new(),
+            Part::Rails(Ok(Arc::clone(&rails)))
+        ));
         for name in ["buildings", "movers", "fog", "snow"] {
-            assert!(!pending.take(7, name, 0.0, Part::failed(name)));
+            assert!(!pending.take(7, name, 0.0, Vec::new(), Part::failed(name)));
         }
         assert!(Arc::ptr_eq(pending.rails.as_ref().unwrap(), &rails));
         assert_eq!(pending.received, 5);
         for name in ["political", "names"] {
-            assert!(!pending.take(7, name, 1.0, Part::failed(name)));
+            assert!(!pending.take(7, name, 1.0, Vec::new(), Part::failed(name)));
         }
-        assert!(pending.take(7, "overlay", 1.0, Part::failed("overlay")));
+        assert!(pending.take(7, "overlay", 1.0, Vec::new(), Part::failed("overlay")));
         assert_eq!(pending.received, PARTS);
     }
 }

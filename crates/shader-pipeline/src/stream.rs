@@ -252,6 +252,51 @@ impl Stream {
             && self.textures == other.textures
     }
 
+    /// Independent-owner fixture comparison: shader sources, defines, layouts,
+    /// states, strides and constants compare raw. Only texture identities are mapped.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn same_bindings_mapped_for_tests(
+        &self,
+        other: &Self,
+        mut same_texture: impl FnMut(&wgpu::TextureView, &wgpu::TextureView) -> bool,
+    ) -> bool {
+        let program = match (&self.program, &other.program) {
+            (None, None) => true,
+            (Some((a, al)), Some((b, bl))) => {
+                a.effect.source == b.effect.source
+                    && a.effect.defines == b.effect.defines
+                    && a.index == b.index && al == bl
+            }
+            _ => false,
+        };
+        program
+            && self.vertex_strides == other.vertex_strides
+            && self.state.blend == other.state.blend
+            && self.state.write_mask == other.state.write_mask
+            && self
+                .state
+                .samplers
+                .iter()
+                .map(|(k, s)| (*k, gpu::sampler_key(s)))
+                .eq(other
+                    .state
+                    .samplers
+                    .iter()
+                    .map(|(k, s)| (*k, gpu::sampler_key(s))))
+            && self.depth_stencil == other.depth_stencil
+            && self.rasterizer.as_ref().map(raster_key) == other.rasterizer.as_ref().map(raster_key)
+            && self.constants == other.constants
+            && self.known_constants == other.known_constants
+            && self.textures.len() == other.textures.len()
+            && self.textures.iter().zip(&other.textures).all(|((a_key, a), (b_key, b))| {
+                a_key == b_key && match (a, b) {
+                    (Some(a), Some(b)) => same_texture(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+            })
+    }
+
     /// Start a scoped render-to-texture pass with the caller's retained bindings.
     /// Keep this stream's device cache; later changes do not alter the caller.
     pub fn inherit_bindings(&mut self, caller: &Self) {

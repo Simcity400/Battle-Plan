@@ -1,11 +1,11 @@
 //! Political-map location and viewer-selected unit tooltip.
 use super::counter_content;
-use std::sync::Mutex;
 use viewer_foundation::map::native_text::FLAG;
 use viewer_foundation::tooltip_text::state_name as tooltip_text_state_name;
 mod air_region;
 mod border;
 pub(super) mod clock;
+mod inputs;
 mod mode_lines;
 pub mod naval_accidents;
 pub mod naval_mines;
@@ -19,9 +19,9 @@ mod strategic_navy;
 pub(super) mod units;
 mod weather;
 
-use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Argument as Arg, localisation::Localisation};
 use installed_content_states::states::StateDefinition;
+use inputs::Names;
 use replay_data::{rows::ProvinceRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -43,7 +43,7 @@ pub struct Content {
     /// What the hourly temperature pass reads ([`replay_data::temperature`]), and the last frame's
     /// derivation, which the next hour of the same anchor steps once from.
     pass: Result<replay_data::temperature::Content, String>,
-    derived: Mutex<replay_data::temperature::Memo>,
+    derived: inputs::TemperaturesByFrame,
     pub(super) units: Result<units::Content, String>,
     border: Result<border::Defines, String>,
     /// `NGame.AIR_LOG_TIMEOUT_HOURS`, the daily prune's window
@@ -163,6 +163,13 @@ impl Content {
         border::enemy_share(self, frame, country, links, state)
     }
 
+    /// Certify this exact frame's temperature input on an hour worker. Only
+    /// immutable values/refusals cross to the hover; no roster query runs here.
+    pub fn prepare_temperature(&self, frame: &Arc<DecodedFrame>) {
+        self.derived
+            .prepare(frame, self.pass.as_ref().map_err(String::as_str));
+    }
+
     /// The temperature `province`'s record holds at the frame's hour, which the game reads:
     /// recorded, or derived from the frame's anchor and pass with the recorded content.
     fn temperature_at(
@@ -172,20 +179,12 @@ impl Content {
         province: u32,
     ) -> Result<i64, String> {
         let _weather_span = viewer_foundation::profiling::span("pt_weather_states");
-        let mut derived = self
-            .derived
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let states = derived.states(
-            frame.branch,
-            frame.hour,
+        self.derived.at(
+            frame,
             rows,
             self.pass.as_ref().map_err(String::as_str),
-        )?;
-        states
-            .get(province as usize)
-            .map(|state| state.temperature)
-            .ok_or_else(|| "province weather absent".into())
+            province,
+        )
     }
 }
 
@@ -451,10 +450,7 @@ fn build(
         }
     };
     drop(sources_span);
-    let countries = {
-        let _countries_span = viewer_foundation::profiling::span("pt_country_names");
-        CountryNames::read(frame, &content.localisation)
-    };
+    let countries = Names::new(frame, &content.localisation);
     let context = Context {
         content,
         reads,
@@ -527,7 +523,7 @@ struct Context<'a> {
     vision: &'a Vision,
     province: &'a ProvinceRow,
     links: BTreeMap<u32, u32>,
-    countries: CountryNames<'a>,
+    countries: Names<'a>,
     rosters: &'a dyn air_region::Rosters,
 }
 impl Context<'_> {
@@ -545,13 +541,8 @@ impl Context<'_> {
     }
     /// The flag, tag and name of the country in `slot`.
     fn marked_slot(&self, slot: u32) -> Result<String, String> {
-        let operands = self
-            .countries
-            .operands(slot)
-            .ok_or("country naming operands absent")?
-            .as_ref()
-            .map_err(Clone::clone)?;
-        if operands.tag.chars().count() != 3 {
+        let tag = self.countries.tag(slot, "country naming operands absent")?;
+        if tag.chars().count() != 3 {
             return Err(format!(
                 "country slot {slot} flag tag is not three codepoints"
             ));
@@ -562,7 +553,7 @@ impl Context<'_> {
             true,
             true,
         );
-        Ok(format!("{}{} {name}", FLAG, operands.tag))
+        Ok(format!("{}{} {name}", FLAG, tag))
     }
     /// A content static modifier's list, two spaces before each line, scaled by `scale`.
     fn scaled_static_modifiers(&self, token: &str, scale: i64) -> Result<String, String> {

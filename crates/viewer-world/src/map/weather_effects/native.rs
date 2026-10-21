@@ -878,6 +878,7 @@ impl Renderer {
         inputs: Inputs<'_>,
         packets: &[DrawPacket],
     ) -> io::Result<()> {
+        let _profile = viewer_foundation::profiling::thread_span("weather_prepare_lower");
         // Move scratch out so program/state borrows stay independent. On an error,
         // drop its view-local GPU entries; no stale slice survives to another Arena.
         let mut planned_uploads = std::mem::take(&mut self.packing);

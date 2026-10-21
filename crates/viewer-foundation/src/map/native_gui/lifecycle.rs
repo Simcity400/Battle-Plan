@@ -767,6 +767,27 @@ impl Tree {
     }
 }
 
+/// Authored elements borrowed only for one ordered call transaction. A stream that never
+/// reaches a visibility call or a text scrollbar never builds the traversal.
+#[derive(Default)]
+struct CallElements<'a> {
+    held: Option<Vec<(&'a Element, Option<usize>, bool)>>,
+    #[cfg(test)]
+    builds: usize,
+}
+
+impl<'a> CallElements<'a> {
+    fn get(&mut self, tree: &Tree, root: &'a Element) -> &[(&'a Element, Option<usize>, bool)] {
+        self.held.get_or_insert_with(|| {
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+            tree.elements(root)
+        })
+    }
+}
+
 /// One object of a window's construction ([`graph`]).
 struct Object<'a> {
     element: &'a Element,
@@ -1606,13 +1627,22 @@ impl Instance {
     /// child visibility. An existing show movement continues. A control uses its own guarded
     /// Show.
     pub fn show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
+        self.show_using(root, element, &mut CallElements::default())
+    }
+
+    fn show_using<'a>(
+        &mut self,
+        root: &'a Element,
+        element: &Element,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = self.tree.elements(root);
+        let elements = authored.get(&self.tree, root);
         if self.nodes[index].kind == Kind::Window {
-            return self.fixed_show(&elements, index);
+            return self.fixed_show(elements, index);
         }
         if self.nodes[index].window.is_none() {
-            self.show_control(&elements, index);
+            self.show_control(elements, index);
             return Ok(());
         }
         let shown = self.nodes[index].shown;
@@ -1620,25 +1650,34 @@ impl Instance {
             return Ok(());
         }
         let container = element.container().expect("a window node");
-        self.begin_show_fade(&elements, index);
+        self.begin_show_fade(elements, index);
         if self.nodes[index].window.expect("a window node").mode == 1 {
             return Ok(());
         }
         if container.show_animation == Animation::None {
-            self.show_now(&elements, index);
+            self.show_now(elements, index);
             return Ok(());
         }
-        self.show_now(&elements, index);
-        self.start_show_movement(&elements, index)
+        self.show_now(elements, index);
+        self.start_show_movement(elements, index)
     }
 
     /// Shows a window and every admitted child control and window in order, beginning fades
     /// throughout the subtree. A configured show movement starts when none is running. Hide
     /// guards apply to each object. Map icons and list/grid items use this operation.
     pub fn gui_show(&mut self, root: &Element, element: &Element) -> Result<(), String> {
+        self.gui_show_using(root, element, &mut CallElements::default())
+    }
+
+    fn gui_show_using<'a>(
+        &mut self,
+        root: &'a Element,
+        element: &Element,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = self.tree.elements(root);
-        self.gui_show_at(&elements, index)
+        let elements = authored.get(&self.tree, root);
+        self.gui_show_at(elements, index)
     }
 
     fn gui_show_at(
@@ -1679,9 +1718,18 @@ impl Instance {
     /// all children. Otherwise it moves to `hide_position` and hides the subtree when movement
     /// or fade completes. Controls use their own Hide.
     pub fn hide(&mut self, root: &Element, element: &Element) -> Result<(), String> {
+        self.hide_using(root, element, &mut CallElements::default())
+    }
+
+    fn hide_using<'a>(
+        &mut self,
+        root: &'a Element,
+        element: &Element,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = self.tree.elements(root);
-        self.hide_at(&elements, index)
+        let elements = authored.get(&self.tree, root);
+        self.hide_at(elements, index)
     }
 
     fn hide_at(
@@ -1727,8 +1775,18 @@ impl Instance {
     /// also hides only the window.
     #[cfg(any(test, feature = "test-support"))]
     pub fn hide_window(&mut self, root: &Element, element: &Element) -> Result<(), String> {
+        self.hide_window_using(root, element, &mut CallElements::default())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn hide_window_using<'a>(
+        &mut self,
+        root: &'a Element,
+        element: &Element,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         let index = self.index(root, element)?;
-        let elements = self.tree.elements(root);
+        let elements = authored.get(&self.tree, root);
         let Some(window) = self.nodes[index].window else {
             return Err(format!("{} is not a containerWindowType", element.path));
         };
@@ -1736,9 +1794,9 @@ impl Instance {
             return Ok(());
         }
         let container = element.container().expect("a window node");
-        self.begin_hide_fade(&elements, index);
+        self.begin_hide_fade(elements, index);
         if container.hide_animation == Animation::None {
-            self.hide_now(&elements, index);
+            self.hide_now(elements, index);
             return Ok(());
         }
         let window = self.nodes[index].window.as_mut().expect("a window node");
@@ -1752,7 +1810,7 @@ impl Instance {
             window.frame.size,
             "hide_position",
         )?;
-        self.retarget(&elements, index, target, false, true)
+        self.retarget(elements, index, target, false, true)
     }
 
     /// Writes the hide bit, changing whether a later Show is admitted without changing current
@@ -2160,6 +2218,17 @@ impl Instance {
         text: &str,
         resources: &dyn Resources,
     ) -> Result<(), String> {
+        self.set_text_using(root, element, text, resources, &mut CallElements::default())
+    }
+
+    fn set_text_using<'a>(
+        &mut self,
+        root: &'a Element,
+        element: &Element,
+        text: &str,
+        resources: &dyn Resources,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         let index = self.index(root, element)?;
         match &mut self.nodes[index].control.text {
             Some(written) => text.clone_into(written),
@@ -2202,12 +2271,12 @@ impl Instance {
             scroll,
             written: Some(text.to_owned()),
         };
-        let elements = self.tree.elements(root);
+        let elements = authored.get(&self.tree, root);
         match refreshed {
             Refreshed::Above { flagged } if flagged || self.nodes[bar].shown.visible => {
-                self.gui_show_at(&elements, bar)
+                self.gui_show_at(elements, bar)
             }
-            Refreshed::AtMost => self.hide_at(&elements, bar),
+            Refreshed::AtMost => self.hide_at(elements, bar),
             _ => Ok(()),
         }
     }
@@ -4213,19 +4282,30 @@ impl Call {
         instance: &mut Instance,
         resources: &dyn Resources,
     ) -> Result<(), String> {
+        self.apply_with_elements(root, element, instance, resources, &mut CallElements::default())
+    }
+
+    fn apply_with_elements<'a>(
+        &self,
+        root: &'a Element,
+        element: &Element,
+        instance: &mut Instance,
+        resources: &dyn Resources,
+        authored: &mut CallElements<'a>,
+    ) -> Result<(), String> {
         match self {
             #[cfg(any(test, feature = "test-support"))]
             Call::SetPosition(point) => instance.set_position(root, element, *point)?,
-            Call::Show => instance.show(root, element)?,
+            Call::Show => instance.show_using(root, element, authored)?,
             #[cfg(any(test, feature = "test-support"))]
-            Call::GuiShow => instance.gui_show(root, element)?,
-            Call::Hide => instance.hide(root, element)?,
+            Call::GuiShow => instance.gui_show_using(root, element, authored)?,
+            Call::Hide => instance.hide_using(root, element, authored)?,
             #[cfg(any(test, feature = "test-support"))]
-            Call::HideWindow => instance.hide_window(root, element)?,
+            Call::HideWindow => instance.hide_window_using(root, element, authored)?,
             Call::SetHideFlag(hide) => instance.set_hide_flag(root, element, *hide)?,
             Call::SetFrame(frame) => instance.set_frame(root, element, *frame)?,
             Call::SetSprite(name, setter) => instance.set_sprite(root, element, name, *setter)?,
-            Call::SetText(text) => instance.set_text(root, element, text, resources)?,
+            Call::SetText(text) => instance.set_text_using(root, element, text, resources, authored)?,
             #[cfg(any(test, feature = "test-support"))]
             Call::Play => instance.play(root, element)?,
             #[cfg(any(test, feature = "test-support"))]
@@ -4272,7 +4352,7 @@ impl Call {
                     instance.set_progress_float_value(root, element, value)?;
                 }
                 if let Some(text) = text {
-                    instance.set_text(root, element, &text, resources)?;
+                    instance.set_text_using(root, element, &text, resources, authored)?;
                 }
             }
         }
@@ -4293,11 +4373,17 @@ impl Instance {
         if calls.peek().is_none() {
             return Ok(());
         }
+        let copy_profile = crate::profiling::span("dc_nu_tx_copy");
         let mut next = self.clone();
+        drop(copy_profile);
+        let setters_profile = crate::profiling::span("dc_nu_tx_setters");
+        let mut authored = CallElements::default();
         for (path, call) in calls {
             let element = self.element_at_path(root, path)?;
-            call.apply(root, element, &mut next, resources)?;
+            call.apply_with_elements(root, element, &mut next, resources, &mut authored)?;
         }
+        drop(setters_profile);
+        let _commit_profile = crate::profiling::span("dc_nu_tx_commit");
         *self = next;
         Ok(())
     }
@@ -4428,6 +4514,336 @@ mod retained_work_tests {
         assert!(why.contains("root.missing"), "{why}");
         assert_eq!(actual.bindings(root, &resources).unwrap().bound, before);
         assert_eq!(actual.phase, Phase::Drawn);
+    }
+
+    #[test]
+    fn transaction_elements_are_lazy_and_shared_only_within_the_call_stream() {
+        let gui = template();
+        let root = gui.template("root").unwrap();
+        let resources = fixture();
+        let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+        let icon = root.path_named("icon").unwrap();
+        let mut authored = CallElements::default();
+        for call in [Call::SetFrame(2), Call::SetHideFlag(false)] {
+            call.apply_with_elements(root, icon, &mut instance, &resources, &mut authored)
+                .unwrap();
+        }
+        assert_eq!(authored.builds, 0);
+        for call in [Call::Show, Call::Hide, Call::Show, Call::Hide] {
+            call.apply_with_elements(root, icon, &mut instance, &resources, &mut authored)
+                .unwrap();
+        }
+        assert_eq!(authored.builds, 1);
+        // A later stream owns a new view, including when it supplies a copied template.
+        let copied = root.clone();
+        let mut later = CallElements::default();
+        Call::GuiShow
+            .apply_with_elements(&copied, &copied, &mut instance, &resources, &mut later)
+            .unwrap();
+        assert_eq!(later.builds, 1);
+    }
+
+    #[test]
+    fn transaction_elements_keep_transactional_lifecycle_requests_and_output_across_frames() {
+        use crate::map::test_support::gui::Fixture;
+        use std::cell::{Cell, RefCell};
+
+        struct Requested<'a> {
+            fixture: &'a Fixture,
+            published: &'a Cell<bool>,
+            log: RefCell<Vec<String>>,
+        }
+        impl Requested<'_> {
+            fn note(&self, kind: &str, name: impl std::fmt::Debug) {
+                self.log.borrow_mut().push(format!("{kind}:{name:?}"));
+            }
+        }
+        impl Resources for Requested<'_> {
+            fn sprite(&self, name: &[u8]) -> Option<SpriteInfo> {
+                self.note("sprite", name);
+                if name == b"GFX_late" {
+                    return self
+                        .published
+                        .get()
+                        .then(|| self.fixture.sprite(b"GFX_odd"))
+                        .flatten();
+                }
+                self.fixture.sprite(name)
+            }
+            fn sprite_info(&self, name: &[u8]) -> Option<Cow<'_, SpriteInfo>> {
+                self.note("sprite_info", name);
+                self.sprite(name).map(Cow::Owned)
+            }
+            fn portrait_texture(&self, name: &[u8]) -> Option<Texture> {
+                self.note("portrait", name);
+                self.fixture.portrait_texture(name)
+            }
+            fn font(&self, name: &[u8]) -> Option<&native_text::Font> {
+                self.note("font", name);
+                self.fixture.font(name)
+            }
+            fn localisation(&self) -> &Localisation {
+                self.fixture.localisation()
+            }
+            fn text_colors(&self) -> &TextColors {
+                self.fixture.text_colors()
+            }
+            fn text_effect(&self) -> Result<Effect, String> {
+                self.fixture.text_effect()
+            }
+            fn effect(&self, file: &str) -> Result<Effect, String> {
+                self.fixture.effect(file)
+            }
+            fn shield_flag(
+                &self,
+                small: bool,
+                index: i32,
+            ) -> Result<Option<(Texture, [f32; 4])>, String> {
+                self.note("shield", (small, index));
+                self.fixture.shield_flag(small, index)
+            }
+            fn text_flag(&self, tag: &str) -> Result<Option<Texture>, String> {
+                self.note("flag", tag);
+                self.fixture.text_flag(tag)
+            }
+            fn resolved_text_flag(&self, key: &[u8]) -> Result<Option<Texture>, String> {
+                self.note("resolved_flag", key);
+                self.fixture.resolved_text_flag(key)
+            }
+            fn resolved_text_flag_key(&self, text: &[char]) -> Option<usize> {
+                self.fixture.resolved_text_flag_key(text)
+            }
+            fn gui_type(&self, name: &[u8]) -> Option<&Element> {
+                self.note("gui", name);
+                self.fixture.gui_type(name)
+            }
+            fn session_text_sprite(&self, name: &[u8]) -> bool {
+                self.fixture.session_text_sprite(name)
+            }
+            fn sprite_animations(&self, name: &[u8]) -> Option<Vec<AnimationRecord>> {
+                self.note("animations", name);
+                self.fixture.sprite_animations(name)
+            }
+        }
+        fn output_bits(batch: &Batch) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            for quad in &batch.quads {
+                for value in quad
+                    .rect
+                    .into_iter()
+                    .chain(quad.uv)
+                    .chain(quad.color)
+                    .chain([quad.rotation, quad.shade])
+                {
+                    bytes.extend(value.to_ne_bytes());
+                }
+                if let Some(exact) = &quad.exact {
+                    assert!(exact.native.is_none(), "this oracle uses synthetic effects");
+                    for value in exact
+                        .corners
+                        .into_iter()
+                        .flatten()
+                        .chain(exact.uv.into_iter().flatten())
+                        .chain(exact.lod_bias)
+                        .chain(exact.offsets)
+                        .chain(exact.inputs)
+                        .chain(exact.second_color)
+                    {
+                        bytes.extend(value.to_ne_bytes());
+                    }
+                }
+            }
+            bytes
+        }
+        let _metadata = template();
+        const GUI: &[u8] = br#"guiTypes={
+            scrollbarType={name=bar size={x=10 y=60} minValue=0 maxValue=1
+                slider=s track=t leftButton=d rightButton=u
+                buttonType={name=u spriteType=GFX_four}
+                buttonType={name=d spriteType=GFX_four}
+                guiButtonType={name=t spriteType=GFX_bar3x17}
+                guiButtonType={name=s spriteType=GFX_bar3x17}}
+            containerWindowType={name=root size={width=160 height=90}
+                fade_type=linear fade_time=150
+                show_position={x=10 y=5} show_animation_type=linear show_animation_time=150
+                hide_position={x=-10 y=0} hide_animation_type=linear hide_animation_time=100
+                containerWindowType={name=child size={width=100 height=60}
+                    gridBoxType={name=held size={width=40 height=20} slotsize={width=20 height=10}}
+                    iconType={name=icon spriteType=GFX_animated}
+                    instantTextBoxType={name=text font=Main_14 text=Initial maxWidth=50 maxHeight=20 scrollbarType=bar}}}}"#;
+        let gui = native::read(GUI);
+        let root = gui.template("root").unwrap();
+        let copied = root.clone();
+        let mut fixture = fixture();
+        fixture.templates.push(native::read(GUI));
+        let published = Cell::new(false);
+        let expected_resources = Requested {
+            fixture: &fixture,
+            published: &published,
+            log: RefCell::default(),
+        };
+        let actual_resources = Requested {
+            fixture: &fixture,
+            published: &published,
+            log: RefCell::default(),
+        };
+        let mut expected = Instance::construct(root, [800, 600], &expected_resources).unwrap();
+        let mut actual = expected.clone();
+        assert!(
+            !expected.text_boxes.is_empty(),
+            "exercise constructed external scrollbar parts"
+        );
+        let mut saw_quads = false;
+        let mut saw_flag = false;
+        for frame in 0..40 {
+            published.set(frame >= 17);
+            let template = if frame % 7 == 3 { &copied } else { root };
+            let child = template.path_named("child").unwrap();
+            let icon = child.path_named("icon").unwrap();
+            let text = child.path_named("text").unwrap();
+            let mut calls = vec![
+                (icon.path.as_str(), Call::SetFrame(frame % 3 + 1)),
+                (
+                    icon.path.as_str(),
+                    Call::SetSprite(b"GFX_late".to_vec(), SpriteSetter::Icon),
+                ),
+                (
+                    text.path.as_str(),
+                    Call::SetText(
+                        if frame % 2 == 0 {
+                            "aaaa bbbb cccc\n\u{12}GER"
+                        } else {
+                            "a"
+                        }
+                        .into(),
+                    ),
+                ),
+                (
+                    text.path.as_str(),
+                    Call::Control(Box::new(Bound {
+                        text: Some("\u{12}GER long text long text".into()),
+                        color: Some([0.2, 0.3, 0.4, 0.8]),
+                        ..Bound::default()
+                    })),
+                ),
+                (icon.path.as_str(), Call::SetHideFlag(frame % 6 == 1)),
+                (icon.path.as_str(), Call::Show),
+            ];
+            if frame % 8 == 0 {
+                calls.push((template.path.as_str(), Call::GuiShow));
+            }
+            if frame % 8 == 2 {
+                calls.push((child.path.as_str(), Call::Hide));
+            }
+            if frame % 8 == 3 {
+                calls.push((child.path.as_str(), Call::GuiShow));
+            }
+            if frame % 8 == 4 {
+                calls.push((template.path.as_str(), Call::HideWindow));
+            }
+            if frame % 8 == 6 {
+                calls.push((template.path.as_str(), Call::Hide));
+            }
+            let fail = frame == 5 || frame == 23;
+            if fail {
+                calls.push(("root.missing", Call::Hide));
+            }
+            expected_resources.log.borrow_mut().clear();
+            actual_resources.log.borrow_mut().clear();
+            let before = format!("{expected:?}");
+            // The ordinary keyed stream is an independent setter reference.
+            // Commit its staged instance only on success, as apply_calls promises.
+            let mut staged = HashMap::from([((), expected.clone())]);
+            let reference = Calls {
+                calls: calls
+                    .iter()
+                    .map(|(path, call)| ((), (*path).to_owned(), call.clone()))
+                    .collect(),
+            };
+            let old_result = reference.apply(template, &mut staged, &expected_resources);
+            if old_result.is_ok() {
+                expected = staged.remove(&()).unwrap();
+            }
+            let new_result = actual.apply_calls(
+                template,
+                calls.iter().map(|(path, call)| (*path, call)),
+                &actual_resources,
+            );
+            assert_eq!(old_result, new_result, "frame {frame}");
+            assert_eq!(old_result.is_err(), fail, "frame {frame}");
+            if fail {
+                assert_eq!(
+                    format!("{expected:?}"),
+                    before,
+                    "failed transaction changed expected state"
+                );
+            }
+            assert_eq!(
+                format!("{expected:?}"),
+                format!("{actual:?}"),
+                "after calls frame {frame}"
+            );
+            // Resource effects of earlier calls still run even when a later path fails.
+            assert_eq!(
+                *expected_resources.log.borrow(),
+                *actual_resources.log.borrow(),
+                "call requests frame {frame}"
+            );
+            if fail {
+                assert!(!expected_resources.log.borrow().is_empty());
+            }
+            let tick = Tick {
+                time: frame as f32 * 0.05,
+                dt: 0.05,
+            };
+            expected.tick(template, &expected_resources, tick).unwrap();
+            actual.tick(template, &actual_resources, tick).unwrap();
+            assert_eq!(
+                format!("{expected:?}"),
+                format!("{actual:?}"),
+                "after tick frame {frame}"
+            );
+            assert_eq!(expected.take_held(), actual.take_held());
+            assert_eq!(
+                expected.bindings(template, &expected_resources).unwrap().bound,
+                actual.bindings(template, &actual_resources).unwrap().bound
+            );
+            let old_layout = expected.layout_with_regions(template, &expected_resources, None, true);
+            let new_layout = actual.layout_with_regions(template, &actual_resources, None, true);
+            assert_eq!(old_layout, new_layout, "frame {frame}");
+            if let Ok(Some(layout)) = old_layout {
+                let mut old_batch = Batch::default();
+                let mut new_batch = Batch::default();
+                assert_eq!(
+                    draw(&layout, [13, 7], &fixture, &mut old_batch),
+                    draw(
+                        new_layout.as_ref().unwrap().as_ref().unwrap(),
+                        [13, 7],
+                        &fixture,
+                        &mut new_batch
+                    )
+                );
+                assert_eq!(old_batch.quads, new_batch.quads, "frame {frame}");
+                assert_eq!(
+                    output_bits(&old_batch),
+                    output_bits(&new_batch),
+                    "frame {frame}"
+                );
+                saw_quads |= !old_batch.quads.is_empty();
+            }
+            assert_eq!(
+                *expected_resources.log.borrow(),
+                *actual_resources.log.borrow(),
+                "all requests frame {frame}"
+            );
+            saw_flag |= expected_resources
+                .log
+                .borrow()
+                .iter()
+                .any(|entry| entry.starts_with("flag:"));
+        }
+        assert!(saw_quads);
+        assert!(saw_flag, "text flags must really request resources");
     }
 
     #[test]

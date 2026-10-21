@@ -4,13 +4,17 @@ Counter grids, native icon windows, recorded counter decisions, grouping and por
 
 The portrait store also resolves recorded operative sprite identities for map-icon texture bindings, regardless of their sprite naming convention.
 
-Camera-independent hour preparation warms each recorded country's exact cosmetic/original/ruling-group flag candidates in the small, medium and large counter atlases. Decoding runs on the hour workers before their tables are published, independent of camera, visibility and coarse-plate thresholds. Warming does not request cells: frames retain draw-order packing and synchronously decide any unwarmed request before drawing, never substituting a decoded fallback for an undecoded preferred candidate.
+Camera-independent hour preparation warms each recorded country's exact cosmetic/original/ruling-group flag candidates in the small, medium and large counter atlases. Decoding runs on the hour workers before their tables are published, independent of camera, visibility and coarse-plate thresholds. The document loader can decide only its initial frame's candidates in these same stores while the remaining content loads; unavailable operands retain the original worker and synchronous cold paths. Warming does not request cells: frames retain draw-order packing and synchronously decide any unwarmed request before drawing, never substituting a decoded fallback for an undecoded preferred candidate.
+
+Grouping geography is an immutable hour product shared by a bounded recent memo. Every query first checks the complete core province census; only the exact ordered province/state projection and the retained content inputs select a prior state map and extents. Changed assignments or content rebuild through the original grouping geometry law.
 
 Shared input, action, status, railway-gun and partial naval-count folds, stack anchors and hover observations come from viewer-foundation. The host supplies shared movement reads, resolved mission topology and immutable content, and composes the resulting grids with hover, raid and world outputs. The crate imports neither the host nor another viewer feature. Content facts resolve through installed-content; joins retain occurrence order, demand gates and counted refusals. For a free eye every height rule an icon reads (its kind's cutoff, grouping level, coarse plate, priority, lift and selection split) reads that icon's distance from the eye, and every drawn quad carries its icon's anchor for the [free view's presentation](../viewer-foundation/src/map/free_icons.rs).
 
 The counter-type tint memo includes `WarRelations`, so foreign-country friendship and hostility queries read the recorded war census. An undeclared selected type sprite (including the question mark) is withheld and counted by name: the game keeps the pooled counter's previous drawable, which the recording does not hold.
 
 Under `BATTLE_PLAN_VIEWER_PROFILE`, the sequential naval draw spans are `dc_naval_update`, `dc_naval_tick`, `dc_naval_markers`, `dc_ports` and `dc_naval_at_sea`. `dc_pool_manager`, `dc_gui_submit` and `dc_observe` are nested detail, not extra slices to add to those totals. They measure pool admission, GUI submission and drawn-control observations without enabling a separate diagnostic collector.
+
+The naval update's `dc_nu_*` laps are sequential setup, schedule-lock wait, combat, base, result, missions, carrier retention/tick, port-owner map/carriers, at-sea settling/call production/application and bookkeeping. They retain zero and short laps. The transaction copy/setters/commit, control overlays, base setters/maps, held propagation and grid layout/append/finalize spans are nested detail; do not add them to those sequential laps.
 
 Tests live with their modules. `test-support` enables shared synthetic foundation inputs for consumers. Follow the workspace [working rules](../../AGENTS.md).
 
@@ -62,3 +66,15 @@ Air-grid first-fit grouping retains membership and aircraft counts; production p
 Port task-force plates share the regional grid's native selection, ownership, visibility, engagement, reserve, fleet and mission comparator. Political mode keeps coarse sorting and allegiance boundaries. Other modes sort in detail below their own coarse distance and keep comparator-defined runs until the content's strategic grouping level, where allegiance boundaries take over. The two thresholds are independent. Crossing the coarse distance empties port boxes only in political mode; strategic ports retain their grids. Own selected members split from unselected members; political identity is explicit rather than inferred from a shared priority table. Port membership, ship counts and the Air wing grid's first-fit law are unchanged.
 
 Volunteer type-tint attribution shares replay-data's alias-list validation, full-handle live lookup and logical-host rule with dashboard army preparation. Allegiance, first-host order, zero-reference identity and friendship/hostility precedence remain local to the map.
+
+The hour builder's `native_base_icons` children distinguish native inputs, recorded
+occupant order and base decisions (province lookup, naval bases and buildings).
+Base decisions borrow the reconstructed sorted-unique province and building rows;
+province grouping and stable active-building ordinal ties preserve recorded order.
+Mission children distinguish memo misses (`build`), initial read, trigger world,
+joined inputs, dominance and controls/semantic hovers. Nested scopes are inclusive.
+
+The hour builder's `movement_actions` children are the sequential pins, abilities,
+hostility, guns, routes and actions reads. The host's prerequisites children split
+ETAs and Vision. Both use the explicit job-local wall/thread-CPU collector; nested
+children are inclusive, never extra time to add to their parent.

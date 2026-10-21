@@ -101,6 +101,7 @@ impl Presentation<'_> {
             pass.set_hidden(hidden);
             drop(place_span);
             let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
+            let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
             pass.animate_with_workers(animation_time, None, &[0.], workers);
         }
         // Trains run below the railway fade, whether or not the display shows them.
@@ -133,6 +134,7 @@ impl Presentation<'_> {
             pass.set_clock_records(presentation.clock_records(), animation_time);
             drop(clocks_span);
             let _animate_span = viewer_foundation::profiling::span("city_animate");
+            let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
             pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
@@ -142,6 +144,7 @@ impl Presentation<'_> {
         // The raids map mode draws no land unit models (ships stay), and it and the operatives
         // mode no unit arrows, as the game's camera cutoffs would.
         let gates = gates.for_mode(&visibility);
+        let history_profile = viewer_foundation::profiling::thread_span("history_update");
         let models = unit_history.update_models(
             camera,
             size,
@@ -151,6 +154,7 @@ impl Presentation<'_> {
             building_history,
             true,
         );
+        drop(history_profile);
         if let Some(arrows) = movement_arrows {
             let _arrows_span = viewer_foundation::profiling::span("step_arrows");
             arrows.advance(
@@ -166,17 +170,31 @@ impl Presentation<'_> {
         }
         if let Some(pass) = map_buildings {
             let _buildings_span = viewer_foundation::profiling::span("step_buildings");
+            if viewer_foundation::profile_writer::profiling() {
+                // Observe the existing result only; no new reuse decision or input walk.
+                viewer_foundation::profiling::record_count(
+                    "building_field_reused",
+                    u64::from(models.buildings.is_none()),
+                );
+                viewer_foundation::profiling::record_count(
+                    "building_field_updated",
+                    u64::from(models.buildings.is_some()),
+                );
+            }
             if let Some(placed) = models.buildings {
                 let _place_span = viewer_foundation::profiling::span("building_place");
                 pass.update_placed(placed, BUILDING_TILE);
             }
             let _animate_span = viewer_foundation::profiling::span("building_animate");
+            let _animate_profile = viewer_foundation::profiling::thread_span("building_animate");
             pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
         }
         if let Some(pass) = unit_models {
             let _units_span = viewer_foundation::profiling::span("step_units");
             let place_span = viewer_foundation::profiling::span("unit_place");
+            let place_profile = viewer_foundation::profiling::thread_span("unit_place");
             pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
+            drop(place_profile);
             drop(place_span);
             let clocks_span = viewer_foundation::profiling::span("unit_clocks");
             pass.set_clocks(unit_history.combat_clocks());
@@ -184,6 +202,7 @@ impl Presentation<'_> {
             // Advance hidden entities too. History retires their players independently of
             // render culling.
             let _animate_span = viewer_foundation::profiling::span("unit_animate");
+            let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
             pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         // Missile scenarios finished since the last frame start their explosions on the clock
@@ -428,6 +447,73 @@ mod tests {
                     self.missile_clock,
                 )
             )
+        }
+    }
+
+    #[test]
+    fn coarse_animation_scopes_are_profile_only_and_preserve_state() {
+        // Each arm owns its process and PROFILE initialization; do not mutate the
+        // test runner's environment or compare nondeterministic clock values.
+        const ARM: &str = "BATTLE_PLAN_TEST_ANIMATION_PROFILE_ARM";
+        let Some(arm) = std::env::var_os(ARM) else {
+            let name = concat!(
+                module_path!(),
+                "::coarse_animation_scopes_are_profile_only_and_preserve_state"
+            );
+            let mut states = Vec::new();
+            for enabled in [false, true] {
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+                child
+                    .args(["--exact", name.split_once("::").unwrap().1, "--nocapture"])
+                    .env(ARM, if enabled { "1" } else { "0" })
+                    .env_remove("BATTLE_PLAN_VIEWER_PROFILE")
+                    .env_remove("BATTLE_PLAN_ANIMATION_PROFILE");
+                if enabled {
+                    child.env("BATTLE_PLAN_VIEWER_PROFILE", "1");
+                }
+                let output = child.output().unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let arm_states: Vec<_> = stdout
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("ANIMATION_PROFILE_STATE "))
+                    .map(str::to_owned)
+                    .collect();
+                assert_eq!(arm_states.len(), 4, "{stdout}");
+                states.push(arm_states);
+            }
+            assert_eq!(states[0], states[1]);
+            return;
+        };
+        let enabled = arm == "1";
+        assert_eq!(viewer_foundation::profile_writer::profiling(), enabled);
+        let mut world = World::new();
+        for frame in 0..4 {
+            viewer_foundation::profiling::begin_thread_frame();
+            world.step(&MapGraphics::default(), frame as f32 / 10.0);
+            let line = viewer_foundation::profiling::take_thread_spans();
+            for stage in ["history_update", "unit_place", "unit_animate"] {
+                let calls = format!("mt_{stage}_calls=1");
+                assert_eq!(line.split_whitespace().any(|field| field == calls), enabled);
+                for key in [format!("mt_{stage}="), format!("mt_{stage}_cpu=")] {
+                    let value = line.split_whitespace().find_map(|field| field.strip_prefix(&key));
+                    if enabled {
+                        let value = value.unwrap();
+                        if value != "unavailable" {
+                            let value: f64 = value.parse().unwrap();
+                            assert!(value.is_finite() && value >= 0.0);
+                        }
+                    } else {
+                        assert!(value.is_none());
+                    }
+                }
+            }
+            // No reached pass means no sample, rather than a fabricated zero.
+            for stage in ["aircraft_animate", "building_animate", "city_animate", "lights"] {
+                assert!(!line.contains(&format!("mt_{stage}=")));
+            }
+            assert!(!line.contains("building_field_reused="));
+            println!("ANIMATION_PROFILE_STATE {}", world.state());
         }
     }
 

@@ -4,6 +4,7 @@ use crate::map::test_support::serial;
 use installed_content_core::{map::CountryColors, map::ProvinceDefinition};
 
 use super::*;
+use std::collections::BTreeMap;
 
 const POW2: Decode = Decode {
     force_pow2_textures: true,
@@ -289,7 +290,7 @@ fn two_block_map(kinds: [ProvinceKind; 2]) -> MapData {
 fn the_intel_texel_is_the_complement_of_the_block_mean() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
     let visibility: BTreeMap<u32, u8> = [(1, 0), (2, 250)].into_iter().collect();
-    let built = intel_map(&map, Some(&visibility)).unwrap();
+    let built = IntelCells::new(&map).unwrap().intel_map(Some(&visibility));
     assert!(built.fog);
     assert_eq!(built.texels, vec![5, 255]);
 }
@@ -301,7 +302,7 @@ fn an_unrecorded_province_is_not_a_recorded_zero() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
     let partial: BTreeMap<u32, u8> = [(2, 0)].into_iter().collect();
     assert_eq!(
-        intel_map(&map, Some(&partial)).unwrap().texels,
+        IntelCells::new(&map).unwrap().intel_map(Some(&partial)).texels,
         vec![255, 0]
     );
 }
@@ -312,7 +313,7 @@ fn sea_and_lake_provinces_never_take_fog() {
     let map = two_block_map([ProvinceKind::Sea, ProvinceKind::Lake]);
     let visibility: BTreeMap<u32, u8> = [(1, 0), (2, 0)].into_iter().collect();
     assert_eq!(
-        intel_map(&map, Some(&visibility)).unwrap().texels,
+        IntelCells::new(&map).unwrap().intel_map(Some(&visibility)).texels,
         vec![0, 0]
     );
 }
@@ -321,7 +322,7 @@ fn sea_and_lake_provinces_never_take_fog() {
 #[test]
 fn no_recorded_visibility_is_the_engines_fog_off_branch() {
     let map = two_block_map([ProvinceKind::Land, ProvinceKind::Land]);
-    let built = intel_map(&map, None).unwrap();
+    let built = clear_intel_map(&map).unwrap();
     assert!(!built.fog);
     assert_eq!(built.texels, vec![0, 0]);
 }

@@ -16,6 +16,12 @@ use wgpu;
 mod arena;
 pub use arena::{Arena, Slice};
 
+#[cfg(any(test, feature = "test-support"))]
+#[path = "gpu/uploads.rs"]
+mod uploads;
+#[cfg(any(test, feature = "test-support"))]
+pub use uploads::FrozenBufferWrites;
+
 pub struct Pipeline {
     pub pipeline: wgpu::RenderPipeline,
     label: String,
@@ -48,11 +54,28 @@ struct Fallback {
 #[derive(Default)]
 struct Groups {
     frame: u64,
-    constants: Vec<(wgpu::Buffer, wgpu::BindGroup, u64)>,
+    constants: Vec<(wgpu::Buffer, wgpu::BindGroup, GroupStamp)>,
     /// By the hash of the views, so a hit clones none of them.
-    textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, u64)>>,
+    textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, GroupStamp)>>,
     /// The last texture entry used: consecutive draws usually share a material.
     last: Option<(u64, usize)>,
+    clock: Arc<GroupClock>,
+}
+
+impl Groups {
+    fn advance(&mut self, frame: u64) {
+        if self.frame != frame {
+            self.clock.invalidate();
+            self.frame = frame;
+            let live = |used: &GroupStamp| used.get() + 1 >= frame;
+            self.constants.retain(|(_, _, used)| live(used));
+            for entries in self.textures.values_mut() {
+                entries.retain(|(_, _, used)| live(used));
+            }
+            self.textures.retain(|_, entries| !entries.is_empty());
+            self.last = None;
+        }
+    }
 }
 
 pub struct Draw {
@@ -148,8 +171,7 @@ const TEXTURES: usize = TEXTURE_BINDINGS;
 
 #[derive(Clone)]
 pub struct Bindings {
-    pipeline: wgpu::RenderPipeline,
-    groups: [wgpu::BindGroup; 3],
+    resources: ResourceHandle,
     offsets: [u32; BUFFERS],
     count: usize,
     #[cfg(any(test, feature = "test-support"))]
@@ -164,7 +186,8 @@ impl Bindings {
 
     /// Same pipeline and texture/sampler groups, independent of uploaded constants.
     pub fn same_resources(&self, other: &Self) -> bool {
-        self.pipeline == other.pipeline && self.groups[1..] == other.groups[1..]
+        let (a, b) = (self.resources.get(), other.resources.get());
+        a.pipeline == b.pipeline && a.groups[1..] == b.groups[1..]
     }
 
     pub fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -174,19 +197,22 @@ impl Bindings {
     /// Bind after `previous` of the same pipeline in the same pass, setting only the
     /// groups that differ. Each set merges all of a group's resources into the pass.
     pub fn bind_after(&self, pass: &mut wgpu::RenderPass<'_>, previous: Option<&Self>) {
+        let resources = self.resources.get();
+        let before = previous.map(|previous| previous.resources.get());
         // The bound views may select a shader-filtered variant of the caller's pipeline.
-        if previous.is_none_or(|previous| previous.pipeline != self.pipeline) {
-            pass.set_pipeline(&self.pipeline);
+        if before.is_none_or(|previous| previous.pipeline != resources.pipeline) {
+            pass.set_pipeline(&resources.pipeline);
         }
         let offsets = &self.offsets[..self.count];
         if previous.is_none_or(|previous| {
-            previous.groups[0] != self.groups[0] || previous.offsets[..previous.count] != *offsets
+            previous.resources.get().groups[0] != resources.groups[0]
+                || previous.offsets[..previous.count] != *offsets
         }) {
-            pass.set_bind_group(0, &self.groups[0], offsets);
+            pass.set_bind_group(0, &resources.groups[0], offsets);
         }
         for index in 1..3 {
-            if previous.is_none_or(|previous| previous.groups[index] != self.groups[index]) {
-                pass.set_bind_group(index as u32, &self.groups[index], &[]);
+            if before.is_none_or(|previous| previous.groups[index] != resources.groups[index]) {
+                pass.set_bind_group(index as u32, &resources.groups[index], &[]);
             }
         }
     }
@@ -209,6 +235,11 @@ fn preparation_bytes(specs: &[Buffer], blocks: &[(&[u8], u64)]) -> Vec<(u32, Vec
 #[path = "gpu/program_tests.rs"]
 mod program_tests;
 
+#[path = "gpu/session.rs"]
+mod session;
+pub use session::{BindingSession, BindingSessionStorage};
+use session::{GroupClock, GroupResources, GroupStamp, ResourceHandle, ResolvedGroups};
+
 /// Immutable resources of an actually successful bind, including a shader-filtered variant.
 /// This is not native retained state: callers still perform their ordered checks, fallbacks
 /// and binds. Only identical resource identities may reuse it; every constant is restaged.
@@ -230,6 +261,31 @@ impl BindingProgram {
     /// The effective pipeline, not necessarily the pipeline originally requested.
     pub fn pipeline(&self) -> &wgpu::RenderPipeline {
         &self.pipeline
+    }
+
+    /// Read-only fixture access: prove the exact successful program and recover
+    /// the actual constant buffer bound by this draw, within its own owner.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn constant_buffer_for_tests(&self, bindings: &Bindings) -> Option<wgpu::Buffer> {
+        let actual = bindings.resources.get();
+        if actual.pipeline != self.pipeline || actual.groups[2] != self.samplers {
+            return None;
+        }
+        let groups = self.groups.lock().unwrap_or_else(|error| error.into_inner());
+        // A captured texture group may have retired. Prove the actual live group's
+        // complete view list, not equality with the capture's obsolete group handle.
+        if !groups.textures.values().flatten().any(|(views, group, _)| {
+            *group == actual.groups[1] && *views == self.views
+        }) {
+            return None;
+        }
+        groups.constants.iter().find(|(_, group, _)| *group == actual.groups[0])
+            .map(|(buffer, _, _)| buffer.clone())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn texture_views_for_tests(&self) -> impl Iterator<Item = (u32, &wgpu::TextureView)> {
+        self.texture_slots.iter().copied().zip(&self.views)
     }
 
     /// Reflected physical sizes and conservative reads in dynamic-offset order.
@@ -266,28 +322,30 @@ impl BindingProgram {
         }
         let mut offsets = [0; BUFFERS];
         let source = arena.constants(&blocks[..count], &mut offsets[..count])?;
+        let resolved = self.resolve_groups(arena, source, false)?;
+        Ok(Bindings {
+            resources: ResourceHandle::Inline(resolved.resources),
+            offsets,
+            count,
+            #[cfg(any(test, feature = "test-support"))]
+            proof: preparation_bytes(&self.buffers, &blocks[..count]),
+        })
+    }
+
+    fn resolve_groups(&self, arena: &Arena, source: wgpu::Buffer, capture_use: bool) -> Result<ResolvedGroups, String> {
         let frame = arena.frame();
         let device = arena.device();
         let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
         let groups = &mut *groups;
-        if groups.frame != frame {
-            groups.frame = frame;
-            let live = |used: u64| used + 1 >= frame;
-            groups.constants.retain(|(_, _, used)| live(*used));
-            for entries in groups.textures.values_mut() {
-                entries.retain(|(_, _, used)| live(*used));
-            }
-            groups.textures.retain(|_, entries| !entries.is_empty());
-            groups.last = None;
-        }
-        let constants = match groups
+        groups.advance(frame);
+        let (constants, constants_stamp) = match groups
             .constants
             .iter_mut()
             .find(|(cached, _, _)| *cached == source)
         {
             Some((_, group, used)) => {
-                *used = frame;
-                group.clone()
+                used.set(frame);
+                (group.clone(), capture_use.then(|| used.clone()))
             }
             None => {
                 let group = scoped(device, || {
@@ -308,8 +366,9 @@ impl BindingProgram {
                             .collect::<Vec<_>>(),
                     })
                 })?;
-                groups.constants.push((source, group.clone(), frame));
-                group
+                let used = GroupStamp::new(frame);
+                groups.constants.push((source, group.clone(), used.clone()));
+                (group, capture_use.then_some(used))
             }
         };
         let entries = groups.textures.entry(self.hash).or_default();
@@ -321,11 +380,11 @@ impl BindingProgram {
                     .iter()
                     .position(|(views, _, _)| *views == self.views)
             });
-        let (index, textures) = match found {
+        let (index, textures, textures_stamp) = match found {
             Some(index) => {
                 let (_, group, used) = &mut entries[index];
-                *used = frame;
-                (index, group.clone())
+                used.set(frame);
+                (index, group.clone(), capture_use.then(|| used.clone()))
             }
             None => {
                 let group = scoped(device, || {
@@ -343,19 +402,23 @@ impl BindingProgram {
                             .collect::<Vec<_>>(),
                     })
                 })?;
-                entries.push((self.views.clone(), group.clone(), frame));
-                (entries.len() - 1, group)
+                let used = GroupStamp::new(frame);
+                entries.push((self.views.clone(), group.clone(), used.clone()));
+                (entries.len() - 1, group, capture_use.then_some(used))
             }
         };
         groups.last = Some((self.hash, index));
+        groups.clock.hint.store(true, std::sync::atomic::Ordering::Release);
 
-        Ok(Bindings {
-            pipeline: self.pipeline.clone(),
-            groups: [constants, textures, self.samplers.clone()],
-            offsets,
-            count,
-            #[cfg(any(test, feature = "test-support"))]
-            proof: preparation_bytes(&self.buffers, &blocks[..count]),
+        Ok(ResolvedGroups {
+            resources: GroupResources {
+                pipeline: self.pipeline.clone(),
+                groups: [constants, textures, self.samplers.clone()],
+            },
+            constants: constants_stamp,
+            textures: textures_stamp,
+            clock: capture_use.then(|| Arc::clone(&groups.clock)),
+            revision: groups.clock.revision(),
         })
     }
 }
@@ -598,7 +661,12 @@ impl Cache {
 
 impl Pipeline {
     fn release_bind_groups(&self) {
-        *self.groups.lock().unwrap_or_else(|e| e.into_inner()) = Groups::default();
+        {
+            let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
+            groups.clock.invalidate();
+            let clock = Arc::clone(&groups.clock);
+            *groups = Groups { clock, ..Default::default() };
+        }
         if let Some(fallback) = &self.fallback {
             for pipeline in fallback
                 .variants
@@ -1132,23 +1200,14 @@ impl Pipeline {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let groups = &mut *groups;
-        if groups.frame != frame {
-            groups.frame = frame;
-            let live = |used: u64| used + 1 >= frame;
-            groups.constants.retain(|(_, _, used)| live(*used));
-            for entries in groups.textures.values_mut() {
-                entries.retain(|(_, _, used)| live(*used));
-            }
-            groups.textures.retain(|_, entries| !entries.is_empty());
-            groups.last = None;
-        }
+        groups.advance(frame);
         let constants = match groups
             .constants
             .iter_mut()
             .find(|(cached, _, _)| *cached == buffer)
         {
             Some((_, group, used)) => {
-                *used = frame;
+                used.set(frame);
                 group.clone()
             }
             None => {
@@ -1170,13 +1229,14 @@ impl Pipeline {
                             .collect::<Vec<_>>(),
                     })
                 })?;
-                groups.constants.push((buffer, group.clone(), frame));
+                groups.constants.push((buffer, group.clone(), GroupStamp::new(frame)));
                 group
             }
         };
         let same = |cached: &[wgpu::TextureView]| cached.iter().map(Some).eq(views.iter().copied());
         let last = groups
             .last
+            .filter(|_| groups.clock.hint.load(std::sync::atomic::Ordering::Acquire))
             .filter(|(hash, index)| same(&groups.textures[hash][*index].0));
         let (hash, found) = match last {
             Some((hash, index)) => (hash, Some(index)),
@@ -1196,7 +1256,7 @@ impl Pipeline {
         let textures = match found {
             Some(index) => {
                 let (_, group, used) = &mut entries[index];
-                *used = frame;
+                used.set(frame);
                 groups.last = Some((hash, index));
                 group.clone()
             }
@@ -1217,11 +1277,12 @@ impl Pipeline {
                     })
                 })?;
                 let views = views.iter().flatten().map(|view| (*view).clone()).collect();
-                entries.push((views, group.clone(), frame));
+                entries.push((views, group.clone(), GroupStamp::new(frame)));
                 groups.last = Some((hash, entries.len() - 1));
                 group
             }
         };
+        groups.clock.hint.store(true, std::sync::atomic::Ordering::Release);
         let program = capture.then(|| BindingProgram {
             pipeline: self.pipeline.clone(),
             samplers: self.samplers.clone(),
@@ -1237,8 +1298,10 @@ impl Pipeline {
 
         Ok((
             Bindings {
-                pipeline: self.pipeline.clone(),
-                groups: [constants, textures, self.samplers.clone()],
+                resources: ResourceHandle::Inline(GroupResources {
+                    pipeline: self.pipeline.clone(),
+                    groups: [constants, textures, self.samplers.clone()],
+                }),
                 offsets,
                 count,
                 #[cfg(any(test, feature = "test-support"))]

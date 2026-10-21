@@ -32,6 +32,8 @@ scheduler diagnostic switch.
 
 The ordinary `BATTLE_PLAN_VIEWER_PROFILE` output includes `dc_pool_manager` for icon-pool admission before owner callbacks and `dc_gui_submit` for native GUI submission (including rollback). These are inclusive nested spans, not additional owner time; no separate collector or counters are enabled.
 
+An ordered native-GUI call transaction builds its borrowed authored-element traversal lazily, at the first visibility or text-scrollbar call, and shares it only until that transaction ends. Setters, resource requests, immediate scrollbar refreshes and rollback retain their original order; no view or layout is retained across frames.
+
 Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. Follow the workspace [working rules](../../AGENTS.md).
 
 Stored modifier source labels recover through their recorded language's content keys in `recorded_labels`; combat and occupation hovers share the same display-language policy.
@@ -77,3 +79,32 @@ Occupation markers use the ordinary native map-icon projection, pooled window li
 
 Frame-only regional mines, naval control/share, directed-war owners and naval
 fixed-point math live in replay-derive and are re-exported at their viewer paths.
+
+Fog raster geometry is immutable content: `textures::IntelCells` stores each
+six-pixel cell's defined land-province multiplicities once, with floor-sized
+footprint and bottom-up rows. Hour grids keep the scalar raster's integer
+sum/divide/complement, clear defaults for water and missing bytes, distinct
+absent versus empty visibility, and the exact nonzero-texel count. Storage
+follows actual cells, land definitions and reached cell/province pairs.
+`IntelCellsCache` shares a once-only result between content-load background
+preparation and the exact lazy fallback. Completed tables and deterministic
+structural refusals are retained; allocation/resource failures remain retryable.
+Half-built tables are never published, and hour jobs never observe mutable geometry.
+
+
+PROFILE thread-CPU samples use QueryThreadCycleTime with a once-calibrated
+invariant-TSC rate, not scheduler-tick GetThreadTimes. Frame `mt_*` wall/CPU/call
+records retain zeros and unavailable samples and stay on their originating thread;
+builder children remain explicitly job-local. Disabled scopes read no clocks and
+allocate no records. Ordinary frame lines also retain overlay re-preparation reasons
+and explicitly transported owner placement/CPU; see the viewer profiling guide
+for inclusive nesting, main/helper identity and unavailable-sample semantics.
+
+The bounded hour `builder_pool` exposes nonblocking `try_submit_status`, preserving
+the rejected owned job on both Full and Disconnected, and RAII capacity listeners.
+Queue-space notifications happen on dequeue, outside receiver/registry locks and
+before the accepted job runs; they are not idle/helper-admission signals. Callbacks
+only post nonblocking wakes. Producers register before admission, acknowledge
+before trying, and compare generations after Full to avoid missed wakes. Accepted
+jobs retain the existing FIFO, queue width, priorities and exact-once execution;
+this API adds no cancellation. Without subscribers dequeue reads one atomic only.

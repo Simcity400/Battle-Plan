@@ -71,7 +71,7 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
 const ROW: u64 = std::mem::size_of::<replay_data::rows::CountryRow>() as u64;
 
 /// A decoded hour whose `Countries` table holds `rows` rows.
-fn sized_frame(hour: Hour, rows: usize) -> Current {
+pub(super) fn sized_frame(hour: Hour, rows: usize) -> Current {
     use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows};
     use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
@@ -160,7 +160,7 @@ fn the_frame_cache_counts_a_shared_table_once() {
     assert_eq!(third.bytes, 2 * each, "equal rows in two allocations");
 }
 
-fn test_view() -> View {
+pub(super) fn test_view() -> View {
     View {
         camera: Camera::fit(
             crate::map::camera::MapSize {
@@ -175,9 +175,10 @@ fn test_view() -> View {
     }
 }
 
-fn pending(ticket: u64) -> Pending {
+pub(super) fn pending(ticket: u64) -> Pending {
     Pending {
         ticket,
+        trace: Default::default(),
         current: Current::Gap {
             branch: 1,
             hour: 10,
@@ -197,6 +198,7 @@ fn pending(ticket: u64) -> Pending {
         error: None,
         error_rank: None,
         laps: Vec::new(),
+        child_laps: Vec::new(),
         view: test_view(),
     }
 }
@@ -217,7 +219,7 @@ fn concurrent_errors_wait_for_all_parts_and_choose_fixed_priority() {
         let mut pending = pending(7);
         for index in 0..PARTS {
             let name = names[(index + shift) % PARTS];
-            let done = pending.take(7, name, 0.0, Part::failed(name));
+            let done = pending.take(7, name, 0.0, Vec::new(), Part::failed(name));
             assert_eq!(
                 done,
                 index + 1 == PARTS,
@@ -232,12 +234,54 @@ fn concurrent_errors_wait_for_all_parts_and_choose_fixed_priority() {
 #[test]
 fn a_cancelled_dispatch_cannot_fill_a_rerequested_hour() {
     let mut replacement = pending(8);
-    assert!(!replacement.take(7, "snow", 0.0, Part::failed("snow")));
+    let child = || {
+        vec![BuilderSpan {
+            name: "snow.grid",
+            ms: 0.0,
+            cpu_ms: Some(0.0),
+        }]
+    };
+    assert!(!replacement.take(7, "snow", 0.0, child(), Part::failed("snow")));
     assert_eq!(replacement.received, 0);
     assert!(replacement.error.is_none());
     assert!(replacement.laps.is_empty());
-    assert!(!replacement.take(8, "snow", 0.0, Part::failed("snow")));
+    assert!(replacement.child_laps.is_empty());
+    assert!(!replacement.take(8, "snow", 0.0, child(), Part::failed("snow")));
     assert_eq!(replacement.received, 1);
+    assert_eq!(replacement.child_laps.len(), 1);
+    let child = &replacement.child_laps[0].1[0];
+    assert_eq!(child.name, "snow.grid");
+    assert_eq!(child.ms, 0.0);
+    assert_eq!(child.cpu_ms, Some(0.0));
+}
+
+#[test]
+fn builder_children_keep_fixed_part_order_and_nested_completion_order() {
+    let span = |name| BuilderSpan {
+        name,
+        ms: 0.0,
+        cpu_ms: None,
+    };
+    let parts = vec![
+        (
+            "fog",
+            vec![span("fog.intel_build"), span("fog.intel_lookup")],
+        ),
+        ("snow", vec![span("snow.grid")]),
+        ("overlay", vec![span("overlay.tables")]),
+    ];
+    assert_eq!(
+        ordered_child_laps(parts)
+            .iter()
+            .map(|span| span.name)
+            .collect::<Vec<_>>(),
+        [
+            "overlay.tables",
+            "fog.intel_build",
+            "fog.intel_lookup",
+            "snow.grid"
+        ]
+    );
 }
 
 #[test]
@@ -304,10 +348,10 @@ fn the_intel_map_follows_the_viewing_countrys_province_bytes() {
             .intel
             .get_or_insert_with(fog.clone(), || {
                 built.set(built.get() + 1);
-                Ok::<_, ()>(Arc::new(IntelMap {
-                    texels: fog.map_or_else(Vec::new, |fog| fog.into_values().collect()),
-                    fog: true,
-                }))
+                Ok::<_, ()>(Arc::new(IntelMap::new(
+                    fog.map_or_else(Vec::new, |fog| fog.into_values().collect()),
+                    true,
+                )))
             })
             .unwrap()
     };
@@ -326,7 +370,7 @@ fn the_intel_map_follows_the_viewing_countrys_province_bytes() {
     assert_eq!(built.get(), 3);
 }
 
-fn lane_over(replay: &Arc<Replay>) -> DecodeLane {
+pub(super) fn lane_over(replay: &Arc<Replay>) -> DecodeLane {
     DecodeLane::start(Playback::unloaded(Arc::clone(replay)).unwrap().with_reader(
         BlockReader::new(Arc::clone(replay), Arc::new(Dropper::new().unwrap())),
     ))
@@ -343,16 +387,25 @@ fn long_replay(hours: &[Hour]) -> Arc<Replay> {
     )
 }
 
-/// `lane.frame` on another thread, failing the test rather than hanging it.
-fn frame_within(lane: &Arc<DecodeLane>, branch: BranchId, hour: Hour) -> Current {
-    let (done, result) = mpsc::channel();
-    let asker = Arc::clone(lane);
-    thread::spawn(move || {
-        let _ = done.send(asker.frame(branch, hour));
+/// Wait only in the test driver; production coordinators consume reply events.
+pub(super) fn source_frame(client: &Arc<SourceMailbox>, branch: BranchId, hour: Hour) -> Current {
+    let (send, result) = mpsc::channel();
+    let _handle = client.post(next_id(), (branch, hour), move |_, reply| {
+        let _ = send.send(reply);
     });
-    result
-        .recv_timeout(TEST_HANG_GUARD)
-        .expect("the lane answers")
+    match result.recv_timeout(TEST_HANG_GUARD).expect("source replies") {
+        source_mailbox::Reply::Ready { value, .. } => value,
+        source_mailbox::Reply::Stopped => Current::Gap {
+            branch,
+            hour,
+            reason: LANE_STOPPED.to_owned(),
+        },
+        source_mailbox::Reply::Cancelled => panic!("ordinary request is not cancelled"),
+    }
+}
+
+fn frame_within(lane: &DecodeLane, branch: BranchId, hour: Hour) -> Current {
+    source_frame(&lane.client(), branch, hour)
 }
 
 #[test]
@@ -377,6 +430,7 @@ fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
     let replay = long_replay(&hours);
     let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
     let shared = LaneShared {
+        mailbox: OnceLock::new(),
         state: Mutex::new(LaneState::default()),
         changed: Condvar::new(),
     };
@@ -426,8 +480,11 @@ fn a_dropped_lane_ends_its_thread_and_a_dead_lane_answers_with_a_gap() {
         thread::sleep(std::time::Duration::from_millis(5));
     }
     // A lane whose thread is gone answers at once.
+    let mailbox = SourceMailbox::new(|_| false);
+    mailbox.stop();
     let dead = DecodeLane {
         shared: Arc::new(LaneShared {
+            mailbox: OnceLock::from(mailbox),
             state: Mutex::new(LaneState {
                 dead: true,
                 ..LaneState::default()
@@ -436,7 +493,7 @@ fn a_dropped_lane_ends_its_thread_and_a_dead_lane_answers_with_a_gap() {
         }),
     };
     assert!(matches!(
-        dead.frame(1, 10),
+        frame_within(&dead, 1, 10),
         Current::Gap { reason, .. } if reason == LANE_STOPPED
     ));
 }
@@ -450,17 +507,17 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
         Current::Frame(frame) => Some(frame.hour),
         Current::Gap { .. } => None,
     };
-    assert_eq!(decoded(lane.frame(1, 105)), Some(105));
+    assert_eq!(decoded(frame_within(&lane, 1, 105)), Some(105));
     // Decoded ahead, in want order: already there.
-    assert_eq!(decoded(lane.frame(1, 100)), Some(100));
+    assert_eq!(decoded(frame_within(&lane, 1, 100)), Some(100));
     // An hour the want does not name is decoded on request; a hole is a gap.
-    assert_eq!(decoded(lane.frame(1, 820)), Some(820));
-    assert_eq!(decoded(lane.frame(1, 103)), None);
+    assert_eq!(decoded(frame_within(&lane, 1, 820)), Some(820));
+    assert_eq!(decoded(frame_within(&lane, 1, 103)), None);
     let expected = match replay.seek(1, 101).unwrap() {
         replay::container::SeekResult::Frame(frame) => *frame,
         other => panic!("{other:?}"),
     };
-    match lane.frame(1, 101) {
+    match frame_within(&lane, 1, 101) {
         Current::Frame(frame) => assert_eq!(*frame, expected),
         other => panic!("{other:?}"),
     }
@@ -531,7 +588,8 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
                 .with_checkpoint_source(context),
         )
         .unwrap();
-    let current = worker.frame(1, 105).unwrap();
+    let client = worker.client();
+    let current = source_frame(&client, 1, 105);
     assert!(matches!(current, Current::Frame(ref frame) if frame.hour == 105 && frame.branch == 1));
     let expected = replay
         .seek_selected(1, 105, Some(selected_tables()))
@@ -570,9 +628,9 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
         matches!((current, expected), (Current::Frame(actual), replay::container::SeekResult::Frame(expected)) if actual.as_ref() == expected.as_ref())
     );
     // Stepping on from the restored hour replaces the hourly impacts.
-    assert_eq!(strikes(&worker.frame(1, 820).unwrap()), Ok(Vec::new()));
+    assert_eq!(strikes(&source_frame(&client, 1, 820)), Ok(Vec::new()));
     let metrics = worker
-        .0
+        .state
         .lock()
         .unwrap()
         .playback
@@ -585,10 +643,10 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
     );
     store.clear().unwrap();
     assert!(
-        matches!(worker.frame(1, 101).unwrap(), Current::Frame(ref frame) if frame.hour == 101)
+        matches!(source_frame(&client, 1, 101), Current::Frame(ref frame) if frame.hour == 101)
     );
     assert!(
-        matches!(worker.frame(1, 102).unwrap(), Current::Gap { hour: 102, branch: 1, ref reason } if reason == "flush failed")
+        matches!(source_frame(&client, 1, 102), Current::Gap { hour: 102, branch: 1, ref reason } if reason == "flush failed")
     );
     assert!(
         store.saved_key().unwrap().is_none(),
@@ -771,7 +829,7 @@ fn sparse_playback_decode_is_identical_to_an_independent_paused_seek_at_every_sa
         .collect();
     lane.want(samples.iter().map(|hour| (1, *hour)).collect(), 2);
     for hour in samples {
-        let Current::Frame(actual) = lane.frame(1, hour) else {
+        let Current::Frame(actual) = frame_within(&lane, 1, hour) else {
             panic!("sample {hour} is not a frame")
         };
         let replay::container::SeekResult::Frame(expected) = replay.seek(1, hour).unwrap() else {
@@ -835,7 +893,7 @@ fn skipped_colour_refreshes_carry_in_recorded_order_and_gaps_start_cold() {
     };
     let carried = carry_colour(
         Some(old),
-        (24..=27).map(|hour| sized_frame(hour, 0)).collect(),
+        (24..=27).map(|hour| sized_frame(hour, 0)),
         &mut evaluate,
     )
     .unwrap()
@@ -891,4 +949,69 @@ fn forward_playback_retains_only_targets_not_cancellation_endpoints_or_behind_ho
         state.frames.frames.keys().copied().collect::<Vec<_>>(),
         [(1, 690)]
     );
+}
+
+#[test]
+fn target_trace_decode_metadata_follows_frame_cache_eviction() {
+    let mut state = LaneState::default();
+    assert!(state.decode_profile.is_none());
+    let sample = trace::DecodeClock::start(true).finish(1, 100).unwrap();
+    for hour in 0..100 {
+        state.frames.insert(
+            (1, hour),
+            Current::Gap { branch: 1, hour, reason: "recorded gap".into() },
+        );
+        state.decode_profile
+            .get_or_insert_with(BTreeMap::new)
+            .insert((1, hour), sample);
+    }
+    state.evict();
+    let metadata = state.decode_profile.as_ref().unwrap();
+    assert_eq!(metadata.len(), FRAME_CACHE);
+    assert_eq!(
+        metadata.keys().copied().collect::<Vec<_>>(),
+        state.frames.frames.keys().copied().collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn railway_neighbour_wait_precedes_single_flight_ownership_after_reversed_worker_entry() {
+    let memo = Arc::new(viewer_foundation::map::memo::Recent::<u8, u32>::new(2));
+    let predecessor = Slot::new();
+    let (entered, waiting) = mpsc::channel();
+    let (done, result) = mpsc::channel();
+    let later_memo = memo.clone();
+    let near = predecessor.clone();
+    let later = thread::spawn(move || {
+        let value = memo_after_neighbours(
+            &later_memo,
+            1,
+            || {
+                entered.send(()).unwrap();
+                wait_all(vec![near])
+            },
+            |_| -> io::Result<_> { Ok(Arc::new(999)) },
+        ).unwrap();
+        done.send(value).unwrap();
+    });
+    waiting.recv_timeout(TEST_HANG_GUARD).unwrap();
+    // B reached the dependency first. A has not entered the memo until now.
+    // If B claimed it before waiting, A and B would form the reported cycle.
+    let (built, first) = mpsc::channel();
+    let earlier = thread::spawn(move || {
+        let value = memo_after_neighbours(
+            &memo,
+            1,
+            Vec::<Arc<u32>>::new,
+            |_| -> io::Result<_> { Ok(Arc::new(42)) },
+        ).unwrap();
+        Fill(predecessor).set(Some(value.clone()));
+        built.send(value).unwrap();
+    });
+    let first = first.recv_timeout(TEST_HANG_GUARD).unwrap();
+    let second = result.recv_timeout(TEST_HANG_GUARD).unwrap();
+    assert_eq!(*second, 42);
+    assert!(Arc::ptr_eq(&first, &second));
+    earlier.join().unwrap();
+    later.join().unwrap();
 }

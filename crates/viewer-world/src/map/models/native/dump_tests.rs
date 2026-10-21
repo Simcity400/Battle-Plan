@@ -885,10 +885,9 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
     for (index, object) in objects.iter_mut().enumerate() {
         let arena = &arenas[index];
         model.drawn.set(0);
-        let error = model
-            .prepare_native(arena, frame, inputs, Queue::Regular, object)
-            .err()
-            .unwrap();
+        let error = model.prepare_native(arena, frame, inputs, Queue::Regular, object)
+        .err()
+        .unwrap();
         errors.push(error.to_string());
         assert_eq!(model.drawn(), 0);
     }
@@ -905,4 +904,396 @@ fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_
             .stream
             .same_bindings(&objects[1].retained.stream)
     );
+}
+
+#[path = "dump_tests/independent.rs"]
+mod independent;
+
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn native_routes_and_program_cache_keep_multiframe_pixels_arena_state_and_refusals() {
+    use viewer_foundation::map::gpu_contract::read_texture;
+    let (_directory, mut library, blank) = fixture();
+    library.meshes[1].native[0].lods[0][0].material.shader = Some("Object".into());
+    let mut alternate = library.meshes[1].native[0].lods[0][0].clone();
+    alternate.material.shader = Some("Alpha".into());
+    library.meshes[1].native[0].lods[0].push(alternate);
+    library.meshes[2].visual = true;
+    library.alternatives.insert(2, 1);
+    let (_serial, device, queue) = tests::device();
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let camera = Camera {
+        center: [0., 0.],
+        height: 100.,
+        map: MapSize {
+            width: 100,
+            height: 100,
+        },
+        defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    let render = |draws: &DrawList, caster: bool, samples| {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        if caster {
+            let target = |format| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("native walk caster proof"),
+                    size: wgpu::Extent3d {
+                        width: 16,
+                        height: 16,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                })
+            };
+            let colour = target(DEPTH_MAP_FORMAT);
+            let depth = target(DEPTH_FORMAT);
+            let colour_view = colour.create_view(&Default::default());
+            let depth_view = depth.create_view(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &colour_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }),
+                    ..Default::default()
+                });
+                draws.record(&mut pass);
+            }
+            queue.submit([encoder.finish()]);
+            read_texture(&device, &queue, &colour, 4).unwrap()
+        } else {
+            let targets = Targets::new(&device, [16, 16], [16, 16], samples);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    color_attachments: &[Some(
+                        targets.scene_attachment(wgpu::LoadOp::Clear(wgpu::Color::BLACK)),
+                    )],
+                    depth_stencil_attachment: Some(
+                        targets.depth_attachment(wgpu::LoadOp::Clear(1.)),
+                    ),
+                    ..Default::default()
+                });
+                draws.record(&mut pass);
+            }
+            queue.submit([encoder.finish()]);
+            read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
+        }
+    };
+    let mut nonempty = 0;
+    let mut refusals = 0;
+    let mut seen = [false; 5];
+    for samples in [1, 4] {
+        // Each arm starts cold with independent mutable residency, retained state and Arena.
+        let mut models = [0, 1].map(|_| {
+            let mut model = ModelPass::new(&library, "unit models");
+            model.upload_library(&device, &queue, &library).unwrap();
+            model
+        });
+        let mut resources = independent::Resources::default();
+        let arenas = [
+            shader_pipeline::gpu::Arena::new(&device),
+            shader_pipeline::gpu::Arena::new(&device),
+        ];
+        let mut objects = [ObjectConstants::default(), ObjectConstants::default()];
+        let mut globals = models.each_ref().map(|model| model.textures[blank].as_ref().unwrap().view.clone());
+        for frame in 0..48usize {
+            let placed: Vec<_> = (0..16)
+                .map(|index| {
+                    (
+                        index % library.meshes.len(),
+                        ModelInstance {
+                            scale: 0.25 + (index % 5) as f32 * 0.125,
+                            position: [(index % 3) as f32, 0., (index % 2) as f32],
+                            animation_seed: index as u32 % 3,
+                            animation_identity: index as u32 % 2,
+                            animation: if index % 2 == 0 {
+                                entity_animation::STOPPED
+                            } else {
+                                0
+                            },
+                            roll: if frame % 11 == 1 && index == 5 {
+                                0.5
+                            } else {
+                                0.
+                            },
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect();
+            let mut absent = [None, None];
+            for (arm, model) in models.iter_mut().enumerate() {
+                model.fall_back();
+                model.label = ["unit models", "city sprawl", "supply trains", "unknown caller"][frame % 4];
+                if frame % 3 == 0 {
+                    let mut field = ModelField::build(&library, placed.clone(), 128.);
+                    field.native_order.reverse();
+                    let duplicate = field.native_order[0];
+                    field.native_order.insert(3, duplicate);
+                    model.replace_field(&library, &mut field);
+                } else {
+                    model.update_placed(placed.clone(), 128.);
+                }
+                model.set_hidden(if frame % 7 == 2 {
+                    BTreeSet::from([(1, 2, 1)])
+                } else {
+                    BTreeSet::new()
+                });
+                // Exercise real optional-metadata absence, not another renderer.
+                if arm == 0 && frame % 3 == 0 { model.native_walk.installed = false; }
+                if frame % 13 == 4 {
+                    globals[arm] = model.textures[blank].as_ref().unwrap().texture.create_view(&Default::default());
+                    seen[0] = true;
+                }
+                if frame % 17 == 6 {
+                    absent[arm] = model.textures[blank].take();
+                }
+                if frame % 19 == 9 {
+                    model.material_refusals.insert(0, "injected source-order material refusal".into());
+                    seen[2] = true;
+                }
+            }
+            seen[1] |= absent.iter().any(Option::is_some);
+            let scene = [0; 416];
+            let frames = [scene.as_slice(), scene.as_slice()];
+            // Finite, nonzero alpha makes alternate draws an order-sensitive pixel proof.
+            let grid = [0.125_f32, 0.25, 0.5, 50.];
+            let model_frame = ModelFrame {
+                camera,
+                offsets: &[0., 0.5],
+                visible: (frame % 5 == 1).then_some([-2., -2., 3., 3.]),
+                alpha: 0.75,
+            };
+            for kind in [Queue::Regular, Queue::Alternate, Queue::Caster] {
+                let mut outputs = [None, None];
+                let mut reports = Vec::new();
+                // Alternate arm order without changing source order inside either walk.
+                for arm in if frame % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let model = &models[arm];
+                    let inputs = Inputs {
+                        samples, frames: &frames, grid: bytemuck::cast_slice(&grid),
+                        textures: [&globals[arm]; 10],
+                    };
+                    model.drawn.set(0);
+                    *model.refusals.borrow_mut() = (arenas[arm].frame(), BTreeSet::new());
+                    objects[arm].begin();
+                    // Recipe allocation is optional. Exercise the actual direct-source
+                    // fallback while the other owner uses its installed reflected recipe.
+                    if arm == 0 && let Some(native) = model.native.borrow_mut().as_mut() {
+                        for resident in &mut native.residents {
+                            if let Some((_, program)) = &mut resident.program {
+                                program.omit_recipe_for_tests();
+                            }
+                        }
+                    }
+                    let result = model.prepare_native(
+                        &arenas[arm], model_frame, inputs, kind, &mut objects[arm],
+                    );
+                    let draws = result.unwrap();
+                    refusals += model.refusal_lines(arenas[arm].frame()).len();
+                    reports.push((arm, model.drawn(), model.refusal_lines(arenas[arm].frame())));
+                    outputs[arm] = Some(draws);
+                }
+                reports.sort_by_key(|report| report.0);
+                assert_eq!(
+                    (&reports[0].1, &reports[0].2),
+                    (&reports[1].1, &reports[1].2)
+                );
+                let [direct, installed] = outputs.map(Option::unwrap);
+                assert_eq!(direct.draws.len(), installed.draws.len(), "frame {frame}");
+                for (a, b) in direct.draws.iter().zip(&installed.draws) {
+                    assert_eq!(
+                        (a.reference, a.vertices, a.indices, a.first, a.count, a.base),
+                        (b.reference, b.vertices, b.indices, b.first, b.count, b.base)
+                    );
+                    assert_eq!(
+                        a.bindings.preparation_proof(),
+                        b.bindings.preparation_proof(),
+                        "frame {frame}"
+                    );
+                }
+                resources.owners(&models[0], &models[1]);
+                resources.view(&globals[0], &globals[1]);
+                resources.draws(&models, &direct, &installed);
+                assert_eq!(arenas[0].refusals(), arenas[1].refusals());
+                assert_eq!(arenas[0].proof_bytes_for_tests(), arenas[1].proof_bytes_for_tests(),
+                    "allocator prefix frame {frame}, samples {samples}");
+                assert_eq!(objects[0].bytes, objects[1].bytes);
+                assert_eq!(objects[0].pixel, objects[1].pixel);
+                assert!(
+                    objects[0]
+                        .retained
+                        .stream
+                        .same_bindings_mapped_for_tests(&objects[1].retained.stream, |a, b| {
+                            resources.view(a, b);
+                            true
+                        })
+                );
+                // Check every actual upload identity against the SAME bijection used by
+                // draw geometry, constant groups and retained textures. All other operands
+                // compare raw; checkpoint is the exact existing flush boundary.
+                let checkpoints = arenas.each_ref().map(shader_pipeline::gpu::Arena::checkpoint);
+                assert_eq!(checkpoints[0].frame(), checkpoints[1].frame());
+                let mut other = checkpoints[1].writes();
+                for (a, a_offset, a_bytes) in checkpoints[0].writes() {
+                    let (b, b_offset, b_bytes) = other.next().expect("matching upload record");
+                    resources.buffer(a, b);
+                    assert_eq!((a_offset, a_bytes.len(), a_bytes), (b_offset, b_bytes.len(), b_bytes));
+                }
+                assert!(other.next().is_none());
+                drop(other);
+                assert_eq!(arenas[0].proof_bytes_for_tests(), arenas[1].proof_bytes_for_tests());
+                resources.check();
+                for checkpoint in checkpoints {
+                    checkpoint.execute(&queue);
+                }
+                let pixels = render(&direct, kind == Queue::Caster, samples);
+                assert_eq!(
+                    pixels,
+                    render(&installed, kind == Queue::Caster, samples),
+                    "frame {frame}, samples {samples}"
+                );
+                if pixels
+                    .chunks_exact(if kind == Queue::Caster { 4 } else { 8 })
+                    .any(|pixel| {
+                        pixel[..if kind == Queue::Caster { 4 } else { 6 }]
+                            .iter()
+                            .any(|byte| *byte != 0)
+                    })
+                {
+                    nonempty += 1;
+                }
+                // Return only the optimized arm's capacity, exactly as Scene does.
+                models[1].recycle_native(installed);
+                seen[3] |= !models[1].redirects.is_empty();
+                seen[4] |= kind == Queue::Alternate && !direct.draws.is_empty();
+            }
+            for (model, absent) in models.iter_mut().zip(absent) {
+                if let Some(texture) = absent {
+                    model.textures[blank] = Some(texture);
+                }
+                model.material_refusals.clear();
+            }
+            resources.check();
+            for arena in &arenas {
+                arena.reset();
+            }
+        }
+    }
+    assert!(nonempty > 0 && refusals > 0);
+    assert!(seen.into_iter().all(|flag| flag));
+    assert!(pollster::block_on(validation.pop()).is_none());
+}
+
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn native_plan_tail_keeps_independent_late_fatal_prefix_and_recovery() {
+    let (_directory, mut library, blank) = fixture();
+    library.meshes[1].native[0].lods[0][0].material.shader = Some("Object".into());
+    let mut missing = library.meshes[1].clone();
+    missing.name = "tail_missing_shared".into();
+    missing.native[0].lods[0][0].material.shader = Some("Missing".into());
+    let missing_index = library.meshes.len();
+    library.meshes.push(missing);
+    library.rigs.push(library.rigs[1].clone());
+    let (_serial, device, queue) = tests::device();
+    let camera = Camera {
+        center: [0., 0.], height: 100.,
+        map: MapSize { width: 100, height: 100 },
+        defines: MapDefines::test(), pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    for samples in [1, 4] {
+        let mut models = [0, 1].map(|_| {
+            let mut model = ModelPass::new(&library, "unit models");
+            model.upload_library(&device, &queue, &library).unwrap();
+            model
+        });
+        let arenas = [0, 1].map(|_| shader_pipeline::gpu::Arena::new(&device));
+        let mut objects = [ObjectConstants::default(), ObjectConstants::default()];
+        let mut resources = independent::Resources::default();
+        for frame in 0..10 {
+            let fatal = frame == 8;
+            let placements = if fatal { vec![1, missing_index] } else { vec![1, 1] };
+            for (arm, model) in models.iter_mut().enumerate() {
+                model.update_placed(placements.iter().map(|&mesh| (mesh, ModelInstance {
+                    scale: 1., ..Default::default()
+                })).collect(), 128.);
+                if arm == 0 { model.native_walk.installed = false; }
+                model.drawn.set(0);
+            }
+            let mut results = Vec::new();
+            for arm in 0..2 {
+                let model = &models[arm];
+                let globals = &model.textures[blank].as_ref().unwrap().view;
+                let frames = [&[frame as u8; 416][..]];
+                objects[arm].begin();
+                results.push(model.prepare_native(
+                    &arenas[arm], ModelFrame { camera, offsets: &[0.], visible: None, alpha: 0.75 },
+                    Inputs { samples, frames: &frames, grid: &[0; 16], textures: [globals; 10] },
+                    Queue::Regular, &mut objects[arm],
+                ));
+            }
+            let [scalar, dense]: [_; 2] = results.try_into().unwrap_or_else(|_| unreachable!());
+            if fatal {
+                let scalar = scalar.err().expect("the late missing shared program is fatal");
+                let dense = dense.err().expect("tail must not turn the fatal into a refusal");
+                assert_eq!((scalar.kind(), scalar.to_string()), (dense.kind(), dense.to_string()));
+                assert_eq!(scalar.to_string(), "native PdxMeshColor fallback is unavailable");
+                assert_eq!(models[0].drawn(), 0, "fatal suppresses the invocation's draw-count commit");
+            } else {
+                let (scalar, dense) = (scalar.unwrap(), dense.unwrap());
+                assert_eq!(scalar.draws.len(), 2);
+                assert_eq!(scalar.draws.len(), dense.draws.len());
+                for (a, b) in scalar.draws.iter().zip(&dense.draws) {
+                    assert_eq!(a.bindings.preparation_proof(), b.bindings.preparation_proof());
+                }
+                resources.owners(&models[0], &models[1]);
+                resources.draws(&models, &scalar, &dense);
+            }
+            resources.owners(&models[0], &models[1]);
+            assert_eq!(models[0].drawn(), models[1].drawn());
+            assert_eq!(models[0].refusal_lines(arenas[0].frame()), models[1].refusal_lines(arenas[1].frame()));
+            assert_eq!(arenas[0].refusals(), arenas[1].refusals());
+            assert_eq!(arenas[0].proof_bytes_for_tests(), arenas[1].proof_bytes_for_tests(), "raw fatal/recovery allocator prefix, frame {frame}, samples {samples}");
+            assert_eq!(objects[0].bytes, objects[1].bytes);
+            assert_eq!(objects[0].pixel, objects[1].pixel);
+            assert!(objects[0].retained.stream.same_bindings_mapped_for_tests(&objects[1].retained.stream, |a, b| {
+                resources.view(a, b); true
+            }));
+            let checkpoints = arenas.each_ref().map(shader_pipeline::gpu::Arena::checkpoint);
+            let mut right = checkpoints[1].writes();
+            for (a, offset, bytes) in checkpoints[0].writes() {
+                let (b, other_offset, other_bytes) = right.next().unwrap();
+                resources.buffer(a, b);
+                assert_eq!((offset, bytes), (other_offset, other_bytes));
+            }
+            assert!(right.next().is_none());
+            drop(right);
+            resources.check();
+            for checkpoint in checkpoints { checkpoint.execute(&queue); }
+            for arena in &arenas { arena.reset(); }
+        }
+    }
 }

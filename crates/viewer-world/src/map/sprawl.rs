@@ -352,25 +352,44 @@ impl Damage {
         types: &[BuildingType],
         available: &BTreeMap<(bool, u32, usize), &BuildingRow>,
     ) -> Self {
-        let read = || -> io::Result<Self> {
-            // An absent row means no building only in a complete table.
-            let states = frame.complete::<tables::StateBuildings>()?;
-            let provinces = frame.complete::<tables::ProvinceBuildings>()?;
-            frame.complete::<tables::LexicalTokens>()?;
-            let names = TokenNames::new(frame)?;
-            for row in states
-                .iter()
-                .chain(provinces)
-                .filter(|row| row.building_type != 0)
-            {
-                names
-                    .name(row.building_type)
-                    .map_err(|error| invalid(error.to_string()))?;
-            }
-            let provinces = core::<tables::Provinces>(frame)?;
-            Self::from_rows(provinces, types, available)
-        };
-        read().unwrap_or_else(|error| Self {
+        Self::read_profiled(
+            frame,
+            types,
+            available,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// The same damage read with explicit hour-builder child scopes.
+    pub fn read_profiled(
+        frame: &DecodedFrame,
+        types: &[BuildingType],
+        available: &BTreeMap<(bool, u32, usize), &BuildingRow>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> Self {
+        let read = (|| -> io::Result<Self> {
+            let provinces = spans.measure("buildings.damage_validate", |_| {
+                // An absent row means no building only in a complete table.
+                let states = frame.complete::<tables::StateBuildings>()?;
+                let provinces = frame.complete::<tables::ProvinceBuildings>()?;
+                frame.complete::<tables::LexicalTokens>()?;
+                let names = TokenNames::new(frame)?;
+                for row in states
+                    .iter()
+                    .chain(provinces)
+                    .filter(|row| row.building_type != 0)
+                {
+                    names
+                        .name(row.building_type)
+                        .map_err(|error| invalid(error.to_string()))?;
+                }
+                core::<tables::Provinces>(frame)
+            })?;
+            spans.measure("buildings.damage_map", |_| {
+                Self::from_rows(provinces, types, available)
+            })
+        })();
+        read.unwrap_or_else(|error| Self {
             refused: Some(error.to_string()),
             ..Self::default()
         })

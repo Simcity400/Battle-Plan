@@ -5,6 +5,14 @@
 
 use std::{ops::Range, sync::OnceLock, time::Instant};
 
+mod frame_cpu;
+mod thread_clock;
+pub use frame_cpu::{
+    FrameOwners, OwnerSample, ThreadSpan, begin_thread_frame, record_count,
+    record_owner_sample, take_thread_spans, thread_span,
+};
+pub use thread_clock::cpu_clock_hz;
+
 /// The first frame of a profiled `--window-dump` sweep; the frames before it
 /// settle the first hour and its caches.
 pub const SWEEP_START: u32 = 121;
@@ -48,45 +56,97 @@ pub fn sweep_range(frames: u32) -> Range<u32> {
     SWEEP_START..SWEEP_START.saturating_add(frames)
 }
 
-/// Kernel and user CPU time used by the calling thread, excluding waits.
+/// Cycle-derived CPU time used by the calling thread, excluding waits.
+/// QueryThreadCycleTime is converted with a once-calibrated TSC rate, like the
+/// collector's cycle CPU estimate, rather than scheduler-quantized thread times.
 /// Returns `None` if unavailable; callers sample it only while profiling.
 pub fn current_thread_cpu_time() -> Option<std::time::Duration> {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::{
-            Foundation::FILETIME,
-            System::Threading::{GetCurrentThread, GetThreadTimes},
-        };
-        let empty = FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let (mut created, mut exited, mut kernel, mut user) = (empty, empty, empty, empty);
-        // SAFETY: the current thread's pseudo handle needs no closing, and
-        // each output points to a live FILETIME for the duration of the call.
-        let read = unsafe {
-            GetThreadTimes(
-                GetCurrentThread(),
-                &mut created,
-                &mut exited,
-                &mut kernel,
-                &mut user,
-            )
-        };
-        if read == 0 {
-            return None;
+    thread_clock::current()
+}
+
+/// One completed child scope of an hour-builder job, in milliseconds.
+/// CPU samples retain the platform clock's resolution, including exact zeros.
+#[derive(Clone, Debug)]
+pub struct BuilderSpan {
+    pub name: &'static str,
+    pub ms: f64,
+    pub cpu_ms: Option<f64>,
+}
+
+/// Explicit job-local child timings, transported with the built hour rather
+/// than left on a worker's thread-local frame collector. Names are full dotted
+/// paths; nested scopes are inclusive and recorded in completion order.
+pub struct BuilderSpans {
+    enabled: bool,
+    records: Vec<BuilderSpan>,
+}
+
+impl BuilderSpans {
+    /// Uses the caller's existing PROFILE enable; disabled scopes allocate no
+    /// records and read neither the wall clock nor the thread CPU clock.
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            records: Vec::new(),
         }
-        let ticks = |time: FILETIME| {
-            (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
-        };
-        let total = ticks(kernel).checked_add(ticks(user))?;
-        Some(std::time::Duration::new(
-            total / 10_000_000,
-            ((total % 10_000_000) * 100) as u32,
-        ))
     }
-    #[cfg(not(windows))]
-    None
+
+    /// Whether job-local PROFILE output is requested; no clock is read.
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Runs `work` exactly once on this thread, retaining its result unchanged.
+    /// An ordinary error result completes the scope. If work panics, completed
+    /// nested scopes remain, but the unfinished scope has no invented timing.
+    pub fn measure<T>(&mut self, name: &'static str, work: impl FnOnce(&mut Self) -> T) -> T {
+        if !self.enabled {
+            return work(self);
+        }
+        let started = Instant::now();
+        let cpu_started = current_thread_cpu_time();
+        let value = work(self);
+        let cpu_ms = cpu_started
+            .zip(current_thread_cpu_time())
+            .and_then(|(before, after)| after.checked_sub(before))
+            .map(|used| used.as_secs_f64() * 1000.0);
+        self.records.push(BuilderSpan {
+            name,
+            ms: started.elapsed().as_secs_f64() * 1000.0,
+            cpu_ms,
+        });
+        value
+    }
+
+    /// A worker-local recorder with the same enable, sampled on that worker.
+    /// Creating it reads no clock and allocates no record storage.
+    pub fn fork(&self) -> Self {
+        Self {
+            enabled: self.enabled,
+            records: Vec::new(),
+        }
+    }
+
+    /// Adopts completed worker scopes at the caller's ordered join. Their CPU
+    /// samples belong to the worker, not this thread; wall scopes may overlap.
+    pub fn append(&mut self, mut worker: Self) {
+        if self.enabled {
+            self.records.append(&mut worker.records);
+        }
+    }
+
+    /// Adds a completed job-local aggregate without sampling another clock.
+    /// Callers retain their own stage totals; existing scopes keep their order.
+    /// Disabled recorders allocate no storage and discard the supplied record.
+    pub fn record(&mut self, record: BuilderSpan) {
+        if self.enabled {
+            self.records.push(record);
+        }
+    }
+
+    pub fn into_records(self) -> Vec<BuilderSpan> {
+        self.records
+    }
 }
 
 /// `name=ms` pairs of the laps at least `min_ms` long, three decimals.
@@ -241,6 +301,132 @@ impl CpuLaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builder_spans_disabled_run_once_without_records() {
+        let mut calls = 0;
+        let mut spans = BuilderSpans::new(false);
+        let result: Result<_, &str> = spans.measure("outer", |spans| {
+            calls += 1;
+            spans.measure("outer.inner", |_| {
+                calls += 1;
+                Err::<(), _>("kept refusal")
+            })
+        });
+        assert_eq!(result, Err("kept refusal"));
+        assert_eq!(calls, 2);
+        assert!(spans.records.is_empty());
+        assert_eq!(spans.records.capacity(), 0);
+        assert!(spans.into_records().is_empty());
+    }
+
+    #[test]
+    fn builder_spans_forks_keep_enable_without_allocating_records() {
+        for enabled in [false, true] {
+            let mut spans = BuilderSpans::new(enabled);
+            assert_eq!(spans.enabled(), enabled);
+            let worker = spans.fork();
+            assert_eq!(worker.enabled(), enabled);
+            assert!(worker.records.is_empty());
+            assert_eq!(worker.records.capacity(), 0);
+            spans.append(worker);
+            assert!(spans.records.is_empty());
+            assert_eq!(spans.records.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn builder_spans_keep_nested_completion_order_and_error_results() {
+        let mut calls = Vec::new();
+        let mut spans = BuilderSpans::new(true);
+        let result = spans.measure("fog.intel_lookup", |spans| {
+            calls.push("lookup");
+            spans.measure("fog.intel_build", |_| {
+                calls.push("build");
+                Err::<(), _>("same refusal")
+            })
+        });
+        assert_eq!(result, Err("same refusal"));
+        assert_eq!(calls, ["lookup", "build"]);
+        assert_eq!(
+            spans
+                .into_records()
+                .iter()
+                .map(|span| span.name)
+                .collect::<Vec<_>>(),
+            ["fog.intel_build", "fog.intel_lookup"]
+        );
+    }
+
+    #[test]
+    fn builder_spans_adopt_worker_records_in_join_order() {
+        for enabled in [false, true] {
+            let mut spans = BuilderSpans::new(enabled);
+            let workers: Vec<_> = ["bake.worker_first", "bake.worker_second"]
+                .map(|name| (name, spans.fork()))
+                .into_iter()
+                .collect();
+            let workers = std::thread::scope(|scope| {
+                let handles: Vec<_> = workers
+                    .into_iter()
+                    .map(|(name, mut worker)| {
+                        scope.spawn(move || {
+                            worker.measure(name, |_| 7);
+                            worker
+                        })
+                    })
+                    .collect();
+                spans.measure("bake.join", |_| {
+                    handles
+                        .into_iter()
+                        .map(|handle| handle.join().unwrap())
+                        .collect::<Vec<_>>()
+                })
+            });
+            for worker in workers {
+                spans.append(worker);
+            }
+            if enabled {
+                assert_eq!(
+                    spans
+                        .records
+                        .iter()
+                        .map(|span| span.name)
+                        .collect::<Vec<_>>(),
+                    ["bake.join", "bake.worker_first", "bake.worker_second"]
+                );
+                assert!(
+                    spans
+                        .records
+                        .iter()
+                        .all(|span| span.ms.is_finite() && span.ms >= 0.0)
+                );
+            } else {
+                assert!(spans.records.is_empty());
+                assert_eq!(spans.records.capacity(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn builder_spans_keep_completed_scopes_when_a_parent_panics() {
+        let mut spans = BuilderSpans::new(true);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            spans.measure("fog.parent", |spans| {
+                spans.measure("fog.completed", |_| ());
+                panic!("unfinished scope");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            spans
+                .into_records()
+                .iter()
+                .map(|span| span.name)
+                .collect::<Vec<_>>(),
+            ["fog.completed"]
+        );
+    }
 
     #[test]
     fn the_pace_takes_finite_rates_within_bounds() {

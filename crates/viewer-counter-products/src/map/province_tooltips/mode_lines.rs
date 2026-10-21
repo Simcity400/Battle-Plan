@@ -123,18 +123,11 @@ impl Context<'_> {
     fn diplomacy(&self, very_good: i32, very_bad: i32) -> Result<String, String> {
         let state = self.state_row()?;
         let owner_slot = self.slot(state.owner)?;
-        let operands = self
+        let tag = self
             .countries
-            .operands(owner_slot)
-            .ok_or("country naming operands absent")?
-            .as_ref()
-            .map_err(Clone::clone)?;
+            .tag(owner_slot, "country naming operands absent")?;
         let owner = self.countries.name(owner_slot)?;
-        let mut text = format!(
-            "{} ( {owner} ) - ( {FLAG}{} )\n\n",
-            self.state_name()?,
-            operands.tag
-        );
+        let mut text = format!("{} ( {owner} ) - ( {FLAG}{} )\n\n", self.state_name()?, tag);
         let viewer_raw = self.viewer_raw()?;
         let viewer = self.countries.name(self.vision.ours())?;
         let args = [("COUNTRY", Arg::Text(&owner)), ("FROM", Arg::Text(&viewer))];

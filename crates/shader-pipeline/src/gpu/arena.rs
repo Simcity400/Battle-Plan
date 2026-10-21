@@ -144,6 +144,25 @@ impl Arena {
         }
     }
 
+    /// Seal exactly the writes the next flush would issue, without touching the queue.
+    /// Caller-buffer writes lead chunk suffixes, just as in `flush`. Padding and flushed
+    /// cursors advance now, so later staging cannot change or move this boundary's bytes.
+    /// A discarded checkpoint discards reached writes; consumers must execute reached prefix
+    /// checkpoints even when the main frame fails. Uncheckpointed caller writes still carry
+    /// across `reset`, and the ordinary buffer reset/submission lifetime remains unchanged.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn checkpoint(&self) -> super::FrozenBufferWrites {
+        let mut inner = self.inner.borrow_mut();
+        let mut writes = Vec::with_capacity(inner.writes.len() + inner.chunks.len());
+        writes.append(&mut inner.writes);
+        for chunk in &mut inner.chunks {
+            if let Some((offset, bytes)) = checkpoint_bytes(&mut chunk.staged, &mut chunk.flushed) {
+                writes.push((chunk.buffer.clone(), offset, bytes));
+            }
+        }
+        super::FrozenBufferWrites::new(inner.frame, writes)
+    }
+
     /// One draw's constant blocks in a single buffer, each zero-filled to its declared size
     /// (D3D11 reads past a bound buffer's bytes as zero). Writes each block's offset.
     pub(crate) fn constants(
@@ -299,6 +318,19 @@ impl Inner {
             changed = true;
         }
     }
+}
+
+/// Freeze only this boundary's new initialized suffix, including the original flush padding.
+#[cfg(any(test, feature = "test-support"))]
+fn checkpoint_bytes(staged: &mut Vec<u8>, flushed: &mut usize) -> Option<(u64, Vec<u8>)> {
+    if staged.len() == *flushed {
+        return None;
+    }
+    staged.resize(align(staged.len(), 4), 0);
+    let offset = *flushed;
+    let bytes = staged[offset..].to_vec();
+    *flushed = staged.len();
+    Some((offset as u64, bytes))
 }
 
 fn align(value: usize, alignment: usize) -> usize {
@@ -519,3 +551,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "arena/checkpoint_tests.rs"]
+mod checkpoint_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "arena/proof.rs"]
+mod proof;

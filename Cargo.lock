@@ -3124,6 +3124,8 @@ version = "0.1.0"
 dependencies = [
  "dashboard-army",
  "dashboard-base",
+ "dashboard-forces",
+ "dashboard-land-battles",
  "dashboard-text",
  "dpi",
  "engine-executable",

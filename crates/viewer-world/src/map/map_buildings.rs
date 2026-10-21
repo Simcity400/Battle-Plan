@@ -1133,8 +1133,26 @@ impl MapBuildingAssets {
         vision: &Vision,
         city: &CityTerrain<'_>,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary)> {
-        let tokens = self.tokens.get_or_build(frame, (), |projected| {
-            token_types(projected, &self.facts.keys, &self.facts.index).map(Arc::new)
+        self.field_profiled(
+            frame,
+            vision,
+            city,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// The same hour targets with explicit builder child scopes.
+    pub fn field_profiled(
+        &self,
+        frame: &DecodedFrame,
+        vision: &Vision,
+        city: &CityTerrain<'_>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<(PreparedBuildings, MapBuildingSummary)> {
+        let tokens = spans.measure("buildings.tokens", |_| {
+            self.tokens.get_or_build(frame, (), |projected| {
+                token_types(projected, &self.facts.keys, &self.facts.index).map(Arc::new)
+            })
         })?;
         // Read only when a row's token names no building type, to word why.
         let mut names = None;
@@ -1144,108 +1162,115 @@ impl MapBuildingAssets {
         };
         let state_rows = rows::<tables::StateBuildings>(frame)?;
         let province_rows = rows::<tables::ProvinceBuildings>(frame)?;
-        let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
-        let detection = Detection::read(frame, &links, vision.ours())?;
+        let links: BTreeMap<u32, u32> = spans.measure("buildings.links", |_| {
+            Ok::<_, io::Error>(
+                core::<tables::CountryLinks>(frame)?
+                    .iter()
+                    .map(|link| (link.id, link.canonical_slot))
+                    .collect(),
+            )
+        })?;
+        let detection = spans.measure("buildings.detection", |_| {
+            Detection::read(frame, &links, vision.ours())
+        })?;
         // The game tests the strategic-navy base hash whatever the
         // base's level; `NavalBases` walks that hash.
-        let naval_bases = rows::<tables::NavalBases>(frame)?;
-        let naval_base_provinces: BTreeSet<u32> =
-            naval_bases.rows().iter().map(|row| row.province).collect();
+        let (naval_bases, naval_base_provinces) = spans.measure("buildings.naval_bases", |_| {
+            let naval_bases = rows::<tables::NavalBases>(frame)?;
+            let naval_base_provinces: BTreeSet<u32> =
+                naval_bases.rows().iter().map(|row| row.province).collect();
+            Ok::<_, io::Error>((naval_bases, naval_base_provinces))
+        })?;
         // Keyed by the table a row came from, its location and its type index.
-        let mut available: BTreeMap<(bool, u32, usize), &BuildingRow> = BTreeMap::new();
-        for (provincial, table) in [(false, state_rows.rows()), (true, province_rows.rows())] {
-            for row in table {
-                // Building type 0 is none: token registration gives token 0 to
-                // every key it rejects, so it names no building type and a row
-                // holding it has nothing to draw or report.
-                if row.building_type == 0 {
-                    continue;
-                }
-                let index = match tokens.get(&row.building_type) {
-                    Some(Ok(index)) => *index,
-                    Some(Err(reason)) => {
-                        refuse(&mut summary.refused_tokens, reason.clone());
+        let available = spans.measure("buildings.rows", |_| {
+            let mut available: BTreeMap<(bool, u32, usize), &BuildingRow> = BTreeMap::new();
+            for (provincial, table) in [(false, state_rows.rows()), (true, province_rows.rows())] {
+                for row in table {
+                    // Building type 0 is none: token registration gives token 0 to
+                    // every key it rejects, so it names no building type and a row
+                    // holding it has nothing to draw or report.
+                    if row.building_type == 0 {
                         continue;
                     }
-                    None => {
-                        let names = match names {
-                            Some(names) => names,
-                            None => *names.insert(TokenNames::new(frame)?),
-                        };
-                        let reason = match names.name(row.building_type) {
-                            Ok(spelling) => format!(
-                                "token {} ({spelling}) names no authored building type",
-                                row.building_type
-                            ),
-                            Err(error) => {
-                                summary.unnamed_tokens += 1;
-                                error.to_string()
-                            }
-                        };
-                        refuse(&mut summary.refused_tokens, reason);
-                        continue;
-                    }
-                };
-                let building = &self.facts.ordered[index];
-                available.insert((provincial, row.location, index), row);
-                if slots_for_level(building, row.level, self.defines.max_levels) == 0 {
-                    continue;
-                }
-                summary.built += 1;
-                if !self
-                    .slots
-                    .contains_key(&(row.location, building.slot_name().to_owned()))
-                {
-                    summary.missing_slots += 1;
-                    *summary
-                        .missing_by_type
-                        .entry(building.name.clone())
-                        .or_default() += 1;
-                }
-                let (destroyed, damaged, uncertain) = health_state(
-                    row.level,
-                    row.healthy_level,
-                    row.partial_health,
-                    &self.defines,
-                );
-                summary.destroyed += usize::from(destroyed);
-                summary.damaged += usize::from(damaged);
-                summary.uncertain_damage += usize::from(uncertain);
-            }
-        }
-        let mut slots = Vec::with_capacity(self.slot_count());
-        for ((_, bucket), positions) in &self.slots {
-            let candidates = self.candidates.get(bucket).map_or(&[][..], Vec::as_slice);
-            for (ordinal, (position, province)) in positions.iter().enumerate() {
-                // The game takes the bucket's first candidate, in database
-                // order, with a positive level at this slot's location.
-                let selected = candidates.iter().find_map(|&index| {
-                    let building = &self.facts.ordered[index];
-                    let location = if building.provincial() {
-                        (*province)?
-                    } else {
-                        position.state
+                    let index = match tokens.get(&row.building_type) {
+                        Some(Ok(index)) => *index,
+                        Some(Err(reason)) => {
+                            refuse(&mut summary.refused_tokens, reason.clone());
+                            continue;
+                        }
+                        None => {
+                            let names = match names {
+                                Some(names) => names,
+                                None => *names.insert(TokenNames::new(frame)?),
+                            };
+                            let reason = match names.name(row.building_type) {
+                                Ok(spelling) => format!(
+                                    "token {} ({spelling}) names no authored building type",
+                                    row.building_type
+                                ),
+                                Err(error) => {
+                                    summary.unnamed_tokens += 1;
+                                    error.to_string()
+                                }
+                            };
+                            refuse(&mut summary.refused_tokens, reason);
+                            continue;
+                        }
                     };
-                    let row = available.get(&(building.provincial(), location, index))?;
-                    (row.level > 0).then_some((index, *row))
-                });
-                let mut prepared = PreparedSlot {
-                    id: slots.len() as u32,
-                    drawn_at_distance: selected
-                        .map(|(index, _)| self.facts.ordered[index].drawn_at_distance),
-                    entity: None,
-                };
-                if let Some((index, row)) = selected {
-                    prepared.entity = self.entity(
-                        index,
-                        row,
-                        position,
-                        *province,
-                        &mut summary,
-                        Gates {
+                    let building = &self.facts.ordered[index];
+                    available.insert((provincial, row.location, index), row);
+                    if slots_for_level(building, row.level, self.defines.max_levels) == 0 {
+                        continue;
+                    }
+                    summary.built += 1;
+                    if !self
+                        .slots
+                        .contains_key(&(row.location, building.slot_name().to_owned()))
+                    {
+                        summary.missing_slots += 1;
+                        *summary
+                            .missing_by_type
+                            .entry(building.name.clone())
+                            .or_default() += 1;
+                    }
+                    let (destroyed, damaged, uncertain) = health_state(
+                        row.level,
+                        row.healthy_level,
+                        row.partial_health,
+                        &self.defines,
+                    );
+                    summary.destroyed += usize::from(destroyed);
+                    summary.damaged += usize::from(damaged);
+                    summary.uncertain_damage += usize::from(uncertain);
+                }
+            }
+            Ok::<_, io::Error>(available)
+        })?;
+        let mut slots = spans.measure("buildings.slots", |_| {
+            let mut slots = Vec::with_capacity(self.slot_count());
+            for ((_, bucket), positions) in &self.slots {
+                let candidates = self.candidates.get(bucket).map_or(&[][..], Vec::as_slice);
+                for (ordinal, (position, province)) in positions.iter().enumerate() {
+                    // The game takes the bucket's first candidate, in database
+                    // order, with a positive level at this slot's location.
+                    let selected = candidates.iter().find_map(|&index| {
+                        let building = &self.facts.ordered[index];
+                        let location = if building.provincial() {
+                            (*province)?
+                        } else {
+                            position.state
+                        };
+                        let row = available.get(&(building.provincial(), location, index))?;
+                        (row.level > 0).then_some((index, *row))
+                    });
+                    let mut prepared = PreparedSlot {
+                        id: slots.len() as u32,
+                        drawn_at_distance: selected
+                            .map(|(index, _)| self.facts.ordered[index].drawn_at_distance),
+                        entity: None,
+                    };
+                    if let Some((index, row)) = selected {
+                        let gates = Gates {
                             vision,
                             city,
                             detection: &detection,
@@ -1253,94 +1278,105 @@ impl MapBuildingAssets {
                             naval_bases_complete: naval_bases.is_complete(),
                             ordinal,
                             seed: prepared.id,
-                        },
-                    );
+                        };
+                        prepared.entity =
+                            self.entity(index, row, position, *province, &mut summary, gates);
+                    }
+                    slots.push(prepared);
                 }
-                slots.push(prepared);
             }
-        }
-        let supply = rows::<tables::ProvinceSupply>(frame)?;
-        let deployments = rows::<tables::FloatingHarborDeployments>(frame)?;
-        let supply_by_province: BTreeMap<u32, &ProvinceSupplyRow> = supply
-            .rows()
-            .iter()
-            .map(|row| (row.province, row))
-            .collect();
-        for (position, _) in &self.floating {
-            let id = slots.len() as u32;
-            let entity = (|| {
-                // The seventh field must be a positive province: the fog byte and the
-                // deployment are that province's.
-                let province = position.adjacent_sea;
-                if (province as i32) <= 0 {
-                    return None;
-                }
-                match vision
-                    .province_byte(province)
-                    .map(|byte| byte >= FLOATING_HARBOR_VISIBILITY)
-                {
-                    Some(true) => {}
-                    Some(false) => {
-                        summary.fogged += 1;
+            slots
+        });
+        let (supply, deployments, supply_by_province) =
+            spans.measure("buildings.supply", |_| {
+                let supply = rows::<tables::ProvinceSupply>(frame)?;
+                let deployments = rows::<tables::FloatingHarborDeployments>(frame)?;
+                let supply_by_province: BTreeMap<u32, &ProvinceSupplyRow> = supply
+                    .rows()
+                    .iter()
+                    .map(|row| (row.province, row))
+                    .collect();
+                Ok::<_, io::Error>((supply, deployments, supply_by_province))
+            })?;
+        spans.measure("buildings.floating", |_| {
+            for (position, _) in &self.floating {
+                let id = slots.len() as u32;
+                let entity = (|| {
+                    // The seventh field must be a positive province: the fog byte and the
+                    // deployment are that province's.
+                    let province = position.adjacent_sea;
+                    if (province as i32) <= 0 {
                         return None;
                     }
-                    None => {
+                    match vision
+                        .province_byte(province)
+                        .map(|byte| byte >= FLOATING_HARBOR_VISIBILITY)
+                    {
+                        Some(true) => {}
+                        Some(false) => {
+                            summary.fogged += 1;
+                            return None;
+                        }
+                        None => {
+                            *summary
+                                .unknown_floating_harbors
+                                .entry("the fog byte of the harbour's sea province is unknown")
+                                .or_default() += 1;
+                            return None;
+                        }
+                    }
+                    let deployed = floating_harbor_deployed(
+                        province,
+                        supply_by_province.get(&province).copied(),
+                        supply.is_complete(),
+                        deployments.rows(),
+                        deployments.is_complete(),
+                    );
+                    if deployed.is_none() {
                         *summary
                             .unknown_floating_harbors
-                            .entry("the fog byte of the harbour's sea province is unknown")
+                            .entry("the controller's floating-harbour deployment is unknown")
                             .or_default() += 1;
-                        return None;
                     }
-                }
-                let deployed = floating_harbor_deployed(
-                    province,
-                    supply_by_province.get(&province).copied(),
-                    supply.is_complete(),
-                    deployments.rows(),
-                    deployments.is_complete(),
-                );
-                if deployed.is_none() {
-                    *summary
-                        .unknown_floating_harbors
-                        .entry("the controller's floating-harbour deployment is unknown")
-                        .or_default() += 1;
-                }
-                let mesh = self.floating_mesh.filter(|_| deployed == Some(true))?;
-                summary.placed += 1;
-                // The reserved slot has no damage states or variants: one entity definition,
-                // variant selector 0 from the default request.
-                let selection = Selection {
-                    admitted: true,
-                    mesh,
-                    definition: mesh,
-                    variant: 0,
-                };
-                Some(PreparedEntity {
-                    healthy: selection,
-                    ruined: selection,
-                    destroyed: false,
-                    uncertain: false,
-                    damaged: false,
-                    // The reserved slot receives a null template,
-                    // which grows unless its template explicitly suppresses popup growth.
-                    disable_grow_animation: false,
-                    instance: ModelInstance {
-                        position: [position.x, position.y, position.z],
-                        rotation: position.rotation,
-                        scale: 1.0,
-                        animation_seed: id,
-                        ..ModelInstance::default()
-                    },
-                })
-            })();
-            slots.push(PreparedSlot {
-                id,
-                // The reserved slot copies no template's distance flag.
-                drawn_at_distance: Some(false),
-                entity,
-            });
-        }
-        let city_damage = super::sprawl::Damage::read(frame, &self.facts.ordered, &available);
+                    let mesh = self.floating_mesh.filter(|_| deployed == Some(true))?;
+                    summary.placed += 1;
+                    // The reserved slot has no damage states or variants: one entity definition,
+                    // variant selector 0 from the default request.
+                    let selection = Selection {
+                        admitted: true,
+                        mesh,
+                        definition: mesh,
+                        variant: 0,
+                    };
+                    Some(PreparedEntity {
+                        healthy: selection,
+                        ruined: selection,
+                        destroyed: false,
+                        uncertain: false,
+                        damaged: false,
+                        // The reserved slot receives a null template,
+                        // which grows unless its template explicitly suppresses popup growth.
+                        disable_grow_animation: false,
+                        instance: ModelInstance {
+                            position: [position.x, position.y, position.z],
+                            rotation: position.rotation,
+                            scale: 1.0,
+                            animation_seed: id,
+                            ..ModelInstance::default()
+                        },
+                    })
+                })();
+                slots.push(PreparedSlot {
+                    id,
+                    // The reserved slot copies no template's distance flag.
+                    drawn_at_distance: Some(false),
+                    entity,
+                });
+            }
+        });
+        let city_damage = spans.measure("buildings.city_damage", |spans| {
+            super::sprawl::Damage::read_profiled(frame, &self.facts.ordered, &available, spans)
+        });
         if let Some(reason) = &city_damage.refused {
             summary.unknown_city_damage.insert(
                 reason.clone(),

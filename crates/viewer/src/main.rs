@@ -78,7 +78,7 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content
          --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off
-         --profile-pointer <x,y>, framebuffer hover for a profiled --window-dump only
+         --profile-pointer <x,y>, framebuffer hover for a profiled window only
          --free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>, a free eye at world (x, y, z)
            turned by degrees (yaw clockwise from north, pitch up, roll right side down) with a
            vertical field of view in degrees (default 45) and near/far planes (default 1, 20000)
@@ -351,7 +351,7 @@ struct Options {
     /// default, as those modes start.
     free_overlays: Option<bool>,
     camera: Option<Placement>,
-    /// A profiled window dump's synthetic framebuffer hover, never an OS input.
+    /// A profiled window's synthetic framebuffer hover, never an OS input.
     profile_pointer: Option<[f32; 2]>,
     /// `--window-dump --walk`: a walk placed on the map, drawn through the walking mode with
     /// the keys `--walk-keys` holds ([`controls::walker::Start`]).
@@ -851,9 +851,11 @@ impl Options {
         if !options.building_cameras.is_empty() && !options.headless_dump {
             return Err(invalid("--building-camera requires --dump"));
         }
-        if options.profile_pointer.is_some() && !(options.window_dump && profiling) {
+        if options.profile_pointer.is_some()
+            && (!profiling || options.headless_dump || options.compare.is_some())
+        {
             return Err(invalid(
-                "--profile-pointer requires --window-dump with BATTLE_PLAN_VIEWER_PROFILE",
+                "--profile-pointer requires an interactive window with BATTLE_PLAN_VIEWER_PROFILE",
             ));
         }
         if options.province_hover.is_some() && !options.headless_dump {
@@ -2293,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_pointer_requires_a_profiled_window_dump_and_finite_pixels() {
+    fn profile_pointer_requires_a_profiled_window_and_finite_pixels() {
         let args = [
             "--window-dump",
             "campaign.battleplan",
@@ -2328,6 +2330,13 @@ mod tests {
             parse(
                 &["campaign.battleplan", "--profile-pointer", "1600,700"],
                 true
+            )
+            .is_ok()
+        );
+        assert!(
+            parse(
+                &["campaign.battleplan", "--profile-pointer", "1600,700"],
+                false,
             )
             .is_err()
         );

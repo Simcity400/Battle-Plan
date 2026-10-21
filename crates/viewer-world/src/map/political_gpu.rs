@@ -13,6 +13,7 @@
 //! country/naval buffers and texture pair; [`View`]s with equal tables share one, and a state is
 //! released with the last view showing it. States dispatch through one shared [`Scratch`].
 
+mod membership;
 #[path = "province_colors.rs"]
 mod province_colors;
 pub(crate) use province_colors::ProvinceColors;
@@ -22,6 +23,7 @@ use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::gradient_math::DIVISOR;
 use viewer_foundation::map::gradient_math::FieldDefines;
 use viewer_foundation::map::textures::gradient_size;
+use viewer_foundation::profiling::span;
 
 use viewer_foundation::map::gpu_contract::{compute_limits, unsupported};
 
@@ -590,24 +592,31 @@ impl View {
         {
             return Ok(false);
         }
-        let state = if let Some(state) = self.base.find(regions, &self.strategic_styles) {
+        let found = {
+            let _span = span("political_find");
+            self.base.find(regions, &self.strategic_styles)
+        };
+        let state = if let Some(state) = found {
             if let Some(spare) = self.spare.take() {
                 self.base.release(spare);
             }
             state
         } else {
-            // A state only this view holds follows it; a shared one stays with the other views.
-            let own = self
-                .shown
-                .as_ref()
-                .filter(|state| self.base.claim(state))
-                .cloned();
-            let state = match own
-                .or_else(|| self.spare.take())
-                .or_else(|| self.base.recycle())
-            {
-                Some(state) => state,
-                None => self.base.state(device, queue)?,
+            let state = {
+                let _span = span("political_acquire");
+                // A state only this view holds follows it; a shared one stays with the other views.
+                let own = self
+                    .shown
+                    .as_ref()
+                    .filter(|state| self.base.claim(state))
+                    .cloned();
+                match own
+                    .or_else(|| self.spare.take())
+                    .or_else(|| self.base.recycle())
+                {
+                    Some(state) => state,
+                    None => self.base.state(device, queue)?,
+                }
             };
             let mut fill = state.lock();
             let channels = regions
@@ -626,28 +635,35 @@ impl View {
             let field = self.base.field;
             let blank = |_| [0; 3];
             let empty_layer = Layer::new(gradient::LayerKind::Country, &empty, &blank, &field);
-            match regions.mode.as_deref() {
-                Some(Draw {
-                    second: Some(second),
-                    ..
-                }) if channels.contains(&Source::Second) => {
-                    fill.gpu.update_mode(device, queue, second)?
+            {
+                let _span = span("political_country");
+                match regions.mode.as_deref() {
+                    Some(Draw {
+                        second: Some(second),
+                        ..
+                    }) if channels.contains(&Source::Second) => {
+                        fill.gpu.update_mode(device, queue, second)?
+                    }
+                    _ if !channels.contains(&Source::Country) && held.contains(&Held::Country) => {
+                        fill.gpu.update(device, queue, &empty_layer)?
+                    }
+                    Some(Draw {
+                        country: Some(variant),
+                        ..
+                    }) => fill.gpu.update_mode(device, queue, variant)?,
+                    _ => fill.gpu.update_regions(device, queue, regions)?,
                 }
-                _ if !channels.contains(&Source::Country) && held.contains(&Held::Country) => {
-                    fill.gpu.update(device, queue, &empty_layer)?
-                }
-                Some(Draw {
-                    country: Some(variant),
-                    ..
-                }) => fill.gpu.update_mode(device, queue, variant)?,
-                _ => fill.gpu.update_regions(device, queue, regions)?,
             }
-            match regions.mode.as_ref().and_then(|draw| draw.layer.as_ref()) {
-                Some(layer) if channels.contains(&Source::Mode) => {
-                    fill.mode.update_mode(device, queue, layer)?
+            {
+                let _span = span("political_mode");
+                match regions.mode.as_ref().and_then(|draw| draw.layer.as_ref()) {
+                    Some(layer) if channels.contains(&Source::Mode) => {
+                        fill.mode.update_mode(device, queue, layer)?
+                    }
+                    _ => fill.mode.update(device, queue, &empty_layer)?,
                 }
-                _ => fill.mode.update(device, queue, &empty_layer)?,
             }
+            let naval_span = span("political_naval");
             let mode = regions
                 .mode
                 .as_ref()
@@ -694,6 +710,7 @@ impl View {
                 layer.region_style = Some(&style);
             }
             fill.naval.update(device, queue, &layer)?;
+            drop(naval_span);
             fill.strategic_styles = Arc::clone(&self.strategic_styles);
             fill.shown = Some(Arc::clone(regions));
             drop(fill);
@@ -1209,9 +1226,10 @@ impl PoliticalGpu {
             return Err(unsupported("region table no longer covers the map"));
         }
         let region_of = &layer.region_of[..self.mapping.len()];
+        let same_membership = self.source_keys == region_of;
         if self.initialized
             && !self.pending
-            && self.source_keys == region_of
+            && same_membership
             && self.keys.iter().all(|(&key, &slot)| {
                 key == 0
                     || (self.regions[slot].color == rgb((layer.region_color)(key))
@@ -1231,12 +1249,14 @@ impl PoliticalGpu {
         let storage = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
-        let mut area_of: HashMap<u32, u64> = HashMap::new();
-        for (province, &key) in region_of.iter().enumerate() {
-            if key != 0 {
-                *area_of.entry(key).or_default() += self.provinces[province].pixels;
-            }
-        }
+        let area_of = {
+            let _span = span("political_area");
+            membership::areas(
+                region_of,
+                &self.provinces,
+                same_membership.then_some((&self.keys, &self.areas)),
+            )
+        };
         let released = self
             .keys
             .keys()
@@ -1276,38 +1296,45 @@ impl PoliticalGpu {
 
         self.dirty.fill(!self.initialized || self.pending);
         let mut changed = Vec::new();
-        self.keys.retain(|key, slot| {
-            if *key == 0 || area_of.contains_key(key) {
-                true
-            } else {
-                self.free.push(*slot);
-                false
-            }
-        });
-        for (province, &key) in region_of.iter().enumerate() {
-            let slot = if let Some(&slot) = self.keys.get(&key) {
-                slot
-            } else {
-                let slot = self.free.pop().unwrap_or_else(|| {
-                    self.regions.push(Region::default());
-                    self.areas.push(0);
-                    self.thickness.push(u32::MAX);
-                    self.regions.len() - 1
+        {
+            let _span = span("political_mapping");
+            // An exact source-key match keeps every slot and integer area unchanged,
+            // including nonzero keys whose member provinces have no pixels.
+            if !same_membership {
+                self.keys.retain(|key, slot| {
+                    if *key == 0 || area_of.contains_key(key) {
+                        true
+                    } else {
+                        self.free.push(*slot);
+                        false
+                    }
                 });
-                self.keys.insert(key, slot);
-                slot
-            };
-            let old = self.mapping[province] as usize;
-            if old != slot {
-                let pixels = self.provinces[province].pixels;
-                if old != 0 {
-                    self.areas[old] -= pixels;
+                for (province, &key) in region_of.iter().enumerate() {
+                    let slot = if let Some(&slot) = self.keys.get(&key) {
+                        slot
+                    } else {
+                        let slot = self.free.pop().unwrap_or_else(|| {
+                            self.regions.push(Region::default());
+                            self.areas.push(0);
+                            self.thickness.push(u32::MAX);
+                            self.regions.len() - 1
+                        });
+                        self.keys.insert(key, slot);
+                        slot
+                    };
+                    let old = self.mapping[province] as usize;
+                    if old != slot {
+                        let pixels = self.provinces[province].pixels;
+                        if old != 0 {
+                            self.areas[old] -= pixels;
+                        }
+                        if slot != 0 {
+                            self.areas[slot] += pixels;
+                        }
+                        self.mapping[province] = slot as u32;
+                        changed.push(province);
+                    }
                 }
-                if slot != 0 {
-                    self.areas[slot] += pixels;
-                }
-                self.mapping[province] = slot as u32;
-                changed.push(province);
             }
         }
         let mut affected = vec![false; self.regions.len()];
@@ -1478,8 +1505,9 @@ impl PoliticalGpu {
                 bytemuck::cast_slice(&[x, self.params.count.div_ceil(x), 1]),
             );
         }
-        self.source_keys
-            .copy_from_slice(&layer.region_of[..self.mapping.len()]);
+        if !same_membership {
+            self.source_keys.copy_from_slice(region_of);
+        }
         Ok(())
     }
 

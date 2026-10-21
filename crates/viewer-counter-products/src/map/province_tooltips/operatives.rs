@@ -42,14 +42,7 @@ impl Source for Context<'_> {
         Context::slot(self, raw)
     }
     fn tag(&self, slot: u32) -> Result<String, String> {
-        Ok(self
-            .countries
-            .operands(slot)
-            .ok_or("country naming operands absent")?
-            .as_ref()
-            .map_err(Clone::clone)?
-            .tag
-            .clone())
+        self.countries.tag(slot, "country naming operands absent")
     }
     fn marked(&self, slot: u32) -> Result<String, String> {
         self.marked_slot(slot)

@@ -33,16 +33,18 @@ fn retained_semantic_plans_match_fresh_through_camera_thresholds_and_admission()
                 (3, [100., 9.5, 100.]),
             ];
             content.default_anchors = Arc::new(points.into());
-            content.bounds = points
-                .into_iter()
-                .map(|(id, [x, _, z])| (id, [x - 1., z - 1., x + 1., z + 1.]))
-                .collect();
+            content.bounds = Arc::new(
+                points
+                    .into_iter()
+                    .map(|(id, [x, _, z])| (id, [x - 1., z - 1., x + 1., z + 1.]))
+                    .collect(),
+            );
             content.region_of = Arc::new([(1, 1), (2, 1), (3, 2)].into());
         },
         |mut inputs| {
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
-            use crate::map::counters::preparation::plan_probe;
             let frame = DecodedFrame {
                 branch: 1,
                 hour: 11,
@@ -244,7 +246,9 @@ fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTable
 }
 
 fn synthetic_hour_with_history(
-    inputs: &CounterInputs<'_>, frame: &DecodedFrame, history: Option<&History>,
+    inputs: &CounterInputs<'_>,
+    frame: &DecodedFrame,
+    history: Option<&History>,
 ) -> HourTables {
     let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
     hour_tables(
@@ -274,9 +278,9 @@ fn retained_semantic_plan_key_invalidates_every_non_camera_input_it_reuses() {
         |_| {},
         |_| {},
         |inputs| {
+            use crate::map::counters::preparation::plan_probe;
             use replay_data::rows::{TableId, TableRows};
             use replay_frame::frame::TableView;
-            use crate::map::counters::preparation::plan_probe;
             let frame = DecodedFrame {
                 branch: 1,
                 hour: 11,
@@ -388,43 +392,90 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                 (3, [100., 9.5, 100.]),
             ];
             content.default_anchors = Arc::new(points.into());
-            content.bounds = points
-                .into_iter()
-                .map(|(id, [x, _, z])| (id, [x - 1., z - 1., x + 1., z + 1.]))
-                .collect();
+            content.bounds = Arc::new(
+                points
+                    .into_iter()
+                    .map(|(id, [x, _, z])| (id, [x - 1., z - 1., x + 1., z + 1.]))
+                    .collect(),
+            );
             content.region_of = Arc::new([(1, 1), (2, 1), (3, 2)].into());
         },
         |mut inputs| {
-            use replay_data::rows::{CountryLinkRow, CountryRow, DivisionRow,
-                DivisionMovementRow, LandCombatRow, LandCombatSideRow, NavalCombatRow,
-                TableId, TableRows};
+            use replay_data::rows::{
+                CountryLinkRow, CountryRow, DivisionMovementRow, DivisionRow, LandCombatRow,
+                LandCombatSideRow, NavalCombatRow, TableId, TableRows,
+            };
             use replay_frame::frame::TableView;
             use viewer_foundation::engagement_history::{Covered, NAVAL, NAVAL_ICON};
             use viewer_foundation::icon_frames::Kept;
             let mut frame = DecodedFrame {
-                branch: 1, hour: 11, metrics: Default::default(),
-                tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
+                branch: 1,
+                hour: 11,
+                metrics: Default::default(),
+                tables: TableId::ALL
+                    .map(|table| TableView::Complete(TableRows::empty(table)).into()),
             };
             *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-                [1, 5].map(|id| CountryRow { id, canonical_slot: id,
-                    tag: format!("T{id}").into_bytes(), ..Default::default() }).to_vec()));
-            *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-                [1, 5].map(|id| CountryLinkRow { id, canonical_slot: id }).to_vec()));
-            *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
-                vec![DivisionRow { id: 10, province: 1, organisation: 10, ..Default::default() }]));
-            *frame.tables[TableId::DivisionMovement.index()] = TableView::Complete(TableRows::DivisionMovement(
-                vec![DivisionMovementRow { division: 10, ..Default::default() }]));
-            *frame.tables[TableId::LandCombats.index()] = TableView::Complete(TableRows::LandCombats(
-                vec![LandCombatRow { id: 61, province: 1, attackers: vec![10], defenders: vec![10],
-                    ..Default::default() }]));
-            *frame.tables[TableId::LandCombatSides.index()] = TableView::Complete(TableRows::LandCombatSides(
-                vec![LandCombatSideRow { combat: 61, attacker_primary: vec![1], defender_primary: vec![5],
-                    ..Default::default() }]));
-            *frame.tables[TableId::NavalCombats.index()] = TableView::Complete(TableRows::NavalCombats(
-                vec![NavalCombatRow { id: 81, province: 2, ..Default::default() }]));
+                [1, 5]
+                    .map(|id| CountryRow {
+                        id,
+                        canonical_slot: id,
+                        tag: format!("T{id}").into_bytes(),
+                        ..Default::default()
+                    })
+                    .to_vec(),
+            ));
+            *frame.tables[TableId::CountryLinks.index()] =
+                TableView::Complete(TableRows::CountryLinks(
+                    [1, 5]
+                        .map(|id| CountryLinkRow {
+                            id,
+                            canonical_slot: id,
+                        })
+                        .to_vec(),
+                ));
+            *frame.tables[TableId::Divisions.index()] =
+                TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                    id: 10,
+                    province: 1,
+                    organisation: 10,
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::DivisionMovement.index()] =
+                TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {
+                    division: 10,
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::LandCombats.index()] =
+                TableView::Complete(TableRows::LandCombats(vec![LandCombatRow {
+                    id: 61,
+                    province: 1,
+                    attackers: vec![10],
+                    defenders: vec![10],
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::LandCombatSides.index()] =
+                TableView::Complete(TableRows::LandCombatSides(vec![LandCombatSideRow {
+                    combat: 61,
+                    attacker_primary: vec![1],
+                    defender_primary: vec![5],
+                    ..Default::default()
+                }]));
+            *frame.tables[TableId::NavalCombats.index()] =
+                TableView::Complete(TableRows::NavalCombats(vec![NavalCombatRow {
+                    id: 81,
+                    province: 2,
+                    ..Default::default()
+                }]));
             let populate = |tables: &mut HourTables| {
-                tables.divisions = [((1, STANDSTILL), vec![land_unit(10, 1, 10, 10, true),
-                    land_unit(11, 1, 10, 10, true)])].into();
+                tables.divisions = [(
+                    (1, STANDSTILL),
+                    vec![
+                        land_unit(10, 1, 10, 10, true),
+                        land_unit(11, 1, 10, 10, true),
+                    ],
+                )]
+                .into();
                 tables.base_icons.headquarters = vec![(1, [2., 9.5, 2.])];
                 tables.countries = Arc::new(countries([(1, Allegiance::Ours)]));
             };
@@ -443,36 +494,65 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                 let original_epoch = Arc::clone(&tables.epoch);
                 let original_base = Arc::clone(&tables.base);
                 let mut memo = Preparation::default();
-                let mut windows = [naval_windows::Windows::default(), naval_windows::Windows::default()];
+                let mut windows = [
+                    naval_windows::Windows::default(),
+                    naval_windows::Windows::default(),
+                ];
                 let mut pings = [PoolView::default(), PoolView::default()];
                 let mut bases = [BaseView::default(), BaseView::default()];
                 let mut combats = [land_windows::View::default(), land_windows::View::default()];
                 let schedules: [Shared; 2] = std::array::from_fn(|_| Shared::default());
-                let mut inputs = CounterInputs { selected: &empty, schedule: &schedules[0], ..inputs };
+                let mut inputs = CounterInputs {
+                    selected: &empty,
+                    schedule: &schedules[0],
+                    ..inputs
+                };
                 for at in 0..10 {
                     if at == 3 {
                         let mut covered = Covered::new(frame.hour);
-                        if case != 0 { covered.viewers.push((frame.hour, if case == 1 || case == 5 { 5 } else { 1 })); }
-                        let flag = match case { 2 => Engaged::Unknown, 3 | 5 => Engaged::Yes, _ => Engaged::No };
+                        if case != 0 {
+                            covered
+                                .viewers
+                                .push((frame.hour, if case == 1 || case == 5 { 5 } else { 1 }));
+                        }
+                        let flag = match case {
+                            2 => Engaged::Unknown,
+                            3 | 5 => Engaged::Yes,
+                            _ => Engaged::No,
+                        };
                         for (kind, id) in [(LAND, 61), (NAVAL, 81)] {
                             covered.points[kind].insert((id, 0), vec![(frame.hour, flag)]);
                             covered.points[kind].insert((id, 1), vec![(frame.hour, flag)]);
-                            covered.recording[kind].insert((id, 0), vec![(frame.hour, Engaged::Yes)]);
+                            covered.recording[kind]
+                                .insert((id, 0), vec![(frame.hour, Engaged::Yes)]);
                         }
                         for (kind, id) in [(LAND_ICON, 61), (NAVAL_ICON, 81)] {
-                            covered.icons[kind].insert(id, vec![(frame.hour, Some(Kept::Frame(7)))]);
-                            covered.recording_icons[kind].insert(id, vec![(frame.hour, Some(Kept::Frame(2)))]);
+                            covered.icons[kind]
+                                .insert(id, vec![(frame.hour, Some(Kept::Frame(7)))]);
+                            covered.recording_icons[kind]
+                                .insert(id, vec![(frame.hour, Some(Kept::Frame(2)))]);
                         }
-                        if case == 5 { covered.players.push((frame.hour, Some(1))); }
-                        history.branches.lock().unwrap().insert(frame.branch, covered);
+                        if case == 5 {
+                            covered.players.push((frame.hour, Some(1)));
+                        }
+                        history
+                            .branches
+                            .lock()
+                            .unwrap()
+                            .insert(frame.branch, covered);
                         assert!(history.covers(frame.branch, frame.hour));
                         tables = tables.refine_engagement(Some(&history)).unwrap();
                         assert!(Arc::ptr_eq(&original_base, &tables.base));
                         assert!(!Arc::ptr_eq(&original_epoch, &tables.epoch));
                     }
-                    inputs.camera.height = [80., 90., 180., 80., 350., 80., 80., 180., 80., 80.][at];
+                    inputs.camera.height =
+                        [80., 90., 180., 80., 350., 80., 80., 180., 80., 80.][at];
                     inputs.camera.center = [2. + at as f32 * 0.125, 2.];
-                    inputs.selected = if (4..8).contains(&at) { &selected } else { &empty };
+                    inputs.selected = if (4..8).contains(&at) {
+                        &selected
+                    } else {
+                        &empty
+                    };
                     inputs.hovered = (at == 5).then_some(Unit::Division(10));
                     inputs.visibility.unit_counters = at != 6;
                     inputs.schedule = &schedules[0];
@@ -558,13 +638,16 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                         &flags,
                         &[(81, kept)].into(),
                         &|province| inputs.content.kinds.get(&province).copied(),
-                        &|province| stack_anchor(
-                            &inputs.content.anchors,
-                            &inputs.content.default_anchors,
-                            province,
-                            STANDSTILL,
-                        ),
-                    ).unwrap();
+                        &|province| {
+                            stack_anchor(
+                                &inputs.content.anchors,
+                                &inputs.content.default_anchors,
+                                province,
+                                STANDSTILL,
+                            )
+                        },
+                    )
+                    .unwrap();
                     let expected_tables = HourTables {
                         epoch: Arc::new(()),
                         base: Arc::clone(&original_base),
@@ -573,45 +656,541 @@ fn arrival_refinement_matches_fixed_expectations_through_publication_and_view_ch
                         engaged: Arc::new(flags),
                     };
                     actual_markers += tables.land_combats.markers.len();
-                    let mut expected = prepare_retained(&inputs, &frame, &expected_tables, 0, &mut Preparation::default()).unwrap();
-                    let mut refined = prepare_retained(&inputs, &frame, &tables, 0, &mut memo).unwrap();
-                    assert_eq!(expected.fixed.report, refined.fixed.report, "case {case} frame {at}");
+                    let mut expected = prepare_retained(
+                        &inputs,
+                        &frame,
+                        &expected_tables,
+                        0,
+                        &mut Preparation::default(),
+                    )
+                    .unwrap();
+                    let mut refined =
+                        prepare_retained(&inputs, &frame, &tables, 0, &mut memo).unwrap();
+                    assert_eq!(
+                        expected.fixed.report, refined.fixed.report,
+                        "case {case} frame {at}"
+                    );
                     for (side, prepared) in [&mut expected, &mut refined].into_iter().enumerate() {
                         inputs.schedule = &schedules[side];
-                        prepared.draw(&inputs, at as f32 / 240., &mut windows[side], &mut pings[side],
-                            &mut bases[side], &mut combats[side]).unwrap();
+                        prepared
+                            .draw(
+                                &inputs,
+                                at as f32 / 240.,
+                                &mut windows[side],
+                                &mut pings[side],
+                                &mut bases[side],
+                                &mut combats[side],
+                            )
+                            .unwrap();
                     }
-                    assert_eq!(expected.drawn.report, refined.drawn.report, "case {case} frame {at}");
-                    for (a, b) in [(&expected.fixed.pings, &refined.fixed.pings),
-                        (&expected.fixed.bases, &refined.fixed.bases), (&expected.fixed.combats, &refined.fixed.combats),
-                        (&expected.drawn.batch, &refined.drawn.batch), (&expected.drawn.combats, &refined.drawn.combats)] {
+                    assert_eq!(
+                        expected.drawn.report, refined.drawn.report,
+                        "case {case} frame {at}"
+                    );
+                    for (a, b) in [
+                        (&expected.fixed.pings, &refined.fixed.pings),
+                        (&expected.fixed.bases, &refined.fixed.bases),
+                        (&expected.fixed.combats, &refined.fixed.combats),
+                        (&expected.drawn.batch, &refined.drawn.batch),
+                        (&expected.drawn.combats, &refined.drawn.combats),
+                    ] {
                         assert_quad_bits(a, b);
                     }
                     total_drawn += expected.drawn.batch.quads.len();
                 }
-                assert_eq!(tables.engaged.land_provenance, match case {
-                    0 => Provenance::Unread, 1 => Provenance::OtherViewer, _ => Provenance::Indexed,
-                });
+                assert_eq!(
+                    tables.engaged.land_provenance,
+                    match case {
+                        0 => Provenance::Unread,
+                        1 => Provenance::OtherViewer,
+                        _ => Provenance::Indexed,
+                    }
+                );
                 if case == 4 {
                     assert_eq!(tables.land_combats.markers[0].frame, Some(7));
                     assert!(!tables.land_combats.markers[0].seen);
                 }
-                if case == 5 { assert_eq!(tables.engaged.land[&61], Engaged::Yes); }
-                let mut changed = frame.clone(); changed.branch += 1;
+                if case == 5 {
+                    assert_eq!(tables.engaged.land[&61], Engaged::Yes);
+                }
+                let mut changed = frame.clone();
+                changed.branch += 1;
                 assert!(!tables.is_for_frame(&changed));
-                changed = frame.clone(); changed.hour += 1;
+                changed = frame.clone();
+                changed.hour += 1;
                 assert!(!tables.is_for_frame(&changed));
                 for table in TableId::ALL {
                     changed = frame.clone();
                     changed.tables[table.index()] = (*changed.tables[table.index()]).clone().into();
                     assert!(!tables.is_for_frame(&changed), "{table:?}");
                     changed = frame.clone();
-                    changed.tables[table.index()] = changed.tables[table.index()].clone().with_sampled_at(Some(frame.hour));
-                    assert!(!tables.is_for_frame(&changed), "supplying hour for {table:?}");
+                    changed.tables[table.index()] = changed.tables[table.index()]
+                        .clone()
+                        .with_sampled_at(Some(frame.hour));
+                    assert!(
+                        !tables.is_for_frame(&changed),
+                        "supplying hour for {table:?}"
+                    );
                 }
             }
             assert!(total_drawn > 0, "must compare real emitted counter quads");
-            assert!(actual_markers > 0, "must exercise nonempty history-dependent marker products");
+            assert!(
+                actual_markers > 0,
+                "must exercise nonempty history-dependent marker products"
+            );
+        },
+    );
+}
+
+/// Fixed base decisions over changing valid ordered hours, with independent
+/// presented GUI histories for the expected decisions and the decoded result.
+#[test]
+fn base_icon_sorted_lookups_keep_expected_state_refusals_and_output_across_hours() {
+    use replay_data::rows::{
+        BuildingRow, CountryLinkRow, CountryRow, FacilityMapFlagRow, LexicalTokenRow, NavalBaseRow,
+        ProvinceRow, SimulationFeatureRow, TableId, TableRows,
+    };
+    use replay_frame::frame::TableView;
+    use viewer_foundation::map::province_map::ProvinceMap;
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    // The generic counter fixture loads only direct sheets; retained native
+    // windows need their own synthetic texture and effect through GuiResources.
+    let stack = installed_content_core::test_support::Stack::new("base-icon-lookups");
+    let base = stack.base();
+    stack.write(&base, "gfx/FX/defines_hlsl_dx11.fxh", "");
+    stack.write(
+        &base,
+        "gfx/FX/buttonstate.shader",
+        r#"
+        VertexStruct I { float3 p : POSITION; };
+        VertexStruct O { float4 p : SV_POSITION; };
+        VertexShader = { MainCode V [[ O main(I v) { O o; o.p=float4(v.p,1); return o; } ]] }
+        PixelShader = { MainCode P [[ float4 main(O v) : SV_TARGET { return float4(0,1,0,1); } ]] }
+        Effect Up { VertexShader = V PixelShader = P }
+    "#,
+    );
+    stack.write(
+        &base,
+        "interface/base-icons.gfx",
+        r#"spriteTypes={
+        spriteType={name=GFX_synthetic_plate textureFile="gfx/plate.tga"}
+        spriteType={name=GFX_mapicon_facility_air textureFile="gfx/plate.tga"}
+        spriteType={name=GFX_mapicon_facility_naval textureFile="gfx/plate.tga"}
+    }"#,
+    );
+    let mut image = vec![0_u8; 18];
+    image[2] = 2;
+    image[12..14].copy_from_slice(&81_u16.to_le_bytes());
+    image[14..16].copy_from_slice(&29_u16.to_le_bytes());
+    image[16] = 32;
+    image[17] = 8;
+    image.resize(18 + 81 * 29 * 4, 255);
+    std::fs::write(base.join("gfx/plate.tga"), image).unwrap();
+    let layers = stack.layers(&[]);
+    let guis = layout_gui(
+        br#"guiTypes={
+        containerWindowType={name=unit_mapicon size={width=81 height=29}
+            gridBoxType={name=units_box size={width=81 height=290}
+                slotsize={width=81 height=1} max_slots_horizontal=1 format=UPPER_LEFT}}
+        positionType={name=unit_counter_zoomed_in_offset position={x=0 y=0}}
+        containerWindowType={name=unit_counter_navy size={width=20 height=10}}
+        containerWindowType={name=naval_combat_mapicon size={width=20 height=10}}
+        containerWindowType={name=unit_counter size={width=81 height=29}
+            buttonType={name=count_bg quadTextureSprite=GFX_synthetic_plate}
+            iconType={name=onmap_action_icon spriteType=GFX_synthetic_actions frame=12}
+            iconType={name=counter_overlay spriteType=GFX_synthetic_overlay}}
+        containerWindowType={name=naval_headquarter_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+        containerWindowType={name=special_facility_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+        containerWindowType={name=naval_base_mapicon size={width=81 height=29}
+            buttonType={name=bg_btn quadTextureSprite=GFX_synthetic_plate}}
+    }"#,
+    );
+    with_counter_inputs_fixture(
+        guis,
+        |assets| {
+            assets.layouts = Layouts::read(&assets.windows);
+            assets.gui = viewer_foundation::map::native_resources::GuiResources::new(
+                native::resources::Registry::load(&layers).unwrap(),
+                b"english",
+                [4, 4],
+                Default::default(),
+            );
+            assets
+                .gui
+                .load(
+                    &layers,
+                    &viewer_foundation::map::native_gui::Assets {
+                        sprites: [
+                            b"GFX_synthetic_plate".to_vec(),
+                            b"GFX_mapicon_facility_air".to_vec(),
+                            b"GFX_mapicon_facility_naval".to_vec(),
+                        ]
+                        .into(),
+                        ..Default::default()
+                    },
+                    &mut Vec::new(),
+                )
+                .unwrap();
+        },
+        |content| {
+            let definitions = installed_content_core::buildings::parse(
+                b"buildings={hq_first={naval_headquarter=yes} hq_second={naval_headquarter=yes}
+                fac_a={specialization={air}} fac_b={specialization={naval}}
+                ambiguous={naval_headquarter=yes specialization={land}}
+                ambiguous={naval_headquarter=no specialization={nuclear}}}",
+                &installed_content_core::key_names::KeyNames::default(),
+            )
+            .unwrap();
+            content.building_icons = BuildingIconContent::load(
+                &definitions,
+                &[],
+                &ProvinceMap {
+                    width: 1,
+                    height: 1,
+                    ids: &[1],
+                },
+                |_, _, _| building_facts::SlotAdmission::Admitted,
+                [[0.; 3]; 2],
+            );
+            content.default_anchors = Arc::new([(1, [2., 9.5, 2.]), (3, [3., 9.5, 2.])].into());
+            content.ports = [(1, [2., 9.5, 2.]), (3, [3., 9.5, 2.])].into();
+            content.kinds = Arc::new([(1, ProvinceKind::Land), (3, ProvinceKind::Land)].into());
+        },
+        |inputs| {
+            let links = [(10, 1), (20, 2)].into();
+            let ids = [(1, 10), (2, 20)].into();
+            let vision = Vision::sharing(1, []);
+            let schedules: [Shared; 2] = std::array::from_fn(|_| Shared::default());
+            let mut windows = [
+                naval_windows::Windows::default(),
+                naval_windows::Windows::default(),
+            ];
+            let mut pings = [PoolView::default(), PoolView::default()];
+            let mut base_views = [BaseView::default(), BaseView::default()];
+            let mut combats = [land_windows::View::default(), land_windows::View::default()];
+            let mut inputs = CounterInputs {
+                schedule: &schedules[0],
+                ..inputs
+            };
+            let mut emitted = 0;
+            let mut admitted = 0;
+            let mut refused = 0;
+            let mut errors = 0;
+            let mut naval = 0;
+            for hour in 0..36 {
+                let case = hour % 18;
+                let mut frame = DecodedFrame {
+                    branch: 1,
+                    hour,
+                    metrics: Default::default(),
+                    tables: TableId::ALL
+                        .map(|table| TableView::Complete(TableRows::empty(table)).into()),
+                };
+                let mut put = |rows: TableRows| {
+                    let table = rows.table();
+                    *frame.tables[table.index()] = TableView::Complete(rows);
+                };
+                put(TableRows::Countries(vec![
+                    CountryRow {
+                        id: 10,
+                        canonical_slot: 1,
+                        tag: b"AAA".to_vec(),
+                        ..Default::default()
+                    },
+                    CountryRow {
+                        id: 20,
+                        canonical_slot: 2,
+                        tag: b"BBB".to_vec(),
+                        ..Default::default()
+                    },
+                ]));
+                put(TableRows::CountryLinks(vec![
+                    CountryLinkRow {
+                        id: 10,
+                        canonical_slot: 1,
+                    },
+                    CountryLinkRow {
+                        id: 20,
+                        canonical_slot: 2,
+                    },
+                ]));
+                put(TableRows::Provinces(
+                    [1, 3]
+                        .map(|id| ProvinceRow {
+                            id,
+                            state: id,
+                            owner: 10,
+                            controller: if case == 3 {
+                                20
+                            } else if case == 4 {
+                                0
+                            } else if case == 5 {
+                                999
+                            } else {
+                                10
+                            },
+                            ..Default::default()
+                        })
+                        .into(),
+                ));
+                let mut buildings: Vec<_> = [1, 3]
+                    .into_iter()
+                    .flat_map(|location| {
+                        (1..=4).map(move |kind| BuildingRow {
+                            location,
+                            building_type: kind,
+                            ordinal: if case == 2 { 0 } else { 5 - kind },
+                            country: if case == 6 {
+                                999
+                            } else if case == 7 {
+                                20
+                            } else {
+                                0
+                            },
+                            status_flags: if case == 8 { 0 } else { 1 },
+                            level: if case == 1 && kind == 1 || case == 9 {
+                                0
+                            } else {
+                                1
+                            },
+                            ..Default::default()
+                        })
+                    })
+                    .collect();
+                if case == 10 {
+                    buildings.retain(|row| row.location != 1 || row.building_type != 3);
+                }
+                if case == 11 {
+                    buildings.push(BuildingRow {
+                        location: 3,
+                        building_type: 5,
+                        level: 1,
+                        country: 10,
+                        ..Default::default()
+                    });
+                }
+                put(TableRows::ProvinceBuildings(buildings));
+                put(TableRows::LexicalTokens(
+                    ["hq_first", "hq_second", "fac_a", "fac_b", "ambiguous"]
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(index, _)| case != 12 || *index != 2)
+                        .map(|(index, literal)| LexicalTokenRow {
+                            token: index as u32 + 1,
+                            literal: literal.as_bytes().to_vec(),
+                        })
+                        .collect(),
+                ));
+                put(TableRows::FacilityMapFlags(
+                    [1, 3]
+                        .map(|province| FacilityMapFlagRow {
+                            province,
+                            flag: u8::from(case != 13),
+                        })
+                        .into(),
+                ));
+                put(TableRows::SimulationFeatures(vec![SimulationFeatureRow {
+                    dlc_mask: if case == 14 { 0 } else { 0x8000 },
+                    ..Default::default()
+                }]));
+                put(TableRows::NavalBases(
+                    [1, 3]
+                        .map(|province| NavalBaseRow {
+                            province,
+                            country: if case == 15 { 20 } else { 10 },
+                            ..Default::default()
+                        })
+                        .into(),
+                ));
+                // Each synthetic source observes the real format's sorted-unique law.
+                for table in [TableId::Provinces, TableId::ProvinceBuildings] {
+                    let TableView::Complete(rows) = &*frame.tables[table.index()] else {
+                        unreachable!()
+                    };
+                    rows.validate_keys().unwrap();
+                }
+                if case == 16 {
+                    let TableView::Complete(rows) =
+                        &*frame.tables[TableId::ProvinceBuildings.index()]
+                    else {
+                        unreachable!()
+                    };
+                    let rows = rows.clone();
+                    *frame.tables[TableId::ProvinceBuildings.index()] =
+                        TableView::Truncated { rows, missing: 1 };
+                }
+                if case == 17 {
+                    *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
+                        reason: "core fixture refusal".into(),
+                    };
+                }
+                if hour == 15 {
+                    *frame.tables[TableId::SimulationFeatures.index()] = TableView::Unavailable {
+                        reason: "feature fixture refusal".into(),
+                    };
+                }
+                let order = counter_order::RecordedOrder::read(&frame).unwrap();
+                let context = BaseContext {
+                    content: inputs.content,
+                    vision: &vision,
+                    links: &links,
+                    country_ids: &ids,
+                    relations: Err("fixture relations unavailable"),
+                    order: order.as_ref(),
+                };
+                let actual = BaseIcons::read_profiled(
+                    &frame,
+                    &context,
+                    &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                );
+                if case == 17 {
+                    let why = actual.unwrap_err();
+                    assert_eq!(why.kind(), std::io::ErrorKind::InvalidData);
+                    assert_eq!(
+                        why.to_string(),
+                        format!(
+                            "hour {hour} Provinces is unavailable: core fixture refusal; the core tables \
+                             Provinces, CountryLinks and Countries carry the political map itself, so this hour cannot be drawn"
+                        )
+                    );
+                    errors += 1;
+                    continue;
+                }
+                let actual = actual.unwrap();
+                // Expectations spell the fixture's admission, tie and refusal laws;
+                // no map-index implementation remains as an alternate code path.
+                let mut expected = BaseIcons::default();
+                // A dictionary omission is not an ambiguous token mapping;
+                // it refuses the reached facility below, not the token roster.
+                for (province, anchor) in [(1, [2., 9.5, 2.]), (3, [3., 9.5, 2.])] {
+                    if case == 15 {
+                        *expected.unknown.naval_bases
+                            .entry("fixture relations unavailable".into()).or_default() += 1;
+                    } else {
+                        expected.naval.push(NavalBaseIcon {
+                            province,
+                            frame: 2,
+                            highlighted: false,
+                            enabled: true,
+                            capacity: None,
+                            capacity_refusal: Some(
+                                "txt_capacity is withheld: the naval port intel level is unknown"
+                            ),
+                        });
+                    }
+                    let hq_refusal = match case {
+                        11 if province == 3 => Some(
+                            "naval HQ building ambiguous is declared more than once, differently"
+                        ),
+                        16 => Some("the ProvinceBuildings census is incomplete"),
+                        _ if hour == 15 => Some("the SimulationFeatures DLC mask is unavailable"),
+                        5 | 6 | 8 => Some("the building's country is unresolved"),
+                        _ => None,
+                    };
+                    if let Some(why) = hq_refusal {
+                        *expected.unknown.naval_headquarters.entry(why.into()).or_default() += 1;
+                    } else if !matches!(case, 3 | 4 | 7 | 9 | 14) {
+                        expected.headquarters.push((province, anchor));
+                    }
+                    if matches!(case, 4 | 13) {
+                        continue;
+                    }
+                    let facility_refusal = match case {
+                        11 if province == 3 => Some(
+                            "facility building ambiguous is declared more than once, differently"
+                        ),
+                        12 => Some("facility building fac_a has no single token this hour"),
+                        16 => Some("the ProvinceBuildings census is incomplete"),
+                        5 | 6 | 8 => Some("the building's country is unresolved"),
+                        _ => None,
+                    };
+                    if let Some(why) = facility_refusal {
+                        *expected.unknown.facilities.entry(why.into()).or_default() += 1;
+                    } else if !matches!(case, 3 | 7 | 9) {
+                        let sprite = if case == 2 {
+                            "GFX_mapicon_facility_air"
+                        } else {
+                            "GFX_mapicon_facility_naval"
+                        };
+                        expected.facilities.push((province, anchor, sprite.into()));
+                    }
+                }
+                assert_eq!(expected.naval, actual.naval, "naval state hour {hour}");
+                assert_eq!(expected.unknown, actual.unknown, "refusal counts hour {hour}");
+                assert_eq!(expected.refused, actual.refused, "named refusals hour {hour}");
+                assert_eq!(
+                    expected.headquarters
+                        .iter()
+                        .map(|(p, a)| (*p, a.map(f32::to_bits)))
+                        .collect::<Vec<_>>(),
+                    actual.headquarters
+                        .iter()
+                        .map(|(p, a)| (*p, a.map(f32::to_bits)))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    expected.facilities
+                        .iter()
+                        .map(|(p, a, s)| (*p, a.map(f32::to_bits), s))
+                        .collect::<Vec<_>>(),
+                    actual.facilities
+                        .iter()
+                        .map(|(p, a, s)| (*p, a.map(f32::to_bits), s))
+                        .collect::<Vec<_>>()
+                );
+                admitted += actual.headquarters.len() + actual.facilities.len();
+                refused += actual.unknown.totals().into_iter().sum::<usize>();
+                naval += actual.naval.len();
+                inputs.camera.height = if hour % 4 == 0 { 180. } else { 80. };
+                inputs.camera.center = [2. + (hour % 3) as f32 * 0.125, 2.];
+                let mut tables = synthetic_hour(&inputs, &frame);
+                let mut prepared = [expected, actual].map(|icons| {
+                    tables.base_icons = icons;
+                    prepare_cached(&inputs, &frame, &tables).unwrap()
+                });
+                assert_eq!(prepared[0].fixed.report, prepared[1].fixed.report);
+                for (side, prepared) in prepared.iter_mut().enumerate() {
+                    inputs.schedule = &schedules[side];
+                    prepared
+                        .draw(
+                            &inputs,
+                            hour as f32 / 24.,
+                            &mut windows[side],
+                            &mut pings[side],
+                            &mut base_views[side],
+                            &mut combats[side],
+                        )
+                        .unwrap();
+                }
+                let [expected, actual] = &prepared;
+                if hour == 0 {
+                    assert!(
+                        !expected.fixed.bases.quads.is_empty(),
+                        "fixture must emit native base windows: {:?}",
+                        expected.drawn.report
+                    );
+                }
+                assert_eq!(
+                    expected.drawn.report, actual.drawn.report,
+                    "draw reports hour {hour}"
+                );
+                for (a, b) in [
+                    (&expected.fixed.pings, &actual.fixed.pings),
+                    (&expected.fixed.bases, &actual.fixed.bases),
+                    (&expected.fixed.combats, &actual.fixed.combats),
+                    (&expected.drawn.batch, &actual.drawn.batch),
+                    (&expected.drawn.combats, &actual.drawn.combats),
+                ] {
+                    assert_quad_bits(a, b);
+                    emitted += a.quads.len();
+                }
+            }
+            assert!(
+                errors > 0 && refused > 0 && admitted > 0 && naval > 0 && emitted > 0,
+                "must prove decided/refused/error and nonempty drawing branches: {errors}/{refused}/{admitted}/{naval}/{emitted}"
+            );
         },
     );
 }

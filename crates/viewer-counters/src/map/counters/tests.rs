@@ -1516,6 +1516,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         building_icons: Default::default(),
         kinds: Arc::new(Default::default()),
         bounds: Default::default(),
+        geography: geography::Memo::default(),
         region_of: Default::default(),
         region_provinces: Default::default(),
         region_icons: Default::default(),

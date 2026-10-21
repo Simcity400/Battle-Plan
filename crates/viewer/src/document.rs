@@ -393,6 +393,9 @@ pub struct Content {
     mission_memo: counters::MissionMemo,
     /// Which provinces each snow and mud cell reads, built on first use.
     snow_cells: OnceLock<Result<weather::SnowCells, (io::ErrorKind, String)>>,
+    /// The fog grid's immutable cell composition, prepared during content
+    /// loading with the same lazy fallback for an hour that arrives first.
+    intel_cells: Arc<textures::IntelCellsCache>,
     /// The content-derived movement map and defines behind route points,
     /// stack kinds and ETAs; `None` when the content could not be derived, in
     /// which case moving units stand at their province and have no ETA.
@@ -402,6 +405,21 @@ pub struct Content {
     pub province_geometry: Arc<ProvinceGeometry>,
     /// How long that one pass over `map/provinces.bmp` took, for reporting.
     pub province_geometry_build: Duration,
+}
+
+impl Content {
+    /// The exact intel raster for rebuilt visibility. A missing visibility
+    /// input validates the image but need not construct its cell composition.
+    pub(crate) fn intel_map_from_visibility(
+        &self,
+        visibility: Option<&BTreeMap<u32, u8>>,
+    ) -> io::Result<IntelMap> {
+        if visibility.is_none() {
+            return textures::clear_intel_map(&self.map);
+        }
+        let cells = self.intel_cells.get_or_init()?;
+        Ok(cells.intel_map(visibility))
+    }
 }
 
 /// What one hour's [`perspective::Vision`] reads besides its tables: the hour
@@ -761,94 +779,139 @@ impl PreparedOverlay {
             occupation,
             adjacency_rules,
         } = &mut *views;
+        let owner_profile = viewer_foundation::profiling::FrameOwners::new();
         let (counters, other) = crate::map_views::join(
             workers,
             || {
                 let _finish = order.finishing();
                 let _span = viewer_foundation::profiling::span("d_counters");
-                icons.draw(&inputs, time, naval, pings, bases, land_combats)
+                owner_profile.measure("counters", || {
+                    icons.draw(&inputs, time, naval, pings, bases, land_combats)
+                })
             },
             || {
-                // GUI walkers and their RefCells are task-local. Only immutable content
-                // is shared. A flag/portrait request waits for counters to finish so atlas
-                // packing retains serial order, including on a cold modded view.
-                let wait = || order.wait();
-                let portrait_textures = |name: &[u8]| assets.operative_portrait_texture(name);
-                let gui = GuiAssets {
-                    gui: &assets.gui,
-                    windows: &windows,
-                    localisation,
-                    flags: flags.as_ref().map(|source| GuiFlags {
-                        source,
-                        small: &assets.flags,
-                        large: &assets.large_flags,
-                    }),
-                    physical_viewport: Some(logical),
-                    portrait_textures: Some(&portrait_textures),
-                    before_dynamic: Some(&wait),
-                };
-                let context = &Context {
-                    resources: &gui,
-                    windows: &windows,
-                    viewport: logical,
-                    time: Some(time),
-                };
-                let mut label_batch = Batch::default();
-                let span = viewer_foundation::profiling::span("d_labels");
-                let report = labels.draw_scheduled(context, &dirty, label_view, &mut label_batch);
-                drop(span);
-                let mut raid_batch = Batch::default();
-                let mut raid_hits = Vec::new();
-                let mut raid_report = native_raids.report.clone();
-                native_raids.draw(
-                    context,
-                    raid_priority,
-                    raid_view,
-                    &mut raid_batch,
-                    &mut raid_hits,
-                    &mut raid_report,
-                );
-                let mut intel_batch = Batch::default();
-                let mut intel_hits = Vec::new();
-                let mut intel_report = native_intel.report.clone();
-                native_intel.draw(
-                    intel_assets,
-                    context,
-                    raid_priority,
-                    intel_view,
-                    &mut intel_batch,
-                    &mut intel_hits,
-                    &mut intel_report,
-                );
-                let mut mode_icons = Batch::default();
-                let resource_report = resource_icons.draw(context, resources, &mut mode_icons);
-                let mut refused = resource_report.refused;
-                let occupation_report =
-                    occupation_icons.draw(context, occupation, &mut mode_icons, occupation_hits);
-                for (reason, count) in occupation_report.refused {
-                    *refused.entry(reason).or_default() += count;
-                }
-                for (reason, count) in &adjacency_icons.report {
-                    *refused.entry(reason.clone()).or_default() += count;
-                }
-                adjacency_icons.draw(
-                    context,
-                    adjacency_priority,
-                    adjacency_rules,
-                    &mut mode_icons,
-                    &mut refused,
-                );
-                (
-                    label_batch,
-                    report,
+                owner_profile.measure("other", || {
+                    // GUI walkers and their RefCells are task-local. Only immutable content
+                    // is shared. A flag/portrait request waits for counters to finish so atlas
+                    // packing retains serial order, including on a cold modded view.
+                    let wait = || order.wait();
+                    let portrait_textures = |name: &[u8]| assets.operative_portrait_texture(name);
+                    let gui = GuiAssets {
+                        gui: &assets.gui,
+                        windows: &windows,
+                        localisation,
+                        flags: flags.as_ref().map(|source| GuiFlags {
+                            source,
+                            small: &assets.flags,
+                            large: &assets.large_flags,
+                        }),
+                        physical_viewport: Some(logical),
+                        portrait_textures: Some(&portrait_textures),
+                        before_dynamic: Some(&wait),
+                    };
+                    let context = &Context {
+                        resources: &gui,
+                        windows: &windows,
+                        viewport: logical,
+                        time: Some(time),
+                    };
+                    let ((label_batch, report), labels_owner) =
+                        owner_profile.measure("labels", || {
+                            let mut label_batch = Batch::default();
+                            let span = viewer_foundation::profiling::span("d_labels");
+                            let report = labels.draw_scheduled(
+                                context,
+                                &dirty,
+                                label_view,
+                                &mut label_batch,
+                            );
+                            drop(span);
+                            (label_batch, report)
+                        });
+                    let (raid_quads, raids_owner) = owner_profile.measure("raids", || {
+                        let mut raid_batch = Batch::default();
+                        let mut raid_hits = Vec::new();
+                        let mut raid_report = native_raids.report.clone();
+                        native_raids.draw(
+                            context,
+                            raid_priority,
+                            raid_view,
+                            &mut raid_batch,
+                            &mut raid_hits,
+                            &mut raid_report,
+                        );
+                        (raid_batch, raid_hits, raid_report)
+                    });
+                    let (intel_quads, intel_owner) = owner_profile.measure("intel", || {
+                        let mut intel_batch = Batch::default();
+                        let mut intel_hits = Vec::new();
+                        let mut intel_report = native_intel.report.clone();
+                        native_intel.draw(
+                            intel_assets,
+                            context,
+                            raid_priority,
+                            intel_view,
+                            &mut intel_batch,
+                            &mut intel_hits,
+                            &mut intel_report,
+                        );
+                        (intel_batch, intel_hits, intel_report)
+                    });
+                    let ((mut mode_icons, mut refused), resources_owner) =
+                        owner_profile.measure("resources", || {
+                            let mut mode_icons = Batch::default();
+                            let resource_report =
+                                resource_icons.draw(context, resources, &mut mode_icons);
+                            (mode_icons, resource_report.refused)
+                        });
+                    let (_, occupation_owner) = owner_profile.measure("occupation", || {
+                        let occupation_report = occupation_icons.draw(
+                            context,
+                            occupation,
+                            &mut mode_icons,
+                            occupation_hits,
+                        );
+                        for (reason, count) in occupation_report.refused {
+                            *refused.entry(reason).or_default() += count;
+                        }
+                    });
+                    let (_, adjacency_owner) = owner_profile.measure("adjacency", || {
+                        for (reason, count) in &adjacency_icons.report {
+                            *refused.entry(reason.clone()).or_default() += count;
+                        }
+                        adjacency_icons.draw(
+                            context,
+                            adjacency_priority,
+                            adjacency_rules,
+                            &mut mode_icons,
+                            &mut refused,
+                        );
+                    });
                     (
-                        (raid_batch, raid_hits, raid_report),
-                        (intel_batch, intel_hits, intel_report),
-                    ),
-                    (mode_icons, refused),
-                )
+                        (
+                            label_batch,
+                            report,
+                            (raid_quads, intel_quads),
+                            (mode_icons, refused),
+                        ),
+                        [
+                            labels_owner,
+                            raids_owner,
+                            intel_owner,
+                            resources_owner,
+                            occupation_owner,
+                            adjacency_owner,
+                        ],
+                    )
+                })
             },
         );
+        let (counters, counters_owner) = counters;
+        let ((other, other_owners), other_owner) = other;
+        for sample in [counters_owner, other_owner].into_iter().chain(other_owners)
+        {
+            viewer_foundation::profiling::record_owner_sample(sample);
+        }
         let (labels, label_report, raid_quads, mode_icons) = other;
         counters?;
         self.label_report = label_report;
@@ -2021,6 +2084,14 @@ impl Document {
             wave2_warnings,
         ) = *std::thread::scope(|scope| -> io::Result<_> {
             let layers = &content.layers;
+            // Decide only the initial hour's flag candidates, in the same stores the
+            // hour workers will use. This requests no atlas cells; any refused
+            // operands leave the original worker/acquire cold path in place.
+            let h_initial_flags = scope.spawn(|| {
+                if let crate::playback::Current::Frame(frame) = playback.current() {
+                    let _ = counters::warm_initial_flags(frame, &counter_assets);
+                }
+            });
             let h_movement = scope.spawn(|| -> io::Result<_> {
                 let mut movement = MovementContent::new(
                     installed_content_core::movement::MovementMap::read(layers, &defines)?,
@@ -2162,6 +2233,7 @@ impl Document {
                     None
                 }
             };
+            h_initial_flags.join().expect("initial flag warmer panicked");
             // Boxed for the same reason as the first wave's content.
             Ok(Box::new((
                 labels,
@@ -2399,6 +2471,7 @@ impl Document {
             scripted: Arc::clone(&scripted),
         });
         let map = Arc::new(map);
+        let intel_cells = textures::IntelCellsCache::prewarm(Arc::clone(&map));
         let province_geometry = Arc::new(province_geometry);
         let battle_name_provinces = Arc::new(battle_name_provinces);
         let state_name_keys = Arc::new(state_name_keys);
@@ -2624,6 +2697,7 @@ impl Document {
             type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
             mission_memo: Recent::new(MISSION_MEMO),
             snow_cells: OnceLock::new(),
+            intel_cells,
             movement,
             province_geometry,
             province_geometry_build,
@@ -3570,14 +3644,31 @@ impl<'a> Hour<'a> {
         viewer_world::map::map_buildings::PreparedBuildings,
         viewer_world::map::map_buildings::MapBuildingSummary,
     )> {
-        self.map_buildings.field(
+        self.map_building_field_profiled(
+            perspective,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// The same targets with sequential parts on the hour-builder PROFILE line.
+    pub fn map_building_field_profiled(
+        &self,
+        perspective: &perspective::Choice,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<(
+        viewer_world::map::map_buildings::PreparedBuildings,
+        viewer_world::map::map_buildings::MapBuildingSummary,
+    )> {
+        let vision = spans.measure("buildings.vision", |_| self.vision(perspective))?;
+        self.map_buildings.field_profiled(
             self.frame,
-            &*self.vision(perspective)?,
+            &vision,
             &viewer_world::map::map_buildings::CityTerrain {
                 width: self.map.width,
                 height: self.map.height,
                 spawn_city: &self.assets.spawn_city,
             },
+            spans,
         )
     }
 
@@ -3591,56 +3682,92 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
     ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
-        let content = &self.counters;
-        let definitions = &self.map.definitions;
-        let etas = self.etas()?;
-        let movement = self.movement.as_deref();
-        let world = movement.map(
-            |movement| viewer_foundation::map::counter_move::RouteWorld {
-                map: &movement.map,
-                heights: self.heights(),
-                width: self.map.width as f32,
-            },
-        );
-        let anchor = |province, slot| content.anchor(province, slot);
-        // Whether a province is land: the content movement map's terrain flag, else the map's
-        // own kind. It picks a task force's slot 19.
-        let land = |province| match movement.and_then(|movement| movement.map.terrain(province)) {
-            Some(terrain) => terrain.flags & 1 != 0,
-            None => matches!(
-                definitions.get(&province).map(|it| it.kind),
-                Some(map::ProvinceKind::Land)
-            ),
-        };
-        let motions =
-            viewer_foundation::map::task_force_visual::TaskForceMotions::read(self.frame)?;
-        let missions = viewer_foundation::map::task_force_visual::MissionSkips::read(self.frame)?;
-        let region = |province| content.region(province);
-        let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
-            self.trigger_world().evaluate(items, scopes)
-        };
-        self.unit_models
-            .prepare(viewer_world::map::unit_models::PrepareInputs {
-                frame: self.frame,
-                limits: viewer_world::map::equipment_graphics::Limits::new(
-                    &self.pool_limits,
-                    &evaluate,
-                ),
-                vision: &*self.vision(perspective)?,
-                etas: &etas,
-                anchor: &anchor,
-                world: world.as_ref(),
-                terrain: &content.terrain.combat_terrain,
-                ships: &viewer_world::map::unit_models::ShipPlaces {
-                    motions: &motions,
-                    movement,
-                    land: &land,
-                    missions: &missions,
-                    region: &region,
-                    scale: &|province, kind| content.stack_scale(province, kind),
+        self.prepare_unit_models_profiled(perspective, &mut |_| {})
+    }
+
+    /// The same preparation with sequential parts reported on the builder's line.
+    pub fn prepare_unit_models_profiled(
+        &self,
+        perspective: &perspective::Choice,
+        lap: &mut dyn FnMut(&'static str),
+    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        self.prepare_unit_models_with_spans(
+            perspective,
+            lap,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// Includes nested model joins and bake-worker CPU on the built hour line.
+    pub fn prepare_unit_models_with_spans(
+        &self,
+        perspective: &perspective::Choice,
+        lap: &mut dyn FnMut(&'static str),
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        let prepared = (|| {
+            let content = &self.counters;
+            let definitions = &self.map.definitions;
+            let etas = self.etas()?;
+            lap("um_etas");
+            let movement = self.movement.as_deref();
+            let world = movement.map(
+                |movement| viewer_foundation::map::counter_move::RouteWorld {
+                    map: &movement.map,
+                    heights: self.heights(),
+                    width: self.map.width as f32,
                 },
-                localisation: &self.names.localisation,
-            })
+            );
+            let anchor = |province, slot| content.anchor(province, slot);
+            // Whether a province is land: the content movement map's terrain flag, else the map's
+            // own kind. It picks a task force's slot 19.
+            let land = |province| match movement.and_then(|movement| movement.map.terrain(province))
+            {
+                Some(terrain) => terrain.flags & 1 != 0,
+                None => matches!(
+                    definitions.get(&province).map(|it| it.kind),
+                    Some(map::ProvinceKind::Land)
+                ),
+            };
+            let motions =
+                viewer_foundation::map::task_force_visual::TaskForceMotions::read(self.frame)?;
+            let missions =
+                viewer_foundation::map::task_force_visual::MissionSkips::read(self.frame)?;
+            lap("um_ship_inputs");
+            let region = |province| content.region(province);
+            let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
+                self.trigger_world().evaluate(items, scopes)
+            };
+            let limits =
+                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
+            let vision = self.vision(perspective)?;
+            lap("um_vision");
+            self.unit_models.prepare_with_spans(
+                viewer_world::map::unit_models::PrepareInputs {
+                    frame: self.frame,
+                    limits,
+                    vision: &vision,
+                    etas: &etas,
+                    anchor: &anchor,
+                    world: world.as_ref(),
+                    terrain: &content.terrain.combat_terrain,
+                    ships: &viewer_world::map::unit_models::ShipPlaces {
+                        motions: &motions,
+                        movement,
+                        land: &land,
+                        missions: &missions,
+                        region: &region,
+                        scale: &|province, kind| content.stack_scale(province, kind),
+                    },
+                    localisation: &self.names.localisation,
+                },
+                lap,
+                spans,
+            )
+        })();
+        // The preparation's local joins have been released before this last part.
+        lap("um_finish");
+        prepared
     }
 
     /// The hour's unit models with the raid units, and the trade-route convoys sailing at `time`
@@ -3762,13 +3889,16 @@ impl<'a> Hour<'a> {
         let evaluate = |items: &[installed_content_core::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
+        let models = viewer_world::map::aircraft::ModelMemo::default();
         let model = |variant, country| {
-            self.unit_models.aircraft_entity(
-                self.frame,
-                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
-                variant,
-                country,
-            )
+            models.resolve(variant, country, || {
+                self.unit_models.aircraft_entity(
+                    self.frame,
+                    viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
+                    variant,
+                    country,
+                )
+            })
         };
         viewer_world::map::aircraft::AircraftPlan::build(
             self.frame,
@@ -3868,14 +3998,11 @@ impl<'a> Hour<'a> {
             let intel = match intel {
                 Some(intel) => intel,
                 None => {
-                    built = textures::intel_map(&self.map, vision.province_fog())?;
+                    built = self.intel_map_from_visibility(vision.province_fog())?;
                     &built
                 }
             };
-            out.note_fog_of_war(
-                intel.texels.iter().filter(|&&b| b > 0).count(),
-                self.hour_fraction,
-            );
+            out.note_fog_of_war(intel.fogged_texels(), self.hour_fraction);
         }
         for table in vision.truncated() {
             out.note_field(
@@ -4146,24 +4273,53 @@ impl<'a> Hour<'a> {
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
     ) -> io::Result<OverlayTables> {
-        let etas = self.etas()?;
-        // One `Vision` per hour and perspective: the counters and the limitation
-        // lines read the same cached one.
-        let vision = self.vision(perspective)?;
+        self.hour_tables_with_raids_profiled(
+            perspective,
+            raids,
+            engaged,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// Builds the same immutable tables with explicit, job-owned child timings.
+    pub(crate) fn hour_tables_with_raids_profiled(
+        &self,
+        perspective: &perspective::Choice,
+        raids: Arc<raids::RaidIcons>,
+        engaged: Option<&crate::engaged_index::EngagedIndex>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<OverlayTables> {
+        let (etas, vision) = spans.measure("overlay.tables.prerequisites", |spans| {
+            let etas = spans.measure("overlay.tables.prerequisites.etas", |_| self.etas())?;
+            // One `Vision` per hour and perspective: the counters and the limitation
+            // lines read the same cached one.
+            let vision = spans.measure("overlay.tables.prerequisites.vision", |_| {
+                self.vision(perspective)
+            })?;
+            Ok::<_, io::Error>((etas, vision))
+        })?;
         let ours = vision.ours();
-        let labels = labels::LabelTables::read(self.frame, ours, &self.names.localisation)?;
+        let labels = spans.measure("overlay.tables.labels", |_| {
+            labels::LabelTables::read(self.frame, ours, &self.names.localisation)
+        })?;
         // Checked first: coverage that arrives during the build costs one
         // rebuild, never a stale flag.
         let engaged_covered =
             engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
-        let radar = Arc::new(viewer_world::map::radar_symbols::Field::read(
-            self.frame, ours, self.heights(), &self.radar_centers,
-        ));
-        let empty_air = OverlayAir {
-            selected: Arc::new(Vec::new()),
-            orders: Arc::new(self.air_orders(ours, &[], &[])),
-            ranges: Arc::new(self.air_ranges(ours, &[])),
-        };
+        let (radar, empty_air) = spans.measure("overlay.tables.radar_empty_air", |_| {
+            let radar = Arc::new(viewer_world::map::radar_symbols::Field::read(
+                self.frame,
+                ours,
+                self.heights(),
+                &self.radar_centers,
+            ));
+            let empty_air = OverlayAir {
+                selected: Arc::new(Vec::new()),
+                orders: Arc::new(self.air_orders(ours, &[], &[])),
+                ranges: Arc::new(self.air_ranges(ours, &[])),
+            };
+            (radar, empty_air)
+        });
         Ok(OverlayTables {
             vision: PreparedVision::new(
                 self.frame,
@@ -4176,32 +4332,37 @@ impl<'a> Hour<'a> {
             air: Arc::new(std::sync::Mutex::new(empty_air.clone())),
             empty_air,
             content_identity: Arc::clone(&self.combat),
-            counters: counters::hour_tables(
-                self.frame,
-                &self.map,
-                vision,
-                &self.counters,
-                &self.icons.counters,
-                Ok(self.unit_models.sub_units.equipment_content()),
-                &self.names.localisation,
-                &etas,
-                self.movement.as_deref(),
-                engaged.map(|index| index.shared.as_ref()),
-                &self.type_tint_memo,
-                &self.mission_memo,
-                self.icons.raids.movement_reads(),
-                self.icons.raids.mission_topology(),
-            )?,
+            counters: spans.measure("overlay.tables.counters", |spans| {
+                counters::hour_tables_profiled(
+                    self.frame,
+                    &self.map,
+                    vision,
+                    &self.counters,
+                    &self.icons.counters,
+                    Ok(self.unit_models.sub_units.equipment_content()),
+                    &self.names.localisation,
+                    &etas,
+                    self.movement.as_deref(),
+                    engaged.map(|index| index.shared.as_ref()),
+                    &self.type_tint_memo,
+                    &self.mission_memo,
+                    self.icons.raids.movement_reads(),
+                    self.icons.raids.mission_topology(),
+                    spans,
+                )
+            })?,
             labels: Arc::new(labels),
             raids: raids::RaidIcons::carried(raids, self.frame.branch, self.frame.hour, ours),
-            intel: Arc::new(intel_icons::icons(
-                &self.icons.intel,
-                &self.icons.raids,
-                self.frame,
-                ours,
-                &self.names.localisation,
-                &self.raid_hover.recorded_language,
-            )),
+            intel: spans.measure("overlay.tables.intel", |_| {
+                Arc::new(intel_icons::icons(
+                    &self.icons.intel,
+                    &self.icons.raids,
+                    self.frame,
+                    ours,
+                    &self.names.localisation,
+                    &self.raid_hover.recorded_language,
+                ))
+            }),
             built_for: (self.frame.branch, self.frame.hour, ours),
         })
     }
@@ -4273,13 +4434,57 @@ impl<'a> Hour<'a> {
         view: &CounterView,
         workers: &viewer_foundation::parallel::Workers,
     ) -> io::Result<PreparedOverlay> {
+        self.prepare_overlay_with(
+            camera,
+            viewport,
+            ui_scale,
+            tables,
+            view,
+            workers,
+            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+        )
+    }
+
+    /// Builder projection stays serial; only the explicit recorder differs.
+    pub(crate) fn prepare_overlay_profiled(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        tables: &OverlayTables,
+        view: &CounterView,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<PreparedOverlay> {
+        self.prepare_overlay_with(
+            camera,
+            viewport,
+            ui_scale,
+            tables,
+            view,
+            &Default::default(),
+            spans,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_overlay_with(
+        &self,
+        camera: Camera,
+        viewport: [u32; 2],
+        ui_scale: f32,
+        tables: &OverlayTables,
+        view: &CounterView,
+        workers: &viewer_foundation::parallel::Workers,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<PreparedOverlay> {
         let lazy_version = self.icons.lazy.version();
         let frame = self.frame;
-        let windows = self
-            .icons
-            .counters
-            .window_cache
-            .at(native_shader_draw::gui_viewport(viewport, ui_scale))?;
+        let windows = spans.measure("overlay.projection.windows", |_| {
+            self.icons
+                .counters
+                .window_cache
+                .at(native_shader_draw::gui_viewport(viewport, ui_scale))
+        })?;
         let counter_inputs = CounterInputs {
             content: &self.counters,
             equipment: Ok(self.unit_models.sub_units.equipment_content()),
@@ -4317,236 +4522,253 @@ impl<'a> Hour<'a> {
         // and the completed hour tables cross the fork.
         let content = self.content;
         let fraction = self.hour_fraction;
-        let (icons, other) = crate::map_views::join(
-            workers,
-            || {
-                let _span = viewer_foundation::profiling::span("p_counters");
-                let mut retained = view.presentation.counters.lock().unwrap_or_else(|p| p.into_inner());
-                counters::prepare_retained(&counter_inputs, frame, &tables.counters, lazy_version, &mut retained)
-            },
-            || {
-                let hour = Hour::new(content, frame, fraction);
-                // Raid icons sort above the labels and the counters by their layer.
-                let native_raids = hour.raid_owners(
+        let prepare_counters = || {
+            let _span = viewer_foundation::profiling::span("p_counters");
+            let mut retained = view
+                .presentation
+                .counters
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            counters::prepare_retained(
+                &counter_inputs,
+                frame,
+                &tables.counters,
+                lazy_version,
+                &mut retained,
+            )
+        };
+        let prepare_other = || {
+            let hour = Hour::new(content, frame, fraction);
+            // Raid icons sort above the labels and the counters by their layer.
+            let native_raids = hour.raid_owners(
+                camera,
+                viewport,
+                ui_scale,
+                view.visibility.raid_icons,
+                &tables.raids,
+            );
+            let raid_report = tables.raids.report.clone();
+            let labels = {
+                let _span = viewer_foundation::profiling::span("p_labels");
+                labels::prepare(&label_inputs, frame, &tables.labels)?
+            };
+            let label_report = labels.report.clone();
+            let label_anchor = |province| hour.labels.anchors.get(&province).copied();
+            let native_intel = intel_icons::prepare(
+                &hour.icons.intel,
+                &intel_icons::IntelInputs {
+                    anchor: &label_anchor,
                     camera,
                     viewport,
                     ui_scale,
-                    view.visibility.raid_icons,
-                    &tables.raids,
-                );
-                let raid_report = tables.raids.report.clone();
-                let labels = {
-                    let _span = viewer_foundation::profiling::span("p_labels");
-                    labels::prepare(&label_inputs, frame, &tables.labels)?
-                };
-                let label_report = labels.report.clone();
-                let label_anchor = |province| hour.labels.anchors.get(&province).copied();
-                let native_intel = intel_icons::prepare(
-                    &hour.icons.intel,
-                    &intel_icons::IntelInputs {
-                        anchor: &label_anchor,
+                    operatives: view.operatives,
+                },
+                &tables.intel,
+            );
+            let intel_report = native_intel.report.clone();
+            // The resource icons' content failure is a document warning; they draw nothing then.
+            let resource_icons = match &hour.resource_icons {
+                Ok(content) => viewer_world::map::resource_icons::prepare(
+                    &viewer_world::map::resource_icons::ResourceIconInputs {
+                        content,
+                        localisation: &hour.names.localisation,
+                        state_provinces: &hour.icons.raids.trigger_content.state_provinces,
+                        centroid: &|province| {
+                            let (_, geography) = hour.icons.raids.mission_topology().ok()?;
+                            let [x, z] = *geography.centroids.get(&province)?;
+                            let (x, z) = (x as f32, z as f32);
+                            Some([x, hour.heights().surface_height(x, z), z])
+                        },
                         camera,
                         viewport,
                         ui_scale,
-                        operatives: view.operatives,
+                        visibility: view.visibility,
                     },
-                    &tables.intel,
-                );
-                let intel_report = native_intel.report.clone();
-                // The resource icons' content failure is a document warning; they draw nothing then.
-                let resource_icons = match &hour.resource_icons {
-                    Ok(content) => viewer_world::map::resource_icons::prepare(
-                        &viewer_world::map::resource_icons::ResourceIconInputs {
-                            content,
-                            localisation: &hour.names.localisation,
-                            state_provinces: &hour.icons.raids.trigger_content.state_provinces,
-                            centroid: &|province| {
-                                let (_, geography) = hour.icons.raids.mission_topology().ok()?;
-                                let [x, z] = *geography.centroids.get(&province)?;
-                                let (x, z) = (x as f32, z as f32);
-                                Some([x, hour.heights().surface_height(x, z), z])
-                            },
-                            camera,
-                            viewport,
-                            ui_scale,
-                            visibility: view.visibility,
+                    frame,
+                ),
+                Err(_) => Default::default(),
+            };
+            let occupation_icons = match &hour.icons.occupation {
+                Ok(content) => viewer_world::map::occupation_icons::prepare(
+                    &viewer_world::map::occupation_icons::Inputs {
+                        content,
+                        mode: view.occupation,
+                        country: tables.ours(),
+                        state_provinces: &hour.icons.raids.trigger_content.state_provinces,
+                        centroid: &|province| {
+                            let (_, geography) = hour.icons.raids.mission_topology().ok()?;
+                            let [x, z] = *geography.centroids.get(&province)?;
+                            let (x, z) = (x as f32, z as f32);
+                            Some([x, hour.heights().surface_height(x, z), z])
                         },
-                        frame,
-                    ),
-                    Err(_) => Default::default(),
-                };
-                let occupation_icons = match &hour.icons.occupation {
-                    Ok(content) => viewer_world::map::occupation_icons::prepare(
-                        &viewer_world::map::occupation_icons::Inputs {
-                            content,
-                            mode: view.occupation,
-                            country: tables.ours(),
-                            state_provinces: &hour.icons.raids.trigger_content.state_provinces,
-                            centroid: &|province| {
-                                let (_, geography) = hour.icons.raids.mission_topology().ok()?;
-                                let [x, z] = *geography.centroids.get(&province)?;
-                                let (x, z) = (x as f32, z as f32);
-                                Some([x, hour.heights().surface_height(x, z), z])
-                            },
-                            camera,
-                            viewport,
-                            ui_scale,
-                        },
-                        frame,
-                    ),
-                    Err(_) => Default::default(),
-                };
-                let counters = &hour.counters;
-                let anchor = |province| {
-                    counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)
-                };
-                let adjacency_icons =
-                    hour.adjacency_icons
-                        .prepare(&viewer_world::map::adjacency_icons::Inputs {
-                            anchor: &anchor,
-                            camera,
-                            viewport,
-                            ui_scale,
-                            visibility: view.visibility,
-                        });
-                let adjacency_priority = viewer_world::map::adjacency_icons::priority(
-                    &hour.counters.defines.priorities,
-                    &view.visibility,
-                );
-                let air_assignment = if view.visibility.priorities
-                    == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+                        camera,
+                        viewport,
+                        ui_scale,
+                    },
+                    frame,
+                ),
+                Err(_) => Default::default(),
+            };
+            let counters = &hour.counters;
+            let anchor = |province| {
+                counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)
+            };
+            let adjacency_icons =
+                hour.adjacency_icons
+                    .prepare(&viewer_world::map::adjacency_icons::Inputs {
+                        anchor: &anchor,
+                        camera,
+                        viewport,
+                        ui_scale,
+                        visibility: view.visibility,
+                    });
+            let adjacency_priority = viewer_world::map::adjacency_icons::priority(
+                &hour.counters.defines.priorities,
+                &view.visibility,
+            );
+            let air_assignment = if view.visibility.priorities
+                == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+            {
+                let defines = &hour.icons.raids.defines;
+                viewer_world::map::air_assignment::read(
+                    frame,
+                    &view.air_selected,
+                    tables.ours(),
+                    viewer_foundation::map::air_range::Defines {
+                        map_scale: defines.map_scale,
+                        ace_wing_size: defines.ace_wing_size,
+                        ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
+                    },
+                    viewer_world::map::air_assignment::Content {
+                        geometry: &hour.icons.raids.geometry,
+                        states: &hour.icons.raids.trigger_content.state_provinces,
+                        regions: &hour.icons.raids.region_provinces,
+                        colors: hour
+                            .air_assignment_colors
+                            .as_ref()
+                            .copied()
+                            .map_err(String::as_str),
+                    },
+                )
+            } else {
+                Default::default()
+            };
+            let (air_orders, air_ranges) = {
+                let mut air = tables
+                    .air
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                air.for_selection(&view.air_selected, || {
+                    (
+                        hour.air_orders(tables.ours(), &[], &view.air_selected),
+                        hour.air_ranges(tables.ours(), &view.air_selected),
+                    )
+                })
+            };
+            Ok::<_, io::Error>((
+                labels,
+                label_report,
+                native_raids,
+                raid_report,
+                native_intel,
+                intel_report,
+                resource_icons,
+                occupation_icons,
+                adjacency_icons,
+                adjacency_priority,
+                air_assignment,
+                air_orders,
+                air_ranges,
+            ))
+        };
+        let (icons, other) = if workers.threads() == 1 {
+            (
+                spans.measure("overlay.projection.counters", |_| prepare_counters()),
+                spans.measure("overlay.projection.other", |_| prepare_other()),
+            )
+        } else {
+            crate::map_views::join(workers, prepare_counters, prepare_other)
+        };
+        spans.measure("overlay.projection.compose", |_| {
+            let icons = icons?;
+            let (
+                labels,
+                label_report,
+                native_raids,
+                raid_report,
+                native_intel,
+                intel_report,
+                resource_icons,
+                occupation_icons,
+                adjacency_icons,
+                adjacency_priority,
+                air_assignment,
+                air_orders,
+                air_ranges,
+            ) = other?;
+            Ok(PreparedOverlay {
+                air_orders,
+                air_assignment,
+                occupation_stripes: if view.visibility.priorities
+                    == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
                 {
-                    let defines = &hour.icons.raids.defines;
-                    viewer_world::map::air_assignment::read(
+                    viewer_world::map::occupation_stripes::read(
                         frame,
-                        &view.air_selected,
                         tables.ours(),
-                        viewer_foundation::map::air_range::Defines {
-                            map_scale: defines.map_scale,
-                            ace_wing_size: defines.ace_wing_size,
-                            ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
-                        },
-                        viewer_world::map::air_assignment::Content {
-                            geometry: &hour.icons.raids.geometry,
-                            states: &hour.icons.raids.trigger_content.state_provinces,
-                            regions: &hour.icons.raids.region_provinces,
-                            colors: hour
-                                .air_assignment_colors
-                                .as_ref()
-                                .copied()
-                                .map_err(String::as_str),
-                        },
+                        &self.map,
+                        &self.icons.raids.trigger_content.state_provinces,
+                        self.occupation_stripe_alpha
+                            .as_ref()
+                            .copied()
+                            .map_err(String::as_str),
                     )
                 } else {
                     Default::default()
-                };
-                let (air_orders, air_ranges) = {
-                    let mut air = tables
-                        .air
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    air.for_selection(&view.air_selected, || {
-                        (
-                            hour.air_orders(tables.ours(), &[], &view.air_selected),
-                            hour.air_ranges(tables.ours(), &view.air_selected),
-                        )
-                    })
-                };
-                Ok::<_, io::Error>((
-                    labels,
-                    label_report,
-                    native_raids,
-                    raid_report,
-                    native_intel,
-                    intel_report,
-                    resource_icons,
-                    occupation_icons,
-                    adjacency_icons,
-                    adjacency_priority,
-                    air_assignment,
-                    air_orders,
-                    air_ranges,
-                ))
-            },
-        );
-        let icons = icons?;
-        let (
-            labels,
-            label_report,
-            native_raids,
-            raid_report,
-            native_intel,
-            intel_report,
-            resource_icons,
-            occupation_icons,
-            adjacency_icons,
-            adjacency_priority,
-            air_assignment,
-            air_orders,
-            air_ranges,
-        ) = other?;
-        Ok(PreparedOverlay {
-            air_orders,
-            air_assignment,
-            occupation_stripes: if view.visibility.priorities
-                == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
-            {
-                viewer_world::map::occupation_stripes::read(
-                    frame,
-                    tables.ours(),
-                    &self.map,
-                    &self.icons.raids.trigger_content.state_provinces,
-                    self.occupation_stripe_alpha
-                        .as_ref()
-                        .copied()
-                        .map_err(String::as_str),
-                )
-            } else {
-                Default::default()
-            },
-            naval_selection: if view.visibility.priorities
-                == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
-            {
-                viewer_world::map::naval_selection::read(
-                    frame,
-                    tables.ours(),
-                    &view.selected,
-                    &view.fleets_selected,
-                    &self.icons.raids.region_provinces,
-                    &self.naval_region_eligibility,
-                    self.naval_selection_colors
-                        .as_ref()
-                        .copied()
-                        .map_err(String::as_str),
-                )
-            } else {
-                Default::default()
-            },
-            air_ranges,
-            radar: Arc::clone(&tables.radar),
-            resource_icons,
-            occupation_icons,
-            occupation_hits: Vec::new(),
-            adjacency_icons,
-            adjacency_priority,
-            mode_icons: Batch::default(),
-            mode_icon_refused: BTreeMap::new(),
-            lazy_version,
-            engaged_covered: tables.engaged_covered,
-            counter_view: view.clone(),
-            labels,
-            native_raids,
-            raids: Batch::default(),
-            raid_hits: Vec::new(),
-            raid_range: None,
-            raids_hovered: false,
-            icons,
-            label_report,
-            raid_report,
-            native_intel,
-            intel: Batch::default(),
-            intel_hits: Vec::new(),
-            intel_report,
+                },
+                naval_selection: if view.visibility.priorities
+                    == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
+                {
+                    viewer_world::map::naval_selection::read(
+                        frame,
+                        tables.ours(),
+                        &view.selected,
+                        &view.fleets_selected,
+                        &self.icons.raids.region_provinces,
+                        &self.naval_region_eligibility,
+                        self.naval_selection_colors
+                            .as_ref()
+                            .copied()
+                            .map_err(String::as_str),
+                    )
+                } else {
+                    Default::default()
+                },
+                air_ranges,
+                radar: Arc::clone(&tables.radar),
+                resource_icons,
+                occupation_icons,
+                occupation_hits: Vec::new(),
+                adjacency_icons,
+                adjacency_priority,
+                mode_icons: Batch::default(),
+                mode_icon_refused: BTreeMap::new(),
+                lazy_version,
+                engaged_covered: tables.engaged_covered,
+                counter_view: view.clone(),
+                labels,
+                native_raids,
+                raids: Batch::default(),
+                raid_hits: Vec::new(),
+                raid_range: None,
+                raids_hovered: false,
+                icons,
+                label_report,
+                raid_report,
+                native_intel,
+                intel: Batch::default(),
+                intel_hits: Vec::new(),
+                intel_report,
+            })
         })
     }
 
@@ -4703,7 +4925,7 @@ impl<'a> Hour<'a> {
     /// and a frame that draws no fog.
     pub fn intel_map(&self, perspective: &perspective::Choice) -> io::Result<IntelMap> {
         let vision = self.vision(perspective)?;
-        textures::intel_map(&self.map, vision.province_fog())
+        self.intel_map_from_visibility(vision.province_fog())
     }
 }
 

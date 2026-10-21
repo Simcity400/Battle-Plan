@@ -1,5 +1,8 @@
 //! Compiled mesh passes with retained material state and ordered submission.
 use super::*;
+pub(super) mod walk;
+mod plans;
+mod plan_tail;
 use crate::map::{mesh_pose, mesh_shader, shader_scene};
 use installed_content_core::pdxshader::program::Stage;
 use shader_pipeline::{
@@ -186,21 +189,6 @@ impl ObjectConstants {
     pub fn begin(&mut self) {
         self.bytes.fill(0);
     }
-
-    fn update(&mut self, world: &[[f32; 4]; 4], userdata: Option<[f32; 8]>) {
-        self.bytes[..64].copy_from_slice(bytemuck::bytes_of(world));
-        if let Some(data) = userdata {
-            self.bytes[64..96].copy_from_slice(bytemuck::bytes_of(&data));
-        }
-    }
-
-    /// VS b1, and PS b1 once any actor has bound it.
-    fn upload(&mut self, pixel: bool) -> (&[u8], Option<&[u8]>) {
-        if pixel {
-            self.pixel = Some(self.bytes);
-        }
-        (&self.bytes, self.pixel.as_ref().map(|bytes| &bytes[..]))
-    }
 }
 
 /// One queue invocation's retained binds, applied after its draws. Each native bind replaces
@@ -208,8 +196,6 @@ impl ObjectConstants {
 /// equals binding every draw in turn.
 struct Pending {
     part: Option<usize>,
-    /// By binding; a slot no draw bound stays `None`.
-    constants: [Option<Vec<u8>>; CONSTANT_BINDINGS],
     /// The part whose program last bound a sampler with each texture.
     samplers: [Option<usize>; TEXTURE_BINDINGS],
     skin: Option<usize>,
@@ -221,7 +207,6 @@ impl Default for Pending {
     fn default() -> Self {
         Self {
             part: None,
-            constants: std::array::from_fn(|_| None),
             samplers: [None; TEXTURE_BINDINGS],
             skin: None,
             frame: None,
@@ -231,23 +216,6 @@ impl Default for Pending {
 }
 
 impl Pending {
-    fn constants(&mut self, buffers: &Constants, view: usize) {
-        for (slot, (pending, bytes)) in self.constants.iter_mut().zip(buffers).enumerate() {
-            if (slot / 2 == 0 && self.frame == Some(view))
-                || (slot == binding(2, Stage::Pixel) as usize && self.grid)
-            {
-                continue;
-            }
-            if let Some(bytes) = bytes {
-                let pending = pending.get_or_insert_default();
-                pending.clear();
-                pending.extend_from_slice(bytes);
-            }
-        }
-        self.frame = Some(view);
-        self.grid |= buffers[binding(2, Stage::Pixel) as usize].is_some();
-    }
-
     fn record(&mut self, key: usize, resident: &Resident, textures: u32) {
         if self.part != Some(key) {
             let mut samplers = textures & resident.samplers;
@@ -263,11 +231,11 @@ impl Pending {
         self.part = Some(key);
     }
 
-    /// `textures` are the last draw's.
-    fn apply<'a>(
-        self,
+    fn apply_sources<'a>(
+        &self,
         resident: impl Fn(usize) -> &'a Resident,
         textures: Textures,
+        buffers: Constants,
         retained: &mut shader_scene::State,
     ) {
         let Some(part) = self.part else {
@@ -282,7 +250,7 @@ impl Pending {
             }
         };
         let stream = &mut retained.stream;
-        for (key, bytes) in (0..).zip(&self.constants) {
+        for (key, bytes) in (0..).zip(buffers) {
             let Some(bytes) = bytes else {
                 continue;
             };
@@ -323,6 +291,8 @@ struct Resident {
     pipeline: mesh_shader::Pass,
     required_constants: Vec<u32>,
     required_textures: Vec<u32>,
+    constant_mask: u32,
+    texture_mask: u32,
     /// The lit program's native binds, which later passes retain.
     retained: shader_scene::Program,
     geometry: SharedGeometry,
@@ -331,7 +301,7 @@ struct Resident {
     /// Physical slots this material updates, independent of shader reads.
     samplers: u32,
     /// Published only at the successful descriptor commit. Stale programs stay cold until use.
-    program: Option<(ResourceStamp, shader_pipeline::gpu::BindingProgram)>,
+    program: Option<(ResourceStamp, plan_tail::Program)>,
 }
 
 enum PrepareError {
@@ -402,7 +372,14 @@ pub(super) struct Renderer {
     slots: Vec<MeshSlots>,
     resource_ids: ResourceIdentities,
     geometry: BTreeMap<GeometryKey, SharedGeometry>,
-    queues: BTreeMap<(usize, usize), [bool; 2]>,
+    /// Same deferred mesh/node queue decisions, addressed without tree lookups.
+    queue_slots: Vec<Vec<Option<[bool; 2]>>>,
+    frame_handles: walk::FrameHandles,
+    binding_storage: shader_pipeline::gpu::BindingSessionStorage,
+    scratch: plans::Scratch,
+    geometry_seen: Vec<bool>,
+    prepared: Vec<PreparedPart>,
+    candidates: Vec<(usize, shader_pipeline::gpu::BindingProgram)>,
     /// Vertex pools by stream stride and skinning; the index pool.
     pools: BTreeMap<(u64, bool), Pool>,
     indices: Pool,
@@ -837,55 +814,6 @@ fn matrix(transform: &mesh::Transform) -> [[f32; 4]; 4] {
     ]
 }
 
-fn userdata(
-    label: &str,
-    source: &mesh_pose::Source,
-    instance: ModelInstance,
-    alpha: f32,
-) -> io::Result<Option<[f32; 8]>> {
-    // Initialize actor userdata from the two default payload blocks.
-    let mut data = [0., 0., 1., 1., 1., 0., 0., 0.];
-    match label {
-        "city sprawl" | "railway bridges" => return Ok(None),
-        "map buildings" | "flying aircraft" | "map frame" => {}
-        "unit models" => {
-            if instance.native_flags & 1 != 0
-                && let Some(authored) = &source.game_data
-            {
-                let authored = authored.as_ref().map_err(|e| invalid(e.clone()))?;
-                // Initialize the last (at most fourth) atlas column.
-                data[0] = authored.atlas_size[0].wrapping_sub(1).min(3) as f32;
-                data[2] = authored.atlas_size[0] as f32;
-                data[3] = authored.atlas_size[1] as f32;
-                data[4] = if instance.native_flags & 2 != 0 {
-                    authored.texture_anim_speed
-                } else {
-                    0.
-                };
-            }
-        }
-        "supply trains" => {
-            // Send 32 bytes recursively; TrainColor plus endpoint plane.
-            data = [
-                1.,
-                1.,
-                1.,
-                alpha,
-                instance.train_clip[0],
-                instance.train_clip[1],
-                instance.train_clip[2],
-                instance.train_clip[3],
-            ];
-        }
-        _ => {
-            return Err(invalid(format!(
-                "native mesh userdata caller {label:?} unavailable"
-            )));
-        }
-    }
-    Ok(Some(data))
-}
-
 impl ModelPass {
     pub(crate) fn has_placements(&self) -> bool {
         !self.field.native_order.is_empty()
@@ -992,15 +920,16 @@ impl ModelPass {
             return Ok(DrawList::default());
         }
         let caster = queue == Queue::Caster;
+        let caller = plan_tail::Caller::select(self.label);
         // The game forces every train actor and attachment.
         let forced = self.label == "supply trains";
-        let mut native = self.native.borrow_mut();
-        if native.is_none() {
+        let mut renderer = self.native.borrow_mut();
+        if renderer.is_none() {
             let layers = self
                 .layers
                 .as_ref()
                 .ok_or_else(|| invalid("mesh content stack unavailable"))?;
-            *native = Some(Renderer {
+            *renderer = Some(Renderer {
                 libraries: {
                     let globals = super::super::shader_sources::globals(
                         [frame.camera.map.width, frame.camera.map.height],
@@ -1019,17 +948,27 @@ impl ModelPass {
                 slots: Vec::new(),
                 resource_ids: ResourceIdentities::default(),
                 geometry: BTreeMap::new(),
-                queues: BTreeMap::new(),
+                queue_slots: Vec::new(),
+                frame_handles: Default::default(),
+                binding_storage: Default::default(),
+                scratch: Default::default(),
+                geometry_seen: Vec::new(),
+                prepared: Vec::new(),
+                candidates: Vec::new(),
                 pools: BTreeMap::new(),
                 indices: Pool::default(),
                 draws: DrawList::default(),
             });
         }
-        let native = native.as_mut().expect("initialized above");
+        let native = renderer.as_mut().expect("initialized above");
         let stamp = native
             .resource_ids
             .observe(&self.textures, (!caster).then_some(inputs.textures));
         native.slots.resize_with(self.meshes.len(), Vec::new);
+        native.queue_slots.resize_with(self.meshes.len(), Vec::new);
+        let layout = &self.native_walk;
+        let mut frame_handles = std::mem::take(&mut native.frame_handles);
+        let dense_handles = layout.installed && frame_handles.begin(layout.players.len());
 
         let mut commands = std::mem::take(&mut native.draws);
         let device = arena.device();
@@ -1041,9 +980,15 @@ impl ModelPass {
         let eye = frame.camera.eye();
         let mut drawn = 0;
         let mut last_material = None;
-        let mut pending = Pending::default();
-        let mut prepared = Vec::new();
-        let mut candidates = Vec::new();
+        let mut pending_sources = plans::PendingSources::default();
+        let mut scratch = std::mem::take(&mut native.scratch);
+        scratch.begin(object);
+        let mut binding_session = shader_pipeline::gpu::BindingSession::with_storage(
+            arena, std::mem::take(&mut native.binding_storage));
+        native.geometry_seen.clear();
+        native.geometry_seen.resize(native.residents.len(), false);
+        let mut prepared = std::mem::take(&mut native.prepared);
+        let mut candidates = std::mem::take(&mut native.candidates);
         // Physical pixel slots 4..13; material slots 0..2 are replaced per draw.
         let mut textures: Textures = [None; TEXTURE_BINDINGS];
         let mut texture_mask = 0;
@@ -1055,21 +1000,20 @@ impl ModelPass {
             }
         }
         for (view, offset) in frame.offsets.iter().enumerate() {
-            for &(group_index, index) in &self.field.native_order {
+            for (group_index, index, row) in layout.routes(&self.field) {
                 let group = &self.field.groups[group_index];
-                let library = self.shader_library(group.mesh);
+                let library = row.map_or_else(|| self.shader_library(group.mesh), |row| row.library);
                 if !visible(group, *offset, frame.visible) {
                     continue;
                 }
                 let mesh = &self.meshes[group.mesh];
                 {
                     let instance = self.field.instances[index];
-                    if !self.hidden.is_empty() {
+                    let hidden = row.map_or_else(|| {
                         let (seed, identity) = instance.animation_key();
-                        if self.hidden.contains(&(group.mesh, seed, identity)) {
-                            continue;
-                        }
-                    }
+                        self.hidden.contains(&(group.mesh, seed, identity))
+                    }, |row| row.hidden);
+                    if hidden { continue; }
 
                     let instance_world = match instance.native_transform() {
                         Ok(world) => world,
@@ -1092,23 +1036,26 @@ impl ModelPass {
                         );
                         continue;
                     };
-                    let player = self.player(group.mesh, &instance);
                     let actors = poses.1[index].get_or_insert_with(|| {
-                        self.actors(
-                            group.mesh,
-                            rig,
-                            player,
-                            // A refused default-state actor stays as still as a
-                            // stopped one; a played one has its player.
-                            !matches!(
-                                instance.animation,
-                                entity_animation::STOPPED | entity_animation::DEFAULT_STATE
-                            ),
-                        )
+                        // Default-state refusal keeps the original frozen-choice law.
+                        let frozen = !matches!(
+                            instance.animation,
+                            entity_animation::STOPPED | entity_animation::DEFAULT_STATE
+                        );
+                        if dense_handles {
+                            let row = row.expect("installed actor route");
+                            frame_handles.resolve(row.player, row.mesh, frozen, || {
+                                self.actors(group.mesh, rig, self.players.get(&layout.players[row.player]), frozen)
+                            })
+                        } else {
+                            // Optional handle allocation cannot add a refusal or suppress
+                            // the original actor demand. No separate preparation path.
+                            self.actors(group.mesh, rig, self.player(group.mesh, &instance), frozen)
+                        }
                     });
 
                     for descriptor in &mesh.native {
-                        let scratch_before = (object.bytes, object.pixel);
+                        let source_before = scratch.checkpoint();
                         candidates.clear();
 
                         let mut submit = || -> Result<(), PrepareError> {
@@ -1148,8 +1095,11 @@ impl ModelPass {
                                 })
                                 .transpose()?;
 
-                            let descriptor_key = (group.mesh, descriptor.node);
-                            if !native.queues.contains_key(&descriptor_key) {
+                            let queues = &mut native.queue_slots[group.mesh];
+                            if queues.len() <= descriptor.node {
+                                queues.resize(descriptor.node + 1, None);
+                            }
+                            if queues[descriptor.node].is_none() {
                                 let mut admitted = [false; 2];
                                 for part in descriptor.lods.iter().flatten() {
                                     let lit = select(&mut native.libraries[library], part, false)?;
@@ -1167,9 +1117,9 @@ impl ModelPass {
                                     );
                                     admitted[usize::from(alternate)] = true;
                                 }
-                                native.queues.insert(descriptor_key, admitted);
+                                queues[descriptor.node] = Some(admitted);
                             }
-                            let flags = native.queues[&descriptor_key];
+                            let flags = queues[descriptor.node].unwrap();
                             if !match queue {
                                 Queue::Regular => flags[0] && !forced,
                                 Queue::Alternate => flags[1] || forced,
@@ -1185,12 +1135,11 @@ impl ModelPass {
                             let userdata = if caster {
                                 None
                             } else {
-                                userdata(self.label, root, instance, frame.alpha)
-                                    .map_err(PrepareError::Actor)?
+                                caller.evaluate(root, instance, frame.alpha).map_err(PrepareError::Actor)?
                             };
 
-                            object.update(&world, userdata);
-                            let (vertex, pixel) = object.upload(userdata.is_some());
+                            scratch.update(&world, userdata);
+                            let (vertex, pixel) = (scratch.vertex(), scratch.pixel());
 
                             prepared.clear();
 
@@ -1204,7 +1153,7 @@ impl ModelPass {
                                     .collect();
                             }
 
-                            let mut submitted_buffers: Constants = [None; CONSTANT_BINDINGS];
+                            let mut submitted_mask = 0;
                             for (part, source) in descriptor.lods[lod].iter().enumerate() {
                                 let variants = usize::from(caster) * 2 + usize::from(forced);
                                 let key = match native.slots[group.mesh][descriptor.node][lod][part]
@@ -1348,6 +1297,10 @@ impl ModelPass {
                                                 .chain(&compiled.pixel.textures)
                                                 .map(|(slot, _)| *slot)
                                                 .collect(),
+                                            constant_mask: compiled.vertex.buffers.iter().chain(&compiled.pixel.buffers)
+                                                .fold(0, |mask, buffer| mask | (1 << buffer.binding)),
+                                            texture_mask: compiled.vertex.textures.iter().chain(&compiled.pixel.textures)
+                                                .fold(0, |mask, (slot, _)| mask | (1 << slot)),
                                             caster_texture,
                                             blended,
                                             samplers,
@@ -1387,17 +1340,7 @@ impl ModelPass {
                                     texture_mask |= 1 << slot;
                                 }
 
-                                let mut buffers: Constants = [None; CONSTANT_BINDINGS];
-                                buffers[binding(0, Stage::Vertex) as usize] =
-                                    Some(inputs.frames[view]);
-                                buffers[binding(0, Stage::Pixel) as usize] =
-                                    Some(inputs.frames[view]);
-                                if !caster {
-                                    buffers[binding(2, Stage::Pixel) as usize] = Some(inputs.grid);
-                                }
-                                buffers[binding(1, Stage::Vertex) as usize] = Some(vertex);
-                                buffers[binding(1, Stage::Pixel) as usize] = pixel;
-                                if gpu.geometry.cpu_skin.is_some() {
+                                let skin = if gpu.geometry.cpu_skin.is_some() {
                                     let pose = skin_pose.expect("skinned geometry checked above");
                                     if gpu.geometry.skin_bones > pose.bones.len() {
                                         return Err(PrepareError::Actor(invalid(format!(
@@ -1405,25 +1348,32 @@ impl ModelPass {
                                             pose.bones.len()
                                         ))));
                                     }
-                                    buffers[binding(2, Stage::Vertex) as usize] =
-                                        Some(bytemuck::cast_slice(&pose.bones));
+                                    Some(bytemuck::cast_slice(&pose.bones))
+                                } else { None };
+                                let supplies = plan_tail::Supplies::new(
+                                    inputs.frames[view], vertex, pixel, skin,
+                                    (!caster).then_some(inputs.grid));
+                                // Missing inputs retain their original ordered diagnostic demand.
+                                if supplies.present() & gpu.constant_mask != gpu.constant_mask
+                                    || texture_mask & gpu.texture_mask != gpu.texture_mask
+                                {
+                                    gpu.check_bindings(&supplies.constants(), &textures)?;
                                 }
 
-                                // Actor inputs are checked separately; later arena/device errors are fatal.
-
-                                gpu.check_bindings(&buffers, &textures)?;
-
                                 let bindings = match &gpu.program {
-                                    Some((installed, program)) if *installed == stamp => program
-                                        .bind_with(arena, |binding| buffers[binding as usize])
-                                        .map_err(invalid)?,
+                                    Some((installed, program)) if *installed == stamp => {
+                                        match program.recipe() {
+                                            Some(recipe) => binding_session.bind_ordered(key, program, recipe.ordered(supplies)),
+                                            None => binding_session.bind_with(key, program, |binding| supplies.get(binding)),
+                                        }.map_err(invalid)?
+                                    }
                                     _ => {
                                         let (bindings, program) = gpu
                                             .pipeline
                                             .pipeline
                                             .bind_program_with(
                                                 arena,
-                                                |binding| buffers[binding as usize],
+                                                |binding| supplies.get(binding),
                                                 |binding| textures[binding as usize],
                                             )
                                             .map_err(invalid)?;
@@ -1433,13 +1383,7 @@ impl ModelPass {
                                 };
 
                                 if queue.accepts(gpu.blended, forced) {
-                                    for (pending, bytes) in
-                                        submitted_buffers.iter_mut().zip(buffers)
-                                    {
-                                        if bytes.is_some() {
-                                            *pending = bytes;
-                                        }
-                                    }
+                                    submitted_mask |= supplies.present();
                                     prepared.push(PreparedPart {
                                         key,
                                         bindings,
@@ -1452,11 +1396,11 @@ impl ModelPass {
 
                             // A failed later part leaves all successful-program candidates cold.
                             for (key, program) in candidates.drain(..) {
-                                native.residents[key].program = Some((stamp, program));
+                                native.residents[key].program = Some((stamp, plan_tail::Program::new(program)));
                             }
                             // Prepare every part before the first command for this actor.
                             if !caster && !prepared.is_empty() {
-                                pending.constants(&submitted_buffers, view);
+                                pending_sources.constants_mask(submitted_mask, view, &scratch, index, descriptor.node);
                             }
                             for PreparedPart {
                                 key,
@@ -1468,10 +1412,14 @@ impl ModelPass {
                             {
                                 let gpu = &native.residents[key];
                                 if !caster {
-                                    pending.record(key, gpu, textures);
+                                    pending_sources.state.record(key, gpu, textures);
                                 }
                                 let pool = (gpu.geometry.stride, gpu.geometry.cpu_skin.is_some());
                                 let vertices = (pool, gpu.geometry.vertices.0);
+                                native.geometry_seen.resize(native.residents.len(), false);
+                                let first_geometry = !native.geometry_seen[key];
+                                native.geometry_seen[key] = true;
+                                if first_geometry {
                                 commands.vertices.entry(vertices).or_insert_with(|| {
                                     native.pools[&pool].chunks[vertices.1].streams.clone()
                                 });
@@ -1484,6 +1432,7 @@ impl ModelPass {
                                             .expect("index stream")
                                             .clone()
                                     });
+                                }
                                 commands.draws.push(RecordedDraw {
                                     bindings,
                                     reference: gpu.pipeline.reference(),
@@ -1501,9 +1450,12 @@ impl ModelPass {
                         if let Err(why) = submit() {
                             let why = match why {
                                 PrepareError::Actor(why) => why,
-                                PrepareError::Shared(why) => return Err(why),
+                                PrepareError::Shared(why) => {
+                                    scratch.sync(object);
+                                    return Err(why);
+                                }
                             };
-                            (object.bytes, object.pixel) = scratch_before;
+                            scratch.restore(source_before);
                             let name = if descriptor.name == mesh.name {
                                 mesh.name.clone()
                             } else {
@@ -1534,9 +1486,17 @@ impl ModelPass {
                         self.textures[index].as_ref().map(|texture| &texture.view);
                 }
             }
-            pending.apply(|key| &native.residents[key], textures, &mut object.retained);
+            pending_sources.apply(native, textures, inputs, &scratch, &poses.1, &mut object.retained);
             self.drawn.set(self.drawn.get() + drawn);
         }
+        scratch.sync(object);
+        native.scratch = scratch;
+        native.binding_storage = binding_session.into_storage();
+        native.frame_handles = frame_handles;
+        prepared.clear();
+        candidates.clear();
+        native.prepared = prepared;
+        native.candidates = candidates;
         Ok(commands)
     }
 }
@@ -1883,49 +1843,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pending_constants_keep_immutable_view_inputs_and_last_bound_snapshots() {
-        let frame_a = [1; 416];
-        let frame_b = [2; 416];
-        let grid = [3; 16];
-        let vertex_a = [4; 208];
-        let pixel_a = [5; 208];
-        let vertex_b = [6; 208];
-        let skin = [7; 96];
-        let mut first: Constants = [None; CONSTANT_BINDINGS];
-        first[binding(0, Stage::Vertex) as usize] = Some(&frame_a);
-        first[binding(0, Stage::Pixel) as usize] = Some(&frame_a);
-        first[binding(1, Stage::Vertex) as usize] = Some(&vertex_a);
-        first[binding(1, Stage::Pixel) as usize] = Some(&pixel_a);
-        first[binding(2, Stage::Vertex) as usize] = Some(&skin);
-        first[binding(2, Stage::Pixel) as usize] = Some(&grid);
-        let mut pending = Pending::default();
-        pending.constants(&first, 0);
-        let frame_storage = pending.constants[0].as_ref().unwrap().as_ptr();
-        let grid_storage = pending.constants[5].as_ref().unwrap().as_ptr();
-        let mut next = first;
-        next[binding(1, Stage::Vertex) as usize] = Some(&vertex_b);
-        next[binding(1, Stage::Pixel) as usize] = None;
-        next[binding(2, Stage::Vertex) as usize] = None;
-        pending.constants(&next, 0);
-        assert_eq!(
-            pending.constants[0].as_ref().unwrap().as_ptr(),
-            frame_storage
-        );
-        assert_eq!(
-            pending.constants[5].as_ref().unwrap().as_ptr(),
-            grid_storage
-        );
-        assert_eq!(pending.constants[2].as_deref(), Some(vertex_b.as_slice()));
-        assert_eq!(pending.constants[3].as_deref(), Some(pixel_a.as_slice()));
-        assert_eq!(pending.constants[4].as_deref(), Some(skin.as_slice()));
-        next[0] = Some(&frame_b);
-        next[1] = Some(&frame_b);
-        pending.constants(&next, 1);
-        assert_eq!(pending.constants[0].as_deref(), Some(frame_b.as_slice()));
-        assert_eq!(pending.constants[1].as_deref(), Some(frame_b.as_slice()));
-    }
-
     /// A part whose mesh pass fell back from a visual mod's replacement draws with the
     /// recorded technique: its compiled program, vertex layouts (the recorded POSITION and
     /// TEXCOORD0, where the replacement's COLOR0 has none), state (the recorded blend) and
@@ -1979,12 +1896,13 @@ mod tests {
     #[test]
     fn object_upload_retains_pixel_snapshot_and_cpu_userdata_independently() {
         let mut object = ObjectConstants::default();
-        object.update(&[[2.; 4]; 4], None);
-        assert!(object.upload(false).1.is_none());
-        object.update(&[[3.; 4]; 4], Some([5.; 8]));
-        object.upload(true);
-        object.update(&[[7.; 4]; 4], None);
-        let (vertex, pixel) = object.upload(false);
+        let mut scratch = plans::Scratch::default();
+        scratch.begin(&object);
+        scratch.update(&[[2.; 4]; 4], None);
+        assert!(scratch.pixel().is_none());
+        scratch.update(&[[3.; 4]; 4], Some([5.; 8]));
+        scratch.update(&[[7.; 4]; 4], None);
+        let (vertex, pixel) = (scratch.vertex(), scratch.pixel());
         let pixel = pixel.unwrap();
         assert_eq!(&pixel[..64], bytemuck::bytes_of(&[[3_f32; 4]; 4]));
         assert_eq!(&pixel[64..96], bytemuck::bytes_of(&[5_f32; 8]));
@@ -1992,14 +1910,16 @@ mod tests {
         assert_eq!(&vertex[..64], bytemuck::bytes_of(&[[7_f32; 4]; 4]));
         assert_eq!(&vertex[64..96], bytemuck::bytes_of(&[5_f32; 8]));
         // Starting another native invocation clears CPU scratch, not PS b1.
+        scratch.sync(&mut object);
         object.begin();
-        object.update(&[[11.; 4]; 4], None);
-        let (vertex, pixel) = object.upload(false);
+        scratch.begin(&object);
+        scratch.update(&[[11.; 4]; 4], None);
+        let (vertex, pixel) = (scratch.vertex(), scratch.pixel());
         assert_eq!(pixel.unwrap(), retained);
         assert_eq!(&vertex[..64], bytemuck::bytes_of(&[[11_f32; 4]; 4]));
         assert!(vertex[64..].iter().all(|byte| *byte == 0));
-        object.update(&[[13.; 4]; 4], Some([17.; 8]));
-        let pixel = object.upload(true).1.unwrap();
+        scratch.update(&[[13.; 4]; 4], Some([17.; 8]));
+        let pixel = scratch.pixel().unwrap();
         assert_eq!(&pixel[..64], bytemuck::bytes_of(&[[13_f32; 4]; 4]));
         assert_eq!(&pixel[64..96], bytemuck::bytes_of(&[17_f32; 8]));
     }
@@ -2102,27 +2022,27 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            userdata("city sprawl", &source, instance, 1.).unwrap(),
+            plan_tail::Caller::select("city sprawl").evaluate(&source, instance, 1.).unwrap(),
             None
         );
         assert_eq!(
-            userdata("unit models", &source, instance, 1.).unwrap(),
+            plan_tail::Caller::select("unit models").evaluate(&source, instance, 1.).unwrap(),
             Some([3., 0., 8., 3., 0., 0., 0., 0.])
         );
         instance.native_flags = 3;
         assert_eq!(
-            userdata("unit models", &source, instance, 1.)
+            plan_tail::Caller::select("unit models").evaluate(&source, instance, 1.)
                 .unwrap()
                 .unwrap()[4],
             0.75
         );
         assert_eq!(
-            userdata("map buildings", &source, instance, 1.).unwrap(),
+            plan_tail::Caller::select("map buildings").evaluate(&source, instance, 1.).unwrap(),
             Some([0., 0., 1., 1., 1., 0., 0., 0.])
         );
         instance.train_clip = [2., 3., 5., 7.];
         assert_eq!(
-            userdata("supply trains", &source, instance, 0.25).unwrap(),
+            plan_tail::Caller::select("supply trains").evaluate(&source, instance, 0.25).unwrap(),
             Some([1., 1., 1., 0.25, 2., 3., 5., 7.])
         );
     }

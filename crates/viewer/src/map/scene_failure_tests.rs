@@ -134,6 +134,10 @@ impl Fixture {
     }
 
     pub(crate) fn scene(&self) -> io::Result<Scene> {
+        self.scene_with_samples(1)
+    }
+
+    pub(crate) fn scene_with_samples(&self, samples: u32) -> io::Result<Scene> {
         let d = &self.document;
         let (device, queue) = (&self.state.device, &self.state.queue);
         let mut scene = crate::app::load_scene(
@@ -141,7 +145,7 @@ impl Fixture {
             queue,
             d,
             dashboard::protocol::MapGraphics {
-                samples: 1,
+                samples,
                 ..Default::default()
             },
         )?;

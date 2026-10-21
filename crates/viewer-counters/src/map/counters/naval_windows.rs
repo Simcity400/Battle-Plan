@@ -65,6 +65,7 @@ pub(super) fn update_naval(
     strategic: bool,
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
+    let _profile = viewer_foundation::profiling::span("dc_nu_base_setters");
     let c = base_controls(root)?;
     for (button, shown) in [(c.background, !strategic), (c.strategic, strategic)] {
         instance.set_frame(
@@ -632,6 +633,24 @@ pub(super) fn inside(inputs: &CounterInputs<'_>, point: [i32; 2], size: [i32; 2]
 /// recording, so which frame's requests get the new slots may differ.
 pub(super) const GROWTH_FRAME: &str = "the frame the pool's growth completes is not recorded";
 
+/// Sequential update laps keep short/zero phases visible instead of censoring them at
+/// PROFILE's ordinary span threshold. Nested detail still uses the ordinary spans.
+struct UpdateLaps(Option<std::time::Instant>);
+
+impl UpdateLaps {
+    fn new() -> Self {
+        Self(viewer_foundation::profile_writer::profiling().then(std::time::Instant::now))
+    }
+
+    fn lap(&mut self, name: &'static str) {
+        if let Some(last) = self.0 {
+            let now = std::time::Instant::now();
+            viewer_foundation::profiling::record_lap(name, now.duration_since(last));
+            self.0 = Some(now);
+        }
+    }
+}
+
 /// The presented frame: the owners, the manager's pass, the overrides and grids, the naval
 /// counters at sea (`plates`: each counter's flotilla, local placement and graphical column;
 /// `columns`: every shown unit column), one tick of every window, and their layouts and draws:
@@ -650,6 +669,7 @@ pub(super) fn present(
     report: &mut CounterReport,
 ) -> io::Result<()> {
     let update_profile = viewer_foundation::profiling::span("dc_naval_update");
+    let mut update_laps = UpdateLaps::new();
     let native = inputs.windows;
     let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
     let flags = gui_windows::window_flags(inputs, plan.countries.as_deref());
@@ -659,23 +679,29 @@ pub(super) fn present(
             .naval_window_notes
             .entry(format!("the naval map-icon windows are not built: {why}").into())
             .or_default() += 1;
+        update_laps.lap("dc_nu_setup");
         return Ok(());
     }
     // The view's single presentation clock and the frame's step.
     let frame = frame(&mut windows.last, time);
+    update_laps.lap("dc_nu_setup");
     // PreparedCounters::draw advances the shared province schedule before these consumers.
     let schedule = inputs
         .schedule
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    update_laps.lap("dc_nu_lock");
     let combat_window = native.naval_combat();
     combat_frame(inputs, plan, windows, combat_window, &schedule, report)?;
+    update_laps.lap("dc_nu_combat");
     if let Some(base) = native.naval_base() {
         base_frame(inputs, plan, windows, base, &schedule, report)?;
     }
+    update_laps.lap("dc_nu_base");
     if let Some(result) = native.naval_result() {
         result_frame(inputs, plan, windows, result, &schedule, report)?;
     }
+    update_laps.lap("dc_nu_result");
     let mut mission_view = std::mem::take(&mut windows.missions);
     let missions = naval_missions::update(
         inputs,
@@ -717,6 +743,7 @@ pub(super) fn present(
     }
     windows.missions = mission_view;
     drop(schedule);
+    update_laps.lap("dc_nu_missions");
     let navy = native.navy();
     let mut carrier_wings = std::mem::take(&mut windows.carrier_wings);
     carrier_wings.retain(|key, _| match key {
@@ -729,9 +756,11 @@ pub(super) fn present(
         }
         CarrierKey::Port(item) => windows.items.contains_key(item),
     });
+    update_laps.lap("dc_nu_carrier_retain");
     for view in carrier_wings.values_mut() {
         view.tick(time);
     }
+    update_laps.lap("dc_nu_carrier_tick");
     // Port wrappers are pooled with their own unit item, never with another
     // base or with the at-sea representation of the same task force.
     let port_owners: HashMap<_, _> = windows
@@ -743,6 +772,7 @@ pub(super) fn present(
                 .collect()
         })
         .unwrap_or_default();
+    update_laps.lap("dc_nu_port_map");
     for (key, item) in &mut windows.items {
         let (IconSlot::Base(slot), ItemPool::Port) = (key.icon, key.pool) else {
             continue;
@@ -770,15 +800,18 @@ pub(super) fn present(
             }
         }
     }
+    update_laps.lap("dc_nu_port_carriers");
     // Counters at sea: their source task forces' windows, destroyed with their source.
     if let Some(forces) = &plan.forces {
         settle_counters(windows, forces);
     }
+    update_laps.lap("dc_nu_sea_settle");
     let mut at_sea = Vec::with_capacity(plates.len());
     for &(flotilla, countries, plate) in plates {
         let update = counter_calls(inputs, navy, flotilla, countries, report);
         at_sea.push((flotilla, plate, update));
     }
+    update_laps.lap("dc_nu_sea_calls");
     let mut placed_at_sea = Vec::with_capacity(at_sea.len());
     for (flotilla, plate, update) in at_sea {
         let visible = windows.columns.contains_key(&plate.column.identity);
@@ -829,6 +862,7 @@ pub(super) fn present(
             }
         }
     }
+    update_laps.lap("dc_nu_sea_apply");
     let shown: BTreeMap<_, _> = columns
         .iter()
         .map(|column| (column.identity, column.count))
@@ -862,6 +896,7 @@ pub(super) fn present(
             );
         }
     }
+    update_laps.lap("dc_nu_bookkeeping");
     drop(update_profile);
     let tick_profile = viewer_foundation::profiling::span("dc_naval_tick");
     tick(
@@ -2105,6 +2140,7 @@ fn settle_counters(windows: &mut Windows, forces: &Forces) {
 /// Propagate window show and hide calls through its retained grids and lists
 /// to every held item in order.
 fn reach_items(windows: &mut Windows, icon: IconSlot, held: &[Held]) -> Result<(), String> {
+    let _profile = viewer_foundation::profiling::span("dc_nu_held");
     let Some((native, _)) = windows.built.clone() else {
         return Ok(());
     };
@@ -2221,6 +2257,7 @@ fn read_grids(
     name: &str,
     resources: &dyn native_gui::Resources,
 ) -> (Option<Layout>, Option<String>) {
+    let _profile = viewer_foundation::profiling::span("dc_nu_grid_layout");
     match instance.layout(window, resources, None) {
         Ok(laid) => (laid, None),
         Err(refusals) => (
@@ -2349,6 +2386,7 @@ fn append(
     key: ItemKey,
     template: &native::Element,
 ) -> Result<bool, String> {
+    let _profile = viewer_foundation::profiling::span("dc_nu_grid_append");
     let held = windows
         .grids
         .entry((key.icon, grid.path.clone()))
@@ -2400,6 +2438,7 @@ fn finalize(
     laid: Option<&Layout>,
     viewport: [i32; 2],
 ) -> Result<(), String> {
+    let _profile = viewer_foundation::profiling::span("dc_nu_grid_finalize");
     let Some((native, _)) = windows.built.clone() else {
         return Ok(());
     };
@@ -2461,10 +2500,12 @@ fn base_frame(
     let result = (|| -> Result<(), String> {
         let mut erased: Vec<(SlotId, Vec<Held>)> = Vec::new();
         // Request the icon for an admitted standing base; otherwise erase its owner.
+        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
         let mut provinces: BTreeSet<u32> = pool.live().map(|(owner, ..)| *owner).collect();
         if let Some(pass) = &plan.bases {
             provinces.extend(pass.bases.iter().map(|(province, _)| *province));
         }
+        drop(maps_profile);
         for province in provinces {
             let Some(update) = schedule.update(province) else {
                 continue;
@@ -2490,11 +2531,13 @@ fn base_frame(
                 windows.diverged_bases = Some(GROWTH_FRAME.into());
             }
         }
+        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
         let anchors: HashMap<u32, [f32; 3]> = plan
             .bases
             .as_ref()
             .map(|pass| pass.bases.iter().copied().collect())
             .unwrap_or_default();
+        drop(maps_profile);
         let size = plan.bases.as_ref().map_or([0; 2], |pass| pass.size);
         let mut kept_off_screen = false;
         let pass = pool.update(window, |province, _| {
@@ -2521,11 +2564,13 @@ fn base_frame(
         };
         let flags = gui_windows::window_flags(inputs, plan.countries.as_deref());
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
+        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
         let glyphs: HashMap<_, _> = bases
             .glyphs
             .iter()
             .map(|glyph| (glyph.province, glyph))
             .collect();
+        drop(maps_profile);
         for (province, slot) in pass.updated {
             let instance = pool.get(slot).ok_or("an updated icon has no window")?;
             match glyphs.get(&province) {

@@ -1667,6 +1667,7 @@ impl Pass {
         weather: bool,
         workers: &viewer_foundation::parallel::Workers,
     ) -> Packets {
+        let _profile = viewer_foundation::profiling::thread_span("weather_packets");
         let mut packets = Vec::new();
         if weather {
             let time = self

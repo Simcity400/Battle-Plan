@@ -1,0 +1,113 @@
+//! Bounded immutable hour geometry, independent of counter and GUI history.
+
+use std::{collections::BTreeMap, convert::Infallible, io, sync::Arc};
+
+use replay_data::rows::{ProvinceRow, tables};
+use replay_frame::frame::DecodedFrame;
+use viewer_foundation::map::{memo::Recent, tables::core};
+
+use crate::map::counter_groups::{Bounds, Extents, GroupDefines};
+
+/// The state lookup and extents always come from the same ordered province projection.
+pub(super) struct Geometry {
+    pub state_of: BTreeMap<u32, u32>,
+    pub extents: Extents,
+}
+
+impl Geometry {
+    fn build(
+        provinces: &[ProvinceRow],
+        bounds: &BTreeMap<u32, Bounds>,
+        region_of: &BTreeMap<u32, u32>,
+        defines: &GroupDefines,
+        map_width: f32,
+    ) -> Self {
+        let mut state_of = BTreeMap::new();
+        for province in provinces {
+            if province.state != 0 {
+                state_of.insert(province.id, province.state);
+            }
+        }
+        let extents = Extents::build(bounds, &state_of, region_of, defines, map_width);
+        Self { state_of, extents }
+    }
+}
+
+struct Key {
+    /// Keep row order and repetitions, including zero-state rows. In particular, a
+    /// repeated zero does not remove the preceding nonzero assignment.
+    states: Vec<(u32, u32)>,
+    /// Retained allocations both namespace the content and prevent address reuse.
+    /// Editing either map with Arc::make_mut changes its identity while a key holds it.
+    bounds: Arc<BTreeMap<u32, Bounds>>,
+    region_of: Arc<BTreeMap<u32, u32>>,
+    /// These are the only scalar content inputs Extents::build reads.
+    limits: [u32; 3],
+}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.bounds, &other.bounds)
+            && Arc::ptr_eq(&self.region_of, &other.region_of)
+            && self.limits == other.limits
+            && self.states == other.states
+    }
+}
+
+pub(super) struct Memo {
+    recent: Recent<Key, Geometry>,
+}
+
+impl Default for Memo {
+    fn default() -> Self {
+        // As with the other hour-product memos, eviction only rebuilds a value;
+        // this bounds retained projections, not the admitted province/state counts.
+        Self {
+            recent: Recent::new(8),
+        }
+    }
+}
+
+impl Memo {
+    fn geometry(
+        &self,
+        frame: &DecodedFrame,
+        bounds: &Arc<BTreeMap<u32, Bounds>>,
+        region_of: &Arc<BTreeMap<u32, u32>>,
+        defines: &GroupDefines,
+        map_width: f32,
+    ) -> io::Result<Arc<Geometry>> {
+        // A previous complete hour must never stand in for a refused core read.
+        let provinces = core::<tables::Provinces>(frame)?;
+        let key = Key {
+            states: provinces.iter().map(|row| (row.id, row.state)).collect(),
+            bounds: Arc::clone(bounds),
+            region_of: Arc::clone(region_of),
+            limits: [defines.state_huge, defines.strategic_area_huge, map_width].map(f32::to_bits),
+        };
+        Ok(self
+            .recent
+            .get_or_insert_with(key, || {
+                Ok::<_, Infallible>(Arc::new(Geometry::build(
+                    provinces, bounds, region_of, defines, map_width,
+                )))
+            })
+            .unwrap_or_else(|never| match never {}))
+    }
+}
+
+pub(super) fn read(
+    frame: &DecodedFrame,
+    content: &super::CounterContent,
+) -> io::Result<Arc<Geometry>> {
+    content.geography.geometry(
+        frame,
+        &content.bounds,
+        &content.region_of,
+        &content.defines.groups,
+        content.map.x(),
+    )
+}
+
+#[cfg(test)]
+mod tests;

@@ -9,7 +9,9 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use viewer_foundation::debug_fields;
 use viewer_foundation::map::textures::load_file;
+use viewer_foundation::profiling::BuilderSpans;
 mod animation_dispatch;
+mod skeleton_source;
 mod native;
 pub use native::{
     Inputs as NativeInputs, ObjectConstants as NativeObjectConstants, Queue as NativeQueue,
@@ -363,6 +365,27 @@ impl Reach {
 /// and parallelize cleanly.
 const BAKE_SHARDS: usize = 4;
 
+/// Source labels stay explicit across recorded retries and counterparts.
+#[derive(Clone, Copy)]
+struct BakeLabels {
+    worker: &'static str,
+    join: &'static str,
+    merge: &'static str,
+}
+
+impl BakeLabels {
+    const SHOWN: Self = Self {
+        worker: "units.ensure.bake_worker.shown",
+        join: "units.ensure.bake_join_shown",
+        merge: "units.ensure.bake_merge_shown",
+    };
+    const RECORDED: Self = Self {
+        worker: "units.ensure.bake_worker.recorded",
+        join: "units.ensure.bake_join_recorded",
+        merge: "units.ensure.bake_merge_recorded",
+    };
+}
+
 impl ModelLibrary {
     pub fn rig(&self, slot: usize) -> &Rig {
         &self.rigs[slot]
@@ -405,6 +428,28 @@ impl ModelLibrary {
         Self::load_with(layers, decode, descriptors, names, warnings, |_, _| None)
     }
 
+    /// The same load with job-local baker CPU and caller join/merge scopes.
+    /// Worker wall scopes overlap; their CPU is not included in caller CPU.
+    pub(crate) fn load_profiled(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        descriptors: &Descriptors,
+        names: &[String],
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
+        spans: &mut BuilderSpans,
+    ) -> io::Result<Self> {
+        Self::load_with_spans(
+            layers,
+            decode,
+            descriptors,
+            names,
+            warnings,
+            |_, _| None,
+            spans,
+            BakeLabels::SHOWN,
+        )
+    }
+
     /// Loads admitted names, applying their owner's declaration check to recorded retries
     /// and draw counterparts too. Other model owners keep their own admission rules.
     pub fn load_with(
@@ -414,6 +459,30 @@ impl ModelLibrary {
         names: &[String],
         warnings: &mut Vec<installed_content_core::Diagnostic>,
         refused: fn(&mesh::Roster, &str) -> Option<String>,
+    ) -> io::Result<Self> {
+        Self::load_with_spans(
+            layers,
+            decode,
+            descriptors,
+            names,
+            warnings,
+            refused,
+            &mut BuilderSpans::new(false),
+            BakeLabels::SHOWN,
+        )
+    }
+
+    // Keep the owner's declaration check and profiling source explicit.
+    #[allow(clippy::too_many_arguments)]
+    fn load_with_spans(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        descriptors: &Descriptors,
+        names: &[String],
+        warnings: &mut Vec<installed_content_core::Diagnostic>,
+        refused: fn(&mesh::Roster, &str) -> Option<String>,
+        spans: &mut BuilderSpans,
+        labels: BakeLabels,
     ) -> io::Result<Self> {
         // Stable de-duplication first: the serial loop skipped later
         // duplicates via the index, so keeping each name's first occurrence
@@ -427,28 +496,33 @@ impl ModelLibrary {
         // An empty list bakes an empty library: `chunks` needs a nonzero
         // size and then yields no shard.
         let chunk = unique.len().div_ceil(shards).max(1);
-        let baked: Vec<(ModelLibrary, Vec<(String, String)>)> = std::thread::scope(|scope| {
+        let baked = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for shard_names in unique.chunks(chunk).collect::<Vec<_>>() {
+                let mut worker = spans.fork();
                 handles.push(scope.spawn(move || {
-                    let mut library = ModelLibrary {
-                        decode,
-                        ..Default::default()
-                    };
-                    let mut missing = Vec::new();
-                    for name in shard_names {
-                        match library.add(layers, descriptors, name) {
-                            Ok(()) => {}
-                            Err(error) => missing.push(((*name).clone(), error.to_string())),
+                    let baked = worker.measure(labels.worker, |_| {
+                        let mut library = ModelLibrary {
+                            decode,
+                            ..Default::default()
+                        };
+                        let mut missing = Vec::new();
+                        for name in shard_names {
+                            if let Err(error) = library.add(layers, descriptors, name) {
+                                missing.push(((*name).clone(), error.to_string()));
+                            }
                         }
-                    }
-                    (library, missing)
+                        (library, missing)
+                    });
+                    (baked, worker)
                 }));
             }
-            handles
-                .into_iter()
-                .map(|handle| handle.join().expect("entity baker panicked"))
-                .collect()
+            spans.measure(labels.join, |_| {
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("entity baker panicked"))
+                    .collect::<Vec<_>>()
+            })
         });
         let mut library = ModelLibrary {
             layers: Some(Arc::new(layers.clone())),
@@ -456,13 +530,16 @@ impl ModelLibrary {
             ..Default::default()
         };
         let mut missing = Vec::new();
-        for (shard, shard_missing) in baked {
-            for (name, error) in shard_missing {
-                library.failed.insert(name.clone(), error.clone());
-                missing.push((name, error));
+        spans.measure(labels.merge, |spans| {
+            for ((shard, shard_missing), worker) in baked {
+                spans.append(worker);
+                for (name, error) in shard_missing {
+                    library.failed.insert(name.clone(), error.clone());
+                    missing.push((name, error));
+                }
+                library.merge(shard);
             }
-            library.merge(shard);
-        }
+        });
         // With visual mods mounted, an entity that does not bake is baked from the recording
         // instead, by the recording's own descriptors apart from the mod's files, and named;
         // and each entity a visual mod supplies keeps its recorded counterpart, baked the same
@@ -477,14 +554,19 @@ impl ModelLibrary {
                     .filter(|(name, _)| refused(&roster, name).is_none())
                     .map(|(name, _)| name.clone())
                     .collect();
-                let baked = Self::load(
+                let baked = Self::load_with_spans(
                     &recorded,
                     decode,
                     &roster.descriptors,
                     &names,
                     &mut Vec::new(),
+                    |_, _| None,
+                    spans,
+                    BakeLabels::RECORDED,
                 )?;
-                library.merge(baked.isolated(false));
+                spans.measure(BakeLabels::RECORDED.merge, |_| {
+                    library.merge(baked.isolated(false));
+                });
                 missing.retain(|(name, error)| {
                     let drawn = library.slot(name).is_some();
                     if drawn {
@@ -502,14 +584,19 @@ impl ModelLibrary {
                 .map(|mesh| mesh.name.clone())
                 .collect();
             if !visual.is_empty() {
-                let counterparts = Self::load(
+                let counterparts = Self::load_with_spans(
                     &recorded,
                     decode,
                     &roster.descriptors,
                     &visual,
                     &mut Vec::new(),
+                    |_, _| None,
+                    spans,
+                    BakeLabels::RECORDED,
                 )?;
-                library.merge(counterparts.isolated(true));
+                spans.measure(BakeLabels::RECORDED.merge, |_| {
+                    library.merge(counterparts.isolated(true));
+                });
             }
         }
         if !library.animation_refusals.is_empty() {
@@ -606,18 +693,32 @@ impl ModelLibrary {
         names: &[String],
         why: impl Fn(&str) -> String,
     ) -> io::Result<Self> {
+        Self::load_recorded_profiled(layers, decode, names, why, &mut BuilderSpans::new(false))
+    }
+
+    /// Recorded-only bakes retain the same source labels, including worker CPU.
+    pub(crate) fn load_recorded_profiled(
+        layers: &ResolvedLayers,
+        decode: Decode,
+        names: &[String],
+        why: impl Fn(&str) -> String,
+        spans: &mut BuilderSpans,
+    ) -> io::Result<Self> {
         let (Some(recorded), Some(roster)) = (
             layers.without_overlays(),
             layers.recorded_descriptor_roster()?,
         ) else {
             return Ok(Self::empty(decode));
         };
-        let baked = Self::load(
+        let baked = Self::load_with_spans(
             &recorded,
             decode,
             &roster.descriptors,
             names,
             &mut Vec::new(),
+            |_, _| None,
+            spans,
+            BakeLabels::RECORDED,
         )?;
         for name in names.iter().filter(|name| baked.slot(name).is_some()) {
             layers.note_overlay_refusal(format!("model {name} ({})", why(name)));
@@ -985,8 +1086,7 @@ impl ModelLibrary {
                 .find_map(|clip| self.push_palette(&decoded, clip.animation.as_deref(), &own));
         }
         let node_index = out.rig.nodes.len();
-        let mut skeleton = decoded.clone();
-        skeleton.shapes.clear();
+        let mut skeleton = skeleton_source::skeleton(&decoded);
         // Each LOD may repeat the skeleton, sometimes with placeholder zero
         // inverse binds. Mesh::palette/joint choose the first occurrence of
         // each index; keep that same canonical skeleton for per-frame writes.
@@ -1310,9 +1410,7 @@ impl ModelLibrary {
         self.composing_visual |= layers.supplied_by_visual_mod(path);
         if !self.animations.contains_key(path) {
             let read = |stack: &ResolvedLayers| -> Result<mesh::Animation, String> {
-                let bytes = stack
-                    .read_uncovered(path)
-                    .map_err(|error| error.to_string())?;
+                let bytes = stack.read_uncovered(path).map_err(|error| error.to_string())?;
                 mesh::read_animation(&bytes).map_err(|error| error.to_string())
             };
             let decoded = match read(layers) {
@@ -1320,7 +1418,10 @@ impl ModelLibrary {
                 Err(why) => {
                     // An animation the visual mods break is the recording's own, named; one
                     // neither stack reads is refused by name.
-                    match layers.without_overlays().map(|recorded| read(&recorded)) {
+                    match layers
+                        .without_overlays()
+                        .map(|recorded| read(&recorded))
+                    {
                         Some(Ok(animation)) => {
                             layers.note_overlay_refusal(format!("animation {path} ({why})"));
                             Some(Arc::new(animation))
@@ -1826,6 +1927,7 @@ mod clock_record_tests {
 
 pub struct ModelPass {
     native: RefCell<Option<native::Renderer>>,
+    native_walk: native::walk::Layout,
     layers: Option<Arc<ResolvedLayers>>,
     decode: Decode,
     /// Uploaded when a resident mesh first needs one.
@@ -2193,6 +2295,7 @@ impl ModelPass {
         self.field.default_states.clear();
         self.field
             .rebuild_meshes(&self.meshes, &mut placed, &mut self.keyed, tile);
+        self.rebuild_native_walk();
     }
 
     /// Installs a producer's whole field, which needs no GPU; `field` receives the previous one,
@@ -2202,6 +2305,7 @@ impl ModelPass {
         self.sync(library);
         std::mem::swap(&mut self.field, field);
         self.redirect_field();
+        self.rebuild_native_walk();
     }
 
     /// Uploads what the installed field's meshes need to draw.
@@ -2221,6 +2325,7 @@ impl ModelPass {
     pub fn new(library: &ModelLibrary, label: &'static str) -> Self {
         Self {
             native: RefCell::new(None),
+            native_walk: Default::default(),
             layers: library.layers.clone(),
             decode: library.decode,
             textures: (0..library.textures.len()).map(|_| None).collect(),
@@ -2280,6 +2385,7 @@ impl ModelPass {
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
         self.hidden = hidden;
         self.redirect_field();
+        self.native_walk.set_hidden(&self.hidden);
     }
 
     /// Whether an actor is placed but hidden ([`ModelPass::set_hidden`]).
@@ -2299,6 +2405,8 @@ impl ModelPass {
         }
         // Recorded before the mesh arrays are extended below.
         let known_meshes = self.meshes.len();
+        let route_change = known_meshes < library.meshes.len()
+            || self.alternatives.len() != library.alternatives.len();
         if self.meshes.len() < library.meshes.len() {
             self.static_actors.get_mut().clear();
             self.meshes
@@ -2324,6 +2432,9 @@ impl ModelPass {
                 (&library.palette, library.meshes.len()),
             );
             self.default_palette = library.palette.clone();
+        }
+        if route_change {
+            self.rebuild_native_walk();
         }
     }
 
@@ -2421,6 +2532,7 @@ impl ModelPass {
         }
         self.field = field;
         self.redirect_field();
+        self.rebuild_native_walk();
         Ok(())
     }
 
@@ -2487,8 +2599,10 @@ impl ModelPass {
             return;
         }
         let field = &mut self.field;
+        let mut changed = false;
         for group in &mut field.groups {
             if let Some(&to) = self.redirects.get(&group.mesh) {
+                changed |= group.mesh != to;
                 group.mesh = to;
                 // Culled by the counterpart's own reach, not the refused entity's.
                 let radius = self.meshes.get(to).map_or(0.0, |mesh| mesh.radius);
@@ -2514,6 +2628,22 @@ impl ModelPass {
                 )
             })
             .collect();
+        if changed {
+            self.rebuild_native_walk();
+        } else {
+            self.native_walk.set_hidden(&self.hidden);
+        }
+    }
+
+    fn rebuild_native_walk(&mut self) {
+        let _span = viewer_foundation::profiling::span("native_walk_install");
+        self.native_walk.rebuild(
+            &self.field,
+            self.meshes.len(),
+            &self.alternatives,
+            &self.redirects,
+            &self.hidden,
+        );
     }
 
     pub fn refusal_lines(&self, frame: u64) -> Vec<String> {

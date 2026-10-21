@@ -7,6 +7,9 @@ use viewer_foundation::map::gpu_contract::device_descriptor;
 use viewer_foundation::map::gpu_passes::PassTimer;
 use viewer_foundation::map::test_support::serial;
 
+#[path = "political_gpu/membership_gpu_tests.rs"]
+mod membership_gpu_tests;
+
 #[test]
 fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing() {
     let Some(harness) = Harness::fallback(64, 32) else {

@@ -188,6 +188,34 @@ and index/branch/session/gap metadata without rereading compressed block bytes.
 
 Before publishing an hour, its overlay worker warms the recorded countries' counter flag candidates at all three sizes. Exports warm the same candidates before laying out their frame; UI table refreshes do not warm. Decoding is cached separately from draw-request atlas packing, preserving cell positions while pans and coarse-plate changes consume already decoded artwork. Drawing still synchronously decides any unwarmed request, so a frame never draws an undecoded flag's stand-in.
 
+Content loading starts the immutable `IntelCells` table on a background
+thread; hour workers retain the same lazy construction if preparation has
+not finished. Both paths publish one table and the same errors, reusing its
+province pixel multiplicities across hours. The
+existing exact-visibility memo still shares equal grids; each grid supplies
+its own fogged-texel count to limitations. Missing visibility validates the
+image and stays all-clear without demanding cell geometry.
+
+The hour coordinator is event-driven: the Campaign decode lane and each source's
+shared dashboard decode actor reply through a one-request mailbox. Part completions
+are assembled before trying another pool admission or source request; the
+coordinator never waits for source I/O, a builder queue slot, a neighbour's slot,
+or output-channel space. Its held jobs retain FIFO part order. Every pool-accepted
+target runs all its parts, even after an epoch change; only wholly unaccepted,
+unneeded targets can be superseded. Predecessors captured by kept targets remain
+live. A source cancellation keeps its credit until the service acknowledges it.
+Decode reservations, pending/retired builds and complete unsent results together
+use the existing concurrency limit; the result channel keeps the same capacity.
+UI receives post coalesced output-space events. Stable ticket order resolves an
+equal ready batch, without holding a ready hour behind an unfinished one.
+Campaign and dashboard maps share builder arithmetic, scripted native-hour
+colour traversal, assembly and existing presentation/history policy. Scripted
+catch-up folds one native hour on a pool worker at a time under its target's
+existing source credit, retaining colour state rather than full intervening
+frames. The captured predecessor and gap-reset law are unchanged. Fold CPU/wall
+work appears as the aggregate `political_history` builder part when profiled. This is not
+a target-grid or recording-format change.
+
 Playback keeps speed when builders lag. Show the playhead hour if ready, otherwise the newest built hour before it, all layers/date together. Finish in-flight hours at/before the playhead. Paused seeks, captures and exports await the exact hour. Coalescing preserves playing state/seek counter; hour distance cannot identify a seek.
 
 [presentation.rs](../viewer-foundation/src/map/presentation.rs) separates continuity from unit recreation:
@@ -322,9 +350,60 @@ CPU GUI checks use synthetic technique, sampler, blend and clock metadata. Insta
 | `BATTLE_PLAN_VIEWER_BENCH_MODELS`, `BATTLE_PLAN_VIEWER_MODEL_FRAMES` | Live model histories after settled dump. |
 | `BATTLE_PLAN_MAP_SCENE_RGBA16F` | New-path HDR readback before grading, outside benchmark timing. |
 
-With ordinary `BATTLE_PLAN_VIEWER_PROFILE`, `PROFILE built` lines retain each part's elapsed milliseconds and add `cpu=` thread-CPU milliseconds sampled around that part on its builder thread, excluding queue waits and preemption. The samples use the platform clock's resolution; unavailable samples are reported by name. No thread-CPU sampling runs with profiling off.
+With ordinary `BATTLE_PLAN_VIEWER_PROFILE`, `PROFILE built` lines retain each part's elapsed milliseconds and add `cpu=` thread-CPU milliseconds sampled around that part on its builder thread. On Windows, CPU is a cycle-derived estimate from `QueryThreadCycleTime`, converted using one invariant-TSC rate calibrated against `Instant` (once, at least 10 ms, before the first CPU sample). This avoids scheduler-quantized thread times; unavailable samples are reported by name. The same clock serves builder child/lifecycle samples. It excludes time descheduled, but elapsed-minus-CPU is not a pure wait measurement. No thread-CPU sampling or calibration runs with profiling off.
 
-With `BATTLE_PLAN_VIEWER_PROFILE` set, `--window-dump --profile-pointer <x,y>` supplies a deterministic map hover in framebuffer pixels (before interface scaling), independent of the real pointer. It never moves the OS cursor or supplies button/camera input; outside the captured frame it supplies no hover. Without profiling or without `--window-dump` the argument is refused. Builder-side `PROFILE movers` lines carry epoch/branch/hour and each step's wall and thread-CPU milliseconds separately from window-thread spans; short CPU values retain the platform clock's resolution.
+Window `PROFILE frame` lines add `mt_<scope>=wall_ms`, `mt_<scope>_cpu=cpu_ms` and `mt_<scope>_calls` for `frame`, `render`, `overlay_draw`, `sprite_upload`, `units_upload` and `overlay_prepare`; `cpu_hz` reports the fixed conversion rate. These scopes run on the immediate renderer. Zero calls means the scope did not execute; zero CPU with nonzero calls is a measured zero, and `unavailable` is not zero. Short/zero samples are not filtered. The frame scope follows `frame_total`, excluding pacing, later capture/readback, external egui paint/present and the separately reported `outside` gap. Scopes nest and must not be summed. Re-preparation records independent `overlay_reason_key`, `overlay_reason_artwork`, `overlay_reason_engagement` and `overlay_reason_raid_missing` bits at the actual preparation; several can explain one `overlay_reprepare`.
+
+Ordinary frame lines also identify each reached overlay owner with `owner_<part>=main|helper|mixed|not_run`, `owner_<part>_cpu` and `owner_<part>_calls`: counters, the inclusive other-overlay branch, labels, raids, intel, resources, occupation and adjacency. Main means the original `draw_into` caller, not task index zero; CPU is sampled on the thread executing that owner and transported through the existing join, not inferred from wall time or charged to the caller. Mixed calls additionally report main/helper CPU separately. Unavailable remains distinct from measured zero; zero calls means not executed. The other branch includes its children, so do not add them. These measurements do not change scheduling, resource-request order, retained state or error publication, and profiling off captures no identity, samples no clock and allocates no owner records.
+
+Ordinary `PROFILE frame` lines also carry `shown_ns`, `shown_branch` and
+`shown_hour`. The integer nanoseconds sample `Instant` immediately after the
+frame's successful map-scene submission on both Campaign and dashboard maps;
+the identity is the installed document, not the requested playhead. Every frame
+is stamped, including repeated hours. Differences between stamps measure real
+CPU-side presentation cadence, independent of synthetic playback time and writer
+batching; this is not GPU completion, final egui present or display scanout.
+The process-local shown origin is independent of the hour-lifecycle origin, so
+subtract shown stamps only from shown stamps, not from `hour_target` times.
+With PROFILE off, this seam reads no clock or shown identity and creates no record.
+
+The overlay projection children separate viewport-window lookup (including any cold parse or lock wait), owner preparation, and final composition. These are inclusive wall/thread-CPU scopes, not a WindowCache seeding or scheduling change. Initial-frame country flag candidates warm the existing three counter stores during the second content-load wave, without acquiring atlas cells; later hours and unknown inputs retain their original exact warm/acquire paths.
+
+The same built line carries explicit job-local child scopes as `children=path:wall_ms,...` and `child_cpu=path:cpu_ms,...`, including exact zeros and `unavailable` CPU samples. Nested scopes are inclusive, not additive; records follow fixed parent-part order and scope-completion order within a job. A failed scope returning an error is measured; a panic retains completed children only. Builders pass `profiling::BuilderSpans` explicitly, never through the frame thread's span collector. Disabled child scopes read no clocks and allocate no records.
+
+Ordinary PROFILE also emits one `PROFILE hour_target` lifecycle line per dispatched
+hour, keyed by independent trace id, allocated ticket (including gaps), epoch,
+branch and hour. All timestamps are monotonic milliseconds from one process-local
+origin, not the synthetic playback clock. `want` is the latest posted Want used
+by that dispatch; `received` is when the coordinator takes it. `dispatch`,
+`assembly` (layers assembled), `delivery` (Pipeline take/wait), and `send`
+(begin/end of the bounded result send) retain their separate timestamps.
+`parts=` has fixed part order and
+`enqueue/submit_return/start/finish/finish_to_assembly:state`; a worker can start
+before submit returns. Reused parts have no queue/start timestamps; missing
+stages are `-`, never invented zero work. Cancelled/unread targets emit their
+completed prefix on final release. Delivered targets emit once both send and
+receive are recorded, whichever occurs first; retaining a ready hour cannot delay
+its line.
+
+`blocked` and `ready_blocked` retain the decode / pool-admission / delivery
+wait-cause columns, all zero: the event-driven coordinator never parks in those
+operations. Actual source readiness and part queue/service times remain separate
+from thread CPU; dashboard decoding runs on its source actor, not the coordinator.
+`decodes=` lists the endpoint request as
+`branch/hour:request/return/service@service_branch/service_hour:start/finish/publish:thread_cpu`.
+Scripted intermediate requests stream as `PROFILE hour_colour_read` records
+with the same target id/ticket and `decode=` syntax, rather than retaining a
+recording-sized trace in one target. Speculative/cache-hit services can predate
+the request; deduplicate service ids before summing CPU. Passed frames share their service's conservative publication
+stamp. An unavailable service or CPU sample is explicit. Decoder CPU samples
+only its calling thread around walk/seek, **not** source-loader worker CPU;
+idle lane waits and abandoned traversals without a published frame are not
+attributed to an endpoint. Elapsed-minus-CPU is not a pure wait measurement.
+All new clocks, locks, trace allocations and records are absent with PROFILE off.
+The seam changes no cancellation, dispatch, queue, decode or delivery policy.
+
+With `BATTLE_PLAN_VIEWER_PROFILE` set, `--profile-pointer <x,y>` supplies a deterministic map hover in framebuffer pixels (before interface scaling), independent of the real pointer, in either an ordinary interactive window or `--window-dump`. It never moves the OS cursor or supplies button/camera input; a point outside the map framebuffer supplies no hover. Without profiling, or for a headless dump or image comparison, the argument is refused. Builder-side `PROFILE movers` lines carry epoch/branch/hour and each step's wall and thread-CPU milliseconds separately from window-thread spans; short CPU values retain the platform clock's resolution.
 
 The app laps `engaged`, `combat_draw`, `picker` and `map_tooltip` split the work after `overlay_draw`; `combat_hover` retains the remaining tooltip/inventory work. The counter guide describes the sequential and nested `dc_*` spans.
 

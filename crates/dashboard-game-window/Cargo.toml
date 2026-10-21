@@ -49,6 +49,9 @@ viewer-foundation = { path = "../viewer-foundation", features = ["test-support"]
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+dashboard-army = { workspace = true, features = ["test-support"] }
+dashboard-forces = { workspace = true, features = ["test-support"] }
+dashboard-land-battles = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

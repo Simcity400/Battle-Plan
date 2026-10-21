@@ -19,7 +19,7 @@ use crate::map::gpu_contract::device_descriptor;
 use crate::map::gpu_contract::select_adapter;
 #[cfg(test)]
 use crate::map::test_support::GPU_TESTS;
-use std::{collections::BTreeMap, io};
+use std::io;
 
 use eframe::wgpu;
 use installed_content_core::{
@@ -29,6 +29,9 @@ use installed_content_core::{
 use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use super::{camera::MapSize, gradient_math};
+
+mod intel_cells;
+pub use intel_cells::{IntelCells, IntelCellsCache};
 
 /// Atlas tiles per axis.
 pub const MAP_NUM_TILES: u32 = 4;
@@ -765,100 +768,45 @@ pub fn terrain_id_map(
     Ok(out)
 }
 
-/// IntelMap is the per-province fog input, with one byte per texel.
-///
-/// Average the in-bounds province-image pixels in each six-by-six block using
-/// integer division, then complement the byte. Water and disabled fog contribute
-/// 255 before averaging. The output retains bottom-up row order.
-///
-/// Fog bytes complement the truncated block average. Only land contributes visibility values; water
-/// contributes 255. Boundary blocks average all pixels, forming the six-pixel fog ramp before linear
-/// sampling.
-///
-/// Visibility holds rebuilt province bytes for the viewing country. None means disabled fog or
-/// incomplete inputs and produces an all-clear grid. Unavailable historical inputs remain diagnosed
-/// limitations.
-///
-/// Output rows run bottom-up, with row zero at world z zero. Source province-image rows run north-
-/// first.
-pub fn intel_map(map: &MapData, visibility: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
-    let (width, height) = (map.width as usize, map.height as usize);
-    if map.province_ids.len() != width * height || width == 0 || height == 0 {
-        return Err(invalid(format!(
-            "the province image is {}x{} but carries {} ids",
-            map.width,
-            map.height,
-            map.province_ids.len()
-        )));
-    }
-    // The host's fog-of-war upload checks the size
-    // refuses a grid its texture cannot hold, and naming it once is enough.
-    let grid_width = map.width / FOW_BLOCK;
-    let grid_height = map.height / FOW_BLOCK;
-    let mut texels = vec![0u8; grid_width as usize * grid_height as usize];
-    let Some(visibility) = visibility else {
-        return Ok(IntelMap { texels, fog: false });
-    };
-    // The land bit, per province id, so the inner loop is two array reads.
-    let largest = map.definitions.keys().copied().max().unwrap_or(0);
-    let mut land_of = vec![false; largest as usize + 1];
-    for (id, definition) in &map.definitions {
-        land_of[*id as usize] = definition.kind == ProvinceKind::Land;
-    }
-    // The recorded byte per province id. A province the hour does not record is
-    // not a recorded zero: the engine would have read whatever its own buffer
-    // held, and the honest stand-in for "no byte" is the unfogged 0xff, which
-    // claims nothing the recording does not hold. `super::tables` names the
-    // hours where that matters.
-    let mut byte_of = vec![u8::MAX; largest as usize + 1];
-    for (province, seen) in visibility {
-        if let Some(slot) = byte_of.get_mut(*province as usize) {
-            *slot = *seen;
-        }
-    }
-    for cell_z in 0..grid_height as usize {
-        for cell_x in 0..grid_width as usize {
-            let mut sum = 0u32;
-            let mut count = 0u32;
-            for step_z in 0..FOW_BLOCK as usize {
-                let world_z = cell_z * FOW_BLOCK as usize + step_z;
-                if world_z >= height {
-                    break;
-                }
-                for step_x in 0..FOW_BLOCK as usize {
-                    let column = cell_x * FOW_BLOCK as usize + step_x;
-                    if column >= width {
-                        break;
-                    }
-                    let province = map.province_ids[(height - 1 - world_z) * width + column];
-                    let land = land_of.get(province as usize).copied().unwrap_or(false);
-                    sum += u32::from(if land {
-                        byte_of.get(province as usize).copied().unwrap_or(u8::MAX)
-                    } else {
-                        u8::MAX
-                    });
-                    count += 1;
-                }
-            }
-            if let Some(mean) = sum.checked_div(count) {
-                texels[cell_z * grid_width as usize + cell_x] = !(mean as u8);
-            }
-        }
-    }
-    Ok(IntelMap { texels, fog: true })
+/// An all-clear grid for disabled fog or unavailable visibility. Validate the
+/// province image without demanding the content's cell-composition table.
+pub fn clear_intel_map(map: &MapData) -> io::Result<IntelMap> {
+    intel_image_size(map)?;
+    let [width, height] = fow_size(MapSize {
+        width: map.width,
+        height: map.height,
+    });
+    Ok(IntelMap::new(vec![0; width as usize * height as usize], false))
 }
 
 /// One hour's `IntelMap` grid and whether it is a recorded fog or the all-clear
-/// stand-in; [`intel_map`] builds it.
+/// stand-in; [`IntelCells::intel_map`] builds recorded fog grids.
 pub struct IntelMap {
     /// [`fow_size`] texels, one byte each, rows bottom-up.
     pub texels: Vec<u8>,
     /// Whether this frame draws fog of war at all, which is what
     /// `map::frame::fow_fade_factor` gates on.
     pub fog: bool,
+    fogged_texels: usize,
 }
 
 impl IntelMap {
+    /// An immutable hour grid, with its diagnostic count computed from the
+    /// same texels. Content-owned cells count while producing their bytes.
+    pub fn new(texels: Vec<u8>, fog: bool) -> Self {
+        let fogged_texels = texels.iter().filter(|&&byte| byte > 0).count();
+        Self {
+            texels,
+            fog,
+            fogged_texels,
+        }
+    }
+
+    /// Number of nonzero texels in this prepared grid.
+    pub fn fogged_texels(&self) -> usize {
+        self.fogged_texels
+    }
+
     /// The dump's one-line report, beside the weather grid's and the
     /// perspective's. `switch` is the fog-of-war switch the frame was asked for.
     pub fn line(
@@ -889,6 +837,19 @@ impl IntelMap {
             super::frame::fow_fade_factor(defines, camera_height, true),
         )
     }
+}
+
+fn intel_image_size(map: &MapData) -> io::Result<[usize; 2]> {
+    let (width, height) = (map.width as usize, map.height as usize);
+    if width.checked_mul(height) != Some(map.province_ids.len()) || width == 0 || height == 0 {
+        return Err(invalid(format!(
+            "the province image is {}x{} but carries {} ids",
+            map.width,
+            map.height,
+            map.province_ids.len()
+        )));
+    }
+    Ok([width, height])
 }
 
 pub fn expect_size(name: &str, width: u32, height: u32, expected: [u32; 2]) -> io::Result<()> {

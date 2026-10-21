@@ -98,7 +98,7 @@ impl UnitModelAssets {
                 },
             );
         }
-        let Some(template_slot) = self.bake_slot(&content.template_entity) else {
+        let Some(template_slot) = self.bake_slot_for_hour(&content.template_entity, hour) else {
             report.error("naval_combat_template: the recorded formation entity cannot bake");
             return Ok(out);
         };
@@ -131,7 +131,7 @@ impl UnitModelAssets {
                 if !self.registered(name) {
                     continue;
                 }
-                if let Some(slot) = self.bake_slot(name) {
+                if let Some(slot) = self.bake_slot_for_hour(name, hour) {
                     let library = self.library();
                     let default = library
                         .rig(slot)

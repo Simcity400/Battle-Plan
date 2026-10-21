@@ -534,6 +534,7 @@ pub(super) fn apply(
     calls: &[(String, Call)],
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
+    let _profile = viewer_foundation::profiling::span("dc_nu_calls");
     if calls.is_empty() {
         return Ok(());
     }
@@ -544,6 +545,7 @@ pub(super) fn apply(
         }),
         resources,
     )?;
+    let _controls_profile = viewer_foundation::profiling::span("dc_nu_controls");
     for (path, call) in calls {
         let Call::Control(written) = call else {
             continue;
