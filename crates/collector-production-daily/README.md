@@ -2,6 +2,8 @@
 
 Daily production slot capture: IndustrialOrganisations, CountryProductionModifiers and ProductionLineModifiers, the latter read in up to four consecutive census slot ranges. The host owns dispatch, the range split, loans and table assembly.
 
+MIO runs in an independent worker job submitted before the modifier ranges. Range zero retains the ProductionDaily job; all captures keep slot 8 and the existing late join, ordered modifier assembly and refusal rules. The MIO job takes its existing capture buffers by value, leaving an allocation-free vacant placeholder, and returns them with the daily pack.
+
 Read the [shared rules](../../AGENTS.md) and the [collector guide](../collector/README.md).
 
 Run `cargo test -p collector-production-daily` and `cargo clippy -p collector-production-daily --all-targets -- -D warnings` for its synthetic checks.

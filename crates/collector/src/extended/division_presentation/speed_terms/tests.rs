@@ -253,8 +253,10 @@ fn deferred_unit_speed_loan_forgets_dropped_unwound_and_invalidated_baselines() 
     owned::forget();
     loan.return_complete();
     assert_eq!(owned::Loan::take().unwrap().epoch, None);
-    let mut capture = SpeedTerms::default();
-    capture.held = owned::Loan::take().unwrap();
+    let mut capture = SpeedTerms {
+        held: owned::Loan::take().unwrap(),
+        ..Default::default()
+    };
     capture.held.epoch = Some(10);
     // A caught decode panic can leave storage alive after consuming the flag.
     capture.settle_pending = false;
@@ -1163,4 +1165,126 @@ fn country_entry_scratch_is_reused_and_one_failed_key_keeps_healthy_entries() {
             .skip(2)
             .all(|row| row.entry.is_some())
     );
+}
+
+#[test]
+fn speed_term_projection_keeps_frame_bytes_for_quiet_changes_and_refusals() {
+    use crate::projection::{Projection, ProjectionScratch};
+    use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
+
+    let input = |hour| FrameInput {
+        branch: 1,
+        hour,
+        tables: std::array::from_fn(|_| crate::spooling::unavailable("fixture table").into()),
+        metrics: Metrics::default(),
+    };
+    for force in [false, true] {
+        let mut capture = SpeedTerms::default();
+        for owner in 1..=5_000 {
+            capture.states.push(MovementStateTermRow {
+                state: owner,
+                roster: owner,
+                owner,
+                terms: Some(StateMovementTerms::default()),
+            });
+            capture.access.push(CoreSupplyAccessRow {
+                owner,
+                province: 1,
+                access: Some(true),
+            });
+            capture.entries.push(CountryUnitSpeedEntryRow {
+                country: owner,
+                key: SPEED_KEY,
+                entry: Some(Some(123)),
+            });
+            capture.rivers.push(RiverRelationRow {
+                owner,
+                controller: 1,
+                entry: Some(None),
+            });
+            capture.transport.push(OwnerTransportSpeedRow {
+                owner,
+                region: 1,
+                speed: Some(456),
+            });
+        }
+        capture.outcomes = [Outcome::Rows { len: 5_000 }; N];
+        let scratch = ProjectionScratch::default();
+        let mut optimized = FrameEncoder::new();
+        let mut reference = FrameEncoder::new();
+        for hour in 0..=8 {
+            match hour {
+                2 => {
+                    capture.states.reverse();
+                    capture.access.reverse();
+                    capture.entries.reverse();
+                    capture.rivers.reverse();
+                    capture.transport.reverse();
+                }
+                3 => {
+                    capture.states[36].terms = None;
+                    capture.access[36].access = None;
+                    capture.entries[36].entry = None;
+                    capture.rivers[36].entry = Some(Some(-123));
+                    capture.transport[36].speed = None;
+                }
+                4 => {
+                    capture.states.pop();
+                    capture.access.pop();
+                    capture.entries.pop();
+                    capture.rivers.pop();
+                    capture.transport.pop();
+                    capture.outcomes = [Outcome::Rows { len: 4_999 }; N];
+                }
+                5 => {
+                    capture.states[1] = capture.states[0];
+                    capture.access[1] = capture.access[0];
+                    capture.entries[1] = capture.entries[0];
+                    capture.rivers[1] = capture.rivers[0];
+                    capture.transport[1] = capture.transport[0];
+                }
+                6 => {
+                    capture.outcomes = [Outcome::Unavailable { reason: "fixture refusal" }; N];
+                    capture.outcomes[2] = Outcome::Truncated {
+                        len: 1,
+                        unread_rows: 4_998,
+                    };
+                }
+                7 => {
+                    // Keep duplicate-key refusal ahead of malformed truncation.
+                    capture.outcomes = [Outcome::Truncated {
+                        len: 2,
+                        unread_rows: 0,
+                    }; N];
+                }
+                8 => capture.outcomes = [Outcome::Rows { len: 5_000 }; N],
+                _ => {}
+            }
+            let mut projection = Projection::new(&optimized, 1, hour, force, &scratch);
+            let actual = if !force && hour == 1 {
+                collector_test_support::with_allocations_denied(|| {
+                    capture.table_inputs(Some(&mut projection))
+                })
+            } else {
+                capture.table_inputs(Some(&mut projection))
+            };
+            if !force && matches!(hour, 1 | 2) {
+                assert!(actual.iter().all(|input| matches!(input, TableInput::ComparedEqual(_))));
+            }
+            let mut next = input(hour);
+            let mut control = input(hour);
+            for (table, (actual, expected)) in TABLES
+                .into_iter()
+                .zip(actual.into_iter().zip(capture.tables()))
+            {
+                next.tables[table.index()] = actual;
+                control.tables[table.index()] = expected.into();
+            }
+            assert_eq!(
+                optimized.encode_input(next, force).unwrap(),
+                reference.encode_input(control, force).unwrap(),
+                "hour {hour}, force {force}"
+            );
+        }
+    }
 }

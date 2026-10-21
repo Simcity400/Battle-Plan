@@ -215,52 +215,28 @@ fn air_base_wings(frame: &DecodedFrame, r: &mut Report) -> io::Result<()> {
 }
 
 /// One row per saved land combat. The save serializes neither country set of a
-/// side, nor the indicator byte or flag words. Beyond the census, each primary
-/// set must hold the logical owner of every saved unit on its side: the game
-/// appends the joining unit's logical owner to the side's set.
+/// side, nor the indicator byte or flag words. The sets accumulate joining
+/// logical owners and survive ownership transfers, so the save's current owners
+/// cannot certify membership. Compare the census and resolve primary references.
 fn sides(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatSides>()?;
     let countries = country_context(frame)?;
     let mut seen = BTreeSet::new();
-    let mut unsaved_units = 0_usize;
     for row in rows {
         if row.combat == 0 || !seen.insert(row.combat) {
             return Err(invalid("LandCombatSides: null or duplicate combat handle"));
         }
-        let Some(combat) = save.land_combats.get(&row.combat) else {
+        if !save.land_combats.contains_key(&row.combat) {
             r.difference(
                 format!("LandCombatSides {}", row.combat),
                 "present",
                 "absent",
             );
             continue;
-        };
-        for (label, units, primary) in [
-            ("attacker", &combat.attackers, &row.attacker_primary),
-            ("defender", &combat.defenders, &row.defender_primary),
-        ] {
-            let mut tags = BTreeSet::new();
+        }
+        for primary in [&row.attacker_primary, &row.defender_primary] {
             for &raw in primary {
-                if let Some(tag) = country_tag(raw, &countries.links)? {
-                    tags.insert(tag);
-                }
-            }
-            for unit in units {
-                let Some(division) = save.divisions.get(unit) else {
-                    unsaved_units += 1;
-                    continue;
-                };
-                r.scalar_checks += 1;
-                if !tags.contains(division.logical_owner.as_slice()) {
-                    r.difference(
-                        format!("LandCombatSides {}.{label}_primary", row.combat),
-                        format!(
-                            "missing {}",
-                            tag_text(Some(division.logical_owner.as_slice()))
-                        ),
-                        "every saved unit's logical owner",
-                    );
-                }
+                let _ = country_tag(raw, &countries.links)?;
             }
         }
     }
@@ -268,14 +244,8 @@ fn sides(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
         r.difference(format!("LandCombatSides {combat}"), "absent", "present");
     }
     r.compared("LandCombatSides", rows.len());
-    if unsaved_units > 0 {
-        r.limitation(
-            "A saved combat side names a unit the save's division rosters do not hold; its logical owner cannot be checked against the primary set.",
-            "LandCombatSides",
-        );
-    }
     r.limitation(
-        "The text save serializes neither side's country sets, the indicator byte nor the flag words. The census is compared, and each primary set must hold every saved unit's logical owner; the full ordered raw lists, secondary sets and operands need a paused live-memory check.",
+        "The text save serializes neither side's country sets, the indicator byte nor the flag words. The sets accumulate joining logical owners and survive ownership transfers; the save's current owners cannot certify membership. The census is compared and raw primary references are resolved; the full ordered raw lists, secondary sets and operands need a paused live-memory check.",
         "LandCombatSides",
     );
     Ok(())

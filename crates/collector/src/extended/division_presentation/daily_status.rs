@@ -34,6 +34,7 @@ impl DailyStatus {
         store: Option<&mut ArmyStatStore>,
         base: usize,
         seeds: &[DivisionSeed],
+        staged: impl Fn(usize) -> Option<Option<Arc<Sample>>>,
     ) {
         self.reset();
         let _ = packet.select_supply(&[]);
@@ -50,7 +51,8 @@ impl DailyStatus {
         .is_ok();
         if prepared {
             for (index, seed) in seeds.iter().enumerate() {
-                let sample = store.daily_supply(base, index, seed, &mut self.order);
+                let sample = staged(index)
+                    .unwrap_or_else(|| store.daily_supply(base, index, seed, &mut self.order));
                 self.requested.push(sample.is_none());
                 self.samples.push(sample);
             }

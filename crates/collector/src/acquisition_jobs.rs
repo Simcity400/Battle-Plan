@@ -315,6 +315,18 @@ pub(crate) struct ProductionDailyRequest {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ProductionDailyReport;
+pub(crate) struct IndustrialOrganisationsRequest {
+    pub countries: Arc<engine_native::country_memory::Cache>,
+    pub base: usize,
+    pub game_state: usize,
+    pub hour: i32,
+    pub force_full: bool,
+    pub captured: crate::extended::industrial_organisations::Captured,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IndustrialOrganisationsReport {
+    pub ticks: [u64; crate::extended::industrial_organisations::N],
+}
 /// One slot range of a split production modifier capture, beside the
 /// ProductionDaily job, which captures the first.
 pub(crate) struct ProductionModifierPartRequest {
@@ -785,6 +797,7 @@ pub(crate) enum Job {
     Slow(SlowRequest),
     Stability(StabilityRequest),
     WarOverview(WarOverviewRequest),
+    IndustrialOrganisations(IndustrialOrganisationsRequest),
     ProductionDaily(ProductionDailyRequest),
     ProductionModifierPart(ProductionModifierPartRequest),
     RaidState(RaidStateRequest),
@@ -867,6 +880,7 @@ pub(crate) enum Report {
     Slow(SlowReport),
     Stability(StabilityReport),
     WarOverview(WarOverviewReport),
+    IndustrialOrganisations(IndustrialOrganisationsReport),
     ProductionDaily(ProductionDailyReport),
     ProductionModifierPart(ProductionModifierPartReport),
     RaidState(RaidStateReport),
@@ -943,6 +957,7 @@ pub(crate) enum Role {
     Slow,
     Stability,
     WarOverview,
+    IndustrialOrganisations,
     ProductionDaily,
     ProductionModifierParts,
     RaidState,
@@ -1040,6 +1055,7 @@ impl Role {
             Self::Slow => T::ProvinceNames,
             Self::Stability => T::CountryStabilityInputs,
             Self::WarOverview => T::WarOwnedRelations,
+            Self::IndustrialOrganisations => T::IndustrialOrganisations,
             Self::ProductionDaily | Self::ProductionModifierParts => T::CountryProductionModifiers,
             Self::RaidState => T::StateResourceInputs,
             Self::RaidLaunch => T::RaidCountryInputs,
@@ -1073,8 +1089,9 @@ impl Role {
 
 impl Role {
     /// Claim order when workers are scarce, lower first and FIFO among equals.
-    /// Variants and RaidState claim first, ahead of the saturated census
-    /// tier, so their independent bodies do not become the assembly tail.
+    /// The presentation chain, Variants and RaidState claim first, ahead of
+    /// the saturated census tier, so their successors and independent bodies
+    /// do not become the assembly tail.
     /// Jobs another job waits for claim next, so their dependency chains
     /// open at once: the observer boundaries, Countries (the Ordinary
     /// counter part), the order censuses, wings, the Naval copy, child fronts
@@ -1088,10 +1105,7 @@ impl Role {
     /// first segment's joins (1.0/1.3 ms at 1936/1943 as one job, 0.27/0.29
     /// ms of join wait at int_12a1f26; the economy rest, CountryResources
     /// alone 0.62 ms at 1936, runs beside the production and construction
-    /// rests), and the Presentation status pass, the longest job that waits
-    /// for another: dispatched once the unit inputs join, it otherwise
-    /// queues behind every first-burst job of its class (0.94 ms of join
-    /// wait at 1943, int_761c274). The longest independent jobs follow, so
+    /// rests). The longest independent jobs follow, so
     /// the workers finish together (the Provinces job among them: 2.2/2.5
     /// ms, which as a medium job waited 0.50 ms at its join at 1936); the
     /// medium and short jobs fill in behind them, the capitulation copy,
@@ -1103,7 +1117,13 @@ impl Role {
     /// one already running.
     pub(crate) fn priority(self) -> u8 {
         match self {
-            Self::Variants | Self::RaidState => 0,
+            Self::Variants
+            | Self::RaidState
+            | Self::PresentationPrepare
+            | Self::PresentationPreparation
+            | Self::PresentationSettle
+            | Self::PresentationStatus
+            | Self::Presentation => 0,
             Self::ObserverBoundary
             | Self::Countries
             | Self::Orders
@@ -1131,11 +1151,6 @@ impl Role {
             | Self::Sunk
             | Self::World
             | Self::Economy
-            | Self::Presentation
-            | Self::PresentationPrepare
-            | Self::PresentationSettle
-            | Self::PresentationStatus
-            | Self::PresentationPreparation
             | Self::PresentationSpeedTerms
             | Self::FinalInputs
             // The longest first-burst job, 2.55 ms at 1943 with the war
@@ -1147,6 +1162,7 @@ impl Role {
             | Self::Slow
             | Self::Stability
             | Self::WarOverview
+            | Self::IndustrialOrganisations
             | Self::ProductionDaily
             | Self::ProductionModifierParts => 1,
             Self::IntelResidual
@@ -1194,7 +1210,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 77;
+pub(crate) const ROLE_COUNT: usize = 78;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1239,6 +1255,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Slow,
     Role::Stability,
     Role::WarOverview,
+    Role::IndustrialOrganisations,
     Role::ProductionDaily,
     Role::ProductionModifierParts,
     Role::RaidState,
@@ -1345,6 +1362,7 @@ impl Job {
             Self::Slow(..) => Role::Slow,
             Self::Stability(..) => Role::Stability,
             Self::WarOverview(..) => Role::WarOverview,
+            Self::IndustrialOrganisations(..) => Role::IndustrialOrganisations,
             Self::ProductionDaily(..) => Role::ProductionDaily,
             Self::ProductionModifierPart(..) => Role::ProductionModifierParts,
             Self::RaidState(..) => Role::RaidState,
@@ -1930,6 +1948,18 @@ fn run_with_memory(
             );
             Report::Stability(StabilityReport)
         }
+        Job::IndustrialOrganisations(request) => {
+            let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+            let cached = request.countries.roster_view(memory);
+            let ticks = request.captured.capture(
+                &cached,
+                request.base,
+                request.game_state,
+                request.hour,
+                request.force_full,
+            );
+            Report::IndustrialOrganisations(IndustrialOrganisationsReport { ticks })
+        }
         Job::ProductionModifierPart(request) => {
             let cached = request.countries.roster_view(memory);
             let ticks = request.captured.capture(
@@ -2230,8 +2260,7 @@ fn run_with_memory(
                 },
                 request.army_stats.as_deref_mut(),
             );
-            // Only an armed ordered-settle job owns this continuation. Setup
-            // keeps the callback's existing observation-range dispatch path.
+            // Armed setup and ordered-settle jobs release their own ranges.
             request.dispatch.dispatch(
                 &mut request.captured,
                 &request.countries,
@@ -3041,9 +3070,11 @@ mod tests {
             Role::PresentationPreparation,
             Role::PresentationStatus,
             Role::PresentationSettle,
+            Role::Presentation,
         ] {
             assert!(role.worker_only());
-            assert_eq!(role.priority(), Role::Presentation.priority());
+            assert_eq!(role.priority(), 0);
+            assert!(role.priority() < Role::Countries.priority());
             assert_eq!(role.read_anchor(), Role::Presentation.read_anchor());
         }
         assert_eq!(Role::PresentationPrepare.jobs_per_hour(), 0);
@@ -3054,6 +3085,59 @@ mod tests {
             division_presentation::MAX_STATUS_PARTS
         );
         assert_eq!(Role::Presentation.jobs_per_hour(), 1);
+
+        let pool = synthetic_pool(|job| {
+            assert_eq!(job.role(), Role::PresentationPreparation);
+            Report::PresentationStatus(0)
+        });
+        let mut batch = Batch::new(&pool);
+        let mut request = request();
+        for _ in 0..2 {
+            request.captured = division_presentation::Captured::vacant();
+            request.captured.prepare_status_holding(
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &[],
+                },
+                context,
+                production::Sources {
+                    rows: &[],
+                    outcome: engine_native::walk::Outcome::Rows { len: 0 },
+                },
+                None,
+            );
+            batch.arm_presentation(&mut request);
+            assert!(!request.dispatch.dispatched());
+            assert_eq!(request.dispatch.ticks, 0);
+            request.dispatch.dispatch(
+                &mut request.captured,
+                &request.countries,
+                context,
+                &request.inputs,
+            );
+            assert!(request.dispatch.dispatched());
+            let (ticket, parked) = batch.adopt_presentation(&mut request, 0).unwrap();
+            assert!(!parked);
+            let completed = batch.finish(ticket).unwrap();
+            assert!(matches!(
+                completed.report,
+                Ok(Report::PresentationStatus(0))
+            ));
+        }
+        let stats = pool.calibration();
+        assert_eq!(
+            stats.roles[Role::PresentationPreparation as usize]
+                .counters
+                .accepted,
+            2
+        );
+        assert_eq!(
+            stats.roles[Role::PresentationStatus as usize]
+                .counters
+                .accepted,
+            0
+        );
+        assert_eq!(stats.executor.uncollected, 0);
     }
 
     #[test]
@@ -3065,8 +3149,9 @@ mod tests {
         assert_eq!(Role::PresentationSpeedTerms.jobs_per_hour(), 1);
         assert_eq!(
             Role::PresentationSpeedTerms.priority(),
-            Role::Presentation.priority()
+            Role::Countries.priority()
         );
+        assert!(Role::Presentation.priority() < Role::PresentationSpeedTerms.priority());
         assert!(Role::PresentationSpeedTerms.priority() < Role::PresentationMovement.priority());
         assert_eq!(
             Role::PresentationSpeedTerms.read_anchor(),
@@ -3078,7 +3163,18 @@ mod tests {
     fn variants_and_raid_state_claim_before_the_saturated_census_tier() {
         assert_eq!(Role::Variants.priority(), Role::RaidState.priority());
         for role in ROLES {
-            if !matches!(role, Role::Variants | Role::RaidState) {
+            if matches!(
+                role,
+                Role::Variants
+                    | Role::RaidState
+                    | Role::PresentationPrepare
+                    | Role::PresentationPreparation
+                    | Role::PresentationSettle
+                    | Role::PresentationStatus
+                    | Role::Presentation
+            ) {
+                assert_eq!(role.priority(), 0, "{role:?}");
+            } else {
                 assert!(Role::Variants.priority() < role.priority(), "{role:?}");
             }
         }
@@ -3130,9 +3226,9 @@ mod tests {
         assert!(captured.restore_stability_request(request, true).is_some());
     }
 
-    /// The daily production slot's walks are their own job, queued exactly
-    /// at their slot (hour 8, or a full hour): it claims no later than Slow,
-    /// and its reads stay charged to the industrial organisations' and
+    /// The daily production slot's walks are independent jobs, queued exactly
+    /// at their slot (hour 8, or a full hour): they claim no later than Slow,
+    /// and their reads stay charged to the industrial organisations' and
     /// production modifiers' own tables.
     #[test]
     fn the_daily_production_tables_are_their_own_job_beside_slow() {
@@ -3140,6 +3236,15 @@ mod tests {
             ProductionDailyPacks, industrial_organisations, production_modifiers,
         };
         assert!(Role::ProductionDaily.priority() <= Role::Slow.priority());
+        assert_eq!(
+            Role::IndustrialOrganisations.priority(),
+            Role::ProductionDaily.priority()
+        );
+        assert!(Role::IndustrialOrganisations.worker_only());
+        assert_eq!(
+            Role::IndustrialOrganisations.read_anchor(),
+            TableId::IndustrialOrganisations
+        );
         assert_eq!(
             Role::ProductionDaily.read_anchor(),
             TableId::CountryProductionModifiers
@@ -3160,10 +3265,24 @@ mod tests {
             base: 0,
             bytes: &bytes,
         });
+        let mut mio = Job::IndustrialOrganisations(
+            captured.take_industrial_organisations_request(&countries, 0, 0x1000, 8, false),
+        );
         let mut job = Job::ProductionDaily(
             captured.take_production_daily_request(&countries, 0, 0x1000, 8, false),
         );
+        assert_eq!(mio.role(), Role::IndustrialOrganisations);
         assert_eq!(job.role(), Role::ProductionDaily);
+        let mio_reads = Capture::new();
+        let Report::IndustrialOrganisations(mio_report) = run_for_test(&mut mio, &memory) else {
+            unreachable!()
+        };
+        let mio_reads = mio_reads.finish();
+        for (index, counts) in mio_reads.iter().enumerate() {
+            if index != industrial_organisations::TABLES[0].index() {
+                assert_eq!(*counts, ReadCounts::ZERO, "MIO table {index}");
+            }
+        }
         let reads = Capture::new();
         let report = run_for_test(&mut job, &memory);
         let reads = reads.finish();
@@ -3171,18 +3290,23 @@ mod tests {
             report,
             Report::ProductionDaily(ProductionDailyReport)
         ));
-        let own = [
-            industrial_organisations::TABLES[0],
-            production_modifiers::TABLES[0],
-        ];
         for (index, counts) in reads.iter().enumerate() {
-            if own.iter().all(|table| table.index() != index) {
+            if index != production_modifiers::TABLES[0].index() {
                 assert_eq!(*counts, ReadCounts::ZERO, "table {index}");
             }
         }
-        let Job::ProductionDaily(request) = job else {
+        let Job::IndustrialOrganisations(mio) = mio else {
             unreachable!()
         };
+        let Job::ProductionDaily(mut request) = job else {
+            unreachable!()
+        };
+        captured.restore_industrial_organisations_request(
+            mio,
+            true,
+            mio_report.ticks,
+            &mut request.packs,
+        );
         captured.restore_production_daily_request(request, true);
     }
 

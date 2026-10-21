@@ -1,6 +1,26 @@
 use super::super::production_rest_test_kit as kit;
 use super::*;
 
+/// Hold the worker's staging lock until the callback has actually tried it.
+/// Release it before joining: production holders never wait for a callback.
+pub(super) fn with_store_contended<R: Send>(callback: impl FnOnce() -> R + Send) -> R {
+    static WAIT: OnceLock<std::sync::Barrier> = OnceLock::new();
+    fn waiting() {
+        WAIT.get().unwrap().wait();
+    }
+    let pause = WAIT.get_or_init(|| std::sync::Barrier::new(2));
+    let store = STORE.get().unwrap().lock().unwrap();
+    std::thread::scope(|threads| {
+        let writer = threads.spawn(|| {
+            BEFORE_STORE_WAIT.set(Some(waiting));
+            collector_test_support::with_allocations_denied(callback)
+        });
+        pause.wait();
+        drop(store);
+        writer.join().unwrap()
+    })
+}
+
 #[test]
 fn a_new_fog_refusal_withdraws_the_earlier_daily_snapshot() {
     let mut capture = super::super::Captured::with_capacities(&Capacities::default());
@@ -1105,5 +1125,149 @@ fn reused_definition_edits_keep_intermediate_validation_refusals() {
             matches!(result, TableInput::Sampled(TableView::Unavailable { reason })
             if reason == expected)
         );
+    }
+}
+
+#[test]
+fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes() {
+    use std::sync::Arc;
+
+    let definitions: Vec<_> = (1..=5_000)
+        .map(|id| rows::VariantDefinitionRow {
+            id,
+            design: rows::Recorded::Value(rows::VariantDesignState::default()),
+            ..Default::default()
+        })
+        .collect();
+    let snapshot = rows::VariantSnapshot {
+        definition: definitions[36].clone().into(),
+        modules: vec![rows::VariantSnapshotModule {
+            ordinal: 0,
+            slot: 11,
+            definition_token: 17,
+            active: 1,
+        }],
+        stats: rows::VariantStatsRow::default().values.to_vec(),
+        upgrades: vec![rows::VariantSnapshotUpgrade {
+            ordinal: 0,
+            definition_token: 19,
+            level: 2,
+        }],
+    };
+    let baseline = [
+        Arc::new(rows::TableRows::VariantDefinitions(definitions)),
+        Arc::new(rows::TableRows::VariantModules(
+            (1..=5_000)
+                .map(|variant| rows::VariantModuleRow {
+                    variant,
+                    source_ordinal: 0,
+                    slot: 11,
+                    definition_token: 17,
+                    definition_active: 1,
+                })
+                .collect(),
+        )),
+        Arc::new(rows::TableRows::VariantStats(
+            (1..=5_000)
+                .map(|variant| rows::VariantStatsRow {
+                    variant,
+                    ..Default::default()
+                })
+                .collect(),
+        )),
+        Arc::new(rows::TableRows::VariantUpgrades(
+            (1..=5_000)
+                .map(|variant| rows::VariantUpgradeRow {
+                    variant,
+                    source_ordinal: 0,
+                    definition_token: 19,
+                    level: 2,
+                })
+                .collect(),
+        )),
+    ];
+    for force in [false, true] {
+        let mut optimized = replay_frame::frame::FrameEncoder::new();
+        let mut reference = replay_frame::frame::FrameEncoder::new();
+        for encoder in [&mut optimized, &mut reference] {
+            let mut first = input(0);
+            for rows in &baseline {
+                first.tables[rows.table().index()] = TableInput::SharedComplete(Arc::clone(rows));
+            }
+            encoder.encode_input(first, false).unwrap();
+        }
+        let scratch = crate::projection::ProjectionScratch::default();
+        for hour in 1..=4 {
+            let mut snapshot = snapshot.clone();
+            if hour >= 2 {
+                snapshot.definition.display_name = b"changed".to_vec();
+            }
+            let mut captured = Captured::vacant();
+            captured.rows = (1..=2)
+                .map(|sequence| rows::VariantChangeRow {
+                    sequence,
+                    hour,
+                    variant: 37,
+                    snapshot: Some(snapshot.clone()),
+                    ..Default::default()
+                })
+                .collect();
+            if hour == 4 {
+                // A later good occurrence must not hide an incomplete earlier one.
+                captured.rows[0].snapshot = None;
+            }
+            captured.outcome = Outcome::Rows { len: 2 };
+            let projection = Projection::new(&optimized, 1, hour, force, &scratch);
+            assert!(
+                Projection::new(&optimized, 2, hour, force, &scratch)
+                    .observed_shared_baseline::<tables::VariantDefinitions>()
+                    .is_none()
+            );
+            assert!(
+                Projection::new(&optimized, 1, hour + 1, force, &scratch)
+                    .observed_shared_baseline::<tables::VariantDefinitions>()
+                    .is_none()
+            );
+            if !force && hour == 1 {
+                assert!(matches!(
+                    collector_test_support::with_allocations_denied(|| {
+                        project_definitions(&captured.rows, Some(&projection))
+                    }),
+                    TableInput::SharedComplete(_)
+                ));
+            }
+            let actual = project(&captured, Some(&projection));
+            if !force && hour < 4 {
+                for input in actual.iter().skip(usize::from(hour == 2)) {
+                    assert!(matches!(input, TableInput::SharedComplete(rows)
+                        if Arc::ptr_eq(rows, optimized.shared_baseline(rows.table()).unwrap())));
+                }
+            }
+            // The forced projection uses the existing complete materialization,
+            // while encoding still uses the same requested frame cadence.
+            let full = Projection::new(&reference, 1, hour, true, &scratch);
+            let expected = project(&captured, Some(&full));
+            let mut next = input(hour);
+            let mut control = input(hour);
+            let shared = |input| match input {
+                TableInput::Sampled(TableView::Complete(rows)) => {
+                    TableInput::SharedComplete(Arc::new(rows))
+                }
+                input => input,
+            };
+            for (table, (actual, expected)) in TABLES[3..7]
+                .iter()
+                .zip(actual.into_iter().zip(expected))
+            {
+                // Daily complete inputs enter the real spool's recovery cache.
+                next.tables[table.index()] = shared(actual);
+                control.tables[table.index()] = shared(expected);
+            }
+            assert_eq!(
+                optimized.encode_input(next, force).unwrap(),
+                reference.encode_input(control, force).unwrap(),
+                "hour {hour}, force {force}"
+            );
+        }
     }
 }

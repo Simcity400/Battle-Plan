@@ -38,6 +38,14 @@ fn acquire(
             capture.restore_status_part(index, part, 0);
         }
         if stage == 0 {
+            assert!(
+                capture.preparation_parts[..capture.status_part_count()]
+                    .iter()
+                    .all(|part| part
+                        .range
+                        .clone()
+                        .all(|index| part.daily_supply(index).is_some()))
+            );
             capture.prepare_status_observed(memory, context, sources(), Some(store), changes);
         }
     }
@@ -126,8 +134,6 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
         assert!(capture.retain_owned_settlement(store, Some(owned), context).is_none());
         // Decode has no memory capability. Changing the live footer now cannot
         // change either the carried sample or the owned fresh observations.
-        drop(guarded);
-        drop(live);
         for &army in &populated.world.armies {
             let at = army - populated.world.base + supply::ASKED;
             populated.world.bytes[at..at + 8].copy_from_slice(&i64::MIN.to_le_bytes());

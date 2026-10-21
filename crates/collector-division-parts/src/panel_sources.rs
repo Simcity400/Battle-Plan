@@ -456,6 +456,7 @@ impl Store {
             None,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     fn root_with_observation(
         &mut self,
         memory: &impl Memory,
@@ -574,6 +575,7 @@ impl Store {
     pub fn phase_ticks(&self) -> [u64; PHASE_NAMES.len()] {
         self.phase_ticks
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn capture_staged<'a>(
         &mut self,
         memory: &impl Memory,
@@ -602,6 +604,7 @@ impl Store {
         self.boundary.active = false;
         result
     }
+    #[allow(clippy::too_many_arguments)]
     fn capture_inner<'a>(
         &mut self,
         memory: &impl Memory,
@@ -1294,6 +1297,7 @@ impl Store {
         );
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn state_prepared(
         &mut self,
         memory: &impl Memory,

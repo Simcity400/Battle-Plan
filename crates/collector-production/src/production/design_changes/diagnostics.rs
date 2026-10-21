@@ -136,16 +136,6 @@ macro_rules! unobserved {
         missed_site!("unobserved");
     }};
 }
-macro_rules! lock_contended {
-    () => {{
-        $crate::production::design_changes::LOCK_CONTENTIONS
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        $crate::production::design_changes::UNATTRIBUTED_LOCK_CONTENTIONS
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        $crate::production::design_changes::refuse_census();
-        missed_site!("unattributed_lock_contention");
-    }};
-}
 macro_rules! unknown_receiver {
     () => {{
         $crate::production::design_changes::UNKNOWN_RECEIVERS

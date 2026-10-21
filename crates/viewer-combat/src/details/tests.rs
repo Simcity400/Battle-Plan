@@ -841,7 +841,6 @@ fn a_division_listed_twice_on_a_side_keeps_its_first_modifier_row() {
             id,
             ..Default::default()
         }],
-        ..Default::default()
     };
     let rows = [
         row(4, 0, 0, 70, 1),

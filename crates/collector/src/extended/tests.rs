@@ -228,6 +228,47 @@ fn vacant_spares_restore_storage_and_verdicts_after_success_and_failure() {
         assert_eq!(captured.allocated_bytes(), bytes);
         assert_vacant(&captured);
 
+        let daily_box = std::ptr::from_ref(&**captured.production_daily_spare.as_ref().unwrap());
+        let mio = crate::test_support::with_allocations_denied(|| {
+            captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false)
+        });
+        let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+        assert_eq!(std::ptr::from_ref(&*request.packs), daily_box);
+        assert_eq!(
+            captured.allocated_bytes()
+                + request.packs.allocated_bytes()
+                + mio.captured.allocated_bytes(),
+            bytes
+        );
+        crate::test_support::with_allocations_denied(|| {
+            captured.restore_industrial_organisations_request(
+                mio,
+                completed,
+                [0; industrial_organisations::N],
+                &mut request.packs,
+            );
+        });
+        captured.restore_production_daily_request(request, completed);
+        assert_eq!(
+            std::ptr::from_ref(&**captured.production_daily_spare.as_ref().unwrap()),
+            daily_box
+        );
+        assert_eq!(captured.allocated_bytes(), bytes);
+        assert_vacant(&captured);
+        let mio = crate::test_support::with_allocations_denied(|| {
+            captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false)
+        });
+        let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
+        captured.restore_industrial_organisations_request(
+            mio,
+            completed,
+            [0; industrial_organisations::N],
+            &mut request.packs,
+        );
+        captured.restore_production_daily_request(request, completed);
+        assert_eq!(captured.allocated_bytes(), bytes);
+        assert_vacant(&captured);
+
         captured.fog.radar_raw_mode = true;
         captured.fog.intel_raw_mode = true;
         captured.fog.registrations_raw_mode = true;
@@ -3151,12 +3192,12 @@ fn the_daily_production_tables_keep_slows_refusals_and_skip_off_their_slot() {
     }
 }
 
-/// Every combination of a completed, failed and missing Slow job and
-/// ProductionDaily job, on the slot and on a full hour, through the real
+/// Every combination of completed, failed and missing Slow, MIO and
+/// ProductionDaily jobs, on the slot and on a full hour, through the real
 /// take, restore and non-test missing-job paths: Slow's failure or absence
 /// refuses the daily production tables with Slow's reason though their own
 /// job completed; their own failure or absence refuses them with the reason
-/// a failed or missing Slow recorded; with both complete they publish their
+/// a failed or missing Slow recorded; with all complete they publish their
 /// own capture, as on a frame reused after a refused hour.
 #[test]
 fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() {
@@ -3181,8 +3222,8 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             .chain(captured.production_modifiers.outcomes())
             .collect()
     };
-    // One hour: Slow's and the daily job's joins, then the assembly twice.
-    let hour_of = |captured: &mut Captured, slow: Job, daily: Job, hour: i32, full: bool| {
+    // One hour: Slow's and both daily jobs' joins, then the assembly twice.
+    let hour_of = |captured: &mut Captured, slow: Job, mio: Job, daily: Job, hour: i32, full: bool| {
         match slow {
             Job::Missing => captured.fail_missing_slow(hour, full),
             done => {
@@ -3197,11 +3238,39 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
                 let _ = captured.restore_slow_request(request, done == Job::Completed);
             }
         }
+        let mio_request = (mio != Job::Missing).then(|| {
+            let mut request =
+                captured.take_industrial_organisations_request(&countries, 11, 0x1000, hour, full);
+            let ticks = request.captured.capture(&NoRead, 11, 0x1000, hour, full);
+            (request, ticks)
+        });
         if daily != Job::Missing {
             let mut request =
                 captured.take_production_daily_request(&countries, 11, 0x1000, hour, full);
             request.packs.capture(&NoRead, 11, 0x1000, hour, full);
+            if let Some((mio_request, ticks)) = mio_request {
+                captured.restore_industrial_organisations_request(
+                    mio_request,
+                    mio == Job::Completed,
+                    ticks,
+                    &mut request.packs,
+                );
+            }
             captured.restore_production_daily_request(request, daily == Job::Completed);
+        } else if let Some((mio_request, ticks)) = mio_request {
+            // Return MIO's storage even when range zero was never supplied.
+            let mut packs = captured.production_daily_spare.take().unwrap();
+            captured.restore_industrial_organisations_request(
+                mio_request,
+                mio == Job::Completed,
+                ticks,
+                &mut packs,
+            );
+            std::mem::swap(
+                &mut captured.industrial_organisations,
+                &mut packs.industrial_organisations,
+            );
+            captured.production_daily_spare = Some(packs);
         }
         let mut ticks = [0; TABLE_COUNT];
         captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
@@ -3219,37 +3288,66 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             &mut Captured::with_capacities(&Capacities::default()),
             Job::Completed,
             Job::Completed,
+            Job::Completed,
             hour,
             full,
+        );
+        let mut serial = Captured::with_capacities(&Capacities::default());
+        serial.assemble_production_daily(
+            &NoRead,
+            11,
+            0x1000,
+            hour,
+            full,
+            &mut [0; TABLE_COUNT],
+            true,
+        );
+        assert_eq!(
+            healthy,
+            outcomes(&serial),
+            "independent native faults changed order"
         );
         for reason in ["slow acquisition failed", "slow acquisition not supplied"] {
             assert_ne!(healthy, refused(reason), "{hour} {full}");
         }
         for slow in [Job::Completed, Job::Failed, Job::Missing] {
-            for daily in [Job::Completed, Job::Failed, Job::Missing] {
-                let expected = match (slow, daily) {
-                    (Job::Failed, _) | (Job::Completed, Job::Failed) => {
-                        refused("slow acquisition failed")
-                    }
-                    (Job::Missing, _) | (Job::Completed, Job::Missing) => {
-                        refused("slow acquisition not supplied")
-                    }
-                    (Job::Completed, Job::Completed) => healthy.clone(),
-                };
-                let mut captured = Captured::with_capacities(&Capacities::default());
-                assert_eq!(
-                    hour_of(&mut captured, slow, daily, hour, full),
-                    expected,
-                    "{slow:?} {daily:?} {hour} {full}"
-                );
-                // The frame reused after the reset that starts every hour:
-                // a healthy hour publishes its own capture.
-                captured.reset();
-                assert_eq!(
-                    hour_of(&mut captured, Job::Completed, Job::Completed, hour, full),
-                    healthy,
-                    "after {slow:?} {daily:?} {hour} {full}"
-                );
+            for mio in [Job::Completed, Job::Failed, Job::Missing] {
+                for daily in [Job::Completed, Job::Failed, Job::Missing] {
+                    let expected = match (slow, mio, daily) {
+                        (Job::Failed, _, _)
+                        | (Job::Completed, _, Job::Failed)
+                        | (Job::Completed, Job::Failed, Job::Completed) => {
+                            refused("slow acquisition failed")
+                        }
+                        (Job::Missing, _, _)
+                        | (Job::Completed, _, Job::Missing)
+                        | (Job::Completed, Job::Missing, Job::Completed) => {
+                            refused("slow acquisition not supplied")
+                        }
+                        (Job::Completed, Job::Completed, Job::Completed) => healthy.clone(),
+                    };
+                    let mut captured = Captured::with_capacities(&Capacities::default());
+                    assert_eq!(
+                        hour_of(&mut captured, slow, mio, daily, hour, full),
+                        expected,
+                        "{slow:?} {mio:?} {daily:?} {hour} {full}"
+                    );
+                    // The frame reused after the reset that starts every hour:
+                    // a healthy hour publishes its own capture.
+                    captured.reset();
+                    assert_eq!(
+                        hour_of(
+                            &mut captured,
+                            Job::Completed,
+                            Job::Completed,
+                            Job::Completed,
+                            hour,
+                            full,
+                        ),
+                        healthy,
+                        "after {slow:?} {mio:?} {daily:?} {hour} {full}"
+                    );
+                }
             }
         }
     }
@@ -3335,11 +3433,18 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         for (loan, part) in loans.iter_mut().zip(rest) {
             *loan.captured = part.unwrap();
         }
+        let mio = captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false);
         let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
         request
             .packs
             .production_modifiers
             .captured_as(first.unwrap());
+        captured.restore_industrial_organisations_request(
+            mio,
+            true,
+            [0; industrial_organisations::N],
+            &mut request.packs,
+        );
         captured.restore_production_daily_request(request, daily);
         for (loan, returned) in loans.into_iter().zip(&returned[1..]) {
             if *returned != Returned::Missing {
@@ -3436,11 +3541,18 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         4
     );
     captured.reset();
+    let mio = captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false);
     let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
     request
         .packs
         .production_modifiers
         .captured_as(test_support::part(&rows, context));
+    captured.restore_industrial_organisations_request(
+        mio,
+        true,
+        [0; industrial_organisations::N],
+        &mut request.packs,
+    );
     captured.restore_production_daily_request(request, true);
     let mut ticks = [0; TABLE_COUNT];
     captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);
@@ -3470,6 +3582,7 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
                 loan
             })
             .collect();
+        let mio = captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false);
         let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
         if captured_first {
             request
@@ -3477,6 +3590,12 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
                 .production_modifiers
                 .captured_as(test_support::part(&range(1, slots[0].end), context));
         }
+        captured.restore_industrial_organisations_request(
+            mio,
+            true,
+            [0; industrial_organisations::N],
+            &mut request.packs,
+        );
         captured.restore_production_daily_request(request, daily);
         for loan in loans {
             captured.restore_production_modifier_part(loan, true, 0);
@@ -3497,11 +3616,18 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         captured.production_modifiers.prepared_slots(),
         std::iter::once(1..u32::MAX).collect::<Vec<_>>()
     );
+    let mio = captured.take_industrial_organisations_request(&countries, 11, 0x1000, 8, false);
     let mut request = captured.take_production_daily_request(&countries, 11, 0x1000, 8, false);
     request
         .packs
         .production_modifiers
         .captured_as(test_support::part(&rows, context));
+    captured.restore_industrial_organisations_request(
+        mio,
+        true,
+        [0; industrial_organisations::N],
+        &mut request.packs,
+    );
     captured.restore_production_daily_request(request, true);
     let mut ticks = [0; TABLE_COUNT];
     captured.assemble_production_daily(&NoRead, 11, 0x1000, 8, false, &mut ticks, false);

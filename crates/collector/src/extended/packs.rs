@@ -501,8 +501,43 @@ impl Captured {
         store
     }
 
-    /// Loan the daily production slot's packs ([`ProductionDailyPacks`]) to
-    /// their own pool job of the first burst at that slot.
+    /// Loan MIO first, before the daily pack leaves with modifier range zero.
+    pub(crate) fn take_industrial_organisations_request(
+        &mut self,
+        countries: &Arc<engine_native::country_memory::Cache>,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> crate::acquisition_jobs::IndustrialOrganisationsRequest {
+        let captured = std::mem::replace(
+            &mut self.industrial_organisations,
+            industrial_organisations::Captured::vacant(),
+        );
+        crate::acquisition_jobs::IndustrialOrganisationsRequest {
+            countries: Arc::clone(countries),
+            base,
+            game_state: state,
+            hour,
+            force_full,
+            captured,
+        }
+    }
+
+    /// Reunite the independent MIO capture with range zero at the late join.
+    pub(crate) fn restore_industrial_organisations_request(
+        &mut self,
+        request: crate::acquisition_jobs::IndustrialOrganisationsRequest,
+        completed: bool,
+        ticks: [u64; industrial_organisations::N],
+        packs: &mut ProductionDailyPacks,
+    ) {
+        packs.industrial_organisations = request.captured;
+        packs.industrial_organisations_completed = Some(completed);
+        scatter(&industrial_organisations::TABLES, ticks, &mut packs.ticks);
+    }
+
+    /// Loan modifier range zero and the daily group's late-join storage.
     pub(crate) fn take_production_daily_request(
         &mut self,
         countries: &Arc<engine_native::country_memory::Cache>,
@@ -518,6 +553,7 @@ impl Captured {
             .expect("production daily spare present");
         self.swap_production_daily(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
+        packs.industrial_organisations_completed = None;
         crate::acquisition_jobs::ProductionDailyRequest {
             countries: Arc::clone(countries),
             base,
@@ -536,8 +572,14 @@ impl Captured {
         completed: bool,
     ) {
         let mut packs = request.packs;
-        if !completed {
+        if !completed || packs.industrial_organisations_completed == Some(false) {
             packs.fail(request.hour, request.force_full, "slow acquisition failed");
+        } else if packs.industrial_organisations_completed.is_none() {
+            packs.fail(
+                request.hour,
+                request.force_full,
+                "slow acquisition not supplied",
+            );
         }
         self.production_daily_ticks = Some(packs.ticks);
         self.swap_production_daily(&mut packs);
@@ -1808,13 +1850,14 @@ impl WarOverviewPacks {
 }
 
 /// The daily production slot's industrial organisations and production
-/// modifiers (`Daily(8)`): their own pool job of the first burst at that
-/// slot, so the day's longest walk runs beside Slow instead of in it. Off
-/// the slot they are not loaned and their tables are skipped without a read.
+/// modifiers (`Daily(8)`): independent first-burst jobs, with MIO submitted
+/// before every modifier range. Off the slot they are not loaned and their
+/// tables are skipped without a read.
 /// They keep Slow's refusals: a failed or missing job refuses them with
 /// Slow's reasons, and Slow's own refusal refuses them too.
 pub(crate) struct ProductionDailyPacks {
     pub(crate) industrial_organisations: industrial_organisations::Captured,
+    industrial_organisations_completed: Option<bool>,
     pub(crate) production_modifiers: production_modifiers::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
@@ -1840,6 +1883,7 @@ impl ProductionDailyPacks {
         }
         Some(Box::new(Self {
             industrial_organisations: industrial_organisations::Captured::vacant(),
+            industrial_organisations_completed: None,
             production_modifiers: production_modifiers::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
         }))
@@ -1861,12 +1905,6 @@ impl ProductionDailyPacks {
     ) {
         let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
         let mut ticks = [0; TABLE_COUNT];
-        scatter(
-            &industrial_organisations::TABLES,
-            self.industrial_organisations
-                .capture(memory, base, game_state, hour, force_full),
-            &mut ticks,
-        );
         scatter(
             &production_modifiers::TABLES,
             self.production_modifiers

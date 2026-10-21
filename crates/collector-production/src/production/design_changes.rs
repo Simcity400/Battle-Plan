@@ -3,7 +3,6 @@
 use super::*;
 #[macro_use]
 mod diagnostics;
-mod dependency_repair;
 mod forward;
 pub(super) mod held;
 pub(super) mod liveness;
@@ -22,6 +21,33 @@ use std::sync::{
 
 const ROOT_BYTES: usize = native::DESIGN_TEAM_TRAITS + 4;
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
+// STORE never spans an original, forwarded notification or native call. Hooks
+// only copy guarded memory into prepared buffers. Workers may prepare/copy owned
+// state under it, but never wait for ACTIVE or a game thread. The only nested
+// callback lock is STORE -> WRITERS; WRITERS never takes STORE. Same-thread
+// nesting happens inside originals, after releasing both mutexes.
+fn callback_store(store: &Mutex<Store>) -> std::sync::MutexGuard<'_, Store> {
+    match store.try_lock() {
+        Ok(store) => store,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
+            #[cfg(test)]
+            BEFORE_STORE_WAIT.with(|hook| {
+                if let Some(hook) = hook.take() {
+                    hook();
+                }
+            });
+            store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+}
+#[cfg(test)]
+thread_local! {
+    static BEFORE_STORE_WAIT: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+}
 static MISSED: AtomicBool = AtomicBool::new(false);
 static MISSED_AT: std::sync::atomic::AtomicPtr<std::panic::Location<'static>> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -31,8 +57,6 @@ static RUNNING_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static MISSED_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static COMPETING_WRITER_REJECTIONS: AtomicU64 = AtomicU64::new(0);
 static LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
-static RECEIVER_LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
-static UNATTRIBUTED_LOCK_CONTENTIONS: AtomicU64 = AtomicU64::new(0);
 static UNKNOWN_RECEIVERS: AtomicU64 = AtomicU64::new(0);
 static REPAIRED_INTERVALS: AtomicU64 = AtomicU64::new(0);
 static REPAIRED_RECEIVERS: AtomicU64 = AtomicU64::new(0);
@@ -778,10 +802,6 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
         RECOVER.store(true, Ordering::Release);
         return;
     }
-    if let Err(reason) = dependency_repair::prepare(&store.interests) {
-        store.batch.failure = Some(reason);
-        return;
-    }
     if active() != 0
         || store.epoch != EPOCH.load(Ordering::Acquire)
         || REVISION.load(Ordering::Acquire) != revision
@@ -826,21 +846,11 @@ impl Drop for BaselineAttempt {
 }
 
 fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, published: bool) {
-    if published {
-        repair::publication();
-    }
     let Some(store) = STORE.get() else {
         unobserved!();
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        if published {
-            lock_contended!();
-        } else {
-            repair::contended(pointer);
-        }
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
@@ -959,8 +969,8 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
     }
 }
 
-/// Lost ordinary edits retain receiver marks even while STORE is held by a
-/// worker. Membership/lifetime changes still need their observed binding log.
+/// Genuine overlapping native edits retain receiver marks. Membership/lifetime
+/// changes still need their observed binding log before consuming the receiver.
 fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<usize>) {
     if pointer == 0 || matches!(receiver, Receiver::Roster | Receiver::CreateCommand) {
         unknown_receiver!();
@@ -975,14 +985,7 @@ fn unrecorded_writer(receiver: Receiver, pointer: usize, moved_source: Option<us
             unknown_receiver!();
             return;
         };
-        let Ok(store) = store.try_lock() else {
-            if moved_source.is_none() && matches!(receiver, Receiver::Removed) {
-                repair::retire(pointer);
-            } else {
-                lock_contended!();
-            }
-            return;
-        };
+        let store = callback_store(store);
         if store.watched.contains_key(&pointer)
             || moved_source.is_some_and(|source| store.watched.contains_key(&source))
         {
@@ -1004,10 +1007,7 @@ fn retire(memory: &impl Memory, base: usize, pointer: usize) -> bool {
     let Some(store) = STORE.get() else {
         return false;
     };
-    let Ok(mut store) = store.try_lock() else {
-        repair::retire(pointer);
-        return false;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return false;
     }
@@ -1072,10 +1072,7 @@ fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
         unobserved!();
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        repair::contended(pointer);
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
@@ -1503,16 +1500,12 @@ unsafe fn around_with_identities<const SITE: usize>(
         && pointer != 0
         && retire(&memory, base, pointer);
     let move_bindings = if admitted && moving {
-        STORE.get().and_then(|store| match store.try_lock() {
-            Ok(store) => Some([
+        STORE.get().map(|store| {
+            let store = callback_store(store);
+            [
                 store.watched.get(&first).copied(),
                 store.watched.get(&second).copied(),
-            ]),
-            Err(_) if repair::excluded_move(first, second) => Some([None; 2]),
-            Err(_) => {
-                lock_contended!();
-                None
-            }
+            ]
         })
     } else {
         None
@@ -1649,6 +1642,15 @@ fn replace<S: rows::TableSchema>(
     else {
         return Ok(None);
     };
+    if edits
+        .iter()
+        .all(|(index, row)| baseline.get(*index).is_some_and(|old| old == row))
+    {
+        return Ok(Some(match projection.and_then(Projection::observed_shared_baseline::<S>) {
+            Some(rows) => TableInput::SharedComplete(std::sync::Arc::clone(rows)),
+            None => TableInput::ComparedEqual(token),
+        }));
+    }
     if !token.allows_row_updates() {
         return Ok(None);
     }
@@ -1663,14 +1665,10 @@ fn replace<S: rows::TableSchema>(
         indices.push(index);
         output.push(row);
     }
-    Ok(Some(if indices.is_empty() {
-        TableInput::ComparedEqual(token)
-    } else {
-        TableInput::ComparedChanges {
-            token,
-            indices,
-            rows: S::wrap(output),
-        }
+    Ok(Some(TableInput::ComparedChanges {
+        token,
+        indices,
+        rows: S::wrap(output),
     }))
 }
 
@@ -1939,31 +1937,14 @@ fn drain_with(
         // These bindings may have changed during the lost edit. Shared-source
         // occurrences must not act on their obsolete dependencies; the fresh
         // terminal read installs their current bindings below.
-        for watch in repairs.watches.iter().chain(&repairs.retired) {
+        for watch in &repairs.watches {
             sources::remove(watch.id);
-        }
-        // Lost destruction callbacks become terminal tombstones, never fresh
-        // reads of their dead receivers. Their occurrence history is unavailable.
-        for watch in &repairs.retired {
-            engine_allocation::reserve(&mut batch.events, 1)
-                .map_err(|_| "variant retirement repair allocation failed")?;
-            batch.events.push(Event {
-                kind: Kind::Design,
-                sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour,
-                pointer: watch.pointer,
-                variant: watch.id,
-                flags: None,
-                removed: true,
-                start: 0,
-                end: 0,
-            });
         }
         // Reject consumed parent identities against the preceding held state,
         // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
         decode_batch(&batch, base, hour, output)?;
-        liveness::repair(memory, base, &repairs.authors, hour, output)?;
+        liveness::refresh_context(memory, base, &batch.events)?;
         for watch in &repairs.watches {
             let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
             if value.definition.id != watch.id {
@@ -2543,17 +2524,10 @@ pub struct Status {
     missed_refusals: u64,
     competing_writer_rejections: u64,
     lock_contentions: u64,
-    receiver_lock_contentions: u64,
-    unattributed_lock_contentions: u64,
     unknown_receivers: u64,
     claim_capacity_refusals: u64,
     repaired_intervals: u64,
     repaired_receivers: u64,
-    deferred_retirements: u64,
-    draft_retirement_contentions: u64,
-    draft_move_contentions: u64,
-    source_lock_contentions: u64,
-    author_lock_contentions: u64,
     missed_sources: diagnostics::Report,
     refusal_reasons: diagnostics::Reasons,
     last_missed_at: Option<MissedAt>,
@@ -2575,17 +2549,10 @@ pub fn status() -> Status {
         missed_refusals: MISSED_REFUSALS.load(Ordering::Relaxed),
         competing_writer_rejections: COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed),
         lock_contentions: LOCK_CONTENTIONS.load(Ordering::Relaxed),
-        receiver_lock_contentions: RECEIVER_LOCK_CONTENTIONS.load(Ordering::Relaxed),
-        unattributed_lock_contentions: UNATTRIBUTED_LOCK_CONTENTIONS.load(Ordering::Relaxed),
         unknown_receivers: UNKNOWN_RECEIVERS.load(Ordering::Relaxed),
         claim_capacity_refusals: CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed),
         repaired_intervals: REPAIRED_INTERVALS.load(Ordering::Relaxed),
         repaired_receivers: REPAIRED_RECEIVERS.load(Ordering::Relaxed),
-        deferred_retirements: repair::DEFERRED_RETIREMENTS.load(Ordering::Relaxed),
-        draft_retirement_contentions: repair::DRAFT_RETIREMENTS.load(Ordering::Relaxed),
-        draft_move_contentions: repair::DRAFT_MOVES.load(Ordering::Relaxed),
-        source_lock_contentions: dependency_repair::SOURCE_CONTENTIONS.load(Ordering::Relaxed),
-        author_lock_contentions: dependency_repair::AUTHOR_CONTENTIONS.load(Ordering::Relaxed),
         missed_sources: diagnostics::Report,
         refusal_reasons: diagnostics::Reasons,
         // Caller locations have static storage; callbacks publish no borrowed

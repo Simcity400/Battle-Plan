@@ -1,9 +1,154 @@
 use super::*;
 use replay_data::{
-    rows::AirBaseRow, rows::AirWingRow, rows::NavalCombatAirBaseWingHandlesRow,
-    rows::NavalCombatShipRow, rows::Recorded, rows::TableRows,
+    rows::AirBaseRow, rows::AirWingRow, rows::LandCombatSideRow,
+    rows::NavalCombatAirBaseWingHandlesRow, rows::NavalCombatShipRow, rows::Recorded,
+    rows::TableRows,
 };
 use replay_frame::frame::TableView;
+
+fn land_sides_fixture() -> (DecodedFrame, Save, u64) {
+    let (mut frame, mut save, ..) = super::super::fixtures::division_fixture();
+    // The unit joined under GER and has since returned to D01. Its joining
+    // owner's primary entry survives the current ownership change.
+    let division = save.divisions.values_mut().next().unwrap();
+    division.roster_owner = division.logical_owner.clone();
+    division.expeditionary_owner = None;
+    let unit = division.id;
+    let TableView::Complete(TableRows::Divisions(rows)) =
+        &mut *frame.tables[TableId::Divisions.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].roster_owner = rows[0].logical_owner;
+    rows[0].expeditionary_owner = 0;
+    let combat = (7_u64 << 32) | 62;
+    save.land_combats.insert(
+        combat,
+        save::LandCombat {
+            id: combat,
+            province: 2,
+            details: Default::default(),
+            day: 0,
+            duration: 0,
+            attackers: vec![unit],
+            defenders: Vec::new(),
+        },
+    );
+    *frame.tables[TableId::LandCombatSides.index()] =
+        TableView::Complete(TableRows::LandCombatSides(vec![LandCombatSideRow {
+            combat,
+            // 102 is a resolving alias of GER, not the current owner D01.
+            attacker_primary: vec![102],
+            ..Default::default()
+        }]));
+    (frame, save, combat)
+}
+
+#[test]
+fn land_sides_returned_expeditionary_owner_does_not_certify_primary_membership() {
+    for defender in [false, true] {
+        let (mut frame, mut save, combat) = land_sides_fixture();
+        if defender {
+            let saved = save.land_combats.get_mut(&combat).unwrap();
+            std::mem::swap(&mut saved.attackers, &mut saved.defenders);
+            let TableView::Complete(TableRows::LandCombatSides(rows)) =
+                &mut *frame.tables[TableId::LandCombatSides.index()]
+            else {
+                unreachable!()
+            };
+            let row = &mut rows[0];
+            std::mem::swap(&mut row.attacker_primary, &mut row.defender_primary);
+        }
+        let mut report = Report::default();
+        sides(&frame, &save, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["LandCombatSides"], 1);
+        assert_eq!(report.scalar_checks, 0);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("current owners cannot certify membership"))
+        );
+    }
+}
+
+#[test]
+fn land_sides_missing_combat_is_a_difference() {
+    let (mut frame, save, combat) = land_sides_fixture();
+    *frame.tables[TableId::LandCombatSides.index()] =
+        TableView::Complete(TableRows::LandCombatSides(Vec::new()));
+    let mut report = Report::default();
+    sides(&frame, &save, &mut report).unwrap();
+    assert_eq!(
+        report.differences,
+        [format!(
+            "LandCombatSides {combat}: replay \"absent\", save \"present\""
+        )]
+    );
+}
+
+#[test]
+fn land_sides_extra_combat_is_a_difference() {
+    let (frame, mut save, combat) = land_sides_fixture();
+    save.land_combats.clear();
+    let mut report = Report::default();
+    sides(&frame, &save, &mut report).unwrap();
+    assert_eq!(
+        report.differences,
+        [format!(
+            "LandCombatSides {combat}: replay \"present\", save \"absent\""
+        )]
+    );
+}
+
+#[test]
+fn land_sides_null_or_duplicate_combats_are_rejected() {
+    for null in [false, true] {
+        let (mut frame, save, combat) = land_sides_fixture();
+        let row = LandCombatSideRow {
+            combat: if null { 0 } else { combat },
+            ..Default::default()
+        };
+        let rows = if null {
+            vec![row]
+        } else {
+            vec![row.clone(), row]
+        };
+        *frame.tables[TableId::LandCombatSides.index()] =
+            TableView::Complete(TableRows::LandCombatSides(rows));
+        let mut report = Report::default();
+        let error = sides(&frame, &save, &mut report).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "LandCombatSides: null or duplicate combat handle"
+        );
+    }
+}
+
+#[test]
+fn land_sides_unresolved_primary_references_are_rejected_on_both_sides() {
+    for defender in [false, true] {
+        let (mut frame, save, combat) = land_sides_fixture();
+        let mut row = LandCombatSideRow {
+            combat,
+            attacker_primary: vec![102],
+            defender_primary: vec![102],
+            ..Default::default()
+        };
+        let primary = if defender {
+            &mut row.defender_primary
+        } else {
+            &mut row.attacker_primary
+        };
+        primary.push(999);
+        *frame.tables[TableId::LandCombatSides.index()] =
+            TableView::Complete(TableRows::LandCombatSides(vec![row]));
+        let mut report = Report::default();
+        let error = sides(&frame, &save, &mut report).unwrap_err();
+        assert_eq!(error.to_string(), "unresolved country reference 999");
+    }
+}
 
 #[test]
 fn missing_retained_details_report_incomplete_coverage_without_waiving_differences() {

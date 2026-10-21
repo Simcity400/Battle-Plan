@@ -109,13 +109,14 @@ fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result
     Ok(())
 }
 pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
+    if matches!(key, sources::Key::Direct(0) | sources::Key::Provider(0)) {
+        unknown_receiver!();
+        return;
+    }
     let Some(store) = STORE.get() else {
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        dependency_repair::source(key, retired);
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }

@@ -308,28 +308,6 @@ pub(super) fn author_designs(handle: u64) -> Result<Vec<u64>, &'static str> {
     );
     Ok(designs)
 }
-pub(super) fn affected(
-    direct: &std::collections::HashSet<usize>,
-    providers: &std::collections::HashSet<usize>,
-) -> Result<std::collections::HashSet<u64>, &'static str> {
-    let held = bindings();
-    let mut affected = std::collections::HashSet::new();
-    engine_allocation::reserve_set(&mut affected, held.len())
-        .map_err(|_| "variant dependency repair allocation failed")?;
-    for (id, binding) in held.iter() {
-        if binding
-            .direct
-            .iter()
-            .any(|pointer| direct.contains(pointer))
-            || binding
-                .provider
-                .is_some_and(|(_, pointer)| providers.contains(&pointer))
-        {
-            affected.insert(*id);
-        }
-    }
-    Ok(affected)
-}
 pub(super) fn remove(variant: u64) {
     bindings().remove(&variant);
     TRIM.store(true, Ordering::Release);
@@ -498,23 +476,33 @@ mod tests {
         }
     }
     #[test]
-    fn lost_source_and_provider_keys_select_all_raw_owner_aliases() {
+    fn source_occurrences_select_all_raw_owner_aliases() {
         let first = binding();
         let mut alias = first.clone();
         alias.provider.as_mut().unwrap().0 = 4_999;
         let mut unrelated = first.clone();
         unrelated.direct = vec![SOURCE + 1];
         unrelated.provider = Some((4_998, 0x2000));
-        bindings().extend([(1, first), (2, alias), (3, unrelated)]);
-        let empty = std::collections::HashSet::new();
+        let mut held = HashMap::from([(1, first), (2, alias), (3, unrelated)]);
+        let bytes = direct(42);
+        let memory = engine_native::memory::SliceMemory {
+            base: SOURCE,
+            bytes: &bytes,
+        };
+        let mut output = Vec::new();
+        decode_in(
+            &mut held,
+            &event(Kind::Source, SOURCE),
+            &memory,
+            0,
+            &mut output,
+        )
+        .unwrap();
         assert_eq!(
-            affected(&std::collections::HashSet::from([SOURCE]), &empty).unwrap(),
-            std::collections::HashSet::from([1, 2])
+            output.iter().map(|row| row.variant).collect::<Vec<_>>(),
+            [1, 2]
         );
-        assert_eq!(
-            affected(&empty, &std::collections::HashSet::from([0x1000])).unwrap(),
-            std::collections::HashSet::from([1, 2])
-        );
+        assert_eq!(held[&3].references.direct, [1, 1]);
     }
     #[test]
     fn repeated_source_writes_freeze_distinct_versions_and_preserve_duplicate_references() {

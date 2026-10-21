@@ -5602,6 +5602,116 @@ static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
 static ECO_QOS_ENABLED: AtomicU64 = AtomicU64::new(0);
 static ECO_QOS_CLEARED: AtomicU64 = AtomicU64::new(0);
 static ECO_QOS_FAILURES: AtomicU64 = AtomicU64::new(0);
+static CONFINED: AtomicU64 = AtomicU64::new(0);
+static CONFINEMENT_CLEARED: AtomicU64 = AtomicU64::new(0);
+static CONFINEMENT_FAILURES: AtomicU64 = AtomicU64::new(0);
+static CONFINEMENT_CPU_SETS: AtomicU64 = AtomicU64::new(0);
+
+/// CPU set ids of the two least preferred physical cores (lowest scheduling
+/// class, then highest core index) with all their logical processors. Empty
+/// when the machine has fewer than four physical cores, or the query or its
+/// advisory allocation fails, so background threads then stay unconfined.
+fn background_cpu_sets() -> &'static [u32] {
+    use windows_sys::Win32::System::SystemInformation::{
+        CpuSetInformation, GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+    };
+    static SETS: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    SETS.get_or_init(|| {
+        let sets = engine_allocation::advisory(|| {
+            let mut length = 0u32;
+            // SAFETY: a null buffer of length zero only reports the required length.
+            unsafe {
+                GetSystemCpuSetInformation(
+                    std::ptr::null_mut(),
+                    0,
+                    &mut length,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            let words = (length as usize).div_ceil(8);
+            let mut buffer = engine_allocation::vec::<u64>(words).ok()?;
+            buffer.resize(words, 0);
+            // SAFETY: the buffer is at least `length` bytes and 8-byte aligned.
+            let read = unsafe {
+                GetSystemCpuSetInformation(
+                    buffer.as_mut_ptr().cast(),
+                    length,
+                    &mut length,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if length == 0 || read == 0 {
+                return None;
+            }
+            let entry_size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
+            let mut sets = engine_allocation::vec(length as usize / entry_size).ok()?;
+            let bytes = buffer.as_ptr().cast::<u8>();
+            let mut offset = 0usize;
+            while offset + entry_size <= length as usize && sets.len() < sets.capacity() {
+                // SAFETY: entries are packed back to back, each starting with its own size.
+                let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
+                if (entry.Size as usize) < entry_size {
+                    break;
+                }
+                if entry.Type == CpuSetInformation {
+                    // SAFETY: the CpuSet arm is the active one for CpuSetInformation entries.
+                    let set = unsafe { entry.Anonymous.CpuSet };
+                    // SAFETY: SchedulingClass is the defined reading of this union.
+                    let class = unsafe { set.Anonymous2.SchedulingClass };
+                    sets.push(CpuSet {
+                        group: set.Group,
+                        rank: (class, set.EfficiencyClass, std::cmp::Reverse(set.CoreIndex)),
+                        id: set.Id,
+                    });
+                }
+                offset += entry.Size as usize;
+            }
+            least_preferred_cores(&sets)
+        })
+        .unwrap_or_default();
+        CONFINEMENT_CPU_SETS.store(sets.len() as u64, Ordering::Relaxed);
+        sets
+    })
+}
+
+/// One logical processor's CPU set. `rank` orders its physical core from least
+/// preferred: lowest scheduling class, then lowest efficiency class (the more
+/// efficient cores of a hybrid CPU), then highest group-relative core index.
+#[derive(Clone, Copy)]
+struct CpuSet {
+    group: u16,
+    rank: (u8, u8, std::cmp::Reverse<u8>),
+    id: u32,
+}
+
+/// The CPU set ids of the two least preferred physical cores, with all their
+/// logical processors. None are selected with fewer than four physical cores,
+/// or on a machine with several processor groups: core indices are
+/// group-relative and Windows ignores selected sets outside a thread's group,
+/// so those machines stay unconfined. `None` only when the advisory
+/// allocation fails.
+fn least_preferred_cores(sets: &[CpuSet]) -> Option<Vec<u32>> {
+    if sets.iter().any(|set| set.group != sets[0].group) {
+        return Some(Vec::new());
+    }
+    let mut cores = engine_allocation::vec(sets.len()).ok()?;
+    cores.extend(sets.iter().map(|set| set.rank));
+    cores.sort_unstable();
+    cores.dedup();
+    if cores.len() < 4 {
+        return Some(Vec::new());
+    }
+    cores.truncate(2);
+    let mut ids = engine_allocation::vec(sets.len()).ok()?;
+    ids.extend(
+        sets.iter()
+            .filter(|set| cores.contains(&set.rank))
+            .map(|set| set.id),
+    );
+    Some(ids)
+}
 
 /// Reserved stack of each collector thread that decodes, converts, compares or
 /// encodes whole frames and tables: decode, spool, its conversion helpers and
@@ -5617,10 +5727,14 @@ pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// be waiting for this thread. Only the calling thread is
 /// changed; game threads, their priorities and affinities are never touched.
 /// Priority and EcoQoS failures independently retain their previous setting
-/// and retry between work items; neither prevents changing the other.
+/// and retry between work items; neither prevents changing the other. While
+/// keeping up the thread is also confined to the two least preferred physical
+/// cores, so its work shares no core with game threads elsewhere; a backlog
+/// lifts the confinement with the priority.
 pub(crate) struct OwnPriority {
     lowest: Option<bool>,
     eco_qos: Option<bool>,
+    confined: Option<bool>,
 }
 
 impl OwnPriority {
@@ -5628,6 +5742,7 @@ impl OwnPriority {
         Self {
             lowest: None,
             eco_qos: None,
+            confined: None,
         }
     }
 
@@ -5698,6 +5813,27 @@ impl OwnPriority {
                 self.eco_qos = Some(lowest);
             }
         }
+        let sets = background_cpu_sets();
+        if !sets.is_empty() && self.confined != Some(lowest) {
+            use windows_sys::Win32::System::Threading::SetThreadSelectedCpuSets;
+            let (list, count) = if lowest {
+                (sets.as_ptr(), sets.len() as u32)
+            } else {
+                (std::ptr::null(), 0)
+            };
+            // SAFETY: the pseudo-handle names only this collector thread; a
+            // null, empty list clears its selection.
+            if unsafe { SetThreadSelectedCpuSets(GetCurrentThread(), list, count) } == 0 {
+                CONFINEMENT_FAILURES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                if lowest {
+                    CONFINED.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    CONFINEMENT_CLEARED.fetch_add(1, Ordering::Relaxed);
+                }
+                self.confined = Some(lowest);
+            }
+        }
     }
 }
 
@@ -5709,7 +5845,11 @@ fn background_priority_status() -> impl serde::Serialize {
         "eco_qos_enabled": ECO_QOS_ENABLED.load(Ordering::Relaxed),
         "eco_qos_cleared_for_backlog": ECO_QOS_CLEARED.load(Ordering::Relaxed),
         "eco_qos_failures": ECO_QOS_FAILURES.load(Ordering::Relaxed),
-        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most two of the four reusable buffers are free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts",
+        "confined": CONFINED.load(Ordering::Relaxed),
+        "confinement_cleared_for_backlog": CONFINEMENT_CLEARED.load(Ordering::Relaxed),
+        "confinement_failures": CONFINEMENT_FAILURES.load(Ordering::Relaxed),
+        "confinement_cpu_sets": CONFINEMENT_CPU_SETS.load(Ordering::Relaxed),
+        "scope": "cumulative successful policy applications of the decode, spool, spool helper and sizing threads: LOWEST with execution-speed EcoQoS while idle or keeping up, NORMAL with EcoQoS explicitly cleared when at most one of the four reusable buffers is free; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears on backlog and failed selection calls; confinement_cpu_sets is the number of logical processors selected, zero when confinement is unavailable (fewer than four physical cores, several processor groups, or a failed topology query or allocation, kept until the collector reloads), in which case no selection call is made",
     })
 }
 
@@ -5727,6 +5867,83 @@ mod tests {
         assert!(message.contains("15 s"));
     }
     use super::*;
+
+    /// Two logical processors per `(group, scheduling class, efficiency class,
+    /// core index)`, with ids from `first`.
+    fn cpu_sets(cores: &[(u16, u8, u8, u8)], first: u32) -> Vec<CpuSet> {
+        let mut id = first;
+        let mut sets = Vec::new();
+        for &(group, class, efficiency, core) in cores {
+            for _ in 0..2 {
+                let rank = (class, efficiency, std::cmp::Reverse(core));
+                sets.push(CpuSet { group, rank, id });
+                id += 1;
+            }
+        }
+        sets
+    }
+
+    #[test]
+    fn background_threads_take_the_two_least_preferred_physical_cores() {
+        // Classes ranked as a preferred-core machine reports them; three cores
+        // tie at class 0, so the two highest core indices are taken.
+        let sets = cpu_sets(
+            &[
+                (0, 6, 0, 0),
+                (0, 2, 0, 2),
+                (0, 0, 0, 4),
+                (0, 0, 0, 6),
+                (0, 0, 0, 8),
+            ],
+            256,
+        );
+        assert_eq!(least_preferred_cores(&sets).unwrap(), [262, 263, 264, 265]);
+        let mut shuffled = sets.clone();
+        shuffled.reverse();
+        assert_eq!(
+            least_preferred_cores(&shuffled).unwrap(),
+            [265, 264, 263, 262]
+        );
+        // A hybrid CPU with tied scheduling classes: the efficient cores (lower
+        // efficiency class) go first, whatever their indices.
+        let hybrid = cpu_sets(
+            &[
+                (0, 0, 1, 0),
+                (0, 0, 1, 2),
+                (0, 0, 0, 4),
+                (0, 0, 0, 6),
+                (0, 0, 1, 8),
+            ],
+            0,
+        );
+        assert_eq!(least_preferred_cores(&hybrid).unwrap(), [4, 5, 6, 7]);
+        let reversed = cpu_sets(
+            &[
+                (0, 0, 0, 0),
+                (0, 0, 0, 2),
+                (0, 0, 1, 4),
+                (0, 0, 1, 6),
+                (0, 0, 1, 8),
+            ],
+            0,
+        );
+        assert_eq!(least_preferred_cores(&reversed).unwrap(), [0, 1, 2, 3]);
+        // Several processor groups repeat group-relative core indices: unconfined.
+        let groups = cpu_sets(
+            &[
+                (0, 0, 0, 60),
+                (0, 0, 0, 62),
+                (1, 0, 0, 60),
+                (1, 0, 0, 62),
+                (1, 0, 0, 0),
+            ],
+            0,
+        );
+        assert!(least_preferred_cores(&groups).unwrap().is_empty());
+        // Fewer than four physical cores: unconfined.
+        assert!(least_preferred_cores(&sets[..6]).unwrap().is_empty());
+        assert!(least_preferred_cores(&[]).unwrap().is_empty());
+    }
 
     static ATTACH_PREPARATIONS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
 

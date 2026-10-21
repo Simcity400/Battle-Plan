@@ -3125,6 +3125,7 @@ impl StatusPacket {
     /// scalar and exercise acquisition belongs to each final-status range.
     /// Maxima stay ordered because aliases must retain the first seed's held
     /// observation, even when a later alias offers contradictory operands.
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare_holding(
         &mut self,
         memory: &impl Memory,

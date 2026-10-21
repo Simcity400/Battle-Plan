@@ -109,15 +109,17 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
     let request = request();
     let inputs = Arc::clone(request.inputs.as_ref().unwrap());
     let store = request.army_stats.as_deref().unwrap() as *const _;
-    let mut presentation = PresentationPending::default();
-    // SAFETY: synthetic worker reads only the fixture; batch drains all tickets.
-    presentation.prepare = Some(unsafe {
-        submit_acquisition(
-            &shared,
-            &mut batch,
-            acquisition::Job::PresentationPrepare(request),
-        )
-    });
+    let mut presentation = PresentationPending {
+        // SAFETY: synthetic worker reads only the fixture; batch drains all tickets.
+        prepare: Some(unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::PresentationPrepare(request),
+            )
+        }),
+        ..Default::default()
+    };
     running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     for index in 0..2 {
         // An unrelated producer and its consumer both dispatch and collect
@@ -197,15 +199,17 @@ fn presentation_readiness_failed_preparation_or_range_returns_its_loan_without_r
         let mut batch = acquisition::Batch::new(&pool);
         let request = request();
         let inputs = Arc::clone(request.inputs.as_ref().unwrap());
-        let mut presentation = PresentationPending::default();
-        // SAFETY: synthetic requests only; batch drains all accepted ranges.
-        presentation.prepare = Some(unsafe {
-            submit_acquisition(
-                &shared,
-                &mut batch,
-                acquisition::Job::PresentationPrepare(request),
-            )
-        });
+        let mut presentation = PresentationPending {
+            // SAFETY: synthetic requests only; batch drains all accepted ranges.
+            prepare: Some(unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::PresentationPrepare(request),
+                )
+            }),
+            ..Default::default()
+        };
         let (mut request, report) = unsafe { presentation.finish(&shared, &mut batch) };
         assert!(report.is_err());
         if fail_prepare {
@@ -234,15 +238,17 @@ fn presentation_readiness_rejected_preparation_never_runs_inline_or_retries() {
     let mut batch = acquisition::Batch::new(&pool);
     let request = request();
     let inputs = Arc::clone(request.inputs.as_ref().unwrap());
-    let mut presentation = PresentationPending::default();
-    // SAFETY: the stopped pool cannot read native memory.
-    presentation.prepare = Some(unsafe {
-        submit_acquisition(
-            &shared,
-            &mut batch,
-            acquisition::Job::PresentationPrepare(request),
-        )
-    });
+    let mut presentation = PresentationPending {
+        // SAFETY: the stopped pool cannot read native memory.
+        prepare: Some(unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::PresentationPrepare(request),
+            )
+        }),
+        ..Default::default()
+    };
     let (request, report) = crate::test_support::with_allocations_denied(|| unsafe {
         presentation.finish(&shared, &mut batch)
     });
@@ -262,15 +268,17 @@ fn presentation_readiness_batch_drain_owns_parked_preparation_and_all_range_leas
     let inputs = Arc::clone(request.inputs.as_ref().unwrap());
     {
         let mut batch = acquisition::Batch::new(&pool);
-        let mut presentation = PresentationPending::default();
-        // SAFETY: all synthetic jobs and parked preparation drain with the batch.
-        presentation.prepare = Some(unsafe {
-            submit_acquisition(
-                &shared,
-                &mut batch,
-                acquisition::Job::PresentationPrepare(request),
-            )
-        });
+        let mut presentation = PresentationPending {
+            // SAFETY: all synthetic jobs and parked preparation drain with the batch.
+            prepare: Some(unsafe {
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::PresentationPrepare(request),
+                )
+            }),
+            ..Default::default()
+        };
         batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
         unsafe { presentation.advance(&shared, &mut batch) };
         assert!(presentation.prepared.is_some());
@@ -304,15 +312,17 @@ fn presentation_second_preparation_yields_to_unrelated_dispatches() {
         }
     });
     let mut batch = acquisition::Batch::new(&pool);
-    let mut presentation = PresentationPending::default();
-    // SAFETY: synthetic memory only; this batch retains and drains every lease.
-    presentation.prepare = Some(unsafe {
-        submit_acquisition(
-            &shared,
-            &mut batch,
-            acquisition::Job::PresentationPrepare(request()),
-        )
-    });
+    let mut presentation = PresentationPending {
+        // SAFETY: synthetic memory only; this batch retains and drains every lease.
+        prepare: Some(unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::PresentationPrepare(request()),
+            )
+        }),
+        ..Default::default()
+    };
     for _ in 0..2 {
         batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
         unsafe { presentation.advance(&shared, &mut batch) };
@@ -374,15 +384,17 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         }
     });
     let mut batch = acquisition::Batch::new(&pool);
-    let mut presentation = PresentationPending::default();
-    // SAFETY: fixture memory only; the batch drains both waves and their store loan.
-    presentation.prepare = Some(unsafe {
-        submit_acquisition(
-            &shared,
-            &mut batch,
-            acquisition::Job::PresentationPrepare(request()),
-        )
-    });
+    let mut presentation = PresentationPending {
+        // SAFETY: fixture memory only; the batch drains both waves and their store loan.
+        prepare: Some(unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::PresentationPrepare(request()),
+            )
+        }),
+        ..Default::default()
+    };
     // Initial setup -> preparation ranges -> ordered prepare -> final ranges.
     for _ in 0..3 {
         batch.wait_ready(|batch| presentation.ready(batch).then_some(()));

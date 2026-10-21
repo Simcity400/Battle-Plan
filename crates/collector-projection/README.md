@@ -25,3 +25,7 @@ Within one unpublished batch, replacements reuse exclusively owned tree paths. S
 validates it against every
 current source, and converts in replay order without sorting row payloads.
 It does not certify values, preserve stale membership or reorder native storage.
+
+An observed daily projection can retain the encoder's continuous shared baseline
+after proving equality. Keeping its shared ownership also preserves the spool's
+skipped-hour recovery snapshot; comparison tokens alone do not own that snapshot.

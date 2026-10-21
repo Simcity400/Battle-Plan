@@ -84,10 +84,7 @@ pub(super) fn observe(memory: &impl Memory, base: usize, pointer: usize, field: 
         unobserved!();
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        repair::contended(pointer);
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }

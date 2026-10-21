@@ -1,5 +1,5 @@
-//! The ordered presentation worker can release its already-prepared ranges
-//! without waiting for the callback's next unrelated result installation.
+//! Presentation workers release prepared ranges without waiting for the
+//! callback's next unrelated result installation.
 use super::*;
 use std::sync::Weak;
 
@@ -29,7 +29,10 @@ impl Default for PresentationDispatch {
 }
 impl PresentationDispatch {
     pub(super) fn arm(&mut self, pool: &Pool) {
-        assert!(!self.dispatched && self.parts.iter().all(Option::is_none));
+        assert!(self.parts.iter().all(Option::is_none));
+        self.dispatched = false;
+        self.ticks = 0;
+        self.released = 0;
         self.executor = Arc::downgrade(&pool.executor);
         self.calibration = Some(Arc::clone(&pool.calibration));
     }
@@ -62,18 +65,13 @@ impl PresentationDispatch {
                 inputs: inputs.clone(),
                 part: captured.take_status_part(index),
             }));
+            let role = job.as_ref().unwrap().role();
             // SAFETY: the parent belongs to the callback's Batch. The ledger
             // drains every child on unwind until that Batch adopts its ticket.
-            let result = unsafe {
-                executor.submit_with_priority(
-                    &mut job,
-                    Role::PresentationStatus.priority(),
-                    true,
-                    false,
-                )
-            };
+            let result =
+                unsafe { executor.submit_with_priority(&mut job, role.priority(), true, false) };
             note_dispatch(
-                &self.calibration.as_ref().unwrap().roles[Role::PresentationStatus as usize],
+                &self.calibration.as_ref().unwrap().roles[role as usize],
                 result.is_ok(),
             );
             self.parts[index] = Some(match result {

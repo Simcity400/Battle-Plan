@@ -1549,10 +1549,10 @@ impl Captured {
         mut store: Option<&mut super::attack_stats::ArmyStatStore>,
         changes: &dyn crate::army_stat_changes::Changes,
     ) {
-        if !self.prefetching {
-            if let Some(store) = store.as_deref_mut() {
-                store.sources.capture_boundary();
-            }
+        if !self.prefetching
+            && let Some(store) = store.as_deref_mut()
+        {
+            store.sources.capture_boundary();
         }
         if !self.prefetching && self.begin_preparation(&sources, store.as_deref_mut()) {
             return;
@@ -1747,16 +1747,16 @@ impl Captured {
                 army_stats.as_deref_mut(),
                 changes,
             );
-            if !self.owned_settlement {
-                if let Some(store) = army_stats {
-                    self.daily_status.settle(
-                        &self.status_packet,
-                        store,
-                        context.base,
-                        rows,
-                        matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
-                    );
-                }
+            if !self.owned_settlement
+                && let Some(store) = army_stats
+            {
+                self.daily_status.settle(
+                    &self.status_packet,
+                    store,
+                    context.base,
+                    rows,
+                    matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
+                );
             }
             let finished = qpc();
             self.phase_ticks[0] += named.saturating_sub(started).max(0) as u64;
@@ -2114,6 +2114,16 @@ impl Captured {
             army_stats.as_deref_mut(),
             base,
             rows,
+            |index| {
+                if !ready {
+                    return None;
+                }
+                probes[..preparation_count]
+                    .iter()
+                    .find(|part| part.range.contains(&index))
+                    .and_then(|part| part.daily_supply(index))
+                    .cloned()
+            },
         );
         let certified = qpc();
         self.phase_ticks[4] = certified.saturating_sub(sources_finished).max(0) as u64;
@@ -2202,16 +2212,16 @@ impl Captured {
             army_stats.as_deref_mut(),
             changes,
         );
-        if !self.owned_settlement {
-            if let Some(store) = army_stats {
-                self.daily_status.settle(
-                    &self.status_packet,
-                    store,
-                    base,
-                    rows,
-                    matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
-                );
-            }
+        if !self.owned_settlement
+            && let Some(store) = army_stats
+        {
+            self.daily_status.settle(
+                &self.status_packet,
+                store,
+                base,
+                rows,
+                matches!(outcome, Outcome::Rows { .. }) && self.status.outcome == outcome,
+            );
         }
         let finished = qpc();
         // The dig-in phase is the movement pass job's ([`Self::restore_movement`]).
@@ -2528,7 +2538,7 @@ impl Captured {
             });
         }
         let [movement, mut status, bans, ..] = self.outcomes();
-        let terms: [TableInput; speed_terms::N] = self.speed_terms.tables().map(Into::into);
+        let terms = self.speed_terms.table_inputs(projection.as_deref_mut());
         let [states, access, entries, rivers, transport] = terms;
         let bans = scalar_table::<tables::DivisionRetreatBans, _>(
             projection.as_deref_mut(),

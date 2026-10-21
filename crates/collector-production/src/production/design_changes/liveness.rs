@@ -173,10 +173,7 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
         unobserved!();
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        dependency_repair::author(handle, pointer);
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
@@ -209,10 +206,7 @@ pub(super) fn retired(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
         return;
     };
-    let Ok(mut store) = store.try_lock() else {
-        dependency_repair::retired_author(pointer);
-        return;
-    };
+    let mut store = callback_store(store);
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
@@ -244,35 +238,25 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
         }
     }
 }
-pub(super) fn repair(
+pub(super) fn refresh_context(
     memory: &impl Memory,
     base: usize,
-    handles: &std::collections::HashSet<u64>,
-    hour: i32,
-    output: &mut Vec<rows::VariantChangeRow>,
+    events: &[Event],
 ) -> Result<(), &'static str> {
-    let mut store = STORE
-        .get()
-        .unwrap()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for handle in handles {
+    // Keep every logged liveness occurrence, but derive country demand from
+    // the terminal live reference, not a possibly retired event pointer.
+    let mut handles = std::collections::HashSet::new();
+    for event in events {
+        if matches!(event.kind, Kind::Organisation(_)) {
+            engine_allocation::reserve_set(&mut handles, 1)
+                .map_err(|_| "variant author context allocation failed")?;
+            handles.insert(event.variant);
+        }
+    }
+    for handle in &handles {
         let resolved = engine_native::creference_registry::resolve(memory, base, *handle)?;
-        store.interests.organisation(*handle, resolved)?;
         let designs = sources::author_designs(*handle)?;
         super::super::design_context::author(memory, base, *handle, resolved, &designs)?;
-        change(*handle, resolved.is_some())?;
-        engine_allocation::reserve(output, 1)
-            .map_err(|_| "variant liveness repair allocation failed")?;
-        output.push(rows::VariantChangeRow {
-            sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            hour,
-            organisation: Some(rows::VariantOrganisationChange {
-                organisation: *handle,
-                live: resolved.is_some(),
-            }),
-            ..Default::default()
-        });
     }
     Ok(())
 }

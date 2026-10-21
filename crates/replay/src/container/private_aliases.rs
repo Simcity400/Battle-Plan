@@ -244,10 +244,10 @@ fn candidates(
             values[10] = Some(stats.air_defense);
         }
     }
-    if let Some(movement) = movement {
-        if let Recorded::Value(Some(fuel)) = movement.fuel {
-            values[11] = Some(fuel);
-        }
+    if let Some(movement) = movement
+        && let Recorded::Value(Some(fuel)) = movement.fuel
+    {
+        values[11] = Some(fuel);
     }
     values
 }

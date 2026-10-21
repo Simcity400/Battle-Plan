@@ -1010,9 +1010,7 @@ fn name_value<'a>(
     dictionary: Option<&[DivisionTemplateRow]>,
     hour: Option<i32>,
 ) -> Option<NameValue<'a>> {
-    if hour.is_none() {
-        return None;
-    }
+    hour?;
     let name = row.display_name?;
     let literal = span(bytes, name.literal)?;
     let key = match name.fallback_key {

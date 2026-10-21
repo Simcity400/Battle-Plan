@@ -12,7 +12,6 @@ fn member(ordinal: u32, entries: Vec<CombatModifierValue>) -> LandCombatDivision
         ordinal,
         division: (0x35 << 32) | 0x33,
         entries,
-        ..Default::default()
     }
 }
 

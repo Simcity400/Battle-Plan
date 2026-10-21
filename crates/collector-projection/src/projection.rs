@@ -107,6 +107,17 @@ impl<'a> Projection<'a> {
         self.encoder.observed_baseline::<S>(self.branch, self.hour)
     }
 
+    /// The same continuous observed baseline with its shared ownership intact.
+    /// An unchanged daily projection can retain this snapshot for skipped-hour
+    /// recovery without cloning rows or replacing the spool's recovery cache
+    /// with a comparison token.
+    pub fn observed_shared_baseline<S: TableSchema>(
+        &self,
+    ) -> Option<&'a std::sync::Arc<TableRows>> {
+        self.observed_baseline::<S>()?;
+        self.encoder.shared_baseline(S::ID)
+    }
+
     /// A complete writer certificate covers the rows the event batch omits.
     pub fn observed_comparison_baseline<S: TableSchema>(
         &self,

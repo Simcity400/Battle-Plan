@@ -1,7 +1,7 @@
 //! Range-local observations; ordered certificate/store admission stays in the parent.
 use super::*;
 use collector_observers::unit_history_changes as history_changes;
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Copy)]
 pub struct PreparedDivision {
@@ -31,6 +31,8 @@ pub struct PreparationPart {
     pub range: Range<usize>,
     rows: Vec<PreparedDivision>,
     orders: [ScalarOrder; 4],
+    supply: Vec<Option<Arc<crate::supply_inputs::Sample>>>,
+    supply_order: ScalarOrder,
     sources: crate::panel_sources::Preparation,
     source_ready: bool,
 }
@@ -40,6 +42,8 @@ impl Default for PreparationPart {
             range: 0..0,
             rows: Vec::new(),
             orders: std::array::from_fn(|_| ScalarOrder::default()),
+            supply: Vec::new(),
+            supply_order: Default::default(),
             sources: Default::default(),
             source_ready: false,
         }
@@ -48,6 +52,9 @@ impl Default for PreparationPart {
 impl PreparationPart {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.capacity() * std::mem::size_of::<PreparedDivision>()
+            + self.supply.capacity()
+                * std::mem::size_of::<Option<Arc<crate::supply_inputs::Sample>>>()
+            + self.supply_order.allocated_bytes()
             + self.sources.allocated_bytes()
             + self
                 .orders
@@ -57,6 +64,10 @@ impl PreparationPart {
     }
     pub fn get(&self, index: usize) -> Option<PreparedDivision> {
         self.rows.get(index.checked_sub(self.range.start)?).copied()
+    }
+    /// An absent entry selects ordered lookup; a present `None` is a sampled miss.
+    pub fn daily_supply(&self, index: usize) -> Option<&Option<Arc<crate::supply_inputs::Sample>>> {
+        self.supply.get(index.checked_sub(self.range.start)?)
     }
     pub fn can_settle_sources(&self) -> bool {
         self.source_ready && self.rows.len() == self.range.len() && self.sources.can_settle_owned()
@@ -74,6 +85,8 @@ impl PreparationPart {
         changes: &dyn Changes,
     ) {
         self.rows.clear();
+        self.supply.clear();
+        self.supply_order.clear();
         self.source_ready = false;
         for order in &mut self.orders {
             order.clear();
@@ -91,6 +104,13 @@ impl PreparationPart {
         {
             return;
         }
+        // This immutable daily baseline cannot change until the range leases
+        // return. Optional scratch failure keeps the original ordered lookup.
+        let supply_ready = store.holds_daily_progress()
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.supply, seeds.len())
+            })
+            .is_ok();
         let source_reads = self.sources.begin(seeds.len());
         let countries = source_reads
             .then(|| engine_native::ccountry::Reader::new(memory, base, state).ok())
@@ -100,6 +120,10 @@ impl PreparationPart {
         self.source_ready = source_reads && countries.is_some();
         for (index, seed) in seeds.iter().enumerate() {
             let index = self.range.start + index;
+            if supply_ready {
+                self.supply
+                    .push(store.daily_supply(base, index, seed, &mut self.supply_order));
+            }
             let selection = self.source_ready.then(|| {
                 self.sources.capture(
                     memory,

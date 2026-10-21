@@ -3209,6 +3209,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         "OrdinaryPart",
         "Slow",
         "WarOverview",
+        "IndustrialOrganisations",
         "ProductionModifierPart",
         "ProductionDaily",
         "Stability",
@@ -3236,6 +3237,8 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
             "{job} first burst"
         );
     }
+    assert!(at(&queue("IndustrialOrganisations")) < at(&queue("ProductionDaily")));
+    assert!(at(&queue("IndustrialOrganisations")) < at(&queue("ProductionModifierPart")));
     let handlers = &body[at("match step {")..at("            segment!(1);")];
     let handler = |step: &str| {
         let marker = format!("EarlyStep::{step} => {{");
@@ -3337,6 +3340,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
             "install_unit_inputs(",
             "batch.hold();",
             &queue("Divisions"),
+            "batch.arm_presentation(&mut presentation_request)",
             &queue("PresentationPrepare"),
             &queue("Presentation"),
             &queue("PresentationMovement"),
@@ -3546,6 +3550,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
             "let acquisition::Job::EventFeedSeal(feed) = job",
             ".restore_event_feed_seal(feed",
             "completed!(pending, ProductionDaily)",
+            "completed!(pending, IndustrialOrganisations)",
             "completed!(pending, ProductionModifierPart)",
             ".capture_tables(&cached",
             "completed!(late_pending, Late)",
@@ -3561,9 +3566,21 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     );
     assert_eq!(body.matches("registrations_raw_mode = true").count(), 1);
     assert_eq!(body.matches("air_bases_report = report;").count(), 1);
-    // Variants and RaidState claim before the dependency tier; the
-    // remaining independent jobs follow it in descending length.
+    // The presentation chain, Variants and RaidState claim before the
+    // dependency tier; remaining independent jobs follow in descending length.
     use acquisition::Role;
+    for role in [
+        Role::PresentationPrepare,
+        Role::PresentationPreparation,
+        Role::PresentationSettle,
+        Role::PresentationStatus,
+        Role::Presentation,
+        Role::Variants,
+        Role::RaidState,
+    ] {
+        assert_eq!(role.priority(), 0, "{role:?}");
+        assert!(role.priority() < Role::Countries.priority(), "{role:?}");
+    }
     for gate in [
         Role::ObserverBoundary,
         Role::Countries,
@@ -3595,14 +3612,13 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
         // read the economy rest.
         Role::World,
         Role::Economy,
-        // The longest job that waits for another: dispatched after the
-        // first burst, it would queue behind every job of its class.
-        Role::Presentation,
+        Role::PresentationSpeedTerms,
         Role::FinalInputs,
         // The longest first-burst job and the tables split from it.
         Role::Slow,
         Role::Stability,
         Role::WarOverview,
+        Role::IndustrialOrganisations,
         Role::ProductionDaily,
         Role::ProductionModifierParts,
     ] {
@@ -3701,17 +3717,19 @@ fn buffer_return_runs_on_a_small_stack() {
 }
 
 #[test]
-fn buffers_backlogged_with_two_free_buffers() {
+fn buffers_backlogged_with_one_free_buffer() {
     let shared = campaign_shared();
     let first = shared.take_frame(&mut 0).unwrap();
-    assert_eq!(shared.free.len(), 3);
-    assert!(!shared.buffers_backlogged());
     let second = shared.take_frame(&mut 0).unwrap();
     assert_eq!(shared.free.len(), 2);
+    assert!(!shared.buffers_backlogged());
+    let third = shared.take_frame(&mut 0).unwrap();
+    assert_eq!(shared.free.len(), 1);
     assert!(shared.buffers_backlogged());
     shared.recycle_frame_prepared(first);
     assert!(!shared.buffers_backlogged());
     shared.recycle_frame_prepared(second);
+    shared.recycle_frame_prepared(third);
     assert_eq!(shared.free.len(), BUFFERS);
 }
 

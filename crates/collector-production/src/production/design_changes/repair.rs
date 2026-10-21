@@ -1,40 +1,30 @@
-//! Receiver-local lost-log evidence. Slots are prepared from the saved census;
-//! hooks only mark atomics, even while STORE is unavailable. The acquisition worker
-//! reads terminal state, not a replacement history of the lost occurrences.
+//! Receiver-local evidence of genuine overlapping native writers. Prepared marks
+//! exclude uncertain snapshots; terminal reads recover current state, never the
+//! unobservable occurrences. Ordinary STORE contention loses no callback.
 use super::*;
 use collector_certificates::watch_registry::WatchRegistry;
 
 static MARKS: WatchRegistry = WatchRegistry::marking();
-static RETIRED: WatchRegistry = WatchRegistry::marking();
-static RETIRING: AtomicBool = AtomicBool::new(false);
-pub(super) static DEFERRED_RETIREMENTS: AtomicU64 = AtomicU64::new(0);
-pub(super) static DRAFT_RETIREMENTS: AtomicU64 = AtomicU64::new(0);
-pub(super) static DRAFT_MOVES: AtomicU64 = AtomicU64::new(0);
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn pending() -> bool {
-    PENDING.load(Ordering::Acquire)
-        || REPAIRING.load(Ordering::Acquire)
-        || dependency_repair::pending()
+    PENDING.load(Ordering::Acquire) || REPAIRING.load(Ordering::Acquire)
 }
 pub(super) fn added() {
     ADDED.store(true, Ordering::Release);
 }
 pub(super) fn prepare(watches: &HashMap<usize, Watch>) -> Result<(), &'static str> {
-    for marks in [&MARKS, &RETIRED] {
-        marks.collect();
-        marks.offer(watches.capacity());
-        marks.set_enabled(true);
-        marks.boundary(true);
-        for pointer in watches.keys() {
-            marks
-                .register(*pointer)
-                .ok_or("variant repair watch allocation failed")?;
-        }
+    MARKS.collect();
+    MARKS.offer(watches.capacity());
+    MARKS.set_enabled(true);
+    MARKS.boundary(true);
+    for pointer in watches.keys() {
+        MARKS
+            .register(*pointer)
+            .ok_or("variant repair watch allocation failed")?;
     }
-    RETIRING.store(false, Ordering::Release);
     PENDING.store(false, Ordering::Release);
     ADDED.store(false, Ordering::Release);
     Ok(())
@@ -47,72 +37,9 @@ pub(super) fn mark(pointer: usize) {
     drop(MARKS.notify(pointer));
     PENDING.store(true, Ordering::Release);
 }
-pub(super) fn contended(pointer: usize) {
-    LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    RECEIVER_LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    mark(pointer);
-}
-/// Destruction supplies its receiver before the original. Only prepared saved
-/// slots produce tombstones; excluded drafts require no native read or event.
-/// Publication while a retirement is deferred must use a complete roster,
-/// because the same pointer may now name a replacement binding.
-pub(super) fn retire(pointer: usize) {
-    if pointer == 0 {
-        unknown_receiver!();
-        return;
-    }
-    LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    RECEIVER_LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    let notification = RETIRED.notify(pointer);
-    if !notification.has_mark() && !ADDED.load(Ordering::Acquire) {
-        // No publication has added an unprepared binding. This receiver was
-        // never saved in this interval, so its destruction loses no row.
-        DRAFT_RETIREMENTS.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    DEFERRED_RETIREMENTS.fetch_add(1, Ordering::Relaxed);
-    RETIRING.store(true, Ordering::Release);
-    drop(notification);
-    PENDING.store(true, Ordering::Release);
-}
-/// A consuming move needs no saved bindings only when both operands lack
-/// prepared slots and no publication has added an unprepared binding. Boundary
-/// registration clears ADDED, so its in-progress window cannot prove absence.
-/// The caller's active flight also prevents a concurrent census from admission.
-pub(super) fn excluded_move(first: usize, second: usize) -> bool {
-    if first == 0
-        || second == 0
-        || !SAVED_BASELINE.load(Ordering::Acquire)
-        || RECOVER.load(Ordering::Acquire)
-        || ADDED.load(Ordering::Acquire)
-        || REPAIRING.load(Ordering::Acquire)
-    {
-        return false;
-    }
-    let first = MARKS.notify(first);
-    let second = MARKS.notify(second);
-    if first.has_mark()
-        || second.has_mark()
-        || ADDED.load(Ordering::Acquire)
-        || REPAIRING.load(Ordering::Acquire)
-    {
-        return false;
-    }
-    LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    RECEIVER_LOCK_CONTENTIONS.fetch_add(1, Ordering::Relaxed);
-    DRAFT_MOVES.fetch_add(1, Ordering::Relaxed);
-    true
-}
-pub(super) fn publication() {
-    if RETIRING.load(Ordering::Acquire) {
-        unobserved!();
-    }
-}
 pub(super) struct Repairs {
     admitted: bool,
     pub watches: Vec<Watch>,
-    pub retired: Vec<Watch>,
-    pub authors: std::collections::HashSet<u64>,
     pub lost: usize,
 }
 impl Drop for Repairs {
@@ -129,8 +56,6 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     let mut repairs = Repairs {
         admitted: false,
         watches: Vec::new(),
-        retired: Vec::new(),
-        authors: std::collections::HashSet::new(),
         lost: 0,
     };
     // Consuming the marks does not yet publish their replacement values. Keep
@@ -138,8 +63,7 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     REPAIRING.store(true, Ordering::Release);
     let pending = PENDING.swap(false, Ordering::AcqRel);
     let added = ADDED.swap(false, Ordering::AcqRel);
-    let retiring = RETIRING.swap(false, Ordering::AcqRel);
-    if !pending && !added && !dependency_repair::pending() {
+    if !pending && !added {
         repairs.admitted = true;
         return Ok(repairs);
     }
@@ -161,12 +85,6 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
         let (_, fresh) = MARKS
             .register(*pointer)
             .ok_or("variant repair receiver registration failed")?;
-        let (_, retirement_fresh) = RETIRED
-            .register(*pointer)
-            .ok_or("variant retirement receiver registration failed")?;
-        if retiring && retirement_fresh {
-            return Err("variant unprepared binding may have an unobserved retirement");
-        }
         if pending && fresh {
             pointers.insert(*pointer);
         }
@@ -176,25 +94,7 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
             pointers.insert(pointer);
         })
         .ok_or("variant repair marks have a running writer or changed epoch")?;
-    let mut retired = std::collections::HashSet::new();
-    engine_allocation::reserve_set(&mut retired, RETIRED.registered())
-        .map_err(|_| "variant retirement repair allocation failed")?;
-    RETIRED
-        .take(|pointer| {
-            retired.insert(pointer);
-        })
-        .ok_or("variant retirement marks have a running writer or changed epoch")?;
-    let dependencies = dependency_repair::take(&mut store, batch, &mut pointers)?;
-    repairs.authors = dependencies.authors;
-    repairs.lost = pointers.len() + retired.len() + dependencies.lost;
-    repairs.retired = engine_allocation::vec(retired.len())
-        .map_err(|_| "variant retirement repair allocation failed")?;
-    for pointer in &retired {
-        if let Some(watch) = store.watched.remove(pointer) {
-            repairs.retired.push(watch);
-        }
-    }
-    pointers.extend(retired);
+    repairs.lost = pointers.len();
 
     repairs.watches =
         engine_allocation::vec(pointers.len()).map_err(|_| "variant repair allocation failed")?;
@@ -304,8 +204,6 @@ pub(super) fn complete(
 pub(super) unsafe fn release() {
     unsafe {
         MARKS.release();
-        RETIRED.release();
-        dependency_repair::release();
     };
 }
 

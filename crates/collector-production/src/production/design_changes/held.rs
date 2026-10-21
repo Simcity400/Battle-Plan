@@ -489,7 +489,7 @@ mod census_tests {
         }
     }
     #[test]
-    fn variant_recovery_rechecks_a_lost_edit_completed_after_census_admission() {
+    fn variant_recovery_rechecks_a_writer_waiting_after_census_admission() {
         static PAUSE: OnceLock<Barrier> = OnceLock::new();
         fn admitted() {
             let pause = PAUSE.get().unwrap();
@@ -500,18 +500,22 @@ mod census_tests {
         BASE.store(space.base, Ordering::Release);
         let pointer = sources[0].pointer();
         let pause = PAUSE.get_or_init(|| Barrier::new(2));
+        fn waiting() {
+            PAUSE.get().unwrap().wait();
+        }
         let writer = std::thread::spawn(move || {
             pause.wait();
+            BEFORE_STORE_WAIT.set(Some(waiting));
             collector_test_support::with_allocations_denied(|| unsafe {
                 around::<0>([pointer, 0, 23, 0], refresh_bonus)
             });
-            pause.wait();
         });
         AFTER_CENSUS_ADMISSION.with(|hook| hook.set(Some(admitted)));
         let recovered = acquire(&space.memory(), space.base, &sources[..7], true);
         writer.join().unwrap();
-        assert!(repair::pending());
-        assert_eq!(status().receiver_lock_contentions, 1);
+        assert!(!repair::pending());
+        assert!(pending());
+        assert_eq!(status().lock_contentions, 1);
         assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
         assert!(!Arc::ptr_eq(
             &recovered.definitions.rows[0].design,
@@ -908,10 +912,11 @@ mod census_tests {
         );
     }
     #[test]
-    fn variant_store_collision_repairs_without_refusing_the_interval() {
+    fn variant_store_collision_preserves_the_scalar_occurrence() {
         let (space, sources, _) = setup();
-        let store = STORE.get().unwrap().lock().unwrap();
-        collector_test_support::with_allocations_denied(|| {
+        // The census-only fixture has no staging; prepare this one-byte event.
+        STORE.get().unwrap().lock().unwrap().batch.prepare(1, 1, 1);
+        super::super::tests::with_store_contended(|| {
             scalar::observe(
                 &space.memory(),
                 space.base,
@@ -919,12 +924,15 @@ mod census_tests {
                 scalar::Field::AutoUpgraded,
             );
         });
-        drop(store);
-        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
+        let mut changes = Vec::new();
+        assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].scalar.is_some());
         let status = status();
         assert_eq!(status.missed_refusals, 0);
         assert_eq!(status.running_refusals, 0);
-        assert_eq!(status.repaired_receivers, 1);
+        assert_eq!(status.repaired_receivers, 0);
+        assert_eq!(status.lock_contentions, 1);
         assert!(!needs_full());
     }
     #[test]

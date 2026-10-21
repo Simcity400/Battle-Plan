@@ -2,6 +2,7 @@
 //! then finish native status after ordered shared admission has published.
 use super::*;
 
+#[allow(clippy::large_enum_variant)] // Reserved work cells retain their inline range storage.
 pub(crate) enum StatusWork {
     Preparation {
         store: Option<Arc<super::super::attack_stats::ArmyStatStore>>,

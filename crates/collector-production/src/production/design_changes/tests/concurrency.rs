@@ -203,7 +203,15 @@ fn same_saved_design_overlap<const SITE: usize>() {
     assert_eq!(status().missed_refusals, 0);
     assert_eq!(status().repaired_receivers, 1);
     assert!(!needs_full());
-    assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
+    assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
+    let mut captured = Captured::vacant();
+    captured.outcome = Outcome::Rows { len: changes.len() };
+    captured.repaired = 1;
+    captured.rows = changes;
+    assert!(matches!(
+        captured.table_input(None),
+        TableInput::Sampled(TableView::Unavailable { .. })
+    ));
 }
 #[test]
 fn same_saved_design_overlap_repairs_only_that_receiver_even_when_original_stores_are_ordered() {
@@ -262,76 +270,105 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn a_contended_terminal_snapshot_repairs_only_its_receiver_without_waiting_for_store() {
+fn contended_terminal_snapshots_keep_every_occurrence_in_sequence_order() {
+    static WAIT: OnceLock<Barrier> = OnceLock::new();
+    fn waiting() {
+        WAIT.get().unwrap().wait();
+    }
     let (space, registry, baseline) = setup(2);
-    let pause = Barrier::new(2);
-    let writer = spawn::<0>(registry[0].pointer(), &pause, 1);
-    pause.wait();
-    let store = STORE.get().unwrap().lock().unwrap();
-    pause.wait();
-    // Joining with STORE held proves callback try_lock never waits for drain.
-    assert_eq!(writer.join().unwrap(), 1);
-    drop(store);
-    assert_eq!(active(), 0);
-    let mut changes = Vec::new();
+    let pause = WAIT.get_or_init(|| Barrier::new(registry.len() + 1));
+    let mut store = STORE.get().unwrap().lock().unwrap();
+    let spans = store.batch.log.spans.capacity() * 2;
+    let bytes = store.batch.log.bytes.capacity() * 2;
+    store.batch.prepare(registry.len() * 2, spans, bytes);
+    std::thread::scope(|threads| {
+        let writers: Vec<_> = registry
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                threads.spawn(move || {
+                    BEFORE_STORE_WAIT.set(Some(waiting));
+                    collector_test_support::with_allocations_denied(|| {
+                        for value in [index * 10 + 1, index * 10 + 2] {
+                            assert_eq!(
+                                unsafe { around::<0>([source.pointer(), 0, value, 0], edited) },
+                                value
+                            );
+                        }
+                    });
+                })
+            })
+            .collect();
+        // Both distinct receivers have completed their first native edit and
+        // reached the occupied STORE. Neither callback may discard its copy.
+        pause.wait();
+        drop(store);
+        for writer in writers {
+            writer.join().unwrap();
+        }
+    });
     let meter = OnlyDesign {
         space: &space,
-        forbidden: registry[1].pointer(),
+        forbidden: registry[0].pointer(),
         reads: std::cell::Cell::new(0),
     };
-    let repaired = drain_with(&meter, space.base, 7, &mut changes).unwrap();
-    assert_eq!(repaired, 1);
-    assert!(meter.reads.get() > 0);
-    assert_eq!(status().lock_contentions, 1);
+    let mut changes = Vec::new();
+    assert_eq!(drain_with(&meter, space.base, 7, &mut changes), Ok(0));
+    assert_eq!(
+        meter.reads.get(),
+        0,
+        "drain decodes owned occurrences, with no terminal reread"
+    );
+    assert_eq!(changes.len(), 4);
+    assert!(
+        changes
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    for (index, source) in registry.iter().enumerate() {
+        assert_eq!(
+            changes
+                .iter()
+                .filter(|row| row.variant == source.id)
+                .map(|row| row.snapshot.as_ref().unwrap().stats[0])
+                .collect::<Vec<_>>(),
+            [index as i64 * 10 + 1, index as i64 * 10 + 2]
+        );
+    }
+    assert!(status().lock_contentions >= 2);
     assert_eq!(status().competing_writer_rejections, 0);
     assert_eq!(status().refused_intervals, 0);
-    assert_eq!(status().repaired_intervals, 1);
+    assert_eq!(status().repaired_intervals, 0);
     assert!(!needs_full());
-    let certificate = held::certified().unwrap();
-    assert!(std::sync::Arc::ptr_eq(
-        &certificate.get(&registry[1]).unwrap(),
-        &baseline.definitions.rows[1].design
-    ));
-    drop(certificate);
     assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
     let mut captured = Captured::vacant();
-    captured.repaired = repaired;
+    captured.outcome = Outcome::Rows { len: changes.len() };
     captured.rows = changes;
-    captured.outcome = Outcome::Rows { len: 1 };
-    assert!(matches!(
-        captured.table_input(None),
-        TableInput::Sampled(TableView::Unavailable { .. })
-    ));
-    // The next quiet hour carries the repaired state without another read.
-    assert_eq!(drain_with(&meter, space.base, 8, &mut Vec::new()), Ok(0));
-    assert_eq!(status().repaired_receivers, 1);
+    assert!(matches!(captured.table_input(None), TableInput::Sampled(
+        TableView::Complete(rows::TableRows::VariantChanges(rows))) if rows.len() == 4));
 }
 #[test]
-fn a_self_owned_derived_writer_needs_no_store_lock_to_resolve_its_version_owner() {
+fn a_self_owned_derived_writer_waits_only_for_its_terminal_snapshot() {
     let (space, registry, baseline) = setup(2);
-    let store = STORE.get().unwrap().lock().unwrap();
     assert_eq!(
-        collector_test_support::with_allocations_denied(|| unsafe {
-            around::<1>([registry[0].pointer(), 0, 17, 0], edited)
-        }),
+        with_store_contended(|| unsafe { around::<1>([registry[0].pointer(), 0, 17, 0], edited) }),
         17
     );
-    drop(store);
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
-    assert_eq!(status().unattributed_lock_contentions, 0);
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 1);
+    assert_eq!(status().lock_contentions, 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn contended_scalar_and_flag_writes_repair_complete_state_and_refresh_cached_flags() {
+fn contended_scalar_and_flag_writes_keep_both_occurrences_and_refresh_cached_flags() {
     let (space, registry, baseline) = setup(2);
     let pointer = registry[0].pointer();
     unsafe {
         std::ptr::write((pointer + native::AUTO_UPGRADED) as *mut u8, 1);
         std::ptr::write((pointer + native::CAN_UPGRADE_VARIANT) as *mut u8, 1);
     }
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
+    with_store_contended(|| {
         scalar::observe(
             &space.memory(),
             space.base,
@@ -340,14 +377,16 @@ fn contended_scalar_and_flag_writes_repair_complete_state_and_refresh_cached_fla
         );
         flag_change(&space.memory(), space.base, pointer);
     });
-    drop(store);
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0].scalar.as_ref().unwrap().auto_upgraded, Some(1));
+    assert_eq!(changes[1].flags.unwrap()[1], 1);
     assert_eq!(
         STORE.get().unwrap().lock().unwrap().watched[&pointer].flags[1],
         1
     );
-    assert_eq!(status().lock_contentions, 2);
+    assert_eq!(status().lock_contentions, 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -409,7 +448,7 @@ fn a_repair_rechecks_the_revision_after_its_live_reads() {
 }
 
 #[test]
-fn a_new_saved_binding_without_a_prepared_slot_is_repaired_before_carry() {
+fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
     let space = space(1, 3);
     let mut registry = Vec::new();
     native::walk_registry(&space.memory(), space.base, space.game_state, &mut registry);
@@ -422,16 +461,10 @@ fn a_new_saved_binding_without_a_prepared_slot_is_repaired_before_carry() {
     assert!(baseline_admitted());
     let pointer = registry[2].pointer();
     observe(&space.memory(), space.base, pointer, false, true);
-    let pause = Barrier::new(2);
-    let writer = spawn::<0>(pointer, &pause, 17);
-    pause.wait();
-    let store = STORE.get().unwrap().lock().unwrap();
-    pause.wait();
-    writer.join().unwrap();
-    drop(store);
+    with_store_contended(|| unsafe { around::<0>([pointer, 0, 17, 0], edited) });
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
-    assert_eq!(changes.len(), 1);
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 2);
     assert_eq!(changes[0].variant, registry[2].id);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
@@ -609,14 +642,12 @@ fn a_contended_move_of_two_unwatched_drafts_preserves_saved_rows_without_native_
     let baseline = acquire(&space, &registry[2..]);
     begin_read();
     prepare(&registry[2..], &baseline);
-    let store = STORE.get().unwrap().lock().unwrap();
     assert_eq!(
-        collector_test_support::with_allocations_denied(|| unsafe {
+        with_store_contended(|| unsafe {
             around::<9>([registry[0].pointer(), registry[1].pointer(), 0, 0], moved)
         }),
         19
     );
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[2].pointer(),
@@ -627,31 +658,35 @@ fn a_contended_move_of_two_unwatched_drafts_preserves_saved_rows_without_native_
     assert_eq!(memory.reads.get(), 0);
     assert!(changes.is_empty());
     assert!(!needs_full());
-    assert_eq!(status().draft_move_contentions, 1);
-    assert_eq!(status().unattributed_lock_contentions, 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[2..]));
+    assert_eq!(status().lock_contentions, 1);
 }
 #[test]
-fn a_contended_move_with_a_saved_operand_still_requires_the_consumed_bindings() {
-    let (space, registry, _) = setup(2);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| unsafe {
+fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
+    let (space, registry, baseline) = setup(2);
+    with_store_contended(|| unsafe {
         around::<9>([registry[0].pointer(), registry[1].pointer(), 0, 0], moved)
     });
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[1].pointer(),
         reads: std::cell::Cell::new(0),
     };
-    assert!(drain_with(&memory, space.base, 7, &mut Vec::new()).is_err());
+    let mut changes = Vec::new();
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
+    assert!(changes.iter().any(|row| row.removed));
+    assert!(changes.last().unwrap().snapshot.is_some());
+    assert!(!needs_full());
+    let rebound =
+        native::RegistryRow::read(&space.memory(), space.base, registry[0].pointer()).unwrap();
+    let mut survivors = vec![rebound];
+    survivors.extend_from_slice(&registry[2..]);
+    assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
     assert_eq!(memory.reads.get(), 0);
-    assert!(needs_full());
-    assert_eq!(status().draft_move_contentions, 0);
-    assert_eq!(status().unattributed_lock_contentions, 1);
+    assert_eq!(status().lock_contentions, 1);
 }
 #[test]
-fn a_contended_move_of_a_new_unprepared_saved_operand_is_not_exempted_as_a_draft() {
+fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occurrence() {
     let (space, registry, _) = setup(3);
     let baseline = acquire(&space, &registry[2..]);
     begin_read();
@@ -663,21 +698,26 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_is_not_exempted_as_a_draft
         false,
         true,
     );
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| unsafe {
+    with_store_contended(|| unsafe {
         around::<9>([registry[0].pointer(), registry[1].pointer(), 0, 0], moved)
     });
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[1].pointer(),
         reads: std::cell::Cell::new(0),
     };
-    assert!(drain_with(&memory, space.base, 7, &mut Vec::new()).is_err());
+    let mut changes = Vec::new();
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
+    assert!(changes.iter().any(|row| row.removed));
+    assert!(changes.last().unwrap().snapshot.is_some());
+    assert!(!needs_full());
+    let rebound =
+        native::RegistryRow::read(&space.memory(), space.base, registry[0].pointer()).unwrap();
+    let mut survivors = vec![rebound];
+    survivors.extend_from_slice(&registry[2..]);
+    assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
     assert_eq!(memory.reads.get(), 0);
-    assert!(needs_full());
-    assert_eq!(status().draft_move_contentions, 0);
-    assert_eq!(status().unattributed_lock_contentions, 1);
+    assert_eq!(status().lock_contentions, 1);
 }
 #[test]
 fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_rows() {
@@ -909,45 +949,30 @@ fn a_rejected_move_still_forwards_both_original_receivers_through_terminal_phase
 }
 
 #[test]
-fn a_contended_saved_destruction_publishes_a_tombstone_without_reading_dead_storage() {
+fn a_contended_saved_destruction_logs_its_tombstone_before_the_original() {
     let (space, registry, baseline) = setup(2);
     let pointer = registry[0].pointer();
-    let pause = Barrier::new(2);
-    let store = STORE.get().unwrap().lock().unwrap();
-    std::thread::scope(|threads| {
-        let writer = threads.spawn(|| {
-            pause.wait();
-            collector_test_support::with_allocations_denied(|| {
-                assert!(!retire(&space.memory(), space.base, pointer));
-            });
-        });
-        pause.wait();
-        writer.join().unwrap();
-    });
-    drop(store);
+    with_store_contended(|| assert!(retire(&space.memory(), space.base, pointer)));
     let memory = OnlyDesign {
         space: &space,
         forbidden: pointer,
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
     assert_eq!(memory.reads.get(), 0);
     assert_eq!(changes.len(), 1);
     assert!(changes[0].removed);
-    assert_eq!(status().deferred_retirements, 1);
-    assert_eq!(status().unattributed_lock_contentions, 0);
+    assert_eq!(status().lock_contentions, 1);
     assert_eq!(status().refused_intervals, 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[1..]));
 }
 #[test]
 fn contended_draft_destruction_needs_neither_a_native_read_nor_a_full_census() {
     let (space, registry, baseline) = setup(1);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
+    with_store_contended(|| {
         assert!(!retire(&space.memory(), space.base, usize::MAX));
     });
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
@@ -960,11 +985,9 @@ fn contended_draft_destruction_needs_neither_a_native_read_nor_a_full_census() {
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn publication_after_a_deferred_retirement_requires_a_complete_roster() {
-    let (space, registry, _) = setup(1);
-    let store = STORE.get().unwrap().lock().unwrap();
-    retire(&space.memory(), space.base, registry[0].pointer());
-    drop(store);
+fn publication_after_a_contended_retirement_retains_both_occurrences() {
+    let (space, registry, baseline) = setup(1);
+    with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
     observe(
         &space.memory(),
         space.base,
@@ -972,11 +995,15 @@ fn publication_after_a_deferred_retirement_requires_a_complete_roster() {
         false,
         true,
     );
-    assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    assert!(needs_full());
+    let mut changes = Vec::new();
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 2);
+    assert!(changes[0].removed && changes[1].snapshot.is_some());
+    assert!(!needs_full());
+    assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn a_new_saved_binding_has_retirement_marks_after_its_first_boundary() {
+fn a_new_saved_binding_logs_retirement_after_its_first_boundary() {
     let (space, registry, _) = setup(2);
     // Remove only this synthetic binding from the first prepared census.
     let baseline = acquire(&space, &registry[..1]);
@@ -990,16 +1017,14 @@ fn a_new_saved_binding_has_retirement_marks_after_its_first_boundary() {
         true,
     );
     assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(0));
-    let store = STORE.get().unwrap().lock().unwrap();
-    retire(&space.memory(), space.base, registry[1].pointer());
-    drop(store);
+    with_store_contended(|| retire(&space.memory(), space.base, registry[1].pointer()));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[1].pointer(),
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 8, &mut changes), Ok(1));
+    assert_eq!(drain_with(&memory, space.base, 8, &mut changes), Ok(0));
     assert_eq!(changes.len(), 1);
     assert!(changes[0].removed);
     assert_eq!(changes[0].variant, registry[1].id);
@@ -1039,93 +1064,82 @@ fn saved_source() -> (Space, Vec<native::RegistryRow>, Variants, usize) {
     (space, registry, baseline, source)
 }
 #[test]
-fn a_contended_source_rereads_every_dependant_and_carries_unrelated_designs() {
+fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads() {
     let (space, registry, baseline, source) = saved_source();
     unsafe { std::ptr::write_unaligned((source + 0x88) as *mut i64, 23) };
-    let pause = Barrier::new(2);
-    let store = STORE.get().unwrap().lock().unwrap();
-    std::thread::scope(|threads| {
-        let writer = threads.spawn(|| {
-            pause.wait();
-            collector_test_support::with_allocations_denied(|| {
-                source_hooks::observe(
-                    &space.memory(),
-                    space.base,
-                    sources::Key::Direct(source),
-                    false,
-                );
-            });
-        });
-        pause.wait();
-        writer.join().unwrap();
+    with_store_contended(|| {
+        source_hooks::observe(
+            &space.memory(),
+            space.base,
+            sources::Key::Direct(source),
+            false,
+        )
     });
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[2].pointer(),
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert!(drain_with(&memory, space.base, 7, &mut changes).unwrap() > 0);
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
+    assert_eq!(memory.reads.get(), 0);
     assert_eq!(changes.len(), 2);
-    assert_eq!(status().repaired_receivers, 2);
-    assert_eq!(status().source_lock_contentions, 1);
-    assert_eq!(status().unattributed_lock_contentions, 0);
+    assert_eq!(status().repaired_receivers, 0);
+    assert_eq!(status().lock_contentions, 1);
     assert_eq!(status().refused_intervals, 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn a_lost_demanded_source_retirement_requires_a_full_census_without_reading_it() {
+fn a_contended_demanded_source_retirement_keeps_its_observation_without_reading_dead_storage() {
     let (space, _, _, source) = saved_source();
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
+    with_store_contended(|| {
         source_hooks::observe(
             &space.memory(),
             space.base,
             sources::Key::Direct(source),
             true,
-        );
+        )
     });
-    drop(store);
     struct Dead;
     impl Memory for Dead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("unobserved source retirement must not be dereferenced");
+            panic!("retired source must not be dereferenced");
         }
     }
+    let mut changes = Vec::new();
     assert_eq!(
-        drain_with(&Dead, space.base, 7, &mut Vec::new()),
-        Err("applied design source retirement was not observed")
+        drain_with(&Dead, space.base, 7, &mut changes),
+        Err("applied design source destroyed while still referenced")
     );
     assert!(needs_full());
+    assert_eq!(status().lock_contentions, 1);
 }
 #[test]
-fn a_contended_author_retirement_refreshes_liveness_without_rewriting_frozen_designs() {
+fn a_contended_author_retirement_keeps_liveness_without_rewriting_frozen_designs() {
     let (space, registry, baseline) = setup(2);
     let pointer = usize::MAX;
-    {
-        let mut store = STORE.get().unwrap().lock().unwrap();
-        store.interests.organisation(1, Some(pointer)).unwrap();
-        dependency_repair::prepare(&store.interests).unwrap();
-    }
+    STORE
+        .get()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .interests
+        .organisation(1, Some(pointer))
+        .unwrap();
     liveness::change(1, true).unwrap();
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
-        liveness::retired(&space.memory(), space.base, pointer);
-    });
-    drop(store);
+    with_store_contended(|| liveness::retired(&space.memory(), space.base, pointer));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
     assert_eq!(changes.len(), 1);
     let author = changes[0].organisation.as_ref().unwrap();
     assert_eq!(author.organisation, 1);
     assert!(!author.live);
-    assert_eq!(status().author_lock_contentions, 1);
+    assert_eq!(status().lock_contentions, 1);
     assert_eq!(status().refused_intervals, 0);
     let held = held::certified().unwrap();
     for (source, row) in registry.iter().zip(&baseline.definitions.rows) {
@@ -1139,40 +1153,31 @@ fn a_contended_author_retirement_refreshes_liveness_without_rewriting_frozen_des
 }
 
 #[test]
-fn contended_author_roster_resolves_its_hook_argument_before_store_and_keeps_designs_frozen() {
+fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
     use engine_production::nindustrial_organisation_corganisation as organisation;
     let (space, registry, baseline) = setup(1);
-    let mut bytes = vec![0u8; organisation::REFERENCE + 8];
+    let mut bytes = [0u8; organisation::REFERENCE + 8];
+    bytes[..8].copy_from_slice(&((space.base + organisation::VTABLE_RVA) as u64).to_le_bytes());
     bytes[organisation::REFERENCE..organisation::REFERENCE + 8]
         .copy_from_slice(&1u64.to_le_bytes());
     let pointer = bytes.as_ptr() as usize;
     let pointers = [pointer];
     let header = [pointers.as_ptr() as usize as u64, 1 | (1u64 << 32)];
     liveness::change(1, true).unwrap();
-    let pause = Barrier::new(2);
-    let store = STORE.get().unwrap().lock().unwrap();
-    std::thread::scope(|threads| {
-        let writer = threads.spawn(|| {
-            pause.wait();
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            collector_test_support::with_allocations_denied(|| {
-                liveness::roster(&memory, space.base, header.as_ptr() as usize);
-            });
-        });
-        pause.wait();
-        writer.join().unwrap();
+    with_store_contended(|| {
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        liveness::roster(&memory, space.base, header.as_ptr() as usize);
     });
-    drop(store);
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
-    assert_eq!(status().author_lock_contentions, 1);
-    assert_eq!(status().unattributed_lock_contentions, 0);
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 1);
     assert!(!changes[0].organisation.as_ref().unwrap().live);
+    assert_eq!(status().lock_contentions, 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 
@@ -1182,11 +1187,9 @@ fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() 
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
     prepare(&registry[..1], &baseline);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
+    with_store_contended(|| {
         retire(&space.memory(), space.base, usize::MAX);
     });
-    drop(store);
     assert!(!repair::pending());
     observe(
         &space.memory(),
@@ -1197,45 +1200,35 @@ fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() 
     );
     let mut changes = Vec::new();
     assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
-    assert_eq!(status().draft_retirement_contentions, 1);
     assert_eq!(status().refused_intervals, 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 
 #[test]
-fn a_rejected_contended_destruction_keeps_its_receiver_local_tombstone() {
-    let (space, registry, baseline) = setup(2);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
-        unrecorded_writer(Receiver::Removed, registry[0].pointer(), None);
-    });
-    drop(store);
+fn a_rejected_saved_destruction_still_refuses_unobservable_lifetime_history() {
+    let (space, registry, _) = setup(2);
+    with_store_contended(|| unrecorded_writer(Receiver::Removed, registry[0].pointer(), None));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
         reads: std::cell::Cell::new(0),
     };
-    let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
-    assert!(changes[0].removed);
-    assert_eq!(status().unattributed_lock_contentions, 0);
-    assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[1..]));
+    assert!(drain_with(&memory, space.base, 7, &mut Vec::new()).is_err());
+    assert_eq!(memory.reads.get(), 0);
+    assert!(needs_full());
+    assert_eq!(status().lock_contentions, 1);
 }
 #[test]
-fn a_contended_source_without_a_receiver_still_refuses_the_whole_interval() {
+fn a_source_without_a_receiver_still_refuses_the_whole_interval() {
     let (space, _, _) = setup(1);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| {
-        source_hooks::observe(&space.memory(), space.base, sources::Key::Direct(0), false);
-    });
-    drop(store);
+    source_hooks::observe(&space.memory(), space.base, sources::Key::Direct(0), false);
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
     assert!(needs_full());
-    assert_eq!(status().unattributed_lock_contentions, 1);
+    assert_eq!(status().unknown_receivers, 1);
 }
 
 #[test]
-fn a_contended_unprepared_saved_retirement_refuses_without_reading_dead_storage() {
+fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
     let (space, registry, _) = setup(2);
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
@@ -1247,20 +1240,19 @@ fn a_contended_unprepared_saved_retirement_refuses_without_reading_dead_storage(
         false,
         true,
     );
-    let store = STORE.get().unwrap().lock().unwrap();
-    retire(&space.memory(), space.base, registry[1].pointer());
-    drop(store);
+    with_store_contended(|| retire(&space.memory(), space.base, registry[1].pointer()));
     struct Dead;
     impl Memory for Dead {
         fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            panic!("unprepared retirement cannot authorize any native read");
+            panic!("retirement cannot authorize any native read");
         }
     }
-    assert_eq!(
-        drain_with(&Dead, space.base, 7, &mut Vec::new()),
-        Err("variant unprepared binding may have an unobserved retirement")
-    );
-    assert!(needs_full());
+    let mut changes = Vec::new();
+    assert_eq!(drain_with(&Dead, space.base, 7, &mut changes), Ok(0));
+    assert_eq!(changes.len(), 2);
+    assert!(changes[0].snapshot.is_some() && changes[1].removed);
+    assert!(!needs_full());
+    assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[..1]));
 }
 #[test]
 fn a_contended_saved_parent_retirement_still_revokes_carried_child_identities() {
@@ -1274,10 +1266,8 @@ fn a_contended_saved_parent_retirement_still_revokes_carried_child_identities() 
     let baseline = acquire(&space, &registry);
     begin_read();
     prepare(&registry, &baseline);
-    let store = STORE.get().unwrap().lock().unwrap();
     repair::mark(registry[1].pointer());
-    retire(&space.memory(), space.base, registry[0].pointer());
-    drop(store);
+    with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
@@ -1302,10 +1292,8 @@ fn a_repaired_child_never_follows_a_new_parent_with_a_consumed_receiver() {
             registry[0].pointer(),
         );
     }
-    let store = STORE.get().unwrap().lock().unwrap();
     repair::mark(registry[1].pointer());
-    retire(&space.memory(), space.base, registry[0].pointer());
-    drop(store);
+    with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
@@ -1320,21 +1308,20 @@ fn a_repaired_child_never_follows_a_new_parent_with_a_consumed_receiver() {
 }
 
 #[test]
-fn a_repaired_design_and_an_unrelated_retirement_preserve_exact_surviving_rows() {
+fn a_native_overlap_repair_and_an_unrelated_retirement_preserve_exact_surviving_rows() {
     let (space, registry, baseline) = setup(3);
-    let store = STORE.get().unwrap().lock().unwrap();
-    collector_test_support::with_allocations_denied(|| unsafe {
-        around::<0>([registry[1].pointer(), 0, 77, 0], edited)
-    });
-    retire(&space.memory(), space.base, registry[0].pointer());
-    drop(store);
+    unsafe {
+        around::<0>([registry[1].pointer(), 0, 77, 0], edited);
+    }
+    repair::mark(registry[1].pointer());
+    with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
     let memory = OnlyDesign {
         space: &space,
         forbidden: registry[0].pointer(),
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(2));
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
     assert!(memory.reads.get() > 0);
     assert_eq!(changes.len(), 2);
     assert!(changes[0].removed);
@@ -1350,11 +1337,10 @@ fn a_rebound_move_destination_can_be_repaired_without_reading_the_consumed_sourc
     collector_test_support::with_allocations_denied(|| unsafe {
         around::<9>([destination, source, 0, 0], moved)
     });
-    let store = STORE.get().unwrap().lock().unwrap();
     collector_test_support::with_allocations_denied(|| unsafe {
         around::<0>([destination, 0, 77, 0], edited)
     });
-    drop(store);
+    repair::mark(destination);
     let memory = OnlyDesign {
         space: &space,
         forbidden: source,
@@ -1378,10 +1364,9 @@ fn a_delayed_variant_job_keeps_carry_closed_until_its_terminal_repair_finishes()
     // The serial boundary does not consume marks or admit held data. This
     // writer completes before the later Variants worker starts its proof.
     boundary(false);
-    let store = STORE.get().unwrap().lock().unwrap();
     pause.wait();
     writer.join().unwrap();
-    drop(store);
+    repair::mark(registry[0].pointer());
     assert!(repair::pending());
     assert!(held::certified().is_none());
     assert!(!needs_full());

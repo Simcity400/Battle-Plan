@@ -818,6 +818,7 @@ impl Captured {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn capture_owned_impl(
         &mut self,
         memory: &impl Memory,
@@ -1267,6 +1268,7 @@ impl Captured {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn capture_sliced_impl(
         &mut self,
         memory: &impl Memory,

@@ -677,16 +677,13 @@ impl Captured {
                                     certificate.is_some() && p.officer_certificate == certificate
                                 })
                                 .and_then(|p| p.officer)
-                                .map_or_else(
-                                    || {
-                                        engine_native::unit_history::officer_experience(
-                                            memory,
-                                            base,
-                                            seed.pointer,
-                                        )
-                                    },
-                                    |value| value,
-                                )
+                                .unwrap_or_else(|| {
+                                    engine_native::unit_history::officer_experience(
+                                        memory,
+                                        base,
+                                        seed.pointer,
+                                    )
+                                })
                         })
                         .map_err(|_| history_changes::refused())
                         .ok(),
@@ -716,15 +713,9 @@ impl Captured {
                                     certificate.is_some() && p.career_certificate == certificate
                                 })
                                 .and_then(|p| p.career)
-                                .map_or_else(
-                                    || {
-                                        engine_native::unit_history::career_counter(
-                                            memory,
-                                            seed.pointer,
-                                        )
-                                    },
-                                    |value| value,
-                                )
+                                .unwrap_or_else(|| {
+                                    engine_native::unit_history::career_counter(memory, seed.pointer)
+                                })
                         })
                         .map_err(|_| history_changes::refused())
                         .ok(),
@@ -745,16 +736,9 @@ impl Captured {
                                         && p.progression_certificate == certificate
                                 })
                                 .and_then(|p| p.progression)
-                                .map_or_else(
-                                    || {
-                                        engine_native::carmy::pending_template(
-                                            memory,
-                                            base,
-                                            seed.pointer,
-                                        )
-                                    },
-                                    |value| value,
-                                )
+                                .unwrap_or_else(|| {
+                                    engine_native::carmy::pending_template(memory, base, seed.pointer)
+                                })
                         })
                         .map_err(army_stat_changes::progression_refused)
                         .ok(),
@@ -782,18 +766,15 @@ impl Captured {
                                     certificate.is_some() && p.experience_certificate == certificate
                                 })
                                 .and_then(|p| p.experience)
-                                .map_or_else(
-                                    || {
-                                        engine_native::read::<i64>(
-                                            memory,
-                                            seed.pointer
-                                                .checked_add(engine_native::carmy::EXPERIENCE)
-                                                .ok_or("division experience address overflow")?,
-                                        )
-                                        .ok_or("division experience unreadable")
-                                    },
-                                    |value| value,
-                                )
+                                .unwrap_or_else(|| {
+                                    engine_native::read::<i64>(
+                                        memory,
+                                        seed.pointer
+                                            .checked_add(engine_native::carmy::EXPERIENCE)
+                                            .ok_or("division experience address overflow")?,
+                                    )
+                                    .ok_or("division experience unreadable")
+                                })
                         })
                         .map_err(army_stat_changes::experience_refused)
                         .ok(),
@@ -1188,7 +1169,7 @@ impl Captured {
                     let start = self.terrain.len();
                     self.terrain.extend_from_slice(&fresh.terrain);
                     self.movement.extend_from_slice(&fresh.movement_terrain);
-                    let scalars = Scalars::of(&fresh);
+                    let scalars = Scalars::of(fresh);
                     self.rows.push(Row {
                         division: seed.division,
                         start,
@@ -1202,7 +1183,7 @@ impl Captured {
                     if witnessed(hour, id) && !self.terrains.is_empty() {
                         counts.witnessed += 1;
                         self.witness
-                            .push((seed.division, witness(&fresh, &self.terrains)));
+                            .push((seed.division, witness(fresh, &self.terrains)));
                     }
                     if let Some(store) = store.as_deref_mut()
                         && registered
@@ -1223,11 +1204,11 @@ impl Captured {
                         });
                     }
                     // Staged entries retain their own buffers across hours.
-                    if staged.is_none() {
-                        if let Some(Ok(fresh)) = acquired {
-                            self.scratch = fresh.terrain;
-                            self.movement_scratch = fresh.movement_terrain;
-                        }
+                    if staged.is_none()
+                        && let Some(Ok(fresh)) = acquired
+                    {
+                        self.scratch = fresh.terrain;
+                        self.movement_scratch = fresh.movement_terrain;
                     }
                 }
                 Err(_) => {
@@ -1473,6 +1454,14 @@ fn witness(fresh: &stats::AttackStats, terrains: &[(i32, i64)]) -> DivisionAttac
     }
 }
 
+/// A missing range is a programming error, never an invented native refusal.
+struct OwnedAttack;
+impl Memory for OwnedAttack {
+    fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+        panic!("owned attack settlement attempted a native read")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1639,13 +1628,5 @@ mod tests {
             ]
         );
         assert_eq!(packet.stats.night, Some(6));
-    }
-}
-
-/// A missing range is a programming error, never an invented native refusal.
-struct OwnedAttack;
-impl Memory for OwnedAttack {
-    fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-        panic!("owned attack settlement attempted a native read")
     }
 }

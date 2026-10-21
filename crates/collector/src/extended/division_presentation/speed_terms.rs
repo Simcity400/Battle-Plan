@@ -41,6 +41,8 @@ use replay_data::{
     rows::OwnerTransportSpeedRow, rows::RiverRelationRow, rows::StateMovementTerms, rows::TableId,
     rows::tables,
 };
+use replay_frame::frame::TableInput;
+#[cfg(test)]
 use replay_frame::frame::TableView;
 use std::sync::{
     Mutex,
@@ -368,15 +370,65 @@ impl SpeedTerms {
         self.outcomes
     }
 
-    pub(super) fn tables(&self) -> [TableView; N] {
-        use crate::table_conversion::table;
+    pub(super) fn table_inputs(
+        &self,
+        mut projection: Option<&mut crate::projection::Projection<'_>>,
+    ) -> [TableInput; N] {
+        use crate::projection::scalar_table;
+        use replay_data::rows::RowCodec;
         [
-            table::<tables::MovementStateTerms, _>(self.outcomes[0], &self.states, |r| *r),
-            table::<tables::CoreSupplyAccess, _>(self.outcomes[1], &self.access, |r| *r),
-            table::<tables::CountryUnitSpeedEntries, _>(self.outcomes[2], &self.entries, |r| *r),
-            table::<tables::RiverRelations, _>(self.outcomes[3], &self.rivers, |r| *r),
-            table::<tables::DivisionTransportSpeeds, _>(self.outcomes[4], &self.transport, |r| *r),
+            scalar_table::<tables::MovementStateTerms, _>(
+                projection
+                    .as_deref_mut()
+                    .filter(|_| matches!(self.outcomes[0], Outcome::Rows { .. })),
+                self.outcomes[0],
+                &self.states,
+                RowCodec::key,
+                |r| *r,
+            ),
+            scalar_table::<tables::CoreSupplyAccess, _>(
+                projection
+                    .as_deref_mut()
+                    .filter(|_| matches!(self.outcomes[1], Outcome::Rows { .. })),
+                self.outcomes[1],
+                &self.access,
+                RowCodec::key,
+                |r| *r,
+            ),
+            scalar_table::<tables::CountryUnitSpeedEntries, _>(
+                projection
+                    .as_deref_mut()
+                    .filter(|_| matches!(self.outcomes[2], Outcome::Rows { .. })),
+                self.outcomes[2],
+                &self.entries,
+                RowCodec::key,
+                |r| *r,
+            ),
+            scalar_table::<tables::RiverRelations, _>(
+                projection
+                    .as_deref_mut()
+                    .filter(|_| matches!(self.outcomes[3], Outcome::Rows { .. })),
+                self.outcomes[3],
+                &self.rivers,
+                RowCodec::key,
+                |r| *r,
+            ),
+            scalar_table::<tables::DivisionTransportSpeeds, _>(
+                projection.filter(|_| matches!(self.outcomes[4], Outcome::Rows { .. })),
+                self.outcomes[4],
+                &self.transport,
+                RowCodec::key,
+                |r| *r,
+            ),
         ]
+    }
+
+    #[cfg(test)]
+    pub(super) fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection without a baseline always samples"),
+        })
     }
 
     #[cfg(test)]

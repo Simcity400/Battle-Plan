@@ -39,6 +39,8 @@ Career and stored-experience captures share one experience writer certificate pe
 
 Presentation preparation ranges acquire context, dirty source trees, pool
 membership, state/terrain values and history scalars with reused local memos.
+They also select daily supply samples from the immutable occurrence baseline;
+missing staging keeps the host's original ordered lookup.
 Already admitted receivers take their registering certificate before resume;
 held source, membership, state and history slot hints avoid repeat probing.
 A passive gate rejects cold or cleared slots before registration, so parallel

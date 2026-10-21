@@ -960,7 +960,6 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
             ordinal: 0,
             division: 70,
             entries: vec![modifier_entry(4, 10), modifier_entry(4, 10)],
-            ..Default::default()
         },
         LandCombatDivisionModifierRow {
             combat: 7,
@@ -968,7 +967,6 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
             ordinal: 1,
             division: 71,
             entries: vec![modifier_entry(6, 7_000)],
-            ..Default::default()
         },
     ];
     assert_eq!(rows, &expected);

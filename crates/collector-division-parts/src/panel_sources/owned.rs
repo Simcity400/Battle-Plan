@@ -74,6 +74,7 @@ impl Store {
             && self.boundary.retired.is_empty()
             && self.boundary.availability.is_some()
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn settle_owned<'a>(
         &mut self,
         base: usize,

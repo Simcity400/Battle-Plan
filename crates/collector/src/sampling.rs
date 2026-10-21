@@ -1666,10 +1666,12 @@ impl Shared {
         }
     }
 
-    /// At most two of the four reusable buffers free: raise background priority
+    /// At most one of the four reusable buffers free: raise background priority
     /// before the next callback waits in `take_frame` for a returned buffer.
+    /// Two buffers in flight is the steady decode-then-spool pipeline, not a
+    /// backlog.
     pub fn buffers_backlogged(&self) -> bool {
-        self.free.len() <= 2
+        self.free.len() <= 1
     }
 
     pub fn acquisition_failed(&self) -> bool {
@@ -3078,9 +3080,23 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 slow_stores
             )));
             // The daily production slot's walks, beside Slow, at that slot.
+            // MIO is the longest independent walk, so submit it before the
+            // modifier ranges. All still join at the late assembly barrier.
+            let industrial_organisations_pending =
+                extended::ProductionDailyPacks::due(clock.hour, force_full).then(|| {
+                    queue!(acquisition::Job::IndustrialOrganisations(
+                        frame.extended.take_industrial_organisations_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                        )
+                    ))
+                });
             // On its slot the production modifier capture splits at the last
-            // slot hour's balance: the parts after the first leave first, then
-            // the ProductionDaily job with the first; all join in slot order.
+            // slot hour's balance. Loan the extra ranges before range zero's
+            // pack leaves; all modifier ranges join in slot order.
             let mut production_part_pending: [Option<PendingAcquisition>;
                 extended::production_modifiers::MAX_PARTS - 1] =
                 [const { None }; extended::production_modifiers::MAX_PARTS - 1];
@@ -4007,6 +4023,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                                 acquisition.worker_count(),
                             ) > 1;
                             let presentation_pending = if split {
+                                batch.arm_presentation(&mut presentation_request);
                                 queue!(acquisition::Job::PresentationPrepare(presentation_request))
                             } else {
                                 queue!(acquisition::Job::Presentation(presentation_request))
@@ -5507,11 +5524,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     .extended
                     .restore_event_feed_seal(feed, report.err().map(acquisition_failure_reason));
             });
-            // The daily production slot's walks join last before the
-            // assembly that takes their ticks: on their slot they are the
-            // hour's longest job.
+            // The daily production slot's independent walks still join last
+            // before the assembly that takes their ticks.
             if let Some(pending) = production_daily_pending {
-                let (request, _, failure) = completed!(pending, ProductionDaily);
+                let (mut request, _, failure) = completed!(pending, ProductionDaily);
+                if let Some(pending) = industrial_organisations_pending {
+                    let (mio, report, mio_failure) = completed!(pending, IndustrialOrganisations);
+                    frame.extended.restore_industrial_organisations_request(
+                        mio,
+                        mio_failure.is_none(),
+                        report.ticks,
+                        &mut request.packs,
+                    );
+                }
                 frame
                     .extended
                     .restore_production_daily_request(request, failure.is_none());

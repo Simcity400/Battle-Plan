@@ -181,6 +181,7 @@ impl NativeReads {
                 .sum::<usize>()
             + self.variant_indices.capacity() * std::mem::size_of::<((u64, usize), Option<usize>)>()
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -439,6 +440,7 @@ impl NativeReads {
             && read.army == seed.pointer)
             .then_some(read)
     }
+    #[allow(clippy::too_many_arguments)]
     fn capture_state(
         &mut self,
         memory: &impl Memory,
@@ -672,7 +674,8 @@ mod tests {
                 base: 0,
                 bytes: &bytes,
             };
-            let certificate = Some((1, 1));
+            let stamp = (1, 1);
+            let certificate = Some(stamp);
             let mut serial = Store::default();
             serial
                 .root_with_certificate(&memory, 0, owner, receiver, root, certificate)
@@ -706,9 +709,11 @@ mod tests {
             reads.root_indices.insert((0, owner), Some(0));
             reads
                 .root_certificates
-                .insert((0, owner), certificate.unwrap());
-            let mut staged = Store::default();
-            staged.settling_owned = true;
+                .insert((0, owner), stamp);
+            let mut staged = Store {
+                settling_owned: true,
+                ..Store::default()
+            };
             staged
                 .root_prepared(&Denied, 0, owner, receiver, root, Some(&reads))
                 .unwrap();

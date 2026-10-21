@@ -1,6 +1,6 @@
 //! Prepared receiver claims outlive originals and their terminal snapshots.
 //! The claim mutex is never held while calling native code or taking STORE.
-//! Callback acquisition may wait only for this prepared metadata: the only
+//! Callback acquisition may wait for this prepared metadata: the only
 //! nested order is STORE then WRITERS, never the reverse or across an original.
 use super::*;
 

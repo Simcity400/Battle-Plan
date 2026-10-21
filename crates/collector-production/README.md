@@ -18,45 +18,36 @@ bindings by epoch and reseeds on the existing worker.
 
 The daily census reuses shared deep design values only under that complete
 certificate; its batches request deep native spans only for missing values.
-An ordinary lost saved-design edit marks a prepared receiver slot atomically,
-even when a worker owns the staging store. The hourly Variants worker
-re-reads only those designs (including all shallow/deep fields, children,
-source/author bindings and country-context demand), then carries untouched rows.
-The serial observer boundary retains invalidation only; native repairs, liveness,
-fog and country contexts run in the same parallel job before its roster/recovery
-decision. Pending repair evidence closes held-design reuse until completion.
-Both owned outputs return before FinalInputs/projection, and every native read
-finishes before the hourly original resumes. Independent first-burst consumers
-retain their synchronous writer/lifetime marks and live availability checks.
-Overlapping ordinary writers of one receiver, including self-owned version
-refreshes, use the same terminal repair; uncertain recorded snapshots of that receiver are discarded. Newly published
-bindings without prepared slots are included when a callback was lost. Retired
-receivers keep their tombstones and are never dereferenced by repair. Terminal
-repairs preserve exact current state, not lost native occurrences: VariantChanges
-is explicitly unavailable for that hour while the four current-state tables
-remain publishable. A contended destruction marks a separate prepared retirement
-slot: the worker removes the saved binding and publishes a terminal tombstone,
-without reading the dead design. Draft retirements produce no saved mark.
-Publication while retirement is deferred, or retirement of a binding without a
-prepared slot, still requires a complete roster. A contended consuming move
-of two provably unwatched drafts needs no binding log: prepared receiver slots
-and the absence of unprepared publication certify their exclusion. Saved or
-uncertain operands still require their old binding log before consumption.
-Status counts exempt draft-move contentions separately.
+Callbacks retain every occurrence while unrelated native writers run in
+parallel. A busy staging mutex waits for its holder; it no longer drops a
+terminal snapshot, scalar/flag edit, publication, consuming move, destruction,
+source/provider change or author-liveness occurrence. Copies and sequence
+allocation share that mutex, preserving observation order. A consuming move
+logs both old bindings before the original and registers its resulting binding
+afterward; drafts unwatched before and after their originals remain excluded.
 
-Lost direct-source and provider callbacks mark their own prepared keys. The
-worker selects every saved dependant, plus designs whose logged snapshots can
-introduce new bindings, and refreshes their complete terminal state. Lost author
-callbacks instead refresh current reference liveness and rederive every
-dependant's organisation-owner country demand, preserving frozen design lookup
-witnesses. The roster hook follows its own valid argument without
-requiring STORE; retirement uses prepared author-pointer marks, not dead fields.
-Unobserved destruction of a demanded source still refuses native reuse.
-Status counts repaired intervals and re-read receivers, deferred retirements,
-source/provider and author contentions, and exempt draft retirements. Named
-refusal reasons have cumulative interval counts. Each whole-interval missed source reports
-its file, line, cause, call count and refused-interval count; callback diagnostics
-use process-static sites, with no allocation or population cap.
+Only genuine overlapping native writers of one receiver, including self-owned
+version refreshes, require receiver-local terminal repair. Uncertain snapshots
+of that receiver are discarded; the hourly Variants worker re-reads its complete
+state and carries untouched designs. Newly published bindings without prepared
+slots are included when an overlap was lost. Retired receivers retain observed
+tombstones and are never dereferenced by repair. Terminal repairs cannot invent
+native occurrences: VariantChanges is explicitly unavailable for that interval,
+while the four current-state tables remain publishable.
+
+The serial observer boundary retains invalidation only; native repair, liveness,
+fog and country contexts run in the parallel Variants job before its census
+choice. Pending repair evidence closes held-design reuse until completion. Both
+owned outputs return before FinalInputs/projection, and every native read ends
+before the hourly original resumes. First-burst consumers retain synchronous
+writer/lifetime marks and live availability checks. Author occurrences preserve
+frozen design lookup witnesses while the worker rederives their terminal current
+country-context demand through the reference registry, never a retired pointer.
+
+Status counts staging lock waits (not lost observations), competing native
+claims, repaired intervals/receivers and named refusals separately. Each missed
+source reports its file, line, cause, calls and refused intervals using static
+sites, without callback allocation or a population cap.
 
 Unattributed edits, publication/lifetime uncertainty, shared ancestry conflicts,
 dependency gaps, epoch changes and running boundary writers still require a
@@ -78,14 +69,17 @@ it never calls native code, takes STORE or spans an original. Claim growth
 allocates replacement storage off-lock, revalidates quiescence/capacity under the
 metadata lock, then swaps and drops replaced storage off-lock. Claim admission
 uses prepared headroom before probing operand membership; conflict inspection
-and release share each receiver lookup under the same lock. The staging store
-still uses callback try-locks, because it can contain native reads and worker
-preparation. Version-owner walks use the census's atomic live population count,
-not a staging-store lookup. Competing edits to receivers unwatched both before and after their
-originals remain excluded drafts. Observer status retains running/missed-writer
-refusals, the last missed source and last refusal, plus separate competing-writer,
-receiver-local/unattributed lock-contention, unknown-receiver and claim-capacity
-counters.
+and release share each receiver lookup under the same lock. Staging mutex holders
+never call an original, forward notifications, invoke a
+native getter or wait for callback quiescence. Callback critical sections only
+copy guarded memory into prepared storage; worker preparation/census work may
+allocate but never waits for a game thread. Workers check running flights rather
+than waiting for them. Neither mutex spans an original, so nested same-thread
+writers cannot re-enter a held mutex; the nested order is STORE then WRITERS,
+never its reverse. Mutex contention can delay an occurrence, not erase it.
+Version-owner walks use the census's atomic live population count. Status retains
+running/missed-writer refusals, last missed source/refusal, unknown-receiver and
+claim-capacity counters.
 Daily projection compares borrowed headers, text and deep values before cloning
 changed rows. Unchanged source bindings and held design entries keep their
 allocations; country-demand rebuilding recycles its key scratch. Owned definition rows sort only after acquisition, authentication
@@ -187,5 +181,10 @@ that observation rather than the live observer's current availability. Failure
 marks retain owned payload storage, and skipped daily reads preserve its date.
 
 VariantModules, VariantStats and VariantUpgrades convert every occurrence in order but materialize only terminal replacement groups on membership changes, cloning only untouched baseline groups. VariantDefinitions compares borrowed definitions before deep cloning, reuses private rows and source-reference buffers, and keeps key order through complete edits; VariantChanges retains every occurrence.
+
+Terminal replacements equal to a shared encoder baseline reuse that same snapshot
+before the full-materialization fallback. This preserves the daily recovery cache
+without cloning unchanged designs, modules, stats or upgrades; every intermediate
+occurrence is still converted and checked, even when its final value is unchanged.
 
 FIFO decode normalizes completed definition rows after the acquisition's coupled context visits and certificate admission. Design-change drains, terminal repairs and census decisions remain parked because they select native demand.

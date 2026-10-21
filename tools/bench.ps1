@@ -1178,6 +1178,13 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
 }
 Complete-Pending
 Exit-BuildPause
+# Every candidate is detached and finalized: close the game now rather than leave it paused
+# through the offline metrics below, which read only the finalized replays.
+if ($script:game -and -not $script:game.HasExited) {
+    if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
+    $script:game.Kill(); $null = $script:game.WaitForExit(300000)
+    Log 'Closed the game after the last screen.'
+}
 # Exact per-hour metrics decode each finalized replay; run them after the game work.
 foreach ($row in $rowDicts) {
     if (-not $row.frozen -or -not $row.Contains('size') -or -not $row.size -or $row.Contains('exact')) { continue }
