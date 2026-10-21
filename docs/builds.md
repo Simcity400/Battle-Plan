@@ -130,6 +130,14 @@ dev-dependencies that do this and owns them:
 - `[workspace.dependencies]` declares `test-unify` and each rarer third-party crate
   once, between generated markers.
 
+Equal features are not quite enough. Without `--target`, Cargo builds a crate the build
+needs for both build scripts and the target, with the same features, once with the
+target's profile, and proc-macros and build scripts link that build. A selection that
+builds such a crate (`unicode-ident`, for one) only for build scripts builds it with the
+build-script profile instead, and so rebuilds every proc-macro above it and everything
+that uses them. The check therefore also requires a target build wherever the
+workspace's test build has one.
+
 Only test builds read dev-dependencies. `cargo build -p <product>` and checks without
 `--all-targets` resolve exactly the features they did before, so shipped binaries
 and their release builds are unchanged. Those builds still differ from test builds:

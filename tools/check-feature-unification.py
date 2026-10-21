@@ -7,7 +7,8 @@ above it compile from scratch once more for each selection that resolves it diff
 
 The check resolves `cargo tree` with test targets for the workspace and for each member, and
 reports every crate a member's test build resolves with fewer features than the workspace's
-test build. `--fix` makes them equal with generated dev-dependencies, which no non-test build
+test build, or builds only for build scripts and proc-macros where the workspace's test build
+also builds it for the target with the same features (see `differences`). `--fix` makes them equal with generated dev-dependencies, which no non-test build
 reads, so `cargo build` and checks without `--all-targets` keep their own features:
 
 - each member's `[target.'cfg(all())'.dev-dependencies]` table names the workspace crates and
@@ -132,7 +133,16 @@ def scan():
 
 
 def differences(workspace, selections):
-    """{member: {node: features its test build lacks}} and the nodes the workspace never resolves."""
+    """{member: {node: features its test build lacks}} and the nodes the workspace never resolves.
+
+    Without `--target`, Cargo builds a crate the build resolves for both the host and the target
+    with the same features once, with the target's profile, and build scripts and proc-macros
+    link that build. A selection that builds such a crate only for the host builds it with the
+    build-script profile instead, and so rebuilds every proc-macro and build script above it.
+    Its missing target build therefore counts as lacking all the target build's features.
+    """
+    shared = {(n, v) for n, v, side in workspace
+              if side == "host" and workspace.get((n, v, "target")) == workspace[n, v, side]}
     lacking, unknown = {}, {}
     for member, nodes in selections.items():
         for node, features in nodes.items():
@@ -140,6 +150,8 @@ def differences(workspace, selections):
                 unknown.setdefault(node, []).append(member)
             elif workspace[node] - features:
                 lacking.setdefault(member, {})[node] = workspace[node] - features
+            if node[2] == "host" and node[:2] in shared and (*node[:2], "target") not in nodes:
+                lacking.setdefault(member, {})[(*node[:2], "target")] = workspace[(*node[:2], "target")] or {""}
     return lacking, unknown
 
 
@@ -149,9 +161,10 @@ def report(lacking, unknown):
         for node, missing in nodes.items():
             by_node.setdefault(node, []).append((member, missing))
     for (name, version, side), rows in sorted(by_node.items()):
-        missing = sorted(set().union(*(m for _, m in rows)))
+        missing = sorted(set().union(*(m for _, m in rows)) - {""})
+        what = f"lacks {', '.join(missing)}" if missing else "has no target build"
         examples = ", ".join(sorted(member for member, _ in rows)[:4])
-        print(f"{name} {version} ({side}) lacks {', '.join(missing)} in {len(rows)} member test builds, e.g. {examples}")
+        print(f"{name} {version} ({side}) {what} in {len(rows)} member test builds, e.g. {examples}")
     for (name, version, side), owners in sorted(unknown.items()):
         print(f"note: {name} {version} ({side}) appears in {', '.join(sorted(owners)[:4])} but not in the "
               "workspace's resolution; `cargo tree` elided it there, so it is not compared")
@@ -300,7 +313,7 @@ def fix():
             return True
         state = lambda: repr((sorted(unify_target), sorted(unify_host), crates, narrow))
         before = state()
-        share = {node: sum(node in s for s in selections.values()) / len(selections)
+        share = {node: sum(node in s or node in lacking.get(m, ()) for m, s in selections.items()) / len(selections)
                  for nodes in lacking.values() for node in nodes}
         for node in {node for nodes in lacking.values() for node in nodes if node[0] not in members}:
             if node[2] == "host":
@@ -347,7 +360,7 @@ def fix():
                 generated[key or keys[node]] = (
                     third_party_spec(node[0] if key != node[0] else "", node[1], declared[node]) if key
                     else "{ workspace = true }")
-            if member != UNIFY and unified & nodes.keys():
+            if member != UNIFY and unified & (nodes.keys() | lacking.get(member, {}).keys()):
                 generated[UNIFY] = "{ workspace = true }"
             write_member(Path(members[member]["manifest_path"]), generated)
     return False

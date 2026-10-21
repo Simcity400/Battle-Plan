@@ -48,6 +48,8 @@ replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-base64 = { workspace = true }
+unify-bitflags = { workspace = true }
 unify-hashbrown = { workspace = true }
 unify-log = { workspace = true }
 unify-uuid = { workspace = true }

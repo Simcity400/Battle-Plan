@@ -64,6 +64,7 @@ shader-pipeline = { path = "../shader-pipeline", features = ["test-support"] }
 store = { path = "../store", features = ["test-support"] }
 tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 test-unify = { workspace = true }
+unify-bitflags = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-core = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

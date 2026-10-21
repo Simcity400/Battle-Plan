@@ -44,4 +44,5 @@ replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-winapi-util = { workspace = true }
 uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
