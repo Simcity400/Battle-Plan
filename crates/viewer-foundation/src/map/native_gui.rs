@@ -5255,6 +5255,7 @@ pub fn draw_composed(
     sheets: &dyn Sheets,
     batch: &mut Batch,
 ) -> Result<(), Refusal> {
+    let _submit_profile = crate::profiling::span("dc_gui_submit");
     let first = batch.quads.len();
     let mut previous = None;
     for part in layout.composed_parts(items) {
@@ -5393,6 +5394,7 @@ pub fn draw(
     sheets: &dyn Sheets,
     batch: &mut Batch,
 ) -> Result<(), Refusal> {
+    let _submit_profile = crate::profiling::span("dc_gui_submit");
     let first = batch.quads.len();
     let mut previous = None;
     let drawn = layout

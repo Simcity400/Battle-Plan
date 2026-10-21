@@ -45,6 +45,8 @@ use {
 
 pub mod naval;
 pub mod naval_combat;
+mod provinces;
+use provinces::Provinces;
 #[cfg(test)]
 mod empty_tests;
 pub use naval::Sources as NavalSources;
@@ -108,7 +110,7 @@ pub struct Targets(Arc<PreparedTargets>);
 #[derive(Debug, Default, PartialEq)]
 struct PreparedTargets {
     placed: Vec<Target>,
-    provinces: BTreeMap<u32, ProvinceTargets>,
+    provinces: BTreeMap<u32, Arc<ProvinceTargets>>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -139,7 +141,13 @@ impl From<Vec<Target>> for Targets {
             lands.sort_unstable();
             province.lands = lands.into();
         }
-        Self(Arc::new(PreparedTargets { placed, provinces }))
+        Self(Arc::new(PreparedTargets {
+            placed,
+            provinces: provinces
+                .into_iter()
+                .map(|(id, targets)| (id, Arc::new(targets)))
+                .collect(),
+        }))
     }
 }
 
@@ -480,13 +488,13 @@ pub struct History {
     targets: Targets,
     naval: naval::History,
     combats: naval_combat::History,
-    provinces: BTreeMap<u32, Province>,
-    /// Provinces with retained unit entities, in placement order.
-    populated: BTreeSet<u32>,
+    provinces: Provinces,
     /// The shared schedule's reached updates in native province order.
     updates: Vec<(u32, Update)>,
     /// Deferred land requests, retaining capacity between frames and province visits.
     queued: Vec<(u32, Slot, bool)>,
+    #[cfg(test)]
+    queue_trace: Vec<(u32, Slot, bool)>,
     /// Admission operands in province order, refreshed only when the hour installs a roster.
     province_bounds: Vec<(u32, Option<[f32; 4]>)>,
     /// Province boxes for camera admission.
@@ -537,9 +545,8 @@ impl History {
         } else {
             Arc::clone(known)
         };
-        for &id in self.bounds.keys() {
-            self.provinces.entry(id).or_default();
-        }
+        self.provinces.ensure(self.bounds.keys().copied());
+        self.provinces.prepare_inputs(&self.targets, &self.naval);
         self.prepare_province_bounds();
     }
 
@@ -569,14 +576,14 @@ impl History {
     /// Recorded roster/route inputs; mutable animator and attachment state
     /// belongs to this viewer's frame history.
     pub fn set_naval(&mut self, sources: NavalSources) {
-        let mut changed = false;
-        for candidate in &sources.candidates {
-            self.provinces.entry(candidate.province).or_insert_with(|| {
-                changed = true;
-                Province::default()
-            });
-        }
+        let changed = self
+            .provinces
+            .ensure(sources.candidates.iter().map(|candidate| candidate.province));
         self.naval.install(sources);
+        {
+            let _join_span = viewer_foundation::profiling::span("units_join_naval");
+            self.provinces.prepare_inputs(&self.targets, &self.naval);
+        }
         if changed {
             self.prepare_province_bounds();
         }
@@ -601,13 +608,36 @@ impl History {
         bounds: Arc<BTreeMap<u32, [f32; 4]>>,
         steady: bool,
     ) {
+        self.set_prepared_join(targets, bounds, steady, true);
+    }
+
+    /// Installs targets and naval inputs in their usual order, joining the final inputs once.
+    /// Standalone setters still prepare immediately for callers that install only one source.
+    pub fn set_prepared_with_naval(
+        &mut self,
+        targets: Targets,
+        bounds: Arc<BTreeMap<u32, [f32; 4]>>,
+        steady: bool,
+        sources: NavalSources,
+    ) {
+        // Keep the setters' ensure and bounds-refresh order, but join only after both
+        // sources are installed. Independent setters still join immediately.
+        self.set_prepared_join(targets, bounds, steady, false);
+        self.set_naval(sources);
+    }
+
+    fn set_prepared_join(
+        &mut self,
+        targets: Targets,
+        bounds: Arc<BTreeMap<u32, [f32; 4]>>,
+        steady: bool,
+        join: bool,
+    ) {
         let mut changed = false;
         if !bounds.is_empty() && !Arc::ptr_eq(&self.bounds, &bounds) {
             // Native updates the show bits of empty provinces too: a stack
             // arriving in a province already shown starts at full scale.
-            for &id in bounds.keys() {
-                self.provinces.entry(id).or_default();
-            }
+            self.provinces.ensure(bounds.keys().copied());
             self.bounds = bounds;
             changed = true;
         }
@@ -616,14 +646,16 @@ impl History {
                 self.provinces.get_mut(id).unwrap().lands = Arc::default();
             }
         }
+        changed |= self.provinces.ensure(targets.0.provinces.keys().copied());
         for (&id, prepared) in &targets.0.provinces {
-            let province = self.provinces.entry(id).or_insert_with(|| {
-                changed = true;
-                Province::default()
-            });
+            let province = self.provinces.get_mut(&id).unwrap();
             province.lands = Arc::clone(&prepared.lands);
         }
         self.targets = targets;
+        if join {
+            let _join_span = viewer_foundation::profiling::span("units_join_prepared");
+            self.provinces.prepare_inputs(&self.targets, &self.naval);
+        }
         self.steady = steady;
         if changed {
             self.prepare_province_bounds();
@@ -672,16 +704,7 @@ impl History {
             self.epoch += 1;
             self.raid_epoch = self.epoch;
         }
-        for (id, province) in &mut self.provinces {
-            if provinces.is_none_or(|provinces| provinces.contains(id)) {
-                *province = Province {
-                    land_cursor: province.land_cursor,
-                    lands: std::mem::take(&mut province.lands),
-                    ..Province::default()
-                };
-                self.populated.remove(id);
-            }
-        }
+        self.provinces.reset(provinces);
     }
 
     /// Runs on `schedule`, the view's counters' own, from now on: a view keeps
@@ -718,6 +741,7 @@ impl History {
         buildings: &mut BuildingHistory,
         buildings_enabled: bool,
     ) -> FrameModels {
+        let _update_span = viewer_foundation::profiling::span("step_update_models");
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
@@ -803,6 +827,7 @@ impl History {
         // The native literal, advanced before the province updates (unless
         // the frame already advanced it for its map icons); never indexed by
         // the replay hour.
+        let schedule_span = viewer_foundation::profiling::span("units_schedule");
         let schedule = Arc::clone(&self.schedule);
         let mut schedule = schedule
             .lock()
@@ -818,22 +843,30 @@ impl History {
         self.updates.clear();
         self.updates.extend(schedule.updates());
         self.updates.sort_unstable_by_key(|&(id, _)| id);
+        drop(schedule_span);
         let fast_empty = true;
         #[cfg(test)]
         let fast_empty = self.empty_fast_path.unwrap_or(fast_empty);
+        let provinces_span = viewer_foundation::profiling::span("units_provinces");
+        let dense = &mut self.provinces;
+        let mut at = 0;
         for &(id, update) in &self.updates {
-            let Some(province) = self.provinces.get_mut(&id) else {
+            while at < dense.records.len() && dense.records[at].id < id {
+                at += 1;
+            }
+            let Some(record) = dense.records.get_mut(at).filter(|record| record.id == id) else {
                 continue;
             };
+            let province = &mut record.province;
             buildings(id, budget);
             match update {
                 Update::InView => {
                     let land_was_shown = province.shown[Kind::Land as usize];
-                    let targets = self.targets.0.provinces.get(&id).map(|p| &p.slots);
+                    let targets = record.targets.as_ref().map(|p| &p.slots);
                     if fast_empty
                         && province.entities.is_empty()
                         && targets.is_none_or(BTreeMap::is_empty)
-                        && !self.naval.has_candidates(id)
+                        && !record.has_candidates
                     {
                         // No slot can queue, grow or retire. Empty provinces still
                         // remember admission, and stale land visits lose membership.
@@ -867,50 +900,51 @@ impl History {
                 }
             }
             if province.entities.is_empty() {
-                self.populated.remove(&id);
+                dense.populated.remove(&at);
             } else {
-                self.populated.insert(id);
+                dense.populated.insert(at);
             }
         }
+        drop(provinces_span);
         buildings(u32::MAX, budget);
+        let deferred_span = viewer_foundation::profiling::span("units_deferred");
+        #[cfg(test)]
+        self.queue_trace.clone_from(&self.queued);
         for (id, slot, shown) in self.queued.drain(..) {
-            let province = self.provinces.get_mut(&id).unwrap();
-            province.create_land(
+            let dense = &mut self.provinces;
+            let at = dense.indices[&id];
+            let record = &mut dense.records[at];
+            record.province.create_land(
                 slot,
-                &self.targets.0.provinces[&id].slots[&slot],
+                &record.targets.as_ref().unwrap().slots[&slot],
                 shown,
                 self.steady,
                 &mut self.epoch,
                 budget,
             );
-            if !province.entities.is_empty() {
-                self.populated.insert(id);
+            if !record.province.entities.is_empty() {
+                dense.populated.insert(at);
             }
         }
+        drop(deferred_span);
         // Graphical province setters and probes run before idle updates
         // dispatches the animation manager. Admit each private combat player
         // once here, after this frame's callbacks and before its rendered pose.
         self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
-        self.populated
-            .iter()
-            .flat_map(|id| {
-                self.provinces[id]
-                    .entities
-                    .values()
-                    .flat_map(Entity::placed)
-            })
-            .chain(self.combats.placed())
-            .chain(self.raids.iter().map(|&(mesh, instance)| {
-                (
-                    mesh,
-                    ModelInstance {
-                        animation_epoch: raid_epoch,
-                        ..instance
-                    },
-                )
-            }))
-            .collect()
+        let _collect_span = viewer_foundation::profiling::span("units_collect");
+        let mut placed = self.provinces.placed();
+        placed.extend(self.combats.placed());
+        placed.extend(self.raids.iter().map(|&(mesh, instance)| {
+            (
+                mesh,
+                ModelInstance {
+                    animation_epoch: raid_epoch,
+                    ..instance
+                },
+            )
+        }));
+        placed
     }
 
     pub fn combat_warnings(&self) -> Vec<String> {
@@ -984,7 +1018,6 @@ pub mod tests {
             |_, _| {},
         )
     }
-
 
     impl Province {
         // Original per-province allocation/collection is the queue-order oracle.
@@ -1317,7 +1350,8 @@ pub mod tests {
                 false,
             );
             for id in [1, 3, 5] {
-                h.provinces.entry(id).or_default();
+                h.provinces.ensure([id]);
+                h.provinces.prepare_inputs(&h.targets, &h.naval);
             }
             let mut budget = Budget::new(limit, false);
             let mut remaining = [1, 3, 5].into_iter().peekable();
@@ -1381,12 +1415,12 @@ pub mod tests {
             );
             let full: Vec<_> = h
                 .provinces
-                .values()
-                .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+                .iter()
+                .flat_map(|(_, province)| province.entities.values().flat_map(Entity::placed))
                 .collect();
             assert_eq!(placed, full, "frame {frame}");
             assert_eq!(
-                h.populated,
+                h.provinces.populated_ids(),
                 h.provinces
                     .iter()
                     .filter_map(|(&id, province)| (!province.entities.is_empty()).then_some(id))
@@ -1395,7 +1429,7 @@ pub mod tests {
             );
         }
         h.reset(None);
-        assert!(h.populated.is_empty());
+        assert!(h.provinces.populated_ids().is_empty());
     }
 
     #[test]
@@ -1717,7 +1751,7 @@ pub mod tests {
     }
 
     /// The game's raids mode clears the same per-province land-model bit its units cutoff
-    /// clears, so a political → raids → political round trip retires and restores land models
+    /// clears, so a political â†’ raids â†’ political round trip retires and restores land models
     /// exactly as a camera rising above the cutoff and coming back down does, frame for frame;
     /// ships are untouched.
     #[test]

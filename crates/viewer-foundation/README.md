@@ -18,6 +18,20 @@ Flag candidates can be warmed on hour workers through `LazyFlags::warm`, includi
 
 Finalized stack-anchor lookup is shared by counter grids and selected movement products, preserving authored slots, victory-point inheritance and seeded defaults.
 
+Synchronous frame batches use a root-shared `frame_assist` service: protected
+normal-priority idle slots first, then nonblocking hour-builder admission, then
+the caller. The batch width remains the original builder width plus its caller,
+limited by process affinity. Protected slots hold no queue; late builder turns
+cannot reach expired borrowed callbacks. Hour building and raids retain the
+original builder pool and scheduling order.
+With ordinary `BATTLE_PLAN_VIEWER_PROFILE`, `FRAME_TURNS` reports each synchronous
+batch's protected/builder accepts, admitted/started helpers, caller tasks and
+beside hits. Accounting is absent when PROFILE is off; there is no separate
+scheduler diagnostic switch.
+
+
+The ordinary `BATTLE_PLAN_VIEWER_PROFILE` output includes `dc_pool_manager` for icon-pool admission before owner callbacks and `dc_gui_submit` for native GUI submission (including rollback). These are inclusive nested spans, not additional owner time; no separate collector or counters are enabled.
+
 Synthetic GUI, table, raster, localisation and GPU fixtures used by other viewer crates are available through `test-support`. Follow the workspace [working rules](../../AGENTS.md).
 
 Stored modifier source labels recover through their recorded language's content keys in `recorded_labels`; combat and occupation hovers share the same display-language policy.

@@ -1,5 +1,7 @@
 //! Read-only decoder attribution on an explicitly supplied recording.
 use super::*;
+
+mod prepared_stream;
 use std::{
     collections::{BTreeMap, VecDeque},
     hint::black_box,
@@ -261,19 +263,22 @@ fn selected_source_read_measurement() {
     if attribute {
         replay_frame::cpu::enable();
     }
-    let background_workers = std::env::var("BATTLE_PLAN_MAP_DECODE_WORKERS").or_else(|_| std::env::var("HOI4_MAP_DECODE_WORKERS")).map_or_else(
-        |_| std::thread::available_parallelism().map_or(1, |count| count.get() / 2),
-        |value| value.parse::<usize>().unwrap(),
-    )
-    .max(1);
+    let background_workers = std::env::var("BATTLE_PLAN_MAP_DECODE_WORKERS").or_else(|_| std::env::var("HOI4_MAP_DECODE_WORKERS"))
+        .map_or_else(
+            |_| std::thread::available_parallelism().map_or(1, |count| count.get() / 2),
+            |value| value.parse::<usize>().unwrap(),
+        )
+        .max(1);
     let mut reports = Vec::new();
     let rounds =
         std::env::var("BATTLE_PLAN_MAP_DECODE_ROUNDS").or_else(|_| std::env::var("HOI4_MAP_DECODE_ROUNDS")).map_or(3, |value| value.parse::<usize>().unwrap());
     for round in 0..rounds {
         for workers in [1, background_workers] {
             let before = attribute.then(replay_frame::cpu::snapshot);
-            let phase =
-                replay_frame::cpu::scope_named("source_measurement", &format!("{selection}:{workers}"));
+            let phase = replay_frame::cpu::scope_named(
+                "source_measurement",
+                &format!("{selection}:{workers}"),
+            );
             let parallel = replay::container::Parallel {
                 workers,
                 on_worker: &|| {},

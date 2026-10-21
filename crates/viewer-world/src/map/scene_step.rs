@@ -80,10 +80,14 @@ impl Presentation<'_> {
             last_animation_time,
             workers,
         } = self;
+        let view_span = viewer_foundation::profiling::span("step_view");
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
+        drop(view_span);
         // Every mission is placed; one the display hides stays placed and only stops drawing.
         if let Some((pass, assets, plan)) = aircraft.as_deref_mut() {
+            let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
+            let field_span = viewer_foundation::profiling::span("aircraft_field");
             // The band reads the actors' players as the previous frame left them.
             let (mut field, hidden) = plan.field(
                 assets,
@@ -91,29 +95,44 @@ impl Presentation<'_> {
                 &|mission| graphics.air_mission(mission),
                 &|key| pass.root_play_position(key),
             );
+            drop(field_span);
+            let place_span = viewer_foundation::profiling::span("aircraft_place");
             pass.replace_field(&assets.library(), &mut field);
             pass.set_hidden(hidden);
+            drop(place_span);
+            let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
             pass.animate_with_workers(animation_time, None, &[0.], workers);
         }
         // Trains run below the railway fade, whether or not the display shows them.
         if let Some((pass, assets, plan)) = trains
             && rails_shown
         {
+            let _trains_span = viewer_foundation::profiling::span("step_trains");
+            let field_span = viewer_foundation::profiling::span("train_field");
             pass.replace_field(&assets.library, plan.field(assets, animation_time));
+            drop(field_span);
+            let _animate_span = viewer_foundation::profiling::span("train_animate");
             pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
         }
         // City actors are precreated outside the dynamic mesh creation budget. Each province's
         // damage inputs select their states.
         if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
+            let _cities_span = viewer_foundation::profiling::span("step_cities");
+            let update_span = viewer_foundation::profiling::span("city_update");
             if let Some(placed) = presentation.update(
                 camera,
                 size,
                 crate::map::models::draws_city_sprawl(&camera),
                 animation_time,
             ) {
+                let _place_span = viewer_foundation::profiling::span("city_place");
                 pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
             }
-            pass.set_clocks(presentation.clocks(animation_time));
+            drop(update_span);
+            let clocks_span = viewer_foundation::profiling::span("city_clocks");
+            pass.set_clock_records(presentation.clock_records(), animation_time);
+            drop(clocks_span);
+            let _animate_span = viewer_foundation::profiling::span("city_animate");
             pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
@@ -133,6 +152,7 @@ impl Presentation<'_> {
             true,
         );
         if let Some(arrows) = movement_arrows {
+            let _arrows_span = viewer_foundation::profiling::span("step_arrows");
             arrows.advance(
                 last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
                 last_animation_time.is_some_and(|last| animation_time < last),
@@ -141,25 +161,36 @@ impl Presentation<'_> {
             );
         }
         if let Some(text) = animated_text {
+            let _text_span = viewer_foundation::profiling::span("step_text");
             text.advance(camera, animation_time);
         }
         if let Some(pass) = map_buildings {
+            let _buildings_span = viewer_foundation::profiling::span("step_buildings");
             if let Some(placed) = models.buildings {
+                let _place_span = viewer_foundation::profiling::span("building_place");
                 pass.update_placed(placed, BUILDING_TILE);
             }
+            let _animate_span = viewer_foundation::profiling::span("building_animate");
             pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
         }
         if let Some(pass) = unit_models {
+            let _units_span = viewer_foundation::profiling::span("step_units");
+            let place_span = viewer_foundation::profiling::span("unit_place");
             pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
+            drop(place_span);
+            let clocks_span = viewer_foundation::profiling::span("unit_clocks");
             pass.set_clocks(unit_history.combat_clocks());
+            drop(clocks_span);
             // Advance hidden entities too. History retires their players independently of
             // render culling.
+            let _animate_span = viewer_foundation::profiling::span("unit_animate");
             pass.animate_with_workers(animation_time, None, &[0.0], workers);
         }
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
         // fails later starts none of them again.
         if let Some((_, _, plan)) = aircraft {
+            let _missiles_span = viewer_foundation::profiling::span("step_missiles");
             let from = missile_clock.unwrap_or(animation_time);
             let explosions = plan.missile_explosions(from, animation_time);
             strikes.receive_explosions(&explosions, animation_time);
@@ -167,17 +198,23 @@ impl Presentation<'_> {
         *missile_clock = Some(animation_time);
         let mut struck = BTreeSet::new();
         if let (Some(pass), Some(ambient)) = (map_frame, ambient) {
+            let _map_frame_span = viewer_foundation::profiling::span("step_map_frame");
+            let ambient_span = viewer_foundation::profiling::span("ambient_update");
             let mut placed = ambient.update(camera, size, animation_time);
+            drop(ambient_span);
+            let strike_span = viewer_foundation::profiling::span("strike_update");
             // Retirement reads the players the previous frame animated.
             let (impacts, clocks) = strikes.update(camera, size, animation_time, |key| {
                 pass.root_play_position(key)
             });
+            drop(strike_span);
             // The table and the impacts share this pass: a hidden one stays placed, so its
             // admission, clocks and retirement carry on, and only stops drawing.
             let key = |(mesh, instance): &(usize, crate::map::models::ModelInstance)| {
                 let (seed, identity) = instance.animation_key();
                 (*mesh, seed, identity)
             };
+            let place_span = viewer_foundation::profiling::span("map_frame_place");
             pass.set_hidden(hidden_map_frame_actors(
                 graphics,
                 placed.iter().map(key),
@@ -188,8 +225,12 @@ impl Presentation<'_> {
             ));
             placed.extend(impacts);
             pass.update_placed(placed, 256.);
+            drop(place_span);
+            let clocks_span = viewer_foundation::profiling::span("map_frame_clocks");
             struck.extend(clocks.keys().copied());
             pass.set_clocks(clocks);
+            drop(clocks_span);
+            let _animate_span = viewer_foundation::profiling::span("map_frame_animate");
             pass.animate_with_workers(animation_time, None, &[0.], workers);
         }
         struck

@@ -74,6 +74,9 @@ use std::{
 #[cfg(test)]
 #[path = "decoded_section_tests.rs"]
 mod decoded_section_tests;
+mod direct;
+#[cfg(test)]
+mod direct_tests;
 #[cfg(test)]
 mod event_feed_tests;
 mod keyed;
@@ -463,6 +466,56 @@ fn advance_shadow(
         }
         _ => {}
     })
+}
+
+/// Observe an already validated field after its entire row has been recovered
+/// against the old bases. These are the writer's patch-base rules, including
+/// the movement head and dropped-list dependency.
+#[inline]
+fn observe_shadow(
+    table: TableId,
+    status: u8,
+    key: u128,
+    field: usize,
+    bytes: &[u8],
+    shadow: &mut Shadow,
+) {
+    let (head, list) = advance_pair(table).unzip();
+    match field {
+        field if Some(field) == head => {
+            // A value the field cannot hold leaves no head, so writer and
+            // reader alike store that row's next change without its advance.
+            let fields = shadow.entry(key).or_default();
+            match head_value(status, bytes, fields.get(&field)) {
+                Ok(value) => fields.insert(field, value.to_le_bytes().to_vec()),
+                Err(_) => fields.remove(&field),
+            };
+        }
+        field if table.byte_field(field) => {
+            let fields = shadow.entry(key).or_default();
+            // A delta's list that dropped its first element: keep the element.
+            if Some(field) == list
+                && status == DELTA
+                && let Some(before) = fields.get(&field)
+                && without_first(before, 4).as_deref() == Some(bytes)
+            {
+                let element = before[4..8].to_vec();
+                fields.insert(DROPPED, element);
+            }
+            // The base before is replaced in its own storage when that is
+            // not much larger, rather than freed and allocated again.
+            match fields.get_mut(&field) {
+                Some(base) if base.capacity() <= 2 * bytes.len().max(8) => {
+                    base.clear();
+                    base.extend_from_slice(bytes);
+                }
+                _ => {
+                    fields.insert(field, bytes.to_vec());
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Start a block's advance state from its keyframe's rows, on writer and
@@ -3380,16 +3433,24 @@ fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<U
 }
 
 fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
+    #[cfg(test)]
+    super::watched::note_decoded();
+    #[cfg(any(test, feature = "test-support"))]
+    super::test_work::decoded(context.index, table, context.hours.len());
+    direct::table_updates(context, table)
+}
+
+fn table_updates_body(
+    context: &Context<'_>,
+    table: TableId,
+    use_direct: bool,
+) -> io::Result<Vec<TableUpdate>> {
     let format = context.format;
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
     let frames = context.hours.len();
     let key_id = keyframe_section(table);
     let later_id = later_section(table);
-    #[cfg(test)]
-    super::watched::note_decoded();
-    #[cfg(any(test, feature = "test-support"))]
-    super::test_work::decoded(context.index, table, context.hours.len());
     let gap = change.table_gap(table, version);
     let fields = change.fields(table, version);
     let ordinal = context.present.ordinal[table.index()];
@@ -3453,6 +3514,21 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
         ) {
             if predictor.predicts() {
                 // Exactly the predicted changes.
+                if use_direct && gap.is_none() {
+                    updates.push(predicted::take_residual_direct(
+                        table,
+                        fields,
+                        version,
+                        previous,
+                        None,
+                        &mut predictor,
+                        &mut shadow,
+                        &budget,
+                        layout,
+                        None,
+                    )?);
+                    continue;
+                }
                 plain.clear();
                 predicted::take_residual(
                     table,
@@ -3492,6 +3568,40 @@ fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<
             model: model.as_mut(),
             changes: Some(&mut changes),
         });
+        if use_direct && gap.is_none() && head.status == DELTA {
+            let update = if head.residual {
+                predicted::take_residual_direct(
+                    table,
+                    fields,
+                    version,
+                    previous,
+                    Some(&mut later_input),
+                    &mut predictor,
+                    &mut shadow,
+                    &budget,
+                    layout,
+                    coding,
+                )?
+            } else {
+                predictor.clear();
+                direct::take_delta(
+                    table,
+                    fields,
+                    version,
+                    plain_baseline(&plain).expect("a delta header has a baseline"),
+                    &mut later_input,
+                    &mut shadow,
+                    &budget,
+                    layout,
+                    coding,
+                )?
+            };
+            updates.push(update);
+            if layout.keyed() {
+                keys.apply(&mut changes);
+            }
+            continue;
+        }
         if head.residual {
             predicted::take_residual(
                 table,

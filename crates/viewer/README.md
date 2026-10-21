@@ -322,6 +322,12 @@ CPU GUI checks use synthetic technique, sampler, blend and clock metadata. Insta
 | `BATTLE_PLAN_VIEWER_BENCH_MODELS`, `BATTLE_PLAN_VIEWER_MODEL_FRAMES` | Live model histories after settled dump. |
 | `BATTLE_PLAN_MAP_SCENE_RGBA16F` | New-path HDR readback before grading, outside benchmark timing. |
 
+With ordinary `BATTLE_PLAN_VIEWER_PROFILE`, `PROFILE built` lines retain each part's elapsed milliseconds and add `cpu=` thread-CPU milliseconds sampled around that part on its builder thread, excluding queue waits and preemption. The samples use the platform clock's resolution; unavailable samples are reported by name. No thread-CPU sampling runs with profiling off.
+
+With `BATTLE_PLAN_VIEWER_PROFILE` set, `--window-dump --profile-pointer <x,y>` supplies a deterministic map hover in framebuffer pixels (before interface scaling), independent of the real pointer. It never moves the OS cursor or supplies button/camera input; outside the captured frame it supplies no hover. Without profiling or without `--window-dump` the argument is refused. Builder-side `PROFILE movers` lines carry epoch/branch/hour and each step's wall and thread-CPU milliseconds separately from window-thread spans; short CPU values retain the platform clock's resolution.
+
+The app laps `engaged`, `combat_draw`, `picker` and `map_tooltip` split the work after `overlay_draw`; `combat_hover` retains the remaining tooltip/inventory work. The counter guide describes the sequential and nested `dc_*` spans.
+
 Choose matched game/viewer baselines from your own recording and installation. [Scale tests](src/unit_scale_tests.rs)/[fixtures](examples/unit_scale_fixture.rs) check volume, not fidelity/frame acceptance. Measure whole views, set affinity before startup and keep builds out of timings. Captures and reports stay outside Git.
 
 ## Mod corpus check

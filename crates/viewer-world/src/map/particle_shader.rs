@@ -1,10 +1,10 @@
 //! Particle submission and declaration.
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
-use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
+use installed_content_core::ResolvedLayers;
 use installed_content_image::native::Decode;
-use shader_pipeline::{ScalarKind, VertexInput, binding, gpu, library::Effect};
-use std::{collections::BTreeMap, io, sync::Arc};
+use shader_pipeline::{ScalarKind, VertexInput, gpu, library::Effect};
+use std::{io, sync::Arc};
 #[path = "particle_shader/trail.rs"]
 pub mod trail;
 
@@ -27,37 +27,6 @@ pub struct Packet {
     pub scale: [f32; 2],
     pub tiles: [i32; 2],
     pub time: f32,
-}
-
-impl Packet {
-    /// Per-actor scale and world/atlas/time; scene and projection bind once per view.
-    pub fn buffers(&self) -> BTreeMap<u32, Vec<u8>> {
-        // Upload eight scale bytes. CPU zeros beyond that prefix do not initialize the physical bytes
-        // 8 through 15.
-        let scale = [self.scale[0], self.scale[1], 0., 0.];
-        let mut object = vec![0_u8; 96];
-        object[..64].copy_from_slice(bytemuck::bytes_of(&self.world));
-        // Use zero half-pixels on DX11 and signed authored tile counts.
-        let atlas = [
-            0_f32,
-            0.,
-            self.tiles[0] as f32,
-            self.tiles[1] as f32,
-            self.time,
-        ];
-        object[64..84].copy_from_slice(bytemuck::bytes_of(&atlas));
-        BTreeMap::from([
-            (
-                binding(2, Stage::Vertex),
-                bytemuck::bytes_of(&scale).to_vec(),
-            ),
-            (
-                binding(2, Stage::Pixel),
-                bytemuck::bytes_of(&scale).to_vec(),
-            ),
-            (binding(3, Stage::Vertex), object),
-        ])
-    }
 }
 
 /// Compute world-column squared lengths in order, take their ordered maximum, then its square root.

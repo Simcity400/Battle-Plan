@@ -33,6 +33,7 @@ pub(super) fn presented(
     origin: [f32; 2],
     quads: &[sprites::Quad],
 ) -> Presented {
+    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
     let railway_gun = stack.gun.is_some();
     let window = if railway_gun { GUN_WINDOW } else { LAND_WINDOW };
     let Some(root) = inputs.windows.guis.template(window) else {

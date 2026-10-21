@@ -24,12 +24,17 @@ pub(super) fn assert_instances(a: &[(usize, ModelInstance)], b: &[(usize, ModelI
 }
 
 pub(super) fn assert_history(a: &History, b: &History) {
+    assert_eq!(a.targets, b.targets);
+    assert_eq!(a.bounds, b.bounds);
+    assert_eq!(a.steady, b.steady);
+    assert_instances(&a.raids, &b.raids);
     assert_eq!(a.provinces, b.provinces);
-    assert_eq!(a.populated, b.populated);
+    assert_eq!(a.provinces.populated_ids(), b.provinces.populated_ids());
     assert_eq!(a.updates, b.updates);
     assert_eq!(a.queued, b.queued);
+    assert_eq!(a.queue_trace, b.queue_trace);
     assert_eq!(a.epoch, b.epoch);
-    assert_eq!(a.last, b.last);
+    assert_eq!(a.last.map(f32::to_bits), b.last.map(f32::to_bits));
     assert_eq!(a.raid_epoch, b.raid_epoch);
     assert_eq!(a.province_bounds, b.province_bounds);
     a.naval.assert_same_state(&b.naval);
@@ -37,6 +42,10 @@ pub(super) fn assert_history(a: &History, b: &History) {
     assert_eq!(a.combat_warnings(), b.combat_warnings());
     let a_schedule = a.schedule.lock().unwrap();
     let b_schedule = b.schedule.lock().unwrap();
+    assert_eq!(
+        a_schedule.presentation_state(),
+        b_schedule.presentation_state()
+    );
     assert_eq!(a_schedule.pending(), b_schedule.pending());
     for &id in a.provinces.keys() {
         assert_eq!(a_schedule.update(id), b_schedule.update(id));

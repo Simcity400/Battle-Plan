@@ -77,3 +77,30 @@ and installing meshes clears those results. Other palette consumers retain index
 mesh/animation name joins and reuse their sampling buffers. Building groups already applied
 at full scale do no slot work on camera moves inside the near cutoff; hour changes,
 near/far transitions, growth and held mesh-budget creations still run in province order.
+
+Hour builders retain snow/mud grids and prepare winter post-volume factors from
+this content's volume records in the original arithmetic order. Installing an
+hour adopts those shared products; the scene's graphics clock still admits the
+refresh, copies its actual shown current planes to previous, and advances the
+same fade. City damage likewise adopts the built map while content equality
+controls change flags. Skipped built hours advance that history oldest first at
+the last presented view before the final hour is installed.
+
+Hour workers prepare immutable railway vertex buffers and province-ordered draw runs. The scene adopts the complete bank at the same hour publication, keeps its static railway pass and fades, and retires the displaced bank off the window thread. Hours built without a device prepare the same immutable bank synchronously at install; direct renders use that same preparation and adoption entry point.
+
+## Profiling
+
+Normal `BATTLE_PLAN_VIEWER_PROFILE` output includes presentation laps by model pass,
+placement/field updates and clocks. The `units_*` spans separate schedule,
+province visits, deferred creations, collection and install-time operand joins
+(`units_prepare_inputs`, inside `units_join_prepared` or `units_join_naval`).
+`animation_dispatch_plan` and `animation_dispatch_run_commit` separate animation
+layout planning from worker evaluation and ordered serial commit. These laps
+share the ordinary profiling switch and add no separate diagnostic mode.
+
+Scene CPU `pass_*` laps mirror the render-pass boundaries even without GPU
+queries and sum repeated wrap-view labels. They distinguish native model
+encoding from recycling, arena flush, final encoder finish and queue submit.
+`native_lit_prepare` and `native_caster_prepare` time each ordered preparation;
+`native_encode_caller` and `native_turns_finish_wait` separate caller encoding
+from joining borrowed frame turns. All use only normal `BATTLE_PLAN_VIEWER_PROFILE`.

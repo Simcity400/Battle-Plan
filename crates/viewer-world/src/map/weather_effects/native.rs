@@ -1,5 +1,8 @@
 //! Candidate packets from the existing presentation simulator. Shader bytes,
 //! declarations and constants are native; historical simulation/order is separate.
+#[path = "native/packing.rs"]
+mod packing;
+
 use super::{Emitter, Simulation};
 use eframe::wgpu::{self, util::DeviceExt};
 use installed_content_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
@@ -442,12 +445,22 @@ impl InstanceRing {
         }
     }
 
-    /// Upload every nonempty ordinary packet of an actor at once and
-    /// binds each packet's offset into it. The final 12 instance bytes
-    /// have no established writer and stay unknown. Returns the upload's offset.
-    fn append<'a>(&mut self, instances: impl Iterator<Item = &'a Instance>) -> io::Result<u64> {
-        let instances: Vec<_> = instances.collect();
-        let length = (instances.len() as u64)
+    /// Upload every nonempty ordinary packet of an actor at once and bind each
+    /// packet's offset into it. The final 12 instance bytes stay unknown. The cloned
+    /// iterator repeats only the immutable actor/packet walk, not its records.
+    fn append<'a>(
+        &mut self,
+        instances: impl Iterator<Item = &'a Instance> + Clone,
+    ) -> io::Result<u64> {
+        self.append_counted(instances.clone(), instances.count())
+    }
+
+    fn append_counted<'a>(
+        &mut self,
+        instances: impl Iterator<Item = &'a Instance>,
+        count: usize,
+    ) -> io::Result<u64> {
+        let length = (count as u64)
             .checked_mul(48)
             .ok_or_else(|| io::Error::other("particle upload overflow"))?;
         if length > self.size {
@@ -649,15 +662,124 @@ impl OrdinaryUploads {
     }
 }
 
+/// Only commands applied in this view are remembered. Empty actors still apply their
+/// scale/quad; trails replace slot zero. Unknown inherited state is never presumed equal.
+#[derive(Default)]
+struct Applied {
+    scale: Option<[u8; 16]>,
+    object: Option<[u8; 96]>,
+    quad: bool,
+    program: Option<usize>,
+    texture: Option<(usize, usize)>,
+}
+
+impl Applied {
+    fn scale(&mut self, state: &mut crate::map::shader_scene::State, bytes: &[u8]) -> bool {
+        if self
+            .scale
+            .as_ref()
+            .is_some_and(|bound| bound.as_slice() == bytes)
+        {
+            return true;
+        }
+        for stage in [Stage::Vertex, Stage::Pixel] {
+            state.stream.bind_partial_constants(
+                2,
+                stage,
+                Some(bytes),
+                std::slice::from_ref(&(0..8)),
+            );
+        }
+        self.scale = Some(bytes.try_into().expect("particle scale allocation"));
+        false
+    }
+
+    fn object(&mut self, state: &mut crate::map::shader_scene::State, bytes: &[u8]) -> bool {
+        if self
+            .object
+            .as_ref()
+            .is_some_and(|bound| bound.as_slice() == bytes)
+        {
+            return true;
+        }
+        state.stream.bind_partial_constants(
+            3,
+            Stage::Vertex,
+            Some(bytes),
+            std::slice::from_ref(&(0..84)),
+        );
+        self.object = Some(bytes.try_into().expect("particle object allocation"));
+        false
+    }
+
+    fn quad(&mut self, state: &mut crate::map::shader_scene::State, bytes: &Arc<[u8]>) -> bool {
+        if self.quad {
+            return true;
+        }
+        state.bind_vertex(0, 8, bytes.clone());
+        self.quad = true;
+        false
+    }
+}
+
+#[derive(Default)]
+struct Techniques {
+    names: BTreeMap<String, [Option<usize>; 4]>,
+    programs: Vec<NamedProgram>,
+}
+
+struct NamedProgram {
+    name: String,
+    trail: bool,
+    program: Option<Program>,
+    cache: shader_pipeline::stream::NativePassCache,
+}
+
+impl Techniques {
+    fn get(&mut self, effect: &Arc<Effect>, descriptor: &RenderDescriptor) -> io::Result<usize> {
+        let flags = usize::from(descriptor.trail) * 2 + usize::from(descriptor.billboard);
+        if let Some(index) = self
+            .names
+            .get(&descriptor.shader)
+            .and_then(|names| names[flags])
+        {
+            return Ok(index);
+        }
+        let name = descriptor.technique();
+        // Different authored names/flags can spell the same technique. Share the original
+        // name/trail cache, including missing techniques and replacement refusal counts.
+        let index = if let Some(index) = self
+            .programs
+            .iter()
+            .position(|p| p.name == name && p.trail == descriptor.trail)
+        {
+            index
+        } else {
+            let program = Program::new(effect, &name, descriptor.trail)?;
+            self.programs.push(NamedProgram {
+                name,
+                trail: descriptor.trail,
+                program,
+                cache: Default::default(),
+            });
+            self.programs.len() - 1
+        };
+        self.names.entry(descriptor.shader.clone()).or_default()[flags] = Some(index);
+        Ok(index)
+    }
+}
+
 struct PreviousDraw {
     packet: usize,
-    name: String,
+    cached: usize,
     trail: bool,
     pass: shader_pipeline::stream::PassSubmission,
 }
 
 #[cfg(test)]
 struct DrawTrace {
+    packet: usize,
+    planned: bool,
     prepared: bool,
     reused: bool,
     bytes: Vec<Vec<u8>>,
@@ -674,20 +796,40 @@ pub(super) struct Renderer {
     quad: Arc<[u8]>,
     retained: crate::map::shader_scene::State,
     max_particles: usize,
-    /// Per technique name and trail flag; `None` is the missing technique.
-    programs: BTreeMap<(String, bool), Option<Program>>,
+    techniques: Techniques,
+    packing: packing::Uploads,
     #[cfg(test)]
     trace: Option<Vec<DrawTrace>>,
-    #[cfg(test)]
-    reference: bool,
 }
 
 /// A selected technique's declaration and authored states.
 struct Program {
+    packing: Option<Arc<packing::Plan>>,
     selection: shader_pipeline::library::Selection,
     layouts: Vec<gpu::VertexLayout>,
     state: gpu::State,
     raster: installed_content_core::pdxshader::RasterizerState,
+}
+
+impl Program {
+    fn new(effect: &Arc<Effect>, name: &str, trail: bool) -> io::Result<Option<Self>> {
+        shader_pipeline::library::with_recorded(effect, |effect| {
+            let Some(selection) = effect.select(name).map_err(io::Error::other)? else {
+                return Ok(None);
+            };
+            let compiled = effect.compiled(selection.index).map_err(io::Error::other)?;
+            let technique = &effect.source.techniques[selection.index];
+            let layouts = particle_shader::layouts(&compiled.vertex.inputs, trail)?;
+            let packing = (!trail).then(|| packing::Plan::new(&layouts)).flatten();
+            Ok(Some(Self {
+                packing,
+                layouts,
+                state: gpu::State::authored(&effect.source, technique).map_err(io::Error::other)?,
+                raster: effect.source.rasterizer(technique),
+                selection,
+            }))
+        })
+    }
 }
 
 impl Renderer {
@@ -711,11 +853,10 @@ impl Renderer {
             samples,
             max_particles,
             retained: Default::default(),
-            programs: BTreeMap::new(),
+            techniques: Techniques::default(),
+            packing: packing::Uploads::default(),
             #[cfg(test)]
             trace: None,
-            #[cfg(test)]
-            reference: false,
             quad: bytemuck::cast_slice(&particle_shader::QUAD).into(),
             indices: buffer(
                 "native particle indices",
@@ -737,10 +878,11 @@ impl Renderer {
         inputs: Inputs<'_>,
         packets: &[DrawPacket],
     ) -> io::Result<()> {
-        #[cfg(not(test))]
-        let reuse = true;
-        #[cfg(test)]
-        let reuse = !self.reference;
+        // Move scratch out so program/state borrows stay independent. On an error,
+        // drop its view-local GPU entries; no stale slice survives to another Arena.
+        let mut planned_uploads = std::mem::take(&mut self.packing);
+        planned_uploads.clear_view();
+        let mut applied = Applied::default();
         self.retained.inherit(inputs.retained);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("compiled particles"),
@@ -821,32 +963,20 @@ impl Renderer {
                 // Bind an enabled actor's scale and quad even
                 //when all of its subsystem packet counts are zero.
                 let scale = [packet.constants.scale[0], packet.constants.scale[1], 0., 0.];
-                for stage in [Stage::Vertex, Stage::Pixel] {
-                    self.retained.stream.bind_partial_constants(
-                        2,
-                        stage,
-                        Some(bytemuck::bytes_of(&scale)),
-                        std::slice::from_ref(&(0..8)),
-                    );
-                }
-                self.retained.bind_vertex(0, 8, quad.clone());
+                applied.scale(&mut self.retained, bytemuck::bytes_of(&scale));
+                applied.quad(&mut self.retained, quad);
                 // Ordering puts each actor's ordinary packets first, together.
-                ordinary_offset = ring.append(
-                    ordered[index..]
-                        .iter()
-                        .take_while(|p| {
-                            (p.registration, p.actor) == key_actor && !p.descriptor.trail
-                        })
-                        .flat_map(|p| &p.instances),
-                )?;
-                if reuse {
-                    uploads.begin(ordinary_offset, ring.cursor);
-                }
+                let instances = ordered[index..]
+                    .iter()
+                    .take_while(|p| (p.registration, p.actor) == key_actor && !p.descriptor.trail)
+                    .flat_map(|p| &p.instances);
+                ordinary_offset = ring.append(instances)?;
+                uploads.begin(ordinary_offset, ring.cursor);
+                planned_uploads.begin(ordinary_offset, ring.cursor);
             }
             if packet.instances.is_empty() {
                 continue;
             }
-            let name = packet.descriptor.technique();
             let trail = if packet.descriptor.trail {
                 let vertices = particle_shader::trail::vertices(
                     &packet.instances,
@@ -861,84 +991,48 @@ impl Renderer {
             } else {
                 None
             };
-            let program = match self.programs.entry((name.clone(), trail.is_some())) {
-                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    // A visual mod's replacement that cannot be drawn here falls back to the
-                    // recording.
-                    let program =
-                        shader_pipeline::library::with_recorded(&self.effect, |effect| {
-                            let Some(selection) = effect.select(&name).map_err(io::Error::other)?
-                            else {
-                                return Ok(None);
-                            };
-                            let compiled =
-                                effect.compiled(selection.index).map_err(io::Error::other)?;
-                            let technique = &effect.source.techniques[selection.index];
-                            Ok(Some(Program {
-                                layouts: particle_shader::layouts(
-                                    &compiled.vertex.inputs,
-                                    trail.is_some(),
-                                )?,
-                                state: gpu::State::authored(&effect.source, technique)
-                                    .map_err(io::Error::other)?,
-                                raster: effect.source.rasterizer(technique),
-                                selection,
-                            }))
-                        })?;
-                    entry.insert(program)
-                }
-            };
+            let cached = self.techniques.get(&self.effect, &packet.descriptor)?;
+            let named = &mut self.techniques.programs[cached];
+            let (name, program, native_cache) = (
+                named.name.as_str(),
+                &named.program,
+                named.program.as_ref().map(|_| &mut named.cache),
+            );
             let constants = DrawConstants::new(&packet.constants);
             let scale = bytemuck::bytes_of(&constants.scale);
             let object = constants.object.as_slice();
-            #[cfg(test)]
-            let buffers = self.reference.then(|| packet.constants.buffers());
-            #[cfg(test)]
-            let object = buffers.as_ref().map_or(object, |buffers| {
-                buffers[&binding(3, Stage::Vertex)].as_slice()
-            });
-            let stream = &mut self.retained.stream;
-            match program {
-                Some(program) => {
-                    stream.select_program(&program.selection, &program.layouts);
-                    stream.bind_blend(program.state.blend, program.state.write_mask);
-                    stream.bind_rasterizer(program.raster.clone());
+            if applied.program != Some(cached) {
+                let stream = &mut self.retained.stream;
+                match program.as_ref() {
+                    Some(program) => {
+                        stream.select_program(&program.selection, &program.layouts);
+                        stream.bind_blend(program.state.blend, program.state.write_mask);
+                        stream.bind_rasterizer(program.raster.clone());
+                    }
+                    None => {
+                        stream.bind_program(None, Vec::new());
+                        stream.bind_blend(None, wgpu::ColorWrites::ALL);
+                        stream.bind_rasterizer(Default::default());
+                    }
                 }
-                None => {
-                    stream.bind_program(None, Vec::new());
-                    stream.bind_blend(None, wgpu::ColorWrites::ALL);
-                    stream.bind_rasterizer(Default::default());
-                }
+                applied.program = Some(cached);
             }
-            for stage in [Stage::Vertex, Stage::Pixel] {
-                stream.bind_partial_constants(
-                    2,
-                    stage,
-                    Some({
-                        #[cfg(test)]
-                        let scale = buffers
-                            .as_ref()
-                            .map_or(scale, |buffers| buffers[&binding(2, stage)].as_slice());
-                        scale
-                    }),
-                    std::slice::from_ref(&(0..8)),
+            applied.scale(&mut self.retained, scale);
+            applied.object(&mut self.retained, object);
+            // Pages and authored states are immutable during this view. Compare the actual
+            // applied selection/page, not the preceding draw (empty actors can intervene).
+            let texture = Some((packet.page, cached));
+            if applied.texture != texture {
+                self.retained.stream.bind_texture(
+                    0,
+                    Stage::Pixel,
+                    Some(self.pages[packet.page].clone()),
+                    program
+                        .as_ref()
+                        .and_then(|program| program.state.samplers.get(&binding(0, Stage::Pixel))),
                 );
+                applied.texture = texture;
             }
-            stream.bind_partial_constants(
-                3,
-                Stage::Vertex,
-                Some(object),
-                std::slice::from_ref(&(0..84)),
-            );
-            stream.bind_texture(
-                0,
-                Stage::Pixel,
-                Some(self.pages[packet.page].clone()),
-                program
-                    .as_ref()
-                    .and_then(|program| program.state.samplers.get(&binding(0, Stage::Pixel))),
-            );
             let packet_offset = ordinary_offset;
             if let Some(vertices) = &trail {
                 // Allocate maximum count times 56 bytes at stride 28, independently of this upload's size.
@@ -956,8 +1050,9 @@ impl Renderer {
                 };
                 self.retained
                     .bind_partial_vertex(0, 28, Arc::new(Mutex::new(written)), 0);
+                applied.quad = false;
             } else {
-                self.retained.bind_vertex(0, 8, quad.clone());
+                applied.quad(&mut self.retained, quad);
                 self.retained
                     .bind_partial_vertex(1, 48, ring.allocation.clone(), ordinary_offset);
                 ordinary_offset += (packet.instances.len() * 48) as u64;
@@ -969,16 +1064,41 @@ impl Renderer {
             } else {
                 u32::try_from(packet.instances.len()).map_err(io::Error::other)?
             };
-            let upload = if reuse && trail.is_none() {
+            #[cfg(test)]
+            let mut planned = false;
+            let upload = if trail.is_none() {
                 program.as_ref().and_then(|program| {
-                    uploads.packet(
-                        arena,
-                        &program.layouts,
-                        &ring,
-                        quad,
-                        packet_offset,
-                        instances,
-                    )
+                    let attempt =
+                        program
+                            .packing
+                            .as_ref()
+                            .map_or(packing::Attempt::Unproved, |plan| {
+                                planned_uploads.packet(
+                                    arena,
+                                    plan,
+                                    &ring,
+                                    quad,
+                                    packet_offset,
+                                    instances,
+                                )
+                            });
+                    match attempt {
+                        packing::Attempt::Handled(upload) => {
+                            #[cfg(test)]
+                            {
+                                planned = upload.is_some();
+                            }
+                            upload
+                        }
+                        packing::Attempt::Unproved => uploads.packet(
+                            arena,
+                            &program.layouts,
+                            &ring,
+                            quad,
+                            packet_offset,
+                            instances,
+                        ),
+                    }
                 })
             } else {
                 None
@@ -986,15 +1106,14 @@ impl Renderer {
             let preceding = previous
                 .as_ref()
                 .filter(|last| {
-                    reuse
-                        && program.is_some()
-                        && last.name == name
+                    program.is_some()
+                        && last.cached == cached
                         && last.trail == trail.is_some()
                         && same_packet_bindings(packet, ordered[last.packet])
                 })
                 .map(|last| &last.pass);
             let template = if trail.is_some() { &strip } else { &list };
-            let submission = self.retained.prepare_with(
+            let submission = self.retained.prepare_with_cache(
                 arena,
                 format_args!("particle {name}"),
                 template,
@@ -1007,6 +1126,7 @@ impl Renderer {
                         vertices: &p.vertices,
                     }),
                 preceding,
+                native_cache,
             )?;
             #[cfg(test)]
             if let Some(trace) = &mut self.trace {
@@ -1021,6 +1141,8 @@ impl Renderer {
                 };
                 let retained = self.retained.snapshot();
                 trace.push(DrawTrace {
+                    packet: index,
+                    planned,
                     prepared: upload.is_some(),
                     reused: preceding.is_some(),
                     bytes,
@@ -1050,7 +1172,7 @@ impl Renderer {
             }
             previous = Some(PreviousDraw {
                 packet: index,
-                name,
+                cached,
                 trail: trail.is_some(),
                 pass: submission.pass,
             });
@@ -1058,6 +1180,10 @@ impl Renderer {
         //Keep the renderer's persistent device cache while publishing the
         //bindings/vertex allocations subsequent meshes and popups inherit.
         inputs.retained.inherit(&self.retained);
+        // Never retain a GPU slice across the caller's next view/frame Arena reset.
+        // Vector capacities (including the shared byte scratch) are the only mutable reuse.
+        planned_uploads.clear_view();
+        self.packing = planned_uploads;
         Ok(())
     }
 }
@@ -1104,7 +1230,13 @@ mod tests {
                 (b.page, b.registration, b.actor, &b.views)
             );
             assert_eq!(a.descriptor, b.descriptor);
-            assert_eq!(a.constants.buffers(), b.constants.buffers());
+            let a_constants = DrawConstants::new(&a.constants);
+            let b_constants = DrawConstants::new(&b.constants);
+            assert_eq!(
+                bytemuck::bytes_of(&a_constants.scale),
+                bytemuck::bytes_of(&b_constants.scale)
+            );
+            assert_eq!(a_constants.object, b_constants.object);
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&a.instances),
                 bytemuck::cast_slice::<_, u8>(&b.instances)
@@ -1461,8 +1593,8 @@ mod tests {
         assert_eq!(packet.instances.len(), 1);
         assert_eq!(packet.instances[0].tile, [1, 0, 0, 0]);
         assert_eq!(packet.instances[0].color, [200, 200, 200, 255]);
-        let buffers = packet.constants.buffers();
-        let object = &buffers[&binding(3, Stage::Vertex)];
+        let constants = DrawConstants::new(&packet.constants);
+        let object = &constants.object;
         assert_eq!(&object[72..80], bytemuck::bytes_of(&[2_f32, 2.]));
     }
 
@@ -1523,7 +1655,7 @@ mod tests {
                 for coordinate in 0..2 {
                     assert!((original_copy[coordinate] - canonical_copy[coordinate]).abs() < 0.01);
                 }
-                let _ = packet.constants.buffers();
+                let _ = DrawConstants::new(&packet.constants);
                 assert_eq!(packet.instances, instances);
             }
             assert_eq!(simulation.seed, seed);

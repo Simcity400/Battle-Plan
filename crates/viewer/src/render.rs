@@ -62,7 +62,7 @@ pub struct MapLayers<'a> {
     pub river_mesh: &'a RiverMesh,
     // weather
     /// The hour's `SnowMudData` grid.
-    pub snow_mud: &'a SnowMud,
+    pub snow_mud: &'a Arc<SnowMud>,
     // fog of war
     /// The hour's `IntelMap` for the perspective the frame is drawn for.
     pub intel_map: &'a IntelMap,

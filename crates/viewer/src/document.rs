@@ -761,7 +761,7 @@ impl PreparedOverlay {
             occupation,
             adjacency_rules,
         } = &mut *views;
-        let (counters, (labels, label_report, raid_quads, mode_icons)) = crate::map_views::join(
+        let (counters, other) = crate::map_views::join(
             workers,
             || {
                 let _finish = order.finishing();
@@ -849,6 +849,7 @@ impl PreparedOverlay {
                 )
             },
         );
+        let (labels, label_report, raid_quads, mode_icons) = other;
         counters?;
         self.label_report = label_report;
         let (raid_quads, intel_quads) = raid_quads;
@@ -2851,9 +2852,13 @@ impl Document {
 pub(crate) struct OverlayTables {
     counters: counters::HourTables,
     vision: PreparedVision,
-    labels: labels::LabelTables,
+    labels: Arc<labels::LabelTables>,
     radar: Arc<viewer_world::map::radar_symbols::Field>,
     air: Arc<std::sync::Mutex<OverlayAir>>,
+    /// The full-build empty selection products, before per-view Air mutation.
+    empty_air: OverlayAir,
+    /// Fresh on each content load; retained so an old base cannot cross a reload.
+    content_identity: Arc<combat::Content>,
     /// The engaged-flag index covered this hour when these were built.
     pub(crate) engaged_covered: bool,
     /// Built with the rest on the hour builders only: raid offer evaluation
@@ -2906,6 +2911,7 @@ impl PreparedVision {
 }
 
 /// Selection is viewer-local, while camera changes reuse the same Air products.
+#[derive(Clone)]
 struct OverlayAir {
     selected: Arc<Vec<u64>>,
     orders: Arc<viewer_world::map::air_orders::Prepared>,
@@ -4150,6 +4156,14 @@ impl<'a> Hour<'a> {
         // rebuild, never a stale flag.
         let engaged_covered =
             engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
+        let radar = Arc::new(viewer_world::map::radar_symbols::Field::read(
+            self.frame, ours, self.heights(), &self.radar_centers,
+        ));
+        let empty_air = OverlayAir {
+            selected: Arc::new(Vec::new()),
+            orders: Arc::new(self.air_orders(ours, &[], &[])),
+            ranges: Arc::new(self.air_ranges(ours, &[])),
+        };
         Ok(OverlayTables {
             vision: PreparedVision::new(
                 self.frame,
@@ -4158,17 +4172,10 @@ impl<'a> Hour<'a> {
                 Arc::clone(&vision),
             ),
             engaged_covered,
-            radar: Arc::new(viewer_world::map::radar_symbols::Field::read(
-                self.frame,
-                ours,
-                self.heights(),
-                &self.radar_centers,
-            )),
-            air: Arc::new(std::sync::Mutex::new(OverlayAir {
-                selected: Arc::new(Vec::new()),
-                orders: Arc::new(self.air_orders(ours, &[], &[])),
-                ranges: Arc::new(self.air_ranges(ours, &[])),
-            })),
+            radar,
+            air: Arc::new(std::sync::Mutex::new(empty_air.clone())),
+            empty_air,
+            content_identity: Arc::clone(&self.combat),
             counters: counters::hour_tables(
                 self.frame,
                 &self.map,
@@ -4185,7 +4192,7 @@ impl<'a> Hour<'a> {
                 self.icons.raids.movement_reads(),
                 self.icons.raids.mission_topology(),
             )?,
-            labels,
+            labels: Arc::new(labels),
             raids: raids::RaidIcons::carried(raids, self.frame.branch, self.frame.hour, ours),
             intel: Arc::new(intel_icons::icons(
                 &self.icons.intel,
@@ -4196,6 +4203,49 @@ impl<'a> Hour<'a> {
                 &self.raid_hover.recorded_language,
             )),
             built_for: (self.frame.branch, self.frame.hour, ours),
+        })
+    }
+
+    /// An engagement-index arrival changes only the history-dependent counter
+    /// products. Retain the worker's immutable base, but keep the full-build
+    /// fallback for any changed input/content/perspective identity. Installation
+    /// and current-camera projection still happen in this observing frame.
+    pub(crate) fn refine_overlay_tables_with_raids(
+        &self,
+        previous: &OverlayTables,
+        perspective: &perspective::Choice,
+        raids: Arc<raids::RaidIcons>,
+        engaged: Option<&crate::engaged_index::EngagedIndex>,
+    ) -> io::Result<OverlayTables> {
+        if !Arc::ptr_eq(&previous.content_identity, &self.combat)
+            || !previous.counters.is_for_frame(self.frame)
+            || previous.vision.get(self.frame, perspective, &self.counters.fog).is_none()
+        {
+            return self.hour_tables_with_raids(perspective, raids, engaged);
+        }
+        // Sample before rebuilding, exactly as the full constructor does. An
+        // arrival during this chain deliberately asks for refinement next frame.
+        let engaged_covered =
+            engaged.is_some_and(|index| index.shared.covers(self.frame.branch, self.frame.hour));
+        let counters = previous.counters.refine_engagement(
+            engaged.map(|index| index.shared.as_ref()),
+        )?;
+        Ok(OverlayTables {
+            counters,
+            vision: previous.vision.clone(),
+            labels: Arc::clone(&previous.labels),
+            radar: Arc::clone(&previous.radar),
+            // A full rebuild resets this selection memo; do not share a previous
+            // frame's mutable selection state across the arrival either.
+            air: Arc::new(std::sync::Mutex::new(previous.empty_air.clone())),
+            empty_air: previous.empty_air.clone(),
+            content_identity: Arc::clone(&previous.content_identity),
+            engaged_covered,
+            raids: raids::RaidIcons::carried(
+                raids, self.frame.branch, self.frame.hour, previous.ours(),
+            ),
+            intel: Arc::clone(&previous.intel),
+            built_for: previous.built_for,
         })
     }
 

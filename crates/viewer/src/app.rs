@@ -193,6 +193,26 @@ fn a_map_retired_and_shown_again_registers_its_new_target() {
     assert!(presented.stale(1));
 }
 
+/// Profile captures replace only the map's hover point, in framebuffer
+/// pixels. This supplies no OS pointer movement, button or camera input.
+fn profile_hover_point(
+    real: Option<[f32; 2]>,
+    synthetic: Option<[f32; 2]>,
+    enabled: bool,
+    size: [u32; 2],
+    ui_scale: f32,
+) -> Option<[f32; 2]> {
+    let point = match synthetic.filter(|_| enabled) {
+        Some(point) => (point
+            .into_iter()
+            .zip(size)
+            .all(|(p, size)| p.is_finite() && p >= 0.0 && p < size as f32))
+        .then_some(point),
+        None => real,
+    };
+    point.map(|point| to_interface(point, ui_scale))
+}
+
 /// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
     enabled: bool,
@@ -3489,10 +3509,16 @@ impl Viewer {
                 false,
             )
             .map_err(|error| error.to_string())?;
-        let point = response
-            .hover_pos()
-            .or_else(|| response.interact_pointer_pos())
-            .map(|position| to_interface(frame_point(position), ui_scale));
+        let point = profile_hover_point(
+            response
+                .hover_pos()
+                .or_else(|| response.interact_pointer_pos())
+                .map(frame_point),
+            self.options.profile_pointer,
+            profiling() && self.options.window_dump,
+            pixels,
+            ui_scale,
+        );
         // Map-mode keys go to one map: the one that owns keyboard input, as the camera keys do.
         let owner = ui
             .ctx()
@@ -4113,12 +4139,12 @@ impl Viewer {
             let overlay_workers = self
                 .hours
                 .as_ref()
-                .map(|hours| hours.workers())
+                .map(|hours| hours.frame_workers())
                 .unwrap_or_default();
             if let Some(hours) = &self.hours {
                 self.raid_lane.use_workers(hours.workers());
                 if let Some(scene) = self.scene.as_mut() {
-                    scene.use_workers(hours.workers());
+                    scene.use_workers(hours.frame_workers());
                 }
             }
             self.raid_lane.show(
@@ -4166,34 +4192,51 @@ impl Viewer {
                     document.playback.hour(),
                     perspective.clone(),
                 );
-                if !stale_hour
-                    && (engaged_arrived
-                        || self.overlay_tables.as_ref().is_none_or(
-                            |(branch, hour, perspective, _)| {
-                                (*branch, *hour, perspective)
-                                    != (tables_key.0, tables_key.1, &tables_key.2)
-                            },
-                        ))
-                {
-                    // Raid offers are only evaluated on the raid lane: until it
-                    // delivers this hour's for this view, no raid icon draws
-                    // (`RaidIcons::carried`).
-                    let ours = now
-                        .vision(&perspective)
+                let tables_mismatch = self.overlay_tables.as_ref().is_none_or(
+                    |(branch, hour, perspective, _)| {
+                        (*branch, *hour, perspective)
+                            != (tables_key.0, tables_key.1, &tables_key.2)
+                    },
+                );
+                let refine_arrival = engaged_arrived && !tables_mismatch;
+                let mut retired_tables = None;
+                if !stale_hour && (engaged_arrived || tables_mismatch) {
+                    let tables = {
+                        // Raid offers are only evaluated on the raid lane: until it
+                        // delivers this hour's for this view, no raid icon draws
+                        // (`RaidIcons::carried`).
+                        let ours = now
+                            .vision(&perspective)
+                            .map_err(|error| error.to_string())?
+                            .ours();
+                        let raids = self
+                            .raid_lane
+                            .icons(tables_key.0, tables_key.1, ours)
+                            .unwrap_or_default();
+                        if refine_arrival {
+                            now.refine_overlay_tables_with_raids(
+                                &self.overlay_tables.as_ref().expect("matching base").3,
+                                &perspective,
+                                raids,
+                                engaged.as_deref(),
+                            )
+                        } else {
+                            now.hour_tables_with_raids(&perspective, raids, engaged.as_deref())
+                        }
                         .map_err(|error| error.to_string())?
-                        .ours();
-                    let raids = self
-                        .raid_lane
-                        .icons(tables_key.0, tables_key.1, ours)
-                        .unwrap_or_default();
-                    let tables = now
-                        .hour_tables_with_raids(&perspective, raids, engaged.as_deref())
-                        .map_err(|error| error.to_string())?;
-                    self.overlay_tables = Some((tables_key.0, tables_key.1, tables_key.2, tables));
+                    };
+                    let replaced = self.overlay_tables.replace((
+                        tables_key.0, tables_key.1, tables_key.2, tables,
+                    ));
+                    if refine_arrival {
+                        retired_tables = replaced;
+                    } else {
+                        drop(replaced);
+                    }
                 }
                 let tables = &self.overlay_tables.as_ref().expect("parsed above").3;
-                self.prepared_overlay = Some(
-                    now.prepare_overlay_cached(
+                let prepared = now
+                    .prepare_overlay_cached(
                         overlay_camera,
                         pixels,
                         ui_scale,
@@ -4201,8 +4244,17 @@ impl Viewer {
                         &self.counter_view,
                         &overlay_workers,
                     )
-                    .map_err(|error| error.to_string())?,
-                );
+                    .map_err(|error| error.to_string())?;
+                let retired_prepared = self.prepared_overlay.replace(prepared);
+                if refine_arrival && !stale_hour {
+                    // One bounded retirement for this replacement, never a wait.
+                    // The existing Dropper frees inline when its queue is full.
+                    if let Some(dropper) = &self.dropper {
+                        dropper.drop_later((retired_tables, retired_prepared));
+                    }
+                } else {
+                    drop(retired_prepared);
+                }
                 self.overlay_at = Some(overlay_key);
                 self.overlay_fraction = None;
             }
@@ -4480,6 +4532,7 @@ impl Viewer {
                 .map(|hours| hours.engaged(&perspective.country))
                 .transpose()
                 .map_err(|error| error.to_string())?;
+            laps.lap("engaged");
             self.combat.set_playing(self.playing);
             let drawn = self
                 .combat
@@ -4500,6 +4553,7 @@ impl Viewer {
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
+            laps.lap("combat_draw");
             let picker_drawn = match self.draw_picker(document, extent, true, animation_time, true)
             {
                 Some(Ok(drawn)) => Some(drawn),
@@ -4524,12 +4578,14 @@ impl Viewer {
                     .get_or_insert_with(viewer_combat::Drawn::default)
                     .add_hovers(&picker_drawn.drawn);
             }
+            laps.lap("picker");
             let map_hit = self.map_tooltip(
                 document,
                 point.filter(|_| !over_combat && !over_picker),
                 extent,
                 ui.ctx(),
             );
+            laps.lap("map_tooltip");
             let mut tooltip_refused = map_hit
                 .as_ref()
                 .map(|(text, _, _)| text.refused.clone())
@@ -5561,6 +5617,39 @@ fn engaged_relayout(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn profile_pointer_overrides_hover_only_for_profile_captures() {
+        use super::profile_hover_point;
+        let real = Some([30.0, 60.0]);
+        let synthetic = Some([120.0, 240.0]);
+        assert_eq!(
+            profile_hover_point(real, synthetic, true, [640, 480], 1.5),
+            Some([80.0, 160.0])
+        );
+        assert_eq!(
+            profile_hover_point(real, synthetic, false, [640, 480], 1.5),
+            Some([20.0, 40.0])
+        );
+        assert_eq!(
+            profile_hover_point(real, None, true, [640, 480], 1.5),
+            Some([20.0, 40.0])
+        );
+        assert_eq!(
+            profile_hover_point(None, synthetic, false, [640, 480], 1.5),
+            None
+        );
+        assert_eq!(
+            profile_hover_point(None, synthetic, true, [640, 480], 1.5),
+            Some([80.0, 160.0])
+        );
+        for point in [[640.0, 20.0], [20.0, 480.0], [-1.0, 20.0], [f32::NAN, 20.0]] {
+            assert_eq!(
+                profile_hover_point(real, Some(point), true, [640, 480], 1.0),
+                None
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

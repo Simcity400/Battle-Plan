@@ -1015,7 +1015,6 @@ fn cached_visits_probe_copied_timings_once_while_active_or_inactive_but_placing_
     }
 }
 
-
 #[test]
 fn empty_province_shortcut_releases_combat_and_clears_adjacent_selection() {
     let bounds = Arc::new(BTreeMap::from([
@@ -1092,4 +1091,470 @@ fn empty_province_shortcut_releases_combat_and_clears_adjacent_selection() {
             }
         }
     }
+}
+
+// Hour installs replace operands, never any province's carried presentation state.
+fn province_frame_state(province: &unit_history::Province) -> String {
+    let entities: Vec<_> = province
+        .entities
+        .iter()
+        .map(|(slot, entity)| {
+            let parts: Vec<_> = entity
+                .parts
+                .iter()
+                .map(|(index, part)| {
+                    let target = part.target;
+                    (
+                        index,
+                        part.epoch,
+                        part.identity,
+                        &part.graphics,
+                        (
+                            target.province,
+                            target.identity,
+                            target.part,
+                            target.order,
+                            target.occupant,
+                            target.kind,
+                            target.mesh,
+                        ),
+                        bytemuck::bytes_of(&target.instance).to_vec(),
+                        target.origin.map(f32::to_bits),
+                    )
+                })
+                .collect();
+            (
+                slot,
+                entity.kind,
+                entity.scale.to_bits(),
+                entity.shrinking,
+                parts,
+            )
+        })
+        .collect();
+    format!(
+        "{:?}",
+        (
+            province.shown,
+            province.arrows,
+            province.land_cursor,
+            &province.land_visits,
+            entities
+        )
+    )
+}
+
+fn assert_installed_history(history: &unit_history::History, expected_ids: &BTreeSet<u32>) {
+    let dense = &history.provinces;
+    assert_eq!(
+        dense
+            .records
+            .iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>(),
+        expected_ids.iter().copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        dense.indices,
+        expected_ids
+            .iter()
+            .enumerate()
+            .map(|(index, &id)| (id, index))
+            .collect()
+    );
+    assert_eq!(
+        dense.populated,
+        dense
+            .records
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| (!record.province.entities.is_empty()).then_some(index))
+            .collect()
+    );
+    assert_eq!(
+        history.province_bounds,
+        expected_ids
+            .iter()
+            .map(|&id| (id, history.bounds.get(&id).copied()))
+            .collect::<Vec<_>>()
+    );
+    for record in &dense.records {
+        match (&record.targets, history.targets.0.provinces.get(&record.id)) {
+            (Some(joined), Some(targets)) => {
+                assert!(Arc::ptr_eq(joined, targets));
+                assert!(Arc::ptr_eq(&record.province.lands, &targets.lands));
+            }
+            (None, None) => assert!(record.province.lands.is_empty()),
+            _ => panic!("stale target join for province {}", record.id),
+        }
+        assert_eq!(
+            record.has_candidates,
+            history.naval.has_candidates(record.id)
+        );
+    }
+}
+
+#[test]
+// One finite-input driver covers sparse joins, install invariance and the complete emitted stream.
+fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() {
+    use unit_history::{Target, test_support::GATES, test_support::target as unit_target};
+    use viewer_foundation::{
+        map::camera::{MapDefines, MapSize, Placement},
+        map::province_admission::Admission,
+        unit_handle::Unit,
+    };
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("supported executable metadata");
+    let ids: Vec<_> = (0..192u32)
+        .map(|index| index * 100_019 + 7)
+        .chain([u32::MAX - 2, u32::MAX])
+        .collect();
+    let boxes = |count: usize, shift: f32| {
+        Arc::new(
+            ids.iter()
+                .take(count)
+                .enumerate()
+                .map(|(index, &id)| {
+                    let x = (index % 16) as f32 * 320.0 + shift;
+                    let z = (index / 16) as f32 * 120.0;
+                    (id, [x, z, x + 90.0, z + 70.0])
+                })
+                .collect::<BTreeMap<_, _>>(),
+        )
+    };
+    let mut bounds = boxes(160, 0.0);
+    let mut history = unit_history::History::default();
+    history.set(Vec::new(), Arc::clone(&bounds), false);
+    let mut expected_ids: BTreeSet<_> = bounds.keys().copied().collect();
+    let mut expected_bounds = Arc::clone(&bounds);
+    let mut random = 0xa57e_1983u32;
+    let mut next = || {
+        random ^= random << 13;
+        random ^= random >> 17;
+        random ^= random << 5;
+        random
+    };
+    let mut time = 0.0;
+    let mut saw = [false; 5];
+    for number in 0..1_200u32 {
+        let roll = next();
+        let hour = number / 17;
+        if number.is_multiple_of(17) {
+            if number.is_multiple_of(51) {
+                bounds = boxes(160 + hour as usize % 35, (hour % 3) as f32);
+            }
+            let mut targets = Vec::new();
+            for (index, &id) in ids.iter().enumerate() {
+                if (index as u32 + hour) % 11 > 1 {
+                    continue;
+                }
+                for slot in 0..3u64 {
+                    let kind = if slot < 2 { Kind::Land } else { Kind::Ship };
+                    for part in 0..=u32::from(slot == 2) {
+                        targets.push(Target {
+                            identity: u64::from(id) * 16 + slot,
+                            part,
+                            order: ((index as u32 + slot as u32) % 38),
+                            occupant: u64::from(id) * 32 + slot + u64::from(hour % 2),
+                            kind,
+                            mesh: (hour as usize + part as usize) % 5,
+                            instance: ModelInstance {
+                                position: [index as f32 * 3.0, 10.0, part as f32],
+                                rotation: -0.0,
+                                scale: if slot == 1 { 0.3 } else { 1.0 },
+                                animation_seed: id,
+                                ..Default::default()
+                            },
+                            origin: [index as f32, 10.0, 0.0],
+                            ..unit_target(id, kind)
+                        });
+                        if part == 0 && index % 3 == 0 {
+                            let mut duplicate = *targets.last().unwrap();
+                            duplicate.mesh += 7;
+                            targets.push(duplicate);
+                        }
+                    }
+                }
+            }
+            let mut combat = battle(COMBAT, 100 + hour as i32 * 7);
+            combat.health[0].capital = if hour % 3 == 0 { 20_000 } else { 100_000 };
+            combat.health[1].sunk_fraction = (hour % 3) as f32 * 0.25;
+            let mut sources = naval_sources(combat);
+            sources.candidates[0].province = ids[0];
+            sources.candidates[0].sample_count = 8;
+            sources.candidates[0].route = vec![ids[0], ids[1]];
+            sources.candidates[0].next_arc = 0.5;
+            sources.candidates[0].speed = 0.25;
+            sources.candidates[0].day = hour as i32;
+            sources.combats.roots = [(ids[0], geometry(10.0)), (ids[1], geometry(20.0))]
+                .into_iter()
+                .collect();
+            // Repeated Unit occurrences advance the SAME arc serially, including across provinces.
+            let mut repeated = sources.candidates[0].clone();
+            repeated.province = ids[1];
+            repeated.ordinal = 2;
+            sources.candidates.push(repeated.clone());
+            repeated.ordinal = 3;
+            sources.candidates.push(repeated);
+            if hour % 7 == 3 {
+                sources.candidates.clear();
+            }
+            let formation_id = 810;
+            sources.candidates.push(unit_history::naval::Candidate {
+                province: ids[4],
+                identity: formation_id,
+                ordinal: 5,
+                slot: 11,
+                priority: 3,
+                ours: true,
+                class: CounterClass::TaskForce,
+                land_eligible: false,
+                sample_count: 4,
+                next_arc: 0.8,
+                route: vec![ids[4], ids[5]],
+                speed: 0.125,
+                min_arc: 0.0,
+                arrival_allowed: true,
+                day: hour as i32,
+            });
+            let roster = (0..5u64)
+                .map(|index| unit_history::naval::Hull {
+                    flags: if index == 0 { 0x400040 } else { 1 << 8 },
+                    graphics: format!("synthetic_{}", (index + u64::from(hour)) % 3).into_bytes(),
+                    targets: std::array::from_fn(|part| {
+                        Some(Target {
+                            identity: formation_id,
+                            occupant: 900 + index,
+                            part: part as u32,
+                            mesh: (index as usize + hour as usize) % 6,
+                            instance: geometry(index as f32 * 5.0 + part as f32),
+                            ..unit_target(ids[4], Kind::Ship)
+                        })
+                    }),
+                })
+                .collect();
+            sources.formations.push(unit_history::naval::Formation {
+                identity: formation_id,
+                province: ids[4],
+                slot: 11,
+                roster,
+            });
+            let mut land_candidate = sources.candidates.last().unwrap().clone();
+            land_candidate.identity = 1_900;
+            land_candidate.province = ids[191];
+            land_candidate.slot = 3;
+            land_candidate.class = CounterClass::Division;
+            land_candidate.land_eligible = hour % 2 == 0;
+            sources.candidates.push(land_candidate);
+            let targets: unit_history::Targets = targets.into();
+            let carried: BTreeMap<_, _> = history
+                .provinces
+                .iter()
+                .map(|(&id, province)| (id, province_frame_state(province)))
+                .collect();
+            let installed_bounds = if hour % 4 == 1 {
+                Arc::default()
+            } else {
+                Arc::clone(&bounds)
+            };
+            if !installed_bounds.is_empty() {
+                expected_bounds = Arc::clone(&installed_bounds);
+            }
+            expected_ids.extend(installed_bounds.keys().copied());
+            expected_ids.extend(targets.0.provinces.keys().copied());
+            expected_ids.extend(
+                sources
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.province),
+            );
+            if hour % 3 == 0 {
+                // Independent setters must also be complete in either install order.
+                history.set_naval(sources.clone());
+                history.set_prepared(targets.clone(), installed_bounds, false);
+            } else if hour % 3 == 1 {
+                history.set_prepared(targets.clone(), installed_bounds, false);
+                history.set_naval(sources.clone());
+            } else {
+                history.set_prepared_with_naval(
+                    targets.clone(),
+                    installed_bounds,
+                    false,
+                    sources.clone(),
+                );
+            }
+            assert_installed_history(&history, &expected_ids);
+            if hour % 5 == 2 {
+                let mut only_naval = sources.clone();
+                let mut candidate = only_naval.candidates.last().unwrap().clone();
+                candidate.province = u32::MAX - 10_000 - hour;
+                candidate.ordinal += 100;
+                expected_ids.insert(candidate.province);
+                only_naval.candidates.push(candidate);
+                history.set_naval(only_naval);
+                assert_installed_history(&history, &expected_ids);
+            }
+            if hour % 7 == 3 {
+                history.set_prepared(Default::default(), Arc::default(), false);
+                assert_installed_history(&history, &expected_ids);
+            }
+            assert!(Arc::ptr_eq(&history.bounds, &expected_bounds));
+            if hour % 11 == 4 {
+                history.set_naval(Default::default());
+                assert_installed_history(&history, &expected_ids);
+                expected_ids.extend(bounds.keys().copied());
+                expected_bounds = Arc::clone(&bounds);
+                history.set_prepared(targets.clone(), Arc::clone(&bounds), false);
+                assert_installed_history(&history, &expected_ids);
+            }
+            assert!(Arc::ptr_eq(&history.bounds, &expected_bounds));
+            for (&id, state) in &carried {
+                assert_eq!(
+                    *state,
+                    province_frame_state(&history.provinces[&id]),
+                    "hour {hour} province {id}: install changed carried state"
+                );
+            }
+            history.set_raids(vec![(0, geometry(hour as f32))]);
+            assert_installed_history(&history, &expected_ids);
+        }
+        if number == 617 {
+            time = 0.0;
+        }
+        time += [0.0, 1.0 / 240.0, 0.125, 0.5][(roll as usize >> 3) % 4];
+        let camera = Placement::map(
+            [
+                (number % 20) as f32 * 240.0,
+                ((number / 13) % 10) as f32 * 120.0,
+            ],
+            [50.0, 150.0, 260.0, 350.0][number as usize / 37 % 4],
+        )
+        .on(MapSize::TEST, MapDefines::test());
+        let viewport = if roll & 1 == 0 {
+            [1024, 768]
+        } else {
+            [1600, 900]
+        };
+        let admission = Admission::new(camera, viewport);
+        let steady = number.is_multiple_of(79);
+        let mut gates = GATES;
+        gates.scale_up = [2.0, 0.0, -0.5, 0.125][number as usize / 43 % 4];
+        gates.scale_down = [1.0, 0.0, -0.25][number as usize / 47 % 3];
+        let shown = [gates.units(camera.height), gates.ships(camera.height)];
+        let limit = [-11, 0, 1, 2, 7, 91][roll as usize % 6];
+        history.steady = steady;
+        if number.is_multiple_of(173) {
+            history.reset(Some(&BTreeSet::from([ids[number as usize % ids.len()]])));
+        }
+        if number.is_multiple_of(313) {
+            history.restart_live();
+            history.steady = steady;
+        }
+        history.select_provinces(if number % 11 < 5 {
+            BTreeSet::from([ids[0], ids[1], ids[191]])
+        } else {
+            BTreeSet::new()
+        });
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(if number % 5 < 3 {
+            7
+        } else {
+            810
+        })]));
+        if number.is_multiple_of(61) {
+            history.schedule.lock().unwrap().advance(
+                ids.iter().copied().chain([u32::MAX - 1]),
+                |_| true,
+                steady,
+            );
+        } else if number.is_multiple_of(3) {
+            history.advance_schedule(camera, viewport);
+        }
+        let mut budget = Budget::new(limit, steady);
+        let mut trace = Vec::new();
+        let output = history.step_with(
+            time,
+            gates,
+            shown,
+            camera.height < gates.arrows,
+            |id| admission.admits_province(&bounds, id),
+            &mut budget,
+            |id, budget| {
+                if (id ^ roll).is_multiple_of(7) {
+                    budget.take();
+                }
+                trace.push((id, budget.remaining()));
+            },
+        );
+        trace.push((u32::MAX, budget.remaining()));
+        let expected_trace: Vec<_> = history
+            .updates
+            .iter()
+            .map(|&(id, _)| id)
+            .filter(|id| expected_ids.contains(id))
+            .chain([u32::MAX, u32::MAX])
+            .collect();
+        assert_eq!(
+            trace.iter().map(|&(id, _)| id).collect::<Vec<_>>(),
+            expected_trace,
+            "frame {number}: building visits must retain reached province order"
+        );
+        assert_installed_history(&history, &expected_ids);
+        let mut full: Vec<_> = history
+            .provinces
+            .iter()
+            .flat_map(|(_, province)| {
+                province
+                    .entities
+                    .values()
+                    .flat_map(unit_history::Entity::placed)
+            })
+            .collect();
+        full.extend(history.combats.placed());
+        full.extend(history.raids.iter().map(|&(mesh, instance)| {
+            (
+                mesh,
+                ModelInstance {
+                    animation_epoch: history.raid_epoch,
+                    ..instance
+                },
+            )
+        }));
+        unit_history::empty_tests::assert_instances(&output, &full);
+        let dense = &history.provinces;
+        saw[0] |= !output.is_empty();
+        saw[1] |= history
+            .updates
+            .iter()
+            .any(|(_, update)| *update == unit_history::Update::OffScreen);
+        saw[2] |= !history.queue_trace.is_empty();
+        saw[3] |= !history.combats.entities.is_empty();
+        saw[4] |= dense.records.iter().any(|record| record.id > 4_000_000_000);
+    }
+    assert!(
+        saw.into_iter().all(|saw| saw),
+        "driver must exercise all lifetime paths"
+    );
+}
+
+#[test]
+fn dense_province_sizing_keeps_five_thousand_countries_and_sparse_ids() {
+    use unit_history::test_support::{GATES, target as unit_target};
+    let mut history = unit_history::History::default();
+    history.set(
+        (0..5_000u32)
+            .map(|country| Target {
+                identity: (u64::from(country) << 32) | 1,
+                ..unit_target(u32::MAX - country * 100_003, Kind::Land)
+            })
+            .collect(),
+        Arc::default(),
+        true,
+    );
+    let dense = &history.provinces;
+    assert_eq!(dense.records.len(), 5_000);
+    assert_eq!(dense.indices.len(), 5_000);
+    assert_eq!(
+        history.step(0.0, GATES, [true; 2], false, |_| true).len(),
+        5_000
+    );
 }

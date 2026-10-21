@@ -22,6 +22,7 @@ pub(super) fn presented(
     unit_hit: usize,
     notes: &mut BTreeMap<String, usize>,
 ) -> Vec<Hover> {
+    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
     let mut out = Vec::new();
     let placed = native_gui::Layout {
         size: layout.size,

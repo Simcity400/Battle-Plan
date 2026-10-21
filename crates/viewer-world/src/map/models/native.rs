@@ -207,12 +207,12 @@ impl ObjectConstants {
 /// only its own slot (a null pixel sampler keeps the previous one), so the last value per slot
 /// equals binding every draw in turn.
 struct Pending {
-    part: Option<Key>,
+    part: Option<usize>,
     /// By binding; a slot no draw bound stays `None`.
     constants: [Option<Vec<u8>>; CONSTANT_BINDINGS],
     /// The part whose program last bound a sampler with each texture.
-    samplers: [Option<Key>; TEXTURE_BINDINGS],
-    skin: Option<Key>,
+    samplers: [Option<usize>; TEXTURE_BINDINGS],
+    skin: Option<usize>,
     frame: Option<usize>,
     grid: bool,
 }
@@ -248,7 +248,7 @@ impl Pending {
         self.grid |= buffers[binding(2, Stage::Pixel) as usize].is_some();
     }
 
-    fn record(&mut self, key: Key, resident: &Resident, textures: u32) {
+    fn record(&mut self, key: usize, resident: &Resident, textures: u32) {
         if self.part != Some(key) {
             let mut samplers = textures & resident.samplers;
             while samplers != 0 {
@@ -264,16 +264,16 @@ impl Pending {
     }
 
     /// `textures` are the last draw's.
-    fn apply(
+    fn apply<'a>(
         self,
-        parts: &BTreeMap<Key, Resident>,
+        resident: impl Fn(usize) -> &'a Resident,
         textures: Textures,
         retained: &mut shader_scene::State,
     ) {
         let Some(part) = self.part else {
             return;
         };
-        parts[&part].retained.select(retained);
+        resident(part).retained.select(retained);
         let stage = |key: u32| {
             if key.is_multiple_of(2) {
                 Stage::Vertex
@@ -297,18 +297,18 @@ impl Pending {
                 continue;
             };
             let sampler =
-                self.samplers[key as usize].and_then(|part| parts[&part].retained.sampler(key));
+                self.samplers[key as usize].and_then(|part| resident(part).retained.sampler(key));
             stream.bind_texture(key / 2, stage(key), Some(texture.clone()), sampler);
         }
-        let resident = &parts[&part];
+        let selected = resident(part);
         retained.bind_vertex(
             0,
-            resident.geometry.native_stride,
-            resident.geometry.cpu_vertices.clone(),
+            selected.geometry.native_stride,
+            selected.geometry.cpu_vertices.clone(),
         );
         if let Some(skin) = self
             .skin
-            .and_then(|part| parts[&part].geometry.cpu_skin.clone())
+            .and_then(|part| resident(part).geometry.cpu_skin.clone())
         {
             retained.bind_vertex(1, 16, skin);
         }
@@ -330,6 +330,8 @@ struct Resident {
     blended: bool,
     /// Physical slots this material updates, independent of shader reads.
     samplers: u32,
+    /// Published only at the successful descriptor commit. Stale programs stay cold until use.
+    program: Option<(ResourceStamp, shader_pipeline::gpu::BindingProgram)>,
 }
 
 enum PrepareError {
@@ -344,7 +346,7 @@ impl From<io::Error> for PrepareError {
 }
 
 struct PreparedPart {
-    key: Key,
+    key: usize,
     bindings: shader_pipeline::gpu::Bindings,
     textures: u32,
     material: usize,
@@ -386,13 +388,19 @@ struct SharedGeometry {
     skin_bones: usize,
 }
 
+/// Dense resident slots for one mesh: node/LOD/part, then caster/forced selection.
+type MeshSlots = Vec<Vec<Vec<[Option<usize>; 4]>>>;
+
 pub(super) struct Renderer {
     /// The mesh effects of the stack the entities were baked from, then of the recording alone:
     /// a visual mod entity's recorded counterpart ([`super::ModelLibrary::alternatives`]) is
     /// drawn with the recording's own shaders, as the recording draws it.
     libraries: [Library; 2],
     cache: shader_pipeline::gpu::Cache,
-    parts: BTreeMap<Key, Resident>,
+    residents: Vec<Resident>,
+    /// Mesh/node/LOD/part, then caster/forced selection. Sized from demanded content.
+    slots: Vec<MeshSlots>,
+    resource_ids: ResourceIdentities,
     geometry: BTreeMap<GeometryKey, SharedGeometry>,
     queues: BTreeMap<(usize, usize), [bool; 2]>,
     /// Vertex pools by stream stride and skinning; the index pool.
@@ -400,6 +408,58 @@ pub(super) struct Renderer {
     indices: Pool,
     /// Command packet storage returned after this pass has been encoded.
     draws: DrawList,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct ResourceStamp {
+    local: u64,
+    globals: u64,
+}
+
+#[derive(Default)]
+struct ResourceIdentities {
+    local: Vec<Option<wgpu::TextureView>>,
+    globals: Option<[wgpu::TextureView; 10]>,
+    stamp: ResourceStamp,
+}
+
+impl ResourceIdentities {
+    fn observe(
+        &mut self,
+        local: &[Option<Bound>],
+        globals: Option<[&wgpu::TextureView; 10]>,
+    ) -> ResourceStamp {
+        let unchanged = self.local.len() == local.len()
+            && self
+                .local
+                .iter()
+                .zip(local)
+                .all(|(old, new)| match (old, new) {
+                    (None, None) => true,
+                    (Some(old), Some(new)) => *old == new.view,
+                    _ => false,
+                });
+        if !unchanged {
+            self.local = local
+                .iter()
+                .map(|texture| texture.as_ref().map(|texture| texture.view.clone()))
+                .collect();
+            self.stamp.local += 1;
+        }
+        if let Some(globals) = globals
+            && self
+                .globals
+                .as_ref()
+                .is_none_or(|last| !last.iter().eq(globals))
+        {
+            self.globals = Some(globals.map(Clone::clone));
+            self.stamp.globals += 1;
+        }
+        ResourceStamp {
+            local: self.stamp.local,
+            globals: globals.map_or(0, |_| self.stamp.globals),
+        }
+    }
 }
 
 type VertexKey = ((u64, bool), usize);
@@ -487,52 +547,63 @@ impl DrawList {
                 *outputs[0].lock().unwrap_or_else(|e| e.into_inner()) = Some(encoder.finish());
             }
         };
-        let count = admitted.run_beside(
-            count,
-            &|index, count| {
-                let std::ops::Range { start, end } = draw_slice(total, count, index);
-                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("native model slice"),
-                });
-                {
-                    let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
-                    // No producer samples the resolved scene between these slices. Keep every
-                    // multisample value, but resolve only after the last slice's draws.
-                    if index + 1 < count {
-                        colour.resolve_target = None;
-                    }
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("native model slice"),
-                        color_attachments: &[Some(colour)],
-                        depth_stencil_attachment: Some(
-                            targets.depth_attachment(wgpu::LoadOp::Load),
-                        ),
-                        ..Default::default()
-                    });
-                    let mut base = 0;
-                    for list in lists {
-                        let next = base + list.draws.len();
-                        if base < end && next > start {
-                            list.record_slice(
-                                &mut pass,
-                                &list.draws[start.saturating_sub(base)
-                                    ..(end - base).min(list.draws.len())],
-                            );
+        let wall_profile = viewer_foundation::profile_writer::profiling();
+        let (count, timing) = viewer_foundation::parallel::profile_run(wall_profile, || {
+            admitted.run_beside(
+                count,
+                &|index, count| {
+                    let std::ops::Range { start, end } = draw_slice(total, count, index);
+                    let mut encoder =
+                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("native model slice"),
+                        });
+                    {
+                        let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
+                        // No producer samples the resolved scene between these slices. Keep every
+                        // multisample value, but resolve only after the last slice's draws.
+                        if index + 1 < count {
+                            colour.resolve_target = None;
                         }
-                        base = next;
-                        if base >= end {
-                            break;
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("native model slice"),
+                            color_attachments: &[Some(colour)],
+                            depth_stencil_attachment: Some(
+                                targets.depth_attachment(wgpu::LoadOp::Load),
+                            ),
+                            ..Default::default()
+                        });
+                        let mut base = 0;
+                        for list in lists {
+                            let next = base + list.draws.len();
+                            if base < end && next > start {
+                                list.record_slice(
+                                    &mut pass,
+                                    &list.draws[start.saturating_sub(base)
+                                        ..(end - base).min(list.draws.len())],
+                                );
+                            }
+                            base = next;
+                            if base >= end {
+                                break;
+                            }
                         }
                     }
-                }
-                *outputs[index + 1].lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some(encoder.finish());
-            },
-            Some(&finish),
-        );
+                    *outputs[index + 1].lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(encoder.finish());
+                },
+                Some(&finish),
+            )
+        });
         // Busy builders, or helpers that did not take a turn before the caller finished,
         // leave the preceding encoder here. No commands are submitted until Scene is done.
+        let clock = wall_profile.then(std::time::Instant::now);
         finish(&|| true);
+        let caller = timing.own + clock.map_or(std::time::Duration::ZERO, |clock| clock.elapsed());
+
+        if wall_profile {
+            viewer_foundation::profiling::record_lap("native_encode_caller", caller);
+            viewer_foundation::profiling::record_lap("native_turns_finish_wait", timing.wait);
+        }
         outputs
             .into_iter()
             .take(count + 1)
@@ -630,16 +701,6 @@ impl Pool {
         chunk.used += count;
         Ok((index, first))
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Key {
-    mesh: usize,
-    node: usize,
-    lod: usize,
-    part: usize,
-    caster: bool,
-    forced: bool,
 }
 
 /// What a part draws with, from its built pass: the compiled program of the technique the pass
@@ -870,7 +931,20 @@ impl ModelPass {
         object: &mut ObjectConstants,
     ) -> io::Result<()> {
         let draws = self.prepare_native(arena, frame, inputs, queue, object)?;
-        draws.record(pass);
+        {
+            let wall_profile = viewer_foundation::profile_writer::profiling();
+            let clock = wall_profile.then(std::time::Instant::now);
+            draws.record(pass);
+            let caller = clock.map_or(std::time::Duration::ZERO, |clock| clock.elapsed());
+
+            if wall_profile {
+                viewer_foundation::profiling::record_lap("native_encode_caller", caller);
+                viewer_foundation::profiling::record_lap(
+                    "native_turns_finish_wait",
+                    std::time::Duration::ZERO,
+                );
+            }
+        }
         self.recycle_native(draws);
         Ok(())
     }
@@ -908,6 +982,12 @@ impl ModelPass {
         queue: Queue,
         object: &mut ObjectConstants,
     ) -> io::Result<DrawList> {
+        // One clock per queue invocation, only under normal PROFILE.
+        let _wall = viewer_foundation::profiling::span(if queue == Queue::Caster {
+            "native_caster_prepare"
+        } else {
+            "native_lit_prepare"
+        });
         if self.field.native_order.is_empty() {
             return Ok(DrawList::default());
         }
@@ -935,7 +1015,9 @@ impl ModelPass {
                     ]
                 },
                 cache: Default::default(),
-                parts: BTreeMap::new(),
+                residents: Vec::new(),
+                slots: Vec::new(),
+                resource_ids: ResourceIdentities::default(),
                 geometry: BTreeMap::new(),
                 queues: BTreeMap::new(),
                 pools: BTreeMap::new(),
@@ -944,6 +1026,11 @@ impl ModelPass {
             });
         }
         let native = native.as_mut().expect("initialized above");
+        let stamp = native
+            .resource_ids
+            .observe(&self.textures, (!caster).then_some(inputs.textures));
+        native.slots.resize_with(self.meshes.len(), Vec::new);
+
         let mut commands = std::mem::take(&mut native.draws);
         let device = arena.device();
         let mut poses = self.poses.borrow_mut();
@@ -956,6 +1043,7 @@ impl ModelPass {
         let mut last_material = None;
         let mut pending = Pending::default();
         let mut prepared = Vec::new();
+        let mut candidates = Vec::new();
         // Physical pixel slots 4..13; material slots 0..2 are replaced per draw.
         let mut textures: Textures = [None; TEXTURE_BINDINGS];
         let mut texture_mask = 0;
@@ -982,14 +1070,17 @@ impl ModelPass {
                             continue;
                         }
                     }
+
                     let instance_world = match instance.native_transform() {
                         Ok(world) => world,
                         Err(why) => {
                             // The instance's own recorded transform, whatever draws it.
+
                             self.refuse_actor(arena, None, index, usize::MAX, &mesh.name, why);
                             continue;
                         }
                     };
+
                     let Some(rig) = self.rigs.get(group.mesh) else {
                         self.refuse_actor(
                             arena,
@@ -1015,8 +1106,11 @@ impl ModelPass {
                             ),
                         )
                     });
+
                     for descriptor in &mesh.native {
                         let scratch_before = (object.bytes, object.pixel);
+                        candidates.clear();
+
                         let mut submit = || -> Result<(), PrepareError> {
                             let actor = &actors[descriptor.node];
                             let world = mesh_pose::multiply(
@@ -1027,11 +1121,13 @@ impl ModelPass {
                                     .map_err(|why| PrepareError::Actor(invalid(why.clone())))?,
                             );
                             let position = [world[3][0] + offset, world[3][1], world[3][2]];
+
                             let Some(lod) =
                                 descriptor.lod(position, eye).map_err(PrepareError::Actor)?
                             else {
                                 return Ok(());
                             };
+
                             for source in &descriptor.lods[lod] {
                                 if let Some(why) =
                                     self.material_refusals.get(&source.material_index)
@@ -1039,6 +1135,7 @@ impl ModelPass {
                                     return Err(PrepareError::Actor(invalid(why.clone())));
                                 }
                             }
+
                             // No rest palette: the game returns without a played clip;
                             // Draws still upload the allocated bytes.
                             let skin_pose = descriptor.lods[lod]
@@ -1050,6 +1147,7 @@ impl ModelPass {
                                     })
                                 })
                                 .transpose()?;
+
                             let descriptor_key = (group.mesh, descriptor.node);
                             if !native.queues.contains_key(&descriptor_key) {
                                 let mut admitted = [false; 2];
@@ -1079,6 +1177,7 @@ impl ModelPass {
                             } {
                                 return Ok(());
                             }
+
                             // The game propagates the ROOT actor payload to every child.
                             let root = rig.nodes[0].native.as_ref().ok_or_else(|| {
                                 PrepareError::Actor(invalid("native root actor source unavailable"))
@@ -1089,24 +1188,30 @@ impl ModelPass {
                                 userdata(self.label, root, instance, frame.alpha)
                                     .map_err(PrepareError::Actor)?
                             };
+
                             object.update(&world, userdata);
                             let (vertex, pixel) = object.upload(userdata.is_some());
+
                             prepared.clear();
+
+                            let nodes = &mut native.slots[group.mesh];
+                            nodes.resize_with(rig.nodes.len(), Vec::new);
+                            if nodes[descriptor.node].is_empty() {
+                                nodes[descriptor.node] = descriptor
+                                    .lods
+                                    .iter()
+                                    .map(|parts| vec![[None; 4]; parts.len()])
+                                    .collect();
+                            }
+
                             let mut submitted_buffers: Constants = [None; CONSTANT_BINDINGS];
                             for (part, source) in descriptor.lods[lod].iter().enumerate() {
-                                let key = Key {
-                                    mesh: group.mesh,
-                                    node: descriptor.node,
-                                    lod,
-                                    part,
-                                    caster,
-                                    forced,
-                                };
-                                let gpu = match native.parts.entry(key) {
-                                    std::collections::btree_map::Entry::Occupied(entry) => {
-                                        entry.into_mut()
-                                    }
-                                    std::collections::btree_map::Entry::Vacant(entry) => {
+                                let variants = usize::from(caster) * 2 + usize::from(forced);
+                                let key = match native.slots[group.mesh][descriptor.node][lod][part]
+                                    [variants]
+                                {
+                                    Some(key) => key,
+                                    None => {
                                         let selection = if forced && !caster {
                                             select_alpha(&mut native.libraries[library], source)?
                                         } else {
@@ -1224,7 +1329,8 @@ impl ModelPass {
                                         let samplers = (0..TEXTURE_BINDINGS as u32)
                                             .filter(|slot| retained.sampler(*slot).is_some())
                                             .fold(0, |mask, slot| mask | (1 << slot));
-                                        entry.insert(Resident {
+                                        let key = native.residents.len();
+                                        native.residents.push(Resident {
                                             retained,
                                             geometry,
                                             pipeline,
@@ -1245,9 +1351,16 @@ impl ModelPass {
                                             caster_texture,
                                             blended,
                                             samplers,
-                                        })
+                                            program: None,
+                                        });
+                                        native.slots[group.mesh][descriptor.node][lod][part]
+                                            [variants] = Some(key);
+                                        key
                                     }
                                 };
+
+                                let gpu = &native.residents[key];
+
                                 let material = &self.materials[source.material_index];
                                 for (slot, index) in
                                     [material.diffuse, material.specular, material.normal]
@@ -1273,6 +1386,7 @@ impl ModelPass {
                                     *bound = Some(&texture.view);
                                     texture_mask |= 1 << slot;
                                 }
+
                                 let mut buffers: Constants = [None; CONSTANT_BINDINGS];
                                 buffers[binding(0, Stage::Vertex) as usize] =
                                     Some(inputs.frames[view]);
@@ -1294,17 +1408,30 @@ impl ModelPass {
                                     buffers[binding(2, Stage::Vertex) as usize] =
                                         Some(bytemuck::cast_slice(&pose.bones));
                                 }
+
                                 // Actor inputs are checked separately; later arena/device errors are fatal.
+
                                 gpu.check_bindings(&buffers, &textures)?;
-                                let bindings = gpu
-                                    .pipeline
-                                    .pipeline
-                                    .bind_with(
-                                        arena,
-                                        |binding| buffers[binding as usize],
-                                        |binding| textures[binding as usize],
-                                    )
-                                    .map_err(invalid)?;
+
+                                let bindings = match &gpu.program {
+                                    Some((installed, program)) if *installed == stamp => program
+                                        .bind_with(arena, |binding| buffers[binding as usize])
+                                        .map_err(invalid)?,
+                                    _ => {
+                                        let (bindings, program) = gpu
+                                            .pipeline
+                                            .pipeline
+                                            .bind_program_with(
+                                                arena,
+                                                |binding| buffers[binding as usize],
+                                                |binding| textures[binding as usize],
+                                            )
+                                            .map_err(invalid)?;
+                                        candidates.push((key, program));
+                                        bindings
+                                    }
+                                };
+
                                 if queue.accepts(gpu.blended, forced) {
                                     for (pending, bytes) in
                                         submitted_buffers.iter_mut().zip(buffers)
@@ -1322,6 +1449,11 @@ impl ModelPass {
                                     });
                                 }
                             }
+
+                            // A failed later part leaves all successful-program candidates cold.
+                            for (key, program) in candidates.drain(..) {
+                                native.residents[key].program = Some((stamp, program));
+                            }
                             // Prepare every part before the first command for this actor.
                             if !caster && !prepared.is_empty() {
                                 pending.constants(&submitted_buffers, view);
@@ -1334,7 +1466,7 @@ impl ModelPass {
                                 count,
                             } in prepared.drain(..)
                             {
-                                let gpu = &native.parts[&key];
+                                let gpu = &native.residents[key];
                                 if !caster {
                                     pending.record(key, gpu, textures);
                                 }
@@ -1402,7 +1534,7 @@ impl ModelPass {
                         self.textures[index].as_ref().map(|texture| &texture.view);
                 }
             }
-            pending.apply(&native.parts, textures, &mut object.retained);
+            pending.apply(|key| &native.residents[key], textures, &mut object.retained);
             self.drawn.set(self.drawn.get() + drawn);
         }
         Ok(commands)
@@ -1566,7 +1698,10 @@ mod tests {
                 3
             }
         }
-        let workers = Workers::new(Arc::new(Pool));
+        let assist =
+            viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(Arc::new(Pool), 1)
+                .unwrap();
+        let workers = Workers::new(Arc::new(assist));
         struct Busy;
         impl Spawn for Busy {
             fn try_spawn(

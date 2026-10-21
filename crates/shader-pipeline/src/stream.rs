@@ -17,15 +17,24 @@ use installed_content_core::pdxshader::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+type TextureMap = BTreeMap<u32, Option<wgpu::TextureView>>;
+
+fn same_snapshot<T: PartialEq + ?Sized>(a: &Arc<T>, b: &Arc<T>) -> bool {
+    Arc::ptr_eq(a, b) || **a == **b
+}
+
 pub struct Stream {
     program: Option<(Selection, Layout)>,
-    vertex_strides: BTreeMap<u32, u64>,
+    vertex_strides: Arc<BTreeMap<u32, u64>>,
     state: gpu::State,
+    sampler_keys: Arc<BTreeMap<u32, [u32; 10]>>,
     depth_stencil: Option<DepthStencilState>,
     rasterizer: Option<RasterizerState>,
     constants: BTreeMap<u32, Vec<u8>>,
     known_constants: BTreeMap<u32, Vec<std::ops::Range<u32>>>,
-    textures: BTreeMap<u32, Option<wgpu::TextureView>>,
+    textures: TextureMap,
+    // Created only for a successful immutable bind; ordinary texture changes stay in-place.
+    texture_snapshot: Option<Arc<TextureMap>>,
     null_textures: BTreeMap<super::TextureKind, wgpu::TextureView>,
     last_pass: Option<ResolvedPass>,
     pub cache: gpu::Cache,
@@ -35,7 +44,16 @@ pub struct Stream {
 #[derive(Clone, PartialEq, Eq)]
 enum Layout {
     Packed(Declaration),
-    Native(Vec<gpu::VertexLayout>),
+    Native(Arc<[gpu::VertexLayout]>),
+}
+
+impl Layout {
+    fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Native(a), Self::Native(b)) => same_snapshot(a, b),
+            _ => self == other,
+        }
+    }
 }
 
 /// Pipeline inputs only: constant bytes, views and native allocations are still read for every draw.
@@ -43,10 +61,10 @@ struct PassInputs {
     effect: uuid::Uuid,
     technique: usize,
     layout: Layout,
-    strides: BTreeMap<u32, u64>,
+    strides: Arc<BTreeMap<u32, u64>>,
     blend: Option<wgpu::BlendState>,
     write_mask: wgpu::ColorWrites,
-    samplers: Vec<(u32, [u32; 10])>,
+    samplers: Arc<BTreeMap<u32, [u32; 10]>>,
     depth: Option<DepthStencilState>,
     raster: Option<[u32; 8]>,
     template: gpu::Pass,
@@ -76,12 +94,7 @@ impl PassInputs {
             strides: stream.vertex_strides.clone(),
             blend: stream.state.blend,
             write_mask: stream.state.write_mask,
-            samplers: stream
-                .state
-                .samplers
-                .iter()
-                .map(|(key, sampler)| (*key, gpu::sampler_key(sampler)))
-                .collect(),
+            samplers: stream.sampler_keys.clone(),
             depth: stream.depth_stencil.clone(),
             raster: stream.rasterizer.as_ref().map(raster_key),
             template: template.clone(),
@@ -100,15 +113,11 @@ impl PassInputs {
         };
         self.effect == selection.effect.id
             && self.technique == selection.index
-            && self.layout == *layout
-            && self.strides == stream.vertex_strides
+            && self.layout.matches(layout)
+            && same_snapshot(&self.strides, &stream.vertex_strides)
             && self.blend == stream.state.blend
             && self.write_mask == stream.state.write_mask
-            && self.samplers.iter().copied().eq(stream
-                .state
-                .samplers
-                .iter()
-                .map(|(key, sampler)| (*key, gpu::sampler_key(sampler))))
+            && same_snapshot(&self.samplers, &stream.sampler_keys)
             && self.depth == stream.depth_stencil
             && self.raster == stream.rasterizer.as_ref().map(raster_key)
             && self.template == *template
@@ -130,17 +139,19 @@ impl Default for Stream {
     fn default() -> Self {
         Self {
             program: None,
-            vertex_strides: BTreeMap::new(),
+            vertex_strides: Arc::default(),
             state: gpu::State {
                 samplers: BTreeMap::new(),
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             },
+            sampler_keys: Arc::default(),
             depth_stencil: None,
             rasterizer: None,
             constants: BTreeMap::new(),
             known_constants: BTreeMap::new(),
             textures: BTreeMap::new(),
+            texture_snapshot: None,
             null_textures: BTreeMap::new(),
             last_pass: None,
             cache: gpu::Cache::default(),
@@ -167,6 +178,42 @@ pub struct PassSubmission {
 pub struct NativePrepared<'a> {
     pub layouts: &'a [gpu::VertexLayout],
     pub vertices: &'a [gpu::Slice],
+}
+
+struct NativeBindings {
+    textures: Arc<TextureMap>,
+    program: gpu::BindingProgram,
+    used: u64,
+}
+
+impl NativeBindings {
+    fn matches(&self, stream: &Stream) -> bool {
+        stream
+            .texture_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| Arc::ptr_eq(snapshot, &self.textures))
+            || *self.textures == stream.textures
+    }
+}
+
+/// A successful native-pass resolution, scoped to one stream/device and one caller selection.
+/// Every hit still compares the complete ordered pass key and checks initialized constants.
+/// Constants and their arena offsets are never cached. Failed replacements are not cached.
+#[derive(Default)]
+pub struct NativePassCache {
+    resolved: Option<ResolvedPass>,
+    bindings: Vec<NativeBindings>,
+    frame: u64,
+    pending: Option<NativeBindings>,
+}
+
+impl NativePassCache {
+    /// Immutable resource-map snapshots currently held, for consumer exactness proofs.
+    /// This exposes actual cache state, not diagnostic hit/miss counters.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn binding_textures(&self) -> impl Iterator<Item = &Arc<TextureMap>> {
+        self.bindings.iter().map(|entry| &entry.textures)
+    }
 }
 
 pub struct NativeSubmission {
@@ -211,11 +258,13 @@ impl Stream {
         self.program = caller.program.clone();
         self.vertex_strides = caller.vertex_strides.clone();
         self.state = caller.state.clone();
+        self.sampler_keys = caller.sampler_keys.clone();
         self.depth_stencil = caller.depth_stencil.clone();
         self.rasterizer = caller.rasterizer.clone();
         self.constants = caller.constants.clone();
         self.known_constants = caller.known_constants.clone();
         self.textures = caller.textures.clone();
+        self.texture_snapshot = caller.texture_snapshot.clone();
     }
 
     /// Independent renderer blend handle, after program selection. Text backgrounds disable
@@ -243,7 +292,7 @@ impl Stream {
     /// Blend, depth, rasterizer and resource handles are independent commands.
     pub fn bind_program(&mut self, selection: Option<Selection>, vertices: Vec<gpu::VertexLayout>) {
         if let Some(selection) = selection {
-            self.program = Some((selection, Layout::Native(vertices)));
+            self.program = Some((selection, Layout::Native(vertices.into())));
         }
     }
 
@@ -252,7 +301,7 @@ impl Stream {
         if self.program.as_ref().is_some_and(|(bound, layout)| {
             bound.effect.id == selection.effect.id
                 && bound.index == selection.index
-                && matches!(layout, Layout::Native(bound) if bound == vertices)
+                && matches!(layout, Layout::Native(bound) if bound.as_ref() == vertices)
         }) {
             return;
         }
@@ -263,7 +312,9 @@ impl Stream {
     /// replace slot 0 even when a null technique retains a program.
     /// Handles and offsets remain caller-owned; an omitted slot keeps its stride.
     pub fn bind_vertex_stride(&mut self, slot: u32, stride: u64) {
-        self.vertex_strides.insert(slot, stride);
+        if self.vertex_strides.get(&slot) != Some(&stride) {
+            Arc::make_mut(&mut self.vertex_strides).insert(slot, stride);
+        }
     }
 
     /// Effective input declaration for binding the caller's retained buffers.
@@ -275,7 +326,7 @@ impl Stream {
         let Layout::Native(vertices) = layout else {
             return Err("packed vertex decoding requires prepare".into());
         };
-        let mut vertices = vertices.clone();
+        let mut vertices = vertices.to_vec();
         for (slot, vertex) in vertices.iter_mut().enumerate() {
             if let Some(stride) = self.vertex_strides.get(&(slot as u32)) {
                 vertex.stride = *stride;
@@ -296,13 +347,15 @@ impl Stream {
     /// Keep compiled pipelines, but never guess that its program was the last native effect.
     pub fn invalidate_bindings(&mut self) {
         self.program = None;
-        self.vertex_strides.clear();
+        self.vertex_strides = Arc::default();
         self.depth_stencil = None;
         self.rasterizer = None;
         self.state.samplers.clear();
+        self.sampler_keys = Arc::default();
         self.constants.clear();
         self.known_constants.clear();
         self.textures.clear();
+        self.texture_snapshot = None;
     }
 
     /// A null technique retains program/layout and selects the renderer default blend.
@@ -389,6 +442,16 @@ impl Stream {
         Ok(())
     }
 
+    // Keep the canonical bitwise key paired with the actual retained sampler, not an
+    // incoming command that native sampler equality might leave unapplied (signed zero).
+    fn set_sampler(&mut self, key: u32, sampler: Sampler) {
+        let bits = gpu::sampler_key(&sampler);
+        if self.sampler_keys.get(&key) != Some(&bits) {
+            Arc::make_mut(&mut self.sampler_keys).insert(key, bits);
+        }
+        self.state.samplers.insert(key, sampler);
+    }
+
     /// A sampler overrides the caller's slot, for both texture and sampler.
     /// A null pixel sampler retains state, a null vertex sampler clears it; null texture unbinds.
     pub fn bind_texture(
@@ -400,15 +463,18 @@ impl Stream {
     ) {
         let slot = sampler.map_or(slot, |sampler| sampler.index);
         let key = binding(slot, stage);
-        self.textures.insert(key, texture);
+        if self.textures.get(&key) != Some(&texture) {
+            self.textures.insert(key, texture);
+            self.texture_snapshot = None;
+        }
         if let Some(sampler) = sampler {
             if self.state.samplers.get(&key) != Some(sampler) {
-                self.state.samplers.insert(key, sampler.clone());
+                self.set_sampler(key, sampler.clone());
             }
         } else if stage == Stage::Vertex {
             // A null vertex sampler uses D3D11's linear filtering, clamp addressing, zero bias
             // and unrestricted LOD.
-            self.state.samplers.insert(
+            self.set_sampler(
                 key,
                 Sampler {
                     name: "D3D11 null sampler".into(),
@@ -433,7 +499,9 @@ impl Stream {
     pub fn forget_texture(&mut self, slot: u32, stage: Stage, sampler: Option<&Sampler>) {
         self.bind_texture(slot, stage, None, sampler);
         let slot = sampler.map_or(slot, |sampler| sampler.index);
-        self.textures.remove(&binding(slot, stage));
+        if self.textures.remove(&binding(slot, stage)).is_some() {
+            self.texture_snapshot = None;
+        }
     }
 
     /// `count` records of `stride` bytes drawn as the caller's `topology`: a native four-record
@@ -625,6 +693,26 @@ impl Stream {
         prepared: Option<NativePrepared<'_>>,
         previous: Option<&PassSubmission>,
     ) -> Result<NativeSubmission, String> {
+        self.prepare_native_pass_with_cache(
+            arena, label, template, buffers, vertices, instances, prepared, previous, None,
+        )
+    }
+
+    /// Opt-in native-pass cache for a caller's successful selection. Native buffer reads,
+    /// partial constant checks, null bindings and refusals keep their ordinary serial order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_native_pass_with_cache(
+        &mut self,
+        arena: &gpu::Arena,
+        label: impl std::fmt::Display,
+        template: &gpu::Pass,
+        buffers: &BTreeMap<u32, Option<super::vertices::NativeBuffer<'_>>>,
+        vertices: u32,
+        instances: u32,
+        prepared: Option<NativePrepared<'_>>,
+        previous: Option<&PassSubmission>,
+        mut cache: Option<&mut NativePassCache>,
+    ) -> Result<NativeSubmission, String> {
         let result: Result<NativeSubmission, String> = (|| {
             let packed = if prepared.is_none() {
                 Some(super::vertices::pack_native(
@@ -640,7 +728,11 @@ impl Stream {
                 .as_ref()
                 .map(|p| p.layouts)
                 .or_else(|| packed.as_ref().map(|p| p.layouts.as_slice()));
-            let (pass, _) = self.prepare_pass_inner(arena, template, layouts, previous)?;
+            let (pass, _) = if let Some(cache) = cache.as_deref_mut() {
+                self.prepare_cached_pass_inner(arena, template, layouts, previous, cache)?
+            } else {
+                self.prepare_pass_inner(arena, template, layouts, previous)?
+            };
             let vertices = if let Some(prepared) = prepared {
                 prepared.vertices.to_vec()
             } else {
@@ -654,6 +746,15 @@ impl Stream {
             };
             Ok(NativeSubmission { pass, vertices })
         })();
+        if let Some(cache) = cache {
+            // Native geometry staging happens after binding and can still refuse. Publish
+            // immutable bindings only after the entire draw's ordinary preparation succeeds.
+            if let Some(pending) = cache.pending.take()
+                && result.is_ok()
+            {
+                cache.bindings.push(pending);
+            }
+        }
         match result {
             Ok(submission) => Ok(submission),
             Err(reason) => {
@@ -688,8 +789,58 @@ impl Stream {
         vertices: Option<&[gpu::VertexLayout]>,
         previous: Option<&PassSubmission>,
     ) -> Result<(PassSubmission, Selection), String> {
-        let (pipeline, selection, stencil_reference, scissor_enabled) =
-            self.resolve_pass(arena, template, vertices)?;
+        let resolved = self.resolve_pass(arena, template, vertices)?;
+        self.bind_resolved_pass(arena, resolved, previous, None)
+    }
+
+    fn prepare_cached_pass_inner(
+        &mut self,
+        arena: &gpu::Arena,
+        template: &gpu::Pass,
+        vertices: Option<&[gpu::VertexLayout]>,
+        previous: Option<&PassSubmission>,
+        cache: &mut NativePassCache,
+    ) -> Result<(PassSubmission, Selection), String> {
+        let resolved = if let Some(cached) = &cache.resolved
+            && cached.inputs.matches(self, template, vertices)
+        {
+            (
+                cached.pipeline.clone(),
+                cached.selection.clone(),
+                cached.stencil_reference,
+                cached.scissor_enabled,
+            )
+        } else {
+            cache.resolved = None;
+            cache.bindings.clear();
+            let resolved = self.resolve_pass(arena, template, vertices)?;
+            let (pipeline, selection, stencil_reference, scissor_enabled) = &resolved;
+            // Keep a failed replacement's ordinary refusal/fallback on EVERY draw.
+            if self.program.as_ref().is_some_and(|(requested, _)| {
+                requested.effect.id == selection.effect.id && requested.index == selection.index
+            }) {
+                cache.resolved = Some(ResolvedPass {
+                    inputs: PassInputs::new(self, template, vertices),
+                    pipeline: pipeline.clone(),
+                    selection: selection.clone(),
+                    stencil_reference: *stencil_reference,
+                    scissor_enabled: *scissor_enabled,
+                });
+            }
+            resolved
+        };
+        let successful = cache.resolved.is_some();
+        self.bind_resolved_pass(arena, resolved, previous, successful.then_some(cache))
+    }
+
+    fn bind_resolved_pass(
+        &mut self,
+        arena: &gpu::Arena,
+        resolved: PipelineResolution,
+        previous: Option<&PassSubmission>,
+        cache: Option<&mut NativePassCache>,
+    ) -> Result<(PassSubmission, Selection), String> {
+        let (pipeline, selection, stencil_reference, scissor_enabled) = resolved;
         if let Some(previous) =
             previous.filter(|previous| Arc::ptr_eq(&previous.pipeline, &pipeline))
         {
@@ -713,19 +864,51 @@ impl Stream {
         };
         self.null_textures(arena.device(), &selection, kinds())?;
         self.check_constants(&pipeline)?;
-        let bindings = pipeline
-            .bind_with(
-                arena,
-                |binding| self.constants.get(&binding).map(Vec::as_slice),
-                |binding| match self.textures.get(&binding)? {
-                    Some(view) => Some(view),
-                    None => {
-                        let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
-                        self.null_textures.get(kind)
-                    }
-                },
-            )
-            .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
+        let constants = |binding| self.constants.get(&binding).map(Vec::as_slice);
+        let textures = |binding| match self.textures.get(&binding)? {
+            Some(view) => Some(view),
+            None => {
+                let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
+                self.null_textures.get(kind)
+            }
+        };
+        let bindings = if let Some(cache) = cache {
+            let frame = arena.frame();
+            if cache.frame != frame {
+                cache.frame = frame;
+                // Match ordinary bind-group retirement; page changes within a frame do
+                // not repeatedly recapture programs, and unused views cannot accumulate.
+                cache.bindings.retain(|entry| entry.used + 1 >= frame);
+            }
+            if let Some(entry) = cache
+                .bindings
+                .iter_mut()
+                .rev()
+                .find(|entry| entry.matches(self))
+            {
+                entry.used = frame;
+                self.texture_snapshot = Some(entry.textures.clone());
+                entry.program.bind_with(arena, constants)
+            } else {
+                pipeline
+                    .bind_program_with(arena, constants, textures)
+                    .map(|(bindings, program)| {
+                        let snapshot = self
+                            .texture_snapshot
+                            .get_or_insert_with(|| Arc::new(self.textures.clone()))
+                            .clone();
+                        cache.pending = Some(NativeBindings {
+                            textures: snapshot,
+                            program,
+                            used: frame,
+                        });
+                        bindings
+                    })
+            }
+        } else {
+            pipeline.bind_with(arena, constants, textures)
+        }
+        .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
         Ok((
             PassSubmission {
                 pipeline,
@@ -968,7 +1151,7 @@ mod tests {
                 let Layout::Native(v) = &mut s.program.as_mut().unwrap().1 else {
                     unreachable!()
                 };
-                v[0].attributes[0].offset = 4;
+                Arc::make_mut(v)[0].attributes[0].offset = 4;
             },
             |s| s.bind_vertex_stride(0, 20),
             |s| {
@@ -982,18 +1165,16 @@ mod tests {
             |s| s.rasterizer.as_mut().unwrap().scissor = true,
             |s| s.rasterizer.as_mut().unwrap().slope_scaled_depth_bias = -0.,
             |s| {
-                s.state
-                    .samplers
-                    .get_mut(&binding(0, Stage::Vertex))
-                    .unwrap()
-                    .lod_bias = -0.
+                let key = binding(0, Stage::Vertex);
+                let mut sampler = s.state.samplers[&key].clone();
+                sampler.lod_bias = -0.;
+                s.set_sampler(key, sampler);
             },
             |s| {
-                s.state
-                    .samplers
-                    .get_mut(&binding(0, Stage::Vertex))
-                    .unwrap()
-                    .max_lod = 3
+                let key = binding(0, Stage::Vertex);
+                let mut sampler = s.state.samplers[&key].clone();
+                sampler.max_lod = 3;
+                s.set_sampler(key, sampler);
             },
             |s| s.invalidate_bindings(),
         ];
@@ -1006,6 +1187,23 @@ mod tests {
                 "changed pipeline input {index}"
             );
         }
+        let mut equal = Stream::default();
+        equal.inherit_bindings(&stream);
+        equal.bind_vertex_stride(0, 20);
+        equal.bind_vertex_stride(0, 16);
+        let slot = binding(0, Stage::Vertex);
+        let sampler = equal.state.samplers[&slot].clone();
+        let mut changed_sampler = sampler.clone();
+        changed_sampler.lod_bias = -0.;
+        equal.set_sampler(slot, changed_sampler);
+        equal.set_sampler(slot, sampler);
+        equal.bind_program(Some(selection.clone()), layouts.clone());
+        assert!(!Arc::ptr_eq(&equal.vertex_strides, &key.strides));
+        assert!(!Arc::ptr_eq(&equal.sampler_keys, &key.samplers));
+        assert!(
+            key.matches(&equal, &template, Some(&layouts)),
+            "equal independently owned keys still match"
+        );
         let mut changed = template.clone();
         changed.multisample.count = 1;
         assert!(!key.matches(&stream, &changed, Some(&layouts)));
@@ -1031,6 +1229,75 @@ mod tests {
             key.matches(&stream, &template, Some(&layouts)),
             "resources are checked afresh, not cached with a pipeline"
         );
+    }
+
+    #[test]
+    fn immutable_input_snapshots_preserve_noops_bits_and_scoped_mutations() {
+        for frame in 0..256 {
+            let mut owner = Stream::default();
+            owner.bind_vertex_stride(0, 16 + frame);
+            owner.bind_texture(0, Stage::Vertex, None, None);
+            let slot = binding(0, Stage::Vertex);
+            let textures = Arc::new(owner.textures.clone());
+            owner.texture_snapshot = Some(textures.clone());
+            let strides = owner.vertex_strides.clone();
+            let samplers = owner.sampler_keys.clone();
+            let mut scoped = Stream::default();
+            scoped.inherit_bindings(&owner);
+            scoped.bind_vertex_stride(0, 16 + frame);
+            scoped.bind_texture(0, Stage::Vertex, None, None);
+            assert!(Arc::ptr_eq(&scoped.vertex_strides, &strides));
+            assert!(Arc::ptr_eq(&scoped.sampler_keys, &samplers));
+            assert!(Arc::ptr_eq(
+                scoped.texture_snapshot.as_ref().unwrap(),
+                &textures
+            ));
+
+            let mut sampler = scoped.state.samplers[&slot].clone();
+            sampler.lod_bias = -0.;
+            scoped.bind_texture(0, Stage::Vertex, None, Some(&sampler));
+            assert_eq!(
+                scoped.state.samplers[&slot].lod_bias.to_bits(),
+                0,
+                "equal sampler command retains positive zero"
+            );
+            assert!(Arc::ptr_eq(&scoped.sampler_keys, &samplers));
+            sampler.lod_bias = f32::from_bits(0x7fc0_0000 | frame as u32);
+            scoped.bind_texture(0, Stage::Vertex, None, Some(&sampler));
+            let nan_keys = scoped.sampler_keys.clone();
+            scoped.bind_texture(0, Stage::Vertex, None, Some(&sampler));
+            assert!(
+                Arc::ptr_eq(&scoped.sampler_keys, &nan_keys),
+                "same NaN bits do not copy a key"
+            );
+            assert_eq!(
+                scoped.sampler_keys[&slot],
+                gpu::sampler_key(&scoped.state.samplers[&slot])
+            );
+            assert_eq!(owner.sampler_keys, samplers);
+            assert_eq!(owner.state.samplers[&slot].lod_bias.to_bits(), 0);
+
+            scoped.bind_vertex_stride(0, 17 + frame);
+            assert_eq!(owner.vertex_strides[&0], 16 + frame);
+            assert_eq!(scoped.vertex_strides[&0], 17 + frame);
+            scoped.bind_texture(1, Stage::Pixel, None, None);
+            assert!(scoped.texture_snapshot.is_none());
+            assert_eq!(*textures, owner.textures);
+            assert!(!textures.contains_key(&binding(1, Stage::Pixel)));
+            scoped.forget_texture(0, Stage::Vertex, None);
+            assert!(!scoped.textures.contains_key(&slot));
+            assert_eq!(
+                textures.get(&slot),
+                Some(&None),
+                "missing is not explicit null"
+            );
+            scoped.invalidate_bindings();
+            assert!(scoped.vertex_strides.is_empty());
+            assert!(scoped.sampler_keys.is_empty());
+            assert!(scoped.texture_snapshot.is_none());
+            assert_eq!(owner.vertex_strides, strides);
+            assert_eq!(*textures, owner.textures);
+        }
     }
 
     #[test]
@@ -1087,7 +1354,7 @@ mod tests {
         let (_, Layout::Native(retained)) = stream.program.as_ref().unwrap() else {
             panic!("native layout lost")
         };
-        assert_eq!(retained, &layout);
+        assert_eq!(retained.as_ref(), layout);
         let template = template();
         let (pass, reference, scissor) = stream.pass_state(&template);
         assert_eq!((reference, scissor), (Some(37), Some(true)));

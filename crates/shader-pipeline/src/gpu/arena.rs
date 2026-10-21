@@ -255,6 +255,7 @@ impl Arena {
 impl Inner {
     /// Make the current buffer able to take `size` more bytes; true if it changed.
     fn room(&mut self, device: &wgpu::Device, size: usize) -> Result<bool, String> {
+        let original = self.current;
         let mut changed = false;
         loop {
             let replace = match self.chunks.get(self.current) {
@@ -271,6 +272,8 @@ impl Inner {
             };
             let bytes = CHUNK.max(size as u64);
             if bytes > device.limits().max_buffer_size {
+                // Refusal must leave the current chunk and its recent offsets together.
+                self.current = original;
                 return Err(format!(
                     "a draw's {bytes} upload bytes exceed the device's {}-byte buffer limit",
                     device.limits().max_buffer_size
@@ -434,5 +437,85 @@ mod tests {
             &inner.chunks[0].staged[again.offset as usize..][..6],
             &bytes
         );
+    }
+
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn refused_upload_preserves_current_chunk_and_recent_offsets_for_same_frame_retry() {
+        let _serial = crate::tests::GPU_TESTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        let mut descriptor = wgpu::DeviceDescriptor::default();
+        descriptor.required_limits.max_buffer_size = CHUNK;
+        let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).unwrap();
+        for spare in [true, false] {
+            for constants_upload in [false, true] {
+                let arena = Arena::new(&device);
+                if spare {
+                    arena.vertices(&vec![3; CHUNK as usize - 4]).unwrap();
+                    arena.vertices(&[4; 8]).unwrap();
+                    assert_eq!(arena.inner.borrow().chunks.len(), 2);
+                    arena.reset();
+                }
+                let bytes = [7; 16];
+                let vertices = [9; 12];
+                let mut offsets = [0];
+                let buffer = arena.constants(&[(&bytes, 32)], &mut offsets).unwrap();
+                let original_offsets = offsets;
+                let geometry = arena.vertices(&vertices).unwrap();
+                arena.flush(&queue);
+                let snapshot = || {
+                    let inner = arena.inner.borrow();
+                    let recent = |r: Recent| (r.offset, r.length, r.reserved);
+                    (
+                        inner.current,
+                        inner
+                            .chunks
+                            .iter()
+                            .map(|chunk| {
+                                (chunk.buffer.clone(), chunk.staged.clone(), chunk.flushed)
+                            })
+                            .collect::<Vec<_>>(),
+                        inner.recent.iter().copied().map(recent).collect::<Vec<_>>(),
+                        inner.last.map(|r| r.map(recent)),
+                        inner
+                            .vertices
+                            .iter()
+                            .copied()
+                            .map(recent)
+                            .collect::<Vec<_>>(),
+                    )
+                };
+                let before = snapshot();
+                let error = if constants_upload {
+                    let mut refused_offsets = [u32::MAX];
+                    let error = arena
+                        .constants(&[(&bytes, CHUNK + 1)], &mut refused_offsets)
+                        .unwrap_err();
+                    assert_eq!(refused_offsets, [u32::MAX]);
+                    error
+                } else {
+                    arena.vertices(&vec![8; CHUNK as usize + 1]).unwrap_err()
+                };
+                assert!(error.contains("buffer limit"), "{error}");
+                // Production callers can record a refused draw and continue the same frame.
+                // In particular, a spare empty chunk must not inherit the preceding offsets.
+                let retry = arena.constants(&[(&bytes, 32)], &mut offsets).unwrap();
+                assert_eq!(retry, buffer);
+                assert_eq!(offsets, original_offsets);
+                let retry = arena.vertices(&vertices).unwrap();
+                assert_eq!(retry.buffer, geometry.buffer);
+                assert_eq!(retry.offset, geometry.offset);
+                assert_eq!(retry.size, geometry.size);
+                assert_eq!(
+                    snapshot(),
+                    before,
+                    "spare={spare}, constants={constants_upload}"
+                );
+            }
+        }
     }
 }

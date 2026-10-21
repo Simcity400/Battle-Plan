@@ -181,7 +181,7 @@ impl Fixture {
             d.weather_effects.clone(),
             viewer_world::map::weather_effects::field(d.frame()?)?,
         )?;
-        let snow = d.snow_mud()?;
+        let snow = Arc::new(d.snow_mud()?);
         scene.set_snow_mud(device, queue, &snow, Continuity::Reset)?;
         let intel = d.intel_map(&perspective)?;
         scene.set_fog_of_war(queue, &intel.texels, intel.fog)?;

@@ -240,6 +240,9 @@ struct SnowRecord {
     weight: f32,
 }
 
+/// One winter factor per box volume, prepared in the content's volume order.
+pub type SnowFactors = Arc<[Option<f32>]>;
+
 /// The volume tables, without the LUT images, which are dropped once uploaded.
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(Default))]
@@ -253,7 +256,7 @@ pub struct Volumes {
     boxes: Vec<BoxVolume>,
     /// One winter factor per entry of `boxes`; `None` when a representative's
     /// snow is not recorded.
-    snow: Vec<Option<f32>>,
+    snow: SnowFactors,
 }
 
 /// Everything the post pass reads from installed content.
@@ -490,7 +493,7 @@ impl PostAssets {
                 defines,
                 identity: 0,
                 // Set by `Volumes::set_snow` once the hour's weather is in.
-                snow: vec![None; boxes.len()],
+                snow: vec![None; boxes.len()].into(),
                 values,
                 heights,
                 boxes,
@@ -603,11 +606,16 @@ impl Volumes {
     /// Snow uses recorded WeatherProvinces values by province id. A missing representative makes the
     /// factor unknown. Refresh after an hour change while the eye is inside the volume.
     pub fn set_snow(&mut self, snow: &[Option<i64>]) {
-        self.snow = self
-            .boxes
+        self.snow = self.snow_factors(snow);
+    }
+
+    /// Computes the same factors before an hour is published, without changing
+    /// the view's currently selected grade or its retained graphics history.
+    pub fn snow_factors(&self, snow: &[Option<i64>]) -> SnowFactors {
+        self.boxes
             .iter()
             .map(|volume| snow_factor(&volume.records, snow, self.defines))
-            .collect();
+            .collect()
     }
 
     /// A values block the loader has checked exists.
@@ -1247,6 +1255,11 @@ impl PostPass {
     /// Recomputes every volume's winter factor from this hour's raw province snow.
     pub fn set_snow(&mut self, snow: &[Option<i64>]) {
         self.volumes.set_snow(snow);
+    }
+
+    /// Adopts factors built from the same content's volume tables.
+    pub fn set_snow_factors(&mut self, factors: &SnowFactors) {
+        self.volumes.snow = Arc::clone(factors);
     }
 
     /// Rebuilds the post targets and bind groups for a render size. New

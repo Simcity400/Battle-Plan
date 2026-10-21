@@ -36,10 +36,20 @@ pub struct SnowMud {
     /// holds no row: the raw word the winter grading reads
     /// (`map::post::Volumes::set_snow`).
     pub province_snow: Vec<Option<i64>>,
+    /// Winter factors from this document's immutable post-volume tables, when
+    /// prepared by the hour builders. Independent exports can compute them at install.
+    pub post_factors: Option<super::post::SnowFactors>,
     /// Wall time of the rasterisation, for reporting.
     pub build: Duration,
     pub summary: Summary,
     pub refresh: Option<Refresh>,
+}
+
+impl SnowMud {
+    /// Prepares winter grading independently of the view's snow/mud refresh clock.
+    pub fn prepare_post(&mut self, volumes: &super::post::Volumes) {
+        self.post_factors = Some(volumes.snow_factors(&self.province_snow));
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +208,7 @@ fn grid_with(
         height,
         texels,
         province_snow,
+        post_factors: None,
         build: start.elapsed(),
         summary,
         refresh,

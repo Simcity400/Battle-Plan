@@ -13,6 +13,7 @@ pub mod engaged;
 pub mod engagement_history;
 pub mod engagement_progress;
 pub mod errors;
+pub mod frame_assist;
 pub mod icon_frames;
 pub mod image_rgba;
 pub mod land_combat_math;

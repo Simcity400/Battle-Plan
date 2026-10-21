@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use viewer_foundation::debug_fields;
 use viewer_foundation::map::textures::load_file;
+mod animation_dispatch;
 mod native;
 pub use native::{
     Inputs as NativeInputs, ObjectConstants as NativeObjectConstants, Queue as NativeQueue,
@@ -1281,8 +1282,8 @@ impl ModelLibrary {
     ///
     /// An entity whose default state resolves no `.anim` gets no palette at
     /// all, rather than one of identity matrices. The two are the same picture
-    /// — a skinning matrix is `pose * inverse_bind` and the bind pose's own
-    /// composition is the identity — but only the first is the *same bits*, and
+    /// â€” a skinning matrix is `pose * inverse_bind` and the bind pose's own
+    /// composition is the identity â€” but only the first is the *same bits*, and
     /// the sprawl, the map buildings and the map frame are all in that case.
     fn push_palette(
         &mut self,
@@ -1643,6 +1644,186 @@ pub struct ModelFrame<'a> {
 type ActorRefusals = BTreeSet<(usize, usize, String)>;
 type ActorPoses = Arc<[super::mesh_pose::Actor]>;
 
+/// A producer clock whose requests and origin stay unchanged between presentation frames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClockRecord {
+    pub key: (usize, u32, u32),
+    pub start: f32,
+    pub requests: Arc<Vec<entity_animation::Request>>,
+}
+
+impl ClockRecord {
+    fn clock(&self, time: f32) -> entity_animation::Clock {
+        entity_animation::Clock {
+            time: time - self.start,
+            phase: None,
+            requests: Arc::clone(&self.requests),
+        }
+    }
+}
+
+struct ClockRecords {
+    source: Arc<[ClockRecord]>,
+    /// Source indices in key order, retaining the last occurrence of duplicate keys.
+    order: Vec<usize>,
+}
+
+#[cfg(test)]
+mod clock_record_tests {
+    use super::*;
+
+    #[test]
+    fn retained_clocks_replace_exact_keys_requests_and_times_across_400_frames() {
+        let mut retained = ModelPass::new(&ModelLibrary::default(), "clock records");
+        let mut records: Arc<[ClockRecord]> = Arc::default();
+        let mut random = 0xc3a1_851du32;
+        let mut next = || {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            random
+        };
+        let mut saw = [false; 4];
+        for frame in 0..400u32 {
+            let roll = next();
+            if frame.is_multiple_of(11) {
+                let request = |state: String| {
+                    Arc::new(vec![entity_animation::Request {
+                        time: -0.0,
+                        phase_time: None,
+                        state,
+                    }])
+                };
+                let mut source = vec![
+                    ClockRecord {
+                        key: (3, 7, 9),
+                        start: 30.0,
+                        requests: request("source first, redirect winner".into()),
+                    },
+                    ClockRecord {
+                        key: (1, 7, 9),
+                        start: 10.0,
+                        requests: request("original key first".into()),
+                    },
+                    ClockRecord {
+                        key: (1, 7, 9),
+                        start: 12.0,
+                        requests: request("duplicate original key last".into()),
+                    },
+                ];
+                for index in 0..roll % 29 {
+                    source.push(ClockRecord {
+                        key: ((roll as usize + index as usize) % 5, index % 5, index % 3),
+                        start: [0.0, -0.0, 1.0e-30, 1.0e30, frame as f32 / 3.0][index as usize % 5],
+                        requests: request(format!("synthetic_{frame}_{index}")),
+                    });
+                }
+                if frame.is_multiple_of(33) {
+                    source.clear();
+                }
+                records = source.into();
+            }
+            let redirects = match frame / 19 % 3 {
+                0 => BTreeMap::new(),
+                1 => BTreeMap::from([(1, 2), (3, 2)]),
+                _ => BTreeMap::from([(1, 2), (2, 4), (3, 2)]),
+            };
+            {
+                let pass = &mut retained;
+                pass.redirects.clone_from(&redirects);
+                if frame.is_multiple_of(17) {
+                    pass.update_placed(Vec::new(), 256.0);
+                }
+                if frame.is_multiple_of(23) {
+                    let mut field = ModelField::default();
+                    pass.replace_field(&ModelLibrary::default(), &mut field);
+                }
+                if frame.is_multiple_of(7) {
+                    // The ordinary installer must invalidate retained input, even for equal keys.
+                    pass.set_clocks(BTreeMap::new());
+                    assert!(pass.clock_records.is_none());
+                } else if frame.is_multiple_of(5) {
+                    // Stand in for defaults or another field owner overwriting producer clocks.
+                    pass.field.clocks.insert(
+                        (99, 0, 0),
+                        entity_animation::Clock {
+                            time: -9.0,
+                            phase: Some(entity_animation::Phase {
+                                time: 17.0,
+                                root_advances_hidden: true,
+                                instance: ModelInstance::default(),
+                            }),
+                            requests: Arc::default(),
+                        },
+                    );
+                }
+            }
+            let time = [0.0, -0.0, 1.0e-30, 1.0e30, frame as f32 * 0.125][roll as usize % 5];
+            retained.set_clock_records(&records, time);
+            // Duplicate original keys resolve last, before one-hop redirects resolve
+            // collisions in original key order. No alternate pass is needed.
+            let originals: BTreeMap<_, _> =
+                records.iter().map(|record| (record.key, record)).collect();
+            let expected: BTreeMap<_, _> = originals
+                .into_iter()
+                .map(|((mesh, seed, identity), record)| {
+                    (
+                        (
+                            redirects.get(&mesh).copied().unwrap_or(mesh),
+                            seed,
+                            identity,
+                        ),
+                        record,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                retained.field.clocks.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>()
+            );
+            for (key, record) in expected {
+                let clock = &retained.field.clocks[&key];
+                assert_eq!(
+                    clock.time.to_bits(),
+                    (time - record.start).to_bits(),
+                    "frame {frame} key={key:?}"
+                );
+                assert!(clock.phase.is_none());
+                assert!(Arc::ptr_eq(&clock.requests, &record.requests));
+            }
+            assert!(retained.players.is_empty() && retained.events.is_empty());
+            if redirects.is_empty() {
+                let addresses = || {
+                    retained
+                        .field
+                        .clocks
+                        .values()
+                        .map(|clock| clock as *const _ as usize)
+                        .collect::<Vec<_>>()
+                };
+                let before = addresses();
+                retained.set_clock_records(&records, time);
+                let after: Vec<_> = retained
+                    .field
+                    .clocks
+                    .values()
+                    .map(|clock| clock as *const _ as usize)
+                    .collect();
+                assert_eq!(before, after, "unchanged clocks keep their map storage");
+                assert!(Arc::ptr_eq(
+                    &retained.clock_records.as_ref().unwrap().source,
+                    &records
+                ));
+            }
+            saw[0] |= records.is_empty();
+            saw[1] |= !records.is_empty();
+            saw[2] |= redirects.len() == 2;
+            saw[3] |= redirects.len() == 3;
+        }
+        assert!(saw.into_iter().all(|seen| seen));
+    }
+}
+
 pub struct ModelPass {
     native: RefCell<Option<native::Renderer>>,
     layers: Option<Arc<ResolvedLayers>>,
@@ -1655,6 +1836,8 @@ pub struct ModelPass {
     material_refusals: BTreeMap<usize, String>,
     meshes: Vec<ModelMesh>,
     field: ModelField,
+    clock_records: Option<ClockRecords>,
+    animation_dispatch: animation_dispatch::Dispatch,
     /// Placement and live-player keys, rebuilt in retained storage each frame.
     keyed: Vec<KeyedInstance>,
     alive: Vec<(usize, u32, u32)>,
@@ -1755,8 +1938,72 @@ impl ModelPass {
 
     /// Installs producer-owned state requests on the shared entity player.
     pub fn set_clocks(&mut self, clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>) {
+        self.clock_records = None;
         self.field.clocks = clocks;
         self.redirect_field();
+    }
+
+    /// Replaces all producer clocks, retaining their key order and request storage while the
+    /// records are shared. Times use the same single f32 subtraction as ordinary producer clocks.
+    /// Duplicate keys retain the last source record, just as collecting them into a map does.
+    pub fn set_clock_records(&mut self, records: &Arc<[ClockRecord]>, time: f32) {
+        if !self.redirects.is_empty() {
+            // Redirect collisions must resolve AFTER collecting original keys in key order.
+            // Keep the ordinary installer for this path, including chained counterpart redirects.
+            self.set_clocks(
+                records
+                    .iter()
+                    .map(|record| (record.key, record.clock(time)))
+                    .collect(),
+            );
+            return;
+        }
+        if self
+            .clock_records
+            .as_ref()
+            .is_none_or(|installed| !Arc::ptr_eq(&installed.source, records))
+        {
+            let order: BTreeMap<_, _> = records
+                .iter()
+                .enumerate()
+                .map(|(index, record)| (record.key, index))
+                .collect();
+            self.clock_records = Some(ClockRecords {
+                source: Arc::clone(records),
+                order: order.into_values().collect(),
+            });
+        }
+        let installed = self.clock_records.as_ref().unwrap();
+        if self.field.clocks.len() == installed.order.len()
+            && self
+                .field
+                .clocks
+                .iter_mut()
+                .zip(&installed.order)
+                .all(|((key, clock), &index)| {
+                    let record = &records[index];
+                    if *key != record.key
+                        || clock.phase.is_some()
+                        || !Arc::ptr_eq(&clock.requests, &record.requests)
+                    {
+                        return false;
+                    }
+                    clock.time = time - record.start;
+                    true
+                })
+        {
+            return;
+        }
+        // A placement rebuild, default-state insertion or another field owner may have changed
+        // the clock map since the last install. Replace it completely, not just the reached keys.
+        self.field.clocks = installed
+            .order
+            .iter()
+            .map(|&index| {
+                let record = &records[index];
+                (record.key, record.clock(time))
+            })
+            .collect();
     }
 
     /// Samples visible entity palettes; meshes and material buffers are immutable.
@@ -1792,21 +2039,36 @@ impl ModelPass {
             return;
         }
         self.field.default_states = self.prepare_default_states(time);
-        let palette = animate_players_with_workers(
-            &mut self.players,
-            &self.rigs,
-            &self.default_palette,
-            &mut self.field,
-            time,
-            &|group| {
-                offsets
-                    .iter()
-                    .any(|offset| visible(group, *offset, rectangle))
-            },
-            &mut self.events,
-            workers,
-            true,
-        );
+        let shown = |group: &ModelGroup| {
+            offsets
+                .iter()
+                .any(|offset| visible(group, *offset, rectangle))
+        };
+        let palette = if matches!(self.label, "unit models" | "map buildings")
+            && self.animation_dispatch.animate(
+                &mut self.players,
+                &self.rigs,
+                self.default_palette.len(),
+                &mut self.field,
+                time,
+                &shown,
+                &mut self.events,
+                workers,
+            ) {
+            Vec::new()
+        } else {
+            animate_players_with_workers(
+                &mut self.players,
+                &self.rigs,
+                &self.default_palette,
+                &mut self.field,
+                time,
+                &shown,
+                &mut self.events,
+                workers,
+                true,
+            )
+        };
         for event in &mut self.events {
             event.key.pass = self.event_namespace;
         }
@@ -1967,6 +2229,8 @@ impl ModelPass {
             material_refusals: BTreeMap::new(),
             meshes: library.meshes.clone(),
             field: ModelField::default(),
+            clock_records: None,
+            animation_dispatch: Default::default(),
             keyed: Vec::new(),
             alive: Vec::new(),
             drawn: Cell::new(0),
@@ -2386,6 +2650,7 @@ fn animate_players_with_workers(
         palette: &'a mut [PaletteJoint],
         events: &'a mut Vec<entity_animation::Event>,
     }
+    let plan_span = viewer_foundation::profiling::span("animation_dispatch_plan");
     let mut calls = Vec::new();
     // Native actors do not read the optional name-joined palette. Keep the logical
     // offsets identical, but do not allocate or copy unused per-instance ranges.
@@ -2476,6 +2741,7 @@ fn animate_players_with_workers(
             });
         }
     }
+    let run_span;
     {
         let mut by_player = BTreeMap::<_, Vec<Work<'_>>>::new();
         let mut tail = &mut palette[if native_only {
@@ -2505,6 +2771,8 @@ fn animate_players_with_workers(
                     .map(|work| std::sync::Mutex::new((player, work)))
             })
             .collect();
+        drop(plan_span);
+        run_span = viewer_foundation::profiling::span("animation_dispatch_run_commit");
         workers.run(tasks.len(), &|at| {
             let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
             let (player, work) = &mut *task;
@@ -2542,6 +2810,7 @@ fn animate_players_with_workers(
         alive.insert(*key);
     }
     players.retain(|key, _| alive.contains(key));
+    drop(run_span);
     palette
 }
 
@@ -2602,7 +2871,7 @@ mod parallel_animation_tests {
             3
         }
     }
-    fn workers() -> Workers {
+    pub(super) fn workers() -> Workers {
         let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
         let receiver = Arc::new(std::sync::Mutex::new(receiver));
         for _ in 0..3 {
@@ -2617,7 +2886,10 @@ mod parallel_animation_tests {
                 }
             });
         }
-        Workers::new(Arc::new(Pool(std::sync::Mutex::new(sender))))
+        let builders = Arc::new(Pool(std::sync::Mutex::new(sender)));
+        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(builders, 1)
+            .unwrap();
+        Workers::new(Arc::new(assist))
     }
 
     #[test]

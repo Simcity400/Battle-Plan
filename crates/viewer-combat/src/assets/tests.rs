@@ -85,12 +85,15 @@ fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
     assert!(!assets.sprites.contains(b"GFX_F12".as_slice()));
 }
 
-#[test]
-fn combat_fonts_select_the_native_language_family() {
+fn synthetic_assets(
+    name: &str,
+    children: &str,
+    write: impl FnOnce(&std::path::Path),
+) -> (std::path::PathBuf, Assets, Arc<LazyTextures>) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
-        "hoi4_combat_font_language_{}_{:?}",
+        "hoi4_combat_assets_{name}_{}_{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -126,6 +129,7 @@ fn combat_fonts_select_the_native_language_family() {
             )).unwrap();
         std::fs::write(root.join(format!("gfx/fonts/{name}.tga")), tga(2, 2)).unwrap();
     }
+    write(&root);
     let shared = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
     let registry = Registry::load(&shared).unwrap();
     let interface = Interface {
@@ -140,7 +144,9 @@ fn combat_fonts_select_the_native_language_family() {
         .chain([b"unit_counter_navy".as_slice(), b"naval_combat_mapicon"])
     {
         let text = if name == b"landcombatview" {
-            r#"instantTextBoxType = { name = "fixture_text" font = "fixture_font" }"#
+            &format!(
+                r#"instantTextBoxType = {{ name = "fixture_text" font = "fixture_font" }} {children}"#
+            )
         } else {
             ""
         };
@@ -152,6 +158,7 @@ fn combat_fonts_select_the_native_language_family() {
     declaration.push('}');
     let windows = NativeWindows::read(declaration.as_bytes(), [640, 480]).unwrap();
     let lazy = LazyTextures::new();
+    lazy.set_background(false);
     let flags = flag_set(
         &shared,
         installed_content_core::flags::FlagSet::Normal,
@@ -171,10 +178,103 @@ fn combat_fonts_select_the_native_language_family() {
         &lazy,
     )
     .unwrap();
+    (root, assets, lazy)
+}
+
+#[test]
+fn combat_fonts_select_the_native_language_family() {
+    let (root, assets, _) = synthetic_assets("font_language", "", |_| {});
     assert_eq!(
         assets.gui.font(b"fixture_font").unwrap().glyphs.line_height,
         Some(23)
     );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn lazy_portraits_publish_loaded_and_missing_resources() {
+    use crate::{binding::Bindings, gui_resources};
+    use viewer_foundation::map::native_gui::Resources;
+
+    let (root, assets, lazy) = synthetic_assets(
+        "lazy_portrait_purity",
+        r#"iconType = { name = static_icon spriteType = GFX_static }"#,
+        |root| {
+            std::fs::create_dir_all(root.join("gfx/leaders")).unwrap();
+            std::fs::write(root.join("gfx/leaders/lazy.tga"), tga(8, 6)).unwrap();
+            std::fs::write(root.join("gfx/static.tga"), tga(4, 2)).unwrap();
+            std::fs::write(
+                root.join("interface/portraits.gfx"),
+                br#"spriteTypes = {
+                    spriteType = { name = GFX_lazy textureFile = "gfx/leaders/lazy.tga" }
+                    spriteType = { name = GFX_lazy_missing textureFile = "gfx/leaders/missing.tga" }
+                    spriteType = { name = GFX_static textureFile = "gfx/static.tga" }
+                }"#,
+            )
+            .unwrap();
+        },
+    );
+    let inventory = gui_resources::GuiAssets::new(&assets, &Bindings::default());
+    let localisation = Default::default();
+    let resources = gui_resources::GuiResources::new(
+        &assets,
+        &assets.native_windows,
+        &localisation,
+        &assets.flags,
+        &assets.flags,
+        &inventory,
+    );
+    // Lazy publication replaces pending metadata with loaded dimensions or a
+    // missing resource, while static and absent lookups keep their answers.
+    for name in [b"GFX_lazy".as_slice(), b"GFX_lazy_missing"] {
+        assert!(
+            assets
+                .lazy_sprites
+                .contains_key(std::str::from_utf8(name).unwrap())
+        );
+        assert!(resources.sprite_info(name).unwrap().missing.is_some());
+    }
+    assert_eq!(
+        assets.portraits.peek("gfx/leaders/lazy.tga"),
+        Lookup::Pending
+    );
+    let version = lazy.version();
+    assert!(lazy.settle());
+    assert!(lazy.version() > version);
+    assert!(matches!(
+        assets.portraits.peek("gfx/leaders/lazy.tga"),
+        Lookup::Loaded { size: [8, 6], .. }
+    ));
+    assert_eq!(
+        assets.portraits.peek("gfx/leaders/missing.tga"),
+        Lookup::Failed
+    );
+    let loaded = resources.sprite_info(b"GFX_lazy").unwrap();
+    assert_eq!(loaded.texture, [8, 6]);
+    assert!(loaded.missing.is_none());
+    assert!(
+        resources
+            .sprite_info(b"GFX_lazy_missing")
+            .unwrap()
+            .missing
+            .is_some()
+    );
+    for name in [b"GFX_lazy".as_slice(), b"GFX_lazy_missing"] {
+        assert!(
+            assets
+                .lazy_sprites
+                .contains_key(std::str::from_utf8(name).unwrap())
+        );
+    }
+    for name in [b"GFX_static".as_slice(), b"GFX_absent", b"\xff"] {
+        assert!(
+            std::str::from_utf8(name)
+                .ok()
+                .is_none_or(|name| !assets.lazy_sprites.contains_key(name))
+        );
+    }
+    assert!(resources.sprite_info(b"GFX_static").is_some());
+    assert!(resources.sprite_info(b"GFX_absent").is_none());
     std::fs::remove_dir_all(root).unwrap();
 }
 

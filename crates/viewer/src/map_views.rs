@@ -482,7 +482,10 @@ mod parallel_tests {
 
     #[test]
     fn borrowed_overlay_owners_finish_before_join_and_stateful_reads_keep_order() {
-        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
+        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(
+            Arc::new(Pool::new(1).unwrap()), 1,
+        ).unwrap();
+        let workers = Workers::new(Arc::new(assist));
         let order = ResourceOrder::default();
         let wrote = AtomicBool::new(false);
         let (left, right) = join(
@@ -567,7 +570,10 @@ mod parallel_tests {
 
     #[test]
     fn a_panicking_predecessor_releases_the_resource_waiter_before_join_unwinds() {
-        let workers = Workers::new(Arc::new(Pool::new(1).unwrap()));
+        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(
+            Arc::new(Pool::new(1).unwrap()), 1,
+        ).unwrap();
+        let workers = Workers::new(Arc::new(assist));
         let order = ResourceOrder::default();
         let waited = AtomicBool::new(false);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

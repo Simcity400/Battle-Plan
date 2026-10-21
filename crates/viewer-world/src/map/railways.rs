@@ -1107,12 +1107,65 @@ impl Bridges {
 
 // ------------------------------------------------------------------- the pass
 
+/// Immutable uploaded railway strips and their province-ordered draw runs.
+/// Hour builders create this independently of the pass's textures and shaders.
+#[derive(Default)]
+pub struct PreparedRailGeometry {
+    native_vertices: Option<wgpu::Buffer>,
+    native_runs: Vec<Range<u32>>,
+}
+
+impl PreparedRailGeometry {
+    pub fn new(device: &wgpu::Device, mesh: &RailMesh) -> io::Result<Self> {
+        let native_vertices = if mesh.native_vertices.is_empty() {
+            None
+        } else {
+            let usage = wgpu::BufferUsages::VERTEX;
+            // Read back the very same payload in the multi-hour upload oracle.
+            #[cfg(test)]
+            let usage = usage | wgpu::BufferUsages::COPY_SRC;
+            Some(buffer(
+                device,
+                "native rail strips",
+                usage,
+                bytemuck::cast_slice(&mesh.native_vertices),
+            )?)
+        };
+        Ok(Self {
+            native_vertices,
+            native_runs: mesh.native_runs.clone(),
+        })
+    }
+
+    /// CPU-only hour builders can defer preparation until a device is available.
+    pub fn for_hour(
+        device: Option<&wgpu::Device>,
+        mesh: &RailMesh,
+    ) -> io::Result<Option<Arc<Self>>> {
+        device
+            .map(|device| Self::new(device, mesh).map(Arc::new))
+            .transpose()
+    }
+
+    /// Publishes the prepared bank, or prepares the same immutable product on
+    /// this frame when the hour was built without a device.
+    pub fn for_install(
+        device: &wgpu::Device,
+        mesh: &RailMesh,
+        prepared: Option<&Arc<Self>>,
+    ) -> io::Result<Arc<Self>> {
+        match prepared {
+            Some(geometry) => Ok(Arc::clone(geometry)),
+            None => Ok(Self::for_hour(Some(device), mesh)?.expect("device supplied")),
+        }
+    }
+}
+
 /// The GPU railway pass.
 pub struct RailPass {
     effect: Arc<shader_pipeline::library::Effect>,
     compiled: RefCell<Option<Result<super::rail_shader::Rail, String>>>,
-    native_vertices: Option<wgpu::Buffer>,
-    native_runs: Vec<Range<u32>>,
+    geometry: Arc<PreparedRailGeometry>,
     null: wgpu::TextureView,
     samples: u32,
     format: wgpu::TextureFormat,
@@ -1147,8 +1200,7 @@ impl RailPass {
         Ok(Self {
             effect: assets.shader.clone(),
             compiled: RefCell::new(None),
-            native_vertices: None,
-            native_runs: Vec::new(),
+            geometry: Arc::default(),
             null,
             samples,
             format,
@@ -1162,20 +1214,13 @@ impl RailPass {
         })
     }
 
-    /// Uploads the recorded hour's railway strips, one run per province.
-    pub fn upload(&mut self, device: &wgpu::Device, mesh: &RailMesh) -> io::Result<()> {
-        self.native_runs.clone_from(&mesh.native_runs);
-        self.native_vertices = if mesh.native_vertices.is_empty() {
-            None
-        } else {
-            Some(buffer(
-                device,
-                "native rail strips",
-                wgpu::BufferUsages::VERTEX,
-                bytemuck::cast_slice(&mesh.native_vertices),
-            )?)
-        };
-        Ok(())
+    /// Adopts a complete hour without copying vertices or draw runs. The host
+    /// retires the displaced bank away from the window thread.
+    pub fn adopt_geometry(
+        &mut self,
+        geometry: Arc<PreparedRailGeometry>,
+    ) -> Arc<PreparedRailGeometry> {
+        std::mem::replace(&mut self.geometry, geometry)
     }
 
     pub fn textures(&self) -> [&wgpu::TextureView; 2] {
@@ -1194,7 +1239,7 @@ impl RailPass {
         if inputs.alpha < RailFade::TRAINS_VISIBLE {
             return Ok(());
         }
-        let Some(vertices) = &self.native_vertices else {
+        let Some(vertices) = &self.geometry.native_vertices else {
             return Ok(());
         };
         let mut compiled = self.compiled.borrow_mut();
@@ -1218,7 +1263,7 @@ impl RailPass {
                 inputs,
                 super::rail_shader::Geometry {
                     vertices,
-                    runs: &self.native_runs,
+                    runs: &self.geometry.native_runs,
                 },
             )
     }

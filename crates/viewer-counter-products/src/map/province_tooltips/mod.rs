@@ -171,6 +171,7 @@ impl Content {
         rows: &[replay_data::rows::WeatherProvinceRow],
         province: u32,
     ) -> Result<i64, String> {
+        let _weather_span = viewer_foundation::profiling::span("pt_weather_states");
         let mut derived = self
             .derived
             .lock()
@@ -424,6 +425,7 @@ fn build(
     rosters: &dyn air_region::Rosters,
     mode: &ModeHover,
 ) -> Tooltip {
+    let sources_span = viewer_foundation::profiling::span("pt_sources");
     let mut out = Tooltip::default();
     let provinces = match frame.complete::<tables::Provinces>() {
         Ok(rows) => rows,
@@ -448,6 +450,11 @@ fn build(
             return out;
         }
     };
+    drop(sources_span);
+    let countries = {
+        let _countries_span = viewer_foundation::profiling::span("pt_country_names");
+        CountryNames::read(frame, &content.localisation)
+    };
     let context = Context {
         content,
         reads,
@@ -455,7 +462,7 @@ fn build(
         vision,
         province,
         links,
-        countries: CountryNames::read(frame, &content.localisation),
+        countries,
         rosters,
     };
     let ModeHover::Location { category } = mode else {
@@ -466,6 +473,7 @@ fn build(
     if province.state != 0 {
         context.location(&mut out, *category);
     }
+    let units_span = viewer_foundation::profiling::span("pt_units");
     let composition = content
         .province_hover
         .units
@@ -494,13 +502,18 @@ fn build(
             }
         }),
     );
+    drop(units_span);
     if !out.title.is_empty() {
         match localise(&content.localisation, "PROV_TOOLTIP_LOCATION_HEADER", &[]) {
             Ok(header) => out.title.insert_str(0, &header),
             Err(e) => line(&mut out, "pin header", 0, Err(e)),
         }
     }
-    air_region::append(&context, &mut out);
+    {
+        let _rosters_span = viewer_foundation::profiling::span("pt_rosters");
+        air_region::append(&context, &mut out);
+    }
+    let _selection_span = viewer_foundation::profiling::span("pt_selection");
     let selected = selection::build(&context, selected, nato);
     selection::append(&mut out, selected, &content.localisation);
     // Native click/ping/order footers are omitted: replay has no such actions.

@@ -7,8 +7,10 @@
 //! machine's parallelism and return the results in input order, so callers
 //! merge them exactly as a serial load would.
 //!
-//! [`Workers`] lends a batch the threads of a pool that already exists (the
-//! hour builders'), so work split across threads adds none.
+//! [`Workers`] lends a batch an existing bounded pool. Synchronous frame work
+//! can use protected idle helpers before borrowing hour builders.
+
+mod turn_profile;
 
 use std::sync::MutexGuard;
 use std::{
@@ -21,6 +23,51 @@ use std::{
     },
     thread,
 };
+use turn_profile::{Batch, Counts};
+
+/// Coarse caller work and join time for one borrowed turn batch. No scheduling changes.
+#[derive(Clone, Copy, Default)]
+pub struct RunProfile {
+    pub own: std::time::Duration,
+    pub wait: std::time::Duration,
+}
+thread_local! {
+    static RUN_PROFILE: std::cell::Cell<Option<RunProfile>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn profile_run<R>(enabled: bool, work: impl FnOnce() -> R) -> (R, RunProfile) {
+    if !enabled {
+        return (work(), RunProfile::default());
+    }
+    struct Restore(Option<RunProfile>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RUN_PROFILE.set(self.0);
+        }
+    }
+    let _restore = Restore(RUN_PROFILE.replace(Some(RunProfile::default())));
+    let result = work();
+    (result, RUN_PROFILE.get().unwrap_or_default())
+}
+
+fn profile_clock() -> Option<std::time::Instant> {
+    RUN_PROFILE.get().map(|_| std::time::Instant::now())
+}
+
+fn profile_elapsed(clock: Option<std::time::Instant>, wait: bool) {
+    if let Some(clock) = clock {
+        RUN_PROFILE.with(|slot| {
+            slot.set(slot.get().map(|mut profile| {
+                if wait {
+                    profile.wait += clock.elapsed();
+                } else {
+                    profile.own += clock.elapsed();
+                }
+                profile
+            }));
+        });
+    }
+}
 
 /// Maps `items` through `work` on at most `available_parallelism` threads,
 /// returning the results in input order.
@@ -86,10 +133,26 @@ pub fn usable_processors() -> usize {
 /// tasks are all done.
 pub type Beside<'a> = dyn Fn(&dyn Fn() -> bool) + Sync + 'a;
 
+/// The service that accepted a helper, for opt-in per-batch accounting.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HelperSource {
+    Protected,
+    Builder,
+}
+
 /// A pool that takes jobs without waiting.
 pub trait Spawn: Send + Sync {
     /// Queues `job`, or gives it back when the pool cannot take it now.
     fn try_spawn(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), Box<dyn FnOnce() + Send>>;
+    /// The same admission operation, identifying protected frame capacity.
+    #[doc(hidden)]
+    fn try_spawn_classified(
+        &self,
+        job: Box<dyn FnOnce() + Send>,
+    ) -> Result<HelperSource, Box<dyn FnOnce() + Send>> {
+        self.try_spawn(job).map(|()| HelperSource::Builder)
+    }
     /// The pool's threads.
     fn threads(&self) -> usize;
 }
@@ -160,6 +223,7 @@ impl Workers {
     pub fn with_admitted<R>(&self, maximum: usize, work: impl FnOnce(&Admitted) -> R) -> R {
         let admitted = Admitted {
             capacity: maximum.min(self.threads),
+            profile: Batch::new("admitted", maximum),
             gate: Arc::new(Admission {
                 state: Mutex::new(AdmissionState {
                     open: true,
@@ -172,8 +236,9 @@ impl Workers {
         if let Some(pool) = &self.pool {
             for _ in 0..admitted.capacity.saturating_sub(1) {
                 let gate = Arc::clone(&admitted.gate);
-                if pool.try_spawn(Box::new(move || gate.help())).is_err() {
-                    break;
+                match pool.try_spawn_classified(Box::new(move || gate.help())) {
+                    Ok(source) => admitted.profile.accepted(source),
+                    Err(_) => break,
                 }
             }
         }
@@ -191,6 +256,7 @@ impl Workers {
         task: &(dyn Fn(usize) + Sync),
         beside: Option<&Beside<'_>>,
     ) {
+        let profile = Batch::new("run", count);
         let wanted = if beside.is_some() {
             count
         } else {
@@ -200,20 +266,24 @@ impl Workers {
         let pool = match &self.pool {
             Some(pool) if helpers > 0 && count > 0 => pool,
             _ => {
+                if let Some(counts) = &profile.counts {
+                    counts.caller.store(count, Ordering::Relaxed);
+                }
                 (0..count).for_each(task);
                 return;
             }
         };
-        let turns = Turns::new(count, task, beside);
+        let turns = Turns::new(count, task, beside, profile.counts.clone());
         let spawned = catch_unwind(AssertUnwindSafe(|| {
             for _ in 0..helpers {
                 let turn = Arc::clone(&turns);
-                if pool.try_spawn(Box::new(move || turn.help())).is_err() {
-                    break;
+                match pool.try_spawn_classified(Box::new(move || turn.help())) {
+                    Ok(source) => profile.accepted(source),
+                    Err(_) => break,
                 }
             }
         }));
-        turns.finish(spawned.and_then(|()| catch_unwind(AssertUnwindSafe(|| turns.work()))));
+        turns.finish(spawned.and_then(|()| catch_unwind(AssertUnwindSafe(|| turns.work(true)))));
     }
 }
 
@@ -222,6 +292,7 @@ impl Workers {
 pub struct Admitted {
     capacity: usize,
     gate: Arc<Admission>,
+    profile: Batch,
 }
 
 impl Admitted {
@@ -265,12 +336,20 @@ impl Admitted {
         assert!(state.open, "admitted batch already run");
         let count = maximum.min(self.capacity).min(state.waiting + 1);
         let task = |index| task(index, count);
-        let turns = Turns::new(count, &task, beside);
+        if let Some(counts) = &self.profile.counts {
+            counts
+                .admitted
+                .store(count.saturating_sub(1), Ordering::Relaxed);
+        }
+        let turns = Turns::new(count, &task, beside, self.profile.counts.clone());
         state.open = false;
         state.turns = Some(Arc::clone(&turns));
         drop(state);
         self.gate.ready.notify_all();
-        turns.finish(catch_unwind(AssertUnwindSafe(|| turns.work())));
+        let own = profile_clock();
+        let result = catch_unwind(AssertUnwindSafe(|| turns.work(true)));
+        profile_elapsed(own, false);
+        turns.finish(result);
         count
     }
 }
@@ -332,6 +411,7 @@ struct Turns {
     priority: Option<i32>,
     state: Mutex<TurnState>,
     idle: Condvar,
+    profile: Option<Arc<Counts>>,
 }
 
 // SAFETY: `task` is `Sync` and is called only as `Workers::run` allows.
@@ -348,7 +428,12 @@ struct TurnState {
 }
 
 impl Turns {
-    fn new(count: usize, task: &(dyn Fn(usize) + Sync), beside: Option<&Beside<'_>>) -> Arc<Self> {
+    fn new(
+        count: usize,
+        task: &(dyn Fn(usize) + Sync),
+        beside: Option<&Beside<'_>>,
+        profile: Option<Arc<Counts>>,
+    ) -> Arc<Self> {
         // SAFETY: the lifetime is erased only for the pool's jobs, which run
         // `task` only while registered in `Turns::state` before it is closed.
         // Both callers finish this run before the borrowed callbacks expire:
@@ -373,6 +458,7 @@ impl Turns {
             priority: crate::worker_priority::current_priority(),
             state: Mutex::default(),
             idle: Condvar::new(),
+            profile,
         })
     }
 
@@ -381,6 +467,7 @@ impl Turns {
         if own.is_err() {
             self.failed.store(true, Ordering::Release);
         }
+        let wait = profile_clock();
         let mut state = self.lock();
         state.closed = true;
         while state.running > 0 {
@@ -391,6 +478,7 @@ impl Turns {
         }
         let helper = state.panic.take();
         drop(state);
+        profile_elapsed(wait, true);
         if let Err(panic) = own {
             resume_unwind(panic);
         }
@@ -406,11 +494,14 @@ impl Turns {
     }
 
     /// Runs tasks until none remains.
-    fn work(&self) {
+    fn work(&self, caller: bool) {
         loop {
             let at = self.next.fetch_add(1, Ordering::Relaxed);
             if at >= self.count {
                 return;
+            }
+            if caller && let Some(counts) = &self.profile {
+                counts.caller.fetch_add(1, Ordering::Relaxed);
             }
             // SAFETY: called only while `Workers::run` has not returned
             // (see there).
@@ -434,15 +525,21 @@ impl Turns {
             }
             state.running += 1;
         }
+        if let Some(counts) = &self.profile {
+            counts.started.fetch_add(1, Ordering::Relaxed);
+        }
         let result = catch_unwind(AssertUnwindSafe(|| {
             crate::worker_priority::at_least(self.priority, || {
                 if let Some(beside) = self.beside
                     && !self.beside_taken.swap(true, Ordering::AcqRel)
                 {
+                    if let Some(counts) = &self.profile {
+                        counts.beside.fetch_add(1, Ordering::Relaxed);
+                    }
                     // SAFETY: as for `task`.
                     unsafe { (*beside)(&|| self.done()) };
                 }
-                self.work();
+                self.work(false);
             });
         }));
         let mut state = self.lock();
@@ -458,7 +555,7 @@ impl Turns {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         sync::{Arc, Mutex},
         time::Duration,

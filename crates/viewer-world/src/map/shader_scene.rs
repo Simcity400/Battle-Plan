@@ -200,10 +200,28 @@ impl State {
         prepared: Option<stream::NativePrepared<'_>>,
         previous: Option<&stream::PassSubmission>,
     ) -> io::Result<stream::NativeSubmission> {
+        self.prepare_with_cache(
+            arena, label, template, vertices, instances, prepared, previous, None,
+        )
+    }
+
+    /// A particle selection can retain a successful resolution; all native reads remain serial.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_cache(
+        &mut self,
+        arena: &gpu::Arena,
+        label: impl std::fmt::Display,
+        template: &gpu::Pass,
+        vertices: u32,
+        instances: u32,
+        prepared: Option<stream::NativePrepared<'_>>,
+        previous: Option<&stream::PassSubmission>,
+        cache: Option<&mut stream::NativePassCache>,
+    ) -> io::Result<stream::NativeSubmission> {
         if prepared.is_some() {
             return self
                 .stream
-                .prepare_native_pass_with(
+                .prepare_native_pass_with_cache(
                     arena,
                     label,
                     template,
@@ -212,14 +230,15 @@ impl State {
                     instances,
                     prepared,
                     previous,
+                    cache,
                 )
                 .map_err(io::Error::other);
         }
         let stream = &mut self.stream;
         with_buffers(&self.vertices, |buffers| {
             stream
-                .prepare_native_pass_with(
-                    arena, label, template, buffers, vertices, instances, None, previous,
+                .prepare_native_pass_with_cache(
+                    arena, label, template, buffers, vertices, instances, None, previous, cache,
                 )
                 .map_err(io::Error::other)
         })

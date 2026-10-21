@@ -2656,8 +2656,20 @@ fn coarse(inputs: &CounterInputs<'_>) -> bool {
 /// every country's row.
 #[derive(Clone)]
 pub struct HourTables {
-    /// One immutable preparation, including its content and recorded inputs.
+    /// A refinement is a new preparation even when its independent base is shared.
     epoch: Arc<()>,
+    base: Arc<HourBase>,
+    land_combats: Arc<LandMarkers>,
+    naval_markers: Arc<NavalMarkerTables>,
+    engaged: Arc<CombatFlags>,
+}
+
+/// Immutable hour-worker products, independent of engagement-history publication.
+/// Fields remain private; the shared base cannot be edited by a presented frame.
+pub struct HourBase {
+    frame: Arc<DecodedFrame>,
+    engagement_content: EngagementContent,
+    relations: Result<Relations, &'static str>,
     links: BTreeMap<u32, u32>,
     vision: Arc<Vision>,
     countries: Arc<Countries>,
@@ -2676,11 +2688,6 @@ pub struct HourTables {
     status: DivisionStatuses,
     movement: Movements,
     actions: counter_action::Actions,
-    land_combats: Arc<LandMarkers>,
-    /// The naval combat and result icons' camera-independent decisions.
-    naval_markers: Arc<NavalMarkerTables>,
-    /// This hour's engaged flag of every land, border-war and naval combat for the viewer.
-    engaged: Arc<CombatFlags>,
     /// The faction-theatre pins this hour and perspective call for.
     pings: HourPins,
     guns: GunInputs,
@@ -2704,13 +2711,24 @@ pub struct HourTables {
     type_tints: Arc<type_tint::Index>,
 }
 
-impl HourTables {
-    /// Decides every counter-size flag candidate on the caller's hour worker.
-    /// Drawing still acquires any candidate that has not been warmed.
-    pub fn warm_flags(&self, assets: &CounterAssets) {
-        self.countries.warm_flags(assets);
-    }
+impl std::ops::Deref for HourTables {
+    type Target = HourBase;
 
+    fn deref(&self) -> &HourBase {
+        &self.base
+    }
+}
+
+// Synthetic fixtures edit a uniquely held base before presenting it. Production
+// never obtains mutable access to a worker's shared preparation.
+#[cfg(test)]
+impl std::ops::DerefMut for HourTables {
+    fn deref_mut(&mut self) -> &mut HourBase {
+        Arc::get_mut(&mut self.base).expect("synthetic base must be uniquely held")
+    }
+}
+
+impl HourBase {
     fn land(&self) -> CounterTables<'_> {
         CounterTables {
             type_tints: &self.type_tints,
@@ -2730,6 +2748,105 @@ impl HourTables {
             icon_inputs: &self.icon_inputs,
             task_forces: &self.task_forces,
         }
+    }
+
+}
+
+/// The immutable content operands of the history-dependent marker producers.
+struct EngagementContent {
+    land: LandCombatDefines,
+    kinds: Arc<BTreeMap<u32, ProvinceKind>>,
+    anchors: Arc<BTreeMap<(u32, u32), [f32; 3]>>,
+    defaults: Arc<BTreeMap<u32, [f32; 3]>>,
+}
+
+impl EngagementContent {
+    fn new(content: &CounterContent) -> Self {
+        Self {
+            land: content.defines.land_combat,
+            kinds: Arc::clone(&content.kinds),
+            anchors: Arc::clone(&content.anchors),
+            defaults: Arc::clone(&content.default_anchors),
+        }
+    }
+}
+
+fn engagement_tables(
+    frame: &DecodedFrame,
+    vision: &Arc<Vision>,
+    links: &BTreeMap<u32, u32>,
+    relations: Result<&Relations, &'static str>,
+    movement: &Movements,
+    content: &EngagementContent,
+    index: Option<&History>,
+) -> io::Result<(Arc<LandMarkers>, Arc<NavalMarkerTables>, Arc<CombatFlags>)> {
+    let engaged = CombatFlags::read(frame, vision.ours(), links, relations, index)?;
+    // Each kind reads its own flags and retained-frame history, in original order.
+    let kept =
+        |kind, flags| kept_frames(frame, kind, vision.ours(), flags, index).map(|(kept, _)| kept);
+    let land_kept = kept(LAND_ICON, &engaged.land)?;
+    let naval_kept = kept(NAVAL_ICON, &engaged.naval)?;
+    let land_combats = Arc::new(LandMarkers::read(
+        frame,
+        vision,
+        links,
+        &(engaged.land.clone(), engaged.land_provenance),
+        &land_kept,
+        movement,
+        &content.land,
+    )?);
+    let naval_markers = Arc::new(NavalMarkerTables::read(
+        frame,
+        Viewer { vision, owner: &|raw| links.get(&raw).copied() },
+        &engaged,
+        &naval_kept,
+        &|province| content.kinds.get(&province).copied(),
+        &|province| stack_anchor(&content.anchors, &content.defaults, province, STANDSTILL),
+    )?);
+    Ok((land_combats, naval_markers, Arc::new(engaged)))
+}
+
+impl HourTables {
+    /// Decides every counter-size flag candidate on the caller's hour worker.
+    /// Drawing still acquires any candidate that has not been warmed.
+    pub fn warm_flags(&self, assets: &CounterAssets) {
+        self.countries.warm_flags(assets);
+    }
+
+    fn land(&self) -> CounterTables<'_> {
+        self.base.land()
+    }
+
+    /// Every recorded input is still the same immutable allocation. Equal rows in a
+    /// replacement frame do not authorize using another hour worker's preparation.
+    pub fn is_for_frame(&self, frame: &DecodedFrame) -> bool {
+        self.frame.branch == frame.branch
+            && self.frame.hour == frame.hour
+            && self.frame.metrics == frame.metrics
+            && self.frame.tables.iter().zip(&frame.tables).all(|(a, b)| {
+                replay_frame::frame::SharedView::ptr_eq(a, b) && a.sampled_at() == b.sampled_at()
+            })
+    }
+
+    /// Rebuild only the products whose decisions read the engagement history, from
+    /// this base's own recorded frame and content. No resource requests or GUI state.
+    pub fn refine_engagement(&self, index: Option<&History>) -> io::Result<Self> {
+        let (land_combats, naval_markers, engaged) = engagement_tables(
+            &self.frame,
+            &self.vision,
+            &self.links,
+            self.relations.as_ref().map_err(|reason| *reason),
+            &self.movement,
+            &self.engagement_content,
+            index,
+        )?;
+        Ok(Self {
+            epoch: Arc::new(()),
+            base: Arc::clone(&self.base),
+            land_combats,
+            naval_markers,
+            engaged,
+        })
     }
 
     /// Camera-independent regional source products, with complete ledger coverage.
@@ -2864,41 +2981,16 @@ pub fn hour_tables(
     )?;
     let movement = Movements::read(frame, etas, movement_content, content)?;
     let actions = counter_action::Actions::read(frame, &hostility, Some(vision.ours()))?;
-    let index = engaged;
-    let engaged = CombatFlags::read(
-        frame,
-        vision.ours(),
-        &links,
-        relations.as_ref().map_err(|reason| *reason),
-        index,
-    )?;
-    // Each icon kind reads its own kind's flags for an hour the index does not cover.
-    let kept =
-        |kind, flags| kept_frames(frame, kind, vision.ours(), flags, index).map(|(kept, _)| kept);
-    let land_kept = kept(LAND_ICON, &engaged.land)?;
-    let naval_kept = kept(NAVAL_ICON, &engaged.naval)?;
-    let land_combats = Arc::new(LandMarkers::read(
+    let engagement_content = EngagementContent::new(content);
+    let (land_combats, naval_markers, engaged) = engagement_tables(
         frame,
         &vision,
         &links,
-        // The land markers take the land flags with their provenance.
-        &(engaged.land.clone(), engaged.land_provenance),
-        &land_kept,
+        relations.as_ref().map_err(|reason| *reason),
         &movement,
-        &content.defines.land_combat,
-    )?);
-    let naval_markers = Arc::new(NavalMarkerTables::read(
-        frame,
-        Viewer {
-            vision: &vision,
-            owner: &|raw| links.get(&raw).copied(),
-        },
-        &engaged,
-        &naval_kept,
-        &|province| content.province_kind(province),
-        &|province| content.anchor(province, STANDSTILL),
-    )?);
-    let engaged = Arc::new(engaged);
+        &engagement_content,
+        engaged,
+    )?;
     let native = NativeInputs::read(frame)?;
     let order = counter_order::RecordedOrder::read(frame)?;
     let base_icons = BaseIcons::read(
@@ -2958,8 +3050,9 @@ pub fn hour_tables(
         .map(|group| group.hq_provider)
         .collect();
     let type_tints = type_tint::Index::read(type_tints, frame, &links, vision.ours());
-    let mut tables = HourTables {
-        epoch: Arc::new(()),
+    let mut tables = HourBase {
+        frame: Arc::new(frame.clone()),
+        engagement_content,
         divisions: BTreeMap::new(),
         ports: PortTables::default(),
         naval: NavalTables::read(frame, &vision)?,
@@ -3010,9 +3103,7 @@ pub fn hour_tables(
         status: DivisionStatuses::read(frame)?,
         movement,
         actions,
-        land_combats,
-        naval_markers,
-        engaged,
+        relations,
         pings,
         guns,
         abilities,
@@ -3043,7 +3134,13 @@ pub fn hour_tables(
         &NavalContext::cached(frame, sources, &tables.naval)?,
         &|raw| tables.links.get(&raw).copied(),
     )?;
-    Ok(tables)
+    Ok(HourTables {
+        epoch: Arc::new(()),
+        base: Arc::new(tables),
+        land_combats,
+        naval_markers,
+        engaged,
+    })
 }
 
 pub fn prepare_cached(

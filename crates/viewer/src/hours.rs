@@ -42,12 +42,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     sync::{
-        Arc, Condvar, Mutex, Weak,
+        Arc, Condvar, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use viewer_foundation::builder_pool::Pool;
 use viewer_foundation::parallel::Workers;
@@ -260,7 +260,30 @@ impl<T: PartialEq> Shared<T> {
 }
 
 /// The railway mesh and the bridges placed on it.
-pub type Rails = Shared<(RailMesh, ModelField)>;
+pub struct Rails {
+    pub id: u64,
+    pub value: (RailMesh, ModelField),
+    pub geometry: Option<Arc<viewer_world::map::railways::PreparedRailGeometry>>,
+}
+
+impl Rails {
+    fn share(
+        neighbours: Vec<Arc<Self>>,
+        value: (RailMesh, ModelField),
+        device: Option<&eframe::wgpu::Device>,
+    ) -> io::Result<Arc<Self>> {
+        if let Some(same) = neighbours.into_iter().find(|near| near.value == value) {
+            return Ok(same);
+        }
+        let geometry =
+            viewer_world::map::railways::PreparedRailGeometry::for_hour(device, &value.0)?;
+        Ok(Arc::new(Self {
+            id: next_id(),
+            value,
+            geometry,
+        }))
+    }
+}
 
 /// An hour's political fill, shared by the hours whose [`FrameKey`] is equal.
 pub struct Political {
@@ -327,6 +350,102 @@ pub struct Layers {
     pub overlay_tables: OverlayTables,
 }
 
+/// Elapsed time of one part, with its own thread's CPU time when profiled.
+#[derive(Clone, Copy)]
+pub struct PartTiming {
+    pub ms: f64,
+    pub cpu_ms: Option<f64>,
+}
+
+impl From<f64> for PartTiming {
+    fn from(ms: f64) -> Self {
+        Self { ms, cpu_ms: None }
+    }
+}
+
+// Existing elapsed-only reports keep their numeric formatting and precision.
+impl std::fmt::Display for PartTiming {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.ms, formatter)
+    }
+}
+
+/// Per-step timing of the movers job, reported on its builder thread, not
+/// mixed into a later window frame's thread-local spans. CPU time has the
+/// platform thread clock's resolution; short steps may report zero.
+struct MoversLaps {
+    epoch: u64,
+    branch: BranchId,
+    hour: Hour,
+    last: Option<Instant>,
+    cpu: Option<Duration>,
+    laps: Vec<(&'static str, PartTiming)>,
+}
+
+impl MoversLaps {
+    fn new(epoch: u64, branch: BranchId, hour: Hour) -> Self {
+        let enabled = viewer_foundation::profile_writer::profiling();
+        Self {
+            epoch,
+            branch,
+            hour,
+            last: enabled.then(Instant::now),
+            cpu: enabled
+                .then(viewer_foundation::profiling::current_thread_cpu_time)
+                .flatten(),
+            laps: Vec::new(),
+        }
+    }
+
+    fn lap(&mut self, name: &'static str) {
+        let Some(last) = self.last else {
+            return;
+        };
+        let now = Instant::now();
+        let cpu = viewer_foundation::profiling::current_thread_cpu_time();
+        self.laps.push((
+            name,
+            PartTiming {
+                ms: now.duration_since(last).as_secs_f64() * 1000.0,
+                cpu_ms: self
+                    .cpu
+                    .zip(cpu)
+                    .and_then(|(last, now)| now.checked_sub(last))
+                    .map(|used| used.as_secs_f64() * 1000.0),
+            },
+        ));
+        self.last = Some(now);
+        self.cpu = cpu;
+    }
+}
+
+impl Drop for MoversLaps {
+    fn drop(&mut self) {
+        if self.last.is_none() {
+            return;
+        }
+        viewer_foundation::profile_writer::profile_print(format!(
+            "PROFILE movers epoch {} branch {} hour {} parts {} cpu={}",
+            self.epoch,
+            self.branch,
+            self.hour,
+            self.laps
+                .iter()
+                .map(|(name, timing)| format!("{name}={:.3}", timing.ms))
+                .collect::<Vec<_>>()
+                .join(" "),
+            self.laps
+                .iter()
+                .map(|(name, timing)| match timing.cpu_ms {
+                    Some(ms) => format!("{name}:{ms:.3}"),
+                    None => format!("{name}:unavailable"),
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+        ));
+    }
+}
+
 /// One built hour.
 pub struct Built {
     /// Which [`Want::invalidates`] generation it belongs to.
@@ -338,8 +457,9 @@ pub struct Built {
     pub current: Current,
     /// The hour's layers, or why it has none: a recorded gap or a failed part.
     pub layers: Result<Layers, String>,
-    /// CPU milliseconds of each part, and wall milliseconds from dispatch.
-    pub laps: Vec<(&'static str, f64)>,
+    /// Elapsed and optional thread CPU milliseconds of each part.
+    pub laps: Vec<(&'static str, PartTiming)>,
+    /// Wall milliseconds from dispatch.
     pub wall: f64,
 }
 
@@ -531,7 +651,7 @@ enum Event {
         branch: BranchId,
         hour: Hour,
         name: &'static str,
-        ms: f64,
+        timing: PartTiming,
         part: Box<Part>,
     },
 }
@@ -540,14 +660,18 @@ enum Event {
 /// retain independent cancellation and layer state, but do not multiply pools.
 pub struct Resources {
     pool: Arc<Pool>,
+    frame_workers: Workers,
     decoders: Mutex<BTreeMap<usize, Weak<SharedDecoder>>>,
     pub dropper: Arc<Dropper>,
 }
 
 impl Resources {
     pub fn new() -> io::Result<Arc<Self>> {
+        let pool = Arc::new(Pool::new(builder_count())?);
+        let frame_workers = viewer_foundation::frame_assist::workers(pool.clone());
         Ok(Arc::new(Self {
-            pool: Arc::new(Pool::new(builder_count())?),
+            pool,
+            frame_workers,
             decoders: Mutex::new(BTreeMap::new()),
             dropper: Arc::new(Dropper::new()?),
         }))
@@ -647,7 +771,7 @@ struct Pending {
     /// Rank of the part `error` names, so concurrent failures report the
     /// same part in the same fixed order whatever arrives first.
     error_rank: Option<u8>,
-    laps: Vec<(&'static str, f64)>,
+    laps: Vec<(&'static str, PartTiming)>,
     view: View,
 }
 
@@ -692,14 +816,20 @@ impl Pending {
         }
     }
 
-    fn take(&mut self, ticket: u64, name: &'static str, ms: f64, part: Part) -> bool {
+    fn take(
+        &mut self,
+        ticket: u64,
+        name: &'static str,
+        timing: impl Into<PartTiming>,
+        part: Part,
+    ) -> bool {
         // A seek may cancel and then request the same hour within one epoch.
         // Results from the cancelled dispatch must not fill its replacement.
         if ticket != self.ticket {
             return false;
         }
         self.received += 1;
-        self.laps.push((name, ms));
+        self.laps.push((name, timing.into()));
         let rank = part_rank(&part);
         match part {
             Part::Political(result) => match result {
@@ -760,7 +890,15 @@ impl Pending {
             ("fog", Part::Fog(Ok(Arc::clone(&parts.fog)))),
             ("snow", Part::Snow(Ok(Arc::clone(&parts.snow)))),
         ] {
-            self.take(self.ticket, name, 0.0, part);
+            self.take(
+                self.ticket,
+                name,
+                PartTiming {
+                    ms: 0.0,
+                    cpu_ms: Some(0.0),
+                },
+                part,
+            );
         }
     }
 
@@ -1171,6 +1309,7 @@ impl Drop for DecodeLane {
 type Requested = (u64, Want);
 
 struct Coordinator {
+    device: Arc<OnceLock<eframe::wgpu::Device>>,
     content: Arc<Content>,
     playback: Playback,
     shared_decoder: Option<Arc<SharedDecoder>>,
@@ -1236,12 +1375,12 @@ impl Coordinator {
                     branch,
                     hour,
                     name,
-                    ms,
+                    timing,
                     part,
                 }) => {
                     if epoch == self.epoch
                         && let Some(pending) = self.pending.get_mut(&(branch, hour))
-                        && pending.take(ticket, name, ms, *part)
+                        && pending.take(ticket, name, timing, *part)
                     {
                         let pending = self.pending.remove(&(branch, hour)).expect("present");
                         pending.alive.store(false, Ordering::Relaxed);
@@ -1273,9 +1412,9 @@ impl Coordinator {
                         };
                         if viewer_foundation::profile_writer::profiling() {
                             viewer_foundation::profile_writer::profile_print(format!(
-                                "PROFILE hour_build hour {hour} wall {:.3} cpu {:.3} elapsed {:.6}",
+                                "PROFILE hour_build hour {hour} wall {:.3} parts_elapsed {:.3} elapsed {:.6}",
                                 built.wall,
-                                built.laps.iter().map(|(_, ms)| ms).sum::<f64>(),
+                                built.laps.iter().map(|(_, timing)| timing.ms).sum::<f64>(),
                                 run_started.elapsed().as_secs_f64(),
                             ));
                         }
@@ -1471,7 +1610,7 @@ impl Coordinator {
             received: 0,
             error: None,
             error_rank: None,
-            laps: vec![("decode", decode_ms)],
+            laps: vec![("decode", decode_ms.into())],
             view: want.view,
         };
         if let Some(parts) = &reusable {
@@ -1500,6 +1639,9 @@ impl Coordinator {
                 }
                 let started = Instant::now();
                 let view = HourView::new(&content, &frame, 0.0);
+                let cpu_started = viewer_foundation::profile_writer::profiling()
+                    .then(viewer_foundation::profiling::current_thread_cpu_time)
+                    .flatten();
                 // A panicking builder must not take its pool thread with it:
                 // enough dead threads would stall every later hour with the
                 // window waiting at the hour boundary. The panic becomes the
@@ -1509,13 +1651,21 @@ impl Coordinator {
                         Ok(part) => part,
                         Err(_) => Part::failed(name),
                     };
+                let cpu_ms = cpu_started.and_then(|start| {
+                    viewer_foundation::profiling::current_thread_cpu_time()?
+                        .checked_sub(start)
+                        .map(|used| used.as_secs_f64() * 1000.0)
+                });
                 let _ = events.send(Event::Part {
                     ticket,
                     epoch,
                     branch,
                     hour,
                     name,
-                    ms: started.elapsed().as_secs_f64() * 1000.0,
+                    timing: PartTiming {
+                        ms: started.elapsed().as_secs_f64() * 1000.0,
+                        cpu_ms,
+                    },
                     part: Box::new(part),
                 });
             }));
@@ -1662,6 +1812,7 @@ impl Coordinator {
             let fill = Fill(Arc::clone(&slots.rails));
             let near = slots_of(&neighbours, |slots| &slots.rails);
             let memos = Arc::clone(&self.memos);
+            let device = Arc::clone(&self.device);
             submit(
                 "rails",
                 Box::new(move |view| {
@@ -1669,7 +1820,7 @@ impl Coordinator {
                         let rails = memos.rails.get_or_insert_with(network.clone(), || {
                             let mesh = view.rail_mesh_of(&network);
                             let bridges = view.bridges.field(&mesh);
-                            Ok::<_, io::Error>(Shared::share(wait_all(near), (mesh, bridges)))
+                            Rails::share(wait_all(near), (mesh, bridges), device.get())
                         })?;
                         fill.set(Some(Arc::clone(&rails)));
                         Ok(rails)
@@ -1700,27 +1851,42 @@ impl Coordinator {
             "movers",
             Box::new(move |view| {
                 Part::Movers((|| {
+                    let mut laps = MoversLaps::new(epoch, branch, hour);
                     // The raid arrows' units and the trade-route convoys join the unit models.
                     let (orders, convoys) =
                         view.orders_and_convoys(&movers_perspective, show_allied_plans)?;
+                    laps.lap("orders_and_convoys");
                     let mut units = view.prepare_unit_models(&movers_perspective)?;
+                    laps.lap("prepare_unit_models");
                     units.add_raid_units(&view.unit_models, &orders.raid_units);
+                    laps.lap("add_raid_units");
                     if let Ok(defines) = &view.trade_routes {
                         units.add_convoys(convoys, defines.convoys);
                     }
+                    laps.lap("add_convoys");
                     units.stage_field(&view.unit_models);
+                    laps.lap("stage_field");
+                    let trains = view.train_plan(&movers_perspective)?;
+                    laps.lap("train_plan");
+                    let aircraft = view.aircraft_plan(&movers_perspective)?;
+                    laps.lap("aircraft_plan");
+                    let units = Arc::new(units);
+                    let effects = weather_effects::prepare(
+                        &view.weather_effects,
+                        weather_effects::field(view.frame)?,
+                        camera,
+                        viewport,
+                    );
+                    laps.lap("weather_effects_prepare");
+                    let impacts = Arc::new(view.nuclear_impacts()?);
+                    laps.lap("nuclear_impacts");
                     Ok(Arc::new(Movers {
-                        trains: view.train_plan(&movers_perspective)?,
-                        aircraft: view.aircraft_plan(&movers_perspective)?,
-                        units: Arc::new(units),
+                        trains,
+                        aircraft,
+                        units,
                         orders,
-                        effects: weather_effects::prepare(
-                            &view.weather_effects,
-                            weather_effects::field(view.frame)?,
-                            camera,
-                            viewport,
-                        ),
-                        impacts: Arc::new(view.nuclear_impacts()?),
+                        effects,
+                        impacts,
                     }))
                 })())
             }),
@@ -1761,7 +1927,10 @@ impl Coordinator {
             Box::new(move |view| {
                 Part::Snow(view.snow_cells().and_then(|cells| {
                     memos.snow.get_or_build(view.frame, (), |projected| {
-                        weather::grid_from_cells(cells, projected).map(Arc::new)
+                        weather::grid_from_cells(cells, projected).map(|mut snow| {
+                            snow.prepare_post(&view.assets.post.volumes);
+                            Arc::new(snow)
+                        })
                     })
                 }))
             }),
@@ -1782,6 +1951,7 @@ impl Drop for Requests {
 
 /// The window's handle on its hour builders.
 pub struct Pipeline {
+    device: Arc<OnceLock<eframe::wgpu::Device>>,
     content: Arc<Content>,
     replay: Arc<Replay>,
     events: Requests,
@@ -1796,6 +1966,7 @@ pub struct Pipeline {
     engaged: Engaged,
     /// The builders' turns, which other work may borrow.
     workers: Workers,
+    frame_workers: Workers,
     pool: Arc<Pool>,
 }
 
@@ -1819,10 +1990,13 @@ impl Pipeline {
         checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
     ) -> io::Result<Self> {
         let parallel = builder_count();
+        let pool = Arc::new(Pool::new(parallel)?);
+        let frame_workers = viewer_foundation::frame_assist::workers(pool.clone());
         Self::start(
             content,
             replay,
-            Arc::new(Pool::new(parallel)?),
+            pool,
+            frame_workers,
             None,
             parallel,
             checkpoints,
@@ -1842,6 +2016,7 @@ impl Pipeline {
             content,
             replay,
             Arc::clone(&resources.pool),
+            resources.frame_workers.clone(),
             None,
             parallel,
             checkpoints,
@@ -1859,6 +2034,7 @@ impl Pipeline {
             content,
             replay,
             Arc::clone(&resources.pool),
+            resources.frame_workers.clone(),
             Some(decoder),
             1,
             None,
@@ -1869,6 +2045,7 @@ impl Pipeline {
         content: Arc<Content>,
         replay: Arc<Replay>,
         pool: Arc<Pool>,
+        frame_workers: Workers,
         shared_decoder: Option<Arc<SharedDecoder>>,
         parallel: usize,
         checkpoints: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
@@ -1892,7 +2069,9 @@ impl Pipeline {
             }
         };
         let engaged: Engaged = Arc::new(Mutex::new(None));
+        let device = Arc::new(OnceLock::new());
         let coordinator = Coordinator {
+            device: Arc::clone(&device),
             content: Arc::clone(&content),
             playback: Playback::unloaded(Arc::clone(&replay))?,
             shared_decoder,
@@ -1919,6 +2098,7 @@ impl Pipeline {
                 coordinator.run(inbox)
             })?;
         Ok(Self {
+            device,
             content,
             replay,
             events: Requests(events),
@@ -1930,8 +2110,15 @@ impl Pipeline {
             requested,
             engaged,
             workers,
+            frame_workers,
             pool,
         })
+    }
+
+    /// Supplies this view's device before its first request. A pipeline retains
+    /// one device, so immutable shared rail geometry never crosses devices.
+    pub fn set_device(&self, device: &eframe::wgpu::Device) {
+        self.device.get_or_init(|| device.clone());
     }
 
     /// The engaged-flag index for `country`, started on first use; another
@@ -1968,6 +2155,11 @@ impl Pipeline {
     /// batch ([`crate::parallel::Workers`]).
     pub fn workers(&self) -> Workers {
         self.workers.clone()
+    }
+
+    /// Synchronous frame turns: protected helpers, then borrowed builders.
+    pub fn frame_workers(&self) -> Workers {
+        self.frame_workers.clone()
     }
 
     /// Queues a view's CPU preparation without blocking its frame.
@@ -2158,6 +2350,7 @@ mod mode_tests {
         let rails = Arc::new(Rails {
             id: next_id(),
             value: Default::default(),
+            geometry: None,
         });
         assert!(!pending.take(7, "rails", 0.0, Part::Rails(Ok(Arc::clone(&rails)))));
         for name in ["buildings", "movers", "fog", "snow"] {

@@ -280,6 +280,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
             }
             let pool = self.pool.as_mut().expect("the matching view was built");
             let owners = &mut self.owners;
+            let manager_profile = crate::profiling::span("dc_pool_manager");
             owners.clear();
             owners.extend(
                 plan.owners
@@ -320,6 +321,7 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
                     None,
                 )
             };
+            drop(manager_profile);
             for (owner, slot) in updated {
                 let instance = pool.get(slot).expect("updated slot is live");
                 match update(owner, slot, instance, root) {

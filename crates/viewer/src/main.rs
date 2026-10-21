@@ -78,6 +78,7 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content
          --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off
+         --profile-pointer <x,y>, framebuffer hover for a profiled --window-dump only
          --free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>, a free eye at world (x, y, z)
            turned by degrees (yaw clockwise from north, pitch up, roll right side down) with a
            vertical field of view in degrees (default 45) and near/far planes (default 1, 20000)
@@ -200,6 +201,20 @@ fn parse_fly_steer(value: &str) -> io::Result<[f32; 3]> {
             Ok([turn, climb, throttle])
         }
         _ => Err(invalid(USAGE)),
+    }
+}
+
+fn parse_profile_pointer(value: &str) -> io::Result<[f32; 2]> {
+    let values = value
+        .split(',')
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid("--profile-pointer needs finite nonnegative framebuffer x,y"))?;
+    match values.as_slice() {
+        &[x, y] if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 => Ok([x, y]),
+        _ => Err(invalid(
+            "--profile-pointer needs finite nonnegative framebuffer x,y",
+        )),
     }
 }
 
@@ -336,6 +351,8 @@ struct Options {
     /// default, as those modes start.
     free_overlays: Option<bool>,
     camera: Option<Placement>,
+    /// A profiled window dump's synthetic framebuffer hover, never an OS input.
+    profile_pointer: Option<[f32; 2]>,
     /// `--window-dump --walk`: a walk placed on the map, drawn through the walking mode with
     /// the keys `--walk-keys` holds ([`controls::walker::Start`]).
     walk: Option<controls::walker::Start>,
@@ -416,6 +433,10 @@ impl Options {
     }
 
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
+        Self::parse_profiled(args, viewer_foundation::profile_writer::profiling())
+    }
+
+    fn parse_profiled(args: impl Iterator<Item = OsString>, profiling: bool) -> io::Result<Self> {
         // Dumps default to 2048x1152; `--upscale 1.25` produces a 2560x1440 image
         // for comparison with screenshots at that size.
         let mut options = Self {
@@ -632,6 +653,7 @@ impl Options {
                     | "--width"
                     | "--height"
                     | "--camera"
+                    | "--profile-pointer"
                     | "--free-camera"
                     | "--building-camera"
                     | "--perspective"
@@ -722,6 +744,9 @@ impl Options {
                             } else {
                                 parse_free_camera(&value)?
                             });
+                        }
+                        "--profile-pointer" => {
+                            options.profile_pointer = Some(parse_profile_pointer(&value)?)
                         }
                         "--building-camera" => {
                             options.building_cameras.push(parse_placement(&value)?)
@@ -825,6 +850,11 @@ impl Options {
         }
         if !options.building_cameras.is_empty() && !options.headless_dump {
             return Err(invalid("--building-camera requires --dump"));
+        }
+        if options.profile_pointer.is_some() && !(options.window_dump && profiling) {
+            return Err(invalid(
+                "--profile-pointer requires --window-dump with BATTLE_PLAN_VIEWER_PROFILE",
+            ));
         }
         if options.province_hover.is_some() && !options.headless_dump {
             return Err(invalid("--province-hover requires --dump"));
@@ -1212,7 +1242,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         omitted.trees |= options.no_trees;
         println!("Omitted dump layers: {omitted:?}");
         // weather
-        let snow_mud = document.snow_mud()?;
+        let snow_mud = std::sync::Arc::new(document.snow_mud()?);
         // close zoom
         let (map_building_field, building_summary) =
             document.map_building_field(&options.perspective)?;
@@ -2260,6 +2290,51 @@ mod tests {
 
     fn parse(args: &[&str]) -> io::Result<Options> {
         Options::parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn profile_pointer_requires_a_profiled_window_dump_and_finite_pixels() {
+        let args = [
+            "--window-dump",
+            "campaign.battleplan",
+            "--out",
+            "frame.png",
+            "--profile-pointer",
+            "1600,700",
+        ];
+        let parse = |args: &[&str], enabled| {
+            Options::parse_profiled(args.iter().map(OsString::from), enabled)
+        };
+        assert_eq!(
+            parse(&args, true).unwrap().profile_pointer,
+            Some([1600.0, 700.0])
+        );
+        assert!(parse(&args, false).is_err());
+        assert!(
+            parse(
+                &[
+                    "--dump",
+                    "campaign.battleplan",
+                    "--out",
+                    "frame.png",
+                    "--profile-pointer",
+                    "1600,700"
+                ],
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                &["campaign.battleplan", "--profile-pointer", "1600,700"],
+                true
+            )
+            .is_err()
+        );
+        for bad in ["", "1", "1,2,3", "NaN,2", "1,inf", "-1,2", "1,-2"] {
+            assert!(parse_profile_pointer(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_profile_pointer("0,0").unwrap(), [0.0, 0.0]);
     }
 
     #[test]

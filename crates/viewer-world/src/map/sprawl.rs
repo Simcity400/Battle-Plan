@@ -9,7 +9,7 @@
 //! placement.
 
 #[cfg(test)]
-use std::collections::BTreeSet;
+use super::entity_animation::Clock;
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(test)]
 use viewer_foundation::map::camera::MapDefines;
@@ -28,8 +28,8 @@ use replay_data::{rows::BuildingRow, rows::ProvinceRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use {
     super::{
-        entity_animation::{BUILDING_IDLE, Clock, Request, STOPPED},
-        models::{ModelField, ModelInstance, ModelLibrary},
+        entity_animation::{BUILDING_IDLE, Request, STOPPED},
+        models::{ClockRecord, ModelField, ModelInstance, ModelLibrary},
     },
     viewer_foundation::map::{
         camera::Camera,
@@ -482,7 +482,7 @@ pub struct Presentation {
     cities: Arc<[City]>,
     damaged: i64,
     destroyed: i64,
-    damage: Damage,
+    damage: Arc<Damage>,
     view: Option<(Camera, [u32; 2], bool)>,
     /// Houses share their owner province's admission box, but keep placement order.
     groups: Arc<[CityGroup]>,
@@ -490,6 +490,8 @@ pub struct Presentation {
     active: Vec<usize>,
     actors: Vec<Option<Actor>>,
     damage_changed: bool,
+    clocks_changed: bool,
+    clock_records: Arc<[ClockRecord]>,
     placed: Option<Vec<(usize, ModelInstance)>>,
     last_time: Option<f32>,
 }
@@ -532,27 +534,37 @@ impl Presentation {
             cities: cities.into(),
             damaged,
             destroyed,
-            damage: Damage::default(),
+            damage: Arc::default(),
             damage_changed: true,
+            clocks_changed: true,
+            clock_records: Arc::default(),
             view: None,
             placed: None,
             last_time: None,
         }
     }
 
-    pub fn set_damage(&mut self, damage: &Damage) {
-        if self.damage != *damage {
-            self.damage = damage.clone();
-            self.damage_changed = true;
+    /// Adopts a built hour's damage without copying its province map. Equal contents
+    /// preserve the same change flags even when a different allocation supplies them.
+    pub fn set_shared_damage(&mut self, damage: &Arc<Damage>) {
+        if !Arc::ptr_eq(&self.damage, damage) {
+            if *self.damage != **damage {
+                self.damage_changed = true;
+                self.clocks_changed = true;
+            }
+            self.damage = Arc::clone(damage);
         }
         self.view = None;
     }
 
-    /// Preserve crossed hourly state requests at the last presentation time,
-    /// just as the individual-building history does for skipped hours.
-    pub fn advance(&mut self, damage: &Damage) {
+    /// Advances the same skipped-hour history from a builder-owned damage map.
+    pub fn advance_shared(&mut self, damage: &Arc<Damage>) {
+        self.advance_with(|scene| scene.set_shared_damage(damage));
+    }
+
+    fn advance_with(&mut self, install: impl FnOnce(&mut Self)) {
         if let (Some((camera, size, enabled)), Some(time)) = (self.view, self.last_time) {
-            self.set_damage(damage);
+            install(self);
             // Crossed hours advance actor requests, not the renderer's retained stream.
             let placed = self.placed.take();
             self.update(camera, size, enabled, time);
@@ -627,6 +639,8 @@ impl Presentation {
             return None;
         }
         self.damage_changed = false;
+        // Clock membership/requests can change even when the placement stream stays identical.
+        self.clocks_changed = true;
         if membership_changed {
             self.active.clear();
             for (group, &admitted) in self.groups.iter().zip(&self.admitted) {
@@ -678,30 +692,32 @@ impl Presentation {
         Some(placed)
     }
 
-    pub fn clocks(&self, time: f32) -> BTreeMap<(usize, u32, u32), Clock> {
-        self.active
-            .iter()
-            .filter_map(|&index| {
-                let city = &self.cities[index];
-                let instance = city.instance;
-                let actor = self.actors[index].as_ref()?;
-                if !self.damage.health.contains_key(&city.province) {
-                    return None;
-                }
-                Some((
-                    (
-                        city.mesh,
-                        instance.animation_seed,
-                        instance.animation_identity,
-                    ),
-                    Clock {
-                        time: time - actor.start,
-                        phase: None,
+    /// Source-ordered clocks, rebuilt only when admission, damage or actor requests change.
+    pub fn clock_records(&mut self) -> &Arc<[ClockRecord]> {
+        if std::mem::take(&mut self.clocks_changed) {
+            self.clock_records = self
+                .active
+                .iter()
+                .filter_map(|&index| {
+                    let city = &self.cities[index];
+                    let actor = self.actors[index].as_ref()?;
+                    if !self.damage.health.contains_key(&city.province) {
+                        return None;
+                    }
+                    Some(ClockRecord {
+                        key: (
+                            city.mesh,
+                            city.instance.animation_seed,
+                            city.instance.animation_identity,
+                        ),
+                        start: actor.start,
                         requests: Arc::clone(&actor.requests),
-                    },
-                ))
-            })
-            .collect()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+        &self.clock_records
     }
 
     pub fn reset(&mut self) {
@@ -709,6 +725,8 @@ impl Presentation {
         self.admitted.fill(false);
         self.active.clear();
         self.damage_changed = true;
+        self.clocks_changed = true;
+        self.clock_records = Arc::default();
         self.placed = None;
         self.view = None;
         self.last_time = None;
@@ -867,7 +885,7 @@ mod tests {
 
     fn presentation(damage: Damage) -> Presentation {
         let mut presentation = Presentation::new(Vec::new(), 80_000, 30_000);
-        presentation.set_damage(&damage);
+        presentation.set_shared_damage(&Arc::new(damage));
         presentation
     }
 
@@ -923,9 +941,13 @@ mod tests {
             Some("damaged"),
             "destroyed threshold is strict"
         );
-        player.damage.health.insert(2, Some(29_999));
+        Arc::make_mut(&mut player.damage)
+            .health
+            .insert(2, Some(29_999));
         assert_eq!(player.state(2), Some("burning"));
-        player.damage.health.insert(2, Some(80_000));
+        Arc::make_mut(&mut player.damage)
+            .health
+            .insert(2, Some(80_000));
         assert_eq!(player.state(2), Some("idle"), "damaged threshold is strict");
         player.destroyed = 90_000;
         assert_eq!(
@@ -944,7 +966,9 @@ mod tests {
             &available,
         )
         .unwrap();
-        player.damage.health.extend(stateless.health);
+        Arc::make_mut(&mut player.damage)
+            .health
+            .extend(stateless.health);
         player.damaged = 110_000;
         assert_eq!(
             player.state(6_001),
@@ -1100,7 +1124,7 @@ mod tests {
         }];
         let damage = scene.damage.clone();
         scene = Presentation::new(cities, scene.damaged, scene.destroyed);
-        scene.set_damage(&damage);
+        scene.set_shared_damage(&damage);
         let mut player = Player::new(&rig);
         let mut events = Vec::new();
         let camera = Placement {
@@ -1140,7 +1164,9 @@ mod tests {
         );
         assert!((events[0].age - 0.1).abs() < 0.0001);
         events.clear();
-        scene.damage.health.insert(7, Some(60_000));
+        Arc::make_mut(&mut scene.damage)
+            .health
+            .insert(7, Some(60_000));
         scene.view = None;
         step(&mut scene, &mut player, 51.0, &mut events);
         assert!(events.is_empty());
@@ -1189,30 +1215,37 @@ mod tests {
             events[0].definition.particle.as_deref(),
             Some("synthetic_smoke")
         );
-        scene.advance(&Damage {
+        scene.advance_shared(&Arc::new(Damage {
             health: BTreeMap::from([(7, Some(20_000))]),
             refused: None,
-        });
-        scene.advance(&Damage {
+        }));
+        scene.advance_shared(&Arc::new(Damage {
             health: BTreeMap::from([(7, Some(60_000))]),
             refused: None,
-        });
+        }));
         assert_eq!(scene.actors[0].as_ref().unwrap().requests.len(), 4);
         assert_eq!(
             scene.actors[0].as_ref().unwrap().requests[2].time,
             scene.actors[0].as_ref().unwrap().requests[3].time
         );
         scene.reset();
-        scene.set_damage(&Damage {
+        scene.set_shared_damage(&Arc::new(Damage {
             health: BTreeMap::from([(7, Some(100_000))]),
             refused: None,
-        });
+        }));
         let mut rig = rig;
         rig.nodes[0].default = "burning".into();
         let mut player = Player::new(&rig);
         let mut events = Vec::new();
         scene.update(camera, [1024, 768], true, 100.0);
-        let clock = &scene.clocks(100.2)[&(0, 0, 1)];
+        let record = &scene.clock_records()[0];
+        assert_eq!(record.key, (0, 0, 1));
+        assert_eq!(record.start.to_bits(), 100.0f32.to_bits());
+        let clock = &Clock {
+            time: 100.2 - record.start,
+            phase: None,
+            requests: Arc::clone(&record.requests),
+        };
         assert!(
             clock.requests.is_empty(),
             "the initial healthy city cache is zero"
@@ -1230,9 +1263,15 @@ mod tests {
             "the authored default is preserved even when it differs from idle"
         );
         scene.update(camera, [1024, 768], false, 101.0);
-        assert!(scene.clocks(101.0).is_empty());
+        assert!(scene.clock_records().is_empty());
         scene.update(camera, [1024, 768], true, 102.0);
-        let clock = &scene.clocks(102.0)[&(0, 0, 1)];
+        let record = &scene.clock_records()[0];
+        assert_eq!(record.start.to_bits(), 100.0f32.to_bits());
+        let clock = &Clock {
+            time: 102.0 - record.start,
+            phase: None,
+            requests: Arc::clone(&record.requests),
+        };
         assert_eq!(clock.requests.len(), 1);
         assert_eq!(
             clock.requests[0].state, "idle",
@@ -1253,161 +1292,57 @@ mod tests {
         );
     }
 
-    // The ungrouped path is the frame-by-frame oracle, including its camera invalidation
-    // and whole-city clock walk. It deliberately does no retained-stream optimization.
-    #[derive(Clone)]
-    struct OriginalPresentation {
-        cities: Arc<[City]>,
-        damaged: i64,
-        destroyed: i64,
-        damage: Damage,
-        view: Option<(Camera, [u32; 2], bool)>,
-        actors: BTreeMap<u32, Actor>,
-        last_time: Option<f32>,
-    }
-
-    impl OriginalPresentation {
-        pub fn set_damage(&mut self, damage: &Damage) {
-            if self.damage != *damage {
-                self.damage = damage.clone();
-            }
-            self.view = None;
-        }
-
-        /// Preserve crossed hourly state requests at the last presentation time,
-        /// just as the individual-building history does for skipped hours.
-        pub fn advance(&mut self, damage: &Damage) {
-            if let (Some((camera, size, enabled)), Some(time)) = (self.view, self.last_time) {
-                self.set_damage(damage);
-                self.update(camera, size, enabled, time);
-            }
-        }
-
-        fn state(&self, province: u32) -> Option<&'static str> {
-            // Leave target zero when the province has no state,
-            // bypassing both thresholds (which a mod may set above full health).
-            let Some(&health) = self.damage.health.get(&province)?.as_ref() else {
-                return Some("idle");
-            };
-            // both thresholds are strict; damaged is tested first.
-            if health >= self.damaged {
-                Some("idle")
-            } else if health < self.destroyed {
-                Some("burning") // damaged is .
-            } else {
-                Some("damaged")
-            }
-        }
-
-        pub fn update(
-            &mut self,
-            camera: Camera,
-            size: [u32; 2],
-            enabled: bool,
-            time: f32,
-        ) -> Option<Vec<(usize, ModelInstance)>> {
-            if self.last_time.is_some_and(|last| time < last) {
-                self.reset();
-            }
-            self.last_time = Some(time);
-            let view = (camera, size, enabled);
-            if self.view == Some(view) {
-                return None;
-            }
-            self.view = Some(view);
-            let admission = Admission::new(camera, size);
-            let mut placed = Vec::new();
-            let mut active = BTreeSet::new();
-            for city in self
-                .cities
-                .iter()
-                .filter(|city| enabled && admission.admits(city.bounds))
-            {
-                let mut instance = city.instance;
-                active.insert(instance.animation_seed);
-                if let Some(state) = self.state(city.province) {
-                    let actor = self
-                        .actors
-                        .entry(instance.animation_seed)
-                        .or_insert_with(|| Actor {
-                            start: time,
-                            state,
-                            visible: true,
-                            // Initialize the city-state cache to zero. A first healthy show preserves the entity default.
-                            requests: Arc::new(if state == "idle" {
-                                Vec::new()
-                            } else {
-                                vec![Request {
-                                    time: 0.0,
-                                    phase_time: None,
-                                    state: state.into(),
-                                }]
-                            }),
-                        });
-                    if actor.state != state {
-                        Arc::make_mut(&mut actor.requests).push(Request {
-                            time: time - actor.start,
-                            phase_time: None,
-                            state: state.into(),
-                        });
-                        actor.state = state;
-                    }
-                    instance.animation = BUILDING_IDLE;
-                }
-                placed.push((city.mesh, instance));
-            }
-            // Request idle, reset the city-state cache to zero and deactivate the precreated entity. Retain
-            // request history so re-entry preserves idle even when the authored default differs.
-            for (id, actor) in &mut self.actors {
-                let visible = active.contains(id);
-                if actor.visible && !visible {
-                    Arc::make_mut(&mut actor.requests).push(Request {
-                        time: time - actor.start,
-                        phase_time: None,
-                        state: "idle".into(),
-                    });
-                    actor.state = "idle";
-                }
-                actor.visible = visible;
-            }
-            Some(placed)
-        }
-
-        pub fn clocks(&self, time: f32) -> BTreeMap<(usize, u32, u32), Clock> {
-            self.cities
-                .iter()
-                .filter_map(|city| {
-                    let instance = city.instance;
-                    let actor = self.actors.get(&instance.animation_seed)?;
-                    if !actor.visible || !self.damage.health.contains_key(&city.province) {
-                        return None;
-                    }
-                    Some((
-                        (
-                            city.mesh,
-                            instance.animation_seed,
-                            instance.animation_identity,
-                        ),
-                        Clock {
-                            time: time - actor.start,
-                            phase: None,
-                            requests: Arc::clone(&actor.requests),
-                        },
-                    ))
-                })
-                .collect()
-        }
-
-        pub fn reset(&mut self) {
-            self.actors.clear();
-            self.view = None;
-            self.last_time = None;
-        }
-    }
-
     #[test]
-    fn grouped_city_frames_match_original_placements_requests_and_clocks() {
+    fn grouped_city_frames_preserve_admission_placements_requests_and_clock_records() {
+        use super::super::entity_animation::{Clip, Node, Rig};
+        use super::super::models::ModelPass;
+        use installed_content_core::mesh;
         use viewer_foundation::map::camera::{Free, Lens, Pose};
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("supported executable metadata");
+        let rigs: Vec<_> = (0..9)
+            .map(|index| {
+                Arc::new(Rig {
+                    end: 1,
+                    nodes: vec![Node {
+                        mesh: Arc::new(mesh::Mesh::default()),
+                        native: None,
+                        clips: ["idle", "damaged", "burning"]
+                            .into_iter()
+                            .flat_map(|name| {
+                                (0..2).map(move |variant| Clip {
+                                    state: mesh::EntityState {
+                                        name: name.into(),
+                                        chance: (variant + 1) as f32,
+                                        looping: true,
+                                        speed: 1.0,
+                                        events: vec![mesh::EntityEvent {
+                                            time: 0.01,
+                                            particle: Some(format!("synthetic_{name}_{variant}")),
+                                            trigger_once: true,
+                                            ..Default::default()
+                                        }],
+                                        ..Default::default()
+                                    },
+                                    animation: None,
+                                })
+                            })
+                            .collect(),
+                        default: if index % 2 == 0 { "burning" } else { "idle" }.into(),
+                        follows_parent: false,
+                        parent: None,
+                        scale: 1.0,
+                        mesh_scale: 1.0,
+                        skin_base: None,
+                        rigid: 0,
+                        locators: BTreeMap::new(),
+                    }],
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let mut retained_pass = ModelPass::with_rigs_for_tests(rigs, "city clocks");
+        let mut emitted = 0;
         let cities: Vec<_> = (0..1_440)
             .map(|index| {
                 let owner = index * 7 % 60;
@@ -1422,63 +1357,54 @@ mod tests {
                         animation_seed: (index * 17 + 3) as u32,
                         animation_identity: (index % 5 + 1) as u32,
                         animation: STOPPED,
+                        scale: 1.0,
                         ..Default::default()
                     },
                 }
             })
             .collect();
         let mut grouped = Presentation::new(cities.clone(), 80_000, 30_000);
-        let mut original = OriginalPresentation {
-            cities: cities.into(),
-            damaged: grouped.damaged,
-            destroyed: grouped.destroyed,
-            damage: Damage::default(),
-            view: None,
-            actors: BTreeMap::new(),
-            last_time: None,
-        };
         assert_eq!(grouped.groups.len(), 60);
-        let damage = |hour: u32| Damage {
-            health: (0..117)
-                .filter(|id| !(id + hour).is_multiple_of(11))
-                .map(|id| {
-                    let health = match (id + hour) % 7 {
-                        0 => None,
-                        1 => Some(29_999),
-                        2 => Some(30_000),
-                        3 => Some(79_999),
-                        4 => Some(80_000),
-                        _ => Some(100_000),
-                    };
-                    (id, health)
-                })
-                .collect(),
-            refused: hour.is_multiple_of(3).then(|| "synthetic incomplete damage".into()),
+        let damage = |hour: u32| {
+            Arc::new(Damage {
+                health: (0..117)
+                    .filter(|id| !(id + hour).is_multiple_of(11))
+                    .map(|id| {
+                        let health = match (id + hour) % 7 {
+                            0 => None,
+                            1 => Some(29_999),
+                            2 => Some(30_000),
+                            3 => Some(79_999),
+                            4 => Some(80_000),
+                            _ => Some(100_000),
+                        };
+                        (id, health)
+                    })
+                    .collect(),
+                refused: hour
+                    .is_multiple_of(3)
+                    .then(|| "synthetic incomplete damage".into()),
+            })
         };
         let mut grouped_placed = Vec::new();
-        let mut original_placed = Vec::new();
         for frame in 0..900u32 {
             if frame % 137 == 0 {
                 grouped.reset();
-                original.reset();
             }
             if frame % 19 == 0 {
                 let damage = damage(frame / 19);
-                grouped.set_damage(&damage);
-                original.set_damage(&damage);
+                grouped.set_shared_damage(&damage);
             }
             if frame % 31 == 0 {
                 for offset in 0..3 {
                     let damage = damage(frame / 19 + offset);
-                    grouped.advance(&damage);
-                    original.advance(&damage);
+                    grouped.advance_shared(&damage);
                 }
                 // Cover crossed hours both with and without a final install. An
                 // ignored stream must reach the renderer on the next changed view.
                 if frame % 62 == 0 {
                     let damage = damage(frame / 19 + 4);
-                    grouped.set_damage(&damage);
-                    original.set_damage(&damage);
+                    grouped.set_shared_damage(&damage);
                 }
             }
             let movement = frame / 3;
@@ -1506,35 +1432,144 @@ mod tests {
             };
             let enabled = frame % 47 < 37;
             let time = (frame % 211) as f32 / 120.0;
-            if let Some(placed) = grouped.update(camera, size, enabled, time) {
+            let update = grouped.update(camera, size, enabled, time);
+            let submitted = update.is_some();
+            if let Some(placed) = update {
+                retained_pass.update_placed(placed.clone(), SPRAWL_TILE);
                 grouped_placed = placed;
             }
-            if let Some(placed) = original.update(camera, size, enabled, time) {
-                original_placed = placed;
-            }
-            assert_eq!(grouped_placed, original_placed, "frame {frame} placements");
-            assert_eq!(
-                grouped.clocks(time),
-                original.clocks(time),
-                "frame {frame} clocks"
-            );
-            let actors: BTreeMap<_, _> = grouped
-                .actors
+            // Geometry and health rows provide direct expected source-order outputs;
+            // no alternate presentation implementation is retained for this test.
+            let admission = Admission::new(camera, size);
+            let expected_active: Vec<_> = grouped
+                .cities
                 .iter()
                 .enumerate()
-                .filter_map(|(index, actor)| {
-                    actor
-                        .as_ref()
-                        .map(|actor| (grouped.cities[index].instance.animation_seed, actor.clone()))
+                .filter_map(|(index, city)| {
+                    (enabled && admission.admits(city.bounds)).then_some(index)
                 })
                 .collect();
-            assert_eq!(actors, original.actors, "frame {frame} actor state");
-            assert_eq!(grouped.last_time, original.last_time);
-            assert_eq!(grouped.view, original.view);
+            assert_eq!(grouped.active, expected_active, "frame {frame}: admission");
+            let expected_state = |province| {
+                grouped
+                    .damage
+                    .health
+                    .get(&province)
+                    .map(|health| match health {
+                        None => "idle",
+                        Some(health) if *health >= 80_000 => "idle",
+                        Some(health) if *health < 30_000 => "burning",
+                        Some(_) => "damaged",
+                    })
+            };
+            let expected_placed: Vec<_> = expected_active
+                .iter()
+                .map(|&index| {
+                    let city = &grouped.cities[index];
+                    (
+                        city.mesh,
+                        ModelInstance {
+                            animation: if expected_state(city.province).is_some() {
+                                BUILDING_IDLE
+                            } else {
+                                STOPPED
+                            },
+                            ..city.instance
+                        },
+                    )
+                })
+                .collect();
+            // A skipped hour can deliberately retain the old renderer stream at an
+            // unchanged view. Every submitted stream, however, must match the inputs.
+            if submitted {
+                assert_eq!(grouped_placed.len(), expected_placed.len());
+                for ((mesh, instance), (expected_mesh, expected)) in
+                    grouped_placed.iter().zip(&expected_placed)
+                {
+                    assert_eq!(mesh, expected_mesh);
+                    assert_eq!(
+                        bytemuck::bytes_of(instance),
+                        bytemuck::bytes_of(expected),
+                        "frame {frame}: instance bytes"
+                    );
+                }
+            }
+            for (index, actor) in grouped.actors.iter().enumerate() {
+                if let Some(actor) = actor {
+                    let visible = expected_active.binary_search(&index).is_ok();
+                    assert_eq!(
+                        actor.visible, visible,
+                        "frame {frame} actor {index}: visibility"
+                    );
+                    if let Some(state) = visible
+                        .then(|| expected_state(grouped.cities[index].province))
+                        .flatten()
+                    {
+                        assert_eq!(
+                            actor.state, state,
+                            "frame {frame} actor {index}: damage state"
+                        );
+                    }
+                    assert!(actor.start <= time);
+                    assert!(
+                        actor
+                            .requests
+                            .iter()
+                            .all(|request| request.phase_time.is_none()
+                                && request.time.is_finite()
+                                && request.time >= 0.0)
+                    );
+                    assert!(
+                        actor
+                            .requests
+                            .windows(2)
+                            .all(|pair| pair[0].time <= pair[1].time)
+                    );
+                }
+            }
+            let expected_records: Vec<_> = expected_active
+                .iter()
+                .copied()
+                .filter(|&index| expected_state(grouped.cities[index].province).is_some())
+                .collect();
+            let records = Arc::clone(grouped.clock_records());
+            assert!(Arc::ptr_eq(&records, grouped.clock_records()));
+            assert_eq!(records.len(), expected_records.len());
+            for (record, index) in records.iter().zip(expected_records) {
+                let city = &grouped.cities[index];
+                let actor = grouped.actors[index].as_ref().unwrap();
+                assert_eq!(
+                    record.key,
+                    (
+                        city.mesh,
+                        city.instance.animation_seed,
+                        city.instance.animation_identity
+                    )
+                );
+                assert_eq!(record.start.to_bits(), actor.start.to_bits());
+                assert!(Arc::ptr_eq(&record.requests, &actor.requests));
+            }
+            retained_pass.set_clock_records(&records, time);
+            retained_pass.animate(time, None, &[0.0]);
+            for event in &retained_pass.events {
+                assert!(
+                    event
+                        .definition
+                        .particle
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("synthetic_")
+                );
+                assert!(event.age.is_finite());
+            }
+            emitted += retained_pass.events.len();
+            assert_eq!(grouped.last_time.map(f32::to_bits), Some(time.to_bits()));
+            assert_eq!(grouped.view, Some((camera, size, enabled)));
             if frame % 71 == 0 {
                 grouped = grouped.clone();
             }
         }
+        assert!(emitted > 0, "driver must exercise emitted state particles");
     }
 
     #[test]
@@ -1552,11 +1587,11 @@ mod tests {
             80_000,
             30_000,
         );
-        let mut damage = Damage {
+        let mut damage = Arc::new(Damage {
             health: BTreeMap::from([(7, Some(100_000))]),
             refused: None,
-        };
-        scene.set_damage(&damage);
+        });
+        scene.set_shared_damage(&damage);
         let mut camera = Placement {
             center: [10.0, 10.0],
             height: 60.0,
@@ -1566,23 +1601,23 @@ mod tests {
         assert!(scene.update(camera, [1024, 768], true, 10.0).is_some());
         camera.center[0] += 0.01;
         assert!(scene.update(camera, [1024, 768], true, 10.1).is_none());
-        damage.health.insert(7, Some(20_000));
-        scene.set_damage(&damage);
+        Arc::make_mut(&mut damage).health.insert(7, Some(20_000));
+        scene.set_shared_damage(&damage);
         assert!(scene.update(camera, [1024, 768], true, 10.2).is_none());
         assert_eq!(
             scene.actors[0].as_ref().unwrap().requests[0].state,
             "burning"
         );
-        damage.health.clear();
-        scene.set_damage(&damage);
+        Arc::make_mut(&mut damage).health.clear();
+        scene.set_shared_damage(&damage);
         assert_eq!(
             scene.update(camera, [1024, 768], true, 10.3).unwrap()[0]
                 .1
                 .animation,
             STOPPED
         );
-        damage.health.insert(7, Some(60_000));
-        scene.advance(&damage);
+        Arc::make_mut(&mut damage).health.insert(7, Some(60_000));
+        scene.advance_shared(&damage);
         // advance did not hand the new stream to the renderer. Like the original
         // path, the same view does nothing, but a changed view submits that stream.
         assert!(scene.update(camera, [1024, 768], true, 10.4).is_none());
@@ -1593,15 +1628,145 @@ mod tests {
                 .animation,
             BUILDING_IDLE
         );
-        damage.health.clear();
-        scene.advance(&damage);
-        scene.set_damage(&damage);
+        Arc::make_mut(&mut damage).health.clear();
+        scene.advance_shared(&damage);
+        scene.set_shared_damage(&damage);
         assert_eq!(
             scene.update(camera, [1024, 768], true, 10.6).unwrap()[0]
                 .1
                 .animation,
             STOPPED
         );
+    }
+
+    #[test]
+    fn shared_city_damage_keeps_fixed_states_flags_and_oldest_first_history() {
+        let cities = (0..48)
+            .map(|index| City {
+                province: index % 7,
+                bounds: [8.0, 8.0, 12.0, 12.0],
+                mesh: index as usize % 3,
+                instance: ModelInstance {
+                    animation: STOPPED,
+                    animation_seed: index,
+                    ..Default::default()
+                },
+            })
+            .collect();
+        let mut scene = Presentation::new(cities, 80_000, 30_000);
+        let damage = Arc::new(Damage {
+            health: BTreeMap::from([
+                (0, None),
+                (1, Some(29_999)),
+                (2, Some(30_000)),
+                (3, Some(79_999)),
+                (4, Some(80_000)),
+                (6, Some(100_000)),
+            ]),
+            refused: Some("synthetic damage".into()),
+        });
+        let states = [
+            Some("idle"),
+            Some("burning"),
+            Some("damaged"),
+            Some("damaged"),
+            Some("idle"),
+            None,
+            Some("idle"),
+        ];
+        let camera = Placement {
+            center: [10.0, 10.0],
+            height: 60.0,
+            pose: Default::default(),
+        }
+        .on(MapSize::TEST, MapDefines::test());
+        for cycle in 0..36 {
+            scene.reset();
+            let time = cycle as f32 * 0.125;
+            scene.set_shared_damage(&damage);
+            assert!(Arc::ptr_eq(&scene.damage, &damage));
+            assert!(scene.view.is_none());
+            let placed = scene.update(camera, [1024, 768], true, time).unwrap();
+            assert_eq!(scene.active, (0..48).collect::<Vec<_>>());
+            for (index, (mesh, instance)) in placed.iter().enumerate() {
+                let expected_state = states[index % 7];
+                let expected = ModelInstance {
+                    animation: if expected_state.is_some() {
+                        BUILDING_IDLE
+                    } else {
+                        STOPPED
+                    },
+                    ..scene.cities[index].instance
+                };
+                assert_eq!(*mesh, index % 3);
+                assert_eq!(bytemuck::bytes_of(instance), bytemuck::bytes_of(&expected));
+                let actor = scene.actors[index].as_ref();
+                assert_eq!(actor.map(|actor| actor.state), expected_state);
+                if let Some(actor) = actor {
+                    assert_eq!(actor.start.to_bits(), time.to_bits());
+                    assert!(actor.visible);
+                    let expected_requests: &[&str] = match expected_state {
+                        Some("burning") => &["burning"],
+                        Some("damaged") => &["damaged"],
+                        _ => &[],
+                    };
+                    assert_eq!(
+                        actor
+                            .requests
+                            .iter()
+                            .map(|r| r.state.as_str())
+                            .collect::<Vec<_>>(),
+                        expected_requests
+                    );
+                }
+            }
+            let records = Arc::clone(scene.clock_records());
+            assert_eq!(
+                records.iter().map(|r| r.key.1).collect::<Vec<_>>(),
+                (0..48u32).filter(|id| id % 7 != 5).collect::<Vec<_>>()
+            );
+            // A distinct but content-equal hour adopts its allocation without
+            // setting change flags, but still invalidates the selector latch.
+            let equal = Arc::new((*damage).clone());
+            scene.set_shared_damage(&equal);
+            assert!(Arc::ptr_eq(&scene.damage, &equal));
+            assert!(!scene.damage_changed && !scene.clocks_changed);
+            assert!(scene.view.is_none());
+            assert!(scene.update(camera, [1024, 768], true, time).is_none());
+            // Three crossed hours must append requests in oldest-first order
+            // at the last presented time, without submitting their streams.
+            for health in [100_000, 20_000, 60_000] {
+                scene.advance_shared(&Arc::new(Damage {
+                    health: BTreeMap::from([(1, Some(health))]),
+                    refused: None,
+                }));
+            }
+            for index in (1..48).step_by(7) {
+                let actor = scene.actors[index].as_ref().unwrap();
+                assert_eq!(
+                    actor
+                        .requests
+                        .iter()
+                        .map(|r| r.state.as_str())
+                        .collect::<Vec<_>>(),
+                    ["burning", "idle", "burning", "damaged"]
+                );
+                assert!(
+                    actor
+                        .requests
+                        .iter()
+                        .all(|r| r.time == 0.0 && r.phase_time.is_none())
+                );
+            }
+            scene.set_shared_damage(&damage);
+            assert!(scene.damage_changed && scene.clocks_changed);
+            scene.update(camera, [1024, 768], true, time);
+            for index in (1..48).step_by(7) {
+                let actor = scene.actors[index].as_ref().unwrap();
+                assert_eq!(actor.requests.last().unwrap().state, "burning");
+                assert_eq!(actor.requests.len(), 5);
+            }
+        }
     }
 
     fn mask(rows: &[&str]) -> (Vec<bool>, usize, usize) {

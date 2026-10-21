@@ -371,3 +371,93 @@ fn height_is_bilinear_at_the_center_with_the_native_half_pixel_offset() {
         9.5
     );
 }
+
+#[test]
+fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_hours() {
+    use viewer_foundation::map::test_support::gpu;
+    let (_serial, device, queue) = gpu::device();
+    fn bytes(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        geometry: &PreparedRailGeometry,
+    ) -> Vec<u8> {
+        let Some(vertices) = &geometry.native_vertices else {
+            assert!(geometry.native_runs.is_empty());
+            return Vec::new();
+        };
+        let read = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rail geometry oracle"),
+            size: vertices.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(vertices, 0, &read, 0, vertices.size());
+        queue.submit([encoder.finish()]);
+        let slice = read.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |result| result.unwrap());
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let result = slice.get_mapped_range().unwrap().to_vec();
+        read.unmap();
+        result
+    }
+    let mut adopted = Arc::new(PreparedRailGeometry::default());
+    let mut previous = Vec::new();
+    let mut previous_runs = Vec::new();
+    for hour in 0..48 {
+        let mesh = if hour % 6 == 0 {
+            RailMesh::default()
+        } else {
+            let mut graph = edges(&[(1, 2, 1 + hour % 5)]);
+            if hour % 3 != 0 {
+                graph.extend(edges(&[(2, 3, 3)]));
+            }
+            geography().build_rows(&graph, &[], &[], &heights())
+        };
+        let prepared = std::thread::scope(|scope| {
+            scope
+                .spawn(|| PreparedRailGeometry::for_hour(Some(&device), &mesh))
+                .join()
+                .unwrap()
+                .unwrap()
+        });
+        let prepared = prepared.expect("builder has a device");
+        let geometry = PreparedRailGeometry::for_install(&device, &mesh, Some(&prepared)).unwrap();
+        assert!(Arc::ptr_eq(&geometry, &prepared));
+        let unprepared = PreparedRailGeometry::for_hour(None, &mesh).unwrap();
+        assert!(unprepared.is_none());
+        let fallback =
+            PreparedRailGeometry::for_install(&device, &mesh, unprepared.as_ref()).unwrap();
+        // Alternate publication of builder-ready and initially CPU-only hours.
+        let install = if hour % 2 == 0 {
+            geometry
+        } else {
+            Arc::clone(&fallback)
+        };
+        let retired = std::mem::replace(&mut adopted, install);
+        assert_eq!(
+            bytes(&device, &queue, &retired),
+            previous,
+            "retired hour {hour}"
+        );
+        assert_eq!(retired.native_runs, previous_runs, "retired runs {hour}");
+        let expected: &[u8] = bytemuck::cast_slice(&mesh.native_vertices);
+        let actual = bytes(&device, &queue, &adopted);
+        assert_eq!(actual, expected, "prepared bytes hour {hour}");
+        assert_eq!(
+            bytes(&device, &queue, &fallback),
+            expected,
+            "unprepared-hour install bytes hour {hour}"
+        );
+        assert_eq!(
+            adopted.native_runs, mesh.native_runs,
+            "run order hour {hour}"
+        );
+        assert_eq!(
+            fallback.native_runs, mesh.native_runs,
+            "unprepared-hour install run order {hour}"
+        );
+        previous = actual;
+        previous_runs = mesh.native_runs;
+    }
+}

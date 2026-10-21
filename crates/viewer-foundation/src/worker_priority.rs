@@ -86,3 +86,19 @@ pub fn lowest_priority() {
         }
     }
 }
+
+/// Protected synchronous frame helpers start at normal priority, even when
+/// their service was created by a below-normal hour or document thread.
+pub fn normal_priority() {
+    #[cfg(windows)]
+    {
+        unsafe extern "system" {
+            fn GetCurrentThread() -> *mut std::ffi::c_void;
+            fn SetThreadPriority(thread: *mut std::ffi::c_void, priority: i32) -> i32;
+        }
+        // SAFETY: the calling thread's pseudo handle needs no closing.
+        unsafe {
+            SetThreadPriority(GetCurrentThread(), 0);
+        }
+    }
+}

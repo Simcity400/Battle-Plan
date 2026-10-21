@@ -28,7 +28,10 @@ use super::{
 };
 
 mod fade;
+mod packets;
 mod retained;
+
+pub use retained::CameraFrame;
 
 /// One frame-animated sprite: a horizontal strip of equal-width frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -668,6 +671,11 @@ pub struct SpritePass {
     /// These submissions outlive a scene frame, so no other pass may reset their uploads.
     uploads: Option<shader_pipeline::gpu::Arena>,
     retained: Option<retained::Upload>,
+    retained_valid: bool,
+    camera_moving: bool,
+    packets: packets::Cache,
+    packet_views: Vec<(u32, View)>,
+    bake_views: Vec<(u32, View)>,
     native: super::native_shader::stream::Stream,
     native_draws: Vec<super::native_shader::stream::Submission>,
     native_format: wgpu::TextureFormat,
@@ -869,6 +877,11 @@ impl SpritePass {
             native: Default::default(),
             uploads: Some(shader_pipeline::gpu::Arena::new(device)),
             retained: None,
+            retained_valid: false,
+            camera_moving: false,
+            packets: Default::default(),
+            packet_views: Vec::new(),
+            bake_views: Vec::new(),
             native_draws: Vec::new(),
             bakes: Vec::new(),
             bake_stream: Default::default(),
@@ -1002,6 +1015,13 @@ impl SpritePass {
             .or_else(|| self.dynamic.get(&texture).map(|page| &page.texture.view))
     }
 
+    /// Decline retention for the next upload while the drawn camera changes. A moving
+    /// frame uses the caller's arena; one stationary frame repopulates the retained uploads.
+    /// This hint can only give up a hit, never admit one without the complete upload key.
+    pub fn set_camera_moving(&mut self, moving: bool) {
+        self.camera_moving = moving;
+    }
+
     /// Turns changed quads into vertices, grouped by texture. Compiled GUI draws keep their
     /// own upload arena until the batch, viewport, scale or resident artwork changes. The
     /// scene's frame `arena` receives the same refusal names, including on retained frames.
@@ -1053,14 +1073,22 @@ impl SpritePass {
                 .filter(|texture| *texture >= DYNAMIC_BASE)
                 .collect::<BTreeSet<_>>(),
         );
+        let moving = std::mem::take(&mut self.camera_moving);
+        if moving {
+            // Keep snapshot storage, but its submissions are no longer the current ones.
+            self.retained_valid = false;
+            self.upload_changed(device, queue, arena, batch, size, ui_scale);
+            return;
+        }
         let uploads = self
             .uploads
             .take()
             .expect("sprite uploads belong to the pass");
-        let same = self
-            .retained
-            .as_ref()
-            .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
+        let same = self.retained_valid
+            && self
+                .retained
+                .as_ref()
+                .is_some_and(|retained| retained.matches(batch, size, ui_scale, self.synced));
         if !same {
             uploads.reset();
             self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
@@ -1068,11 +1096,11 @@ impl SpritePass {
             match self.retained.as_mut() {
                 Some(retained) => retained.update(batch, size, ui_scale, self.synced),
                 None => {
-                    self.retained =
-                        Some(retained::Upload::new(batch, size, ui_scale, self.synced));
+                    self.retained = Some(retained::Upload::new(batch, size, ui_scale, self.synced));
                 }
             }
         }
+        self.retained_valid = true;
         for reason in uploads.refusals() {
             arena.refuse(&reason);
         }
@@ -1088,6 +1116,7 @@ impl SpritePass {
         size: [u32; 2],
         ui_scale: f32,
     ) {
+        self.packets.begin();
         self.runs.clear();
         self.native_draws.clear();
         // The fade pages' draws are this frame's alone.
@@ -1106,6 +1135,7 @@ impl SpritePass {
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             self.bakes.clear();
             self.fade.fit(device, &[]);
+            self.packets.finish();
             return;
         }
         let Scratch {
@@ -1264,6 +1294,7 @@ impl SpritePass {
             );
         }
         self.bakes.retain(|bake| bake.used);
+        self.packets.finish();
         self.count = frame.len() as u32;
         write_vertices(
             device,
@@ -1641,11 +1672,13 @@ impl SpritePass {
                     )
                 })
         });
-        let views = self.native_views(draw);
+        let mut views = std::mem::take(&mut self.packet_views);
+        self.native_views(draw, &mut views);
         let viewport = super::native_shader::draw::gui_viewport(size, scale);
-        match page {
+        let prepared = match page {
             None => prepare_draw(
                 &mut self.native,
+                &mut self.packets,
                 arena,
                 draw,
                 &views,
@@ -1660,6 +1693,7 @@ impl SpritePass {
             ),
             Some(format) => prepare_draw(
                 &mut self.fade_stream,
+                &mut self.packets,
                 arena,
                 draw,
                 &views,
@@ -1672,29 +1706,20 @@ impl SpritePass {
                     premultiply: true,
                 },
             ),
-        }
+        };
+        views.clear();
+        self.packet_views = views;
+        prepared
     }
 
     /// Each slot `draw` binds: its texture, `None` for a null bind, `Err` naming a texture that
     /// is not resident.
-    fn native_views(&self, draw: &super::native_shader::draw::Quad) -> Vec<(u32, View)> {
-        draw.textures
-            .iter()
-            .map(|&(slot, id)| {
-                (
-                    slot,
-                    id.map(|id| {
-                        self.view(id).cloned().ok_or_else(|| {
-                            format!(
-                                "effect {:?}, draw {:?}: texture {id} is not resident",
-                                draw.effect.asset.source.effect, draw.path
-                            )
-                        })
-                    })
-                    .transpose(),
-                )
-            })
-            .collect()
+    fn native_views(
+        &self,
+        draw: &super::native_shader::draw::Quad,
+        storage: &mut Vec<(u32, View)>,
+    ) {
+        packets::views(storage, draw, |id| self.view(id).cloned());
     }
 
     fn prepare_bake(
@@ -1744,9 +1769,11 @@ impl SpritePass {
         self.bake_stream.inherit_bindings(&self.native);
         let mut submissions = Vec::new();
         for draw in &bake.draws {
-            let views = self.native_views(draw);
-            submissions.push(prepare_draw(
+            let mut views = std::mem::take(&mut self.bake_views);
+            self.native_views(draw, &mut views);
+            let submission = prepare_draw(
                 &mut self.bake_stream,
+                &mut self.packets,
                 arena,
                 draw,
                 &views,
@@ -1758,7 +1785,10 @@ impl SpritePass {
                     clip: None,
                     premultiply: false,
                 },
-            )?);
+            );
+            views.clear();
+            self.bake_views = views;
+            submissions.push(submission?);
         }
         let mut encoder = device.create_command_encoder(&Default::default());
         {
@@ -1857,8 +1887,10 @@ struct Output {
 /// A refusal retains available bindings and forgets missing resources, so later inherited
 /// draws cannot accidentally use resources from an earlier successful draw. Missing techniques
 /// retain the program; a declared technique that fails compilation makes it unavailable.
+#[allow(clippy::too_many_arguments)]
 fn prepare_draw(
     native: &mut super::native_shader::stream::Stream,
+    packets: &mut packets::Cache,
     arena: &shader_pipeline::gpu::Arena,
     draw: &super::native_shader::draw::Quad,
     views: &[(u32, View)],
@@ -1872,10 +1904,7 @@ fn prepare_draw(
     }: Output,
 ) -> Result<super::native_shader::stream::Submission, String> {
     use installed_content_core::pdxshader::program::Stage;
-    let label = format!(
-        "{} / {}:{}",
-        draw.path, draw.effect.asset.source.effect, draw.effect.technique
-    );
+    let packets::Metadata { label, selection } = packets.metadata(draw);
     let mut refused = baked
         .as_ref()
         .and_then(|baked| baked.as_ref().err().cloned());
@@ -1884,7 +1913,6 @@ fn prepare_draw(
             .iter()
             .find_map(|(_, view)| view.as_ref().err().cloned());
     }
-    let selection = draw.effect.asset.select(&draw.effect.technique);
     // A declared technique's record carries the effect's samplers, compiled or not.
     let declared = !matches!(selection, Ok(None));
     match selection {
@@ -2266,6 +2294,45 @@ mod tests {
         pass.upload(&device, &queue, &next_frame, &batch, [16, 16], 1.0);
         assert_eq!(next_frame.refusals(), arena.refusals());
         assert_eq!(pass.native_refusals.values().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn moving_sprite_upload_matches_original_across_retention_transitions() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        let mut batch = Batch::default();
+        batch.scaled(
+            &SpriteSheet {
+                name: "synthetic motion".into(),
+                texture: 0,
+                frames: 1,
+                size: [4, 4],
+            },
+            0,
+            [2.0, 3.0],
+            [7.0, 8.0],
+            [0.75, 0.5, 0.25, 1.0],
+        );
+        // A refused native quad stays refused on moving, rebuild and retained frames alike.
+        let mut refused = batch.quads[0].clone();
+        refused.exact = Some(Exact {
+            native: None,
+            corners: [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
+            uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            scissor: None,
+            technique: 0,
+            blend: super::super::native_effects::Blend::Off,
+            samplers: 0,
+            lod_bias: [0.0; 3],
+            second: None,
+            masking: None,
+            offsets: [0.0; 4],
+            inputs: [0.0; 4],
+            second_color: [0.0; 4],
+        });
+        batch.quads.push(refused);
+        let (pixels, refusals, _) = oracle::render_batch(&device, &queue, &batch);
+        assert!(pixels.iter().any(|byte| *byte != 0));
+        assert_eq!(refusals.values().sum::<u64>(), 1);
     }
 
     #[test]

@@ -313,7 +313,7 @@ fn a_volume_records_regions_against_world_z_rows() {
         }]
     );
     volumes.set_snow(&[Some(0), Some(0), Some(0), Some(20_000)]);
-    assert_eq!(volumes.snow, [Some(1.0)]);
+    assert_eq!(&*volumes.snow, &[Some(1.0)]);
 }
 
 fn europe() -> Volumes {
@@ -329,7 +329,7 @@ fn europe() -> Volumes {
         ]),
         heights: vec![height("base", 0.0, 0.0), height("high", 300.0, 200.0)],
         boxes: vec![volume()],
-        snow: vec![None],
+        snow: vec![None].into(),
         ..Volumes::default()
     }
 }
@@ -362,15 +362,15 @@ fn the_first_box_around_the_eye_wins_and_unknown_snow_keeps_the_height_grade() {
     second.day = "high".into();
     second.night = "high".into();
     volumes.boxes.push(second);
-    volumes.snow.push(None);
+    volumes.snow = vec![None, None].into();
     let reference = camera([3010.0, 1568.0], 290.0);
     let unknown = volumes.select(reference, day);
     assert_eq!(unknown.selection.region, Some(0));
     assert_eq!(unknown.values, resolved(0, 0.2));
-    volumes.snow[0] = Some(1.0);
+    Arc::make_mut(&mut volumes.snow)[0] = Some(1.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.8);
     // No snow takes the summer path: the box's own day values (0.4).
-    volumes.snow[0] = Some(0.0);
+    Arc::make_mut(&mut volumes.snow)[0] = Some(0.0);
     assert_eq!(volumes.select(reference, day).values.middle_grey, 0.4);
     // The look-at is inside, but the eye 30 units south is outside.
     let south = volumes.select(camera([3010.0, 1370.0], 290.0), day);
@@ -430,4 +430,74 @@ fn inherit_folds_parents_and_refuses_unknown_or_cyclic_chains() {
     assert!(resolve(&catalogue, "orphan", &mut paths, defines).is_err());
     catalogue.insert("standard".into(), raw(Some("green"), None, None));
     assert!(resolve(&catalogue, "green", &mut paths, defines).is_err());
+}
+
+#[test]
+fn prepared_snow_factors_preserve_record_order_and_unknown_representatives() {
+    let mut volumes = europe();
+    volumes.boxes[0].records = vec![
+        SnowRecord {
+            province: 3,
+            weight: 0.17,
+        },
+        SnowRecord {
+            province: 1,
+            weight: 0.61,
+        },
+        SnowRecord {
+            province: 2,
+            weight: 0.22,
+        },
+    ];
+    let mut second = volume();
+    second.records = vec![SnowRecord {
+        province: 4,
+        weight: 1.0,
+    }];
+    volumes.boxes.push(second);
+    volumes.boxes.push(volume());
+    volumes.defines.snow_total = [0.0, 1.0];
+    for (snow, expected_bits) in [
+        (vec![], [None, None, Some(0)]),
+        (
+            vec![None, Some(10_250), Some(-5), Some(16_777), None],
+            [Some(0x3e05_970a), None, Some(0)],
+        ),
+        (
+            vec![
+                Some(0),
+                Some(10_999),
+                Some(20_000),
+                Some(10_123),
+                Some(100_000),
+            ],
+            [Some(0x3e90_e94f), Some(0x3f80_0000), Some(0)],
+        ),
+        (
+            vec![
+                Some(0),
+                Some(i64::MAX),
+                Some(i64::MIN),
+                Some(19_999),
+                Some(0),
+            ],
+            [Some(0x3f47_acf8), Some(0), Some(0)],
+        ),
+    ] {
+        let before = Arc::clone(&volumes.snow);
+        let prepared = volumes.snow_factors(&snow);
+        assert!(
+            Arc::ptr_eq(&before, &volumes.snow),
+            "preparation cannot mutate the shown factors"
+        );
+        assert_eq!(
+            prepared
+                .iter()
+                .map(|v| v.map(f32::to_bits))
+                .collect::<Vec<_>>(),
+            expected_bits
+        );
+        volumes.set_snow(&snow);
+        assert_eq!(&*prepared, &*volumes.snow);
+    }
 }

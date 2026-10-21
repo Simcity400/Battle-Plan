@@ -66,6 +66,7 @@ pub(super) fn presented(
     metadata: &Metadata,
     notes: &mut BTreeMap<String, usize>,
 ) -> Vec<Hover> {
+    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
     let placed = native_gui::Layout {
         size: layout.size,
         parts: holder.place(place, layout),

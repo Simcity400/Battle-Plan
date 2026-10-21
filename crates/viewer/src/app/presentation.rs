@@ -112,6 +112,10 @@ impl Viewer {
             self.shown = None;
             self.raid_lane = Default::default();
         }
+        self.hours
+            .as_ref()
+            .expect("started above")
+            .set_device(&state.device);
         let playhead = self.playhead.unwrap_or(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -367,13 +371,22 @@ impl Viewer {
         laps.lap("present");
         if profiling() {
             profile_print(format!(
-                "PROFILE built frame {} hour {hour} wall {wall:.3} parts {}",
+                "PROFILE built frame {} hour {hour} wall {wall:.3} parts {} cpu={}",
                 self.profile_frame,
                 built_laps
                     .iter()
-                    .map(|(name, ms)| format!("{name}={ms:.2}"))
+                    .map(|(name, timing)| format!("{name}={:.2}", timing.ms))
                     .collect::<Vec<_>>()
-                    .join(" ")
+                    .join(" "),
+                built_laps
+                    .iter()
+                    .filter(|(name, _)| *name != "decode")
+                    .map(|(name, timing)| match timing.cpu_ms {
+                        Some(ms) => format!("{name}:{ms:.3}"),
+                        None => format!("{name}:unavailable"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",")
             ));
         }
         laps.lap("built_print");
@@ -472,13 +485,30 @@ impl Viewer {
         let uploaded = &mut self.uploaded;
         if uploaded.rails != Some(rails.id) {
             let (mesh, bridges) = &rails.value;
-            scene.set_railways(&state.device, &state.queue, &document.rail_assets, mesh)?;
-            scene.set_bridges(
-                &state.device,
-                &state.queue,
-                &document.bridges,
-                bridges.clone(),
-            )?;
+            {
+                let _rail_span = viewer_foundation::profiling::span("rail_geometry");
+                let geometry = viewer_world::map::railways::PreparedRailGeometry::for_install(
+                    &state.device,
+                    mesh,
+                    rails.geometry.as_ref(),
+                )?;
+                let replaced = scene.set_prepared_railways(
+                    &state.device,
+                    &state.queue,
+                    &document.rail_assets,
+                    geometry,
+                )?;
+                retired.push(replaced);
+            }
+            {
+                let _bridges_span = viewer_foundation::profiling::span("bridges_install");
+                scene.set_bridges(
+                    &state.device,
+                    &state.queue,
+                    &document.bridges,
+                    bridges.clone(),
+                )?;
+            }
             uploaded.rails = Some(rails.id);
         }
         laps.lap("rails_upload");
@@ -574,6 +604,7 @@ impl Viewer {
         }
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
+            let _political_span = viewer_foundation::profiling::span("political_show");
             scene.set_political(&state.device, &state.queue, &political.layers.regions)?;
             uploaded.political = Some(political.id);
         }

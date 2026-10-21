@@ -428,6 +428,7 @@ pub(super) fn record_hit(
     layer: u64,
     report: &mut CounterReport,
 ) {
+    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
     for button in ["bg_btn", "bg_strat_btn"]
         .into_iter()
         .filter_map(|name| root.find(native::Kind::Button, name))

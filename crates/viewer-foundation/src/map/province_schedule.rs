@@ -56,6 +56,22 @@ pub struct Schedule {
 pub type Shared = Arc<Mutex<Schedule>>;
 
 impl Schedule {
+    /// Canonical carried state for cross-crate presentation oracles.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
+        let sorted = |values: &HashSet<u32>| values.iter().copied().collect::<BTreeSet<_>>();
+        (
+            self.phase,
+            sorted(&self.clean),
+            sorted(&self.in_view),
+            sorted(&self.off_screen),
+            self.pending,
+            self.presented.map(f32::to_bits),
+            self.selected.clone(),
+            self.forced.clone(),
+        )
+    }
+
     pub fn set_selected(&mut self, selected: BTreeSet<u32>) {
         let previous = std::mem::replace(&mut self.selected, selected);
         // A click after the overlay advanced, before its unit walk, applies its force to

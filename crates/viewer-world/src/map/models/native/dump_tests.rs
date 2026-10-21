@@ -67,9 +67,7 @@ fn draw(
     )
 }
 
-#[test]
-#[ignore = "requires the pinned shader compiler and a GPU"]
-fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
+fn fixture() -> (TestDir, ModelLibrary, usize) {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let directory = TestDir::new();
@@ -109,6 +107,36 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
         Effect TestSkinnedShadow { VertexShader = V PixelShader = P RasterizerState = Visible }
         Effect Unbound { VertexShader = UnboundV PixelShader = P RasterizerState = Visible }
         Effect UnboundShadow { VertexShader = UnboundV PixelShader = P RasterizerState = Visible }
+        ConstantBuffer(0,0) {
+            float4 firstScene;
+        };
+        ConstantBuffer(1,0) {
+            float4 firstObject;
+        };
+        ConstantBuffer(2,0) {
+            float4 firstSkin;
+        };
+        MainCode ObjectV
+        [[
+            O main(I v) { O o; o.position = float4(v.position,1) + firstObject * 0.001 + firstScene * 0.0001; return o; }
+        ]]
+        MainCode SkinV
+        [[
+            O main(I v) { O o; o.position = float4(v.position,1) + firstObject * 0.001 + firstScene * 0.0001 + firstSkin * 0.0001; return o; }
+        ]]
+        MainCode ObjectP
+        [[
+            float4 main(O v) : SV_TARGET { return abs(firstObject) + firstSkin * 0.01; }
+        ]]
+        BlendState AlphaBlend { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha }
+        Effect Object { VertexShader = ObjectV PixelShader = ObjectP RasterizerState = Visible }
+        Effect ObjectAlpha { VertexShader = ObjectV PixelShader = ObjectP RasterizerState = Visible BlendState = AlphaBlend }
+        Effect ObjectShadow { VertexShader = ObjectV PixelShader = P RasterizerState = Visible }
+        Effect ObjectSkinned { VertexShader = SkinV PixelShader = ObjectP RasterizerState = Visible }
+        Effect ObjectSkinnedAlpha { VertexShader = SkinV PixelShader = ObjectP RasterizerState = Visible BlendState = AlphaBlend }
+        Effect ObjectSkinnedShadow { VertexShader = SkinV PixelShader = P RasterizerState = Visible }
+        Effect Alpha { VertexShader = ObjectV PixelShader = ObjectP RasterizerState = Visible BlendState = AlphaBlend }
+        Effect AlphaShadow { VertexShader = ObjectV PixelShader = P RasterizerState = Visible }
     "#,
     )
     .unwrap();
@@ -226,6 +254,13 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
     two_part.native[0].lods[0].push(unbound);
     library.meshes.push(two_part);
     library.rigs.push(library.rigs[1].clone());
+    (directory, library, blank)
+}
+
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
+    let (_directory, mut library, blank) = fixture();
     let (_serial, device, queue) = tests::device();
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let field = ModelField::build(
@@ -418,4 +453,456 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Other);
     assert!(oversized.material_refusals.is_empty());
+}
+
+// Independent fixture expectations: only meshes 0/1 can submit. The last two
+// descriptors always refuse (except when their opaque queue is not demanded).
+fn expected_draw_instances(frame: usize, kind: Queue) -> Vec<usize> {
+    let mut result = Vec::new();
+    // ObjectShadow/ObjectSkinnedShadow/AlphaShadow read no material textures,
+    // and no authored diffuse path admits a caster texture. Removing the
+    // material view in frame 4 therefore refuses lit draws only: both views
+    // keep three skinned casters plus two parts of each of three rigid actors
+    // (2 * (3 + 2 * 3) == 18). A material refusal still precedes every queue.
+    if frame == 5 || (frame == 4 && kind != Queue::Caster) {
+        return result;
+    }
+    for _ in 0..2 {
+        for instance in 0..6 {
+            if (instance < 3 && (matches!(frame, 2 | 3) || (frame == 1 && instance == 0)))
+                || (frame == 6 && instance == 3)
+            {
+                continue;
+            }
+            let parts = match kind {
+                Queue::Regular if frame == 2 => 0,
+                Queue::Regular => 1,
+                Queue::Alternate if frame == 2 => 2,
+                Queue::Alternate => usize::from(instance >= 3),
+                Queue::Caster => {
+                    if instance < 3 {
+                        1
+                    } else {
+                        2
+                    }
+                }
+            };
+            result.extend(std::iter::repeat_n(instance, parts));
+        }
+    }
+    result
+}
+
+fn expected_fixture_object(instance: usize, payload: Option<[f32; 8]>) -> [u8; 208] {
+    let mut result = [0; 208];
+    let mut world = mesh_pose::IDENTITY;
+    world[3][0] = instance as f32 * 0.1;
+    result[..64].copy_from_slice(bytemuck::bytes_of(&world));
+    if let Some(payload) = payload {
+        result[64..96].copy_from_slice(bytemuck::bytes_of(&payload));
+    }
+    result
+}
+
+fn expected_fixture_refusals(frame: usize, kind: Queue, label: &str) -> Vec<String> {
+    let demanded = |mesh| match kind {
+        Queue::Regular => !matches!(frame, 2 | 5),
+        Queue::Alternate => matches!(frame, 2 | 5) || mesh == 1,
+        Queue::Caster => true,
+    };
+    let mut result = Vec::new();
+    let mut add = |name: &str, count, why: &str| {
+        result.push(format!(
+            "Map shader {label}: {count} refused actor {name}: {why}"
+        ));
+    };
+    match frame {
+        1 => add("unplayed_skin", 1, "synthetic actor world failure"),
+        2 => add("unplayed_skin", 3, "skin: synthetic skin failure"),
+        3 if demanded(0) => add(
+            "unplayed_skin",
+            3,
+            "skin: vertex reads outside 0 initialized bones",
+        ),
+        6 => add(
+            "defined_triangle",
+            1,
+            "native mesh roll requires the caller's original basis",
+        ),
+        _ => {}
+    }
+    for (mesh, name) in [
+        "unplayed_skin",
+        "defined_triangle",
+        "bad_binding",
+        "two_part_binding",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if frame == 5 && mesh != 2 {
+            add(name, 3, "synthetic material refusal");
+        } else if demanded(mesh) {
+            if frame == 4 && kind != Queue::Caster {
+                add(name, 3, "native mesh material is not resident");
+            } else if mesh >= 2 {
+                add(name, 3, "native constant buffer 3 has not been bound");
+            }
+        }
+    }
+    result.sort_by(|a, b| {
+        a.split_once("refused actor ")
+            .unwrap()
+            .1
+            .cmp(b.split_once("refused actor ").unwrap().1)
+    });
+    result
+}
+
+#[test]
+#[ignore = "requires the pinned shader compiler and a GPU"]
+fn successful_native_programs_keep_multiframe_constants_refusals_and_descriptor_commits() {
+    let (_directory, mut library, blank) = fixture();
+    for mesh in [0, 1, 3] {
+        library.meshes[mesh].native[0].lods[0][0].material.shader = Some("Object".into());
+    }
+    let mut alternate = library.meshes[1].native[0].lods[0][0].clone();
+    alternate.material.shader = Some("Alpha".into());
+    library.meshes[1].native[0].lods[0].push(alternate);
+    let (_serial, device, queue) = tests::device();
+    let field = ModelField::build(
+        &library,
+        (0..library.meshes.len())
+            .flat_map(|mesh| {
+                [0_u32, 1, 0].map(move |identity| {
+                    (
+                        mesh,
+                        ModelInstance {
+                            scale: 1.,
+                            animation_identity: identity,
+                            ..Default::default()
+                        },
+                    )
+                })
+            })
+            .collect(),
+        128.,
+    );
+    let mut model = ModelPass::new(&library, "unit models");
+    model.upload(&device, &queue, &library, field).unwrap();
+    let arenas = [
+        shader_pipeline::gpu::Arena::new(&device),
+        shader_pipeline::gpu::Arena::new(&device),
+    ];
+    let mut objects = [ObjectConstants::default(), ObjectConstants::default()];
+    let mut globals = model.textures[blank].as_ref().unwrap().view.clone();
+    let camera = Camera {
+        center: [0., 0.],
+        height: 100.,
+        map: MapSize {
+            width: 100,
+            height: 100,
+        },
+        defines: MapDefines::test(),
+        pose: viewer_foundation::map::camera::Pose::Map,
+    };
+    let mut expected_pixel = None;
+    for frame in 0..8 {
+        model.label = ["unit models", "city sprawl", "supply trains"][frame % 3];
+        if frame == 3 {
+            globals = model.textures[blank]
+                .as_ref()
+                .unwrap()
+                .texture
+                .create_view(&Default::default());
+        }
+        let absent = if frame == 4 {
+            model.textures[blank].take()
+        } else {
+            None
+        };
+        if frame == 5 {
+            model
+                .material_refusals
+                .insert(0, "synthetic material refusal".into());
+        }
+        if frame == 6 {
+            model.field.instances[3].roll = 1.;
+        }
+        let mut scene = [0; 416];
+        for (index, value) in [0_u32, 0x80000000, 0x7fc01234, 0xffc05678]
+            .into_iter()
+            .enumerate()
+        {
+            scene[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        scene[32] = frame as u8;
+        *model.poses.borrow_mut() = (
+            arenas[0].frame(),
+            (0..model.field.instances.len())
+                .map(|index| {
+                    let mut world = mesh_pose::IDENTITY;
+                    world[3][0] = index as f32 * 0.1;
+                    let mut bone = mesh_pose::IDENTITY;
+                    bone[0][0] = f32::from_bits(if frame % 2 == 0 {
+                        0x80000000
+                    } else {
+                        0x7fc01234
+                    });
+                    bone[3][0] = (index + frame) as f32;
+                    Some(Arc::from([mesh_pose::Actor {
+                        world: if frame == 1 && index == 0 {
+                            Err("synthetic actor world failure".into())
+                        } else {
+                            Ok(world)
+                        },
+                        pose: if frame == 2 {
+                            Err("synthetic skin failure".into())
+                        } else {
+                            Ok(mesh_pose::Pose {
+                                bones: if frame == 3 { Vec::new() } else { vec![bone] },
+                                joints: Vec::new(),
+                            })
+                        },
+                    }]))
+                })
+                .collect(),
+        );
+        let frames = [scene.as_slice(), scene.as_slice()];
+        let inputs = Inputs {
+            samples: 1,
+            frames: &frames,
+            grid: &[frame as u8; 16],
+            textures: [&globals; 10],
+        };
+        let model_frame = ModelFrame {
+            camera,
+            offsets: &[0., 0.5],
+            visible: None,
+            alpha: 0.5,
+        };
+        for kind in [
+            Queue::Regular,
+            Queue::Alternate,
+            Queue::Caster,
+            Queue::Regular,
+        ] {
+            for object in &mut objects {
+                object.begin();
+            }
+            let invoke =
+                |cold: bool, arena: &shader_pipeline::gpu::Arena, object: &mut ObjectConstants| {
+                    if cold && let Some(native) = model.native.borrow_mut().as_mut() {
+                        for resident in &mut native.residents {
+                            resident.program = None;
+                        }
+                    }
+                    model.drawn.set(0);
+                    *model.refusals.borrow_mut() = (arena.frame(), BTreeSet::new());
+                    let result = model.prepare_native(arena, model_frame, inputs, kind, object);
+                    (result, model.drawn(), model.refusal_lines(arena.frame()))
+                };
+            let (cold, cold_count, cold_refusals) = invoke(true, &arenas[0], &mut objects[0]);
+            let (warm, warm_count, warm_refusals) = invoke(false, &arenas[1], &mut objects[1]);
+            let (cold, warm) = (cold.unwrap(), warm.unwrap());
+            let expected = expected_draw_instances(frame, kind);
+            let count = match kind {
+                Queue::Regular => [12, 10, 0, 6, 0, 0, 10, 12][frame],
+                Queue::Alternate => [6, 6, 12, 6, 0, 0, 4, 6][frame],
+                Queue::Caster => [18, 16, 12, 12, 18, 0, 14, 18][frame],
+            };
+            assert_eq!(expected.len(), count);
+            assert_eq!(warm.draws.len(), count, "frame {frame}");
+            assert_eq!(
+                warm_count as usize,
+                if kind == Queue::Caster { 0 } else { count }
+            );
+            assert_eq!(
+                warm_refusals,
+                expected_fixture_refusals(frame, kind, model.label)
+            );
+            let payload = if kind == Queue::Caster || frame % 3 == 1 {
+                None
+            } else if frame % 3 == 0 {
+                Some([0., 0., 1., 1., 1., 0., 0., 0.])
+            } else {
+                Some([1., 1., 1., 0.5, 0., 0., 0., 0.])
+            };
+            let pixel_before = expected_pixel;
+            let scratch = if expected.is_empty() {
+                [0; 208]
+            } else {
+                expected_fixture_object(5, payload)
+            };
+            if !expected.is_empty() && payload.is_some() {
+                expected_pixel = Some(scratch);
+            }
+            assert_eq!(objects[1].bytes, scratch, "frame {frame}");
+            assert_eq!(objects[1].pixel, expected_pixel, "frame {frame}");
+            for (draw, instance) in warm.draws.iter().zip(expected) {
+                let skinned = instance < 3;
+                assert_eq!(draw.reference, 0);
+                assert_eq!(
+                    (
+                        draw.vertices,
+                        draw.indices,
+                        draw.first,
+                        draw.count,
+                        draw.base
+                    ),
+                    (((48, skinned), 0), 0, if skinned { 0 } else { 3 }, 3, 0)
+                );
+                let object = expected_fixture_object(instance, payload);
+                let pixel = if payload.is_some() {
+                    Some(object)
+                } else {
+                    pixel_before
+                };
+                let mut bone = mesh_pose::IDENTITY;
+                bone[0][0] = f32::from_bits(if frame % 2 == 0 {
+                    0x80000000
+                } else {
+                    0x7fc01234
+                });
+                bone[3][0] = (instance + frame) as f32;
+                let (proof, offsets) = draw.bindings.preparation_proof();
+                let mut slots: Vec<_> = proof.iter().map(|(slot, _)| *slot).collect();
+                slots.sort();
+                let mut expected_slots = if kind == Queue::Caster {
+                    vec![0, 2]
+                } else {
+                    vec![0, 2, 3, 5]
+                };
+                if skinned {
+                    expected_slots.push(4);
+                }
+                expected_slots.sort();
+                assert_eq!(slots, expected_slots);
+                assert_eq!(offsets.len(), slots.len());
+                for (slot, bytes) in proof {
+                    let expected: &[u8] = match *slot {
+                        0 => &scene,
+                        2 => &object,
+                        3 => pixel.as_ref().unwrap(),
+                        4 => bytemuck::bytes_of(&bone),
+                        5 => inputs.grid,
+                        _ => panic!("unexpected fixture binding {slot}"),
+                    };
+                    assert_eq!(
+                        bytes, expected,
+                        "frame {frame}, instance {instance}, binding {slot}"
+                    );
+                }
+            }
+            assert_eq!(cold_count, warm_count);
+            assert_eq!(cold_refusals, warm_refusals);
+            assert_eq!(arenas[0].refusals(), arenas[1].refusals());
+            assert_eq!(objects[0].bytes, objects[1].bytes);
+            assert_eq!(objects[0].pixel, objects[1].pixel);
+            assert!(
+                objects[0]
+                    .retained
+                    .stream
+                    .same_bindings(&objects[1].retained.stream)
+            );
+            assert_eq!(cold.draws.len(), warm.draws.len());
+            for (a, b) in cold.draws.iter().zip(&warm.draws) {
+                assert_eq!(
+                    (a.reference, a.vertices, a.indices, a.first, a.count, a.base),
+                    (b.reference, b.vertices, b.indices, b.first, b.count, b.base)
+                );
+                assert_eq!(
+                    a.bindings.preparation_proof(),
+                    b.bindings.preparation_proof(),
+                    "frame {frame}"
+                );
+                assert!(a.bindings.same_resources(&b.bindings));
+            }
+            // The first part staged successfully, but its descriptor's later b3 refusal
+            // must leave it cold; this includes queue-filtered and forced-alpha binds.
+            let native = model.native.borrow();
+            let native = native.as_ref().unwrap();
+            if let Some(lods) = native.slots.get(3).and_then(|nodes| nodes.first()) {
+                for id in lods
+                    .iter()
+                    .flatten()
+                    .flat_map(|variants| variants.iter().flatten())
+                {
+                    assert!(native.residents[*id].program.is_none());
+                }
+            }
+        }
+        if let Some(texture) = absent {
+            model.textures[blank] = Some(texture);
+        }
+        model.material_refusals.remove(&0);
+        model.field.instances[3].roll = 0.;
+        for arena in &arenas {
+            arena.flush(&queue);
+            arena.reset();
+        }
+    }
+
+    // Demand a previously unused mesh only after warm frames. Its shared selection error
+    // must escape after the identical earlier staging/descriptor prefix, without applying
+    // this invocation's Pending state or drawn count.
+    let mut missing = library.meshes[1].clone();
+    missing.name = "missing_shared".into();
+    missing.native[0].lods[0][0].material.shader = Some("Missing".into());
+    library.meshes.push(missing);
+    library.rigs.push(library.rigs[1].clone());
+    let field = ModelField::build(
+        &library,
+        [1, library.meshes.len() - 1]
+            .map(|mesh| {
+                (
+                    mesh,
+                    ModelInstance {
+                        scale: 1.,
+                        ..Default::default()
+                    },
+                )
+            })
+            .to_vec(),
+        128.,
+    );
+    model.upload(&device, &queue, &library, field).unwrap();
+    model.label = "unit models";
+    let frames = [&[0; 416][..]];
+    let inputs = Inputs {
+        samples: 1,
+        frames: &frames,
+        grid: &[0; 16],
+        textures: [&globals; 10],
+    };
+    let frame = ModelFrame {
+        camera,
+        offsets: &[0.],
+        visible: None,
+        alpha: 1.,
+    };
+    let mut errors = Vec::new();
+    for (index, object) in objects.iter_mut().enumerate() {
+        let arena = &arenas[index];
+        model.drawn.set(0);
+        let error = model
+            .prepare_native(arena, frame, inputs, Queue::Regular, object)
+            .err()
+            .unwrap();
+        errors.push(error.to_string());
+        assert_eq!(model.drawn(), 0);
+    }
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(errors[0], "native PdxMeshColor fallback is unavailable");
+    let scratch = expected_fixture_object(0, Some([0., 0., 1., 1., 1., 0., 0., 0.]));
+    assert_eq!(objects[1].bytes, scratch);
+    assert_eq!(objects[1].pixel, Some(scratch));
+    assert_eq!(objects[0].bytes, objects[1].bytes);
+    assert_eq!(objects[0].pixel, objects[1].pixel);
+    assert!(
+        objects[0]
+            .retained
+            .stream
+            .same_bindings(&objects[1].retained.stream)
+    );
 }

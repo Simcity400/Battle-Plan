@@ -1,0 +1,620 @@
+use super::super::{ModelLibrary, ModelMesh, ModelPass, PaletteJoint, parallel_animation_tests};
+use super::*;
+use std::collections::BTreeSet;
+
+fn append_rig(library: &mut ModelLibrary, slot: usize) {
+    let mut rig =
+        crate::map::entity_animation::pose_tests::rig(0.6 + slot as f32 * 0.1, true, true);
+    if slot == 2 {
+        // Default-state admission must still refuse a reachable random variant.
+        for node in &mut rig.nodes {
+            node.clips.push(node.clips[0].clone());
+        }
+    }
+    if slot == 3 {
+        rig.nodes[0].default = "unregistered_default".into();
+    }
+    if slot == 4 {
+        // One non-native child needs real palettes: the ENTIRE pass must fall back.
+        rig.nodes[1].native = None;
+    }
+    if slot == 5 {
+        for node in &mut rig.nodes {
+            node.clips.clear();
+        }
+    }
+    let start = library.palette.len();
+    rig.start += start;
+    rig.end += start;
+    for node in &mut rig.nodes {
+        node.rigid += start as u32;
+        node.skin_base = node.skin_base.map(|base| base + start as u32);
+    }
+    library.palette.resize(rig.end, PaletteJoint::IDENTITY);
+    library.rigs.push(Arc::new(rig));
+    library.meshes.push(ModelMesh {
+        name: format!("synthetic_{slot}"),
+        path: String::new(),
+        scale: 1.,
+        lod_distances: Vec::new(),
+        native: Vec::new(),
+        radius: 1.,
+        height: 1.,
+        visual: slot == 0,
+        own_radius: 1.,
+        bound: 1.,
+        convoy_radius: None,
+        attachments: 1,
+    });
+}
+
+// Check the observable boundary from the fixture's source rows, without evaluating
+// any second player manager or retaining an old animation-dispatch implementation.
+fn assert_frame(
+    pass: &ModelPass,
+    before: &ModelField,
+    appeared: &BTreeMap<Key, f32>,
+    time: f32,
+    shown: &dyn Fn(&ModelGroup) -> bool,
+    frame: u32,
+) {
+    let early = time <= 0.0 && before.clocks.values().all(|clock| clock.phase.is_none());
+    let mut instances = before.instances.clone();
+    for instance in &mut instances {
+        instance.palette_offset = 0;
+    }
+    if early {
+        assert!(pass.players.is_empty() && pass.events.is_empty());
+        assert_eq!(pass.field.default_states, before.default_states);
+        assert_eq!(
+            pass.default_appeared
+                .iter()
+                .map(|(key, start)| (*key, start.to_bits()))
+                .collect::<Vec<_>>(),
+            appeared
+                .iter()
+                .map(|(key, start)| (*key, start.to_bits()))
+                .collect::<Vec<_>>()
+        );
+    } else {
+        let mut defaults = BTreeMap::new();
+        let mut starts = BTreeMap::new();
+        let mut clocks = before.clocks.clone();
+        let mut refused = 0;
+        for group in &before.groups {
+            if pass.rigs.get(group.mesh).is_none() {
+                continue;
+            }
+            for instance in &before.instances[group.range.start as usize..group.range.end as usize]
+            {
+                if instance.animation != entity_animation::DEFAULT_STATE {
+                    continue;
+                }
+                if group.mesh == 2 {
+                    refused += 1;
+                    continue;
+                }
+                // Mesh 3 has an undeclared default; mesh 5 has no clips.
+                if matches!(group.mesh, 3 | 5) {
+                    continue;
+                }
+                let key = key(group.mesh, *instance);
+                let start = appeared
+                    .get(&key)
+                    .copied()
+                    .map_or(time, |start| start.min(time));
+                defaults.insert(key, entity_animation::named_request("idle"));
+                starts.insert(key, start);
+                clocks.insert(
+                    key,
+                    entity_animation::Clock {
+                        time: time - start,
+                        phase: None,
+                        requests: Arc::new(vec![entity_animation::Request {
+                            time: 0.0,
+                            phase_time: None,
+                            state: "idle".into(),
+                        }]),
+                    },
+                );
+            }
+        }
+        assert_eq!(
+            pass.field.default_states, defaults,
+            "frame {frame}: defaults"
+        );
+        assert_eq!(
+            pass.default_appeared
+                .iter()
+                .map(|(key, start)| (*key, start.to_bits()))
+                .collect::<Vec<_>>(),
+            starts
+                .iter()
+                .map(|(key, start)| (*key, start.to_bits()))
+                .collect::<Vec<_>>()
+        );
+        let reason = "entity synthetic_2 reaches state idle of 2 variants, which the game draws from a per-entity random counter no recording holds; it stays still and silent";
+        let expected_refusals = if refused == 0 {
+            BTreeMap::new()
+        } else {
+            BTreeMap::from([(reason.to_owned(), refused)])
+        };
+        assert_eq!(
+            pass.default_state_refusals, expected_refusals,
+            "frame {frame}: exact default refusal"
+        );
+        assert_eq!(
+            pass.field.clocks.keys().collect::<Vec<_>>(),
+            clocks.keys().collect::<Vec<_>>()
+        );
+        for (key, clock) in &clocks {
+            let actual = &pass.field.clocks[key];
+            assert_eq!(actual.time.to_bits(), clock.time.to_bits());
+            let phase = |value: Option<entity_animation::Phase>| {
+                value.map(|value| {
+                    (
+                        value.time.to_bits(),
+                        value.root_advances_hidden,
+                        bytemuck::bytes_of(&value.instance).to_vec(),
+                    )
+                })
+            };
+            assert_eq!(phase(actual.phase), phase(clock.phase));
+            let requests = |value: &entity_animation::Clock| {
+                value
+                    .requests
+                    .iter()
+                    .map(|request| {
+                        (
+                            request.time.to_bits(),
+                            request.phase_time.map(f32::to_bits),
+                            request.state.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(requests(actual), requests(clock));
+        }
+        let phase_only = time <= 0.0 && clocks.values().any(|clock| clock.phase.is_some());
+        let mut alive = BTreeSet::new();
+        let mut sources = Vec::new();
+        let mut source_calls = Vec::new();
+        let mut cursor = pass.default_palette.len();
+        let mut supported = true;
+        for group in &before.groups {
+            let Some(rig) = pass.rigs.get(group.mesh) else {
+                continue;
+            };
+            if rig.nodes.iter().all(|node| node.clips.is_empty()) {
+                continue;
+            }
+            supported &= rig.nodes.iter().all(|node| node.native.is_some());
+            for index in group.range.clone() {
+                let mut instance = before.instances[index as usize];
+                let key = key(group.mesh, instance);
+                let class = match instance.animation {
+                    entity_animation::STOPPED => 0,
+                    entity_animation::DEFAULT_STATE => 1,
+                    _ => 2,
+                };
+                sources.push((index as usize, key, class));
+                let active = shown(group)
+                    && class != 0
+                    && (!phase_only || clocks.get(&key).is_some_and(|clock| clock.phase.is_some()))
+                    && (class != 1 || defaults.contains_key(&key));
+                source_calls.push(if active {
+                    instance.palette_offset = (cursor - rig.start) as u32;
+                    instances[index as usize].palette_offset = instance.palette_offset;
+                    cursor += rig.end - rig.start;
+                    instance.animation = defaults.get(&key).copied().unwrap_or(instance.animation);
+                    alive.insert(key);
+                    Some(instance)
+                } else {
+                    None
+                });
+            }
+        }
+        let mut players = alive.clone();
+        players.extend(clocks.iter().filter_map(|(key, clock)| {
+            (clock.phase.is_some() && pass.rigs.get(key.0).is_some()).then_some(*key)
+        }));
+        assert_eq!(
+            pass.players.keys().copied().collect::<BTreeSet<_>>(),
+            players,
+            "frame {frame}: live/hidden/retired keys"
+        );
+        let layout = pass.animation_dispatch.layout.as_ref().unwrap();
+        assert!(layout.matches(&pass.rigs, &pass.field));
+        assert_eq!(
+            layout.supported, supported,
+            "frame {frame}: whole-pass palette eligibility"
+        );
+        assert_eq!(
+            layout
+                .sources
+                .iter()
+                .map(|source| (source.index, source.key, source.kind))
+                .collect::<Vec<_>>(),
+            sources
+        );
+        if supported {
+            let expected_tasks: BTreeSet<_> = sources
+                .iter()
+                .filter_map(|(_, key, class)| (*class != 0).then_some(*key))
+                .collect();
+            assert_eq!(
+                layout
+                    .tasks
+                    .iter()
+                    .map(|task| task.key)
+                    .collect::<BTreeSet<_>>(),
+                expected_tasks
+            );
+            let mut ordinals = BTreeMap::<Key, usize>::new();
+            for ((source, (_, key, class)), expected) in
+                layout.sources.iter().zip(&sources).zip(source_calls)
+            {
+                if *class == 0 {
+                    assert!(source.call.is_none());
+                    continue;
+                }
+                let task_at = layout
+                    .tasks
+                    .binary_search_by_key(key, |task| task.key)
+                    .unwrap();
+                let ordinal = ordinals.entry(*key).or_default();
+                assert_eq!(source.call, Some((task_at, *ordinal)));
+                let task = &layout.tasks[task_at];
+                let call = &task.calls[*ordinal];
+                *ordinal += 1;
+                assert!(Arc::ptr_eq(&task.rig, &pass.rigs[key.0]));
+                assert_eq!(call.active, expected.is_some());
+                assert!(call.events.is_empty(), "source packets commit and drain");
+                if let Some(expected) = expected {
+                    assert_eq!(
+                        bytemuck::bytes_of(&call.instance),
+                        bytemuck::bytes_of(&expected),
+                        "frame {frame}: call instance bytes"
+                    );
+                    assert_eq!(call.clocked, clocks.contains_key(key));
+                }
+                assert_eq!(task.alive, alive.contains(key));
+                assert_eq!(
+                    task.ordinary,
+                    alive.contains(key) && !clocks.contains_key(key)
+                );
+            }
+            for task in &layout.tasks {
+                assert_eq!(task.calls.len(), ordinals[&task.key]);
+            }
+        } else {
+            assert!(
+                layout.tasks.is_empty(),
+                "mixed palettes reject retained dispatch before binding calls"
+            );
+        }
+        for event in &pass.events {
+            assert_eq!(event.key.pass, pass.event_namespace);
+            assert!(alive.contains(&event.key.actor()));
+            assert_eq!(event.definition.particle.as_deref(), Some("smoke"));
+            assert!(event.age.is_finite());
+            assert!(
+                event
+                    .transform
+                    .basis
+                    .into_iter()
+                    .flatten()
+                    .chain(event.transform.translation)
+                    .all(f32::is_finite)
+            );
+        }
+    }
+    assert_eq!(
+        bytemuck::cast_slice::<_, u8>(&pass.field.instances),
+        bytemuck::cast_slice::<_, u8>(&instances),
+        "frame {frame}: complete instance bytes"
+    );
+    assert_eq!(pass.field.groups.len(), before.groups.len());
+    for (actual, expected) in pass.field.groups.iter().zip(&before.groups) {
+        assert_eq!(
+            (actual.mesh, &actual.range),
+            (expected.mesh, &expected.range)
+        );
+        assert_eq!(
+            actual.bounds.map(f32::to_bits),
+            expected.bounds.map(f32::to_bits)
+        );
+        assert_eq!(
+            actual.centroid.map(f32::to_bits),
+            expected.centroid.map(f32::to_bits)
+        );
+    }
+}
+
+fn actor_bits(player: &entity_animation::Player, rig: &Rig) -> String {
+    let matrix = |matrix: crate::map::mesh_pose::Matrix| {
+        matrix.map(|axis| {
+            axis.map(|value| {
+                assert!(
+                    value.is_finite(),
+                    "fixture scratch is finite, not a NaN-payload oracle"
+                );
+                value.to_bits()
+            })
+        })
+    };
+    let actors = player.native_actors(rig);
+    let bits: Vec<_> = actors
+        .iter()
+        .map(|actor| {
+            (
+                actor.world.as_ref().map(|world| matrix(*world)),
+                actor.pose.as_ref().map(|pose| {
+                    (
+                        pose.joints.iter().copied().map(matrix).collect::<Vec<_>>(),
+                        pose.bones.iter().copied().map(matrix).collect::<Vec<_>>(),
+                    )
+                }),
+            )
+        })
+        .collect();
+    format!("{bits:?}")
+}
+
+#[test]
+fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("synthetic animation tables");
+    let mut library = ModelLibrary::default();
+    for slot in 0..6 {
+        append_rig(&mut library, slot);
+    }
+    library.alternatives.insert(0, 1);
+    let mut pass = ModelPass::new(&library, "unit models");
+    let workers = parallel_animation_tests::workers();
+    let mut random = 0xf0a7_13c5u32;
+    let mut next = || {
+        random ^= random << 13;
+        random ^= random >> 17;
+        random ^= random << 5;
+        random
+    };
+    let mut counts = [0usize; 8];
+    let mut events = 0;
+    let mut refusals = 0;
+    let mut warm = 0;
+    for frame in 0..900u32 {
+        let roll = next();
+        if frame == 450 {
+            pass.label = "map buildings";
+        }
+        if frame == 180 {
+            // A formerly missing rig joins a live field; palette length also changes.
+            append_rig(&mut library, 6);
+            pass.sync(&library);
+            counts[0] += 1;
+        }
+        if frame == 347 {
+            let mut rig = (*library.rigs[1]).clone();
+            rig.nodes[0].clips[0].state.speed = 1.1;
+            library.rigs[1] = Arc::new(rig);
+            pass.rigs[1] = Arc::clone(&library.rigs[1]);
+            counts[1] += 1;
+        }
+        if frame == 380 || frame == 425 {
+            pass.rigs = if frame == 380 {
+                library.rigs[..2].to_vec()
+            } else {
+                library.rigs.clone()
+            };
+            counts[1] += 1;
+        }
+        if frame.is_multiple_of(137) {
+            pass.reset_animation();
+            counts[2] += 1;
+        }
+        if frame.is_multiple_of(37) {
+            let mut placed = Vec::new();
+            let mixed = frame / 37 % 4 == 1;
+            for mesh in [2, 6, 0, 3, 1, 5, 4] {
+                if mesh == 4 && !mixed {
+                    continue;
+                }
+                for ordinal in 0..12u32 {
+                    placed.push((
+                        mesh,
+                        ModelInstance {
+                            position: [ordinal as f32 * 0.6 - 2., 0., (mesh % 3) as f32 * 3.],
+                            rotation: ordinal as f32 * 0.11,
+                            scale: 0.7,
+                            animation: entity_animation::IDLE,
+                            animation_seed: ordinal % 7,
+                            animation_epoch: frame / 111,
+                            animation_identity: if ordinal % 4 == 0 { 17 } else { 0 },
+                            ..Default::default()
+                        },
+                    ));
+                }
+            }
+            pass.update_placed(placed, 4.);
+            counts[3] += 1;
+        }
+        let mut field = pass.field.clone();
+        for (at, instance) in field.instances.iter_mut().enumerate() {
+            instance.position[1] = ((roll.wrapping_add(at as u32) % 17) as f32 - 8.) * 0.03;
+            instance.rotation += 0.017;
+            instance.scale = if frame % 2 == 0 { 0.7 } else { 1.1 };
+            instance.pitch = (at % 3) as f32 * -0.01;
+            instance.native_flags = if at % 5 == 0 { 8 } else { 0 };
+            instance.animation_phase = (at % 11) as f32 / 11.;
+            instance.animation = match (frame / 9 + at as u32) % 9 {
+                0 => entity_animation::STOPPED,
+                1..=2 => entity_animation::DEFAULT_STATE,
+                3..=4 => entity_animation::IDLE,
+                5..=6 => entity_animation::MOVE,
+                _ => entity_animation::ATTACK,
+            };
+            if frame % 53 == 17 && at % 13 == 0 {
+                instance.animation_identity = roll % 5 + 1;
+                counts[4] += 1;
+            }
+        }
+        for (at, group) in field.groups.iter_mut().enumerate() {
+            // Bounds change WITHOUT any structural layout change.
+            group.bounds = if (frame / 7 + at as u32).is_multiple_of(4) {
+                [20., 20., 21., 21.]
+            } else {
+                [-3., -3., 3., 3.]
+            };
+            group.centroid[0] = (roll % 17) as f32;
+        }
+        if frame % 37 == 13 && field.groups.len() > 2 {
+            let duplicate = field.groups[0].clone();
+            field.groups.insert(2, duplicate); // Overlapping ranges, not just duplicate keys.
+            let shift = roll as usize % field.groups.len();
+            field.groups.rotate_left(shift);
+            counts[4] += 1;
+        }
+        if frame.is_multiple_of(43) {
+            pass.replace_field(&library, &mut field);
+            counts[3] += 1;
+        } else {
+            pass.field = field;
+        }
+        if frame == 173 || frame == 521 {
+            pass.falling_back
+                .get_mut()
+                .insert(0, "synthetic redirect".into());
+            counts[5] += 1;
+        }
+        if frame == 311 {
+            pass.redirects.clear();
+        }
+        let time = match frame % 97 {
+            0 => 0.,
+            1 => -0.0,
+            2 => -0.25,
+            _ => (frame % 211) as f32 * 0.071,
+        };
+        let active = (frame % 200) as f32 * 0.031;
+        let phase_time = (frame % 227) as f32 * 0.097;
+        let mut clocks = BTreeMap::new();
+        for mesh in [2, 0, 1, 6, 99] {
+            for seed in [0, 3, 6, 77] {
+                let phase = (!frame.is_multiple_of(4) && (seed == 77 || seed == 3)).then_some(
+                    entity_animation::Phase {
+                        time: phase_time,
+                        root_advances_hidden: frame / 17 % 2 == 0,
+                        instance: ModelInstance {
+                            scale: 0.7,
+                            animation_seed: seed,
+                            animation_epoch: frame / 111,
+                            animation: entity_animation::IDLE,
+                            ..Default::default()
+                        },
+                    },
+                );
+                clocks.insert(
+                    (mesh, seed, frame / 111),
+                    entity_animation::Clock {
+                        time: active,
+                        phase,
+                        requests: Arc::new(vec![
+                            entity_animation::Request {
+                                time: 0.,
+                                phase_time: phase.map(|_| 0.),
+                                state: "idle".into(),
+                            },
+                            entity_animation::Request {
+                                time: 0.19,
+                                phase_time: phase.map(|_| 0.43),
+                                state: "move".into(),
+                            },
+                            entity_animation::Request {
+                                time: 0.9,
+                                phase_time: phase.map(|_| 1.3),
+                                state: if frame / 19 % 2 == 0 {
+                                    "attack"
+                                } else {
+                                    "absent_synthetic_state"
+                                }
+                                .into(),
+                            },
+                        ]),
+                    },
+                );
+            }
+        }
+        pass.set_clocks(clocks);
+        pass.set_hidden(BTreeSet::from([(0, 77, frame / 111), (1, 3, frame / 111)]));
+        let rectangle = if frame / 11 % 3 == 0 {
+            None
+        } else {
+            Some([-5., -5., 5., 5.])
+        };
+        let offsets: &[f32] = if frame / 13 % 3 == 0 {
+            &[]
+        } else {
+            &[0., -32., 32.]
+        };
+        // Resolve the fixture's explicit redirect before recording the expected
+        // input boundary; animation itself is still the sole production entry.
+        pass.fall_back();
+        let input = pass.field.clone();
+        let appeared = pass.default_appeared.clone();
+        let was_warm = pass
+            .animation_dispatch
+            .layout
+            .as_ref()
+            .is_some_and(|layout| layout.matches(&pass.rigs, &pass.field));
+        pass.animate_with_workers(time, rectangle, offsets, &workers);
+        let shown = |group: &ModelGroup| {
+            offsets.iter().any(|offset| {
+                rectangle.is_none_or(|[x0, z0, x1, z1]| {
+                    let [gx0, gz0, gx1, gz1] = group.bounds;
+                    gx0 + offset <= x1 && gx1 + offset >= x0 && gz0 <= z1 && gz1 >= z0
+                })
+            })
+        };
+        assert_frame(&pass, &input, &appeared, time, &shown, frame);
+        if let Some(layout) = &pass.animation_dispatch.layout {
+            counts[if layout.supported { 6 } else { 7 }] += 1;
+            if was_warm && layout.supported {
+                warm += 1;
+            }
+        }
+        if frame >= 173 {
+            assert_eq!(
+                pass.from_recording,
+                BTreeMap::from([("synthetic_0".into(), "synthetic redirect".into())])
+            );
+        }
+        events += pass.events.len();
+        refusals += pass.default_state_refusals.values().sum::<usize>();
+        for (key, player) in &pass.players {
+            let rig = &pass.rigs[key.0];
+            let position = || {
+                player
+                    .root_play_position(rig)
+                    .map(|(time, length)| (time.to_bits(), length.to_bits()))
+            };
+            let before = position();
+            let first = actor_bits(player, rig);
+            assert_eq!(
+                first,
+                actor_bits(player, rig),
+                "frame {frame} key={key:?}: read-only pose cache"
+            );
+            assert_eq!(before, position(), "sampling cannot advance the player");
+        }
+    }
+    assert_eq!(&counts[..4], &[1, 3, 7, 46]);
+    assert!(
+        counts.into_iter().all(|count| count > 0),
+        "coverage {counts:?}"
+    );
+    assert!(
+        events > 0 && refusals > 0 && warm > 50,
+        "events={events} refusals={refusals} warm={warm}"
+    );
+}

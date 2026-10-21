@@ -649,6 +649,7 @@ pub(super) fn present(
     combats: &mut Batch,
     report: &mut CounterReport,
 ) -> io::Result<()> {
+    let update_profile = viewer_foundation::profiling::span("dc_naval_update");
     let native = inputs.windows;
     let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
     let flags = gui_windows::window_flags(inputs, plan.countries.as_deref());
@@ -861,6 +862,8 @@ pub(super) fn present(
             );
         }
     }
+    drop(update_profile);
+    let tick_profile = viewer_foundation::profiling::span("dc_naval_tick");
     tick(
         windows,
         native,
@@ -869,6 +872,8 @@ pub(super) fn present(
         frame,
         report,
     );
+    drop(tick_profile);
+    let markers_profile = viewer_foundation::profiling::span("dc_naval_markers");
     if let Some(missions) = &missions {
         naval_missions::draw(
             inputs,
@@ -893,6 +898,8 @@ pub(super) fn present(
     if let Some(result) = native.naval_result() {
         draw_results(inputs, plan, windows, result, &resources, combats, report)?;
     }
+    drop(markers_profile);
+    let ports_profile = viewer_foundation::profiling::span("dc_ports");
     if let Some(base) = native.naval_base() {
         draw_ports(
             inputs,
@@ -907,6 +914,8 @@ pub(super) fn present(
             report,
         )?;
     }
+    drop(ports_profile);
+    let _at_sea_profile = viewer_foundation::profiling::span("dc_naval_at_sea");
     // At unit-stack priority, each plate retains its column's icon order.
     // Transparent overlap still follows the presented paint order.
     for (flotilla, plate) in placed_at_sea {

@@ -226,8 +226,10 @@ pub struct Scene {
     /// the calling thread alone until the window lends them ([`Scene::use_workers`]).
     workers: viewer_foundation::parallel::Workers,
     pub pass_diagnostics: passes::Diagnostics,
-    /// CPU laps inside the animate step, under `BATTLE_PLAN_VIEWER_PROFILE`.
+    /// CPU laps inside animation and overlay preparation, under `BATTLE_PLAN_VIEWER_PROFILE`.
     detail_laps: CpuLaps,
+    /// Coarse caller-side pass/finish/submit laps, independent of GPU queries.
+    pass_cpu_laps: CpuLaps,
     pub targets: Option<Targets>,
     grid: Grid,
     /// The terrain the frame draws: the uniform grid, or a free eye's blocks.
@@ -251,6 +253,7 @@ pub struct Scene {
     order_label_pass: [NamePass; 3],
     order_labels: [Placements; 3],
     sprite_pass: SpritePass,
+    sprite_camera: Option<viewer_foundation::map::sprites::CameraFrame>,
     empty_batch: Batch,
     empty_placements: Placements,
     // rivers
@@ -728,6 +731,7 @@ impl Scene {
             workers: Default::default(),
             pass_diagnostics: Default::default(),
             detail_laps: Default::default(),
+            pass_cpu_laps: Default::default(),
             targets: None,
             grid: Grid {
                 origin: [0.0, 0.0],
@@ -747,6 +751,7 @@ impl Scene {
             order_label_pass,
             order_labels: std::array::from_fn(|_| Placements::default()),
             sprite_pass,
+            sprite_camera: None,
             empty_batch: Batch::default(),
             empty_placements: Placements::default(),
             // rivers
@@ -1133,9 +1138,12 @@ impl Scene {
             self.unit_models = Some(ModelPass::new(&assets.library(), "unit models"));
         }
         self.unit_gates = Some(assets.gates);
-        self.unit_history
-            .set_prepared(field.targets, assets.bounds.clone(), steady);
-        self.unit_history.set_naval(field.naval);
+        self.unit_history.set_prepared_with_naval(
+            field.targets,
+            assets.bounds.clone(),
+            steady,
+            field.naval,
+        );
         self.unit_history.set_raids(field.raids);
         if let Some(pass) = &mut self.unit_models {
             pass.upload(device, queue, &assets.library(), field.models)?;
@@ -1416,7 +1424,7 @@ impl Scene {
     }
 
     // close zoom
-    /// Builds the railway pass once, then uploads the recorded hour's graph.
+    /// Prepares a bank for a direct render, then uses the same adoption as a built hour.
     pub fn set_railways(
         &mut self,
         device: &wgpu::Device,
@@ -1424,6 +1432,20 @@ impl Scene {
         assets: &RailAssets,
         mesh: &RailMesh,
     ) -> io::Result<()> {
+        let geometry = crate::map::railways::PreparedRailGeometry::for_install(device, mesh, None)?;
+        self.set_prepared_railways(device, queue, assets, geometry)?;
+        Ok(())
+    }
+
+    /// Adopts worker-uploaded railway strips while retaining this pass's
+    /// textures, shaders and all scene presentation clocks.
+    pub fn set_prepared_railways(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        assets: &RailAssets,
+        geometry: Arc<crate::map::railways::PreparedRailGeometry>,
+    ) -> io::Result<Arc<crate::map::railways::PreparedRailGeometry>> {
         if self.railways.is_none() {
             self.railways = Some(RailPass::new(
                 device,
@@ -1433,10 +1455,11 @@ impl Scene {
                 assets,
             )?);
         }
-        if let Some(pass) = &mut self.railways {
-            pass.upload(device, mesh)?;
-        }
-        Ok(())
+        Ok(self
+            .railways
+            .as_mut()
+            .expect("created above")
+            .adopt_geometry(geometry))
     }
 
     // close zoom
@@ -1464,7 +1487,7 @@ impl Scene {
         for hour in passed.unwrap_or_default() {
             self.building_history.advance(hour);
             if let Some(presentation) = &mut self.city_presentation {
-                presentation.advance(&hour.city_damage);
+                presentation.advance_shared(&hour.city_damage);
             }
         }
         self.set_city_damage(&prepared, passed.is_none());
@@ -1499,7 +1522,7 @@ impl Scene {
             if reset {
                 presentation.reset();
             }
-            presentation.set_damage(&prepared.city_damage);
+            presentation.set_shared_damage(&prepared.city_damage);
         }
         if reset && let Some(pass) = &mut self.sprawl {
             pass.reset_animation();
@@ -1524,19 +1547,16 @@ impl Scene {
         Ok(())
     }
 
-    /// Replaces `SnowMudData` for the current hour.
-    ///
-    /// RGBA is (previous mud, current snow, previous snow, current mud), from
-    /// previous/current planes and fade belong to the scene's
-    /// graphics clock. Winter grading still reads this hour's raw province snow.
+    /// Adopts a builder-owned snow grid and its post factors. The graphics
+    /// clock still decides when pending bytes replace the currently shown planes.
     pub fn set_snow_mud(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        snow: &crate::map::weather::SnowMud,
+        snow: &Arc<crate::map::weather::SnowMud>,
         continuity: Continuity,
     ) -> io::Result<()> {
-        if self.snow_presentation.set(snow, continuity) {
+        if self.snow_presentation.set_shared(snow, continuity) {
             replace(
                 device,
                 queue,
@@ -1547,9 +1567,11 @@ impl Scene {
                 &self.snow_presentation.texels,
             )?;
         }
-        // colour: the same hour's raw province snow decides which post-effect
-        // volumes grade as winter (`crate::map::post::Volumes::set_snow`).
-        self.post.set_snow(&snow.province_snow);
+        if let Some(factors) = &snow.post_factors {
+            self.post.set_snow_factors(factors);
+        } else {
+            self.post.set_snow(&snow.province_snow);
+        }
         Ok(())
     }
 
@@ -1764,9 +1786,11 @@ impl Scene {
         zone: &crate::map::demilitarized::ZonePlan,
     ) -> io::Result<()> {
         if let Some(pass) = &mut self.borders {
+            let _border_span = viewer_foundation::profiling::span("ordinary_border_install");
             pass.set_plan(device, classes)?;
         }
         if let Some(pass) = &mut self.demilitarized {
+            let _zone_span = viewer_foundation::profiling::span("dmz_install");
             pass.set_plan(device, zone)?;
             pass.clear_hover();
         }
@@ -2131,6 +2155,7 @@ impl Scene {
             1.0 - overlay.layer_alpha,
             &offsets,
         );
+        self.detail_laps.lap("names_upload");
         // Plan labels have no camera cutoff: each label's own alpha is its
         // arrow colour's, so the layer factor is 1.
         if let Some(orders) = &mut self.orders {
@@ -2158,6 +2183,7 @@ impl Scene {
                 pass.select_arrows(&orders.labels(mode));
             }
         }
+        self.detail_laps.lap("orders_upload");
         self.sprite_pass.sync(device, queue);
         if let Some(radar) = &mut self.radar {
             radar.advance();
@@ -2168,6 +2194,10 @@ impl Scene {
         if let Some(transfers) = &mut self.air_transfers {
             transfers.advance();
         }
+        self.detail_laps.lap("sprite_sync");
+        let sprite_camera = viewer_foundation::map::sprites::CameraFrame::new(camera, size);
+        self.sprite_pass
+            .set_camera_moving(self.sprite_camera.replace(sprite_camera) != Some(sprite_camera));
         self.sprite_pass.upload(
             device,
             queue,
@@ -2176,13 +2206,28 @@ impl Scene {
             size,
             overlay.ui_scale,
         );
+        self.detail_laps.lap("sprite_upload");
         let prepared = clock.map(|clock| clock.elapsed());
+        self.pass_cpu_laps.start(clock.map(|_| Instant::now()));
+        // Both callbacks execute only on the caller. The shared recorder also lets
+        // CPU-only boundaries leave the existing GPU query stream unchanged.
+        let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
+        let cpu_mark = |label: &'static str| {
+            if clock.is_some() {
+                pass_cpu_laps.borrow_mut().lap_sum(label);
+            }
+        };
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
         let mut command_buffers = Vec::new();
         // Taken for the encoder's lifetime and put back on every way out.
         let mut timer = self.pass_timer.take();
         let mut mark = |encoder: &mut wgpu::CommandEncoder, label: &'static str| {
+            cpu_mark(if label == "model_layers" {
+                "model_recycle"
+            } else {
+                label
+            });
             if let Some(timer) = &mut timer {
                 timer.mark(encoder, label);
             }
@@ -2952,6 +2997,7 @@ impl Scene {
                 )?;
             }
         }
+        cpu_mark("radar_ranges");
         // Presentation clocks and births advance once. All Alternate seam envelopes submit the same
         // immutable canonical particle packets. Entity envelopes retain footprint flags and carrier
         // order independently of the uniform terrain's raster list.
@@ -3002,6 +3048,7 @@ impl Scene {
                 );
             }
         }
+        cpu_mark("actor_envelopes");
         let particle_packets = self.weather_effects.as_mut().map(|weather| {
             weather.prepare_frame_with_workers(
                 camera,
@@ -3012,6 +3059,7 @@ impl Scene {
                 &self.workers,
             )
         });
+        cpu_mark("weather_packets");
         // Submit all regular materials before all alternate materials across layer boundaries. Preserve
         // enqueue order before the library's mesh/tile grouping.
         let [
@@ -3113,6 +3161,7 @@ impl Scene {
                                     faults.after(failure_tests::Point::Models)?;
                                 }
                             }
+                            cpu_mark("model_prepare");
                             let buffers = ModelPass::encode_native(
                                 &model_draws,
                                 device,
@@ -3120,6 +3169,7 @@ impl Scene {
                                 admitted,
                                 &mut encoder,
                             );
+                            cpu_mark("model_encode");
                             Ok((model_draws, buffers))
                         })?;
                 command_buffers.extend(buffers);
@@ -3300,16 +3350,21 @@ impl Scene {
         if let Some(timer) = &mut timer {
             timer.finish(&mut encoder);
         }
+        cpu_mark("timestamp_resolve");
         self.arena.flush(queue);
+        cpu_mark("arena_flush");
         let encoded = clock.map(|clock| clock.elapsed());
         command_buffers.push(encoder.finish());
+        cpu_mark("encoder_finish");
         queue.submit(command_buffers);
+        cpu_mark("queue_submit");
         #[cfg(any(test, feature = "test-support"))]
         faults.submissions.set(faults.submissions.get() + 1);
         if let Some(timer) = &mut timer {
             timer.report(device);
         }
         self.pass_timer = timer;
+        cpu_mark("submit_report");
         if let (Some(clock), Some(animated), Some(prepared), Some(encoded)) =
             (clock, animated, prepared, encoded)
         {
@@ -3342,9 +3397,15 @@ impl Scene {
         }
     }
 
-    /// The last frame's animate-step laps, under `BATTLE_PLAN_VIEWER_PROFILE`.
+    /// The last frame's CPU laps, under `BATTLE_PLAN_VIEWER_PROFILE`. `pass_` fields
+    /// partition caller-side encoding and submission, summing repeated views.
+    /// The final encoder finish, queue submit and report belong to scene_submit.
     pub fn detail_laps(&self) -> String {
-        self.detail_laps.line()
+        format!(
+            "{} {}",
+            self.detail_laps.line(),
+            self.pass_cpu_laps.line_with_prefix("pass_")
+        )
     }
 
     /// The post grade of the last frame, for reporting.

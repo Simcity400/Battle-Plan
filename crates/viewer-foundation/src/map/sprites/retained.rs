@@ -3,6 +3,170 @@ use super::{Batch, Exact, Quad};
 use crate::map::native_shader::draw;
 use std::sync::Arc;
 
+/// The complete drawn camera and viewport, compared by field bits rather than Rust padding.
+/// This is only a hint to decline retention; the full upload key still decides every reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CameraFrame {
+    values: [u32; 81],
+    free: Option<[u32; 6]>,
+}
+
+impl CameraFrame {
+    pub fn new(camera: crate::map::camera::Camera, size: [u32; 2]) -> Self {
+        use crate::map::{
+            camera::{Camera, Free, Lens, MapDefines, MapSize, Pose},
+            gradient_math::FieldDefines,
+        };
+        // Exhaustive patterns make a new camera operand a compile error until it is included.
+        let Camera {
+            center,
+            height,
+            map,
+            defines,
+            pose,
+        } = camera;
+        let MapSize {
+            width,
+            height: map_height,
+        } = map;
+        let MapDefines {
+            tilt_lead,
+            heights,
+            outside,
+            sun,
+            moon,
+            second_latitude,
+            gradient_borders,
+            shadows,
+            fog,
+            tree_fade,
+            ambient,
+            sun_diffuse,
+            moon_diffuse,
+            raid_icons,
+            raid_icons_raid_mode,
+            sun_specular,
+            cubemap,
+            country_names_cutoff,
+            gradient_field,
+            border_width,
+            border_fades,
+            sprawl_cutoff,
+            map_objects_cutoff,
+            railway_cutoff,
+            railway_cutoff_speed,
+        } = defines;
+        let FieldDefines {
+            center: field_center,
+            country_thickness,
+            country_area,
+            strategic_thickness,
+            optimization_range,
+            navy_neutral,
+            mode_thickness_max,
+        } = gradient_field;
+        let free = match pose {
+            Pose::Map => None,
+            Pose::Free(free) => {
+                let Free {
+                    yaw,
+                    pitch,
+                    roll,
+                    lens,
+                } = free;
+                let Lens { fov_y, near, far } = lens;
+                Some([yaw, pitch, roll, fov_y, near, far].map(f32::to_bits))
+            }
+        };
+        Self {
+            values: [
+                center[0].to_bits(),
+                center[1].to_bits(),
+                height.to_bits(),
+                width,
+                map_height,
+                size[0],
+                size[1],
+                tilt_lead.to_bits(),
+                heights[0].to_bits(),
+                heights[1].to_bits(),
+                outside[0].to_bits(),
+                outside[1].to_bits(),
+                sun[0].to_bits(),
+                sun[1].to_bits(),
+                sun[2].to_bits(),
+                moon[0].to_bits(),
+                moon[1].to_bits(),
+                second_latitude[0].to_bits(),
+                second_latitude[1].to_bits(),
+                gradient_borders[0].to_bits(),
+                gradient_borders[1].to_bits(),
+                gradient_borders[2].to_bits(),
+                gradient_borders[3].to_bits(),
+                shadows[0].to_bits(),
+                shadows[1].to_bits(),
+                fog[0].to_bits(),
+                fog[1].to_bits(),
+                tree_fade[0].to_bits(),
+                tree_fade[1].to_bits(),
+                ambient[0][0].to_bits(),
+                ambient[0][1].to_bits(),
+                ambient[0][2].to_bits(),
+                ambient[1][0].to_bits(),
+                ambient[1][1].to_bits(),
+                ambient[1][2].to_bits(),
+                ambient[2][0].to_bits(),
+                ambient[2][1].to_bits(),
+                ambient[2][2].to_bits(),
+                ambient[3][0].to_bits(),
+                ambient[3][1].to_bits(),
+                ambient[3][2].to_bits(),
+                ambient[4][0].to_bits(),
+                ambient[4][1].to_bits(),
+                ambient[4][2].to_bits(),
+                ambient[5][0].to_bits(),
+                ambient[5][1].to_bits(),
+                ambient[5][2].to_bits(),
+                sun_diffuse[0].to_bits(),
+                sun_diffuse[1].to_bits(),
+                sun_diffuse[2].to_bits(),
+                sun_diffuse[3].to_bits(),
+                moon_diffuse[0].to_bits(),
+                moon_diffuse[1].to_bits(),
+                moon_diffuse[2].to_bits(),
+                moon_diffuse[3].to_bits(),
+                raid_icons[0].to_bits(),
+                raid_icons[1].to_bits(),
+                raid_icons_raid_mode.to_bits(),
+                sun_specular.to_bits(),
+                cubemap.to_bits(),
+                country_names_cutoff.to_bits(),
+                field_center.to_bits(),
+                country_thickness[0].to_bits(),
+                country_thickness[1].to_bits(),
+                country_area[0].to_bits(),
+                country_area[1].to_bits(),
+                strategic_thickness.to_bits(),
+                optimization_range.to_bits(),
+                u32::from(navy_neutral[0]),
+                u32::from(navy_neutral[1]),
+                u32::from(navy_neutral[2]),
+                mode_thickness_max.to_bits(),
+                border_width.to_bits(),
+                border_fades[0][0].to_bits(),
+                border_fades[0][1].to_bits(),
+                border_fades[1][0].to_bits(),
+                border_fades[1][1].to_bits(),
+                sprawl_cutoff.to_bits(),
+                map_objects_cutoff.to_bits(),
+                railway_cutoff.to_bits(),
+                railway_cutoff_speed.to_bits(),
+            ],
+            free,
+        }
+    }
+}
+
 pub(super) struct Upload {
     quads: Vec<Quad>,
     size: [u32; 2],
@@ -102,7 +266,10 @@ fn same_exact(a: &Exact, b: &Exact) -> bool {
         && a.samplers == b.samplers
         && a.second == b.second
         && a.masking == b.masking
-        && floats(bytemuck::cast_slice(&a.corners), bytemuck::cast_slice(&b.corners))
+        && floats(
+            bytemuck::cast_slice(&a.corners),
+            bytemuck::cast_slice(&b.corners),
+        )
         && floats(bytemuck::cast_slice(&a.uv), bytemuck::cast_slice(&b.uv))
         && floats(&a.lod_bias, &b.lod_bias)
         && floats(&a.offsets, &b.offsets)
@@ -149,6 +316,129 @@ fn same_native(a: &draw::Quad, b: &draw::Quad) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn camera() -> crate::map::camera::Camera {
+        use crate::map::camera::{Camera, MapDefines, MapSize, Pose};
+        Camera {
+            center: [0.0, 10.0],
+            height: 20.0,
+            map: MapSize::TEST,
+            defines: MapDefines::test(),
+            pose: Pose::Map,
+        }
+    }
+
+    #[test]
+    fn sprite_camera_frame_covers_every_camera_operand_and_viewport() {
+        let mut camera = camera();
+        let mut count = 0;
+        for value in camera
+            .center
+            .iter_mut()
+            .chain(std::iter::once(&mut camera.height))
+            .chain(std::iter::once(&mut camera.defines.tilt_lead))
+            .chain(camera.defines.heights.iter_mut())
+            .chain(camera.defines.outside.iter_mut())
+            .chain(camera.defines.sun.iter_mut())
+            .chain(camera.defines.moon.iter_mut())
+            .chain(camera.defines.second_latitude.iter_mut())
+            .chain(camera.defines.gradient_borders.iter_mut())
+            .chain(camera.defines.shadows.iter_mut())
+            .chain(camera.defines.fog.iter_mut())
+            .chain(camera.defines.tree_fade.iter_mut())
+            .chain(camera.defines.ambient.iter_mut().flatten())
+            .chain(camera.defines.sun_diffuse.iter_mut())
+            .chain(camera.defines.moon_diffuse.iter_mut())
+            .chain(camera.defines.raid_icons.iter_mut())
+            .chain(std::iter::once(&mut camera.defines.raid_icons_raid_mode))
+            .chain(std::iter::once(&mut camera.defines.sun_specular))
+            .chain(std::iter::once(&mut camera.defines.cubemap))
+            .chain(std::iter::once(&mut camera.defines.country_names_cutoff))
+            .chain(std::iter::once(&mut camera.defines.border_width))
+            .chain(camera.defines.border_fades.iter_mut().flatten())
+            .chain(std::iter::once(&mut camera.defines.sprawl_cutoff))
+            .chain(std::iter::once(&mut camera.defines.map_objects_cutoff))
+            .chain(std::iter::once(&mut camera.defines.railway_cutoff))
+            .chain(std::iter::once(&mut camera.defines.railway_cutoff_speed))
+            .chain(std::iter::once(&mut camera.defines.gradient_field.center))
+            .chain(camera.defines.gradient_field.country_thickness.iter_mut())
+            .chain(camera.defines.gradient_field.country_area.iter_mut())
+            .chain(std::iter::once(
+                &mut camera.defines.gradient_field.strategic_thickness,
+            ))
+            .chain(std::iter::once(
+                &mut camera.defines.gradient_field.optimization_range,
+            ))
+            .chain(std::iter::once(
+                &mut camera.defines.gradient_field.mode_thickness_max,
+            ))
+        {
+            count += 1;
+            *value = f32::from_bits(0x7fc0_0000 + count);
+        }
+        let key = CameraFrame::new(camera, [123, 456]);
+        let mut observed: Vec<_> = key
+            .values
+            .into_iter()
+            .filter(|value| *value > 0x7fc0_0000 && *value <= 0x7fc0_0000 + count)
+            .collect();
+        observed.sort_unstable();
+        assert_eq!(
+            observed,
+            (1..=count).map(|n| 0x7fc0_0000 + n).collect::<Vec<_>>()
+        );
+        assert_eq!(key, CameraFrame::new(camera, [123, 456]));
+        assert_ne!(key, CameraFrame::new(camera, [124, 456]));
+        assert_ne!(key, CameraFrame::new(camera, [123, 457]));
+        let mut changed = camera;
+        changed.map.width += 1;
+        assert_ne!(key, CameraFrame::new(changed, [123, 456]));
+        changed = camera;
+        changed.map.height += 1;
+        assert_ne!(key, CameraFrame::new(changed, [123, 456]));
+        for index in 0..3 {
+            changed = camera;
+            changed.defines.gradient_field.navy_neutral[index] ^= 1;
+            assert_ne!(key, CameraFrame::new(changed, [123, 456]));
+        }
+    }
+
+    #[test]
+    fn sprite_camera_frame_keeps_zero_nan_and_every_free_pose_bit() {
+        use crate::map::camera::{Free, Lens, Pose};
+        let mut camera = camera();
+        let map = CameraFrame::new(camera, [16, 16]);
+        camera.center[0] = -0.0;
+        assert_ne!(map, CameraFrame::new(camera, [16, 16]));
+        camera.center[0] = f32::from_bits(0x7fc0_0001);
+        let nan = CameraFrame::new(camera, [16, 16]);
+        assert_eq!(nan, CameraFrame::new(camera, [16, 16]));
+        camera.center[0] = f32::from_bits(0x7fc0_0002);
+        assert_ne!(nan, CameraFrame::new(camera, [16, 16]));
+        camera.pose = Pose::Free(Free::new(0.0, 0.0, Lens::MAP));
+        let free = CameraFrame::new(camera, [16, 16]);
+        assert_ne!(free, map);
+        for index in 0..6 {
+            let mut changed = camera;
+            let Pose::Free(pose) = &mut changed.pose else {
+                unreachable!()
+            };
+            let value = match index {
+                0 => &mut pose.yaw,
+                1 => &mut pose.pitch,
+                2 => &mut pose.roll,
+                3 => &mut pose.lens.fov_y,
+                4 => &mut pose.lens.near,
+                _ => &mut pose.lens.far,
+            };
+            *value = f32::from_bits(value.to_bits() ^ 1);
+            assert_ne!(
+                free,
+                CameraFrame::new(changed, [16, 16]),
+                "pose operand {index}"
+            );
+        }
+    }
 
     #[test]
     fn retained_upload_float_inputs_include_every_component_and_nan_bit() {
