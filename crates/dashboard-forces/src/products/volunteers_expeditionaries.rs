@@ -10,7 +10,7 @@ use dashboard_base::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io,
     sync::atomic::AtomicBool,
 };
@@ -238,8 +238,8 @@ pub(crate) fn read(
                 4 + link.host * 4 + 3,
             ];
             for id in keys {
-                if !proofs.contains_key(&id) {
-                    proofs.insert(id, proof.runs(id, first, last)?);
+                if let Entry::Vacant(entry) = proofs.entry(id) {
+                    entry.insert(proof.runs(id, first, last)?);
                 }
             }
             let runs = values.runs(at as u64 * 3 + selected, first, last)?;

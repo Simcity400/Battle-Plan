@@ -593,13 +593,14 @@ fn members<'a>(
 }
 
 /// The row keyed `id` in rows sorted by that key.
-fn find<'a, R>(rows: Option<&'a [R]>, id: u64, key: impl FnMut(&R) -> u64) -> Option<&'a R> {
+fn find<R>(rows: Option<&[R]>, id: u64, key: impl FnMut(&R) -> u64) -> Option<&R> {
     let rows = rows?;
     rows.binary_search_by_key(&id, key).ok().map(|at| &rows[at])
 }
 
 /// One division read against its template's need and its witnessed pool.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn division<'a>(
     frame: &'a DecodedFrame,
     row: &'a DivisionRow,
@@ -737,6 +738,8 @@ pub fn build(
                 }
             }
         }
+        // `new` starts every total at zero; `Default` leaves them unknown.
+        #[allow(clippy::unwrap_or_default)]
         let total = templates.entry(row.template).or_insert_with(TemplateTotals::new);
         total.divisions += 1;
         total.unknown += u32::from(division.compared.is_none());

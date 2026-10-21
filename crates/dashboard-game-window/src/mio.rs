@@ -170,6 +170,7 @@ fn lossy(bytes: &[u8]) -> String {
 /// The policies' authored definitions and what reading them noted, read once per stack against
 /// the stack's shared content names ([`ResolvedLayers::key_names`]).
 #[derive(Default)]
+#[allow(clippy::type_complexity)]
 struct PolicyDefinitions(std::sync::OnceLock<Result<Arc<(Policies, Vec<String>)>, String>>);
 
 /// Reads the policies' definitions ahead of the first window over `layers`.
@@ -378,6 +379,7 @@ pub struct Hour {
 /// The hours a source's choosers were last read at, by artwork session, branch, hour and
 /// organisation: scrolling or reopening a window at an hour reads it once.
 #[derive(Default)]
+#[allow(clippy::type_complexity)]
 struct Hours(std::collections::VecDeque<((String, u64, i32, u64), Arc<Hour>)>);
 
 /// The hours [`Hours`] keeps.
@@ -464,6 +466,7 @@ fn hour(
 }
 
 /// The chooser of `organisation` at `hour`.
+#[allow(clippy::too_many_arguments)]
 pub fn bind(
     source: &Source,
     catalogue: &Catalogue,

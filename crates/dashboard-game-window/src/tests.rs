@@ -635,6 +635,7 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
                 *published.lock().unwrap() = Some(opened.is_some());
                 true
             };
+            #[allow(clippy::type_complexity)]
             let steps: [&dyn Fn(&Mutex<Sessions>) -> bool; 2] = [&first, &second];
             crate::products::game_window::stages(&steps, || {
                 Some(Arc::clone(&sessions)).filter(|sessions| is_current(sessions, "old"))

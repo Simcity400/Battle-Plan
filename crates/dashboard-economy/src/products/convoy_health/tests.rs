@@ -81,7 +81,6 @@ fn each_deal_keeps_its_own_truncated_product_and_lend_lease_has_no_efficiency() 
         TableRows::LexicalTokens(vec![LexicalTokenRow {
             token: 3,
             literal: b"synthetic_ore".to_vec(),
-            ..Default::default()
         }]),
     );
     set(

@@ -69,13 +69,11 @@ pub fn present(
         }
         if let Operand::ShipRebuilt { naming, group, .. } = operand
             && ship_names::needs_groups(naming, group)
+            && let Some(cat) = cat.as_ref()
+            && let Ok(groups) = ship_names::groups(cat)
         {
-            if let Some(cat) = cat.as_ref() {
-                if let Ok(groups) = ship_names::groups(cat) {
-                    for note in &groups.1 {
-                        warnings.entry(note.clone()).or_insert(1);
-                    }
-                }
+            for note in &groups.1 {
+                warnings.entry(note.clone()).or_insert(1);
             }
         }
         let choice = match resolve(operand, cat.as_ref()) {
@@ -129,23 +127,25 @@ pub fn groups(
     let mut ship_names = BTreeMap::new();
     for series in &window.series {
         let parts: Vec<_> = series.name.split('|').collect();
-        if parts.len() == 5 && parts[2] == "ship" && matches!(parts[4], "name" | "nameRebuilt") {
-            if let Some((_, hour, token, _)) = series.runs.last() {
-                let key = (
-                    parts[0].to_owned(),
-                    parts[1].to_owned(),
-                    parts[3].to_owned(),
+        if parts.len() == 5
+            && parts[2] == "ship"
+            && matches!(parts[4], "name" | "nameRebuilt")
+            && let Some((_, hour, token, _)) = series.runs.last()
+        {
+            let key = (
+                parts[0].to_owned(),
+                parts[1].to_owned(),
+                parts[3].to_owned(),
+            );
+            let entry = ship_names.entry(key).or_insert((i32::MIN, String::new()));
+            if *hour >= entry.0 {
+                *entry = (
+                    *hour,
+                    tokens
+                        .get(token)
+                        .map(|choice| choice.name.clone())
+                        .unwrap_or_else(|| "Ship name unavailable".into()),
                 );
-                let entry = ship_names.entry(key).or_insert((i32::MIN, String::new()));
-                if *hour >= entry.0 {
-                    *entry = (
-                        *hour,
-                        tokens
-                            .get(token)
-                            .map(|choice| choice.name.clone())
-                            .unwrap_or_else(|| "Ship name unavailable".into()),
-                    );
-                }
             }
         }
     }

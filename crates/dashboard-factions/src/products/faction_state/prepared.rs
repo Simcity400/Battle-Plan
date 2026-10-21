@@ -659,7 +659,14 @@ impl Prepared {
     ) -> BTreeSet<u32> {
         let full_accounts =
             dirty.refresh || joins.identities_changed || !joins.identity_known || !joins.joined;
-        let mut accounts: BTreeSet<u32> = if full_accounts || dirty.accounts.is_none() {
+        let mut accounts: BTreeSet<u32> = if !full_accounts && let Some(changed) = &dirty.accounts {
+            changed
+                .iter()
+                .copied()
+                .filter(|key| (*key >> 32) as u32 == 0)
+                .map(|key| (key >> 64) as u32)
+                .collect()
+        } else {
             frame
                 .complete::<tables::FactionAccounts>()
                 .ok()
@@ -674,16 +681,6 @@ impl Prepared {
                         .filter(|lane| lane.kind == Kind::Share)
                         .map(|lane| lane.slot),
                 )
-                .collect()
-        } else {
-            dirty
-                .accounts
-                .as_ref()
-                .unwrap()
-                .iter()
-                .copied()
-                .filter(|key| (*key >> 32) as u32 == 0)
-                .map(|key| (key >> 64) as u32)
                 .collect()
         };
         if joins.membership_changed && !full_accounts {

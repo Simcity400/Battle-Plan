@@ -183,10 +183,9 @@ fn memo_reconstructs_committed_words_not_anchor_and_checks_every_hour() {
     let mut bad = temperatures(1, 10, 13, &words, vec![Some(7), None, None], &content.pass);
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *bad.tables[TableId::WeatherProvinces.index()]
+        && let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass
     {
-        if let Recorded::Value(Some(pass)) = &mut rows[0].temperature_pass {
-            pass.checksum ^= 1;
-        }
+        pass.checksum ^= 1;
     }
     assert!(observe(&mut observation, &bad).is_empty());
     assert!(

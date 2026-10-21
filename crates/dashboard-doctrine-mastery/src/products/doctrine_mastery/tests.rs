@@ -324,7 +324,7 @@ fn token_spelling_failure_does_not_erase_any_numeric_measure() {
             .unwrap()
             .iter()
             .any(|series| series["name"] == "GER@7|2|0|mastery"
-                && series["runs"][0][2] == i64::MAX.to_string())
+                && series["runs"][0][2].as_str() == Some(i64::MAX.to_string().as_str()))
     );
 }
 
@@ -332,7 +332,7 @@ fn token_spelling_failure_does_not_erase_any_numeric_measure() {
 fn content_failure_preserves_numbers_and_is_cached_per_binding() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
@@ -1075,7 +1075,7 @@ fn s2_assert_reachable(reply: &Value) {
 fn s2_recorded_tree_without_content_keeps_mastery_bank_and_gains_reachable() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let reply = ask(
         &source,
@@ -1099,7 +1099,7 @@ fn s2_recorded_tree_without_content_keeps_mastery_bank_and_gains_reachable() {
 fn s2_recorded_tree_survives_database_failure_and_caches_the_refusal() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let options = s2_options(&fixture);
     super::content::install_reader_fixture(
@@ -1181,7 +1181,7 @@ fn s2_database() -> installed_content_core::doctrines::Database {
 fn s2_recorded_tree_survives_catalogue_failure_with_independent_requirements() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let options = s2_options(&fixture);
     super::content::install_reader_fixture(&source, &options, Ok(s2_database()), Ok(900_000));
@@ -1235,7 +1235,7 @@ fn s2_recorded_tree_survives_catalogue_failure_with_independent_requirements() {
 fn s2_recorded_tree_keeps_missing_content_choices_with_null_names() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let options = s2_options(&fixture);
     let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[]);
@@ -1321,7 +1321,7 @@ fn s2_recorded_tree_uses_window_tracks_not_the_branch_inventory() {
 fn s2_recorded_tree_keeps_reward_ordinals_when_the_default_requirement_fails() {
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let options = s2_options(&fixture);
     super::content::install_reader_fixture(
@@ -1362,7 +1362,7 @@ fn s2_recorded_tree_distinguishes_unknown_rewards_from_authored_empty() {
     use installed_content_core::tokens::Token;
     let fixture = Fixture::new();
     let input = frame(100);
-    publish(&fixture, &[input.clone()]);
+    publish(&fixture, std::slice::from_ref(&input));
     let source = source(vec![input]);
     let params = json!({"branchId":"1","tag":"GER"});
     let prefix = prefix(100, 100, true);

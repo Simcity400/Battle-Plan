@@ -143,7 +143,7 @@ fn append(
     at: i32,
     entry: &impl Serialize,
 ) -> io::Result<u64> {
-    let first = if chain.count % CHUNK == 0 { at } else { chain.first };
+    let first = if chain.count.is_multiple_of(CHUNK) { at } else { chain.first };
     let chunk = u32::try_from(chain.count / CHUNK)
         .map_err(|_| invalid("a market occurrence chain outgrew its keys"))?;
     let key = keyed.key(field(chunk, first));

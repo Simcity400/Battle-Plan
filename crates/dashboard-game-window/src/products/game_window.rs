@@ -209,6 +209,7 @@ fn stack(options: &ContentOptions) -> String {
 /// The source's catalogue and the artwork session its windows draw from, opened on first use;
 /// the session is `None` when `opener` is the read-ahead and a request has since read other
 /// content ([`session::session`]).
+#[allow(clippy::type_complexity)]
 pub fn open(
     source: &Source,
     options: &ContentOptions,

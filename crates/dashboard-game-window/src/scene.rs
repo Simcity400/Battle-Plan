@@ -383,6 +383,7 @@ impl<'a> Flatten<'a> {
     }
 
     /// The textures and clips the quads name.
+    #[allow(clippy::type_complexity)]
     pub fn finish(
         self,
     ) -> (

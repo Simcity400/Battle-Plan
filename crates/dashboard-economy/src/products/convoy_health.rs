@@ -365,6 +365,7 @@ pub fn region_names(source: &Source, context: &LoadContext, warnings: &mut Vec<S
 /// Resource names through the recorded content.
 pub type ResourceNames<'a> = &'a dyn Fn(&[(u32, String)]) -> (BTreeMap<u32, String>, Vec<String>);
 
+#[allow(clippy::too_many_arguments)]
 pub fn query(
     store: &store::Store,
     key: &store::SourceKey,

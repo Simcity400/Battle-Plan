@@ -695,13 +695,13 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                     2 => Some(format!("Synthetic ship {tick}").into_bytes()),
                     _ => Some(vec![0xff, 0, tick as u8]),
                 }),
-                naming: Recorded::Value((tick % 3 != 0).then(|| ShipNamingOperands {
+                naming: Recorded::Value((!tick.is_multiple_of(3)).then(|| ShipNamingOperands {
                     kind: [i32::MIN, 1, i32::MAX][tick % 3],
                     order: [0, -7, i32::MAX][tick % 3],
                     ordered: RAW_FLAG_CASES[tick % RAW_FLAG_CASES.len()],
                     override_name: vec![tick as u8, 0, 0xff],
                     programmatic: RAW_FLAG_CASES[(tick + 1) % RAW_FLAG_CASES.len()],
-                    equipment: (tick % 2 == 0).then_some(u64::MAX),
+                    equipment: tick.is_multiple_of(2).then_some(u64::MAX),
                 })),
                 id,
                 task_force: [0, u64::MAX, FACTION_A][tick % 3],

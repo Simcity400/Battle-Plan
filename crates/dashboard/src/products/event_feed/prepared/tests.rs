@@ -1679,7 +1679,7 @@ fn immediate_effects_join_their_dispatch_without_taking_its_choice() {
         EventFeedEvent {
             script: Some(replay_data::event_feed_rows::EventFeedScript {
                 option: Some(ordinal),
-                ..row.script.clone().unwrap()
+                ..row.script.unwrap()
             }),
             ..row
         }

@@ -237,12 +237,9 @@ impl Observer for AirMissionsObserver {
                         .iter()
                         .filter(|wing| (wing.mission_mask as i32) > 0)
                         .fold(0, |mask, wing| mask | wing.mission_mask);
-                    for bit in 0..MISSIONS {
+                    for (bit, &count) in counts[&region].iter().enumerate() {
                         if mask & (1 << bit) != 0 {
-                            values.push(
-                                format!("{country}|{region}|m{bit}"),
-                                i128::from(counts[&region][bit]),
-                            );
+                            values.push(format!("{country}|{region}|m{bit}"), i128::from(count));
                         }
                     }
                 }

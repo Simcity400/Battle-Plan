@@ -449,7 +449,7 @@ fn facts(
     out
 }
 
-fn status_of<'a>(frame: &'a DecodedFrame, division: u64) -> Option<&'a replay_data::rows::DivisionStatusRow> {
+fn status_of(frame: &DecodedFrame, division: u64) -> Option<&replay_data::rows::DivisionStatusRow> {
     let rows = frame.complete::<tables::DivisionStatus>().ok()?;
     rows.binary_search_by_key(&division, |row| row.division).ok().map(|at| &rows[at])
 }
@@ -490,7 +490,7 @@ pub fn careers(
     let mut levels = Levels::read(naming.cat);
     let mut templates = BTreeMap::<u64, ()>::new();
     for division in divisions.iter().filter(|row| row.reveal_skip == 0) {
-        if reply.divisions.len() % 1024 == 0 {
+        if reply.divisions.len().is_multiple_of(1024) {
             dashboard_text::metadata::check_cancel(cancelled)?;
         }
         let tag = countries.tag(owner(division));
@@ -533,6 +533,7 @@ pub fn careers(
 }
 
 /// One division's header facts and recorded entries. `places` names provinces.
+#[allow(clippy::type_complexity)]
 pub fn record(
     frame: &DecodedFrame,
     division: u64,
@@ -617,6 +618,7 @@ pub fn record(
 }
 
 /// A career entry in the game's own wording.
+#[allow(clippy::type_complexity)]
 fn describe(
     _frame: &DecodedFrame,
     entry: &DivisionHistoryRow,
@@ -642,7 +644,7 @@ fn describe(
         text(tag.as_bytes(), &[])?
     };
     let provinces = places(&entry.provinces).into_iter().collect::<Result<Vec<_>, _>>()?;
-    let province = division_history::province_list(&provinces, &text)?;
+    let province = division_history::province_list(&provinces, text)?;
     let date = division_history::date(entry.hour);
     text(
         division_history::event_key(entry)?,

@@ -279,10 +279,10 @@ pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
         }
         None => shared::empty(first, last),
     };
-    if let Ok(l) = &labels {
-        if let Ok(sea) = &l.sea_regions {
-            ids.extend(sea);
-        }
+    if let Ok(l) = &labels
+        && let Ok(sea) = &l.sea_regions
+    {
+        ids.extend(sea);
     }
     let mut notes = Refusals::default();
     let regions = shared::choices(&ids, &labels, &mut notes);

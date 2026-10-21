@@ -82,6 +82,7 @@ struct Joins {
     bases: Option<(ViewIdentity, HashMap<u32, Vec<usize>>)>,
     /// Port relations and access, with the views they read (none for a
     /// view that was not complete, which any other incomplete view repeats).
+    #[allow(clippy::type_complexity)]
     access: Option<(
         Vec<Option<ViewIdentity>>,
         Result<Relations, &'static str>,

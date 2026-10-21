@@ -424,7 +424,7 @@ fn intel_coverage_public_query_shape_and_cancellation() {
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
     let value = super::query(&query).unwrap();
-    assert!(value["window"]["series"].as_array().unwrap().len() > 0);
+    assert!(!value["window"]["series"].as_array().unwrap().is_empty());
     let decoded: std::collections::BTreeSet<_> = value
         .as_object()
         .unwrap()

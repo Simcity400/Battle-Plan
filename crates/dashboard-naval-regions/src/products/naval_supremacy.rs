@@ -192,7 +192,7 @@ impl Observer for NavalSupremacyObserver {
         operands::save::<tables::CountryCounterInputs>(frame, values, |r| {
             rows::CountryCounterInputRow {
                 country: r.country,
-                forward_visibility: r.forward_visibility.clone(),
+                forward_visibility: r.forward_visibility,
                 directed_wars: r.directed_wars.clone(),
                 ..Default::default()
             }
@@ -200,7 +200,7 @@ impl Observer for NavalSupremacyObserver {
         operands::save::<tables::ReservedCountryNaming>(frame, values, |r| {
             rows::ReservedCountryNamingRow {
                 tag: r.tag.clone(),
-                faction: r.faction.clone(),
+                faction: r.faction,
                 reverse_visibility: r.reverse_visibility.clone(),
                 ..Default::default()
             }
@@ -373,10 +373,10 @@ pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
         .map_or_else(|_| Vec::new(), |l| l.warnings.clone());
     let mut notes = Refusals::default();
     let mut ids = BTreeSet::new();
-    if let Ok(l) = &labels {
-        if let Ok(sea) = &l.sea_regions {
-            ids.extend(sea);
-        }
+    if let Ok(l) = &labels
+        && let Ok(sea) = &l.sea_regions
+    {
+        ids.extend(sea);
     }
     let mut days = dashboard_keyed::daily::Builder::default();
     let mut viewer_slots = BTreeSet::new();

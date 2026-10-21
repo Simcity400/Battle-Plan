@@ -1018,11 +1018,10 @@ mod tests {
             .set_synthetic_environment(Default::default());
         let database = doctrines::read(&catalogue.content.layers).unwrap();
         assert!(
-            database
+            !database
                 .tactic_sources
                 .sub
-                .get(&Token::c_str(b"hidden_sub"))
-                .is_none()
+                .contains_key(&Token::c_str(b"hidden_sub"))
         );
         assert_eq!(
             database.tracks[&Token::c_str(b"mod_track")].value,

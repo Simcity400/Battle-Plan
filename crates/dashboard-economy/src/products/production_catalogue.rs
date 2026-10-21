@@ -305,7 +305,7 @@ impl Prepared {
                 continue;
             };
             // Without the dictionary a selected policy reads as unspelled.
-            let state = production_lines::organisation_state(detail, None, lexical.map_or(&[][..], |rows| &rows[..]));
+            let state = production_lines::organisation_state(detail, None, lexical.map_or(&[][..], |rows| rows));
             for (field, value) in [
                 (Field::MioSize(id), Some(i128::from(detail.state.size))),
                 (Field::MioFunds(id), Some(i128::from(detail.state.funds_raw))),

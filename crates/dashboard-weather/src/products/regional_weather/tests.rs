@@ -597,7 +597,7 @@ fn daily_projection_respects_recording_gaps_negative_hours_carried_reads_and_int
         let mut edge = KeyedWindow {
             first_hour: hour,
             last_hour: hour,
-            known: vec![span.clone()],
+            known: vec![span],
             reads: vec![(hour, hour, hour)],
             series: vec![KeyedSeries {
                 name: "73|snow".into(),
@@ -1012,7 +1012,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
         "localisation/replace/mod_l_english.yml",
         "\u{feff}l_english:\n MOD_TITLE:0 \"Overlay region\"\n EMPTY:0 \"\"\n weather_snow:0 \"Synthetic frozen condition\"\n MOD_AIR_TITLE:0 \"Synthetic $ARG$ modifier\"\n",
     );
-    write(&root, "user/settings.txt", "language=l_english");
+    write(root, "user/settings.txt", "language=l_english");
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: base.clone(),
@@ -1077,7 +1077,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|theatre| theatre["id"] == u64::MAX.to_string()
+            .any(|theatre| theatre["id"].as_str() == Some(u64::MAX.to_string().as_str())
                 && theatre["regions"] == json!(["73"]))
     );
     // Cached auxiliary reads do not decode a branch again on a repeated query.

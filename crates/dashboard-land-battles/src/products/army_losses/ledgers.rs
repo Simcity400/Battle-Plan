@@ -194,6 +194,7 @@ pub fn witnesses(
 /// tables a read's coverage is known from.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Provenance {
+    #[allow(clippy::type_complexity)]
     covered: BTreeMap<(u32, Entry), (i32, Option<Vec<CombatLogEquipmentRow>>)>,
     unread: Vec<(i32, i32)>,
 }
@@ -280,7 +281,7 @@ impl Builder {
         let from = recent_from(&months);
         let recent = |month: &CombatLogMonthRow| month.date >= from[&(month.group, month.kind)];
         let full = full_hour || months.iter().any(|month| !recent(month) && !rows_of(rows, month).is_empty());
-        for month in months.iter().filter(|month| full || recent(*month)) {
+        for month in months.iter().filter(|month| full || recent(month)) {
             let held = rows_of(rows, month);
             self.out.covered.insert((owner, entry_of(month)), (hour, (!held.is_empty()).then(|| held.to_vec())));
         }

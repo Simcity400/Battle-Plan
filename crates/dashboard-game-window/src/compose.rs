@@ -44,6 +44,7 @@ pub type Refused = Vec<String>;
 
 /// Lays `root` out with its bound lists, each scrolled to its offset in `scroll` (clamped to
 /// its range; zero when absent).
+#[allow(clippy::too_many_arguments)]
 pub fn compose(
     name: &str,
     root: &Element,
