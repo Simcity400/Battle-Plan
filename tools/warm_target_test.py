@@ -8,6 +8,7 @@ import _winapi
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -393,6 +394,69 @@ class External(unittest.TestCase):
         self.assertTrue(a.startswith("G:\\dev\\t3-1234-") and a.endswith(wt.EXTERNAL_SUFFIX))
 
 
+class Slots(unittest.TestCase):
+    def test_slot_b_has_the_shape_of_slot_a(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(os.path.join(root, wt.CHECKOUT_FILE), "C:\\seed\\s\\checkout____\n")
+            a, b = (wt.slot_checkout(root, slot) for slot in wt.SLOTS)
+            self.assertEqual((a, b), ("C:\\seed\\s\\checkout____", "C:\\seed\\s\\checkout___b"))
+
+    def test_readers_of_a_slot_are_live_processes(self):
+        with tempfile.TemporaryDirectory() as root:
+            mine = wt.register_reader(root, "b")
+            exited = subprocess.Popen([sys.executable, "-c", "pass"])
+            exited.wait()
+            write(os.path.join(root, wt.READERS_DIR, str(exited.pid)), "b")
+            self.assertEqual(wt.slot_readers(root, "b"), [os.getpid()])
+            self.assertEqual(wt.slot_readers(root, "a"), [])
+            self.assertEqual(os.listdir(os.path.join(root, wt.READERS_DIR)), [os.path.basename(mine)])
+
+
+class BackgroundRefresh(unittest.TestCase):
+    REPORT = (
+        "import ctypes, subprocess, sys\n"
+        "out = sys.argv[-1] if sys.argv[-1].endswith('.txt') else __file__ + '.parent.txt'\n"
+        "k = ctypes.windll.kernel32\n"
+        "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
+        "k.GetPriorityClass.argtypes = [ctypes.c_void_p]\n"
+        "open(out, 'w').write(str(k.GetPriorityClass(k.GetCurrentProcess())))\n"
+        "if out.endswith('.parent.txt'):\n"
+        "    subprocess.run([sys.executable, __file__, __file__ + '.child.txt'])\n")
+
+    def test_refresh_runs_detached_below_normal_and_only_when_behind(self):
+        with tempfile.TemporaryDirectory() as base:
+            root, repo = os.path.join(base, "seed"), os.path.join(base, "repo")
+            write(os.path.join(repo, "f"), "f")
+            for args in (["init", "-q"], ["add", "f"], ["-c", "user.name=t", "-c", "user.email=t@t",
+                                                       "commit", "-q", "-m", "f"]):
+                subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
+            launcher = os.path.join(root, wt.LAUNCHER)
+            write(launcher, self.REPORT)
+            pid = wt.start_refresh(root, repo)  # no seed yet: behind
+            for name in ("parent", "child"):
+                path = f"{launcher}.{name}.txt"
+                for _ in range(300):
+                    if os.path.exists(path) and read(path):
+                        break
+                    time.sleep(0.1)
+                self.assertEqual(int(read(path)), subprocess.BELOW_NORMAL_PRIORITY_CLASS, name)
+                os.remove(path)
+            while wt.process_alive(pid):
+                time.sleep(0.1)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
+                                  text=True, check=True).stdout.strip()
+            write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": head}))
+            self.assertIsNone(wt.start_refresh(root, repo))  # current
+            write(os.path.join(root, wt.SEED_FILE), json.dumps({"format": wt.SEED_FORMAT, "commit": "0" * 40,
+                                                               "checkout": base}))
+            lock = wt.take_update_lock(root)
+            self.assertIsNone(wt.start_refresh(root, repo))  # another update runs
+            shutil.rmtree(lock)
+            time.sleep(1)
+            self.assertFalse(os.path.exists(f"{launcher}.parent.txt"))
+
+
 class Garbage(unittest.TestCase):
     def test_units_outside_the_last_build_are_removed(self):
         with tempfile.TemporaryDirectory() as profile:
@@ -471,7 +535,7 @@ class EndToEnd(unittest.TestCase):
         }
         for rel, text in files.items():
             write(os.path.join(self.repo, rel), text)
-        self.git(self.repo, "init", "-q")
+        self.git(self.repo, "init", "-q", "-b", "main")
         self.cargo(self.repo, "generate-lockfile", "--offline")
         self.commit("base")
         write(os.path.join(self.repo, "crates", "a", "src", "lib.rs"),
@@ -531,6 +595,96 @@ class EndToEnd(unittest.TestCase):
         self.tool("check", "--root", self.root, "--target-dir",
                   os.path.join(self.worktree, ".cargo-target"))
 
+    def test_a_refresh_keeps_the_seed_usable_until_the_other_slot_is_ready(self):
+        first = wt.read_seed(self.root)
+        self.assertEqual(first["slot"], "a")
+        self.assertIn("already at", self.tool("seed", "--root", self.root, "--repo", self.repo,
+                                              "--no-fetch", "--commit", "HEAD", "--if-moved"))
+        append = os.path.join(self.repo, "crates", "b", "src", "lib.rs")
+        write(append, read(append) + b"// main moved\n")
+        self.commit("moved")
+        # A refresh killed while it made slot b's checkout left a directory git does not know.
+        write(os.path.join(wt.slot_checkout(self.root, "b"), "half-made"), "")
+        # Refreshes name a branch, as `origin/main` is: without --repo they resolve it in a
+        # slot's checkout, whose own HEAD is the slot's commit.
+        branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=self.repo,
+                                capture_output=True, text=True, check=True).stdout.strip()
+        # While slot b builds, warms keep using slot a.
+        during = []
+        collect = wt.collect_garbage
+
+        def warm_meanwhile(*args, **kwargs):
+            self.fresh_worktree()
+            warm = argparse.Namespace(root=self.root, worktree=self.worktree, target_dir=None,
+                                      copy="copyfile2", threads=4, target_roots=None, min_free_gb=60,
+                                      refresh_behind=False)
+            self.assertEqual(wt.command_warm(warm), 0)
+            during.append(self.rebuilt("check", "--workspace", "--all-targets"))
+            return collect(*args, **kwargs)
+
+        wt.collect_garbage = warm_meanwhile
+        try:
+            refresh = argparse.Namespace(root=self.root, like=None, commit=branch, no_fetch=True,
+                                         repo=None, keep_incremental=False, if_moved=True,
+                                         reader_wait=1, jobs=4)
+            self.assertEqual(wt.command_seed(refresh), 0)
+        finally:
+            wt.collect_garbage = collect
+        self.assertEqual(during, [{"b", "c"}])  # the worktree is at the new commit, slot a the old
+        second = wt.read_seed(self.root)
+        self.assertEqual((second["slot"], second["checkout"][:-1]), ("b", first["checkout"][:-1]))
+        self.assertNotEqual(second["commit"], first["commit"])
+        self.warm()
+        self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
+        self.assertEqual(self.rebuilt("test", "--workspace", "--no-run"), set())
+        # A scheduled refresh runs the launcher beside the seed, without naming the repository.
+        launcher = [os.path.join(self.root, wt.LAUNCHER), "seed", "--root", self.root, "--no-fetch",
+                    "--commit", branch, "--if-moved"]
+        result = subprocess.run([sys.executable, *launcher], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already at", result.stdout)
+        # One already running is skipped, and so is a root with no seed.
+        lock = wt.take_update_lock(self.root)
+        try:
+            self.assertIn("skipped", self.tool("seed", "--root", self.root, "--no-fetch",
+                                               "--commit", "HEAD~1", "--if-moved"))
+        finally:
+            shutil.rmtree(lock)
+        empty = os.path.join(self.tmp.name, "no-seed")
+        self.assertIn("skipped", self.tool("seed", "--root", empty, "--if-moved", "--no-fetch"))
+
+        # Thread creation: `warm --refresh-behind` returns at once and a detached refresh
+        # brings the seed to origin/main.
+        write(append, read(append) + b"// main moved again\n")
+        self.commit("moved again")
+        self.git(self.repo, "remote", "add", "origin", self.repo)
+        self.git(self.repo, "fetch", "-q", "origin")
+        self.fresh_worktree()
+        before = wt.read_seed(self.root)
+        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
+        self.assertIn("refreshing it in the background", out)
+        # Killed once it is rebuilding slot a, it leaves slot b in use and warms working.
+        pid = int(re.search(r"process (\d+)", out).group(1))
+        while os.path.exists(os.path.join(wt.slot_dir(self.root, "a"), wt.SEED_FILE)):
+            self.assertTrue(wt.process_alive(pid), read(os.path.join(self.root, wt.REFRESH_LOG)))
+            time.sleep(0.2)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True)
+        self.assertEqual(wt.read_seed(self.root), before)
+        self.warm()
+        self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), {"b", "c"})
+        start = time.time()
+        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
+        self.assertIn("refreshing it in the background", out)
+        self.assertLess(time.time() - start, 60)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=self.repo, capture_output=True,
+                              text=True, check=True).stdout.strip()
+        while (wt.read_seed(self.root) or {}).get("commit") != head:
+            self.assertLess(time.time() - start, 600, read(os.path.join(self.root, wt.REFRESH_LOG)))
+            time.sleep(2)
+        self.assertEqual(wt.read_seed(self.root)["slot"], "a")
+        out = self.tool("warm", "--root", self.root, "--refresh-behind", cwd=self.worktree)
+        self.assertNotIn("background", out)  # current now
+
     def test_unchanged_worktree_rebuilds_nothing_and_runs_with_its_own_paths(self):
         self.warm()
         self.assertEqual(self.rebuilt("check", "--workspace", "--all-targets"), set())
@@ -582,7 +736,8 @@ class EndToEnd(unittest.TestCase):
         wt.translate = racing
         try:
             args = argparse.Namespace(root=self.root, worktree=self.worktree, target_dir=None,
-                                      copy="copyfile2", threads=4, target_roots=None, min_free_gb=60)
+                                      copy="copyfile2", threads=4, target_roots=None, min_free_gb=60,
+                                      refresh_behind=False)
             self.assertEqual(wt.command_warm(args), 0)
         finally:
             wt.translate = translate

@@ -33,17 +33,27 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# A seed root holds two slots, each a checkout and its build with a record and an index in
+# `slots/<slot>`; `seed.json` beside them is the record of the slot warms use. A refresh
+# rebuilds the other slot and then replaces `seed.json`.
 SEED_FILE = "seed.json"
 INDEX_FILE = "index.json"
-CHECKOUT_FILE = "checkout.txt"
+CHECKOUT_FILE = "checkout.txt"  # slot a's checkout path
+SLOTS = ("a", "b")
+SLOTS_DIR = "slots"
+READERS_DIR = "reading"  # one file per running warm, naming the slot it copies
 UPDATE_LOCK = "updating"
+REFRESH_LOG = "refresh.log"  # what `warm --refresh-behind`'s background refreshes print
+REFRESH_COMMIT = "origin/main"
+GAME_PROCESS = "hoi4.exe"  # refreshes wait while it runs: benchmarks and oracle runs
+LAUNCHER = "warm_target.py"  # the tool at the seed's commit, for scheduled refreshes
 STAGING_RECORDS = "warming"  # one file per running warm, naming its staging copy
 STAGING_PREFIX = ".warming-"
 # `warm --target-roots` keeps a worktree's profile directory in
 # `<root>\<worktree name>-<path hash>-cargo-target\debug`, naming its junction in OWNER_FILE.
 EXTERNAL_SUFFIX = "-cargo-target"
 OWNER_FILE = "worktree.txt"
-SEED_FORMAT = 1
+SEED_FORMAT = 2
 
 # Cargo's encoded dep-info (`.fingerprint/<unit>/dep-*`) as written by the pinned toolchain:
 # a marker that older readers reject, a format version, the files rustc read (each tagged as
@@ -85,6 +95,10 @@ STYLES = [(sep, case, enc) for enc in PATH_ENCODINGS for case in PATH_CASES for 
 
 class WarmError(Exception):
     """A condition that makes warming unsafe; nothing is left in the target directory."""
+
+
+class SeedBusy(WarmError):
+    """Another seed update is running."""
 
 
 # ---------------------------------------------------------------------------------------
@@ -833,34 +847,87 @@ def backdate(inputs, worktree, checkout, started):
 
 
 def read_seed(root):
-    path = os.path.join(root, SEED_FILE)
+    """The record of the seed slot warms use now, or None."""
+    return read_record(os.path.join(root, SEED_FILE))
+
+
+def read_record(path):
     if not os.path.exists(path):
         return None
     with open(path, encoding="utf-8") as handle:
-        return json.load(handle)
+        record = json.load(handle)
+    return record if record.get("format") == SEED_FORMAT else None
+
+
+def write_record(path, record):
+    with open(path + ".tmp", "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def slot_dir(root, slot):
+    return os.path.join(root, SLOTS_DIR, slot)
+
+
+def slot_checkout(root, slot):
+    """Each slot's checkout: the recorded path, with its last character naming slot `b`, so
+    both have the shape the seed was made `--like`."""
+    with open(os.path.join(root, CHECKOUT_FILE), encoding="utf-8") as handle:
+        base = handle.read().strip()
+    return base if slot == SLOTS[0] else base[:-1] + slot
+
+
+def register_reader(root, slot):
+    """Records that this process copies from `slot`; a refresh waits for it before
+    rebuilding that slot."""
+    directory = os.path.join(root, READERS_DIR)
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, str(os.getpid()))
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(slot)
+    return path
+
+
+def slot_readers(root, slot):
+    """Live processes copying from `slot`; records of dead ones are removed."""
+    directory = os.path.join(root, READERS_DIR)
+    readers = []
+    for name in os.listdir(directory) if os.path.isdir(directory) else []:
+        path = os.path.join(directory, name)
+        if not name.isdigit() or not process_alive(int(name)):
+            os.remove(path)
+            continue
+        with open(path, encoding="utf-8") as handle:
+            if handle.read().strip() == slot:
+                readers.append(int(name))
+    return readers
+
+
+def update_running(lock):
+    """Whether a live process holds the update lock."""
+    try:
+        with open(os.path.join(lock, "pid"), encoding="utf-8") as handle:
+            return process_alive(int(handle.read()))
+    except FileNotFoundError:
+        # A holder writes its pid right after taking the lock.
+        return os.path.isdir(lock) and time.time() - os.stat(lock).st_mtime < 60
+    except ValueError:
+        return False
 
 
 def take_update_lock(root):
     """Claims the seed for one update. A lock whose process has exited (an update that was
-    killed) is taken over: the seed it left has no record, so nothing used it meanwhile."""
+    killed) is taken over: the slot it was building has no record, so nothing used it."""
     lock = os.path.join(root, UPDATE_LOCK)
     while True:
         try:
             os.mkdir(lock)
             break
         except FileExistsError:
-            try:
-                with open(os.path.join(lock, "pid"), encoding="utf-8") as handle:
-                    holder = int(handle.read())
-            except (FileNotFoundError, ValueError):
-                # A holder writes its pid right after taking the lock.
-                if time.time() - os.stat(lock).st_mtime < 60:
-                    raise WarmError(f"another seed update holds {lock}") from None
-                holder = 0
-            if holder and process_alive(holder):
-                raise WarmError(f"another seed update holds {lock}") from None
+            if update_running(lock):
+                raise SeedBusy(f"another seed update holds {lock}") from None
             print(f"taking over {lock}: the update that held it is no longer running")
-            shutil.rmtree(lock)
+            shutil.rmtree(lock, ignore_errors=True)
     with open(os.path.join(lock, "pid"), "w", encoding="utf-8") as handle:
         handle.write(str(os.getpid()))
     return lock
@@ -869,7 +936,13 @@ def take_update_lock(root):
 def command_seed(args):
     root = os.path.abspath(args.root)
     os.makedirs(root, exist_ok=True)
-    lock = take_update_lock(root)
+    try:
+        lock = take_update_lock(root)
+    except SeedBusy as busy:
+        if args.if_moved:
+            print(f"seed: {busy}; skipped")
+            return 0
+        raise
     try:
         return update_seed(root, args)
     finally:
@@ -877,25 +950,58 @@ def command_seed(args):
 
 
 def update_seed(root, args):
-    record = os.path.join(root, CHECKOUT_FILE)
-    if os.path.exists(record):
-        with open(record, encoding="utf-8") as handle:
-            checkout = handle.read().strip()
-    elif args.like:
-        checkout = shaped_checkout(root, os.path.abspath(args.like))
-        with open(record, "w", encoding="utf-8") as handle:
-            handle.write(checkout + "\n")
-    else:
-        raise WarmError("a new seed needs --like <worktree path> to choose its checkout path")
+    """Builds the slot warms are not using and then points warms at it, so a refresh never
+    leaves them without a seed."""
+    record_path = os.path.join(root, CHECKOUT_FILE)
+    if not os.path.exists(record_path):
+        if args.if_moved:
+            print(f"seed: no seed in {root} to refresh; create it with --like; skipped")
+            return 0
+        if not args.like:
+            raise WarmError("a new seed needs --like <worktree path> to choose its checkout path")
+        with open(record_path, "w", encoding="utf-8") as handle:
+            handle.write(shaped_checkout(root, os.path.abspath(args.like)) + "\n")
+    # Any slot's checkout is a worktree of the repository, so the launcher copy of this tool
+    # beside the seed can refresh it.
+    checkouts = [slot_checkout(root, slot) for slot in SLOTS]
+    repo = args.repo or next((c for c in checkouts if os.path.exists(os.path.join(c, ".git"))), str(ROOT))
+    if args.if_moved and game_running():
+        print("seed: the game is running; skipped")
+        return 0
     if not args.no_fetch:
-        git(args.repo, "fetch", "--quiet", "origin")
-    commit = git(args.repo, "rev-parse", "--verify", args.commit + "^{commit}")
-    seed_path = os.path.join(root, SEED_FILE)
-    if os.path.exists(seed_path):
-        os.remove(seed_path)  # a seed being rebuilt is not used
-    if not os.path.isdir(checkout):
-        git(args.repo, "worktree", "add", "--detach", checkout, commit)
-    git(checkout, "checkout", "--quiet", "--detach", "--force", commit)
+        git(repo, "fetch", "--quiet", "origin")
+    commit = git(repo, "rev-parse", "--verify", args.commit + "^{commit}")
+    sweep_staging(root)
+    active = read_seed(root)
+    if args.if_moved and active and active["commit"] == commit:
+        print(f"seed: already at {commit[:10]}; skipped")
+        return 0
+    slot = SLOTS[1] if active and active["slot"] == SLOTS[0] else SLOTS[0]
+    # Warms that began before the last refresh may still copy from this slot.
+    deadline = time.time() + args.reader_wait * 60
+    while slot_readers(root, slot):
+        if time.time() > deadline:
+            print(f"seed: warms still copy from slot {slot}; skipped")
+            return 0
+        time.sleep(5)
+    directory = slot_dir(root, slot)
+    os.makedirs(directory, exist_ok=True)
+    slot_record = os.path.join(directory, SEED_FILE)
+    if os.path.exists(slot_record):
+        os.remove(slot_record)  # a slot being rebuilt is not used
+    checkout = slot_checkout(root, slot)
+    try:
+        # Never check out in a repository the slot directory merely sits inside.
+        top = os.path.normcase(os.path.abspath(git(checkout, "rev-parse", "--show-toplevel")))
+        if top != os.path.normcase(checkout):
+            raise WarmError(f"{checkout} is not a checkout of its own")
+        git(checkout, "checkout", "--quiet", "--detach", "--force", commit)
+    except (WarmError, OSError):
+        # No checkout yet, or one a killed refresh left half made: start it again.
+        run(["git", "worktree", "remove", "--force", checkout], repo, check=False)
+        shutil.rmtree(checkout, ignore_errors=True)
+        git(repo, "worktree", "prune")
+        git(repo, "worktree", "add", "--detach", checkout, commit)
     env = seed_env()
     metadata = cargo_metadata(checkout, env)
     target = os.path.normpath(metadata["target_directory"])
@@ -904,7 +1010,12 @@ def update_seed(root, args):
     git(checkout, *clean)
     if git_dirty(checkout):
         raise WarmError(f"seed checkout {checkout} is not clean")
-    logs = os.path.join(root, "logs")
+    profile = os.path.join(target, "debug")
+    if active and not os.path.isdir(profile):
+        # A new slot starts as a warm copy of the other, so only what changed compiles.
+        result = warm_into(root, active, checkout, target, None, "copyfile2", 16)
+        print(f"slot {slot} started from slot {active['slot']}: " + report(result))
+    logs = os.path.join(directory, "logs")
     os.makedirs(logs, exist_ok=True)
     results = []
     for name, cargo_args, tail in SEED_COMMANDS:
@@ -918,7 +1029,6 @@ def update_seed(root, args):
         print(f"{name}: exit {code} in {results[-1]['seconds']} s", flush=True)
     if git(checkout, "rev-parse", "HEAD") != commit or git_dirty(checkout):
         raise WarmError(f"seed checkout {checkout} changed during the build")
-    profile = os.path.join(target, "debug")
     # A unit no seed command used is either outdated or blocked by a crate that failed to
     # compile at this commit; neither is worth copying.
     live = live_units([os.path.join(logs, f"{c[0]}.json") for c in SEED_COMMANDS], profile)
@@ -927,10 +1037,15 @@ def update_seed(root, args):
     else:
         freed = collect_garbage(profile, live)
         print(f"{len(live)} units in use; removed {freed / 2**30:.1f} GiB of older units")
+    if not args.keep_incremental:
+        # Warms never copy them, and they grew to six times the rest of the seed; the next
+        # update compiles the crates that changed without them.
+        shutil.rmtree(os.path.join(profile, "incremental"), ignore_errors=True)
     start = time.time()
     files, stamp = target_files(target)
     index = scan_target(target, [target, checkout], files, args.jobs, seed_markers(checkout, root))
-    with open(os.path.join(root, INDEX_FILE), "w", encoding="utf-8") as handle:
+    index_path = os.path.join(directory, INDEX_FILE)
+    with open(index_path, "w", encoding="utf-8") as handle:
         json.dump(index, handle)
     print(f"indexed {len(files)} files ({stamp['bytes'] / 2**30:.1f} GiB), {len(index)} name the seed, "
           f"in {time.time() - start:.0f} s", flush=True)
@@ -942,9 +1057,11 @@ def update_seed(root, args):
     seed = {
         "format": SEED_FORMAT,
         "generation": uuid.uuid4().hex,
+        "slot": slot,
         "commit": commit,
         "checkout": checkout,
         "target": target,
+        "index": index_path,
         "toolchain": toolchain(checkout),
         "cargo_lock_sha256": sha256(os.path.join(checkout, "Cargo.lock")),
         "packages": packages,
@@ -953,14 +1070,15 @@ def update_seed(root, args):
         "stamp": stamp,
         "built": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    if not args.keep_incremental:
-        # Warms never copy them, and they grew to six times the rest of the seed; the next
-        # update compiles the crates that changed without them.
-        shutil.rmtree(os.path.join(profile, "incremental"), ignore_errors=True)
-    with open(seed_path + ".tmp", "w", encoding="utf-8") as handle:
-        json.dump(seed, handle, indent=1)
-    os.replace(seed_path + ".tmp", seed_path)
-    print(f"seed {commit[:10]} ready in {checkout}")
+    write_record(slot_record, seed)
+    write_record(os.path.join(root, SEED_FILE), seed)  # warms switch to this slot
+    # The launcher a scheduled refresh runs: this commit's tool (or, in a repository without
+    # it, the running one), beside the seed.
+    tool = os.path.join(checkout, "tools", "warm_target.py")
+    tool = tool if os.path.exists(tool) else os.path.abspath(__file__)
+    shutil.copy2(tool, os.path.join(root, LAUNCHER) + ".tmp")
+    os.replace(os.path.join(root, LAUNCHER) + ".tmp", os.path.join(root, LAUNCHER))
+    print(f"seed {commit[:10]} ready in slot {slot} ({checkout})")
     return 0
 
 
@@ -1054,11 +1172,66 @@ def sweep_external(target_roots):
                 shutil.rmtree(directory, ignore_errors=True)
 
 
+def game_running():
+    out = run(["tasklist", "/FI", f"IMAGENAME eq {GAME_PROCESS}", "/NH"], os.getcwd(), check=False)
+    return GAME_PROCESS.lower() in out.lower()
+
+
+def start_refresh(root, worktree):
+    """Starts `seed --if-moved` for the seed in the background, detached from this process
+    and its console and below normal priority (cargo and rustc inherit it), when the seed is
+    behind this worktree's origin/main, no update runs and the game is not running.
+    Returns at once, with the refresh's pid if it started one; the refresh writes to
+    REFRESH_LOG beside the seed."""
+    seed = read_seed(root)
+    try:
+        main = git(worktree, "rev-parse", "--verify", REFRESH_COMMIT + "^{commit}")
+    except WarmError:
+        main = None
+    if seed and seed["commit"] == main:
+        return None
+    if update_running(os.path.join(root, UPDATE_LOCK)):
+        print("warm: a seed refresh is already running")
+        return None
+    if game_running():
+        print("warm: the game is running; the seed is not refreshed")
+        return None
+    # The newest tool there is: the active slot's, else the launcher, else this one.
+    tools = [os.path.join(seed["checkout"], "tools", "warm_target.py")] if seed else []
+    tools += [os.path.join(root, LAUNCHER), os.path.abspath(__file__)]
+    tool = next(t for t in tools if os.path.exists(t))
+    log_path = os.path.join(root, REFRESH_LOG)
+    command = [sys.executable, tool, "seed", "--root", root, "--if-moved", "-j", "8"]
+    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+             | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
+    with open(log_path, "ab") as log:
+        log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(command)}\n".encode())
+        log.flush()
+        try:  # outlive a job object that would end it with the hook
+            child = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=log,
+                                     stderr=subprocess.STDOUT,
+                                     creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        except OSError:
+            child = subprocess.Popen(command, cwd=root, stdin=subprocess.DEVNULL, stdout=log,
+                                     stderr=subprocess.STDOUT, creationflags=flags)
+    print(f"warm: the seed is behind {REFRESH_COMMIT}; refreshing it in the background "
+          f"(process {child.pid}, log {log_path})")
+    return child.pid
+
+
 def command_warm(args):
     root = os.path.abspath(args.root)
     worktree = os.path.abspath(git(os.path.abspath(args.worktree), "rev-parse", "--show-toplevel"))
+    try:
+        return warm_worktree(args, root, worktree)
+    finally:
+        if args.refresh_behind:
+            start_refresh(root, worktree)
+
+
+def warm_worktree(args, root, worktree):
     seed = read_seed(root)
-    if seed is None or seed.get("format") != SEED_FORMAT:
+    if seed is None:
         print(f"warm: no usable seed in {root}; cargo will build from scratch")
         return 0
     target_roots = [os.path.abspath(r) for r in (args.target_roots or "").split(";") if r.strip()]
@@ -1078,9 +1251,6 @@ def command_warm(args):
     if toolchain(worktree) != seed["toolchain"]:
         print("warm: the worktree's toolchain differs from the seed's; cargo will build from scratch")
         return 0
-    checkout = seed["checkout"]
-    if git(checkout, "rev-parse", "HEAD") != seed["commit"] or git_dirty(checkout):
-        raise WarmError(f"seed checkout {checkout} no longer matches its build")
     external = None
     if target_roots:
         # The profile directory goes to the root with the most free space, behind a junction
@@ -1093,64 +1263,86 @@ def command_warm(args):
             return 0
         external = external_profile_dir(chosen, worktree)
         shutil.rmtree(external, ignore_errors=True)  # left by an earlier worktree of this path
-    with open(os.path.join(root, INDEX_FILE), encoding="utf-8") as handle:
-        index = json.load(handle)
-    started = time.time_ns()
-    staging = os.path.join(external or target, f"{STAGING_PREFIX}{os.getpid()}")
-    record = register_staging(root, staging)
-    os.makedirs(staging)
-    if external:
-        with open(os.path.join(external, OWNER_FILE), "w", encoding="utf-8") as handle:
-            handle.write(profile)
-    timings = {}
-    installed = False
-    try:
-        start = time.time()
-        if args.copy == "robocopy":
-            copy_robocopy(seed["target"], staging, args.threads)
-        else:
-            copy_seed(seed["target"], staging, target_files(seed["target"])[0], args.threads)
-        timings[f"copy ({args.copy})"] = time.time() - start
-        # Cargo run in the seed checkout outside `seed` would leave the index stale.
-        if target_files(staging)[1] != seed["stamp"]:
-            raise WarmError("the seed's build changed after it was indexed; run `seed` again")
-
-        start = time.time()
-        old_roots, new_roots = [seed["target"], checkout], [target, worktree]
-        counts = translate(staging, index, old_roots, new_roots, set(seed["rebuilt_packages"]))
-        timings["translate"] = time.time() - start
-
-        stale = precalculated_units(staging, seed["packages"], worktree, checkout)
-        invalidate(staging, stale)
-        counts["invalidated units"] += len(stale)
-        # Every file cargo might stat: what the units read, and every file a package lists
-        # (build scripts without `rerun-if-changed` paths watch all of them).
-        inputs = source_inputs(staging, seed["packages"]) | checkout_files(worktree)
-
-        if read_seed(root) != seed or git_dirty(checkout):
-            raise WarmError("the seed changed while it was copied")
-        installed = install(staging, target, external)
-        if not installed:
-            print(f"warm: cargo started building in {target} first; left its build alone")
-            return 0
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        os.remove(record)
-        if external and not installed:
-            shutil.rmtree(external, ignore_errors=True)
-
-    start = time.time()
-    same, differ = backdate(inputs, worktree, checkout, started)
-    timings["backdate"] = time.time() - start
+    result = warm_into(root, seed, worktree, target, external, args.copy, args.threads)
+    if result is None:
+        print(f"warm: cargo started building in {target} first; left its build alone")
+        return 0
     lock = sha256(os.path.join(worktree, "Cargo.lock")) == seed["cargo_lock_sha256"]
     print(f"warm: {target} seeded from {seed['commit'][:10]}"
           + (f", its profile directory on {external}" if external else "")
           + ("" if lock else " (Cargo.lock differs: units it changes rebuild)"))
-    print(f"  copied {seed['stamp']['bytes'] / 2**30:.2f} GiB; "
-          + ", ".join(f"{k} {v:.1f} s" for k, v in timings.items()))
-    print("  " + ", ".join(f"{k} {v}" for k, v in counts.items())
-          + f", sources unchanged {same}, changed {differ}")
+    print("  " + report(result))
     return 0
+
+
+def warm_into(root, seed, worktree, target, external, copy, threads):
+    """Copies the seed slot's build into the empty `target` of `worktree` and makes it the
+    worktree's own. Returns what it did, or None if cargo started building there first."""
+    checkout = seed["checkout"]
+    slot_record = os.path.join(slot_dir(root, seed["slot"]), SEED_FILE)
+    reader = register_reader(root, seed["slot"])
+    try:
+        if read_record(slot_record) != seed or git_dirty(checkout):
+            raise WarmError(f"seed slot {seed['slot']} no longer matches its record")
+        with open(seed["index"], encoding="utf-8") as handle:
+            index = json.load(handle)
+        started = time.time_ns()
+        staging = os.path.join(external or target, f"{STAGING_PREFIX}{os.getpid()}")
+        record = register_staging(root, staging)
+        os.makedirs(staging)
+        if external:
+            with open(os.path.join(external, OWNER_FILE), "w", encoding="utf-8") as handle:
+                handle.write(os.path.join(target, "debug"))
+        timings = {}
+        installed = False
+        try:
+            start = time.time()
+            if copy == "robocopy":
+                copy_robocopy(seed["target"], staging, threads)
+            else:
+                copy_seed(seed["target"], staging, target_files(seed["target"])[0], threads)
+            timings[f"copy ({copy})"] = time.time() - start
+            # Cargo run in the seed checkout outside `seed` would leave the index stale.
+            if target_files(staging)[1] != seed["stamp"]:
+                raise WarmError("the seed's build changed after it was indexed; run `seed` again")
+
+            start = time.time()
+            old_roots, new_roots = [seed["target"], checkout], [target, worktree]
+            counts = translate(staging, index, old_roots, new_roots, set(seed["rebuilt_packages"]))
+            timings["translate"] = time.time() - start
+
+            stale = precalculated_units(staging, seed["packages"], worktree, checkout)
+            invalidate(staging, stale)
+            counts["invalidated units"] += len(stale)
+            # Every file cargo might stat: what the units read, and every file a package
+            # lists (build scripts without `rerun-if-changed` paths watch all of them).
+            inputs = source_inputs(staging, seed["packages"]) | checkout_files(worktree)
+
+            if read_record(slot_record) != seed or git_dirty(checkout):
+                raise WarmError("the seed changed while it was copied")
+            installed = install(staging, target, external)
+            if not installed:
+                return None
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+            os.remove(record)
+            if external and not installed:
+                shutil.rmtree(external, ignore_errors=True)
+    finally:
+        os.remove(reader)
+
+    start = time.time()
+    same, differ = backdate(inputs, worktree, checkout, started)
+    timings["backdate"] = time.time() - start
+    counts["sources unchanged"], counts["changed"] = same, differ
+    return seed["stamp"]["bytes"], timings, counts
+
+
+def report(result):
+    copied, timings, counts = result
+    return (f"copied {copied / 2**30:.2f} GiB; "
+            + ", ".join(f"{k} {v:.1f} s" for k, v in timings.items()) + "; "
+            + ", ".join(f"{k} {v}" for k, v in counts.items()))
 
 
 def install(staging, target, external):
@@ -1183,17 +1375,15 @@ def install(staging, target, external):
 
 def command_check(args):
     root = os.path.abspath(args.root)
-    record = os.path.join(root, CHECKOUT_FILE)
-    if not os.path.exists(record):
+    if not os.path.exists(os.path.join(root, CHECKOUT_FILE)):
         raise WarmError(f"no seed in {root}")
-    with open(record, encoding="utf-8") as handle:
-        roots = [handle.read().strip()]
-    seed = read_seed(root)  # absent while the seed is being rebuilt
-    if seed and under(seed["target"], roots[0]) is None:
-        roots.insert(0, seed["target"])
+    checkouts = [slot_checkout(root, slot) for slot in SLOTS]
+    roots = [read_record(os.path.join(slot_dir(root, slot), SEED_FILE)) for slot in SLOTS]
+    roots = [r["target"] for r in roots if r and under(r["target"], r["checkout"]) is None] + checkouts
     target = os.path.abspath(args.target_dir)
     files, _ = target_files(target)
-    index = scan_target(target, roots, files, args.jobs, seed_markers(roots[-1], root))
+    markers = [c.rsplit("\\", 1)[-1] for c in checkouts] + [root.rstrip("\\")]
+    index = scan_target(target, roots, files, args.jobs, markers)
     for rel, entry in sorted(index.items()):
         print(f"{rel}: {len(entry['at'])} seed paths, {entry['unrecognized']} other references")
     print(f"{len(index)} of {len(files)} files name the seed")
@@ -1206,11 +1396,16 @@ def main():
     seed = commands.add_parser("seed", help="build or update the seed at a commit")
     seed.add_argument("--root", required=True, help="directory holding the seed")
     seed.add_argument("--like", help="a worktree path whose shape the seed checkout copies")
-    seed.add_argument("--commit", default="origin/main")
+    seed.add_argument("--commit", default=REFRESH_COMMIT)
     seed.add_argument("--no-fetch", action="store_true")
-    seed.add_argument("--repo", default=str(ROOT), help="the repository the seed checks out")
+    seed.add_argument("--repo", help="the repository the seed checks out (default: the seed's "
+                      "own checkouts, or the one this tool is in)")
     seed.add_argument("--keep-incremental", action="store_true",
                       help="keep rustc's incremental caches, for faster updates at the cost of disk")
+    seed.add_argument("--if-moved", action="store_true",
+                      help="do nothing when the seed is at the commit already or another update runs")
+    seed.add_argument("--reader-wait", type=int, default=15,
+                      help="minutes to wait for warms still copying from the slot to rebuild")
     seed.add_argument("-j", "--jobs", type=int, default=8)
     warm = commands.add_parser("warm", help="seed this worktree's empty target directory")
     warm.add_argument("--root", required=True)
@@ -1222,6 +1417,8 @@ def main():
     warm.add_argument("--min-free-gb", type=int, default=60,
                       help="with --target-roots, warm only if this much stays free after the copy")
     warm.add_argument("--threads", type=int, default=16)
+    warm.add_argument("--refresh-behind", action="store_true",
+                      help="afterwards, refresh the seed in the background if it is behind origin/main")
     check = commands.add_parser("check", help="list references to the seed in a target directory")
     check.add_argument("--root", required=True)
     check.add_argument("--target-dir", required=True)

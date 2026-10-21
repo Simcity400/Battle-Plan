@@ -176,14 +176,17 @@ instead: the build of a clean checkout at a known commit, recorded with that com
 the toolchain and the lockfile hash.
 
 ```powershell
-# Once, then whenever the seed should follow main: fetches, checks out origin/main and runs
-# `cargo check --workspace --all-targets`, `cargo test --workspace --no-run` (what
-# `cargo nextest run --no-run` builds) and `cargo clippy --workspace --all-targets -- -D warnings`
-# in the seed's checkout, going on past crates that fail. `--like` is needed the first time.
+# Once, with `--like`; then to follow main, `--if-moved`, which does nothing when the seed is
+# at origin/main already, another refresh runs or the game runs. Fetches, checks out
+# origin/main and runs `cargo check --workspace --all-targets`, `cargo test --workspace
+# --no-run` (what `cargo nextest run --no-run` builds) and `cargo clippy --workspace
+# --all-targets -- -D warnings` in the seed's spare slot, going on past crates that fail.
 python tools/warm_target.py seed --root seed --like C:\Users\Example\.t3\worktrees\battle-plan\t3-00000000
+python tools/warm_target.py seed --root seed --if-moved
 # In a new worktree, before its first cargo command; the profile directory goes to the
-# listed directory with the most free space, behind a junction at .cargo-target\debug:
-python tools/warm_target.py warm --root seed --target-roots "C:\hoi4-dev;G:\hoi4-dev"
+# listed directory with the most free space, behind a junction at .cargo-target\debug, and
+# a seed behind origin/main is refreshed in the background:
+python tools/warm_target.py warm --root seed --target-roots "C:\hoi4-dev;F:\hoi4-dev" --refresh-behind
 # Lists references to the seed in a target directory (exit code 1 if there are any):
 python tools/warm_target.py check --root seed --target-dir .cargo-target
 ```
@@ -225,10 +228,23 @@ made the worktree's own:
 
 `warm` does nothing, and says why, when the target directory already holds a build, the
 toolchain differs from the seed's or no seed is ready; a different `Cargo.lock` only
-rebuilds the units it changes. A seed is not used while `seed` runs, and an interrupted
-`seed` leaves it unused until the next `seed` (which takes over the dead run's lock)
-finishes. A copy made while the seed changed is dropped, and if cargo starts building in
-the directory before the copy is in place, cargo's build is kept and no source is
-backdated; the next `warm` of any worktree deletes a copy an interrupted `warm` left.
-Run cargo in the seed checkout only through `seed`: `warm` refuses a seed whose build
-changed after it was recorded.
+rebuilds the units it changes. A seed has two slots, each a checkout of the seed's shape
+and its build: `seed` rebuilds the slot warms are not using (a new slot starts as a warm
+copy of the other), waits up to `--reader-wait` minutes for warms still copying from it,
+and only when its build is indexed points warms at it, so a refresh never leaves new
+worktrees without a seed. An interrupted or failed `seed` leaves the slot it was building
+unused, and the next `seed` takes over its lock. A copy made while its slot changed is
+dropped, and if cargo starts building in the directory before the copy is in place,
+cargo's build is kept and no source is backdated; the next `warm` of any worktree deletes
+a copy an interrupted `warm` left. Run cargo in a seed checkout only through `seed`:
+`warm` refuses a slot whose build changed after it was recorded.
+
+`warm --refresh-behind` (what new threads run) refreshes the seed as main moves. After
+warming, if the seed's commit is not the worktree's `origin/main`, no refresh holds the
+lock and `hoi4.exe` is not running (benchmarks and oracle runs), it starts
+`seed --if-moved -j 8` with the active slot's copy of this tool and returns at once. The
+refresh runs detached from the thread's process and console, below normal priority
+(cargo and rustc inherit it, so agents' builds come first), and appends its output to
+`refresh.log` beside the seed; cargo's output goes to `slots\<slot>\logs`. To stop one,
+end its process tree: `taskkill /T /F /PID <pid>` with the pid in the seed's
+`updating\pid`. The slot warms use is never touched, and the next refresh starts over.
