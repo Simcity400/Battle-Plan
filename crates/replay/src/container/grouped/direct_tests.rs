@@ -1045,3 +1045,87 @@ fn direct_delta_alias_keyframe_memos_and_cached_prefixes_hold_only_resolved_upda
         }
     }
 }
+
+/// A checked allocation failure on the direct route is not a refusal: it propagates instead of being
+/// retried through the original reader with a fresh budget, which would turn it into success.
+#[test]
+fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
+    const CHILD: &str = "BATTLE_PLAN_GROUPED_DIRECT_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "container::grouped::direct_tests::direct_delta_allocation_failures_propagate_instead_of_retrying",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    thread_local! {
+        static ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static FAIL_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+    fn fail_allocation() -> bool {
+        let attempt = ATTEMPTS.get() + 1;
+        ATTEMPTS.set(attempt);
+        FAIL_AT.get() == Some(attempt)
+    }
+    let (replay, _) = fixture(Layout::Chosen);
+    let mut checked = 0;
+    for index in &replay.index {
+        let bytes = replay.block_bytes(index).unwrap();
+        let directory = Directory::parse(&bytes, index).unwrap();
+        let present = Present::new(replay.format.version());
+        let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
+        let (hours, entries) = read_header(&header, index, directory.frames, &present).unwrap();
+        let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
+        let context = Context {
+            replay: &replay,
+            index,
+            position: replay.block_position(index),
+            block: &bytes,
+            directory: &directory,
+            format: replay.format,
+            present: &present,
+            hours: &hours,
+            entries: &entries,
+            selected: None,
+            complete: true,
+            memo: &memo,
+        };
+        for &table in &present.tables {
+            if keyframe_refusal(&directory, replay.format, None, table)
+                .unwrap()
+                .is_some()
+            {
+                continue;
+            }
+            // Warm the alias sources' shared views and memo before counting checked growth.
+            direct::table_updates(&context, table).unwrap();
+            ATTEMPTS.set(0);
+            FAIL_AT.set(None);
+            engine_allocation::set_stop_hook(Some(fail_allocation));
+            let healthy = direct::table_updates(&context, table);
+            engine_allocation::set_stop_hook(None);
+            healthy.unwrap();
+            let attempts = ATTEMPTS.get();
+            for ordinal in 1..=attempts {
+                ATTEMPTS.set(0);
+                FAIL_AT.set(Some(ordinal));
+                engine_allocation::set_stop_hook(Some(fail_allocation));
+                let result = direct::table_updates(&context, table);
+                engine_allocation::set_stop_hook(None);
+                assert_eq!(
+                    result.unwrap_err().kind(),
+                    io::ErrorKind::OutOfMemory,
+                    "{table:?} checked allocation {ordinal}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "the fixture must reach checked allocations on the direct route");
+}
