@@ -261,7 +261,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::MIO_POLICY_COST_FORMAT
+            crate::rows::compatibility::EVENT_FEED_OCCURRENCE_DELTAS_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -328,7 +328,7 @@ mod tests {
                     TableId::DoctrineCountries,
                 ]);
             }
-            if version < crate::rows::compatibility::EVENT_FEED_COLUMNS_FORMAT {
+            if version < crate::rows::compatibility::EVENT_FEED_OCCURRENCE_DELTAS_FORMAT {
                 expected.push(TableId::EventFeedHistory);
             }
             if version < 104 {

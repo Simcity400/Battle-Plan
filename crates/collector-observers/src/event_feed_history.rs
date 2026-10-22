@@ -295,7 +295,7 @@ impl Snapshot {
             .failure
             .map(|reason| allocation::copy_vec(reason.as_bytes()))
             .transpose()?;
-        let row = EventFeedHistoryRow {
+        let mut row = EventFeedHistoryRow {
             script_tokens: allocation::copy_vec(&self.script_tokens)?,
             script_scopes: allocation::copy_vec(&self.script_scopes)?,
             generation: self.boundary.generation,
@@ -311,7 +311,8 @@ impl Snapshot {
             },
             events: allocation::copy_vec(&self.events)?,
         };
-        row.validate()?;
+        // Off the hourly boundary: the pack stores each distinct token once.
+        row.intern_tokens()?;
         Ok(Prepared {
             row,
             revision: self.publication,

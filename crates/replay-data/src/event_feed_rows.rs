@@ -1096,6 +1096,54 @@ impl EventFeedHistoryRow {
             .into_iter()
             .filter_map(|(bit, name)| (self.script_refusals & bit as u8 != 0).then_some(name))
     }
+    /// Keep each distinct token's bytes once in the arena, in first-use order,
+    /// and point every occurrence of an equal token at that one span. Every
+    /// occurrence still resolves the same bytes; a roster rebuild naming one
+    /// decision for every target stores that name once.
+    pub fn intern_tokens(&mut self) -> io::Result<()> {
+        self.validate()?;
+        let (events, tokens) = (&self.events, &self.script_tokens);
+        let span = |index: usize| {
+            events[index]
+                .script
+                .map(|script| &tokens[script.token_start as usize..][..script.token_len as usize])
+        };
+        let mut order = allocation::vec(events.len())?;
+        order.extend((0..events.len()).filter(|&index| events[index].script.is_some()));
+        order.sort_unstable_by(|&a, &b| span(a).cmp(&span(b)).then(a.cmp(&b)));
+        // Each occurrence's first occurrence with an equal token.
+        let mut first = allocation::vec(events.len())?;
+        first.resize(events.len(), 0);
+        let mut bytes = 0;
+        for run in order.chunk_by(|&a, &b| span(a) == span(b)) {
+            bytes += span(run[0]).map_or(0, <[u8]>::len);
+            for &index in run {
+                first[index] = run[0];
+            }
+        }
+        let mut interned = allocation::vec(bytes)?;
+        let mut starts = allocation::vec(events.len())?;
+        starts.resize(events.len(), 0);
+        for index in 0..events.len() {
+            if let Some(token) = span(index) {
+                starts[index] = if first[index] == index {
+                    let start = u32::try_from(interned.len())
+                        .map_err(|_| invalid("Event feed token arena exceeds u32"))?;
+                    interned.extend_from_slice(token);
+                    start
+                } else {
+                    starts[first[index]]
+                };
+            }
+        }
+        for (event, start) in self.events.iter_mut().zip(starts) {
+            if let Some(script) = event.script.as_mut() {
+                script.token_start = start;
+            }
+        }
+        self.script_tokens = interned;
+        Ok(())
+    }
     pub fn validate(&self) -> io::Result<()> {
         if self.script_refusals & !DECISION_FAMILY_REFUSALS != 0 {
             return Err(invalid("unknown Event feed script family refusal"));
@@ -1396,6 +1444,227 @@ pub mod tests {
                 }),
             }],
         }
+    }
+
+    #[test]
+    fn interned_tokens_keep_every_occurrence_and_the_retained_state_it_reduces_to() {
+        use EventFeedScriptChange::*;
+        use decisions::{DecisionChange, Operation};
+        let owner = EventFeedCountry {
+            reference: 3,
+            id: 3,
+            instance: 0,
+        };
+        let mut row = row();
+        row.events.clear();
+        row.counts = None;
+        row.coverage = EventFeedCoverage::Partial;
+        // The seal's layout: every occurrence's token and scopes appended in order.
+        let mut push = |source, target, token: &[u8], scopes: u32, script: EventFeedScript| {
+            let sequence = row.events.last().map_or(1, |event| event.sequence + 1);
+            let script = EventFeedScript {
+                token_start: row.script_tokens.len() as u32,
+                token_len: token.len() as u32,
+                scope_start: row.script_scopes.len() as u32,
+                scope_len: scopes,
+                ..script
+            };
+            row.script_tokens.extend_from_slice(token);
+            for _ in 0..scopes {
+                row.script_scopes.push(EventFeedScope {
+                    country: 3,
+                    ..Default::default()
+                });
+            }
+            row.events.push(EventFeedEvent {
+                sequence,
+                generation: row.generation,
+                hour: row.read_hour,
+                source,
+                actor: owner,
+                target,
+                cause: Recorded::Value(Default::default()),
+                script: Some(script),
+            });
+        };
+        let event = |id| Some(EventFeedEventIdentity { kind: 50, id });
+        let change = |change| EventFeedScript {
+            change: Some(change),
+            ..Default::default()
+        };
+        let decision = |operation, container, ordinal| {
+            change(Decision(DecisionChange {
+                operation,
+                container,
+                flags: 0,
+                ordinal,
+                political_power: None,
+            }))
+        };
+        let none = EventFeedCountry::default();
+        let (state, fired) = (EventFeedSource::ScriptState, b"synthetic.2".as_slice());
+        push(
+            EventFeedSource::ScriptEvent,
+            owner,
+            b"synthetic.1",
+            1,
+            EventFeedScript {
+                native_event: event(1),
+                instance: Some(5),
+                ..Default::default()
+            },
+        );
+        push(
+            EventFeedSource::EventOption,
+            owner,
+            b"synthetic.1",
+            1,
+            EventFeedScript {
+                native_event: event(1),
+                option: Some(-1),
+                ..Default::default()
+            },
+        );
+        push(state, none, b"", 0, change(PendingBaseline));
+        push(
+            state,
+            none,
+            b"synthetic.1",
+            1,
+            EventFeedScript {
+                native_event: event(1),
+                instance: Some(5),
+                ..change(PendingStored { due_hour: 40 })
+            },
+        );
+        push(state, none, b"", 0, change(PendingReady));
+        push(state, none, b"", 0, change(FiredBaseline));
+        for token in [b"synthetic.1".as_slice(), fired, b"synthetic.1"] {
+            push(
+                state,
+                none,
+                token,
+                0,
+                EventFeedScript {
+                    native_event: event(token[10].into()),
+                    ..change(FiredMember)
+                },
+            );
+        }
+        push(state, none, b"", 0, change(FiredReady));
+        push(state, owner, b"", 0, change(DelayedBaseline));
+        push(
+            state,
+            owner,
+            fired,
+            1,
+            EventFeedScript {
+                native_event: event(2),
+                instance: Some(7),
+                ..change(DelayedStored { remaining: 30 })
+            },
+        );
+        push(state, owner, b"", 0, change(DelayedReady));
+        push(state, none, b"", 0, decision(Operation::Baseline, 0, 0));
+        push(
+            state,
+            none,
+            b"decision.a",
+            0,
+            EventFeedScript {
+                instance: Some(9),
+                days: Some(4),
+                ..decision(Operation::Store, 0, 0)
+            },
+        );
+        push(state, none, b"", 0, decision(Operation::Ready, 0, 0));
+        push(
+            state,
+            none,
+            b"decision.a",
+            0,
+            EventFeedScript {
+                days: Some(2),
+                ..decision(Operation::RandomSet, 0, 6)
+            },
+        );
+        push(
+            state,
+            none,
+            b"decision.b",
+            0,
+            change(Decision(DecisionChange {
+                flags: decisions::IGNORED,
+                ..DecisionChange::new(Operation::Ignore, 0)
+            })),
+        );
+        for target in 1..=3 {
+            let target = EventFeedCountry {
+                reference: target,
+                id: target,
+                instance: 0,
+            };
+            push(
+                state,
+                target,
+                b"decision.a",
+                0,
+                EventFeedScript {
+                    country_target: Some(3),
+                    ..decision(Operation::Candidate, 0, target.reference)
+                },
+            );
+        }
+        push(state, none, b"", 0, decision(Operation::Rebuild, 3, 0));
+        row.validate().unwrap();
+
+        let mut interned = row.clone();
+        interned.intern_tokens().unwrap();
+        // Each distinct token once, in first-use order; empty tokens add nothing.
+        assert_eq!(
+            interned.script_tokens,
+            b"synthetic.1synthetic.2decision.adecision.b"
+        );
+        let resolve = |row: &EventFeedHistoryRow| {
+            row.events
+                .iter()
+                .map(|event| {
+                    let script = event.script.unwrap();
+                    row.script_tokens[script.token_start as usize..][..script.token_len as usize]
+                        .to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(resolve(&interned), resolve(&row));
+        let mut offsets = interned.clone();
+        for (event, original) in offsets.events.iter_mut().zip(&row.events) {
+            event.script.as_mut().unwrap().token_start = original.script.unwrap().token_start;
+        }
+        offsets.script_tokens = row.script_tokens.clone();
+        assert_eq!(offsets, row, "only token offsets and the arena change");
+        // Retained registries, delayed queues and decision rosters reduce alike.
+        let reduce = |row: &EventFeedHistoryRow| {
+            let mut state = ScriptEventState::default();
+            let mut visits = Vec::new();
+            state
+                .observe_decisions(row, |owner, event| {
+                    visits.push(format!("{} {owner:?}", event.sequence));
+                    Ok(())
+                })
+                .unwrap();
+            (format!("{state:?}"), visits)
+        };
+        assert_eq!(reduce(&interned), reduce(&row));
+        assert_eq!(reduce(&row).1.len(), 9);
+        let mut bytes = Vec::new();
+        interned.encode(&mut bytes).unwrap();
+        assert_eq!(
+            EventFeedHistoryRow::decode(&mut Decoder::new(&bytes)).unwrap(),
+            interned
+        );
+        let mut again = interned.clone();
+        again.intern_tokens().unwrap();
+        assert_eq!(again, interned);
     }
 
     #[test]

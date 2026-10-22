@@ -21,10 +21,10 @@ pub const COMBAT_LOG_FORMAT: u16 = 104;
 pub const EVENT_FEED_COLUMNS_FORMAT: u16 = 106;
 /// EventFeedHistory's owner-local refusal markers: a delayed owner's
 /// DelayedRefused change (code 18) and a decision owner's Refused operation
-/// (14), each carrying its reason as the token. The table's layout is
-/// unchanged, so its last change stays at EVENT_FEED_COLUMNS_FORMAT: every
-/// older event batch decodes unchanged, and the new codes appear only from
-/// this format.
+/// (14), each carrying its reason as the token. The table's layout did not
+/// change at this format, and the new codes appear only from it; the
+/// occurrence deltas of EVENT_FEED_OCCURRENCE_DELTAS_FORMAT later replaced the
+/// layout.
 pub const EVENT_FEED_OWNER_REFUSALS_FORMAT: u16 = 109;
 /// ProductionLineOutput rows carry each tick's purpose and split a line's
 /// buckets by it; ProductionLineModifiers records the conversion control.
@@ -50,6 +50,10 @@ pub const UNIT_BONUSES_FORMAT: u16 = 117;
 /// Owner-approved IndustrialOrganisationPolicies.cost_modifier_raw: each
 /// country's effective policy-cost modifier, read in the daily MIO census.
 pub const MIO_POLICY_COST_FORMAT: u16 = 118;
+/// EventFeedHistory stores each occurrence as the operand words that differ
+/// from the occurrence before it, and the writer keeps each distinct token
+/// once per pack.
+pub const EVENT_FEED_OCCURRENCE_DELTAS_FORMAT: u16 = 119;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1795,8 +1799,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::CountryExperienceGains.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::EventFeedHistory.index()] = table(
         TableId::EventFeedHistory,
-        EVENT_FEED_COLUMNS_FORMAT,
-        "event-feed-numeric-streams",
+        EVENT_FEED_OCCURRENCE_DELTAS_FORMAT,
+        "event-feed-occurrence-deltas",
     );
     history[TableId::EventFeedHistory.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::AdvisorRoles.index()] = appended_at(
@@ -4378,18 +4382,20 @@ mod tests {
     }
 
     #[test]
-    fn event_feed_owner_refusals_keep_the_column_batch_readable() {
+    fn event_feed_occurrence_deltas_refuse_every_earlier_batch_by_name() {
         let table = TableId::EventFeedHistory;
         let history = table.last_change();
-        assert_eq!(history.format, EVENT_FEED_COLUMNS_FORMAT);
+        assert_eq!(history.format, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT);
+        for format in [
+            EVENT_FEED_COLUMNS_FORMAT,
+            EVENT_FEED_OWNER_REFUSALS_FORMAT,
+            MIO_POLICY_COST_FORMAT,
+        ] {
+            assert!(history.table_gap(table, format).is_some());
+        }
         assert!(
             history
-                .table_gap(table, EVENT_FEED_COLUMNS_FORMAT)
-                .is_none()
-        );
-        assert!(
-            history
-                .table_gap(table, EVENT_FEED_OWNER_REFUSALS_FORMAT)
+                .table_gap(table, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT)
                 .is_none()
         );
     }
@@ -4663,10 +4669,11 @@ mod tests {
                 DAILY_PROGRESS_FORMAT,
                 UNIT_BONUSES_FORMAT,
                 MIO_POLICY_COST_FORMAT,
+                EVENT_FEED_OCCURRENCE_DELTAS_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117, 118],
+            [111, 112, 113, 114, 115, 116, 117, 118, 119],
         );
-        assert_eq!(FORMAT_VERSION, MIO_POLICY_COST_FORMAT);
+        assert_eq!(FORMAT_VERSION, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT);
     }
 
     #[test]

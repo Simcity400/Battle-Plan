@@ -1,9 +1,12 @@
-//! Exact per-field occurrence streams. The interval row supplies world and clock context.
+//! Exact occurrence stream. The interval row supplies world and clock context; each
+//! occurrence stores its sequence gap and only the operand words that differ from
+//! the occurrence before it, so a run of similar occurrences (a rebuilt candidate
+//! roster, say) costs its few changing words and repeats byte for byte when the
+//! same run recurs.
 use super::*;
 use crate::rows::{Field, Kind};
 
 // Source, country/cause leaves, script spans/flags/operands and operation leaves.
-// Sequence has its own unsigned anchor/delta stream before these columns.
 const FIELDS: usize = 37;
 type Words = [Option<u64>; FIELDS];
 
@@ -92,78 +95,105 @@ fn words(event: &EventFeedEvent, read_hour: i32) -> Words {
     words
 }
 
+/// The words of an occurrence that differ from the previous occurrence's.
+fn changed(words: &Words, previous: &Words) -> u64 {
+    (0..FIELDS).fold(0, |mask, column| {
+        mask | (u64::from(words[column] != previous[column]) << column)
+    })
+}
+
+/// Where the occurrence stream goes: counted for sizing, or appended after
+/// the caller reserved the counted bytes.
+trait Sink {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()>;
+    fn varint(&mut self, value: u128) -> io::Result<()>;
+    /// One word as the ordinary optional column change from its previous value.
+    fn change(&mut self, value: Option<u64>, previous: Option<u64>) -> io::Result<()>;
+}
+struct Count(usize);
+impl Sink for Count {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.0 = allocation::add(self.0, bytes.len())?;
+        Ok(())
+    }
+    fn varint(&mut self, value: u128) -> io::Result<()> {
+        self.0 = allocation::add(self.0, crate::rows::varint_bytes(value))?;
+        Ok(())
+    }
+    fn change(&mut self, value: Option<u64>, previous: Option<u64>) -> io::Result<()> {
+        let bytes = match value {
+            None => 1,
+            Some(value) => {
+                let delta = i128::from(value) - i128::from(previous.unwrap_or(0));
+                1 + crate::rows::varint_bytes(((delta as u128) << 1) ^ ((delta >> 127) as u128))
+            }
+        };
+        self.0 = allocation::add(self.0, bytes)?;
+        Ok(())
+    }
+}
+impl Sink for Vec<u8> {
+    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+    fn varint(&mut self, value: u128) -> io::Result<()> {
+        crate::codec::put_varint(self, value);
+        Ok(())
+    }
+    fn change(&mut self, value: Option<u64>, previous: Option<u64>) -> io::Result<()> {
+        Field::OptionalU64(value)
+            .change(Field::OptionalU64(previous))?
+            .encode(self)
+    }
+}
+
 pub(crate) struct Batch<'a>(pub &'a EventFeedHistoryRow);
 impl Batch<'_> {
-    /// Every occurrence's words, computed once for all columns.
-    fn rows(&self) -> io::Result<Vec<Words>> {
-        let mut rows = allocation::vec(self.0.events.len())?;
-        rows.extend(
-            self.0
-                .events
-                .iter()
-                .map(|event| words(event, self.0.read_hour)),
-        );
-        Ok(rows)
+    /// The occurrence count, then per occurrence its sequence gap (the first
+    /// from zero), its changed-word mask (zero when it repeats the previous
+    /// occurrence's mask, else the mask above a set low bit) and each changed
+    /// word as the ordinary optional column change. The first occurrence
+    /// differs from all-absent words.
+    fn write(&self, output: &mut impl Sink) -> io::Result<()> {
+        let count = u32::try_from(self.0.events.len())
+            .map_err(|_| invalid("too many Event feed occurrences"))?;
+        output.put(&count.to_le_bytes())?;
+        let (mut sequence, mut previous, mut previous_mask) = (0, [None; FIELDS], 0);
+        for event in &self.0.events {
+            let gap = event
+                .sequence
+                .checked_sub(sequence)
+                .ok_or_else(|| invalid("Event feed sequence decreased"))?;
+            output.varint(gap.into())?;
+            sequence = event.sequence;
+            let words = words(event, self.0.read_hour);
+            let mask = changed(&words, &previous);
+            output.varint(if mask == previous_mask {
+                0
+            } else {
+                u128::from(mask) << 1 | 1
+            })?;
+            for column in (0..FIELDS).filter(|column| mask & (1 << column) != 0) {
+                output.change(words[column], previous[column])?;
+            }
+            (previous, previous_mask) = (words, mask);
+        }
+        Ok(())
     }
 }
 impl crate::value::EncodeValue for Batch<'_> {
     fn encoded_bytes(&self) -> io::Result<usize> {
-        u32::try_from(self.0.events.len())
-            .map_err(|_| invalid("too many Event feed occurrences"))?;
-        let mut bytes = 4;
-        let mut sequence = 0;
-        for event in &self.0.events {
-            let delta = event
-                .sequence
-                .checked_sub(sequence)
-                .ok_or_else(|| invalid("Event feed sequence decreased"))?;
-            bytes = allocation::add(bytes, wide_len(delta))?;
-            sequence = event.sequence;
-        }
-        let rows = self.rows()?;
-        for column in 0..FIELDS {
-            let mut previous = None;
-            for row in &rows {
-                let value = row[column];
-                bytes = allocation::add(
-                    bytes,
-                    match value {
-                        None => 1,
-                        Some(value) => {
-                            let delta = i128::from(value) - i128::from(previous.unwrap_or(0));
-                            let zigzag = ((delta as u128) << 1) ^ ((delta >> 127) as u128);
-                            1 + crate::rows::varint_bytes(zigzag)
-                        }
-                    },
-                )?;
-                previous = value;
-            }
-        }
-        Ok(bytes)
+        let mut count = Count(0);
+        self.write(&mut count)?;
+        Ok(count.0)
     }
     fn recorded_bytes(&self) -> io::Result<usize> {
         self.encoded_bytes()
     }
     fn encode_value(&self, output: &mut Vec<u8>) -> io::Result<()> {
         allocation::reserve(output, self.encoded_bytes()?)?;
-        (self.0.events.len() as u32).encode_reserved(output)?;
-        let mut sequence = 0;
-        for event in &self.0.events {
-            crate::codec::put_varint(output, u128::from(event.sequence - sequence));
-            sequence = event.sequence;
-        }
-        let rows = self.rows()?;
-        for column in 0..FIELDS {
-            let mut previous = Field::OptionalU64(None);
-            for row in &rows {
-                let value = Field::OptionalU64(row[column]);
-                // The same exact numeric-difference coder used by ordinary table columns,
-                // applied between occurrences rather than to one opaque batch per hour.
-                value.change(previous)?.encode(output)?;
-                previous = value;
-            }
-        }
-        Ok(())
+        self.write(output)
     }
 }
 
@@ -171,35 +201,43 @@ pub(crate) fn decode(
     row: &EventFeedHistoryRow,
     input: &mut Decoder<'_>,
 ) -> io::Result<Vec<EventFeedEvent>> {
-    let count = input.count(FIELDS + 1)?;
-    let mut sequences = allocation::vec(count)?;
-    let mut sequence = 0_u64;
+    // Every occurrence stores at least its sequence gap and mask code.
+    let count = input.count(2)?;
+    let mut events = allocation::vec(count)?;
+    let (mut sequence, mut previous, mut previous_mask) = (0_u64, [None; FIELDS], 0_u64);
     for index in 0..count {
-        let delta = wide_read(input)?;
-        if index != 0 && delta == 0 {
+        let gap = wide_read(input)?;
+        if index != 0 && gap == 0 {
             return Err(invalid("Event feed sequence repeated"));
         }
         sequence = sequence
-            .checked_add(delta)
+            .checked_add(gap)
             .ok_or_else(|| invalid("Event feed sequence overflow"))?;
-        sequences.push(sequence);
-    }
-    let mut entries = allocation::vec(count)?;
-    entries.resize(count, [None; FIELDS]);
-    for column in 0..FIELDS {
-        let mut previous = Field::OptionalU64(None);
-        for entry in &mut entries {
+        let mask = match input.varint()? {
+            0 => previous_mask,
+            code if code & 1 == 1
+                && code >> 1 >> FIELDS == 0
+                && code >> 1 != previous_mask.into() =>
+            {
+                (code >> 1) as u64
+            }
+            _ => return Err(invalid("Event feed changed-word mask differs")),
+        };
+        let mut words = previous;
+        for column in (0..FIELDS).filter(|column| mask & (1 << column) != 0) {
             let change = Kind::OptionalU64.decode_change(input)?;
-            let Field::OptionalU64(value) = change.apply(Kind::OptionalU64, previous)? else {
+            let Field::OptionalU64(value) =
+                change.apply(Kind::OptionalU64, Field::OptionalU64(previous[column]))?
+            else {
                 unreachable!()
             };
-            entry[column] = value;
-            previous = Field::OptionalU64(value);
+            if value == previous[column] {
+                return Err(invalid("Event feed unchanged word stored as a change"));
+            }
+            words[column] = value;
         }
-    }
-    let mut events = allocation::vec(count)?;
-    for (sequence, entry) in sequences.into_iter().zip(entries) {
-        events.push(event(row, sequence, entry)?);
+        events.push(event(row, sequence, words)?);
+        (previous, previous_mask) = (words, mask);
     }
     Ok(events)
 }
@@ -369,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn event_feed_columnar_gaps_extreme_relative_hours_refusals_and_empty_batches() {
+    fn event_feed_occurrences_gaps_extreme_relative_hours_refusals_and_empty_batches() {
         let mut row = super::super::tests::row();
         row.read_hour = i32::MAX;
         row.generation = u64::MAX;
@@ -395,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn event_feed_columnar_scripts_operations_and_out_of_order_event_hours() {
+    fn event_feed_occurrences_scripts_operations_and_out_of_order_event_hours() {
         use EventFeedScriptChange::*;
         use decisions::{DecisionChange, Operation};
         let changes = [
@@ -561,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn event_feed_columnar_truncation_overflow_unused_operands_and_duplicate_sequences_refuse() {
+    fn event_feed_occurrences_truncation_overflow_unused_operands_and_duplicate_sequences_refuse() {
         let row = super::super::tests::row();
         let batch = Batch(&row);
         let mut encoded = Vec::new();
@@ -582,5 +620,166 @@ mod tests {
         let mut repeated = row.clone();
         repeated.events.push(repeated.events[0]);
         assert!(repeated.validate().is_err());
+    }
+
+    /// One owner's candidate roster: an interned token and consecutive targets.
+    fn roster(row: &mut EventFeedHistoryRow, owner: u32, targets: impl Iterator<Item = u32>) {
+        use decisions::{DecisionChange, Operation};
+        for target in targets {
+            let sequence = row.events.last().map_or(40, |event| event.sequence + 1);
+            row.events.push(EventFeedEvent {
+                sequence,
+                generation: row.generation,
+                hour: row.read_hour,
+                source: EventFeedSource::ScriptState,
+                actor: EventFeedCountry {
+                    reference: owner,
+                    id: owner,
+                    instance: 0,
+                },
+                target: EventFeedCountry {
+                    reference: target,
+                    id: target,
+                    instance: 0,
+                },
+                cause: Recorded::Value(Default::default()),
+                script: Some(EventFeedScript {
+                    token_len: row.script_tokens.len() as u32,
+                    country_target: Some(owner),
+                    change: Some(EventFeedScriptChange::Decision(DecisionChange {
+                        operation: Operation::Candidate,
+                        container: 0,
+                        flags: 0,
+                        ordinal: target,
+                        political_power: None,
+                    })),
+                    ..Default::default()
+                }),
+            });
+        }
+    }
+
+    fn batch(row: &EventFeedHistoryRow) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        crate::value::EncodeValue::encode_value(&Batch(row), &mut encoded).unwrap();
+        assert_eq!(
+            crate::value::EncodeValue::encoded_bytes(&Batch(row)).unwrap(),
+            encoded.len()
+        );
+        encoded
+    }
+
+    #[test]
+    fn event_feed_occurrences_store_changed_words_and_repeat_a_run_byte_for_byte() {
+        let mut row = super::super::tests::row();
+        row.events.clear();
+        row.counts = None;
+        row.coverage = EventFeedCoverage::Partial;
+        row.script_tokens = b"synthetic.targeted".to_vec();
+        roster(&mut row, 3, 1..=40);
+        roster(&mut row, 4, (1..=40).filter(|target| *target != 4));
+        roundtrip(&row);
+        // From its third, each candidate stores its sequence gap, a repeated
+        // mask and its three changed target words, nothing else; the second
+        // wrote that mask out.
+        let alone = {
+            let mut first = row.clone();
+            first.events.truncate(40);
+            batch(&first)
+        };
+        let repeated = &alone[alone.len() - 38 * 8..];
+        assert!(
+            repeated
+                .chunks(8)
+                .all(|item| item == [1, 0, 1, 2, 1, 2, 1, 2])
+        );
+        // The same run in a later hour, after another owner's occurrence and at
+        // other sequence numbers, repeats those bytes exactly.
+        let mut later = row.clone();
+        later.read_hour += 24;
+        later.events.clear();
+        later.events.push(EventFeedEvent {
+            sequence: 9_000,
+            hour: later.read_hour,
+            ..row.events[45]
+        });
+        roster(&mut later, 3, 1..=40);
+        roundtrip(&later);
+        assert!(batch(&later).ends_with(repeated));
+    }
+
+    /// The writer's stream, with each occurrence's mask code and stored words
+    /// chosen from its changed mask and the mask before it.
+    fn stream(
+        row: &EventFeedHistoryRow,
+        mut code: impl FnMut(usize, u64, u64) -> (u128, u64),
+    ) -> Vec<u8> {
+        let mut output = Vec::new();
+        output
+            .put(&(row.events.len() as u32).to_le_bytes())
+            .unwrap();
+        let (mut sequence, mut previous, mut previous_mask) = (0, [None; FIELDS], 0);
+        for (index, event) in row.events.iter().enumerate() {
+            output.varint((event.sequence - sequence).into()).unwrap();
+            sequence = event.sequence;
+            let words = words(event, row.read_hour);
+            let (value, stored) = code(index, changed(&words, &previous), previous_mask);
+            output.varint(value).unwrap();
+            for column in (0..FIELDS).filter(|column| stored & (1 << column) != 0) {
+                output.change(words[column], previous[column]).unwrap();
+            }
+            (previous, previous_mask) = (words, stored);
+        }
+        output
+    }
+
+    #[test]
+    fn event_feed_occurrences_refuse_noncanonical_masks_and_unchanged_words() {
+        let mut row = super::super::tests::row();
+        row.events.clear();
+        row.counts = None;
+        row.coverage = EventFeedCoverage::Partial;
+        row.script_tokens = b"synthetic.targeted".to_vec();
+        roster(&mut row, 3, 1..=3);
+        let canonical = |_, mask, previous| {
+            (
+                if mask == previous {
+                    0
+                } else {
+                    u128::from(mask) << 1 | 1
+                },
+                mask,
+            )
+        };
+        let encoded = stream(&row, canonical);
+        assert_eq!(encoded, batch(&row));
+        assert_eq!(
+            decode(&row, &mut Decoder::new(&encoded)).unwrap(),
+            row.events
+        );
+        // A repeated mask written out again.
+        let explicit = stream(&row, |_, mask, _| (u128::from(mask) << 1 | 1, mask));
+        assert!(decode(&row, &mut Decoder::new(&explicit)).is_err());
+        // An unchanged word (the actor's ID) stored as a change.
+        let unchanged = stream(&row, |index, mask, previous| {
+            if index == 2 {
+                let stored = mask | 1 << 3;
+                (u128::from(stored) << 1 | 1, stored)
+            } else {
+                canonical(index, mask, previous)
+            }
+        });
+        assert!(decode(&row, &mut Decoder::new(&unchanged)).is_err());
+        // A word outside the occurrence and a code without its mask bit.
+        for code in [(1_u128 << FIELDS) << 1 | 1, 2] {
+            let malformed = stream(&row, |index, mask, previous| {
+                if index == 1 {
+                    (code, mask)
+                } else {
+                    canonical(index, mask, previous)
+                }
+            });
+            assert!(decode(&row, &mut Decoder::new(&malformed)).is_err());
+        }
     }
 }

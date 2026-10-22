@@ -80,7 +80,7 @@ fn late_war_row(hour: i32) -> EventFeedHistoryRow {
             ),
         };
         row.events.push(EventFeedEvent {
-            sequence: hour as u64 * 1_000 + u64::from(index) * 2 + 7,
+            sequence: hour as u64 * 10_000 + u64::from(index) * 2 + 7,
             generation: row.generation,
             hour: hour - (index % 3) as i32,
             source,
@@ -90,7 +90,43 @@ fn late_war_row(hour: i32) -> EventFeedHistoryRow {
             script,
         });
     }
-    row.validate().unwrap();
+    // Each hour four owners rebuild their targeted-decision rosters, every
+    // owner once a day: one decision for each other country, as captured.
+    let decision = row.script_tokens.len() as u32;
+    row.script_tokens
+        .extend_from_slice(b"synthetic-targeted-decision");
+    for owner in (0..4).map(|n| (hour.rem_euclid(24) + 24 * n) as u32) {
+        for target in (0..96).filter(|target| *target != owner) {
+            let country = |reference| EventFeedCountry {
+                reference,
+                id: reference,
+                instance: 1,
+            };
+            row.events.push(EventFeedEvent {
+                sequence: row.events.last().unwrap().sequence + 1,
+                generation: row.generation,
+                hour,
+                source: EventFeedSource::ScriptState,
+                actor: country(owner),
+                target: country(target),
+                cause: Recorded::Value(EventFeedCause::default()),
+                script: Some(EventFeedScript {
+                    token_start: decision,
+                    token_len: 27,
+                    country_target: Some(owner),
+                    change: Some(EventFeedScriptChange::Decision(DecisionChange {
+                        operation: Operation::Candidate,
+                        container: 0,
+                        flags: 0,
+                        ordinal: target,
+                        political_power: None,
+                    })),
+                    ..Default::default()
+                }),
+            });
+        }
+    }
+    row.intern_tokens().unwrap();
     row
 }
 
@@ -110,7 +146,7 @@ fn old_value(row: &EventFeedHistoryRow, bytes: &mut Vec<u8>) {
 }
 
 #[test]
-fn event_feed_columnar_synthetic_late_war_encoded_zstd_effect() {
+fn event_feed_occurrences_synthetic_late_war_encoded_zstd_effect() {
     let mut before = Vec::new();
     let mut after = Vec::new();
     let hours = 48;
@@ -133,7 +169,7 @@ fn event_feed_columnar_synthetic_late_war_encoded_zstd_effect() {
         after.extend(new);
     }
     println!(
-        "event_feed synthetic: {hours} hours x 384 events; encoded {} -> {} B ({:.1} -> {:.1} B/h)",
+        "event_feed synthetic: {hours} hours x 764 events; encoded {} -> {} B ({:.1} -> {:.1} B/h)",
         before.len(),
         after.len(),
         before.len() as f64 / f64::from(hours),
@@ -152,71 +188,90 @@ fn event_feed_columnar_synthetic_late_war_encoded_zstd_effect() {
         );
         assert!(
             new < old,
-            "synthetic numeric streams should compress smaller"
+            "synthetic occurrence deltas should compress smaller"
         );
     }
 }
 
-#[test]
-fn event_feed_columnar_grouped_seek_selected_and_prepared_are_value_identical() {
-    let hours: Vec<_> = (70_000..70_010).collect();
-    let replay = test_recording::build(b"synthetic-event-columns", &hours, |hour, tables| {
-        let mut row = late_war_row(hour);
-        if hour % 4 == 0 {
-            row.events.clear();
-        }
-        if hour % 3 == 0 {
-            row.coverage = EventFeedCoverage::Partial;
-            row.failure = Some(b"synthetic native refusal".to_vec());
-            row.script_refusals = DECISION_FAMILY_REFUSALS;
-        }
-        tables[TableId::EventFeedHistory.index()] =
-            TableView::Complete(TableRows::EventFeedHistory(vec![row]));
-        let mut metrics = Metrics::default();
-        metrics.table_ns[TableId::EventFeedHistory.index()] = 1;
-        metrics
-    });
-    let selected = [TableId::EventFeedHistory];
-    let mut decoder = FrameDecoder::for_tables(&selected);
-    let frames = replay
-        .read_block_selected(&replay.index[0], &selected)
-        .unwrap();
-    for frame in frames {
-        let decoded = decoder.apply(&frame).unwrap();
-        let mut expected = late_war_row(frame.hour);
-        if frame.hour % 4 == 0 {
-            expected.events.clear();
-        }
-        if frame.hour % 3 == 0 {
-            expected.coverage = EventFeedCoverage::Partial;
-            expected.failure = Some(b"synthetic native refusal".to_vec());
-            expected.script_refusals = DECISION_FAMILY_REFUSALS;
-        }
-        assert_eq!(
-            decoded.complete::<tables::EventFeedHistory>().unwrap(),
-            &[expected]
-        );
-        let mut prepared = Vec::new();
-        decoded.encode_checkpoint(&mut prepared).unwrap();
-        let restored = DecodedFrame::decode_checkpoint(&mut Decoder::new(&prepared)).unwrap();
-        assert_eq!(
-            restored.complete::<tables::EventFeedHistory>().unwrap(),
-            decoded.complete::<tables::EventFeedHistory>().unwrap()
-        );
-        let crate::container::SeekResult::Frame(seek) = replay
-            .seek_selected(1, frame.hour, Some(&selected))
-            .unwrap()
-        else {
-            panic!("known hour refused")
-        };
-        assert_eq!(
-            seek.complete::<tables::EventFeedHistory>().unwrap(),
-            decoded.complete::<tables::EventFeedHistory>().unwrap()
-        );
+/// A branch's row: a world restart at hour 70_008 of the first branch and a
+/// new world on the loaded branch, with empty and refused intervals between.
+fn boundary_row(branch: u64, hour: i32) -> EventFeedHistoryRow {
+    let mut row = late_war_row(hour);
+    let generation = match (branch, hour) {
+        (1, ..70_008) => 41,
+        (1, _) => 42,
+        _ => 43,
+    };
+    row.generation = generation;
+    for event in &mut row.events {
+        event.generation = generation;
+        event.sequence += branch * 1_000_000_000;
     }
-    let sizes = replay.block_sections(&replay.index[0]).unwrap().unwrap();
-    let bytes: u64 = sizes
-        .into_iter()
+    if hour % 4 == 0 {
+        row.events.clear();
+        row.intern_tokens().unwrap();
+    }
+    if hour % 3 == 0 {
+        row.coverage = EventFeedCoverage::Partial;
+        row.failure = Some(b"synthetic native refusal".to_vec());
+        row.script_refusals = DECISION_FAMILY_REFUSALS;
+    }
+    row
+}
+
+#[test]
+fn event_feed_occurrences_grouped_seek_selected_and_prepared_are_value_identical_across_boundaries()
+{
+    let first: Vec<_> = (70_000..70_012).collect();
+    let loaded: Vec<_> = (70_003..70_009).collect();
+    // A forced keyframe inside the first branch; the loaded branch starts with one.
+    let replay = test_recording::build_branches(
+        b"synthetic-event-occurrences",
+        &[(1, &first, &[70_006]), (2, &loaded, &[])],
+        |branch, hour, tables| {
+            tables[TableId::EventFeedHistory.index()] = TableView::Complete(
+                TableRows::EventFeedHistory(vec![boundary_row(branch, hour)]),
+            );
+            let mut metrics = Metrics::default();
+            metrics.table_ns[TableId::EventFeedHistory.index()] = 1;
+            metrics
+        },
+    );
+    let selected = [TableId::EventFeedHistory];
+    let mut hours = 0;
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected).unwrap() {
+            hours += 1;
+            let decoded = decoder.apply(&frame).unwrap();
+            assert_eq!(
+                decoded.complete::<tables::EventFeedHistory>().unwrap(),
+                &[boundary_row(frame.branch, frame.hour)]
+            );
+            let mut prepared = Vec::new();
+            decoded.encode_checkpoint(&mut prepared).unwrap();
+            let restored = DecodedFrame::decode_checkpoint(&mut Decoder::new(&prepared)).unwrap();
+            assert_eq!(
+                restored.complete::<tables::EventFeedHistory>().unwrap(),
+                decoded.complete::<tables::EventFeedHistory>().unwrap()
+            );
+            let crate::container::SeekResult::Frame(seek) = replay
+                .seek_selected(frame.branch, frame.hour, Some(&selected))
+                .unwrap()
+            else {
+                panic!("known hour refused")
+            };
+            assert_eq!(
+                seek.complete::<tables::EventFeedHistory>().unwrap(),
+                decoded.complete::<tables::EventFeedHistory>().unwrap()
+            );
+        }
+    }
+    assert_eq!(hours, first.len() + loaded.len());
+    let bytes: u64 = replay
+        .index
+        .iter()
+        .flat_map(|block| replay.block_sections(block).unwrap().unwrap())
         .filter(|size| {
             matches!(
                 size.section,
@@ -227,8 +282,7 @@ fn event_feed_columnar_grouped_seek_selected_and_prepared_are_value_identical() 
         .map(|size| size.compressed)
         .sum();
     println!(
-        "event_feed synthetic grouped section: {bytes} B over {} hours ({:.1} B/h)",
-        hours.len(),
-        bytes as f64 / hours.len() as f64
+        "event_feed synthetic grouped sections: {bytes} B over {hours} hours ({:.1} B/h)",
+        bytes as f64 / hours as f64
     );
 }

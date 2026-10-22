@@ -129,6 +129,14 @@ fn script_reentrant_instances_and_options_share_receipts_without_losing_repeats(
             .all(|scope| scope.bindings == [0; 3])
     );
     assert_eq!(row.counts.unwrap().settled, 3);
+    // Staging holds each occurrence's token; the pack keeps the one distinct
+    // token once and every occurrence resolves it.
+    assert_eq!(store.tokens_used, 33);
+    assert_eq!(row.script_tokens, b"synthetic.1");
+    assert!(row.events.iter().all(|event| {
+        let script = event.script.unwrap();
+        (script.token_start, script.token_len) == (0, 11)
+    }));
     store.acknowledged(first.publication());
     store
         .snapshot_growing(&mut snapshot, boundary(7, 3))

@@ -1,4 +1,4 @@
-//! Interval row framing around its exact, columnar occurrence value.
+//! Interval row framing around its exact occurrence-delta value.
 use super::*;
 use crate::event_feed_rows::columns::{self, Batch};
 
