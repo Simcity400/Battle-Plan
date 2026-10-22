@@ -1,8 +1,10 @@
 import { mix } from '../../shell/appearance/color.ts';
 
 export interface HeatPart { id: string; label: string; color: string; share: number }
-export interface HeatCell { parts: readonly HeatPart[]; unknown?: boolean; filtered?: boolean }
-export interface HeatPeriod { firstHour: number; lastHour: number; readHour: number | null }
+/** `approximate`: the cell stands for only some of its period's hours. */
+export interface HeatCell { parts: readonly HeatPart[]; unknown?: boolean; filtered?: boolean; approximate?: boolean }
+/** `exact: false`: a period summarising several reads, whose hours the pointer keeps. */
+export interface HeatPeriod { firstHour: number; lastHour: number; readHour: number | null; exact?: boolean }
 export interface HeatRow { id: string; label: string; cells: readonly HeatCell[] }
 export type HeatLook = 'margin' | 'split';
 
@@ -30,6 +32,7 @@ export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: nu
     if (!cell || period.readHour == null || period.readHour > (until ?? Infinity)) return;
     const last = result.at(-1);
     if (last && last.cell.parts === cell.parts && !!last.cell.unknown === !!cell.unknown && !!last.cell.filtered === !!cell.filtered
+      && !!last.cell.approximate === !!cell.approximate
       && last.period.lastHour + 1 === period.firstHour) {
       last.period = { ...last.period, lastHour: period.lastHour, readHour: period.readHour };
     } else result.push({ period, cell });
@@ -75,7 +78,7 @@ export function heatNavigation(periods: readonly HeatPeriod[]) {
     keyHours: periods.flatMap(period => period.readHour == null ? [] : [period.readHour]),
     snap(hour: number): number {
       const index = periodAt(periods, hour);
-      return index == null ? hour : periods[index].readHour ?? hour;
+      return index == null || periods[index].exact === false ? hour : periods[index].readHour ?? hour;
     },
   };
 }

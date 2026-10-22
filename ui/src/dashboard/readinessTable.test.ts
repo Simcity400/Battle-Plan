@@ -39,6 +39,7 @@ function bindings(track: BoundTrack): Record<string, unknown> {
     $branch: BRANCH, $tag: TAG, $tags: [TAG], $first: first, $last: last, $width: 800,
     $firstDayEnd: Math.min(first + 23, last), $lastDayStart: dayStart, $lastDayEnd: Math.min(dayStart + 23, last),
     $afterLast: last + 1, $firstWeekEnd: first + 167, $firstBlockEnd: Math.min(last, Math.floor(first / 2160) * 2160 + 2159),
+    $firstBlockDays: Math.floor(Math.min(last, Math.floor(first / 2160) * 2160 + 2159) / 24) - Math.floor(first / 24) + 1,
   };
 }
 function bind(value: unknown, facts = bindings(TRACKS[0])): unknown {
@@ -59,7 +60,7 @@ const EXACT: Record<string, Built> = {
   'air-statistics': (widget, track) => [built.airStatisticsRequest(widget, track)],
   minefields: (widget, track) => [built.minefieldsRequest(widget, track)],
   'naval-supremacy': (widget, track, window) => [built.navalSupremacyRequest(widget, track, built.windowExtent(track, window))],
-  'weather-by-region': (widget, track, window) => [built.weatherRequest(widget, track, built.windowExtent(track, window))],
+  'weather-by-region': (widget, track, window) => [built.weatherRequest(widget, track, built.windowExtent(track, window), 800)],
   'doctrine-mastery': (widget, track) => [built.doctrineMasteryRequest(widget, track)],
   'occupation-reserve-manpower': (widget, track) => [built.occupationReserveRequest(widget, track)],
   'intel-network-coverage': (widget, track) => [built.intelCoverageRequest(widget, track)],

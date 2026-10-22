@@ -555,7 +555,7 @@
     {
       "kind": "weather-by-region",
       "requests": [
-        {"product": "regional-weather", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstBlockEnd", "daily": true, "show": "conditions"}}
+        {"product": "regional-weather", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "firstHour": "$first", "lastHour": "$firstBlockEnd", "daily": true, "show": "conditions", "width": "$firstBlockDays"}}
       ],
       "note": "A keyed family answers from its accepted prefix; the hours after it are pending."
     },

@@ -26,6 +26,7 @@ use std::{collections::BTreeSet, io};
 use ts_rs::TS;
 
 pub mod block;
+mod columns;
 mod content;
 mod provinces;
 mod temperature;
@@ -57,6 +58,9 @@ pub struct RegionalWeatherParams {
     pub region: Option<String>,
     #[ts(optional)]
     pub hour: Option<i32>,
+    /// Daily history folded into at most this many columns: the viewport's pixel columns.
+    #[ts(optional)]
+    pub width: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -120,6 +124,10 @@ pub struct RegionalWeatherReply {
     /// `available` when preparation bound the recorded temperature content.
     /// Missing/refused hours still have no temperature run.
     pub temperature: String,
+    /// With `width`, the days folded into columns; the window then keeps no runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub columns: Option<columns::Columns>,
     pub warnings: Vec<String>,
 }
 
@@ -195,6 +203,12 @@ impl Product for RegionalWeather {
         if params.show == Some(RegionalWeatherShow::Modifier) && params.modifier.is_none() {
             return Err("A weather modifier is required");
         }
+        if params
+            .width
+            .is_some_and(|width| width == 0 || params.daily != Some(true))
+        {
+            return Err("Weather columns need daily samples and a width");
+        }
         Ok(())
     }
 
@@ -209,6 +223,10 @@ impl Product for RegionalWeather {
             RegionalWeatherShow::decl(),
             Choice::decl(),
             Theatre::decl(),
+            columns::Columns::decl(),
+            columns::Column::decl(),
+            columns::ColumnRegion::decl(),
+            columns::ColumnMeasure::decl(),
             KeyedWindow::decl(),
             KeyedSeries::decl(),
             dashboard_base::products::country_groups::HourSpan::decl(),
@@ -337,6 +355,17 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
         &mut warnings,
     );
     dashboard_text::metadata::check_cancel(query.cancelled)?;
+    let folded = match params.width {
+        Some(width) => {
+            let conditions = matches!(params.show, None | Some(RegionalWeatherShow::Conditions));
+            let folded = columns::fold(&window, width, conditions)?;
+            window.known.clear();
+            window.reads.clear();
+            window.series.clear();
+            Some(folded)
+        }
+        None => None,
+    };
     let reply = RegionalWeatherReply {
         window,
         day_hours: daily::DAY_HOURS,
@@ -345,6 +374,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
         modifiers,
         theatres,
         temperature,
+        columns: folded,
         warnings,
     };
     keyed::finish(query, &RegionalWeatherResponse::History(reply))

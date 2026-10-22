@@ -12,6 +12,7 @@ import { OPTIONS as INTEL } from '../widgets/intel-network-coverage/definition.t
 import { OPTIONS as OCCUPATION } from '../widgets/occupation-reserve-manpower/definition.ts';
 import { OPTIONS as WEATHER } from '../widgets/weather-by-region/definition.ts';
 import type { WeatherShow } from '../widgets/weather-by-region/weatherData';
+import { weatherWindow } from '../widgets/weather-by-region/weatherData.ts';
 
 type Track = BoundTrack | undefined;
 const request = <P>(track: BoundTrack, product: string, params: P): ProductRequest<P> =>
@@ -52,10 +53,18 @@ export function weatherShow(widget: WidgetSpec): { show: WeatherShow; chosen: st
   const show: WeatherShow = options.show === 'modifiers' || options.show === 'temperature' ? options.show : 'conditions';
   return { show, chosen: options.modifier ? contentKey(String(options.modifier)) : null };
 }
-export function weatherRequest(widget: WidgetSpec, track: Track, extent: readonly [number, number] | null) {
+/** The shown days, folded into at most `pixels` columns where they do not fit one a column. */
+export function weatherRequest(widget: WidgetSpec, track: Track, extent: readonly [number, number] | null, pixels: number) {
   const { show, chosen } = weatherShow(widget);
-  return track && extent ? request(track, 'regional-weather', requests.weatherHistory(track.branch.id, ...requests.blockSpan(track.branch, extent),
-    show === 'modifiers' ? 'modifier' : show, chosen)) : null;
+  const window = track && extent ? weatherWindow(track.branch, extent, pixels) : null;
+  return track && window ? request(track, 'regional-weather', { ...requests.weatherHistory(track.branch.id, window.first, window.last,
+    show === 'modifiers' ? 'modifier' : show, chosen), width: window.width }) : null;
+}
+/** One day of the weather history, as the whole history reads it. */
+export function weatherDayRequest(widget: WidgetSpec, track: BoundTrack, day: number, dayHours: number) {
+  const { show, chosen } = weatherShow(widget);
+  return request(track, 'regional-weather', requests.weatherHistory(track.branch.id, Math.max(track.branch.firstHour, day * dayHours),
+    Math.min(track.branch.lastHour, (day + 1) * dayHours - 1), show === 'modifiers' ? 'modifier' : show, chosen));
 }
 
 export function doctrineMasteryRequest(widget: WidgetSpec, track: Track) {

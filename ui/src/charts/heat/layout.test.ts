@@ -76,6 +76,8 @@ test('equal cells share drawing runs without filling gaps or using future reads'
   assert.equal(cellRuns(row, periods, null).length, 2);
   row.cells[1] = { parts: [...parts] };
   assert.equal(cellRuns(row, periods, null).length, 3);
+  const approximate = { id: 'r', label: 'R', cells: [{ parts }, { parts, approximate: true }] };
+  assert.equal(cellRuns(approximate, periods.slice(0, 2), null).length, 2, 'an approximate cell never joins an exact one');
 });
 
 test('narrow row labels are ellipsised without squeezing the font', () => {

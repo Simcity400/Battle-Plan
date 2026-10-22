@@ -225,6 +225,10 @@ impl Bindings {
         i64::from(self.first) + offset.div_euclid(24) * 24
     }
 
+    fn first_block_end(&self) -> i64 {
+        (i64::from(self.first).div_euclid(2160) * 2160 + 2159).min(i64::from(self.last))
+    }
+
     fn value(&self, name: &str) -> Option<Value> {
         Some(match name {
             "$branch" => Value::from(self.branch.clone()),
@@ -242,8 +246,10 @@ impl Bindings {
             // The week from the branch start that a history request holding the first hour asks for.
             "$firstWeekEnd" => Value::from(i64::from(self.first) + 167),
             // The end of the 90-day block (counted from hour 0) holding the first hour.
-            "$firstBlockEnd" => Value::from(
-                (i64::from(self.first).div_euclid(2160) * 2160 + 2159).min(i64::from(self.last)),
+            "$firstBlockEnd" => Value::from(self.first_block_end()),
+            // The calendar days from the first hour to that block's end: one weather column each.
+            "$firstBlockDays" => Value::from(
+                self.first_block_end().div_euclid(24) - i64::from(self.first).div_euclid(24) + 1,
             ),
             _ => return None,
         })

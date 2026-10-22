@@ -38,6 +38,11 @@ test('HeatChart wires its keyboard and pointer props to each period read hour', 
     branchStart: 0, playhead: null, look: 'margin', active: true, revision: 1, tooltip: () => null }));
   assert.match(html, /data-keys="18,69"/);
   assert.match(html, /data-snaps="18,69,30"/);
+  // A period summarising several reads keeps the pointer's own hour.
+  const folded = renderToStaticMarkup(createElement(HeatChart, { label: 'Reads', periods: periods.map(period => ({ ...period, exact: false })), rows: [],
+    extent: [0, 71], branchStart: 0, playhead: null, look: 'margin', active: true, revision: 1, tooltip: () => null }));
+  assert.match(folded, /data-snaps="2,52,30"/);
+  assert.match(folded, /data-keys="18,69"/);
 });
 
 test('a recording-sized legend keeps every row reachable without growing or drawing on the canvas', () => {

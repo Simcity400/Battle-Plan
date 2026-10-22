@@ -3,7 +3,7 @@ import type { KeyboardEvent, PointerEvent } from 'react';
 import { mix } from '../../shell/appearance/color';
 import TimeChart from '../TimeChart';
 import Legend from '../Legend';
-import type { ChartLayer } from '../TimeChart';
+import type { ChartLayer, TimeChartProps } from '../TimeChart';
 import type { TooltipContent } from '../tooltip';
 import { fitLabelWidth, ellipsise } from '../labels';
 import { font, VALUE_LABEL_GAP } from '../draw';
@@ -39,6 +39,8 @@ export interface HeatChartProps {
   onPick?: (row: HeatRow, period: HeatPeriod | null, hour: number) => void;
   /** Stable source/selection token for picks; a change cancels a pending one. */
   pickOwner?: unknown;
+  /** The hours in view and the plot's width in pixels, as they change. */
+  onSummaryView?: TimeChartProps['onSummaryView'];
 }
 
 /** Content-neutral heat strip on the kit's time surface. Labels, axes, zoom,
@@ -142,6 +144,7 @@ export default function HeatChart(props: HeatChartProps) {
           if (!cached || cached.grey !== grey) { cached = { grey, color: marginColor(cell.parts, grey) }; colours.set(cell.parts, cached); }
           if (cached.color) { ctx.fillStyle = cached.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
         }
+        if (cell.approximate) markApproximate(ctx, tokens, rect.left, rect.top, rect.width, rect.height);
         for (const [from, to] of spanRanges(props.approximate, period.firstHour, period.lastHour + 1)) {
           const left = Math.max(rect.left, frame.toX(from)), right = Math.min(rect.left + rect.width, frame.toX(to));
           markApproximate(ctx, tokens, left, rect.top, right - left, rect.height);
@@ -172,7 +175,7 @@ export default function HeatChart(props: HeatChartProps) {
         <div className="heat-chart-plot" style={{ height: window.plotHeight }}><TimeChart label={props.label} extent={props.extent} playhead={props.playhead} playback="cursor" afterPlayhead={props.afterPlayhead}
           branchStart={props.branchStart} hoursPerSecond={props.hoursPerSecond} axes={{ xFrom: null, xTo: null, yMin: 0, yMax: Math.max(1, visible.length), log: false }}
           padding={{ top, bottom }} rows={rows} layers={layers} overlay={overlay} {...navigation}
-          active={props.active} revision={props.revision} onContextMenu={props.onContextMenu}
+          active={props.active} revision={props.revision} onContextMenu={props.onContextMenu} onSummaryView={props.onSummaryView}
           pickOwner={props.pickOwner} onPick={props.onPick ? hour => {
             // The row under the pointer, or the keyboard's row, as the tooltip reads it.
             const row = props.rows[keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length)];

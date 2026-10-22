@@ -5370,14 +5370,22 @@ export type AirStatisticsParams = { branchId: string, tag: string,
 channel: number, firstHour?: number, lastHour?: number, };
 export type AirStatisticsReply = { window: KeyedWindow, channels: Array<AirStatisticsChannelChoice>, regions: Array<KeyedChoice>, theatres?: Array<AirOperationTheatreChoice>, warnings: Array<string>, };
 export type AirStatisticsChannelChoice = { id: string, ours: string, enemy: string, divisor: number, };
-export type RegionalWeatherParams = { branchId: string, firstHour: number | null, lastHour: number | null, regions: Array<string> | null, show: RegionalWeatherShow | null, modifier: string | null, daily: boolean | null, view: RegionalWeatherView, region?: string, hour?: number, };
+export type RegionalWeatherParams = { branchId: string, firstHour: number | null, lastHour: number | null, regions: Array<string> | null, show: RegionalWeatherShow | null, modifier: string | null, daily: boolean | null, view: RegionalWeatherView, region?: string, hour?: number,
+/**
+ * Daily history folded into at most this many columns: the viewport's pixel columns.
+ */
+width?: number, };
 export type RegionalWeatherResponse = { "view": "history" } & RegionalWeatherReply | { "view": "provinces" } & RegionalWeatherProvincesReply;
 export type RegionalWeatherReply = { window: KeyedWindow, dayHours: number, regions: Array<RegionalWeatherChoice>, flags: Array<RegionalWeatherChoice>, modifiers: Array<RegionalWeatherChoice>, theatres?: Array<RegionalWeatherTheatre>,
 /**
  * `available` when preparation bound the recorded temperature content.
  * Missing/refused hours still have no temperature run.
  */
-temperature: string, warnings: Array<string>, };
+temperature: string,
+/**
+ * With `width`, the days folded into columns; the window then keeps no runs.
+ */
+columns?: RegionalWeatherColumns, warnings: Array<string>, };
 export type RegionalWeatherProvincesReply = { hour: number, readHour: number | null, region: string, provinces: Array<RegionalWeatherProvince>, warnings: Array<string>, };
 export type RegionalWeatherProvince = { id: string, name: string | null,
 /**
@@ -5401,6 +5409,55 @@ export type RegionalWeatherTheatre = { id: string, name: string,
  * Decimal strategic-region ids, as in the region choices.
  */
 regions: Array<string>, };
+export type RegionalWeatherColumns = {
+/**
+ * Days per column, counted from the window's first day.
+ */
+days: number, columns: Array<RegionalWeatherColumn>,
+/**
+ * Each region with a sampled measure in the window.
+ */
+regions: Array<RegionalWeatherColumnRegion>, };
+export type RegionalWeatherColumn = { firstHour: number, lastHour: number,
+/**
+ * The latest recorded hour its days were sampled at; none without one.
+ */
+sampledHour: number | null,
+/**
+ * The latest supplying read of a sampled day, where one is recorded.
+ */
+readHour: number | null,
+/**
+ * Its recorded days.
+ */
+recorded: number, };
+export type RegionalWeatherColumnRegion = { id: string,
+/**
+ * Conditions: the days the region's conditions were recorded, per column.
+ */
+observed?: Array<number>,
+/**
+ * Conditions: those days with no condition set, per column.
+ */
+clear?: Array<number>,
+/**
+ * A flag set on no recorded day, or a value on none, is left out.
+ */
+measures: Array<RegionalWeatherColumnMeasure>, };
+export type RegionalWeatherColumnMeasure = {
+/**
+ * `<flag>`, `mod:<modifier>` or `temp`, as in the window's series names.
+ */
+id: string,
+/**
+ * Recorded days with the flag set, or with a value, per column.
+ */
+days: Array<number>,
+/**
+ * Values: each column's lowest raw value, the exact sum of its days' raw
+ * values and its highest, as decimal text; none without a value.
+ */
+values?: Array<[string, string, string] | null>, };
 export type MinefieldsParams = { branchId: string, tags?: Array<string>, firstHour?: number, lastHour?: number, view: MinefieldsView, region?: number, hour?: number, };
 export type MinefieldsReply = MinefieldsHistoryReply | MinefieldsReportsReply;
 export type MinefieldsView = "history" | "reports";
