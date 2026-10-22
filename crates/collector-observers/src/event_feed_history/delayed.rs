@@ -431,22 +431,25 @@ impl Store {
                 refused: seen.is_some_and(|seen| seen.refused),
             };
         }
-        let mut named = None;
-        let result = self.owner_scope(super::OwnerRegistry::Delayed, |store| {
-            // The sample's cut precedes even the identity word.
-            let cut = store.sample()?;
-            // Country's pointer/id/vtable came from this existing census.
-            // Read only its additional identity word; no second traversal.
+        // Country's pointer/id/vtable came from this existing census. Read
+        // only its additional identity word; no second traversal.
+        let identity = || {
             let instance = country
                 .pointer
                 .checked_add(engine_native::ccountry::ID_INSTANCE)
                 .and_then(|at| engine_native::read::<u32>(memory, at))
                 .ok_or("delayed-event country identity word unreadable")?;
-            let owner = CountryIdentity {
+            Ok::<_, &'static str>(CountryIdentity {
                 reference: country.id,
                 id: country.id,
                 instance,
-            };
+            })
+        };
+        let mut named = None;
+        let result = self.owner_scope(super::OwnerRegistry::Delayed, |store| {
+            // The sample's cut precedes even the identity word.
+            let cut = store.sample()?;
+            let owner = identity()?;
             named = Some(owner);
             if !recorded {
                 // Raise the census table's demand; retried at the next visit.
@@ -473,6 +476,12 @@ impl Store {
         if self.preparing_owner {
             return;
         }
+        // A sample crossed before it read the identity word still refuses
+        // its owner by name, as the decision half does: the word is read
+        // after the sample and certifies nothing.
+        if named.is_none() && refusal.retry {
+            named = identity().ok();
+        }
         match named {
             Some(owner) => {
                 let _ = self.refuse_delayed_owner(
@@ -487,7 +496,7 @@ impl Store {
                     false,
                 );
             }
-            // Crossed before the owner could be named: retried, unnamed.
+            // Crossed, and its identity word unreadable: retried, unnamed.
             None if refusal.retry => {}
             // A refusal must name its owner.
             None => {

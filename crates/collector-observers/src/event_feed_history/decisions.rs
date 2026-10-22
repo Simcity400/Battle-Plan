@@ -214,10 +214,12 @@ impl Index {
         }
         Some(owner.failed != Some(losses))
     }
-    fn fail(&mut self, pointer: usize) {
-        if let Ok(at) = Self::locate(&self.owners, pointer, |s| s.pointer) {
-            self.owners[at].failed = Some(self.losses);
-        }
+    /// Record a failed attempt, indexing an owner whose baseline failed
+    /// before it was indexed, so it is not retried in this loss epoch.
+    fn fail(&mut self, pointer: usize, identity: CountryIdentity) -> Result<(), &'static str> {
+        let losses = self.losses;
+        self.owner(pointer, identity)?.failed = Some(losses);
+        Ok(())
     }
     fn identity(&self, pointer: usize) -> Option<CountryIdentity> {
         Self::locate(&self.owners, pointer, |s| s.pointer)
@@ -733,22 +735,16 @@ impl Store {
         }
         self.decisions.reset(generation);
         let pointer = country.pointer;
-        let result = match self.decisions.recovery(pointer) {
+        let recovery = self.decisions.recovery(pointer);
+        let result = match recovery {
             Recovery::Failed => return,
             Recovery::Certified => self.owner_scope(super::OwnerRegistry::Decisions, |store| {
                 store.watch();
                 store.decisions.power_baseline(memory, base, pointer)
             }),
-            Recovery::Baseline => {
-                let result = self.owner_scope(super::OwnerRegistry::Decisions, |store| {
-                    store.decision_baseline(memory, base, generation, state, hour, country)
-                });
-                // A crossed or storage-short sample is retried, not failed.
-                if result.as_ref().is_err_and(|refusal| !refusal.retry) {
-                    self.decisions.fail(pointer);
-                }
-                result
-            }
+            Recovery::Baseline => self.owner_scope(super::OwnerRegistry::Decisions, |store| {
+                store.decision_baseline(memory, base, generation, state, hour, country)
+            }),
         };
         let Err(refusal) = result else {
             return;
@@ -763,6 +759,13 @@ impl Store {
         };
         match identity {
             Ok(owner) => {
+                // A crossed or storage-short baseline is retried, not failed.
+                // A baseline can fail before it indexes its owner, so the
+                // named owner is indexed with its failure; without room for
+                // it the owner is attempted again at the next visit.
+                if recovery == Recovery::Baseline && !refusal.retry {
+                    let _ = self.decisions.fail(pointer, owner);
+                }
                 // Not growing: recovery allocates nothing under the lease.
                 let _ = self.refuse_decision_owner(
                     memory,
@@ -1100,7 +1103,7 @@ impl Store {
         };
         let refused = owner.refused;
         if !retry {
-            self.decisions.fail(pointer);
+            let _ = self.decisions.fail(pointer, identity);
         }
         refused
     }
@@ -1373,8 +1376,7 @@ mod tests {
         index.reset(7);
         let (member, _) = index.put(0x100, 0x1000, identity(1), 3).unwrap();
         index.certify(0x1000, identity(1)).unwrap();
-        index.owner(0x2000, identity(2)).unwrap();
-        index.fail(0x2000);
+        index.fail(0x2000, identity(2)).unwrap();
         assert_eq!(index.recovery(0x1000), Recovery::Certified);
         assert_eq!(index.recovery(0x2000), Recovery::Failed);
         crate::test_support::with_allocations_denied(|| index.revoke());
