@@ -689,3 +689,61 @@ fn classified_holdings_count_when_a_divisions_comparison_is_unknown() {
         "unknown need and shortfall stay unknown");
     assert_eq!(widgets.unknown_divisions, 2);
 }
+
+#[test]
+fn supplying_reads_made_at_once_are_the_reads_made_in_order() {
+    // Daily pools, stockpiles and designs dated apart from the reached hour, across days.
+    let frames: Vec<_> = (2..=60)
+        .map(|offset| {
+            let mut f = frame();
+            f.hour = 60_000_000 + offset;
+            if offset == 2 {
+                f.metrics.table_ns[TableId::VariantModules.index()] = 1;
+            }
+            if offset >= 30 {
+                if let TableView::Complete(TableRows::Divisions(rows)) =
+                    &mut *f.tables[TableId::Divisions.index()]
+                {
+                    rows.push(division(3, 11));
+                }
+            }
+            f
+        })
+        .collect();
+    let replay = Arc::new(
+        replay::container::Replay::from_records(
+            dashboard_base::test_fixtures::CAMPAIGN.into(),
+            &[dashboard_base::test_fixtures::records(1, frames)],
+        )
+        .unwrap(),
+    );
+    let flag = AtomicBool::new(false);
+    // Each way reads its own source, so neither answers from the other's cache.
+    let source = |id: &str| {
+        Source::from_replay(
+            dashboard_base::SourceKey {
+                source_id: id.into(),
+                revision: "1".into(),
+            },
+            "memory.battleplan".into(),
+            Arc::clone(&replay),
+            &flag,
+        )
+        .unwrap()
+    };
+    let (together, apart) = (source("at-once"), source("in-order"));
+    for hour in [60_000_002, 60_000_013, 60_000_030, 60_000_047, 60_000_060] {
+        let fields = |supplied: Supplied| {
+            (
+                supplied.frame,
+                supplied.daily,
+                supplied.stock,
+                supplied.designs,
+                supplied.stock_designs,
+            )
+        };
+        let at_once = fields(supplied_with(&together, 1, hour, &flag, true).unwrap());
+        let in_order = fields(supplied_with(&apart, 1, hour, &flag, false).unwrap());
+        assert_eq!(at_once, in_order, "hour {hour}");
+    }
+}

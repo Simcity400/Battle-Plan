@@ -143,8 +143,31 @@ pub fn decodes_allowed() -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn block_decodes_disabled() -> bool {
+/// Whether this thread's sampled reads refuse to decode recorded blocks
+/// ([`without_block_decodes`]).
+pub fn block_decodes_disabled() -> bool {
     WITHOUT_DECODES.get()
+}
+
+/// `a` and `b` at once, `b` on another thread, where block decodes are allowed;
+/// in order on this thread otherwise, so a refused decode is this thread's own.
+pub fn join<A: Send, B: Send>(
+    a: impl FnOnce() -> A + Send,
+    b: impl FnOnce() -> B + Send,
+) -> (A, B) {
+    if block_decodes_disabled() {
+        let a = a();
+        return (a, b());
+    }
+    std::thread::scope(|scope| {
+        let b = scope.spawn(b);
+        let a = a();
+        (
+            a,
+            b.join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+        )
+    })
 }
 
 /// Numeric pages can answer ahead of their branch-wide identity history. Keep

@@ -229,47 +229,13 @@ impl Product for DivisionEquipment {
             &(&p.tag, p.count_for, &p.template, &p.division),
             cancelled,
             || {
-                let frame = progressive::frame_at(source, branch, p.hour, TABLES, cancelled)?
-                    .ok_or_else(|| io::Error::other("This hour is not recorded"))?;
-                let daily = progressive::latest_read(
-                    source,
-                    branch,
-                    p.hour,
-                    TableId::DivisionEquipment,
-                    replay_data::cadence::STAGGER_PERIOD,
-                    POOLS,
-                    cancelled,
-                )?;
-                let stock = progressive::latest_read(
-                    source,
-                    branch,
-                    p.hour,
-                    TableId::Stockpiles,
-                    replay_data::cadence::STAGGER_PERIOD,
-                    STOCK,
-                    cancelled,
-                )?;
-                let designs = progressive::latest_read(
-                    source,
-                    branch,
-                    p.hour,
-                    TableId::VariantDefinitions,
-                    replay_data::cadence::STAGGER_PERIOD,
-                    &equipment::VariantCatalogue::TABLES,
-                    cancelled,
-                )?;
-                let stock_designs = match stock.as_deref() {
-                    Some(stock) => progressive::latest_read(
-                        source,
-                        branch,
-                        stock.hour,
-                        TableId::VariantDefinitions,
-                        replay_data::cadence::STAGGER_PERIOD,
-                        &equipment::VariantCatalogue::TABLES,
-                        cancelled,
-                    )?,
-                    None => None,
-                };
+                let Supplied {
+                    frame,
+                    daily,
+                    stock,
+                    designs,
+                    stock_designs,
+                } = supplied(source, branch, p.hour, cancelled)?;
                 let mut refusals = Refusals::default();
                 let cat = refusals.keep(army_content::content(source, context)).0;
                 let names = cat.as_ref().map(|cat| {
@@ -313,6 +279,108 @@ impl Product for DivisionEquipment {
         dashboard_base::products::check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+/// The reached hour's frame and the supplying reads dated independently of it.
+pub(crate) struct Supplied {
+    pub frame: Box<DecodedFrame>,
+    pub daily: Option<Box<DecodedFrame>>,
+    pub stock: Option<Box<DecodedFrame>>,
+    pub designs: Option<Box<DecodedFrame>>,
+    /// The designs as of the stockpile's read.
+    pub stock_designs: Option<Box<DecodedFrame>>,
+}
+
+/// [`Supplied`] at `hour`, its reads at once where block decodes are allowed.
+pub(crate) fn supplied(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<Supplied> {
+    supplied_with(
+        source,
+        branch,
+        hour,
+        cancelled,
+        !progressive::block_decodes_disabled(),
+    )
+}
+
+/// [`Supplied`] at `hour`. The reads are independent but for the stockpile's designs,
+/// so `at_once` runs them together; the first failure in their listed order is the
+/// answer either way. In order, no read follows a failure, so none refuses a decode
+/// the answer does not need.
+pub(crate) fn supplied_with(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+    at_once: bool,
+) -> io::Result<Supplied> {
+    let frame = || {
+        progressive::frame_at(source, branch, hour, TABLES, cancelled)?
+            .ok_or_else(|| io::Error::other("This hour is not recorded"))
+    };
+    let latest = |hour: i32, table: TableId, tables: &[TableId]| {
+        progressive::latest_read(
+            source,
+            branch,
+            hour,
+            table,
+            replay_data::cadence::STAGGER_PERIOD,
+            tables,
+            cancelled,
+        )
+    };
+    let daily = || latest(hour, TableId::DivisionEquipment, POOLS);
+    let stock = || latest(hour, TableId::Stockpiles, STOCK);
+    let designs = |hour| {
+        latest(
+            hour,
+            TableId::VariantDefinitions,
+            &equipment::VariantCatalogue::TABLES,
+        )
+    };
+    let stock_designs = |stock: &Option<Box<DecodedFrame>>| match stock.as_deref() {
+        Some(stock) => designs(stock.hour),
+        None => Ok(None),
+    };
+    if !at_once {
+        let frame = frame()?;
+        let daily = daily()?;
+        let stock = stock()?;
+        let designs = designs(hour)?;
+        let stock_designs = stock_designs(&stock)?;
+        return Ok(Supplied {
+            frame,
+            daily,
+            stock,
+            designs,
+            stock_designs,
+        });
+    }
+    let ((frame, daily), ((stock, stock_designs), designs)) = progressive::join(
+        || progressive::join(frame, daily),
+        || {
+            progressive::join(
+                || {
+                    let stock = stock();
+                    let designs = stock.as_ref().ok().map(stock_designs);
+                    (stock, designs)
+                },
+                || designs(hour),
+            )
+        },
+    );
+    let (frame, daily, stock, designs) = (frame?, daily?, stock?, designs?);
+    Ok(Supplied {
+        frame,
+        daily,
+        stock,
+        designs,
+        stock_designs: stock_designs.expect("read with the stockpile")?,
+    })
 }
 
 /// Independently dated inputs; tests supply synthetic frames through this same builder.
