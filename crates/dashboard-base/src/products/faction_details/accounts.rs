@@ -30,11 +30,12 @@ pub struct FactionUpgradeDetail {
 pub(super) fn attach(
     frame: &DecodedFrame,
     faction: u64,
-    cat: Option<&catalogue::Catalogue>,
+    texts: Option<&presentations::Texts<'_>>,
     definitions: Option<&installed_content_core::faction_goals::Catalog>,
     lexical: &faction_names::LexicalNames,
     reply: &mut FactionDetailReply,
 ) {
+    let cat = texts.map(presentations::Texts::cat);
     let result = (|| -> Result<Vec<FactionAccountDetail>, String> {
         let rows = frame
             .complete::<tables::FactionAccounts>()
@@ -122,9 +123,8 @@ pub(super) fn attach(
                     .map(|token| {
                         super::definition(
                             frame,
-                            faction,
                             (*token != u64::MAX).then_some(*token as u32),
-                            cat,
+                            texts,
                             definitions,
                             lexical,
                         )

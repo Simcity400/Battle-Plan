@@ -5,6 +5,14 @@ use crate::products::country_people::{RecruitmentDefines, state_recruitment};
 use replay_data::rows::{FactionAccountRow, Recorded};
 use std::collections::BTreeMap;
 
+/// What a member's lifetime, account and upgrade checks read at its supplying hour.
+const SUPPLY_TABLES: &[TableId] = &[
+    TableId::Countries,
+    TableId::FactionAccounts,
+    TableId::LexicalTokens,
+    TableId::SimulationFeatures,
+];
+/// What a prediction reads there, only for a member it is reached for.
 const TABLES: &[TableId] = &[
     TableId::Countries,
     TableId::CountryLinks,
@@ -120,10 +128,9 @@ struct Defines {
     yearly_growth: i64,
     contribution: i64,
 }
-fn defines(cat: Option<&catalogue::Catalogue>) -> Result<Defines, String> {
+fn defines(cat: Option<&catalogue::Catalogue>, shared: &SharedDefines) -> Result<Defines, String> {
     let cat = need(cat, "manpower prediction recorded content")?;
-    let values =
-        installed_content_core::defines::read(&cat.content.layers).map_err(|why| why.to_string())?;
+    let values = shared.get(cat)?;
     Ok(Defines {
         recruitment: RecruitmentDefines {
             speed: 0, // This prediction queries the held applied ratio, not mobilisation speed.
@@ -389,6 +396,7 @@ pub(super) fn attach(
     current: &DecodedFrame,
     faction: u64,
     cat: Option<&catalogue::Catalogue>,
+    shared: &SharedDefines,
     reply: &mut FactionDetailReply,
 ) -> io::Result<()> {
     let mut detail = FactionRewardDetail {
@@ -397,6 +405,7 @@ pub(super) fn attach(
         reasons: Vec::new(),
     };
     let mut frames = BTreeMap::new();
+    let mut predicting = BTreeMap::new();
     let result = (|| -> Result<(), String> {
         let members = current
             .complete::<tables::FactionMembers>()
@@ -423,7 +432,11 @@ pub(super) fn attach(
                 if let std::collections::btree_map::Entry::Vacant(entry) = frames.entry(hour) {
                     entry.insert(
                         crate::prepared::query::progressive::frame_at(
-                            source, branch, hour, TABLES, cancelled,
+                            source,
+                            branch,
+                            hour,
+                            SUPPLY_TABLES,
+                            cancelled,
                         )
                         .map_err(|why| why.to_string())?,
                     );
@@ -456,7 +469,22 @@ pub(super) fn attach(
                 let value = if scaler(row)? == 0 || bonus <= 0 {
                     0
                 } else {
-                    predict(frame, slot, bonus, defines(cat)?)?
+                    let values = defines(cat, shared)?;
+                    if let std::collections::btree_map::Entry::Vacant(entry) =
+                        predicting.entry(hour)
+                    {
+                        entry.insert(
+                            crate::prepared::query::progressive::frame_at(
+                                source, branch, hour, TABLES, cancelled,
+                            )
+                            .map_err(|why| why.to_string())?,
+                        );
+                    }
+                    let frame = need(
+                        predicting.get(&hour).and_then(Option::as_deref),
+                        format!("manpower supplying frame at hour {hour}"),
+                    )?;
+                    predict(frame, slot, bonus, values)?
                 };
                 Ok((value, hour, row.population_growth))
             })();

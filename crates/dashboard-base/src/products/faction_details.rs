@@ -329,6 +329,10 @@ impl Product for FactionDetails {
                 Err(why) => warnings.push(format!("Shared programme text frame: {why}")),
             }
         }
+        let defines = SharedDefines::default();
+        let texts = cat
+            .as_deref()
+            .map(|cat| presentations::Texts::new(&frame, faction, cat, &defines));
         let mut rendered = std::collections::BTreeMap::new();
         let mut reply = match read(&frame, params, faction, |token| {
             rendered
@@ -336,9 +340,8 @@ impl Product for FactionDetails {
                 .or_insert_with(|| {
                     definition(
                         &frame,
-                        faction,
                         token,
-                        cat.as_deref(),
+                        texts.as_ref(),
                         definitions.as_deref(),
                         &lexical,
                     )
@@ -359,7 +362,7 @@ impl Product for FactionDetails {
         accounts::attach(
             &frame,
             faction,
-            cat.as_deref(),
+            texts.as_ref(),
             definitions.as_deref(),
             &lexical,
             &mut reply,
@@ -395,12 +398,27 @@ impl Product for FactionDetails {
             &frame,
             faction,
             cat.as_deref(),
+            &defines,
             &mut reply,
         )?;
         collect_icon_refusals(&mut reply);
         reply.warnings.extend(warnings);
         check_reply_budget(&reply)?;
         Ok(reply)
+    }
+}
+/// The content stack's defines, read at most once per request: even a cached
+/// read rereads every define script.
+#[derive(Default)]
+struct SharedDefines(std::cell::OnceCell<Result<installed_content_core::defines::Defines, String>>);
+impl SharedDefines {
+    fn get(&self, cat: &catalogue::Catalogue) -> Result<&installed_content_core::defines::Defines, String> {
+        self.0
+            .get_or_init(|| {
+                installed_content_core::defines::read(&cat.content.layers).map_err(|why| why.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
     }
 }
 fn needs_environment(
@@ -553,9 +571,8 @@ fn collect_icon_refusals(reply: &mut FactionDetailReply) {
 
 fn definition(
     frame: &DecodedFrame,
-    faction: u64,
     token: Option<u32>,
-    cat: Option<&catalogue::Catalogue>,
+    texts: Option<&presentations::Texts<'_>>,
     definitions: Option<&installed_content_core::faction_goals::Catalog>,
     lexical: &faction_names::LexicalNames,
 ) -> FactionGoalDefinition {
@@ -584,7 +601,8 @@ fn definition(
             .ok_or("Faction goal names need the recorded game folders")?
             .get(&spelling)?
             .ok_or_else(|| format!("Faction goal {spelling:?} is absent from recorded content"))?;
-        let cat = cat.ok_or("Faction goal names need localisation")?;
+        let texts = texts.ok_or("Faction goal names need localisation")?;
+        let cat = texts.cat();
         let render =
             |bound: &installed_content_core::gui::native::BoundLocalization| -> Result<String, String> {
                 if bound.is_empty() {
@@ -594,21 +612,7 @@ fn definition(
                     lexical.token_of(name)
                 })?;
                 let text = if text.contains('[') {
-                    let raw = frame
-                        .complete::<tables::LocalPlayer>()
-                        .map_err(|why| why.to_string())?
-                        .first()
-                        .and_then(|row| row.viewing_country())
-                        .ok_or("Faction goal text needs the selected country")?;
-                    let root = crate::metadata::link_slot(
-                        frame
-                            .complete::<tables::CountryLinks>()
-                            .map_err(|why| why.to_string())?,
-                        raw,
-                    )
-                    .ok_or("Faction goal text needs the selected country's identity")?;
-                    ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, root)
-                        .expand_faction(&text, faction)?
+                    texts.viewer()?.expand_faction(&text, texts.faction())?
                 } else {
                     text
                 };
@@ -619,7 +623,7 @@ fn definition(
             Ok(icon) => reply.icon = icon,
             Err(why) => failures.push(why),
         }
-        presentations::attach(frame, faction, cat, definition, &mut reply);
+        presentations::attach(texts, definition, &mut reply);
         match render(&definition.name) {
             Ok(text) => reply.name = Some(text),
             Err(reason) => failures.push(reason),
@@ -944,7 +948,9 @@ mod artwork_tests {
             ));
         let lexical =
             faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
-        let resolved = definition(&frame, 9, Some(1), Some(&cat), Some(&definitions), &lexical);
+        let defines = SharedDefines::default();
+        let texts = presentations::Texts::new(&frame, 9, &cat, &defines);
+        let resolved = definition(&frame, Some(1), Some(&texts), Some(&definitions), &lexical);
         assert!(
             resolved
                 .icon
@@ -953,7 +959,7 @@ mod artwork_tests {
                 .starts_with("data:image/png;base64,")
         );
         assert_eq!(resolved.name.as_deref(), Some("Mod goal"));
-        let unresolved = definition(&frame, 9, Some(2), Some(&cat), Some(&definitions), &lexical);
+        let unresolved = definition(&frame, Some(2), Some(&texts), Some(&definitions), &lexical);
         assert!(unresolved.icon.is_none());
         assert_eq!(unresolved.name.as_deref(), Some("Mod goal"));
         let mut reply = FactionDetailReply {

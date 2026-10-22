@@ -35,6 +35,87 @@ fn roots(frame: &DecodedFrame, faction: u64) -> (Result<u32, String>, Result<u32
     })();
     (leader, selected)
 }
+/// One request's goal presentation state: the scripted text (and so the trigger
+/// world) of the faction leader and of the selected country are built once at
+/// this hour and shared by every goal, as are the defines and each term's
+/// replacement walk, whose inputs do not vary between goals.
+pub(super) struct Texts<'a> {
+    frame: &'a DecodedFrame,
+    faction: u64,
+    cat: &'a catalogue::Catalogue,
+    defines: &'a SharedDefines,
+    roots: (Result<u32, String>, Result<u32, String>),
+    leader: std::cell::OnceCell<Result<ScriptedText<'a>, String>>,
+    viewer: std::cell::OnceCell<Result<ScriptedText<'a>, String>>,
+    replacements: std::cell::RefCell<std::collections::BTreeMap<Vec<u8>, Result<bool, String>>>,
+}
+impl<'a> Texts<'a> {
+    pub(super) fn new(
+        frame: &'a DecodedFrame,
+        faction: u64,
+        cat: &'a catalogue::Catalogue,
+        defines: &'a SharedDefines,
+    ) -> Self {
+        Self {
+            frame,
+            faction,
+            cat,
+            defines,
+            roots: roots(frame, faction),
+            leader: Default::default(),
+            viewer: Default::default(),
+            replacements: Default::default(),
+        }
+    }
+    pub(super) fn cat(&self) -> &'a catalogue::Catalogue {
+        self.cat
+    }
+    pub(super) fn faction(&self) -> u64 {
+        self.faction
+    }
+    fn leader(&self) -> Result<&ScriptedText<'a>, String> {
+        self.leader
+            .get_or_init(|| {
+                let leader = self.roots.0.clone()?;
+                Ok(ScriptedText::new(
+                    self.frame,
+                    &self.cat.localisation,
+                    self.cat.scripted_content()?,
+                    leader,
+                ))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+    /// The selected country's text, which goal names and descriptions expand in.
+    pub(super) fn viewer(&self) -> Result<&ScriptedText<'a>, String> {
+        self.viewer
+            .get_or_init(|| {
+                let frame = self.frame;
+                let raw = frame
+                    .complete::<tables::LocalPlayer>()
+                    .map_err(|why| why.to_string())?
+                    .first()
+                    .and_then(|row| row.viewing_country())
+                    .ok_or("Faction goal text needs the selected country")?;
+                let root = crate::metadata::link_slot(
+                    frame
+                        .complete::<tables::CountryLinks>()
+                        .map_err(|why| why.to_string())?,
+                    raw,
+                )
+                .ok_or("Faction goal text needs the selected country's identity")?;
+                Ok(ScriptedText::new(
+                    frame,
+                    &self.cat.localisation,
+                    self.cat.scripted_content()?,
+                    root,
+                ))
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
 // The command creates a fresh leader scope, then binds the acting country as FROM.
 fn command_scopes(leader: u32, actor: u32) -> Scopes {
     Scopes {
@@ -44,13 +125,11 @@ fn command_scopes(leader: u32, actor: u32) -> Scopes {
     }
 }
 pub(super) fn attach(
-    frame: &DecodedFrame,
-    faction: u64,
-    cat: &catalogue::Catalogue,
+    texts: &Texts<'_>,
     definition: &installed_content_core::faction_goals::Definition,
     reply: &mut FactionGoalDefinition,
 ) {
-    let roots = roots(frame, faction);
+    let roots = &texts.roots;
     // Keep authored operands distinct from the held scalar/section cache.
     for input in &definition.progress_inputs {
         let kind = String::from_utf8_lossy(input.key.as_deref().unwrap_or_default()).into_owned();
@@ -116,7 +195,7 @@ pub(super) fn attach(
                     category_name: None,
                     reason: None,
                 };
-                attach(frame, faction, cat, &temporary, &mut rendered);
+                attach(texts, &temporary, &mut rendered);
                 for effect in rendered.rewards {
                     value.text.push_str(&format!("{kind}: {}\n", effect.text));
                     value.reasons.extend(effect.reasons);
@@ -145,9 +224,7 @@ pub(super) fn attach(
         } else {
             let result = (|| -> Result<Eval, String> {
                 let leader = roots.0.clone()?;
-                let text =
-                    ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, leader);
-                Ok(text.trigger_world()?.evaluate(
+                Ok(texts.leader()?.trigger_world()?.evaluate(
                     body,
                     if kind == "available" || kind == "visible" {
                         command_scopes(leader, roots.1.clone()?)
@@ -169,7 +246,7 @@ pub(super) fn attach(
         }
         reply.conditions.push(detail);
     }
-    command_gates(frame, faction, cat, definition, reply);
+    command_gates(texts, definition, reply);
     for kind in ["locked_goal", "is_manifest", "auto_complete"] {
         let (result, reasons) = match definition.flags.get(kind) {
             None => (Some(false), Vec::new()),
@@ -191,13 +268,12 @@ pub(super) fn attach(
         if !body.is_empty() {
             let result = (|| -> Result<crate::effect_description::Description, String> {
                 let leader = roots.0.clone()?;
-                let text =
-                    ScriptedText::new(frame, &cat.localisation, cat.scripted_content()?, leader);
-                let content = cat.scripted_content()?;
+                let text = texts.leader()?;
+                let content = texts.cat.scripted_content()?;
                 let cached = content.effects()?;
                 let context = crate::effect_description::Context::new(
-                    &text,
-                    &cat.localisation,
+                    text,
+                    &texts.cat.localisation,
                     leader,
                     "faction goal",
                     cached.view(None),
@@ -234,14 +310,13 @@ fn replacement_cost(status: i32, unfinished_cost: i64) -> i64 {
     if status == 0 { unfinished_cost } else { 0 }
 }
 fn command_gates(
-    frame: &DecodedFrame,
-    faction: u64,
-    cat: &catalogue::Catalogue,
+    texts: &Texts<'_>,
     definition: &installed_content_core::faction_goals::Definition,
     reply: &mut FactionGoalDefinition,
 ) {
+    let (frame, faction, cat) = (texts.frame, texts.faction, texts.cat);
     let gates = (|| -> Result<(Result<bool, String>, bool), String> {
-        let (leader, actor) = roots(frame, faction);
+        let (leader, actor) = texts.roots.clone();
         let leader = leader?;
         let actor = actor?;
         let features = frame
@@ -307,8 +382,7 @@ fn command_gates(
             .iter()
             .position(|value| *value == category)
             .ok_or("goal.category selects no native term")?;
-        let defines =
-            installed_content_core::defines::read(&cat.content.layers).map_err(|why| why.to_string())?;
+        let defines = texts.defines.get(cat)?;
         let capacity = defines
             .int32(
                 "NFactions",
@@ -379,71 +453,80 @@ fn command_gates(
                 if !affordable {
                     false
                 } else {
-                    let text = ScriptedText::new(
-                        frame,
-                        &cat.localisation,
-                        cat.scripted_content()?,
-                        leader,
-                    );
-                    let world = text.trigger_world()?;
-                    let mut eligible = false;
-                    let mut missing = Vec::new();
-                    for (token, candidate) in catalog.definitions() {
-                        if candidate.category.as_deref() != Some(category) {
-                            continue;
-                        }
-                        let installed_content_core::tokens::Token::Name(name) = token else {
-                            missing.push("replacement candidate has rejected identity".into());
-                            continue;
-                        };
-                        let name = std::str::from_utf8(name)
-                            .map_err(|_| "replacement candidate identity is not UTF-8")?;
-                        if !unused_candidate(name, &held_names) {
-                            continue;
-                        }
-                        if let Err(why) = catalog.get(name) {
-                            missing.push(why);
-                            continue;
-                        }
-                        let mut accepts = true;
-                        for kind in ["available", "allowed"] {
-                            let body = candidate
-                                .conditions
-                                .get(kind)
-                                .map(Vec::as_slice)
-                                .unwrap_or_default();
-                            let scopes = if kind == "available" {
-                                command_scopes(leader, actor)
-                            } else {
-                                let mut value = Scopes::of(Scope::Country(leader));
-                                value.bare = true;
-                                value
+                    // The walk reads only the term, the held goals and the hour.
+                    let walk = || -> Result<bool, String> {
+                        let world = texts.leader()?.trigger_world()?;
+                        let mut eligible = false;
+                        let mut missing = Vec::new();
+                        for (token, candidate) in catalog.definitions() {
+                            if candidate.category.as_deref() != Some(category) {
+                                continue;
+                            }
+                            let installed_content_core::tokens::Token::Name(name) = token else {
+                                missing.push("replacement candidate has rejected identity".into());
+                                continue;
                             };
-                            match world.evaluate(body, scopes) {
-                                Eval::True => (),
-                                Eval::False => {
-                                    accepts = false;
-                                    break;
-                                }
-                                Eval::Unknown(why) => {
-                                    missing.extend(why.into_iter().map(|why| why.to_string()));
-                                    accepts = false;
-                                    break;
+                            let name = std::str::from_utf8(name)
+                                .map_err(|_| "replacement candidate identity is not UTF-8")?;
+                            if !unused_candidate(name, &held_names) {
+                                continue;
+                            }
+                            if let Err(why) = catalog.get(name) {
+                                missing.push(why);
+                                continue;
+                            }
+                            let mut accepts = true;
+                            for kind in ["available", "allowed"] {
+                                let body = candidate
+                                    .conditions
+                                    .get(kind)
+                                    .map(Vec::as_slice)
+                                    .unwrap_or_default();
+                                let scopes = if kind == "available" {
+                                    command_scopes(leader, actor)
+                                } else {
+                                    let mut value = Scopes::of(Scope::Country(leader));
+                                    value.bare = true;
+                                    value
+                                };
+                                match world.evaluate(body, scopes) {
+                                    Eval::True => (),
+                                    Eval::False => {
+                                        accepts = false;
+                                        break;
+                                    }
+                                    Eval::Unknown(why) => {
+                                        missing.extend(why.into_iter().map(|why| why.to_string()));
+                                        accepts = false;
+                                        break;
+                                    }
                                 }
                             }
+                            if accepts {
+                                eligible = true;
+                                break;
+                            }
                         }
-                        if accepts {
-                            eligible = true;
-                            break;
+                        if !eligible && !missing.is_empty() {
+                            return Err(format!(
+                                "goal replacement candidate operands: {}",
+                                missing.join("; ")
+                            ));
+                        }
+                        Ok(eligible)
+                    };
+                    let known = texts.replacements.borrow().get(category).cloned();
+                    match known {
+                        Some(walked) => walked?,
+                        None => {
+                            let walked = walk();
+                            texts
+                                .replacements
+                                .borrow_mut()
+                                .insert(category.to_vec(), walked.clone());
+                            walked?
                         }
                     }
-                    if !eligible && !missing.is_empty() {
-                        return Err(format!(
-                            "goal replacement candidate operands: {}",
-                            missing.join("; ")
-                        ));
-                    }
-                    eligible
                 }
             }
         } else {

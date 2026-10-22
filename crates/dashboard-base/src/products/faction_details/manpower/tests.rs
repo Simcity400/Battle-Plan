@@ -151,6 +151,7 @@ fn zero_scaler_is_presented_without_a_blanket_refusal_or_supplying_read() {
         &frame,
         7,
         None,
+        &SharedDefines::default(),
         &mut reply,
     )
     .unwrap();
