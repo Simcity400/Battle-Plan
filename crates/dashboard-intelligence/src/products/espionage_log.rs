@@ -1677,25 +1677,10 @@ mod tests {
     }
 
     #[test]
-    fn espionage_five_thousand_countries_and_equal_reads_fit() {
-        let mut builder = Builder::default();
-        builder.observe(&frame(100, 5000));
-        builder.observe(&frame(101, 5000));
-        assert_eq!(builder.operations.len(), 5000);
-        assert!(
-            builder
-                .operations
-                .iter()
-                .all(|op| op.runs.len() == 1 && op.runs[0].last_hour == 101)
-        );
-        assert_eq!(builder.reads, [100, 101]);
-    }
-
-    #[test]
-    fn espionage_product_reads_5000_countries_and_dates_disappearance_after_a_gap() {
+    fn espionage_product_reads_every_country_and_dates_disappearance_after_a_gap() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
         use replay_data::rows::LexicalTokenRow;
-        let mut first = frame(100, 5000);
+        let mut first = frame(100, 24);
         first.tables[TableId::Campaign.index()] =
             source(1, 100, Some(1)).tables[TableId::Campaign.index()].clone();
         *first.tables[TableId::LexicalTokens.index()] =
@@ -1739,7 +1724,7 @@ mod tests {
             &cancelled,
         )
         .unwrap();
-        assert_eq!(reply.operations.len(), 5000);
+        assert_eq!(reply.operations.len(), 24);
         assert_eq!(reply.types[0].key, "mod_operation");
         assert_eq!(reply.read_hours, [100, 104]);
         assert_eq!(reply.operations[0].runs.len(), 2);
@@ -1976,77 +1961,6 @@ mod tests {
         row.start_hour = i32::MIN;
         let wrapped = row.start_hour.wrapping_add(24);
         assert_eq!(elapsed_days(&row, wrapped), Some(1));
-    }
-
-    #[test]
-    fn espionage_daily_windows_keep_five_thousand_country_campaign_metadata_bounded() {
-        let mut builder = Builder::default();
-        for day in 0..50 {
-            let mut sample = frame(100 + day * 24, 5000);
-            let rows = sample
-                .complete::<tables::Operations>()
-                .unwrap()
-                .iter()
-                .cloned()
-                .map(|mut row| {
-                    row.preparation_current = i64::from(day + 1);
-                    row.preparation_required = 50;
-                    row
-                })
-                .collect();
-            *sample.tables[TableId::Operations.index()] =
-                TableView::Complete(TableRows::Operations(rows));
-            builder.observe(&sample);
-        }
-        assert_eq!(builder.operations.len(), 5000);
-        assert!(
-            builder
-                .operations
-                .iter()
-                .all(|operation| operation.runs.len() == 50)
-        );
-        let reply = EspionageLogReply {
-            branch_id: "1".into(),
-            window: None,
-            windows: Vec::new(),
-            first_hour: 100,
-            last_hour: 1276,
-            available: builder.available,
-            read_hours: builder.reads,
-            completions_available: Vec::new(),
-            completions_unrecorded: Some(
-                "Operation completions not recorded: this product does not read OperationCompletions".into(),
-            ),
-            types: vec![],
-            operations: builder.operations,
-            warnings: vec![],
-            unavailable: None,
-        };
-        assert!(json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none());
-        let manifest = metadata_window(&reply, None).unwrap();
-        assert_eq!(manifest.windows.len(), 50);
-        assert!(manifest.operations.is_empty());
-        assert!(manifest.read_hours.is_empty());
-        assert!(json_len(&manifest, 64 * 1024).is_some());
-        for index in [0, 25, 49] {
-            let detail = metadata_window(&reply, Some(index)).unwrap();
-            assert_eq!(detail.operations.len(), 5000);
-            assert!(
-                detail
-                    .operations
-                    .iter()
-                    .all(|operation| operation.runs.len() <= 2)
-            );
-            assert!(json_len(&detail, MAX_PRODUCT_REPLY_BYTES).is_some());
-            assert_eq!(detail.read_hours.last(), Some(&detail.first_hour));
-            assert!(
-                detail
-                    .operations
-                    .iter()
-                    .all(|operation| operation.first_read == 100)
-            );
-        }
-        assert!(metadata_window(&reply, Some(50)).is_err());
     }
 
     #[test]

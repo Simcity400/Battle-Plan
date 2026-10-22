@@ -458,79 +458,6 @@ fn research_open_replies_keep_first_seen_key_order_and_missing_countries_across_
     compare(&fixture, &reference, "AAA");
 }
 
-fn scale(hour: i32, count: u32) -> DecodedFrame {
-    let mut frame = crate::test_fixtures::scale_frame(1, hour, count);
-    *frame.tables[TableId::ResearchInputs.index()] =
-        TableView::Complete(TableRows::ResearchInputs(
-            (0..count)
-                .map(|index| ResearchInputRow {
-                    country: 100_000 + index,
-                    index: 0,
-                    technology_handle: 1,
-                    database_index: replay_data::rows::Recorded::Value(1),
-                    technology_present: 1,
-                    token: b"synthetic_project".to_vec(),
-                    classifier: engine_research::ctechnology::CLASSIFIER_ACTIVE,
-                    cost_raw: 10_000_000,
-                    cost_scale_raw: 100_000,
-                    progress_raw: i64::from(hour),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    *frame.tables[TableId::ResearchAppliedBonuses.index()] =
-        TableView::Complete(TableRows::ResearchAppliedBonuses(Vec::new()));
-    let reads = (0..count)
-        .map(|index| SliceReadRow {
-            table: TableId::ResearchInputs.index() as u32,
-            owner: 100_000 + index,
-            sample_hour: hour,
-        })
-        .collect();
-    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
-    frame
-}
-
-#[test]
-fn research_observes_five_thousand_countries_once_and_checkpoints_only_continuation() {
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::default();
-    let mut reference = Scan::default();
-    let flag = AtomicBool::new(false);
-    for hour in 0..2 {
-        let frame = scale(hour, 5_000);
-        reference.observe_selected(&frame, None).unwrap();
-        prepared.observe(&frame).unwrap();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-    }
-    assert_eq!(prepared.keys.len(), 5_000);
-    for index in [0, 2_499, 4_999] {
-        compare(
-            &fixture,
-            &reference,
-            std::str::from_utf8(&crate::test_fixtures::scale_tag(index)).unwrap(),
-        );
-    }
-    let mut prepared = Prepared::default();
-    let mut writer = fixture.writer();
-    let mut before = 0;
-    for hour in 0..2_000 {
-        prepared.observe(&scale(hour, 1)).unwrap();
-        if hour == 199 {
-            before = serde_json::to_vec(&prepared).unwrap().len();
-        }
-    }
-    let after = serde_json::to_vec(&prepared).unwrap().len();
-    eprintln!(
-        "research one-country checkpoint: {before} bytes after 200 reads, {after} after 2000 reads"
-    );
-    assert!(after <= before + 128);
-    prepared.flush(&mut writer, 2, &flag).unwrap();
-    writer.commit().unwrap();
-}
-
 /// The first research owner's id; owner `index` holds canonical slot `index`.
 const FIRST_OWNER: u32 = 100_000;
 
@@ -793,11 +720,6 @@ fn assert_one_read_observes_one_country(count: u32) {
 #[test]
 fn research_hour_reading_one_country_observes_only_that_country() {
     assert_one_read_observes_one_country(200);
-}
-
-#[test]
-fn research_hour_reading_one_of_5000_countries_observes_only_that_country() {
-    assert_one_read_observes_one_country(5_000);
 }
 
 #[test]

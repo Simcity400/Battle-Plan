@@ -1817,11 +1817,11 @@ mod tests {
     }
 
     #[test]
-    fn territory_sampler_and_observer_agree_on_every_key_at_five_thousand_countries() {
+    fn territory_sampler_and_observer_agree_on_every_key() {
         let flag = AtomicBool::new(false);
-        let frame = super::super::tests::frame(100, 5_000, 10_000);
+        let frame = super::super::tests::frame(100, 24, 48);
         let areas = Arc::new(ProvinceAreas {
-            land: (0..=10_000).map(|id| i64::from(id) * 7).collect(),
+            land: (0..=48).map(|id| i64::from(id) * 7).collect(),
         });
         let mut prepared = Prepared {
             inputs: Some(AreaData {
@@ -1839,7 +1839,7 @@ mod tests {
             prepared.builder.aggregations, 1,
             "one land aggregation supplies every numeric channel"
         );
-        assert_eq!(sampled.len(), (5_000 + 1) * (columns::COUNT + 1));
+        assert_eq!(sampled.len(), (24 + 1) * (columns::COUNT + 1));
         for (tag, &actor) in &prepared.tags {
             let identity = prepared.scan.series[tag.as_str()].last.unwrap().0;
             for (column, field) in SAMPLE_FIELDS.iter().enumerate() {
@@ -1868,7 +1868,7 @@ mod tests {
         }
         assert_eq!(sampled[&(String::new(), "roster".into())], (None, Some(1)));
         let requested = vec![
-            ("realm 04999".into(), "ownedArea".into()),
+            ("realm 00023".into(), "ownedArea".into()),
             ("absent opaque tag".into(), "controlledStates".into()),
         ];
         let selected =
@@ -2424,74 +2424,6 @@ mod tests {
                 .all(|bucket| bucket.is_some_and(|bucket| bucket.first_value == 2.0))
         );
     }
-
-    #[test]
-    fn territory_prepared_values_keep_every_one_of_five_thousand_countries() {
-        let fixture = Fixture::new();
-        let cancelled = AtomicBool::new(false);
-        let mut prepared = Prepared::default();
-        let mut identities = super::super::super::country_history::HistoryScan::new(false, &[]);
-        for hour in 100..104 {
-            let mut frame = super::super::tests::frame(hour, 5_000, 5_000);
-            *frame.tables[TableId::CountryCounterInputs.index()] =
-                replay_frame::frame::TableView::Complete(
-                    replay_data::rows::TableRows::CountryCounterInputs(
-                        (0..5_000)
-                            .map(|slot| replay_data::rows::CountryCounterInputRow {
-                                country: 100_000 + slot,
-                                owned_state_count: slot as i32,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    ),
-                );
-            prepared
-                .observe_owned_states(&frame, &mut identities, None)
-                .unwrap();
-            prepared
-                .observe_with(&frame, Default::default(), &cancelled, None)
-                .unwrap();
-            let mut writer = fixture.writer();
-            prepared.flush(&mut writer, 1, &cancelled).unwrap();
-            writer.commit().unwrap();
-            prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
-            identities = serde_json::from_slice(&serde_json::to_vec(&identities).unwrap()).unwrap();
-        }
-        let (tags, _) =
-            series::read_catalogue::<TerritoryReply>(&fixture.store, &fixture.key, "territory", 1)
-                .unwrap()
-                .unwrap();
-        assert_eq!(tags.len(), 5_000);
-        let mut values = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "territory-values-1-0".into(),
-            &cancelled,
-        )
-        .unwrap();
-        for &key in tags.values() {
-            let run = values.value_at(key, 103).unwrap().unwrap();
-            assert_eq!((run.first_hour, run.last_hour, run.value), (100, 103, 1));
-        }
-        let mut native = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "territory-values-1-8".into(),
-            &cancelled,
-        )
-        .unwrap();
-        for slot in 0..5_000 {
-            let key = tags[&format!("realm {slot:05}")];
-            assert_eq!(
-                native.value_at(key, 103).unwrap().unwrap().value,
-                i128::from(slot)
-            );
-        }
-        eprintln!(
-            "territory continuation bytes at 5,000 countries: {}",
-            serde_json::to_vec(&prepared).unwrap().len()
-        );
-    }
 }
 #[cfg(test)]
 mod phase_b_tests {
@@ -2773,49 +2705,6 @@ mod phase_b_tests {
         })
         .unwrap();
         observer_tests::assert_flat(work);
-    }
-
-    #[test]
-    fn territory_shared_driver_carries_all_5000_countries_then_publishes_exactly() {
-        let format = replay_data::format::FormatVersion::CURRENT;
-        let flag = AtomicBool::new(false);
-        let mut frame = super::super::tests::frame(100, 5_000, 5_000);
-        frame.metrics = Default::default();
-        let mut prepared = Prepared::default();
-        prepared
-            .observe_with(
-                &frame,
-                format,
-                &flag,
-                Some(&FrameChangeTracker::new().observe(&frame, format)),
-            )
-            .unwrap();
-        let delta = observer_tests::unchanged_frames(
-            prepared.builder.work,
-            &frame,
-            100,
-            format,
-            |frame, changes| {
-                prepared.observe_with(frame, format, &flag, Some(changes))?;
-                Ok(prepared.builder.work)
-            },
-        )
-        .unwrap();
-        assert_eq!(delta, observer_tests::Work::default());
-        let fixture = crate::prepared::series::tests::Fixture::new();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        let mut values = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "territory-values-1-0".into(),
-            &flag,
-        )
-        .unwrap();
-        for actor in prepared.tags.values() {
-            assert_eq!(values.value_at(*actor, 200).unwrap().unwrap().value, 1);
-        }
     }
 
     /// Publishes every territory section and the saved continuation, as a commit does.

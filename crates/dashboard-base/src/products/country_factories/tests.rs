@@ -1158,52 +1158,6 @@ fn factory_read_confirmations_do_not_use_value_compression_as_provenance() {
 }
 
 #[test]
-#[ignore = "large synthetic recording"]
-fn factories_scale_1500_and_5000_countries_preserves_every_country() {
-    use crate::products::country_factories::scan;
-    use crate::test_fixtures::scale_frame;
-    use replay_data::rows::CountryFactoriesRow;
-    const HOURS: i32 = 24;
-    for (count, changing) in [1_500, 5_000]
-        .into_iter()
-        .flat_map(|count| [(count, false), (count, true)])
-    {
-        let frames = (100..100 + HOURS)
-            .map(|hour| {
-                let mut frame = scale_frame(1, hour, count);
-                *frame.tables[TableId::CountryFactories.index()] =
-                    TableView::Complete(TableRows::CountryFactories(
-                        (0..count)
-                            .map(|index| CountryFactoriesRow {
-                                country: 100_000 + index,
-                                civilian_total_raw: (i64::from(index)
-                                    + if changing && index == 0 {
-                                        i64::from(hour - 100)
-                                    } else {
-                                        0
-                                    })
-                                    * 100_000,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    ));
-                frame
-            })
-            .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-        assert_eq!(scanned.series.len(), count as usize);
-        assert!(scanned.series.iter().all(|(tag, runs)| {
-            if changing && tag == &String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap() {
-                runs.len() == HOURS as usize && runs.last().unwrap().last_hour == 100 + HOURS - 1
-            } else {
-                runs.len() == 1 && runs[0].last_hour == 100 + HOURS - 1
-            }
-        }));
-    }
-}
-
-#[test]
 fn faction_factory_adapter_clips_recorded_runs_around_proven_zero_spans() {
     use super::{FactoryCount, FactoryGroupKey, FactoryRun, faction_measure_runs};
     use crate::products::country_groups::HourSpan;

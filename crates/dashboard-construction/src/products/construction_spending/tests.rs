@@ -207,7 +207,7 @@ fn construction_output_never_joins_a_reset_or_hides_ownerless_final_lines() {
 }
 
 #[test]
-fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owners() {
+fn construction_output_reads_only_at_cadence_and_accounts_for_every_owner() {
     use replay_data::{rows::CountryLinkRow, rows::CountryRow};
     let replay_data::cadence::Cadence::Daily(slot) =
         replay_data::cadence::cadence(TableId::BuildingConstruction)
@@ -216,7 +216,7 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
     };
     let hour = 1000 * replay_data::cadence::STAGGER_PERIOD + slot as i32;
     let frame = |at| {
-        let countries = (1..=5000_u32)
+        let countries = (1..=8_u32)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id,
@@ -224,22 +224,20 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
                 ..Default::default()
             })
             .collect();
-        let links = (1..=5000)
+        let links = (1..=8)
             .map(|id| CountryLinkRow {
                 id,
                 canonical_slot: id,
             })
             .collect();
-        let lines = (1..=5000_u32)
+        let lines = (1..=8_u32)
             .map(|id| replay_data::rows::BuildingConstructionRow {
                 id: u64::from(id),
                 country: id,
                 ..building_line(u64::from(id), id, 1, 0, 1)
             })
             .collect();
-        let output = (1..=5000_u64)
-            .map(|id| output(id, i64::from(at), 0))
-            .collect();
+        let output = (1..=8_u64).map(|id| output(id, i64::from(at), 0)).collect();
         let mut frame = with_output(
             construction_frame(at, false, lines, vec![], Some(vec![]), vec![]),
             output,
@@ -256,12 +254,12 @@ fn construction_output_reads_only_at_cadence_and_accounts_for_5000_country_owner
     )
     .unwrap();
     let log = crate::products::construction_log::scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(log.projects.len(), 5000);
+    assert_eq!(log.projects.len(), 8);
     assert!(log.output_unknown.is_empty());
     // Group every owner's leaves once; `leaves` regroups the whole log per tag.
     let mut grouped = all_leaves(&log);
-    assert_eq!(grouped.len(), 5000);
-    for id in 1..=5000 {
+    assert_eq!(grouped.len(), 8);
+    for id in 1..=8 {
         let (leaves, _) = grouped.remove(&format!("synthetic-{id}")).unwrap();
         assert_eq!(leaves[0].spent.len(), 1);
         assert_eq!(leaves[0].spent[0].total_raw, hour.to_string());

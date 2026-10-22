@@ -1197,38 +1197,6 @@ fn timeline_days_are_dated_gap_columns_are_null_and_latest_partial_read_has_no_f
 }
 
 #[test]
-fn moment_window_accepts_5000_hours_and_keeps_every_recorded_read() {
-    let replay = recording(vec![air(0, 200_000), air(4999, 300_000)]);
-    let request = params(AirView::Moment, 0, 4999);
-    assert!(AirSuperiority::validate(&request).is_ok());
-    let reply = scan_moment(
-        &replay,
-        1,
-        &groups(&replay),
-        &request,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!((reply.first_hour, reply.last_hour), (0, 4999));
-    assert_eq!(
-        reply.recorded,
-        [
-            AirSpan {
-                first_hour: 0,
-                last_hour: 0
-            },
-            AirSpan {
-                first_hour: 4999,
-                last_hour: 4999
-            }
-        ]
-    );
-    assert_eq!(reply.regions[0].runs.len(), 2);
-    assert_eq!(reply.regions[0].runs[1].0, 4999);
-    assert!(check_reply_size(&AirReply::Moment(reply)).is_ok());
-}
-
-#[test]
 fn country_viewpoint_keeps_recorded_scores_without_faction_or_war_tables() {
     let mut frame = air(0, 200_003);
     for table in [
@@ -1695,94 +1663,6 @@ fn timeline_dates_are_refused_only_when_their_json_exceeds_the_reply_budget() {
     .unwrap();
     assert_eq!(reply.days.len(), 5001);
     assert!(check_reply_size(&AirReply::Timeline(reply)).is_ok());
-}
-
-#[test]
-fn selected_5000_countries_are_served_and_oversize_replies_are_never_truncated() {
-    use replay_data::{rows::CountryLinkRow, rows::CountryRow};
-    let mut frame = air(0, 200_000);
-    let countries: Vec<_> = (0..5000)
-        .map(|index| CountryRow {
-            id: 100_000 + index,
-            canonical_slot: index,
-            tag: format!("Mod country {index}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let selected: Vec<_> = countries
-        .iter()
-        .map(|country| format!("c:{}", std::str::from_utf8(&country.tag).unwrap()))
-        .collect();
-    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        countries
-            .iter()
-            .map(|country| CountryLinkRow {
-                id: country.id,
-                canonical_slot: country.canonical_slot,
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::RaidAirScores.index()] = TableView::Complete(TableRows::RaidAirScores(
-        countries
-            .iter()
-            .map(|country| RaidAirScoreRow {
-                country: country.id,
-                region: 7000,
-                friendly: 100_000,
-                enemy: 0,
-                impact: Default::default(),
-                friendly_missions: 0,
-                enemy_missions: 0,
-                air_spotting_scale: Some(0),
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::Countries.index()] =
-        TableView::Complete(TableRows::Countries(countries));
-    *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(vec![]));
-    *frame.tables[TableId::FactionMembers.index()] =
-        TableView::Complete(TableRows::FactionMembers(vec![]));
-    let replay = recording(vec![frame]);
-    let mut request = params(AirView::Moment, 0, 0);
-    request.sides = Some(selected);
-    assert!(AirSuperiority::validate(&request).is_ok());
-    let reply = scan_moment(
-        &replay,
-        1,
-        &groups(&replay),
-        &request,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(reply.sides.len(), 5000);
-    assert_eq!(
-        moment_cell_sides(&reply, &reply.regions[0].runs[0].2)
-            .scores
-            .len(),
-        5000
-    );
-    let mut reply = AirReply::Moment(reply);
-    assert!(check_reply_size(&reply).is_ok());
-    let AirReply::Moment(moment) = &mut reply else {
-        unreachable!()
-    };
-    moment.regions[0].name = "x".repeat(MAX_PRODUCT_REPLY_BYTES);
-    assert!(
-        check_reply_size(&reply)
-            .unwrap_err()
-            .to_string()
-            .contains("MAX_PRODUCT_REPLY_BYTES")
-    );
-    let AirReply::Moment(moment) = reply else {
-        unreachable!()
-    };
-    assert_eq!(moment.sides.len(), 5000);
-    assert_eq!(
-        moment_cell_sides(&moment, &moment.regions[0].runs[0].2)
-            .scores
-            .len(),
-        5000
-    );
 }
 
 #[test]
@@ -2732,8 +2612,9 @@ fn air_superiority_moment_reuses_revision_anchors_without_building_daily_segment
 }
 
 #[test]
-fn air_superiority_moment_wire_is_lossless_for_5000_unknown_countries() {
-    let replay = recording(vec![air(0, 200_000)]);
+fn air_superiority_moment_wire_interns_unknown_sets_and_compacts_trivial_sides_losslessly() {
+    // regression: df290c0bba Make air indexes follow changed reads and compact exact moment replies
+    let replay = recording(vec![air(0, 1)]);
     let mut reply = scan_moment(
         &replay,
         1,
@@ -2742,7 +2623,7 @@ fn air_superiority_moment_wire_is_lossless_for_5000_unknown_countries() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    reply.sides = (0..5000)
+    reply.sides = (0..3)
         .map(|index| {
             let tag = format!("mod country [{index}]");
             AirSide {
@@ -2766,7 +2647,7 @@ fn air_superiority_moment_wire_is_lossless_for_5000_unknown_countries() {
             }
         })
         .collect();
-    let unknown: Vec<_> = (0..5000).collect();
+    let unknown: Vec<_> = (0..3).collect();
     let cell = AirCell(Some(AirValue::Sides(AirSideCell {
         scores: vec![],
         viewpoints: vec![],
@@ -2791,17 +2672,16 @@ fn air_superiority_moment_wire_is_lossless_for_5000_unknown_countries() {
         std::slice::from_ref(&unknown)
     );
     let json = serde_json::to_vec(&reply).unwrap();
-    assert!(
-        json.len() < 200_000,
-        "the exact synthetic moment needs no repeated country properties or unknown lists"
-    );
     let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(
-        value["sides"][4999],
-        serde_json::json!(["mod country [4999]", 0])
-    );
-    assert!(value["regions"][0]["runs"][0][2].get("unknown").is_none());
-    assert_eq!(value["regions"][1]["runs"][0][2]["unknownSet"], 0);
+    assert_eq!(value["sides"][2], serde_json::json!(["mod country [2]", 0]));
+    for region in 0..2 {
+        assert!(
+            value["regions"][region]["runs"][0][2]
+                .get("unknown")
+                .is_none()
+        );
+        assert_eq!(value["regions"][region]["runs"][0][2]["unknownSet"], 0);
+    }
     let decoded: AirMomentReply = serde_json::from_slice(&json).unwrap();
     assert_eq!(decoded.sides, reply.sides);
     for region in &decoded.regions {

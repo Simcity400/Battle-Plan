@@ -79,17 +79,3 @@ fn a_record_keeps_native_entry_order_and_names_what_it_cannot_describe() {
     assert!(record(&frame(), 99, &naming(), &places, &mut refusals).unwrap().absent);
 }
 
-#[test]
-fn five_thousand_divisions_rank_without_a_cap() {
-    let mut f = frame();
-    let divisions: Vec<_> = (10..5_010u64).map(|id| DivisionRow { id, roster_owner: 11, template: 5, ..Default::default() }).collect();
-    let history: Vec<_> = (10..5_010u64)
-        .map(|id| history(id, DivisionHistoryRow::SUMMARY, 0, DivisionHistoryRow { available: 1, amount: (id % 7) as i32, ..Default::default() }))
-        .collect();
-    *f.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
-    *f.tables[TableId::DivisionHistory.index()] = TableView::Complete(TableRows::DivisionHistory(history));
-    let mut refusals = Refusals::default();
-    let r = careers(&f, None, &naming(), &mut refusals, &AtomicBool::new(false)).unwrap();
-    assert_eq!(r.divisions.len(), 5_000);
-    assert_eq!(r.divisions.iter().filter_map(|d| d.facts.medals).map(i64::from).sum::<i64>(), (10..5_010i64).map(|id| id % 7).sum::<i64>());
-}

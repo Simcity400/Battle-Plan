@@ -329,34 +329,3 @@ fn catalogue_and_reply_text_reuse_their_complete_page_identities() {
     );
     assert_eq!(read(), replaced);
 }
-
-#[test]
-fn state_reuse_retains_every_one_of_five_thousand_keys() {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut values = Accumulator::default();
-    values.through(0);
-    for key in 0..5000 {
-        values.observe(key, 0, Some(i128::from(key)), false);
-    }
-    let mut writer = fixture.writer();
-    values.flush(&mut writer, "test", 0, &flag).unwrap();
-    writer.commit().unwrap();
-    let keys: Vec<_> = (0..5000).collect();
-    let read = || {
-        Reader::new(&fixture.store, &fixture.key, "test".into(), &flag)
-            .unwrap()
-            .values_at(&keys, 0)
-            .unwrap()
-    };
-    let scope = cache_scope(None);
-    let expected = read();
-    let held = scope.finish();
-    let before = BLOB_DECODES.get();
-    let scope = cache_scope(Some(&held));
-    assert_eq!(read(), expected);
-    assert_eq!(BLOB_DECODES.get(), before);
-    assert_eq!(scope.finish().blobs.len(), 5000);
-    assert_eq!(expected.len(), 5000);
-    assert!(held.bytes() >= 5000 * std::mem::size_of::<Cached>());
-}

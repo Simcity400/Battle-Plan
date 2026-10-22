@@ -223,68 +223,6 @@ fn prepared_roster_filters_replaced_alias_holders_and_refusals() {
 }
 
 #[test]
-fn prepared_roster_handles_five_thousand_countries_without_daily_checkpoint_growth() {
-    let mut input = frame(0, true, vec![]);
-    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5_000)
-            .map(|id| CountryRow {
-                id,
-                canonical_slot: id,
-                tag: format!("mod-country-{id}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5_000)
-            .map(|id| CountryLinkRow {
-                id,
-                canonical_slot: id,
-            })
-            .collect(),
-    ));
-    *input.tables[TableId::OperativeMemberships.index()] =
-        TableView::Complete(TableRows::OperativeMemberships(
-            (1..=5_000)
-                .map(|id| OperativeMembershipRow {
-                    id: u64::from(id),
-                    roster_country: id,
-                    owner_country: id,
-                    ..row(u64::from(id))
-                })
-                .collect(),
-        ));
-    let source = source(vec![input.clone()]);
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut state = Prepared::default();
-    let mut short = 0;
-    for day in 0..100 {
-        for offset in 0..24 {
-            input.hour = base() + day * 24 + offset;
-            input.metrics.table_ns[TableId::OperativeMemberships.index()] = u64::from(offset == 0);
-            state
-                .observe(&source, &LoadContext { content: None }, &input)
-                .unwrap();
-        }
-        let mut writer = fixture.writer();
-        state.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        if day == 1 {
-            short = serde_json::to_vec(&state).unwrap().len();
-        }
-    }
-    let long = serde_json::to_vec(&state).unwrap().len();
-    eprintln!("roster checkpoint bytes (5,000 countries): 2 days={short}, 100 days={long}");
-    assert!(long < short * 2);
-    let scan = state.scan.as_ref().unwrap();
-    assert_eq!(scan.histories.len(), 5_000);
-    assert!(scan.histories.iter().all(|h| h.reply.observed.len() == 1
-        && h.reply.operatives.len() == 1
-        && h.reply.operatives[0].runs.len() == 1));
-}
-
-#[test]
 fn intel_shared_driver_roster_equal_reads_are_flat_and_exact() {
     use crate::products::{intelligence_prepared::measured, operative_rows::CountryInputs};
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};

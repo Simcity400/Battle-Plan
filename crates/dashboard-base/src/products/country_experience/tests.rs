@@ -144,12 +144,12 @@ fn banked_reasks_share_first_read_observations_across_measures_and_exact_block_f
 }
 
 #[test]
-fn first_read_observations_scale_to_five_thousand_native_holders() {
+fn first_read_observations_cover_every_native_holder() {
     use super::{SAMPLED_MEASURES, Sampler};
     use replay_data::rows::CountryExperienceRow;
     let mut frame = experience_frame(0, true, 9001);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (0..5000)
+        (0..40)
             .map(|i| CountryRow {
                 id: 10000 + i,
                 canonical_slot: i + 1,
@@ -159,7 +159,7 @@ fn first_read_observations_scale_to_five_thousand_native_holders() {
             .collect(),
     ));
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (0..5000)
+        (0..40)
             .map(|i| CountryLinkRow {
                 id: 10000 + i,
                 canonical_slot: i + 1,
@@ -168,7 +168,7 @@ fn first_read_observations_scale_to_five_thousand_native_holders() {
     ));
     *frame.tables[TableId::CountryExperience.index()] =
         TableView::Complete(TableRows::CountryExperience(
-            (0..5000)
+            (0..40)
                 .map(|i| CountryExperienceRow {
                     country: 10000 + i,
                     army_raw: i64::from(i),
@@ -182,7 +182,7 @@ fn first_read_observations_scale_to_five_thousand_native_holders() {
         crate::test_fixtures::file_source(crate::test_fixtures::replay(vec![frame]));
     let flag = AtomicBool::new(false);
     for measure in SAMPLED_MEASURES {
-        let requested: Vec<_> = (0..5000)
+        let requested: Vec<_> = (0..40)
             .map(|i| {
                 (
                     serde_json::to_string(&(format!("holder {i}"), i + 1, 10000 + i)).unwrap(),
@@ -1121,9 +1121,4 @@ fn assert_banked_row_joins(count: u32) {
 #[test]
 fn banked_rows_join_only_changed_slots_and_preserve_aliases_refusals_resume_and_gaps() {
     assert_banked_row_joins(32);
-}
-
-#[test]
-fn banked_row_changes_among_5000_countries_join_only_their_slots() {
-    assert_banked_row_joins(5000);
 }

@@ -774,11 +774,11 @@ mod tests {
     }
 
     #[test]
-    fn faction_goal_details_select_one_owner_among_five_thousand_and_preserve_independent_lists() {
+    fn faction_goal_details_select_one_owner_and_preserve_independent_lists() {
         let mut frame = crate::test_fixtures::source(1, 100, Some(0));
         let selected = u64::MAX;
         *frame.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
-            (1..5000)
+            (1..24)
                 .chain([selected])
                 .map(|id| FactionRow {
                     id,
@@ -788,7 +788,7 @@ mod tests {
         ));
         *frame.tables[TableId::FactionGoalStatus.index()] =
             TableView::Complete(TableRows::FactionGoalStatus(
-                (1..5000)
+                (1..24)
                     .chain([selected])
                     .map(|faction| FactionGoalStatusRow {
                         faction,

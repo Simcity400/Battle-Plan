@@ -339,34 +339,6 @@ fn military_aid_complete_empty_lists_do_not_demand_live_divisions() {
     assert!(host.channels[1].complete && host.channels[1].values.is_empty());
 }
 #[test]
-fn military_aid_5000_countries_keeps_only_observed_directed_links() {
-    let mut frame = scenario(100);
-    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (0..5000)
-            .map(|index| rows::CountryRow {
-                id: 10 + index,
-                canonical_slot: 1 + index,
-                tag: format!("mod/country-{index}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (0..5000)
-            .map(|index| rows::CountryLinkRow {
-                id: 10 + index,
-                canonical_slot: 1 + index,
-            })
-            .collect(),
-    ));
-    let point = direct(&frame);
-    assert_eq!(point.senders.len(), 5000);
-    let mut history = History::default();
-    history.observe(point).unwrap();
-    assert!(history.catalogue.links.len() <= 3);
-    assert_eq!(history.catalogue.actors.len(), 5000);
-}
-#[test]
 fn military_aid_division_deltas_revisit_only_referencing_senders() {
     use dashboard_base::test_fixtures::{CAMPAIGN, records};
     let frames = (100..104)

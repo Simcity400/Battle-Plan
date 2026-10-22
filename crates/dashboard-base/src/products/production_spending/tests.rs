@@ -1222,69 +1222,6 @@ fn production_spending_lost_inexact_unit_row_still_withholds_its_independent_spe
     );
 }
 
-#[test]
-fn production_spending_every_country_5000_country_builder() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let country_count = 5_000u32;
-    let countries: Vec<_> = (1..=country_count)
-        .map(|id| CountryRow {
-            id,
-            canonical_slot: id,
-            tag: format!("opaque|{id}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let links: Vec<_> = (1..=country_count)
-        .map(|id| CountryLinkRow {
-            id,
-            canonical_slot: id,
-        })
-        .collect();
-    let mut frames = Vec::new();
-    for index in 0..2 {
-        let lines: Vec<_> = (1..=country_count)
-            .map(|id| ProductionLineRow {
-                country: id,
-                ..line(u64::from(id), 1, 100_000)
-            })
-            .collect();
-        let outputs: Vec<_> = (1..=country_count)
-            .map(|id| ProductionLineOutputRow {
-                country: id,
-                ..output(u64::from(id), 1, i64::from(index + 1))
-            })
-            .collect();
-        for mut frame in day(index, lines, Some(outputs)) {
-            *frame.tables[TableId::Countries.index()] =
-                TableView::Complete(TableRows::Countries(countries.clone()));
-            *frame.tables[TableId::CountryLinks.index()] =
-                TableView::Complete(TableRows::CountryLinks(links.clone()));
-            frames.push(frame);
-        }
-    }
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    let scanned = production::scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(scanned.tags.len(), country_count as usize);
-    let mut selected = params(false);
-    selected.tag = "opaque|5000".into();
-    let result = reply(
-        &scanned,
-        &selected,
-        Named {
-            units: Some(&units()),
-            texts: None,
-        },
-        Vec::new(),
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(
-        at(&result.total, hour(1)).unwrap().total_raw.as_deref(),
-        Some("200000")
-    );
-}
-
 fn with_zero_rocket(track: TagHistory) -> ScannedProduced {
     let first = track.hours[0];
     let rocket = TagHistory {

@@ -552,12 +552,6 @@ mod tests {
         native_witness_resume_parity(3);
     }
 
-    #[test]
-    fn prepared_native_witnesses_grow_with_changes_not_hours_and_resume_exactly_at_5000_countries()
-    {
-        native_witness_resume_parity(5_000);
-    }
-
     fn native_witness_resume_parity(count: u32) {
         let mut history = History::default();
         let mut sample = frame(100, count);

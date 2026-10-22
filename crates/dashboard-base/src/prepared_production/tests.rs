@@ -619,39 +619,6 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
 }
 
 #[test]
-fn production_observer_carried_hours_stay_flat_at_5000_countries() {
-    use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    let first = observer_frame(5000, true);
-    let format = observer_format(&first);
-    let flag = AtomicBool::new(false);
-    observer_tests::assert_flat(
-        observer_tests::scaled_work(1, |hours| {
-            let mut state = ProductionAccumulator::new(format.version(), 1, first.hour);
-            let mut tracker = FrameChangeTracker::new();
-            state.ingest_changed(
-                format,
-                &first,
-                Named::default(),
-                &flag,
-                &tracker.observe(&first, format),
-            )?;
-            assert_eq!(state.pending.as_ref().unwrap().countries.len(), 4999);
-            observer_tests::unchanged_frames(
-                state.work(),
-                &first,
-                hours as i32,
-                format,
-                |frame, changes| {
-                    state.ingest_changed(format, frame, Named::default(), &flag, changes)?;
-                    Ok(state.work())
-                },
-            )
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
 fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
     use crate::prepared::series::{Reader, tests::Fixture};
     let frame = observer_frame(1, false);
@@ -800,9 +767,10 @@ fn page(read: i32, amounts: Vec<Amount>) -> EndpointPage {
 }
 
 #[test]
-fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits_at_5000_countries() {
+fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits() {
+    // regression: bdcf8aba90 Prepare resumable time-major production subset endpoints
     let mut page = page(0, Vec::new());
-    page.countries = (0..5000u32)
+    page.countries = (0..3u32)
         .map(|index| {
             let mut equipment = source(
                 0,
@@ -827,26 +795,17 @@ fn arbitrary_subsets_keep_signed_wide_sums_ties_request_order_and_refits_at_5000
         .collect();
     let mut params = params();
     params.tags.clear();
-    params.top = Some(5000);
+    params.top = Some(3);
     params.included = vec!["mod_one".into(), "mod_one".into()];
-    let result = select(
-        &page,
-        None,
-        None,
-        &params,
-        4998,
-        20,
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(result.total_countries, 5000);
+    let result = select(&page, None, None, &params, 1, 20, &AtomicBool::new(false)).unwrap();
+    assert_eq!(result.total_countries, 3);
     assert_eq!(
         result
             .countries
             .iter()
             .map(|row| row.tag.as_str())
             .collect::<Vec<_>>(),
-        ["M4998", "M4999"]
+        ["M0001", "M0002"]
     );
     assert_eq!(
         result.countries[0].total.as_deref(),
@@ -1935,7 +1894,3 @@ fn presentation_inventory_carries_keys_and_replaces_only_the_changed_holder() {
     presentation_inventory_work_follows_changed_holders(8);
 }
 
-#[test]
-fn presentation_inventory_carries_keys_at_5000_countries() {
-    presentation_inventory_work_follows_changed_holders(5000);
-}

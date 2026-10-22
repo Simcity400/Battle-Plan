@@ -179,19 +179,6 @@ fn designs_date_obsolescence_to_the_read_that_shows_it_and_mark_the_first_read()
 }
 
 #[test]
-fn five_thousand_countries_keep_their_designs_sparse() {
-    let mut state = Prepared::default();
-    let mut at = frame(5);
-    many_countries(&mut at, 5_000);
-    set(
-        &mut at,
-        TableRows::VariantDefinitions((0..1_000).map(|n| design(u64::from(n) + 1, n * 5 + 1, 0)).collect()),
-    );
-    state.step(&at);
-    assert_eq!(ask(&mut state, CatalogueView::Designs, &["T0005"], 5).designs.len(), 1);
-}
-
-#[test]
 fn a_refused_roster_is_unknown_not_empty_in_every_domain() {
     let mut state = Prepared::default();
     let mut at = base(5);

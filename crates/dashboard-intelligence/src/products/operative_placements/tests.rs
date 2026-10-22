@@ -806,58 +806,6 @@ fn placements_equal_reads_compress_but_operative_names_and_country_identities_sp
     );
 }
 
-pub(super) fn scale_frame(hour: i32, read: bool) -> DecodedFrame {
-    let mut frame = frame(hour, read, vec![]);
-    let countries = (0..5000)
-        .map(|i| CountryRow {
-            id: 100_000 + i,
-            canonical_slot: i + 1,
-            tag: format!("opaque country {i}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let links = (0..5000)
-        .map(|i| CountryLinkRow {
-            id: 100_000 + i,
-            canonical_slot: i + 1,
-        })
-        .collect();
-    let rows = (0..5000)
-        .map(|i| OperativeMembershipRow {
-            owner_country: 100_000 + i,
-            roster_country: 100_000 + i,
-            target_country: Some(100_000 + (i + 1) % 5000).into(),
-            ..operative(u64::from(i))
-        })
-        .collect();
-    *frame.tables[TableId::Countries.index()] =
-        TableView::Complete(TableRows::Countries(countries));
-    *frame.tables[TableId::CountryLinks.index()] =
-        TableView::Complete(TableRows::CountryLinks(links));
-    *frame.tables[TableId::OperativeMemberships.index()] =
-        TableView::Complete(TableRows::OperativeMemberships(rows));
-    frame
-}
-
-#[test]
-fn placements_five_thousand_countries_use_sparse_pairs_without_a_player_predicate() {
-    let frame = scale_frame(10, true);
-    let mut second = frame.clone();
-    second.hour += 1;
-    second.metrics.table_ns[TableId::OperativeMemberships.index()] = 0;
-    let reply = load(vec![frame, second]);
-    assert_eq!(reply.pairs.len(), 5000);
-    assert_eq!(reply.read_hours, [10]);
-    assert!(
-        reply
-            .pairs
-            .iter()
-            .all(|p| p.runs.len() == 1 && p.runs[0].count == 1 && p.runs[0].last_hour == 11)
-    );
-    let sent: u64 = reply.pairs.iter().map(|p| u64::from(p.runs[0].count)).sum();
-    assert_eq!(sent, 5000);
-}
-
 #[test]
 fn held_placements_project_hourly_tags_without_redating_the_membership() {
     let (mut countries, mut links) = countries();

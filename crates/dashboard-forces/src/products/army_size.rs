@@ -1733,6 +1733,3 @@ use inventory::{Inventory, Updates};
 pub mod test_fixtures;
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod scale;

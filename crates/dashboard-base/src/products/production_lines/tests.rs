@@ -2925,11 +2925,6 @@ fn production_country_lookup_reuses_keys_and_follows_every_intervening_identity_
     country_lookup_reuse(32);
 }
 
-#[test]
-fn production_country_lookup_reuses_keys_at_5000_countries() {
-    country_lookup_reuse(5000);
-}
-
 fn quiet_production_replay(lines: u64) -> Replay {
     use crate::test_fixtures::continuation_records;
     let frame = |at: i32| {

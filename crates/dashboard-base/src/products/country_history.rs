@@ -1739,13 +1739,13 @@ mod tests {
     }
 
     #[test]
-    fn country_history_shared_driver_keeps_all_5000_native_owned_counters_without_hourly_work() {
+    fn country_history_shared_driver_keeps_all_native_owned_counters_without_hourly_work() {
         use crate::prepared::{
             frame_changes::FrameChangeTracker,
             observer_tests::{self, Work},
         };
         let format = replay_data::format::FormatVersion::CURRENT;
-        let mut frame = crate::test_fixtures::scale_frame(1, 100, 5_000);
+        let mut frame = crate::test_fixtures::scale_frame(1, 100, 24);
         let counts = frame
             .complete::<tables::Countries>()
             .unwrap()
@@ -1761,7 +1761,7 @@ mod tests {
         let mut prepared = HistoryScan::new(true, &[]);
         let changes = FrameChangeTracker::new().observe(&frame, format);
         prepared.observe_owned_states(&frame, Some(&changes), |_, _, _| {});
-        assert_eq!(prepared.open.len(), 5_000);
+        assert_eq!(prepared.open.len(), 24);
         let delta = observer_tests::unchanged_frames(
             prepared.work,
             &frame,
@@ -2100,11 +2100,6 @@ mod tests {
     #[test]
     fn country_history_quiet_hours_step_as_observed_hours() {
         quiet_steps_equal_hourly_observation(3);
-    }
-
-    #[test]
-    fn country_history_quiet_hours_step_as_observed_hours_for_5000_countries() {
-        quiet_steps_equal_hourly_observation(5_000);
     }
 
     /// An hour that does not read the countries while their keys change

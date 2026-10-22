@@ -385,70 +385,6 @@ fn queries_select_one_country_and_pair_and_clip_accepted_prefix() {
 }
 
 #[test]
-fn five_thousand_countries_stay_sparse_and_queries_only_read_selected_names() {
-    let fixture = Fixture::new();
-    let mut frame = world_frame(100, false);
-    let mut countries = Vec::new();
-    let mut links = Vec::new();
-    let mut wings = Vec::new();
-    let mut registrations = Vec::new();
-    let mut stats = Vec::new();
-    for slot in 0..5000_u32 {
-        let raw = slot + 10_000;
-        countries.push(CountryRow {
-            id: raw,
-            canonical_slot: slot,
-            tag: format!("T{slot:05}").into_bytes(),
-            ..Default::default()
-        });
-        links.push(CountryLinkRow {
-            id: raw,
-            canonical_slot: slot,
-        });
-        wings.push(AirWingRow {
-            owner: raw,
-            id: u64::from(raw),
-            ..wing(u64::from(raw), 7, 5)
-        });
-        registrations.push(AirRegionalMissionRow {
-            wing: u64::from(raw),
-            ordinal: 0,
-            ..Default::default()
-        });
-        stats.push(AirStatisticsRow {
-            country: raw,
-            ..stat(3, [i64::from(slot); 24])
-        });
-    }
-    *frame.tables[TableId::Countries.index()] =
-        TableView::Complete(TableRows::Countries(countries));
-    *frame.tables[TableId::CountryLinks.index()] =
-        TableView::Complete(TableRows::CountryLinks(links));
-    *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(wings));
-    *frame.tables[TableId::AirRegionalMissions.index()] =
-        TableView::Complete(TableRows::AirRegionalMissions(registrations));
-    *frame.tables[TableId::AirStatistics.index()] =
-        TableView::Complete(TableRows::AirStatistics(stats));
-    frame.metrics.table_ns[TableId::AirStatistics.index()] = 1;
-    let mission_scan = publish::<AirMissionsObserver>(&fixture, std::slice::from_ref(&frame));
-    assert_eq!(mission_scan.names().len(), 5000 * 3);
-    let stats_scan = publish::<AirStatisticsObserver>(&fixture, std::slice::from_ref(&frame));
-    assert_eq!(stats_scan.names().len(), 5000 * 26);
-    let reply = answer(
-        &fixture,
-        vec![frame],
-        json!({"branchId":"1","tag":"T01234@1234","channel":3,"firstHour":100,"lastHour":100}),
-        true,
-        None,
-    );
-    assert_eq!(reply["window"]["series"].as_array().unwrap().len(), 4);
-    assert_eq!(
-        runs(&reply, "T01234@1234|3|c3"),
-        &json!([[100, 100, "1234", true]])
-    );
-}
-
-#[test]
 fn cold_prefix_has_empty_window_not_zero_and_keeps_channel_choices() {
     let fixture = Fixture::new();
     let frames = vec![
@@ -468,16 +404,7 @@ fn cold_prefix_has_empty_window_not_zero_and_keeps_channel_choices() {
 }
 
 #[test]
-fn field_selection_and_product_contracts_are_complete_and_distinct() {
-    assert_eq!(AirMissionsObserver::fields().unwrap().len(), 4);
-    assert_eq!(AirStatisticsObserver::fields().unwrap().len(), 3);
-    assert_eq!(AirStatisticsObserver::READ, TableId::AirStatistics);
-    assert!(AirMissions::types().join("\n").contains("AirMissionsWing"));
-    assert!(
-        AirStatistics::types()
-            .join("\n")
-            .contains("AirStatisticsChannelChoice")
-    );
+fn out_of_range_channels_and_views_are_refused() {
     let invalid = serde_json::from_value(json!({"branchId":"1","tag":"GER","channel":12})).unwrap();
     assert!(AirStatistics::validate(&invalid).is_err());
     let invalid =

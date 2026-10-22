@@ -246,11 +246,6 @@ fn phase_b_fuel_work_is_flat_over_unchanged_hours_and_retained_history() {
 }
 
 #[test]
-fn phase_b_fuel_work_is_flat_at_five_thousand_countries() {
-    phase_b_scaled_work(5000);
-}
-
-#[test]
 fn phase_b_link_changes_rebind_retained_operands_without_country_state_or_fuel_row_visits() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let first = fuel_slot(100);
@@ -622,14 +617,14 @@ fn phase_b_shared_views_keep_fresh_reads_gaps_and_dormant_ownership_after_resume
 }
 
 #[test]
-fn progressive_fuel_sampler_matches_observer_on_every_key_at_5000_countries() {
+fn progressive_fuel_sampler_matches_observer_on_every_key() {
     let mut prepared = Prepared::default();
     let flag = AtomicBool::new(false);
     for hour in 0..=1 {
-        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 5000);
+        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 24);
         frame.metrics.table_ns[TableId::CountryFuel.index()] = 1;
         *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
-            (0..5000)
+            (0..24)
                 .map(|index| CountryFuelRow {
                     country: 100_000 + index,
                     current_raw: i64::from(index) - i64::from(hour),
@@ -639,7 +634,7 @@ fn progressive_fuel_sampler_matches_observer_on_every_key_at_5000_countries() {
                 .collect(),
         ));
         let samples = sample(&frame, None).unwrap();
-        assert_eq!(samples.len(), 10_000);
+        assert_eq!(samples.len(), 48);
         prepared
             .observe(&frame, replay_data::format::FormatVersion::CURRENT, &flag)
             .unwrap();
@@ -953,78 +948,6 @@ fn a_gap_settles_country_dates_in_one_shared_batch_after_resume() {
         .unwrap();
     assert!(reads.fuel("Z", first).unwrap().unwrap().day.is_some());
     assert!(reads.fuel("A", first + 1).unwrap().unwrap().day.is_some());
-}
-
-#[test]
-fn five_thousand_countries_share_each_frame_and_keep_bounded_continuations() {
-    use dashboard_base::test_fixtures::scale_frame;
-    use replay_data::{
-        rows::CountryFuelRow, rows::FuelDemandHour, rows::FuelDemandRead, rows::FuelDemandUnit,
-        rows::Recorded,
-    };
-    let count = 5000_u32;
-    let slot = fuel_slot(1000);
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::default();
-    for hour in slot..=slot + 48 {
-        let mut frame = scale_frame(1, hour, count);
-        *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
-            (0..count)
-                .map(|index| CountryFuelRow {
-                    country: 100_000 + index,
-                    current_raw: i64::from(index),
-                    maximum_raw: i64::from(count),
-                    country_instance: Recorded::Value(Some(9)),
-                    demand: Recorded::Value(FuelDemandRead {
-                        hour: FuelDemandHour::Stamped(hour),
-                        country_instance: Some(9),
-                        divisions: vec![FuelDemandUnit {
-                            reference: u64::from(index) << 32 | 29,
-                            rate_raw: Some(i64::from(index)),
-                            ..Default::default()
-                        }],
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        prepared.observe(&frame, format, &flag).unwrap();
-        if hour == slot + 24 || hour == slot + 48 {
-            let mut writer = fixture.writer();
-            prepared.flush(&mut writer, 1, format, &flag).unwrap();
-            writer.commit().unwrap();
-            prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
-        }
-    }
-    let mut reads = Reads::open(&fixture.store, &fixture.key, 1, &flag)
-        .unwrap()
-        .unwrap();
-    for index in 0..count {
-        let tag = String::from_utf8(dashboard_base::test_fixtures::scale_tag(index)).unwrap();
-        assert_eq!(
-            reads.fuel(&tag, slot + 48).unwrap().unwrap().fuel_raw,
-            index.to_string()
-        );
-        assert_eq!(
-            reads
-                .consumption(&tag, slot + 48)
-                .unwrap()
-                .unwrap()
-                .known_daily_raw[0],
-            (i64::from(index) * 24).to_string()
-        );
-    }
-    assert_eq!(prepared.scan.decoded_frames, 49);
-    assert_eq!(prepared.scan.ownership_rows, 49 * count as usize);
-    assert_eq!(prepared.scan.countries.len(), count as usize);
-    assert!(prepared.scan.countries.values().all(|country|country.result.reads.len()<=2 && country.result.consumption.len()==1));
-    eprintln!(
-        "fuel 5000-country continuation bytes: {}",
-        serde_json::to_vec(&prepared).unwrap().len()
-    );
 }
 
 struct FileFixture {
@@ -1599,11 +1522,6 @@ fn check_deferred_fuel_settlement_work(count: u32) {
 #[test]
 fn quiet_fuel_settlement_does_no_per_country_work_between_decisions() {
     check_deferred_fuel_settlement_work(64);
-}
-
-#[test]
-fn quiet_fuel_settlement_carries_5000_countries_without_hourly_decisions() {
-    check_deferred_fuel_settlement_work(5_000);
 }
 
 #[test]

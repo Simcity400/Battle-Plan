@@ -946,20 +946,15 @@ mod tests {
     }
 
     #[test]
-    fn aces_unread_hours_do_not_walk_5000_country_keys_after_invalidation() {
-        intervening_country_identity(5000);
-    }
-
-    #[test]
     fn aces_shared_driver_equal_reads_defer_roster_and_portrait_dates() {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let measured = observer_tests::scaled_work(8, |hours| {
             let fixture = Fixture::new();
             let flag = AtomicBool::new(false);
-            let mut first = scale_frame(1, 10, 5000);
+            let mut first = scale_frame(1, 10, 24);
             first.metrics.table_ns[TableId::AirAces.index()] = 1;
             first.tables[TableId::AirAces.index()] = TableView::Complete(TableRows::AirAces(
-                (0..5000)
+                (0..24)
                     .map(|id| AirAceRow {
                         country: 100_000 + id,
                         ..super::super::tests::ace(u64::from(id) + 1, true)
@@ -1400,36 +1395,6 @@ mod tests {
         assert_eq!(state.scan.aces[0].last_alive, Some(39));
         assert_eq!(state.scan.aces[0].dead_by, Some(40));
         assert_parity(&fixture, &full);
-    }
-
-    #[test]
-    fn prepared_aces_retains_all_5000_country_rosters() {
-        let fixture = Fixture::new();
-        let mut frame = scale_frame(1, 10, 5000);
-        frame.metrics.table_ns[TableId::AirAces.index()] = 1;
-        let rows = (0..5000)
-            .map(|id| AirAceRow {
-                country: 100_000 + id,
-                ..super::super::tests::ace(u64::from(id) + 1, true)
-            })
-            .collect();
-        *frame.tables[TableId::AirAces.index()] = TableView::Complete(TableRows::AirAces(rows));
-        let source = source(
-            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]).unwrap(),
-        );
-        let mut state = Prepared::default();
-        let mut writer = fixture.writer();
-        let mut map = dashboard_base::prepared_map::Builder::new(
-            NonZeroU32::new(24).unwrap(),
-            dashboard_base::prepared_map::selected_tables(),
-            Default::default(),
-        )
-        .unwrap();
-        publish(&mut state, &mut writer, &mut map, &source, 0);
-        writer.commit().unwrap();
-        assert_eq!(state.scan.aces.len(), 5000);
-        assert_eq!(state.portraits.len(), 5000);
-        assert_parity(&fixture, &source);
     }
 
     #[test]

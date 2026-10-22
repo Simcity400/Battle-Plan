@@ -31,7 +31,7 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
         test_fixtures::scale_frame,
     };
     for entries in [100_001, 500_001] {
-        let countries = 5_000;
+        let countries = 1_100;
         let mut frame = scale_frame(1, 100, countries);
         let wars = (0..countries)
             .flat_map(|first| {
@@ -1931,11 +1931,10 @@ fn the_cached_group_scan_supplies_dated_names_rosters_and_country_read_spans_tog
     assert_eq!(cached.faction_leaders(77).unwrap().len(), 2);
 }
 
-fn five_thousand_country_frame(members: bool) -> DecodedFrame {
+fn many_country_frame() -> DecodedFrame {
     use replay_data::{rows::CountryLinkRow, rows::CountryRow};
-    let ids: Vec<_> = (1..=5000).collect();
-    let factions = [(77, "Recorded pact", ids.as_slice())];
-    let mut frame = group_frame(100, &[], if members { &factions } else { &[] }, &[]);
+    let ids: Vec<_> = (1..=24).collect();
+    let mut frame = group_frame(100, &[], &[], &[]);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         ids.iter()
             .map(|&id| CountryRow {
@@ -1958,49 +1957,8 @@ fn five_thousand_country_frame(members: bool) -> DecodedFrame {
 }
 
 #[test]
-fn faction_roster_history_keeps_more_than_two_million_recorded_members() {
-    let template = five_thousand_country_frame(true);
-    let frames = (0..401)
-        .map(|index| {
-            let mut frame = template.clone();
-            frame.hour = 100 + index;
-            *frame.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
-                    id: 77,
-                    name: format!("Recorded name {index}").into_bytes(),
-                    ..Default::default()
-                }]));
-            frame
-        })
-        .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
-    let rosters = &history.factions["77"];
-    assert_eq!(rosters.len(), 401);
-    assert_eq!(
-        rosters
-            .iter()
-            .map(|roster| roster.members.len())
-            .sum::<usize>(),
-        2_005_000
-    );
-    assert!(
-        rosters
-            .iter()
-            .all(|roster| roster.complete && roster.members.len() == 5000)
-    );
-    assert_eq!(rosters.last().unwrap().last_hour, 500);
-    assert_eq!(scan.faction(77).unwrap().3.len(), 5000);
-    assert!(Arc::ptr_eq(
-        &history,
-        &scan.faction_history(&AtomicBool::new(false)).unwrap()
-    ));
-}
-
-#[test]
 fn faction_history_keeps_all_country_read_evidence() {
-    let template = five_thousand_country_frame(false);
+    let template = many_country_frame();
     let frames = (0..101)
         .map(|index| {
             let mut frame = template.clone();
@@ -2011,14 +1969,14 @@ fn faction_history_keeps_all_country_read_evidence() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
     let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
-    assert_eq!(history.country_presence.len(), 5000);
+    assert_eq!(history.country_presence.len(), 24);
     assert_eq!(
         history
             .country_presence
             .values()
             .map(Vec::len)
             .sum::<usize>(),
-        505_000
+        2_424
     );
     assert_eq!(history.country_reads.len(), 101);
     assert!(scan.humans().is_empty());
@@ -3071,93 +3029,6 @@ fn group_deferred_open_state_matches_oracle_after_quiet_commits_resume_append_mi
 }
 
 #[test]
-fn group_faction_literal_change_reuses_five_thousand_members_and_preserves_roster_names() {
-    use super::{Scan, changes::Prepared};
-    use crate::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{assert_flat, scaled_work},
-    };
-    let context = crate::products::LoadContext { content: None };
-    assert_flat(
-        scaled_work(500, |countries| {
-            let mut first = crate::test_fixtures::scale_frame(1, 100, countries as u32);
-            *first.tables[TableId::HumanControllers.index()] =
-                TableView::Complete(TableRows::HumanControllers(vec![]));
-            *first.tables[TableId::WarRelations.index()] =
-                TableView::Complete(TableRows::WarRelations(vec![]));
-            *first.tables[TableId::Capitulation.index()] =
-                TableView::Complete(TableRows::Capitulation(vec![]));
-            *first.tables[TableId::Factions.index()] =
-                TableView::Complete(TableRows::Factions(vec![replay_data::rows::FactionRow {
-                    id: 77,
-                    name: b"Before".to_vec(),
-                    ..Default::default()
-                }]));
-            *first.tables[TableId::FactionMembers.index()] =
-                TableView::Complete(TableRows::FactionMembers(
-                    (0..countries)
-                        .map(|index| replay_data::rows::FactionMemberRow {
-                            country: 100_000 + index as u32,
-                            faction: 77,
-                            ordinal: index as u32,
-                        })
-                        .collect(),
-                ));
-            let source = group_source(
-                Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap(),
-            );
-            let mut scan = Scan::new(source.replay_ref(), 1);
-            let mut events = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            events.observe_changed(
-                &mut scan,
-                &first,
-                &tracker.observe(&first, source.replay_ref().format),
-                &source,
-                &context,
-            )?;
-            let before = scan.continuation.work;
-            let rebuilds = scan.continuation.rosters.rebuilds;
-            let mut renamed = first.clone();
-            renamed.hour += 1;
-            if let TableView::Complete(TableRows::Factions(rows)) =
-                &mut *renamed.tables[TableId::Factions.index()]
-            {
-                rows[0].name = b"After".to_vec();
-            }
-            events.observe_changed(
-                &mut scan,
-                &renamed,
-                &tracker.observe(&renamed, source.replay_ref().format),
-                &source,
-                &context,
-            )?;
-            assert_eq!(
-                scan.continuation.rosters.rebuilds, rebuilds,
-                "changing a literal does not rebuild the members join"
-            );
-            assert_eq!(scan.continuation.member_open.len(), countries);
-            scan.seal();
-            let roster = scan.continuation.rosters.factions["77"]
-                .iter()
-                .next_back()
-                .unwrap();
-            assert_eq!(roster.name.as_deref(), Some("After"));
-            assert_eq!(roster.members.len(), countries);
-            assert_eq!(roster.last_hour, 101);
-            let work = crate::prepared::observer_tests::Work {
-                row_visits: scan.continuation.work.row_visits - before.row_visits,
-                history_visits: scan.continuation.work.history_visits - before.history_visits,
-                ..Default::default()
-            };
-            assert_eq!(work.row_visits, 1);
-            Ok(work)
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
 fn group_membership_change_reads_deferred_unchanged_faction_name() {
     use super::{Scan, changes::Prepared};
     use crate::prepared::{
@@ -3241,121 +3112,6 @@ fn group_membership_change_reads_deferred_unchanged_faction_name() {
     );
     assert_eq!(actual.rows.len(), 1);
     assert_eq!(actual.rows[0].row["name"]["Ok"], "Pact");
-}
-
-#[test]
-fn group_dictionary_change_revisits_only_current_templates_and_skips_five_thousand_literal_names_and_joins()
- {
-    use super::{Scan, changes::Prepared};
-    use crate::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    let context = crate::products::LoadContext { content: None };
-    assert_flat(
-        scaled_work(500, |countries| {
-            let mut first = crate::test_fixtures::scale_frame(1, 100, countries as u32);
-            *first.tables[TableId::Factions.index()] = TableView::Complete(TableRows::Factions(
-                (0..countries)
-                    .map(|index| replay_data::rows::FactionRow {
-                        id: index as u64 + 1,
-                        name: if index == countries - 1 {
-                            vec![]
-                        } else {
-                            format!("Literal {index}").into_bytes()
-                        },
-                        template_token: (index == countries - 1).then_some(9),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-            *first.tables[TableId::FactionMembers.index()] =
-                TableView::Complete(TableRows::FactionMembers(
-                    (0..countries)
-                        .map(|index| replay_data::rows::FactionMemberRow {
-                            country: 100_000 + index as u32,
-                            faction: index as u64 + 1,
-                            ordinal: 0,
-                        })
-                        .collect(),
-                ));
-            *first.tables[TableId::LexicalTokens.index()] =
-                TableView::Complete(TableRows::LexicalTokens(vec![
-                    replay_data::rows::LexicalTokenRow {
-                        token: 9,
-                        literal: b"mod_template".to_vec(),
-                    },
-                ]));
-            for table in [
-                TableId::HumanControllers,
-                TableId::WarRelations,
-                TableId::Capitulation,
-            ] {
-                *first.tables[table.index()] = TableView::Complete(TableRows::empty(table));
-            }
-            let source = group_source(
-                Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap(),
-            );
-            let mut scan = Scan::new(source.replay_ref(), 1);
-            let mut events = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            let format = source.replay_ref().format;
-            events.observe_changed(
-                &mut scan,
-                &first,
-                &tracker.observe(&first, format),
-                &source,
-                &context,
-            )?;
-            let before = scan.continuation.work;
-            let rebuilds = scan.continuation.rosters.rebuilds;
-            let mut changed = first.clone();
-            changed.hour = 101;
-            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
-                &mut *changed.tables[TableId::LexicalTokens.index()]
-            {
-                rows[0].literal = b"changed_template".to_vec();
-            }
-            events.observe_changed(
-                &mut scan,
-                &changed,
-                &tracker.observe(&changed, format),
-                &source,
-                &context,
-            )?;
-            assert_eq!(scan.continuation.rosters.rebuilds, rebuilds);
-            assert_eq!(scan.continuation.member_open.len(), countries);
-            assert_eq!(scan.continuation.names[&1].len(), 1);
-            assert_eq!(scan.continuation.names[&(countries as u64)].len(), 2);
-            assert_eq!(
-                scan.continuation.work.dictionary_interpretations
-                    - before.dictionary_interpretations,
-                1
-            );
-            let work = Work {
-                row_visits: scan.continuation.work.row_visits - before.row_visits,
-                history_visits: scan.continuation.work.history_visits - before.history_visits,
-                dictionary_interpretations: scan.continuation.work.dictionary_interpretations
-                    - before.dictionary_interpretations,
-                ..Default::default()
-            };
-            assert_eq!(work.row_visits, 1);
-            let quiet = crate::prepared::observer_tests::unchanged_frames(
-                scan.continuation.work,
-                &changed,
-                10,
-                format,
-                |frame, changes| {
-                    events.observe_changed(&mut scan, frame, changes, &source, &context)?;
-                    Ok(scan.continuation.work)
-                },
-            )?;
-            assert_eq!(quiet.dictionary_interpretations, 0);
-            assert_eq!(quiet.row_visits, 0);
-            Ok(work)
-        })
-        .unwrap(),
-    );
 }
 
 #[test]

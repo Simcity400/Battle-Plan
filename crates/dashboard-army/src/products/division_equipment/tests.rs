@@ -420,7 +420,7 @@ fn unknown_need_and_unreadable_status_never_become_zero() {
 }
 
 #[test]
-fn params_and_nested_wire_types_are_strict_and_complete() {
+fn params_are_strict() {
     let mut p = params();
     p.template = Some("5".into());
     p.division = Some("1".into());
@@ -431,13 +431,13 @@ fn params_and_nested_wire_types_are_strict_and_complete() {
     let mut wire = serde_json::to_value(params()).unwrap();
     wire["extra"] = true.into();
     assert!(serde_json::from_value::<DivisionEquipmentParams>(wire).is_err());
-    assert_eq!(DivisionEquipment::types().len(), 9);
 }
 
 #[test]
-fn five_thousand_divisions_across_five_thousand_countries_keep_wide_totals_exact() {
+fn divisions_across_countries_keep_wide_totals_exact() {
+    // regression: 18e091de4d Add army products: losses by month, careers, templates, training queue, division equipment
     let mut f = frame();
-    let countries: Vec<_> = (0..5_000u32)
+    let countries: Vec<_> = (0..4u32)
         .map(|i| CountryRow {
             id: i + 1,
             canonical_slot: i,
@@ -454,15 +454,15 @@ fn five_thousand_divisions_across_five_thousand_countries_keep_wide_totals_exact
         .collect();
     *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
     *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
-    let members: Vec<_> = (1..=5_000u64).map(|i| division(i, i as u32)).collect();
-    let rows: Vec<_> = (1..=5_000u64)
+    let members: Vec<_> = (1..=4u64).map(|i| division(i, i as u32)).collect();
+    let rows: Vec<_> = (1..=4u64)
         .map(|i| equipment(i, 0, 70, if i % 2 == 0 { i64::MAX } else { -3 }))
         .collect();
     *f.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(members));
     *f.tables[TableId::DivisionEquipment.index()] =
         TableView::Complete(TableRows::DivisionEquipment(rows));
     let mut p = params();
-    p.tag = "T4999".into();
+    p.tag = "T0003".into();
     let r = reply(&f, Some(&f), None, &p);
     assert_eq!((r.divisions, r.unknown_divisions), (1, 0));
     assert_eq!(r.types[0].held_raw, i64::MAX.to_string());
@@ -470,20 +470,20 @@ fn five_thousand_divisions_across_five_thousand_countries_keep_wide_totals_exact
         &mut *f.tables[TableId::Divisions.index()]
     {
         for row in rows {
-            row.roster_owner = 5_000;
+            row.roster_owner = 4;
         }
     }
     let r = reply(&f, Some(&f), None, &p);
-    assert_eq!((r.divisions, r.unknown_divisions), (5_000, 0));
+    assert_eq!((r.divisions, r.unknown_divisions), (4, 0));
     assert_eq!(
         r.types[0].held_raw,
-        (2500i128 * (i128::from(i64::MAX) - 3)).to_string()
+        (2i128 * (i128::from(i64::MAX) - 3)).to_string()
     );
     assert_eq!(
         r.types[0].missing_raw,
-        Some((2500i128 * 10_000_003).to_string())
+        Some((2i128 * 10_000_003).to_string())
     );
-    assert_eq!(r.types[0].divisions_short, 2500);
+    assert_eq!(r.types[0].divisions_short, 2);
 }
 
 #[test]

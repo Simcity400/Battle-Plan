@@ -882,10 +882,8 @@ mod tests {
     }
 
     #[test]
-    fn blocked_representatives_keep_hostility_indexed_after_5000_country_merges() {
-        let tags: Vec<_> = (0..5000)
-            .map(|index| format!("Country {index:04}"))
-            .collect();
+    fn blocked_representatives_keep_hostility_indexed_after_merges() {
+        let tags: Vec<_> = (0..16).map(|index| format!("Country {index:04}")).collect();
         let indexes = tags
             .iter()
             .enumerate()

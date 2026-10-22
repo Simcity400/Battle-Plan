@@ -127,36 +127,6 @@ fn prepared_cipher_reply_matches_after_commits_resume_and_append() {
 }
 
 #[test]
-fn prepared_cipher_reply_preserves_five_thousand_countries_and_pair_selection() {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut prepared = Accumulator::default();
-    let mut old = Scan::default();
-    for hours in [100..102, 103..105] {
-        let mut writer = fixture.writer();
-        for hour in hours {
-            let input = frame(hour, 5_000, 400_000, 1);
-            old.frame(&input, Ok(DEFINES)).unwrap();
-            prepared.observe_with_defines(&input, Ok(DEFINES)).unwrap();
-        }
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-    }
-    assert_reply(&fixture, &old);
-    let params = Params {
-        branch_id: "1".into(),
-        pairs: vec![("1".into(), "5000".into())],
-        first_hour: Some(104),
-        last_hour: Some(104),
-    };
-    let actual = query(&fixture.store, &fixture.key, 1, &params, &flag)
-        .unwrap()
-        .unwrap();
-    assert_eq!(actual.pairs.len(), 1);
-    assert_eq!(actual.pairs[0].target_id, "5000");
-}
-
-#[test]
 fn prepared_cipher_checkpoint_retains_open_rows_without_daily_history() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

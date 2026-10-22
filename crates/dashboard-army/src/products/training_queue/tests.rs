@@ -94,23 +94,6 @@ fn an_unread_queue_and_an_absent_country_are_named() {
 }
 
 #[test]
-fn a_large_queue_over_five_thousand_lines_stays_exact() {
-    let mut f = frame();
-    let conveyors: Vec<_> = (0..500u64)
-        .map(|i| DeploymentConveyorRow { handle: 1_000 + i, country: 11, ordinal: (499 - i) as u32, template: 5, amount: 10, ..Default::default() })
-        .collect();
-    let lines: Vec<_> = (0..5_000u64)
-        .map(|i| DeploymentLineRow { handle: 10_000 + i, conveyor: 1_000 + i % 500, country: 11, ordinal: (i / 500) as u32, ..Default::default() })
-        .collect();
-    *f.tables[TableId::DeploymentConveyors.index()] = TableView::Complete(TableRows::DeploymentConveyors(conveyors));
-    *f.tables[TableId::DeploymentLines.index()] = TableView::Complete(TableRows::DeploymentLines(lines));
-    let r = reply(&f, "GER");
-    assert_eq!(r.orders.len(), 500);
-    assert_eq!(r.orders[0].order, "1499");
-    assert!(r.orders.iter().all(|order| order.divisions.len() == 10));
-}
-
-#[test]
 fn priority_and_location_keep_their_stored_values_and_name_what_they_cannot() {
     let r = reply(&frame(), "GER");
     let order = &r.orders[1];

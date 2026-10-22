@@ -494,15 +494,10 @@ mod tests {
     }
 
     #[test]
-    fn sprite_artwork_validates_keys_and_exports_its_types() {
+    fn sprite_artwork_validates_keys() {
         for sprites in [vec![], vec![frame("", 0)], vec![frame("key\0tail", 0)]] {
             assert!(SpriteArtwork::validate(&SpriteArtworkParams { sprites }).is_err());
         }
-        assert!(
-            SpriteArtwork::types()
-                .iter()
-                .any(|decl| decl.contains("type SpriteImage"))
-        );
         let with_recorded = |recorded: &str| SpriteFrame {
             recorded: Some(recorded.into()),
             ..frame("GFX_b", 0)

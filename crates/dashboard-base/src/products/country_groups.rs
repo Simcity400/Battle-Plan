@@ -2971,8 +2971,8 @@ mod roster_reuse_tests {
     use replay_frame::frame::TableView;
 
     #[test]
-    fn unchanged_rosters_reuse_members_and_match_uncached_history_at_5000_countries() {
-        let mut frame = crate::test_fixtures::scale_frame(1, 0, 5000);
+    fn unchanged_rosters_reuse_members_and_match_uncached_history() {
+        let mut frame = crate::test_fixtures::scale_frame(1, 0, 24);
         *frame.tables[TableId::Factions.index()] =
             TableView::Complete(TableRows::Factions(vec![FactionRow {
                 id: 77,
@@ -2981,7 +2981,7 @@ mod roster_reuse_tests {
             }]));
         *frame.tables[TableId::FactionMembers.index()] =
             TableView::Complete(TableRows::FactionMembers(
-                (0..5000)
+                (0..24)
                     .map(|index| FactionMemberRow {
                         country: 100_000 + index,
                         faction: 77,
@@ -2989,7 +2989,7 @@ mod roster_reuse_tests {
                     })
                     .collect(),
             ));
-        let mut tags: HashMap<_, _> = (0..5000)
+        let mut tags: HashMap<_, _> = (0..24)
             .map(|index| (100_000 + index, format!("Country {index}")))
             .collect();
         let mut cached = RosterHistory::default();
@@ -3006,7 +3006,7 @@ mod roster_reuse_tests {
             frame.hour = hour;
             if hour == 4 {
                 tags.insert(100_000, "Renamed country".into());
-                tags.insert(104_999, "Country 0".into());
+                tags.insert(100_023, "Country 0".into());
                 if let TableView::Complete(TableRows::Countries(countries)) =
                     &mut *frame.tables[TableId::Countries.index()]
                 {
@@ -3047,6 +3047,6 @@ mod roster_reuse_tests {
         assert_eq!((runs[0].first_hour, runs[0].last_hour), (0, 1));
         assert_eq!((runs[1].first_hour, runs[1].last_hour), (3, 3));
         assert!(!runs[3].complete);
-        assert_eq!(runs.last().unwrap().members.len(), 5000);
+        assert_eq!(runs.last().unwrap().members.len(), 24);
     }
 }

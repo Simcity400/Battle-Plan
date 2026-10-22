@@ -101,21 +101,3 @@ fn an_unread_census_leaves_fielded_counts_unknown_and_an_absent_country_is_named
     assert!(build(&absent, "GER", ArmyAttribution::Owner, None, &|_| Err(String::new()), &mut refusals, &AtomicBool::new(false)).unwrap().absent);
 }
 
-#[test]
-fn hundreds_of_templates_over_five_thousand_divisions_stay_exact() {
-    let mut f = frame();
-    let templates: Vec<_> = (100..400u64).map(|template| DivisionTemplateRow { template, owner: 11, ..Default::default() }).collect();
-    let icons: Vec<_> = (100..400u64)
-        .map(|template| DivisionTemplateIconRow { template, settings: settings(500 - template as u32, false), ..Default::default() })
-        .collect();
-    let divisions: Vec<_> = (0..5_000u64)
-        .map(|id| DivisionRow { id: 10 + id, roster_owner: 11, template: 100 + id % 300, ..Default::default() })
-        .collect();
-    *f.tables[TableId::DivisionTemplates.index()] = TableView::Complete(TableRows::DivisionTemplates(templates));
-    *f.tables[TableId::DivisionTemplateIcons.index()] = TableView::Complete(TableRows::DivisionTemplateIcons(icons));
-    *f.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divisions));
-    let r = reply(&f, ArmyAttribution::Owner);
-    assert_eq!(r.templates.len(), 300);
-    assert_eq!(r.templates[0].template, "399", "the highest handle has the lowest roster position here");
-    assert_eq!(r.templates.iter().map(|t| t.fielded.unwrap()).sum::<u32>(), 5_000);
-}

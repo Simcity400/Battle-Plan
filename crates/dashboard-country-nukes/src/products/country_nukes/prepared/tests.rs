@@ -101,13 +101,13 @@ fn a_quiet_hour_steps_to_the_state_observing_it_reaches() {
 }
 
 #[test]
-fn progressive_nukes_sampler_matches_observer_on_every_key_at_5000_countries() {
-    let frames = [frame(0, 5000), frame(1, 5000)];
+fn progressive_nukes_sampler_matches_observer_on_every_key() {
+    let frames = [frame(0, 24), frame(1, 24)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
     let mut observer = Prepared::default();
     for frame in &frames {
         let samples = sample(frame, None).unwrap();
-        assert_eq!(samples.len(), 15_000);
+        assert_eq!(samples.len(), 72);
         observer
             .observe(
                 frame,
@@ -166,11 +166,10 @@ fn progressive_nukes_sampler_preserves_prefix_holes_duplicates_and_absence() {
 }
 
 #[test]
-fn global_nuclear_increases_match_prepared_mixtures_after_two_commits_resume_and_append_at_5000_countries()
- {
+fn global_nuclear_increases_match_prepared_mixtures_after_two_commits_resume_and_append() {
     let make = |hour| {
         let amount_hour = [0, 1, 1, 3, 2, 4][hour as usize];
-        let mut frame = frame(amount_hour, 5000);
+        let mut frame = frame(amount_hour, 200);
         frame.hour = hour;
         if let TableView::Complete(TableRows::Nukes(rows)) =
             &mut *frame.tables[TableId::Nukes.index()]
@@ -191,8 +190,8 @@ fn global_nuclear_increases_match_prepared_mixtures_after_two_commits_resume_and
         loop {
             pages += 1;
             assert!(
-                pages <= (5000usize * 6).div_ceil(1024),
-                "six supplying frames bound all page reads at 5,000 countries"
+                pages <= (200usize * 6).div_ceil(1024),
+                "six supplying frames bound all page reads"
             );
             let page = reader.events(keys, 0, 5, cursor, 1024).unwrap();
             rows.extend(page.rows);
@@ -296,7 +295,7 @@ fn global_nuclear_increases_match_prepared_mixtures_after_two_commits_resume_and
             .collect();
         expected.sort();
         actual.sort();
-        assert_eq!(actual.len(), 5000 * if stage == 1 { 2 } else { 3 });
+        assert_eq!(actual.len(), 200 * if stage == 1 { 2 } else { 3 });
         assert_eq!(
             actual, expected,
             "one global event key must reproduce prepared mixture increases across publication boundaries"

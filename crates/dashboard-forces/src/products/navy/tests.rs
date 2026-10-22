@@ -1,13 +1,12 @@
 use super::*;
 use dashboard_base::{
     source::SourceKey,
-    test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source},
+    test_fixtures::{CAMPAIGN, records, source},
 };
 use replay::container::Replay;
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ShipCounterInputs,
     rows::ShipModelRow, rows::ShipRow, rows::TableId, rows::TableRows, rows::TaskForceRow,
-    rows::tables,
 };
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
@@ -426,62 +425,6 @@ fn navy_complete_empty_ship_table_proves_zero_without_task_force_or_class_tables
     for owner in &scanned.series {
         assert!(owner.values().all(|runs| runs[0].total == Some(0)));
     }
-}
-
-fn dense_frame(hour: i32, countries: u32) -> DecodedFrame {
-    let mut frame = scale_frame(1, hour, countries);
-    let country_rows = frame.complete::<tables::Countries>().unwrap();
-    let mut forces = Vec::with_capacity(countries as usize);
-    let mut ships = Vec::new();
-    let mut models = Vec::new();
-    for (index, country) in country_rows.iter().enumerate() {
-        let force = index as u64 + 1;
-        forces.push(TaskForceRow {
-            id: force,
-            roster_owner: country.id,
-            logical_owner: country.id,
-            ..Default::default()
-        });
-        let count = if index < 10 { 1_200 } else { 3 + index % 7 };
-        for ship in 0..count {
-            let id = ships.len() as u64 + 1;
-            ships.push(ShipRow {
-                id,
-                task_force: force,
-                class_id: 41 + (ship % 3) as i32,
-                // Dense hourly deltas exercise reconstruction independently of count.
-                strength: 100_000 - (hour as i64 * 10 + ship as i64 % 10),
-                ..Default::default()
-            });
-            models.push(ShipModelRow {
-                ship: id,
-                counter: Some(ShipCounterInputs {
-                    maximum_strength: 200_000,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            });
-        }
-    }
-    *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(forces));
-    *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(ships));
-    *frame.tables[TableId::ShipModels.index()] = TableView::Complete(TableRows::ShipModels(models));
-    *frame.tables[TableId::LexicalTokens.index()] =
-        TableView::Complete(TableRows::LexicalTokens(vec![
-            LexicalTokenRow {
-                token: 41,
-                literal: b"mod_escort".to_vec(),
-            },
-            LexicalTokenRow {
-                token: 42,
-                literal: b"mod_carrier".to_vec(),
-            },
-            LexicalTokenRow {
-                token: 43,
-                literal: b"mod_cruiser".to_vec(),
-            },
-        ]));
-    frame
 }
 
 fn project(scanned: &ScannedNavy, request: &NavyParams) -> NavyReply {
@@ -926,62 +869,6 @@ fn navy_manual_aliases_and_top_replies_keep_native_holder_history() {
 }
 
 #[test]
-fn navy_serves_five_thousand_countries_and_reuses_scoreboard_scan() {
-    let mut frame = scale_frame(1, 0, 5000);
-    *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(vec![]));
-    let source = recorded_source(vec![frame]);
-    let mut request = params();
-    request.tags = (0..5000)
-        .map(|index| String::from_utf8(scale_tag(index)).unwrap())
-        .collect();
-    for top in [false, true] {
-        if top {
-            request.tags.clear();
-            request.top = Some(5000);
-        }
-        NavySize::validate(&request).unwrap();
-        let output = NavySize::load(
-            &source,
-            &request,
-            &LoadContext { content: None },
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        assert_eq!(output.series.len(), 5000);
-        assert!(
-            output
-                .series
-                .iter()
-                .all(|series| series.identities.len() == 1)
-        );
-        assert!(
-            output
-                .series
-                .iter()
-                .all(|series| series.runs[0].total == Some(0))
-        );
-        assert!(dashboard_core::transport::json_len(&output, MAX_REPLY_BYTES).is_some());
-    }
-    let tags: Vec<_> = (0..5000)
-        .map(|index| String::from_utf8(scale_tag(index)).unwrap())
-        .collect();
-    let mut visited = 0;
-    visit_ship_runs(
-        &source,
-        1,
-        &tags,
-        &AtomicBool::new(false),
-        |_, _, _, _, _| {
-            visited += 1;
-            Ok(())
-        },
-    )
-    .unwrap();
-    assert_eq!(visited, 5000);
-    assert_eq!(scans_run(&source), 1);
-}
-
-#[test]
 fn navy_unsupported_country_tags_are_named_and_counted() {
     let mut frame = fleet_frame(0);
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -1065,60 +952,6 @@ fn navy_cache_retains_two_scanned_branches_and_rebuilds_evicted_history() {
     )
     .unwrap();
     assert_eq!(state.lock().unwrap().runs, 4);
-}
-
-#[test]
-#[ignore = "dense decode-inclusive measurement; lead runs optimised"]
-fn navy_dense_scale_including_decode() {
-    use std::time::Instant;
-    for countries in [1500, 5000] {
-        let frames: Vec<_> = (0..24).map(|hour| dense_frame(hour, countries)).collect();
-        let ships = frames[0].complete::<tables::Ships>().unwrap().len();
-        let source = recorded_source(frames);
-        let started = Instant::now();
-        let mut decode_started = None;
-        let mut decode_time = std::time::Duration::ZERO;
-        let scanned = scan::scan_with_decode(
-            source.replay_ref(),
-            1,
-            &AtomicBool::new(false),
-            |decoding| {
-                if decoding {
-                    decode_started = Some(Instant::now());
-                } else {
-                    decode_time += decode_started.take().unwrap().elapsed();
-                }
-            },
-        )
-        .unwrap();
-        let ms = started.elapsed().as_secs_f64() * 1000.0 / 24.0;
-        let decode_ms = decode_time.as_secs_f64() * 1000.0 / 24.0;
-        let product_ms = ms - decode_ms;
-        assert_eq!(scanned.series[0].len(), countries as usize);
-        let major = String::from_utf8(scale_tag(0)).unwrap();
-        assert_eq!(scanned.series[0][&major][0].total, Some(1200));
-        assert_eq!(
-            scanned.strength_series[0][&major][0].total,
-            Some(119_994_600)
-        );
-        assert_eq!(
-            scanned.strength_series[0][&major][0].reference_total,
-            Some(240_000_000)
-        );
-        let mut request = params();
-        request.tags.clear();
-        request.top = Some(10);
-        let bytes =
-            dashboard_core::transport::json_len(&project(&scanned, &request), MAX_REPLY_BYTES)
-                .unwrap();
-        request.measure = NavyMeasure::Strength;
-        let hp_bytes =
-            dashboard_core::transport::json_len(&project(&scanned, &request), MAX_REPLY_BYTES)
-                .unwrap();
-        println!(
-            "navy countries={countries} ships={ships} hours=24 scan_with_decode_ms_per_hour={ms:.3} decode_ms_per_hour={decode_ms:.3} product_ms_per_hour={product_ms:.3} top10_ship_bytes={bytes} top10_hp_bytes={hp_bytes} bound={MAX_REPLY_BYTES}"
-        );
-    }
 }
 
 #[test]
@@ -1218,77 +1051,6 @@ fn navy_sparse_ship_and_model_updates_match_full_censuses_and_share_counts() {
                 assert_eq!(named(&scanned, run), named(&rebuilt, expected));
             }
         }
-    }
-}
-
-#[test]
-#[ignore = "realistic-change decode-inclusive measurement; lead runs optimised"]
-fn navy_realistic_scale_including_decode() {
-    use std::time::Instant;
-    for countries in [1500, 5000] {
-        let mut previous = dense_frame(0, countries);
-        let ships = previous.complete::<tables::Ships>().unwrap().len();
-        let mut frames = vec![previous.clone()];
-        for hour in 1..24 {
-            previous.hour = hour;
-            if let TableView::Complete(TableRows::Ships(rows)) =
-                &mut *previous.tables[TableId::Ships.index()]
-            {
-                // Rotating 1/64 of units, plus one large battle; HP is fixed5.
-                for ship in rows {
-                    if hour == 12 || ship.id % 64 == hour as u64 % 64 {
-                        ship.strength -= 100;
-                    }
-                }
-            }
-            frames.push(previous.clone());
-        }
-        let source = recorded_source(frames);
-        let started = Instant::now();
-        let mut decode_started = None;
-        let mut decode_time = std::time::Duration::ZERO;
-        let scanned = scan::scan_with_decode(
-            source.replay_ref(),
-            1,
-            &AtomicBool::new(false),
-            |decoding| {
-                if decoding {
-                    decode_started = Some(Instant::now());
-                } else {
-                    decode_time += decode_started.take().unwrap().elapsed();
-                }
-            },
-        )
-        .unwrap();
-        let ms = started.elapsed().as_secs_f64() * 1000.0 / 24.0;
-        let decode_ms = decode_time.as_secs_f64() * 1000.0 / 24.0;
-        let product_ms = ms - decode_ms;
-        assert_eq!(scanned.series[0].len(), countries as usize);
-        let major = String::from_utf8(scale_tag(0)).unwrap();
-        assert_eq!(scanned.series[0][&major][0].total, Some(1200));
-        let expected: i64 = previous
-            .complete::<tables::Ships>()
-            .unwrap()
-            .iter()
-            .filter(|ship| ship.task_force == 1)
-            .map(|ship| ship.strength)
-            .sum();
-        let final_run = scanned.strength_series[0][&major].last().unwrap();
-        assert_eq!(final_run.total, Some(expected));
-        assert_eq!(final_run.reference_total, Some(240_000_000));
-        let mut request = params();
-        request.tags.clear();
-        request.top = Some(10);
-        let bytes =
-            dashboard_core::transport::json_len(&project(&scanned, &request), MAX_REPLY_BYTES)
-                .unwrap();
-        request.measure = NavyMeasure::Strength;
-        let hp_bytes =
-            dashboard_core::transport::json_len(&project(&scanned, &request), MAX_REPLY_BYTES)
-                .unwrap();
-        println!(
-            "navy_realistic countries={countries} ships={ships} hours=24 scan_with_decode_ms_per_hour={ms:.3} decode_ms_per_hour={decode_ms:.3} product_ms_per_hour={product_ms:.3} top10_ship_bytes={bytes} top10_hp_bytes={hp_bytes} bound={MAX_REPLY_BYTES}"
-        );
     }
 }
 

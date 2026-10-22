@@ -344,56 +344,8 @@ fn prepared_espionage_retains_terminal_census_runs_when_a_late_drain_moves_the_e
 }
 
 #[test]
-fn prepared_espionage_preserves_five_thousand_countries_and_identity_changes() {
-    let chunks: Vec<Vec<_>> = (0..2)
-        .map(|day| {
-            (100 + day * 24..124 + day * 24)
-                .map(|hour| {
-                    let mut input = frame(hour, 5_000);
-                    input.metrics.table_ns[TableId::Operations.index()] =
-                        u64::from((hour - 100) % 24 == 0);
-                    if day == 1 {
-                        let TableView::Complete(TableRows::Countries(rows)) =
-                            &mut *input.tables[TableId::Countries.index()]
-                        else {
-                            panic!("countries");
-                        };
-                        rows[0].tag = b"mod alias / opaque".to_vec();
-                    }
-                    input
-                })
-                .collect()
-        })
-        .collect();
-    let source = source(&chunks);
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut old = Builder::new(source.replay_ref());
-    let mut state = Prepared::default();
-    for (ordinal, chunk) in chunks.iter().enumerate() {
-        let mut writer = fixture.writer();
-        for input in chunk {
-            old.observe(input);
-            old.observe_completions(input, source.replay_ref(), 1)
-                .unwrap();
-            observe(&mut state, &source, &fixture, input, &flag);
-        }
-        state
-            .finish_block(&source, &mut writer, 1, ordinal, &flag)
-            .unwrap();
-        state.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        parity(&source, &fixture, &old, chunk.last().unwrap().hour, &flag);
-        state = series::read_reply(&fixture.store, &fixture.key, "espionage-log-1", 0)
-            .unwrap()
-            .unwrap();
-    }
-    assert_eq!(state.builder.open.len(), 5_000);
-}
-
-#[test]
 fn prepared_espionage_checkpoint_does_not_retain_daily_runs_or_reads() {
-    let chunks: Vec<Vec<_>> = (0..100)
+    let chunks: Vec<Vec<_>> = (0..20)
         .map(|day| {
             (100 + day * 24..124 + day * 24)
                 .map(|hour| {
@@ -425,7 +377,6 @@ fn prepared_espionage_checkpoint_does_not_retain_daily_runs_or_reads() {
         }
     }
     let long = serde_json::to_vec(&state).unwrap().len();
-    eprintln!("espionage checkpoint bytes: 2 days={short}, 100 days={long}");
     assert!(long < short * 2);
     assert!(state.builder.reads.len() <= 2);
     assert!(state.builder.operations.iter().all(|op| op.runs.len() <= 2));

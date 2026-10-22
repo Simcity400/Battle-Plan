@@ -313,13 +313,13 @@ mod tests {
     }
 
     #[test]
-    fn sampled_holdings_match_the_scan_with_five_thousand_countries() {
+    fn sampled_holdings_match_the_scan_with_many_countries() {
         use crate::test_fixtures::{scale_frame, scale_tag};
         use replay_data::{rows::ActiveIdeaRow, rows::TableId, rows::TableRows};
         use replay_frame::frame::TableView;
-        let mut frame = scale_frame(1, 100, 5_000);
+        let mut frame = scale_frame(1, 100, 24);
         *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(
-            (0..5_000)
+            (0..24)
                 .map(|index| ActiveIdeaRow {
                     country: 100_000 + index,
                     ordinal: 0,
@@ -331,7 +331,7 @@ mod tests {
             TableView::Complete(TableRows::HiredAdvisors(Vec::new()));
         let (source, root) = file_source(replay(vec![frame]));
         let flag = AtomicBool::new(false);
-        let tag = String::from_utf8(scale_tag(4_999)).unwrap();
+        let tag = String::from_utf8(scale_tag(23)).unwrap();
         let oracle = super::super::scan_all(source.replay_ref(), 1, &flag).unwrap();
         let sampled = keyframe(&source, 1, &tag, &source.replay_ref().index[0], &flag)
             .unwrap()

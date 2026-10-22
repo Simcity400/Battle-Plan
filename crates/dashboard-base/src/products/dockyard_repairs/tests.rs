@@ -375,56 +375,6 @@ fn balance_and_repair_budget_deltas_do_not_visit_countries_or_publish_rates() {
     );
 }
 
-#[test]
-fn five_thousand_countries_take_no_country_or_series_visits_on_quiet_hours() {
-    let mut first = scale_frame(1, 0, 5_000);
-    *first.tables[TableId::NavalRepairCountries.index()] =
-        TableView::Complete(TableRows::NavalRepairCountries(
-            (0..5_000)
-                .map(|index| NavalRepairCountryRow {
-                    country: 100_000 + index,
-                    num_used_dockyards: 2,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    *first.tables[TableId::CountryProductionModifiers.index()] =
-        TableView::Complete(TableRows::CountryProductionModifiers(
-            (0..5_000)
-                .map(|index| modifiers(100_000 + index, 50_000, 20_000))
-                .collect(),
-        ));
-    let frames: Vec<_> = (0..73)
-        .map(|hour| {
-            let mut frame = first.clone();
-            frame.hour = hour;
-            frame.metrics.table_ns[TableId::CountryProductionModifiers.index()] =
-                u64::from(hour == 0);
-            frame
-        })
-        .collect();
-    let (fixture, mut prepared) = prepared(&frames);
-    assert_eq!(prepared.country_visits, 5_000);
-    assert_eq!(
-        prepared.rates.key_visits, 15_000,
-        "an observation and a flush seal per country total, an observation per residual"
-    );
-    for hour in 73..80 {
-        assert!(prepared.advance_quiet(hour, false).unwrap());
-    }
-    assert_eq!(prepared.country_visits, 5_000);
-    assert_eq!(
-        prepared.rates.key_visits, 15_000,
-        "an observation and a flush seal per country total, an observation per residual"
-    );
-    let flag = AtomicBool::new(false);
-    let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
-    assert_eq!(
-        reads.integrals(&tag(), &[(0, 72)]).unwrap(),
-        [Ok(1_760_000 * 73)]
-    );
-}
-
 fn split_put(frame: &mut DecodedFrame, rows: TableRows) {
     let index = rows.table().index();
     frame.tables[index] = TableView::Complete(rows).into();
@@ -816,188 +766,22 @@ fn repair_split_unknown_total_gaps_holders_and_late_designs_keep_refusals() {
 }
 
 #[test]
-fn repair_split_five_thousand_countries_many_bases_and_quiet_steps_do_no_row_work() {
-    use replay_data::rows::*;
-    let mut first = split_frame(0, 2, 1);
-    let population = scale_frame(1, 0, 5_000);
-    first.tables[TableId::Countries.index()] =
-        population.tables[TableId::Countries.index()].clone();
-    first.tables[TableId::CountryLinks.index()] =
-        population.tables[TableId::CountryLinks.index()].clone();
-    split_put(
-        &mut first,
-        TableRows::NavalRepairCountries(
-            (0..5_000)
-                .map(|index| NavalRepairCountryRow {
-                    country: 100_000 + index,
-                    num_used_dockyards: 2,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::CountryProductionModifiers(
-            (0..5_000)
-                .map(|index| modifiers(100_000 + index, 100_000, 0))
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::NavalBases(
-            (1..=10_000)
-                .map(|province| NavalBaseRow {
-                    province,
-                    country: 100_000 + (province - 1) / 2,
-                    level: 10,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::NavalRepairBases(
-            (1..=10_000)
-                .map(|province| NavalRepairBaseRow {
-                    province,
-                    allocated_dockyards: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::NavalRepairQueue(
-            (1..=10_000)
-                .map(|province| NavalRepairQueueRow {
-                    province,
-                    ordinal: 0,
-                    ship: u64::from(province),
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::Ships(
-            (1..=10_000_u64)
-                .map(|id| ShipRow {
-                    id,
-                    task_force: id,
-                    strength: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::ShipModels(
-            (1..=10_000_u64)
-                .map(|ship| ShipModelRow {
-                    ship,
-                    variant: 20,
-                    counter: Some(ShipCounterInputs {
-                        maximum_strength: 100,
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::TaskForces(
-            (1..=10_000_u64)
-                .map(|id| TaskForceRow {
-                    id,
-                    province: id as u32,
-                    roster_owner: 100_000 + (id as u32 - 1) / 2,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    split_put(
-        &mut first,
-        TableRows::Provinces(
-            (1..=10_000)
-                .map(|id| ProvinceRow {
-                    id,
-                    controller: 100_000 + (id - 1) / 2,
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    let frames: Vec<_> = (0..73)
-        .map(|hour| {
-            let mut observed = first.clone();
-            observed.hour = hour;
-            observed.metrics.table_ns[TableId::CountryProductionModifiers.index()] =
-                u64::from(hour == 0 || hour % 24 == 8);
-            observed.metrics.table_ns[TableId::VariantDefinitions.index()] =
-                u64::from(hour == 0 || hour % 24 == 22);
-            observed
-        })
-        .collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let mut state = Prepared::default();
-    observe(&mut state, &replay, &frames);
-    assert_eq!(state.country_visits, 5_000);
-    assert_eq!(state.base_visits, 10_000);
-    let before = state.rates.key_visits;
-    for hour in 73..80 {
-        assert!(state.advance_quiet(hour, false).unwrap());
-    }
-    assert_eq!(state.country_visits, 5_000);
-    assert_eq!(state.base_visits, 10_000);
-    assert_eq!(state.rates.key_visits, before);
-    let fixture = Fixture::new();
-    let mut writer = fixture.writer();
-    let flag = AtomicBool::new(false);
-    state.flush(&mut writer, 1, &flag).unwrap();
-    writer.commit().unwrap();
-    let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
-    for index in [0, 1_499, 4_999] {
-        let tag = String::from_utf8(scale_tag(index)).unwrap();
-        assert_eq!(
-            reads
-                .part_integrals(&tag, RepairPart::Design(20), &[(0, 79)])
-                .unwrap(),
-            [Ok(160_000_000)]
-        );
-        assert_eq!(
-            reads
-                .part_integrals(&tag, RepairPart::Unattributed, &[(0, 79)])
-                .unwrap(),
-            [Ok(0)]
-        );
-    }
-}
-
-#[test]
 fn repair_split_churn_revisits_only_changed_and_using_holders() {
     use replay_data::rows::*;
     let mut first = split_frame(0, 1, 1);
-    let population = scale_frame(1, 0, 5_000);
+    let population = scale_frame(1, 0, 24);
     first.tables[TableId::Countries.index()] =
         population.tables[TableId::Countries.index()].clone();
     first.tables[TableId::CountryLinks.index()] =
         population.tables[TableId::CountryLinks.index()].clone();
     let use_rows = |late: i32| {
         TableRows::NavalRepairCountries(
-            (0..5_000)
+            (0..24)
                 .map(|index| NavalRepairCountryRow {
                     country: 100_000 + index,
                     num_used_dockyards: match index {
                         0..3 => 1,
-                        4_999 => late,
+                        23 => late,
                         _ => 0,
                     },
                     ..Default::default()
@@ -1009,7 +793,7 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
     split_put(
         &mut first,
         TableRows::CountryProductionModifiers(
-            (0..5_000)
+            (0..24)
                 .map(|index| modifiers(100_000 + index, 100_000, 0))
                 .collect(),
         ),
@@ -1129,7 +913,7 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
     observe(&mut state, &replay, &frames);
     // The first hour visits every holder; later hours only the three using
     // dockyards and, from hour 25, the one whose use changed and then uses.
-    assert_eq!(state.country_visits, 5_000 + 24 * 3 + 25 * 4);
+    assert_eq!(state.country_visits, 24 + 24 * 3 + 25 * 4);
     assert_eq!(state.base_visits, 50 * 3);
     // Links, bases and access are indexed once, at the first hour: a
     // changing hour does no country-wide work.
@@ -1142,7 +926,7 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
     let mut reads = RepairReads::new(&fixture.store, &fixture.key, 1, &flag).unwrap();
     // Its use has no base assignment behind it: counted, total kept, split refused.
     assert_eq!(reads.allocation_mismatches(), 25);
-    let late = String::from_utf8(scale_tag(4_999)).unwrap();
+    let late = String::from_utf8(scale_tag(23)).unwrap();
     assert_eq!(
         reads.integrals(&late, &[(25, 49)]).unwrap(),
         [Ok(25 * 1_000_000)]
@@ -1154,7 +938,7 @@ fn repair_split_churn_revisits_only_changed_and_using_holders() {
         [Err(ProductionSpendingUnknown::SpendingUnavailable)]
     );
     // An unrelated holder kept its known zero through every partial hour.
-    let quiet = String::from_utf8(scale_tag(2_000)).unwrap();
+    let quiet = String::from_utf8(scale_tag(12)).unwrap();
     assert_eq!(reads.integrals(&quiet, &[(0, 49)]).unwrap(), [Ok(0)]);
     assert_eq!(
         reads

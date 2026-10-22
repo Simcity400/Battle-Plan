@@ -482,6 +482,31 @@ pub(crate) fn installed(overlay: &[&std::path::Path]) -> installed_content_core:
     installed_content_core::ResolvedLayers::from_folders(&folders).unwrap()
 }
 
+/// The smallest stack a session opens over, in its own `name`d folder: just the map size.
+fn bare(name: &str) -> installed_content_core::ResolvedLayers {
+    let mut bmp = vec![0_u8; 66];
+    bmp[..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&66_u32.to_le_bytes());
+    bmp[10..14].copy_from_slice(&54_u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40_u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&4_i32.to_le_bytes());
+    bmp[22..26].copy_from_slice(&1_i32.to_le_bytes());
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    let root = folder(
+        name,
+        &[
+            (
+                "map/default.map",
+                br#"definitions = "definition.csv" provinces = "provinces.bmp" terrain = "terrain.bmp" rivers = "rivers.bmp" heightmap = "heightmap.bmp" tree_definition = "trees.bmp""#
+                    .to_vec(),
+            ),
+            ("map/provinces.bmp", bmp),
+        ],
+    );
+    installed_content_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap()
+}
+
 /// `count` synthetic rows, each named, with `icon` (or none of its own), the first attached and
 /// the second unavailable.
 fn synthetic_rows(count: usize, icon: Option<&[u8]>) -> Vec<mio::Shown> {
@@ -922,7 +947,7 @@ fn a_paused_request_never_retires_a_newer_requests_session() {
         atomic::{AtomicBool, Ordering},
     };
     tables();
-    let layers = installed(&[]);
+    let layers = bare("bare_paused");
     let open = |sessions: &Mutex<Sessions>, stack: &str, still: &dyn Fn() -> bool| {
         session(
             sessions,
@@ -1020,7 +1045,7 @@ fn a_request_of_replaced_folders_never_retires_the_new_folders_session() {
     };
     let old = folders("old user");
     let stack = |options: &ContentOptions| format!("{:?}", binding(options));
-    let layers = installed(&[]);
+    let layers = bare("bare_replaced_folders");
     let open = |sessions: &Mutex<Sessions>, options: &ContentOptions, still: &dyn Fn() -> bool| {
         session(
             sessions,
@@ -1107,7 +1132,7 @@ fn monitors_are_read_dpi_aware_on_any_thread() {
 #[test]
 fn sessions_are_freed_with_their_owner_not_kept_by_their_stack() {
     tables();
-    let layers = installed(&[]);
+    let layers = bare("bare_freed_with_owner");
     let open = |sessions: &std::sync::Mutex<crate::session::Sessions>, stack: &str| {
         crate::session::session(
             sessions,
@@ -1149,7 +1174,7 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
     use crate::session::{Opener, Sessions, current, is_current, session};
     use std::sync::{Arc, Barrier, Mutex};
     tables();
-    let layers = Arc::new(installed(&[]));
+    let layers = Arc::new(bare("bare_read_ahead"));
     let open_while =
         |sessions: &Mutex<Sessions>, stack: &str, opener: Opener, current: &dyn Fn() -> bool| {
             session(

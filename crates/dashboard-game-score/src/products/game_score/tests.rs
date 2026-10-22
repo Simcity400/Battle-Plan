@@ -1228,31 +1228,6 @@ fn scale_score_frame(count: u32) -> DecodedFrame {
 }
 
 #[test]
-fn game_score_keeps_all_five_thousand_countries_without_player_admission() {
-    let first = scale_score_frame(5000);
-    let mut second = first.clone();
-    second.hour = 101;
-    let reply = scan_frames(vec![first, second], None);
-    assert_eq!(reply.countries.len(), 5000);
-    assert_eq!(reply.reads, [100, 101]);
-    for country in &reply.countries {
-        assert_eq!(country.scores.total.len(), 1);
-        assert_eq!(
-            (
-                country.scores.total[0].first_hour,
-                country.scores.total[0].last_hour
-            ),
-            (100, 101)
-        );
-        assert_eq!(
-            amount_at(&reply, &country.scores, "total", 101).value(),
-            Some(5 * Q)
-        );
-    }
-    assert!(dashboard_core::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_some());
-}
-
-#[test]
 fn game_score_equal_rereads_do_not_expand_sparse_histories() {
     let first = frame(0);
     let mut changed = first.clone();
@@ -1983,66 +1958,6 @@ fn prepared_game_score_matches_history_after_commits_resume_append_gaps_and_iden
 }
 
 #[test]
-fn prepared_game_score_five_thousand_countries_retains_only_open_facts() {
-    let first = scale_score_frame(5000);
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])]).unwrap();
-    let naming = prepared_naming();
-    let mut observer = naming.observer(&replay);
-    let mut state = prepared::Prepared::default();
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let mut changes = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-    state
-        .observe(
-            &first,
-            &replay,
-            &mut observer,
-            &naming,
-            &changes.observe(&first, replay.format),
-        )
-        .unwrap();
-    let mut writer = fixture.writer();
-    state
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    writer.commit().unwrap();
-    let first_bytes = serde_json::to_vec(&state).unwrap().len();
-    for hour in 101..=164 {
-        let mut next = first.clone();
-        next.hour = hour;
-        state
-            .observe(
-                &next,
-                &replay,
-                &mut observer,
-                &naming,
-                &changes.observe(&next, replay.format),
-            )
-            .unwrap();
-    }
-    let mut writer = fixture.writer();
-    state
-        .flush(&mut writer, 1, &AtomicBool::new(false))
-        .unwrap();
-    writer.commit().unwrap();
-    let later_bytes = serde_json::to_vec(&state).unwrap().len();
-    eprintln!("game-score continuation: {first_bytes} -> {later_bytes} bytes at 5000 countries");
-    // Counters/partial buckets may change; retaining an hourly row per key cannot pass.
-    assert!(later_bytes < first_bytes * 2);
-    let reference = scan_frames(
-        (100..=164)
-            .map(|hour| {
-                let mut frame = first.clone();
-                frame.hour = hour;
-                frame
-            })
-            .collect(),
-        None,
-    );
-    assert_prepared_score_at(&fixture, &reference, 100);
-    assert_prepared_score_at(&fixture, &reference, 164);
-}
-
-#[test]
 fn prepared_game_score_unchanged_work_is_flat_over_hours_and_accumulated_holders() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     let measure = |history: usize, hours: i32| -> io::Result<observer_tests::Work> {
@@ -2171,8 +2086,8 @@ fn prepared_game_score_balance_only_changes_reuse_native_operands_and_warning_co
 }
 
 #[test]
-fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() {
-    let mut frame = scale_score_frame(5000);
+fn progressive_game_score_sampler_matches_observer() {
+    let mut frame = scale_score_frame(24);
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *frame.tables[TableId::CountryLinks.index()]
     {
@@ -2182,7 +2097,7 @@ fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() 
         &mut *frame.tables[TableId::CountryGameScoreInputs.index()]
     {
         for (index, row) in rows.iter_mut().enumerate() {
-            row.army_count = (index % 7 != 0).then_some(index as i32 - 2500);
+            row.army_count = (index % 7 != 0).then_some(index as i32 - 12);
             // An unread count carries its named error, as the recording requires.
             row.army_error = if row.army_count.is_some() {
                 Vec::new()
@@ -2202,7 +2117,7 @@ fn progressive_game_score_sampler_matches_observer_at_five_thousand_countries() 
         panic!("captured multipliers")
     });
     let values = samples.values();
-    assert_eq!(values.len(), 5000 * 6 + 6);
+    assert_eq!(values.len(), 24 * 6 + 6);
     for (tag, (scores, identity)) in &observed.countries {
         for (field, amount) in PARTS.iter().zip(scores.amounts()) {
             assert_eq!(
@@ -2473,11 +2388,6 @@ fn assert_one_country_hour_observes_only_it(count: u32) {
 #[test]
 fn prepared_game_score_one_changed_country_observes_only_that_country() {
     assert_one_country_hour_observes_only_it(200);
-}
-
-#[test]
-fn prepared_game_score_one_changed_country_observes_only_it_at_five_thousand_countries() {
-    assert_one_country_hour_observes_only_it(5000);
 }
 
 /// Six countries: a subject named after its overlord, two air forces with

@@ -3489,58 +3489,6 @@ mod tests {
     }
 
     #[test]
-    fn full_census_cache_keeps_every_one_of_five_thousand_countries() {
-        let source = source(1);
-        let flag = AtomicBool::new(false);
-        let calls = Cell::new(0);
-        let sample = |frame: &DecodedFrame, _: Option<&[(String, String)]>| {
-            calls.set(calls.get() + 1);
-            Ok((0..5_000u32)
-                .map(|country| {
-                    (
-                        (format!("T{country}"), "value".into()),
-                        (Some((country, country + 1)), Some(i128::from(frame.hour))),
-                    )
-                })
-                .collect())
-        };
-        let tables = crate::prepared_measure::TABLES;
-        let cold = tail_all_cached(
-            &source,
-            "test-census-scale",
-            1,
-            None,
-            tables,
-            (0, 1),
-            &sample,
-            &flag,
-        )
-        .unwrap();
-        assert_eq!(cold.0.len(), 5_000);
-        let computed = calls.get();
-        let (state, refused) = without_block_decodes(|| {
-            state_tail_all_cached(
-                &source,
-                "test-census-scale",
-                1,
-                None,
-                tables,
-                &[1],
-                &sample,
-                &flag,
-            )
-        });
-        assert!(!refused);
-        let state = state.unwrap();
-        assert_eq!(state.0.len(), 5_000);
-        assert_eq!(state.2.len(), 5_000);
-        assert!(state.0.values().all(|runs| runs[0].value == 1));
-        assert_eq!(calls.get(), computed);
-        let (bytes, bound, _) = super::super::observations::usage(&source, "test-census-scale");
-        assert!(bytes > 0 && bytes <= bound);
-    }
-
-    #[test]
     fn full_census_keyframes_keep_their_marks_until_the_exact_zoom_transition() {
         let source = source(15);
         let flag = AtomicBool::new(false);

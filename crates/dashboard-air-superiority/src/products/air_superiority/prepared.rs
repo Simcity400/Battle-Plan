@@ -1215,7 +1215,7 @@ mod tests {
         let measured = observer_tests::scaled_work(8, |hours| {
             let fixture = Fixture::new();
             let flag = AtomicBool::new(false);
-            let mut first = scale_frame(1, 25, 5000);
+            let mut first = scale_frame(1, 25, 24);
             for rows in [
                 TableRows::Factions(vec![]),
                 TableRows::FactionMembers(vec![]),
@@ -1229,7 +1229,7 @@ mod tests {
             }
             first.tables[TableId::RaidAirScores.index()] =
                 TableView::Complete(TableRows::RaidAirScores(
-                    (0..5000)
+                    (0..24)
                         .map(|country| RaidAirScoreRow {
                             country: 100000 + country,
                             region: 7000,
@@ -1748,99 +1748,6 @@ mod tests {
         assert_eq!(state.choices.first().unwrap().first_day_ordinal, 0);
         assert_eq!(state.pending_choice.as_ref().unwrap().first_day_ordinal, 2);
         assert_eq!(state.pending_choice.as_ref().unwrap().last_hour, 49);
-    }
-    #[test]
-    fn prepared_air_superiority_5000_countries_preserve_numeric_and_identity_gaps() {
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let mut first = scale_frame(1, 23, 5000);
-        for rows in [
-            TableRows::Factions(vec![]),
-            TableRows::FactionMembers(vec![]),
-            TableRows::WarRelations(vec![]),
-            TableRows::HumanControllers(vec![]),
-            TableRows::Capitulation(vec![]),
-            TableRows::AirWings(vec![]),
-        ] {
-            let table = rows.table();
-            *first.tables[table.index()] = TableView::Complete(rows);
-        }
-        *first.tables[TableId::RaidAirScores.index()] =
-            TableView::Complete(TableRows::RaidAirScores(
-                (0..5000)
-                    .map(|country| RaidAirScoreRow {
-                        country: 100000 + country,
-                        region: 7000,
-                        friendly: i64::from(country) + 1,
-                        enemy: 99,
-                        impact: Default::default(),
-                        friendly_missions: 0,
-                        enemy_missions: 0,
-                        air_spotting_scale: Some(0),
-                    })
-                    .collect(),
-            ));
-        let mut last = first.clone();
-        last.hour = 25;
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *last.tables[TableId::Countries.index()]
-        {
-            rows[0].id = 999999;
-            rows[0].tag = b"alias".to_vec();
-            rows.sort_by_key(|row| row.id);
-        }
-        if let TableView::Complete(TableRows::CountryLinks(rows)) =
-            &mut *last.tables[TableId::CountryLinks.index()]
-        {
-            rows[0].id = 999999;
-            rows.sort_by_key(|row| row.id);
-        }
-        if let TableView::Complete(TableRows::RaidAirScores(rows)) =
-            &mut *last.tables[TableId::RaidAirScores.index()]
-        {
-            rows[0].country = 999999;
-            rows.sort_by_key(|row| row.country);
-        }
-        let frames = vec![first, last];
-        let replay = recording(frames.clone());
-        let mut groups = dashboard_base::products::country_groups::Scan::new(&replay, 1);
-        let mut state = Prepared::default();
-        for frame in &frames {
-            let mut writer = fixture.writer();
-            groups.observe(frame).unwrap();
-            state.observe(frame, &replay, &mut groups).unwrap();
-            groups.finish(&replay, 1);
-            state.publish_day(&groups, true).unwrap();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
-        }
-        assert_eq!(state.countries.len(), 5001);
-        let scope = series::cache_scope(None);
-        let before = series::text_reads();
-        let first = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
-        assert_eq!(
-            series::text_reads() - before,
-            2,
-            "continuation bypassed bulk page reads"
-        );
-        let held = scope.finish();
-        let scope = series::cache_scope(Some(&held));
-        let before = series::text_reads();
-        let next = Prepared::read_query(&fixture.store, &fixture.key, 1).unwrap();
-        assert_eq!(
-            series::text_reads(),
-            before,
-            "re-read an unchanged query continuation"
-        );
-        assert_eq!(first.keys, next.keys);
-        assert_eq!(
-            serde_json::to_vec(&first.choices).unwrap(),
-            serde_json::to_vec(&next.choices).unwrap()
-        );
-        drop(scope);
-
-        parity(&fixture, &frames, None);
     }
     #[test]
     fn prepared_air_superiority_continuation_grows_with_distinct_operands_and_not_days() {

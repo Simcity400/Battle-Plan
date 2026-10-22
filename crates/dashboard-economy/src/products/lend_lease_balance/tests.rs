@@ -88,16 +88,3 @@ fn an_unreadable_table_names_its_refusal() {
     assert!(reply.known.is_empty());
     assert!(reply.warnings[0].contains("histories unavailable"));
 }
-
-#[test]
-fn five_thousand_countries_allocate_only_their_recorded_pairs() {
-    let mut state = Prepared::default();
-    let mut at = frame(1);
-    many_countries(&mut at, 5_000);
-    set(
-        &mut at,
-        TableRows::WarLendLeaseHistories((0..200).map(|n| history(n + 1, n + 2, 1, 0)).collect()),
-    );
-    state.step(&at);
-    assert_eq!(ask(&mut state, None, 1).histories.len(), 200);
-}

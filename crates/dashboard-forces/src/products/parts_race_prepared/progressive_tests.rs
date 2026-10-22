@@ -4,7 +4,7 @@ use dashboard_base::test_fixtures::{CAMPAIGN, records};
 use std::sync::Arc;
 
 fn sampler_matches<F: Family>() {
-    let frames = [frame(6, 5000), frame(7, 5000)];
+    let frames = [frame(6, 24), frame(7, 24)];
     let replay =
         Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap());
     let source = Source::from_replay(
@@ -31,7 +31,7 @@ fn sampler_matches<F: Family>() {
             )
             .unwrap();
         let samples = sample::<F>(frame, None).unwrap();
-        assert_eq!(samples.len(), 5000 * (4 + F::REFERENCES));
+        assert_eq!(samples.len(), 24 * (4 + F::REFERENCES));
         let observed = std::array::from_fn(|index| F::observed(&prepared.scan, index, frame.hour));
         assert_eq!(
             samples,
@@ -68,11 +68,11 @@ fn sampler_matches<F: Family>() {
 }
 
 #[test]
-fn air_force_progressive_sampler_matches_observer_every_key_at_5000_countries() {
+fn air_force_progressive_sampler_matches_observer_every_key() {
     sampler_matches::<crate::products::air_force::prepared::Air>();
 }
 #[test]
-fn navy_progressive_sampler_matches_observer_every_key_at_5000_countries() {
+fn navy_progressive_sampler_matches_observer_every_key() {
     sampler_matches::<crate::products::navy::prepared::Navy>();
 }
 

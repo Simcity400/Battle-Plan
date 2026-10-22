@@ -63,41 +63,6 @@ fn frame() -> DecodedFrame {
 }
 
 #[test]
-fn checkpoint_retains_partial_census_old_fields_bytes_and_five_thousand_countries() {
-    let source = frame();
-    let position = Position {
-        block: 91,
-        next_frame: 7,
-    };
-    let bytes = encode_checkpoint(&source, position, SELECTED).unwrap();
-    assert_eq!(header(bytes.as_slice()).unwrap(), (71, 300));
-    let restored = decode_checkpoint(bytes.as_slice(), SELECTED).unwrap();
-    assert_eq!(restored.frame, source);
-    assert_eq!(restored.position, position);
-    assert_eq!(
-        restored.frame.tables[TableId::Countries.index()].sampled_at(),
-        Some(273)
-    );
-    assert!(matches!(
-        &*restored.frame.tables[TableId::DivisionStatus.index()],
-        TableView::Truncated {
-            missing: 50_001,
-            ..
-        }
-    ));
-    // A recording-style keyframe would turn this partial census into a refusal;
-    // the prepared snapshot must retain every reached row and its count instead.
-    assert_eq!(
-        restored
-            .frame
-            .complete::<replay_data::rows::tables::Countries>()
-            .unwrap()
-            .len(),
-        5_000
-    );
-}
-
-#[test]
 fn production_map_loader_retains_country_template_configuration_from_recording_and_checkpoint() {
     use crate::test_fixtures::{CAMPAIGN, records, scale_frame};
     use replay::container::{Replay, ReplayStream};

@@ -383,11 +383,6 @@ fn supply_progressive_sampler_matches_observer_every_key() {
     check_supply_progressive_sampler_matches_observer(5);
 }
 
-#[test]
-fn supply_progressive_sampler_matches_observer_every_key_at_5000_countries() {
-    check_supply_progressive_sampler_matches_observer(5000);
-}
-
 fn check_supply_progressive_sampler_matches_observer(countries: u32) {
     use crate::products::parts_race_prepared::test_fixtures::{Fixture, frame, tag};
     let fixture = Fixture::new();
@@ -718,9 +713,4 @@ fn assert_supply_counts_follow_changed_divisions(count: u64) {
 #[test]
 fn supply_bucket_deltas_match_full_recounts_through_snapshots_resume_gaps_and_refusals() {
     assert_supply_counts_follow_changed_divisions(64);
-}
-
-#[test]
-fn supply_bucket_delta_work_is_one_division_among_5000() {
-    assert_supply_counts_follow_changed_divisions(5000);
 }

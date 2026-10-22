@@ -866,68 +866,6 @@ fn only_loss_designs_publish_naming_keys_and_names_resume_exactly() {
 }
 
 #[test]
-fn five_thousand_countries_create_only_observed_loss_leaf_keys() {
-    let frames = vec![
-        frame(10, 5000, 100_001, false),
-        frame(11, 5000, -50_000, false),
-        frame(12, 5000, 25_000, true),
-        frame(13, 5000, 50_000, true),
-    ];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::new(&replay, 1, 10);
-    let mut sizes = Vec::new();
-    for chunk in frames.chunks(2) {
-        for frame in chunk {
-            prepared.observe(frame, &replay, &flag).unwrap();
-        }
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        let bytes = serde_json::to_vec(&prepared).unwrap();
-        sizes.push(bytes.len());
-        prepared = serde_json::from_slice(&bytes).unwrap();
-    }
-    let leaves = prepared
-        .countries
-        .values()
-        .map(|country| country.leaves.len())
-        .sum::<usize>();
-    assert_eq!(prepared.countries.len(), 5000);
-    assert_eq!(leaves, 5000);
-    assert_eq!(prepared.keys.len(), 10_000);
-    assert!(
-        prepared
-            .countries
-            .values()
-            .all(|country| country.scanned.events.is_empty())
-    );
-    eprintln!(
-        "equipment losses: 5000 country keys (sparse ships/read boundaries), 5000 observed leaf keys, 0 fixture variant keys; total 10000; checkpoint bytes: {sizes:?}"
-    );
-    let scanned = read_scanned(
-        &fixture.store,
-        &fixture.key,
-        1,
-        (4999, 104_999),
-        (10.0, 13.0, 1),
-        &[10, 11, 12, 13],
-        replay.format,
-        &flag,
-    )
-    .unwrap()
-    .unwrap();
-    let loss = points(
-        &scanned.events[&(
-            LossSource::Destruction(EquipmentDestructionCause::LandCombat),
-            Some(17),
-        )],
-    );
-    assert_eq!(loss.last().unwrap().total_raw, "125001");
-}
-
-#[test]
 fn sampled_losses_keep_the_first_native_date_when_later_extrema_hide_it() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

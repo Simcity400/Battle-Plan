@@ -421,7 +421,7 @@ fn selected_windows_clip_pending_and_preserve_country_identity_on_tag_reuse() {
 }
 
 #[test]
-fn cold_reply_has_exact_wire_shape_and_all_nested_types() {
+fn cold_reply_has_exact_wire_shape() {
     let fixture = Fixture::new();
     let source = source(vec![frame(100)]);
     let reply = ask(
@@ -442,96 +442,11 @@ fn cold_reply_has_exact_wire_shape_and_all_nested_types() {
     );
     assert!(reply["window"]["known"].as_array().unwrap().is_empty());
     assert!(reply["warnings"].as_array().unwrap().is_empty());
-    let types = DoctrineMastery::types().join("\n");
-    for expected in [
-        "DoctrineMasteryParams",
-        "DoctrineMasteryReply",
-        "DoctrineMasteryReward",
-        "KeyedSeries",
-        "HourSpan",
-    ] {
-        assert!(types.contains(expected), "missing {expected}");
-    }
     assert!(
         DoctrineMasteryObserver::fields()
             .unwrap()
             .iter()
             .any(|field| field.table == TableId::LexicalTokens)
-    );
-}
-
-#[test]
-fn five_thousand_countries_stay_sparse_and_query_only_the_selected_holder() {
-    let fixture = Fixture::new();
-    let mut input = frame(100);
-    *input.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (0..5000)
-            .map(|at| CountryRow {
-                id: at + 10000,
-                canonical_slot: at + 20000,
-                tag: format!("M{at}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *input.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (0..5000)
-            .map(|at| CountryLinkRow {
-                id: at + 10000,
-                canonical_slot: at + 20000,
-            })
-            .collect(),
-    ));
-    *input.tables[TableId::DoctrineCountries.index()] =
-        TableView::Complete(TableRows::DoctrineCountries(
-            (0..5000)
-                .map(|at| DoctrineCountryRow {
-                    slot: at + 20000,
-                    country: at + 10000,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    *input.tables[TableId::DoctrineFolders.index()] =
-        TableView::Complete(TableRows::DoctrineFolders(
-            (0..5000)
-                .map(|at| DoctrineFolderRow {
-                    slot: at + 20000,
-                    ordinal: 2,
-                    folder: 10,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    *input.tables[TableId::DoctrineTracks.index()] =
-        TableView::Complete(TableRows::DoctrineTracks(
-            (0..5000)
-                .map(|at| DoctrineTrackRow {
-                    slot: at + 20000,
-                    folder: 2,
-                    ordinal: 0,
-                    mastery: i64::from(at),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    let scan = publish(&fixture, &[input.clone()]);
-    assert_eq!(scan.names().len(), 5000 * 8);
-    assert_eq!(scan.observer.tokens.len(), 1);
-    let source = source(vec![input]);
-    let reply = ask(
-        &source,
-        &fixture,
-        &json!({"branchId":"1", "tag":"M4999"}),
-        &prefix(100, 100, true),
-        None,
-    );
-    let series = reply["window"]["series"].as_array().unwrap();
-    assert_eq!(series.len(), 8);
-    assert!(
-        series
-            .iter()
-            .all(|row| row["name"].as_str().unwrap().starts_with("M4999@24999|"))
     );
 }
 

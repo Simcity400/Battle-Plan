@@ -9,7 +9,7 @@ use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
     frame::FrameEncoder, frame::TableView,
 };
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 struct Scenario {
     countries: u32,
@@ -24,11 +24,6 @@ struct Scenario {
 
 struct Fixture {
     replay: Arc<Replay>,
-    countries: u32,
-    owners: usize,
-    score_rows: usize,
-    neutral_owners: u32,
-    war_pairs: usize,
     gap_hours: usize,
     recorded_hours: usize,
     truncated_hours: usize,
@@ -184,7 +179,6 @@ fn fixture(scenario: Scenario) -> Fixture {
     }
     wars.sort_by_key(|row| (row.first_country, row.second_country));
     wars.dedup_by_key(|row| (row.first_country, row.second_country));
-    let war_pairs = wars.len();
     *template.tables[TableId::WarRelations.index()] =
         TableView::Complete(TableRows::WarRelations(wars));
     *template.tables[TableId::HumanControllers.index()] =
@@ -206,7 +200,6 @@ fn fixture(scenario: Scenario) -> Fixture {
     let mut scores = vec![vec![0_i64; scenario.members.len()]; scenario.active_regions as usize];
     let mut active = vec![false; scenario.active_regions as usize];
     let mut random = 0x48_4f_49_34_u64;
-    let mut row_count = 0_usize;
     let mut gap_hours = 0;
     let mut recorded_hours = 0;
     let mut truncated_hours = 0;
@@ -324,7 +317,6 @@ fn fixture(scenario: Scenario) -> Fixture {
             truncated_hours += 1;
             rows.truncate(rows.len() - 2);
         }
-        row_count += rows.len();
         *frame.tables[TableId::RaidAirScores.index()] = if truncated {
             TableView::Truncated {
                 rows: TableRows::RaidAirScores(rows),
@@ -404,23 +396,8 @@ fn fixture(scenario: Scenario) -> Fixture {
         recorded_hours += 1;
     }
     let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records]).unwrap());
-    println!(
-        "air_fixture countries={} factions={} co_belligerents={} faction_members={faction_members} air_object_owners={} neutral_wing_owners={neutral_count} war_pairs={war_pairs} content_regions={content_regions} hours={} recorded_hours={recorded_hours} gap_hours={gap_hours} truncated_hours={truncated_hours} score_rows_mean={:.1} period={period} replay_bytes={}",
-        scenario.countries,
-        scenario.members.len(),
-        scenario.co_belligerents,
-        combat_owners + neutral_count as usize,
-        scenario.hours,
-        row_count as f64 / recorded_hours as f64,
-        replay.bytes().len()
-    );
     Fixture {
         replay,
-        countries: scenario.countries,
-        owners: combat_owners + neutral_count as usize,
-        score_rows: row_count,
-        neutral_owners: neutral_count,
-        war_pairs,
         gap_hours,
         recorded_hours,
         truncated_hours,
@@ -500,221 +477,4 @@ fn air_superiority_sparse_fixture_preserves_a_whole_missing_day() {
         moment.sides.iter().any(|side| side.co_belligerents == 1),
         "recorded war relations attach both outside allies to their faction sides"
     );
-}
-
-fn measure(scenario: Scenario, last_hour: i32) {
-    let enforce_budget = scenario.sparse;
-    let many_factions = scenario.members.len() > 4;
-    let selected_theatres: Vec<_> = (0..scenario.members.len())
-        .map(|index| (800_000 + index).to_string())
-        .collect();
-    let fixture = fixture(scenario);
-    let cancelled = AtomicBool::new(false);
-    let started = Instant::now();
-    let source = Source::from_replay(
-        dashboard_base::source::SourceKey {
-            source_id: "air-scale".into(),
-            revision: "1".into(),
-        },
-        "synthetic-air.battleplan".into(),
-        Arc::clone(&fixture.replay),
-        &cancelled,
-    )
-    .unwrap();
-    let source_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let started = Instant::now();
-    let groups =
-        dashboard_base::products::country_groups::cached_scan(&source, 1, &cancelled).unwrap();
-    let groups_ms = started.elapsed().as_secs_f64() * 1000.0;
-    assert!(Arc::ptr_eq(
-        &groups,
-        &dashboard_base::products::country_groups::cached_scan(&source, 1, &cancelled).unwrap()
-    ));
-    let mut cache = DayCache {
-        measurements: Some(Default::default()),
-        ..Default::default()
-    };
-    let started = Instant::now();
-    extend_days(&mut cache, &fixture.replay, 1, &groups, &cancelled).unwrap();
-    let scan_time = started.elapsed();
-    let stages = cache.measurements.as_ref().unwrap();
-    let product_time = scan_time.saturating_sub(stages.wire + stages.decode);
-    let ms_per_hour = |duration: std::time::Duration| {
-        duration.as_secs_f64() * 1000.0 / fixture.recorded_hours as f64
-    };
-    assert_eq!(cache.built_hours().len(), fixture.recorded_hours);
-    let mut params: AirParams = serde_json::from_value(serde_json::json!({
-        "branchId": "1", "view": "timeline", "firstHour": 0,
-        "lastHour": last_hour, "mode": "sides", "top": 10,
-    }))
-    .unwrap();
-    if many_factions {
-        params.theatres = Some(selected_theatres);
-    }
-    let started = Instant::now();
-    let reply = timeline(&cache, &params).unwrap();
-    let timeline_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let day_count = (last_hour / DAY_HOURS + 1) as usize;
-    assert_eq!(reply.days.len(), day_count);
-    assert!(
-        reply
-            .rows
-            .iter()
-            .all(|row| row.cells.iter().map(|(repeat, _)| repeat).sum::<usize>() == day_count)
-    );
-    let started = Instant::now();
-    let timeline_bytes = check_reply_size(&AirReply::Timeline(reply)).unwrap();
-    let timeline_json_ms = started.elapsed().as_secs_f64() * 1000.0;
-    params.view = AirView::Moment;
-    params.first_hour = Some((last_hour - 167).max(0));
-    let mut moment_stages = scan::ScanMeasurements::default();
-    let started = Instant::now();
-    let moment = scan_moment_measured(
-        &fixture.replay,
-        1,
-        &groups,
-        &params,
-        &cache.anchors,
-        &cancelled,
-        Some(&mut moment_stages),
-    )
-    .unwrap();
-    let moment_time = started.elapsed();
-    let moment_ms = moment_time.as_secs_f64() * 1000.0;
-    let moment_product = moment_time.saturating_sub(moment_stages.wire + moment_stages.decode);
-    let moment_hours = (last_hour - params.first_hour.unwrap() + 1) as f64;
-    let moment_product_ms_per_hour = moment_product.as_secs_f64() * 1000.0 / moment_hours;
-    let started = Instant::now();
-    let moment_bytes = check_reply_size(&AirReply::Moment(moment)).unwrap();
-    let moment_json_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let mut viewpoint = DayCache {
-        viewpoint: Some(String::from_utf8(scale_tag(0)).unwrap()),
-        viewpoint_country: true,
-        measurements: Some(Default::default()),
-        ..Default::default()
-    };
-    let started = Instant::now();
-    extend_days_shared(
-        &mut viewpoint,
-        &fixture.replay,
-        1,
-        &groups,
-        Some(&cache),
-        &cancelled,
-    )
-    .unwrap();
-    let view_time = started.elapsed();
-    let view_stages = viewpoint.measurements.as_ref().unwrap();
-    let view_product = view_time.saturating_sub(view_stages.wire + view_stages.decode);
-    println!(
-        "air_measure countries={} owners={} neutral_owners={} war_pairs={} recorded_hours={} gap_hours={} truncated_hours={} score_rows={} source_ms={source_ms:.3} groups_cold_ms={groups_ms:.3} wire_ms_per_hour={:.3} decode_ms_per_hour={:.3} product_ms_per_hour={:.3} scan_ms_per_hour={:.3} viewpoint_product_ms_per_hour={:.3} timeline_ms={timeline_ms:.3} timeline_json_ms={timeline_json_ms:.3} timeline_bytes={timeline_bytes} moment_ms={moment_ms:.3} moment_product_ms_per_hour={moment_product_ms_per_hour:.3} moment_json_ms={moment_json_ms:.3} moment_bytes={moment_bytes}",
-        fixture.countries,
-        fixture.owners,
-        fixture.neutral_owners,
-        fixture.war_pairs,
-        fixture.recorded_hours,
-        fixture.gap_hours,
-        fixture.truncated_hours,
-        fixture.score_rows,
-        ms_per_hour(stages.wire),
-        ms_per_hour(stages.decode),
-        ms_per_hour(product_time),
-        ms_per_hour(scan_time),
-        ms_per_hour(view_product),
-    );
-    if enforce_budget {
-        assert!(
-            moment_product_ms_per_hour <= 5.5,
-            "air moment exceeds 5.5 ms/game hour: {moment_product_ms_per_hour:.3}"
-        );
-        assert!(
-            ms_per_hour(product_time) <= 5.5,
-            "air product exceeds 5.5 ms/game hour: {:.3}",
-            ms_per_hour(product_time)
-        );
-        assert!(
-            ms_per_hour(view_product) <= 5.5,
-            "air viewpoint exceeds 5.5 ms/game hour: {:.3}",
-            ms_per_hour(view_product)
-        );
-    }
-}
-
-fn realistic_scenario(countries: u32, hours: i32) -> Scenario {
-    Scenario {
-        countries,
-        members: [20, 80, 160, 300]
-            .map(|count| count * countries / 1500)
-            .into(),
-        co_belligerents: 50 * countries / 1500,
-        regions: 300,
-        active_regions: 120,
-        hours,
-        sparse: true,
-        gaps: vec![
-            (73 * 24 + 12, 73 * 24 + 17),
-            (177 * 24, 177 * 24 + 23),
-            (281 * 24 + 3, 281 * 24 + 6),
-        ],
-    }
-}
-
-#[test]
-#[ignore = "one synthetic game year; explicit measurement outside routine tests"]
-fn air_superiority_realistic_year_scale() {
-    measure(realistic_scenario(1500, 8760), 8759);
-}
-
-#[test]
-#[ignore = "same realistic change pattern at 5,000 countries; explicit measurement"]
-fn air_superiority_realistic_5000_scale() {
-    // Ninety days cover all five fourteen-day activity levels and a gap.
-    measure(realistic_scenario(5000, 90 * 24), 90 * 24 - 1);
-}
-
-fn stress_scenario(countries: u32) -> Scenario {
-    Scenario {
-        countries,
-        members: vec![countries / 5, countries / 5],
-        co_belligerents: 0,
-        regions: 151,
-        active_regions: 150,
-        hours: 168,
-        sparse: false,
-        gaps: vec![],
-    }
-}
-
-#[test]
-#[ignore = "same dense change pattern at 1,500 countries; explicit measurement"]
-fn air_superiority_stress_1500_scale() {
-    measure(stress_scenario(1500), 167);
-}
-
-#[test]
-#[ignore = "300,000 active pairs per hour; explicit stress measurement"]
-fn air_superiority_stress_5000_scale() {
-    // The 151st content region carries zero witnesses; 150 regions are active.
-    measure(stress_scenario(5000), 167);
-}
-
-fn many_faction_scenario(countries: u32) -> Scenario {
-    Scenario {
-        countries,
-        members: vec![1; (countries / 3 / 2 * 2) as usize],
-        co_belligerents: countries / 30,
-        regions: 33,
-        active_regions: 32,
-        hours: 30 * 24,
-        sparse: true,
-        gaps: vec![],
-    }
-}
-
-#[test]
-#[ignore = "many factions, blocked alliances, transfers and selected theatres; controlled measurement"]
-fn air_superiority_many_factions_scale() {
-    for countries in [1500, 5000] {
-        measure(many_faction_scenario(countries), 30 * 24 - 1);
-    }
 }

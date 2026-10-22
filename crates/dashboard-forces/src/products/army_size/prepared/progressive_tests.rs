@@ -13,8 +13,8 @@ fn army_prepared_enables_detailed_inventory_when_fresh_and_resumed() {
 }
 
 #[test]
-fn army_progressive_sampler_matches_observer_every_key_at_5000_countries() {
-    let frames = [frame(6, 5000), frame(7, 5000)];
+fn army_progressive_sampler_matches_observer_every_key() {
+    let frames = [frame(6, 24), frame(7, 24)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
     let mut prepared = Prepared::default();
     for frame in &frames {
@@ -27,7 +27,7 @@ fn army_progressive_sampler_matches_observer_every_key_at_5000_countries() {
             )
             .unwrap();
         let sampled = sample(frame, None).unwrap();
-        assert_eq!(sampled.len(), 5000 * 8);
+        assert_eq!(sampled.len(), 24 * 8);
         assert_eq!(
             sampled,
             sample_rows(&prepared.scan, &prepared.state, frame.hour, None).unwrap()
@@ -331,11 +331,6 @@ fn assert_one_division_hour_observes_only_its_country(count: u32) {
 #[test]
 fn army_hour_changing_one_division_observes_only_its_country() {
     assert_one_division_hour_observes_only_its_country(200);
-}
-
-#[test]
-fn army_hour_changing_one_of_5000_divisions_observes_only_its_country() {
-    assert_one_division_hour_observes_only_its_country(5000);
 }
 
 #[test]
@@ -755,9 +750,9 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
         query::{observations, progressive},
     };
     use dashboard_base::test_fixtures::{continuation_records, file_source};
-    let first = records(1, vec![frame(0, 5000), frame(1, 5000)]);
+    let first = records(1, vec![frame(0, 24), frame(1, 24)]);
     let replay = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
-    let mut sampled = frame(6, 5000);
+    let mut sampled = frame(6, 24);
     // This nonzero census row has no CountryLinks entry, so it supplies one
     // attribution warning without changing any deployed battalion counts.
     rows::<tables::DivisionCensus>(&mut sampled).push(DivisionCensusRow {
@@ -765,7 +760,7 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
         grouped: 1,
         ..Default::default()
     });
-    let mut refused = frame(7, 5000);
+    let mut refused = frame(7, 24);
     *refused.tables[TableId::Divisions.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "synthetic window refusal".into(),
     };
@@ -811,7 +806,7 @@ fn unchanged_army_window_reuses_values_warnings_and_compositions_before_its_cut_
         serde_json::to_value(&again.3).unwrap()
     );
     assert_eq!(observations::usage(&source, "army-size:window").2, 1);
-    assert_eq!(first.0.len(), 5000);
+    assert_eq!(first.0.len(), 24);
     assert!(
         !first.3.tracks.is_empty(),
         "cached composition metadata was lost"

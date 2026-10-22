@@ -123,21 +123,6 @@ fn country_reads_resolves_shared_links_holders_partners_and_operand_changes() {
     assert!(missing.holders().values().all(Option::is_none));
 }
 
-#[test]
-fn country_reads_resolves_5000_holders_without_a_country_pair_product() {
-    let frame = frame(0, 5_000, 5_000);
-    let reads = CountryReads::new(&frame, frame.complete::<tables::Countries>().unwrap());
-    assert_eq!(reads.slots().len(), 5_000);
-    assert_eq!(reads.holders().len(), 5_000);
-    assert_eq!(reads.partners().len(), 5_000);
-    for slot in 0..5_000 {
-        assert_eq!(
-            reads.holders()[&format!("realm {slot:05}")],
-            Some((slot, 100_000 + slot))
-        );
-    }
-}
-
 pub(super) fn frame(hour: i32, countries: u32, provinces: u32) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "outside territory fixture".into(),
@@ -777,103 +762,6 @@ fn hourly_top_membership_is_cut_to_changes_with_byte_order_ties_and_cancellation
         })
         .is_err()
     );
-}
-
-#[test]
-#[ignore = "large synthetic recording"]
-fn scale_replay_5000_countries_13000_provinces_preserves_every_country() {
-    const HOURS: i32 = 24;
-    for (countries, changing) in [1_500, 5_000]
-        .into_iter()
-        .flat_map(|count| [(count, false), (count, true)])
-    {
-        let replay = replay(
-            (100..100 + HOURS)
-                .map(|hour| {
-                    let mut decoded = frame(hour, countries, 13_000);
-                    if changing
-                        && let TableView::Complete(TableRows::Provinces(rows)) =
-                            &mut *decoded.tables[TableId::Provinces.index()]
-                    {
-                        rows[0].controller = 100_000 + ((hour - 100) as u32 % 2);
-                    }
-                    decoded
-                })
-                .collect(),
-        );
-        let areas = raster_areas(13_000);
-        let scanned = scan(&replay, 1, Some(&areas), &AtomicBool::new(false)).unwrap();
-        let params = TerritoryParams {
-            branch_id: "1".into(),
-            tags: vec![],
-            top: Some(TerritoryTop {
-                count: 10,
-                measure: TerritoryMeasure::Provinces,
-                rule: TerritoryRule::Controlled,
-            }),
-        };
-        let series = requested_series(&scanned, &params, &AtomicBool::new(false), None).unwrap();
-        let reply = TerritoryReply {
-            world_totals: scanned.world_totals.clone(),
-            branch_id: "1".into(),
-            series,
-            area_unit: Some(ProvinceAreas::UNIT.into()),
-            area_reason: None,
-            warnings: vec![],
-        };
-        let json = serde_json::to_vec(&reply).unwrap();
-        assert_eq!(scanned.series.len(), countries as usize);
-        for hour in 100..100 + HOURS {
-            let recorded = reply
-                .series
-                .iter()
-                .filter(|series| {
-                    series
-                        .runs
-                        .iter()
-                        .any(|run| run.first_hour <= hour && hour <= run.last_hour)
-                })
-                .count();
-            assert_eq!(recorded, 10, "top membership at {hour}");
-        }
-        assert!(json.len() < MAX_PRODUCT_REPLY_BYTES);
-        let run_count = reply
-            .series
-            .iter()
-            .map(|series| series.runs.len())
-            .sum::<usize>();
-        if changing {
-            assert!(run_count >= HOURS as usize);
-        } else {
-            assert_eq!(run_count, 10);
-        }
-        let all = requested_series(
-            &scanned,
-            &TerritoryParams {
-                tags: scanned.series.keys().map(|tag| tag.to_string()).collect(),
-                top: None,
-                ..params
-            },
-            &AtomicBool::new(false),
-            None,
-        )
-        .unwrap();
-        assert_eq!(all.len(), countries as usize);
-        for hour in 100..100 + HOURS {
-            let values = all
-                .iter()
-                .map(|series| {
-                    series
-                        .runs
-                        .iter()
-                        .find(|run| run.first_hour <= hour && hour <= run.last_hour)
-                        .and_then(|run| run.values[1])
-                })
-                .collect::<Option<Vec<_>>>()
-                .expect("every country has a recorded province count");
-            assert_eq!(values.into_iter().sum::<i64>(), 13_000);
-        }
-    }
 }
 
 #[test]

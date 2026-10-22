@@ -35,15 +35,6 @@ pub(super) struct DayCache {
     pub partial: Option<(i32, Arc<Snapshot>)>,
     #[cfg(test)]
     pub theatre_read: Option<i32>,
-    #[cfg(test)]
-    pub measurements: Option<ScanMeasurements>,
-}
-// Opt-in checkpoint timings; normal requests do not read the clock.
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(super) struct ScanMeasurements {
-    pub wire: std::time::Duration,
-    pub decode: std::time::Duration,
 }
 #[derive(Clone, Default)]
 pub(super) struct DaySegment {
@@ -1346,32 +1337,13 @@ pub(super) fn extend_days_anchored(
             for (index, (_, frames)) in (first..).zip(pending) {
                 check_cancel(cancelled)?;
                 let mut segment = DaySegment::default();
-                #[cfg(test)]
-                let started = cache
-                    .measurements
-                    .as_ref()
-                    .map(|_| std::time::Instant::now());
                 let mut frames = frames?.into_iter().peekable();
-                #[cfg(test)]
-                if let (Some(measurements), Some(started)) = (&mut cache.measurements, started) {
-                    measurements.wire += started.elapsed();
-                }
                 let mut decoder = day_decoder(tables);
                 // Consume each payload after its update; large blocks do not retain all
                 // delta allocations while indexing later hours.
                 while let Some(frame) = frames.next() {
                     check_cancel(cancelled)?;
-                    #[cfg(test)]
-                    let started = cache
-                        .measurements
-                        .as_ref()
-                        .map(|_| std::time::Instant::now());
                     let decoded = decoder.advance(&frame)?;
-                    #[cfg(test)]
-                    if let (Some(measurements), Some(started)) = (&mut cache.measurements, started)
-                    {
-                        measurements.decode += started.elapsed();
-                    }
                     validate_campaign(decoded, replay)?;
                     if let Some(aux) = reads.observe(&frame, decoded, base.is_none())? {
                         match segment.auxiliary.last_mut() {
@@ -1414,17 +1386,7 @@ pub(super) fn extend_days_anchored(
                     }
                     #[cfg(test)]
                     segment.built_hours.push(frame.hour);
-                    #[cfg(test)]
-                    let started = cache
-                        .measurements
-                        .as_ref()
-                        .map(|_| std::time::Instant::now());
                     drop(frame);
-                    #[cfg(test)]
-                    if let (Some(measurements), Some(started)) = (&mut cache.measurements, started)
-                    {
-                        measurements.wire += started.elapsed();
-                    }
                 }
                 if let Some(base) = base {
                     segment.auxiliary = base.segments[index].auxiliary.clone();
@@ -1470,14 +1432,13 @@ pub(super) fn extend_days_anchored(
 }
 
 #[cfg(test)]
-pub(super) fn scan_window_measured(
+pub(super) fn scan_window(
     replay: &Replay,
     branch: u64,
     groups: &Scan,
     params: &AirParams,
     anchors: &SideAnchors,
     cancelled: &AtomicBool,
-    mut measurements: Option<&mut ScanMeasurements>,
 ) -> io::Result<(Vec<Snapshot>, Vec<AirSide>)> {
     let (first, last) = hours(params)?;
     let mut samples = Vec::new();
@@ -1498,22 +1459,14 @@ pub(super) fn scan_window_measured(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let started = measurements.as_ref().map(|_| std::time::Instant::now());
                 let frames = frames?;
-                if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-                    measurements.wire += started.elapsed();
-                }
                 let mut decoder = day_decoder(MOMENT_TABLES);
                 for frame in frames {
                     check_cancel(cancelled)?;
                     if frame.hour > last {
                         break;
                     }
-                    let started = measurements.as_ref().map(|_| std::time::Instant::now());
                     let decoded = decoder.advance(&frame)?;
-                    if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-                        measurements.decode += started.elapsed();
-                    }
                     validate_campaign(decoded, replay)?;
                     reads.observe_tables(&frame, decoded, true);
                     if frame.hour < first {
@@ -1538,11 +1491,6 @@ pub(super) fn scan_window_measured(
                     )?;
                     apply_auxiliary(&mut sample, &reads.auxiliary.value);
                     samples.push(sample);
-                    let started = measurements.as_ref().map(|_| std::time::Instant::now());
-                    drop(frame);
-                    if let (Some(measurements), Some(started)) = (&mut measurements, started) {
-                        measurements.wire += started.elapsed();
-                    }
                 }
             }
             Ok(())

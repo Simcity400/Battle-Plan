@@ -663,29 +663,8 @@ fn scan_moment_anchored(
     anchors: &assignment::SideAnchors,
     cancelled: &AtomicBool,
 ) -> io::Result<AirMomentReply> {
-    scan_moment_measured(replay, branch, groups, params, anchors, cancelled, None)
-}
-
-#[cfg(test)]
-fn scan_moment_measured(
-    replay: &Replay,
-    branch: u64,
-    groups: &dashboard_base::products::country_groups::Scan,
-    params: &AirParams,
-    anchors: &assignment::SideAnchors,
-    cancelled: &AtomicBool,
-    measurements: Option<&mut scan::ScanMeasurements>,
-) -> io::Result<AirMomentReply> {
     hours(params)?;
-    let (samples, sides) = scan::scan_window_measured(
-        replay,
-        branch,
-        groups,
-        params,
-        anchors,
-        cancelled,
-        measurements,
-    )?;
+    let (samples, sides) = scan::scan_window(replay, branch, groups, params, anchors, cancelled)?;
     moment_reply(samples, sides, groups, params, anchors)
 }
 

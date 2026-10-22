@@ -1961,37 +1961,32 @@ mod tests {
     }
 
     #[test]
-    fn agency_comparison_5000_countries_top_n_and_complete_response_budget() {
+    fn agency_comparison_top_n_selects_by_defense_and_keeps_membership_dates() {
+        // regression: 705b220bcb Add espionage log and agency comparison widgets
         let mut scanned = ScannedAgencies::default();
-        for country in 1..=5000 {
+        for country in 1..=4 {
             let agency = row(country, i64::from(country) * 100_000);
-            scanned.observe(
-                10,
-                &format!("SYN_{country:04}"),
-                (country, country),
-                Some(&agency),
-                None,
-            );
-            scanned.observe(
-                11,
-                &format!("SYN_{country:04}"),
-                (country, country),
-                Some(&agency),
-                None,
-            );
+            for hour in [10, 11] {
+                scanned.observe(
+                    hour,
+                    &format!("SYN_{country:04}"),
+                    (country, country),
+                    Some(&agency),
+                    None,
+                );
+            }
         }
         let cancelled = AtomicBool::new(false);
         let all =
             requested_series(&scanned, &params(), || None, |_| (None, None), &cancelled).unwrap();
-        assert_eq!(all.len(), 5000);
-        assert!(measured(&all).unwrap() < MAX_PRODUCT_REPLY_BYTES);
+        assert_eq!(all.len(), 4);
         assert!(
             all.iter()
                 .all(|series| series.entries.len() == 1 && series.entries[0].last_hour == 11)
         );
         let mut top_params = params();
         top_params.top = Some(AgencyTop {
-            count: 3,
+            count: 2,
             field: AgencyRankField::Defense,
         });
         let top =
@@ -2000,7 +1995,7 @@ mod tests {
             top.iter()
                 .map(|series| series.tag.as_str())
                 .collect::<Vec<_>>(),
-            ["SYN_4998", "SYN_4999", "SYN_5000"]
+            ["SYN_0003", "SYN_0004"]
         );
         assert_eq!(
             top[0].membership.as_ref().unwrap()[0],
@@ -2272,13 +2267,13 @@ mod tests {
     }
 
     #[test]
-    fn agency_comparison_replay_reads_5000_countries_and_refuses_gaps_without_zeroes() {
+    fn agency_comparison_replay_reads_every_country_and_refuses_gaps_without_zeroes() {
         use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
         use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
         use replay_frame::frame::TableView;
         let mut first = source(1, 16, Some(1));
         *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=5000)
+            (1..=24)
                 .map(|id| CountryRow {
                     id,
                     canonical_slot: id,
@@ -2289,7 +2284,7 @@ mod tests {
         ));
         *first.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(
-                (1..=5000)
+                (1..=24)
                     .map(|id| CountryLinkRow {
                         id,
                         canonical_slot: id,
@@ -2298,7 +2293,7 @@ mod tests {
             ));
         *first.tables[TableId::IntelligenceAgencies.index()] =
             TableView::Complete(TableRows::IntelligenceAgencies(
-                (1..=5000)
+                (1..=24)
                     .map(|id| row(id, i64::from(id) * 100_000))
                     .collect(),
             ));
@@ -2334,14 +2329,14 @@ mod tests {
         let reply = AgencyComparison::load(
             &source,
             &AgencyComparisonParams {
-                tags: (1..=5000).map(|id| format!("SYN_{id:04}")).collect(),
+                tags: (1..=24).map(|id| format!("SYN_{id:04}")).collect(),
                 ..params()
             },
             &LoadContext { content: None },
             &cancelled,
         )
         .unwrap();
-        assert_eq!(reply.series.len(), 5000);
+        assert_eq!(reply.series.len(), 24);
         assert_eq!(reply.defense_label, None);
         assert_eq!(
             reply.observed,

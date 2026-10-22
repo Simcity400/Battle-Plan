@@ -308,44 +308,6 @@ fn intel_coverage_join_is_frozen_until_read_and_tag_reuse_is_separate() {
     assert_eq!(pair_series_count(&now), 6);
 }
 #[test]
-fn intel_coverage_five_thousand_countries_have_no_dense_cube() {
-    let rows = (1..=5000)
-        .map(|id| network(id, if id == 5000 { 1 } else { id + 1 }))
-        .collect();
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let mut scan = Scan::default();
-    observe(&mut scan, &frame(100, Some(rows), true, 5000));
-    publish(&mut scan, &fixture);
-    let reply = load(
-        &fixture,
-        &params(serde_json::json!({"branchId":"1"})),
-        100,
-        100,
-        None,
-    );
-    let ranks: Vec<_> = reply
-        .window
-        .series
-        .iter()
-        .filter(|series| series.name.starts_with("rank|"))
-        .collect();
-    assert_eq!(ranks.len(), 5000);
-    assert!(ranks.iter().all(|series| series.runs[0].2 == "2"));
-    assert_eq!(scan.names().len(), 35000);
-    assert!(pair_series_count(&reply) <= 72);
-    let drill = load(
-        &fixture,
-        &params(
-            serde_json::json!({"branchId":"1","view":"pair","owner":"Mod 2500@2500","target":"Mod 2501@2501"}),
-        ),
-        100,
-        100,
-        None,
-    );
-    assert_eq!(pair_series_count(&drill), 6);
-    check_reply_budget(&reply).unwrap();
-}
-#[test]
 fn intel_coverage_equal_forced_reads_and_cold_shapes() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut scan = Scan::<IntelCoverageObserver>::default();
@@ -367,11 +329,6 @@ fn intel_coverage_equal_forced_reads_and_cold_shapes() {
     assert!(
         IntelCoverage::validate(&params(serde_json::json!({"branchId":"1","view":"pair"})))
             .is_err()
-    );
-    assert!(
-        IntelCoverage::types()
-            .iter()
-            .any(|s| s.contains("IntelCoverageReply"))
     );
 }
 

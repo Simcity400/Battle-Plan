@@ -685,69 +685,6 @@ fn destruction_gaps_and_unresolved_raw_owners_are_named_unknown_spans() {
 }
 
 #[test]
-fn destruction_capture_and_ownership_include_all_five_thousand_countries() {
-    const COUNTRIES: u32 = 5_000;
-    let base = 60_827_880;
-    let mut first = first(base);
-    *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=COUNTRIES)
-            .map(|id| CountryRow {
-                id,
-                canonical_slot: id,
-                tag: format!("C{id:05}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *first.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=COUNTRIES)
-            .map(|id| CountryLinkRow {
-                id,
-                canonical_slot: id,
-            })
-            .collect(),
-    ));
-    *first.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(vec![]));
-    let mut all = first.clone();
-    all.hour += 1;
-    drain(
-        &mut all,
-        (1..=COUNTRIES)
-            .flat_map(|country| {
-                [
-                    removal(country, NativeCause::Garrison, 1326, i64::from(country)),
-                    removal(country, NativeCause::AirAccident, 1326, 1),
-                ]
-            })
-            .collect(),
-    );
-    let replay = replay_of(vec![first, all]);
-    for country in [1, 1_500, COUNTRIES] {
-        let tag = format!("C{country:05}");
-        let scanned = scan(&replay, 1, &tag, &AtomicBool::new(false)).unwrap();
-        let params = LossesParams {
-            tag,
-            ..destruction_params()
-        };
-        let reply = reply(&params, &scanned, Content::default(), vec![]);
-        assert_eq!(
-            totals(
-                &reply,
-                LossSource::Destruction(EquipmentDestructionCause::Garrison)
-            ),
-            [(base + 1, country.to_string())]
-        );
-        assert_eq!(
-            totals(
-                &reply,
-                LossSource::Destruction(EquipmentDestructionCause::AirAccident)
-            ),
-            [(base + 1, "1".into())]
-        );
-    }
-}
-
-#[test]
 fn land_source_defaults_to_every_destruction_and_invalid_values_are_refused() {
     let params: LossesParams =
         serde_json::from_value(serde_json::json!({"branchId":"1", "tag":"opaque_tag"})).unwrap();

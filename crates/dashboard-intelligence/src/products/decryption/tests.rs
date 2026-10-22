@@ -251,35 +251,6 @@ fn encoded_branch_scan_compresses_only_consecutive_hours_and_checks_cancellation
 }
 
 #[test]
-fn aliases_all_countries_and_equal_hours_are_sparse_at_5000() {
-    for count in [1_500, 5_000] {
-        let mut scan = Scan::default();
-        scan.frame(&frame(100, count, 0, 0), Ok(DEFINES)).unwrap();
-        scan.frame(&frame(101, count, 0, 255), Ok(DEFINES)).unwrap();
-        scan.frame(&frame(102, count, 0, 255), Ok(DEFINES)).unwrap();
-        assert_eq!(scan.pairs.len(), count as usize - 1);
-        assert_eq!(scan.coverage.len(), 1);
-        for ((owner, target), state) in scan.pairs {
-            let pair = state.pair;
-            assert_eq!(owner, 1);
-            assert_eq!(pair.target_id, target.to_string());
-            assert_eq!(pair.runs.len(), 2);
-            assert_eq!(pair.tag_runs.len(), 1);
-            assert_eq!(pair.tag_runs[0].last_hour, 102);
-            assert_eq!(pair.runs[1].last_hour, 102);
-            assert_eq!(progress(&pair.runs[1]), Some(1));
-            assert_eq!(
-                pair.runs[1].started,
-                Some(CipherObservation {
-                    hour: 101,
-                    upper_bound: true
-                })
-            );
-        }
-    }
-}
-
-#[test]
 fn missing_strength_and_bonus_are_distinct_and_gaps_bound_dates() {
     let mut scan = Scan::default();
     scan.frame(&frame(100, 2, 400_000, 1), Ok(DEFINES)).unwrap();

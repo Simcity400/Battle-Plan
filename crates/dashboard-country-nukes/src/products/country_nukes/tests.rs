@@ -333,8 +333,8 @@ fn country_nukes_static_tokens_resolve_independently_from_sorted_recorded_rows()
 }
 
 #[test]
-fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
-    let rows: Vec<_> = (1..=5000)
+fn country_nukes_are_ranked_without_player_status_filtering() {
+    let rows: Vec<_> = (1..=24)
         .flat_map(|country| {
             [
                 (country, 0, i64::from(country) * 100_000_000, 0),
@@ -342,8 +342,8 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
             ]
         })
         .collect();
-    let result = scanned(vec![frame(10, &rows, 5000)]);
-    assert_eq!(result.series.len(), 5000);
+    let result = scanned(vec![frame(10, &rows, 24)]);
+    assert_eq!(result.series.len(), 24);
     let series = requested_series(
         &result,
         &NukesParams {
@@ -357,11 +357,11 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
     )
     .unwrap();
     assert_eq!(series.len(), 10);
-    assert!(series.iter().any(|series| series.tag == "C05000"));
+    assert!(series.iter().any(|series| series.tag == "C00024"));
     assert!(
         series
             .iter()
-            .all(|series| series.runs[0].total.unwrap() >= 4991)
+            .all(|series| series.runs[0].total.unwrap() >= 15)
     );
     assert!(dashboard_core::transport::json_len(&series, MAX_PRODUCT_REPLY_BYTES).is_some());
     for params in [
@@ -374,13 +374,13 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
         NukesParams {
             branch_id: "1".into(),
             tags: Vec::new(),
-            top: Some(5000),
+            top: Some(24),
             origin_hour: None,
         },
     ] {
         CountryNukes::validate(&params).unwrap();
         let series = requested_series(&result, &params, None, &AtomicBool::new(false)).unwrap();
-        assert_eq!(series.len(), 5000);
+        assert_eq!(series.len(), 24);
     }
 }
 

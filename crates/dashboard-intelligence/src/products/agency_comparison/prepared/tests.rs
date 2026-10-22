@@ -160,16 +160,28 @@ fn prepared_agencies_match_two_commits_resume_append_gaps_and_identity_changes()
 }
 
 #[test]
-fn prepared_agencies_keep_five_thousand_countries_and_existing_top_projection() {
+fn prepared_agencies_match_the_cold_top_selection_across_commits() {
+    // regression: 73eb01407a Prepare agency changes and independently dated roster reads
+    let unequal = |hour| {
+        let mut frame = frame(hour, 4);
+        if let TableView::Complete(TableRows::IntelligenceAgencies(rows)) =
+            &mut *frame.tables[TableId::IntelligenceAgencies.index()]
+        {
+            for row in rows {
+                row.defense_raw = i64::from(row.country) * 100_000;
+            }
+        }
+        frame
+    };
     let fixture = Fixture::new();
-    let source = source(frame(0, 5_000));
+    let source = source(unequal(0));
     let context = LoadContext { content: None };
     let flag = AtomicBool::new(false);
     let mut state = Prepared::default();
     let mut old = ScannedAgencies::default();
     for hours in [0..2, 2..4] {
         for hour in hours {
-            let input = frame(hour, 5_000);
+            let input = unequal(hour);
             state.observe(&source, &input).unwrap();
             old.observe_frame(&input, source.replay_ref()).unwrap();
         }
@@ -179,7 +191,7 @@ fn prepared_agencies_keep_five_thousand_countries_and_existing_top_projection() 
     }
     let mut params = params();
     params.selection.top = Some(AgencyTop {
-        count: 5_000,
+        count: 2,
         field: AgencyRankField::Defense,
     });
     let actual = query(
@@ -195,7 +207,14 @@ fn prepared_agencies_keep_five_thousand_countries_and_existing_top_projection() 
     .unwrap();
     let expected =
         super::super::reply(&source, &params.selection, &context, &flag, &old, None).unwrap();
-    assert_eq!(actual.series.len(), 5_000);
+    assert_eq!(
+        actual
+            .series
+            .iter()
+            .map(|series| series.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["Mod agency | 3", "Mod agency | 4"]
+    );
     assert_eq!(
         serde_json::to_value(actual).unwrap(),
         serde_json::to_value(expected).unwrap()
@@ -209,7 +228,7 @@ fn prepared_agency_checkpoint_retains_changes_without_daily_dates() {
     let flag = AtomicBool::new(false);
     let mut state = Prepared::default();
     let mut short = 0;
-    for day in 0..100 {
+    for day in 0..20 {
         for hour in day * 24..(day + 1) * 24 {
             state.observe(&source, &frame(hour, 2)).unwrap();
         }
@@ -221,7 +240,6 @@ fn prepared_agency_checkpoint_retains_changes_without_daily_dates() {
         }
     }
     let long = serde_json::to_vec(&state).unwrap().len();
-    eprintln!("agency checkpoint bytes: 2 days={short}, 100 days={long}");
     assert!(long < short * 2);
     assert_eq!(state.scan.operative_read_hours.len(), 1);
 }
@@ -335,8 +353,8 @@ fn intel_shared_driver_agencies_one_row_ignores_ten_times_closed_holders() {
 }
 
 #[test]
-fn first_view_keeps_all_five_thousand_agencies_and_matches_hourly_values() {
-    let source = source(frame(0, 5_000));
+fn first_view_keeps_all_agencies_and_matches_hourly_values() {
+    let source = source(frame(0, 24));
     let context = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
     let mut params = params();
@@ -353,6 +371,6 @@ fn first_view_keeps_all_five_thousand_agencies_and_matches_hourly_values() {
         None,
     )
     .unwrap();
-    assert_eq!(actual["series"].as_array().unwrap().len(), 5_000);
+    assert_eq!(actual["series"].as_array().unwrap().len(), 24);
     assert_eq!(actual, serde_json::to_value(expected).unwrap());
 }

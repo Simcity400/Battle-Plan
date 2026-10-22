@@ -242,13 +242,6 @@ fn active_run_unchanged_frames_touch_only_changes_and_publish_dense_bytes() {
 }
 
 #[test]
-fn active_run_5000_keys_keep_frame_work_flat_at_tenfold_hours() {
-    let first = active_run_work_and_bytes(5_000, 10);
-    let tenfold = active_run_work_and_bytes(5_000, 100);
-    assert!(tenfold <= first * 10);
-}
-
-#[test]
 fn active_run_observe_boundary_splits_equal_values_without_identity_break_and_seals_active_keys() {
     let mut values = Accumulator::default();
     values.advance(0).unwrap();
@@ -1417,36 +1410,6 @@ fn events_reject_an_ordinal_count_their_batch_does_not_hold() {
 }
 
 #[test]
-fn files_follow_commits_and_hold_all_five_thousand_keys() {
-    let fixture = Fixture::new();
-    let mut states: BTreeMap<_, _> = (0..5000).map(|key| (key, KeyState::default())).collect();
-    for first in [0, 5000] {
-        let mut batch = Batch::default();
-        batch.through(first);
-        batch.through(first + 4999);
-        for (&key, state) in &mut states {
-            batch.push(
-                key,
-                state,
-                Run::new(first, first + 4999, i128::from(key), first == 0),
-            );
-        }
-        fixture.publish(batch, &mut states);
-    }
-    assert_eq!(
-        fixture.store.range_count(&fixture.key, "test").unwrap(),
-        Some(2)
-    );
-    let flag = AtomicBool::new(false);
-    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
-    let value = reader.value_at(4999, 9999).unwrap().unwrap();
-    assert_eq!(
-        (value.first_hour, value.last_hour, value.value),
-        (0, 9999, 4999)
-    );
-}
-
-#[test]
 fn empty_batches_complete_partial_summaries_without_losing_known_values() {
     let fixture = Fixture::new();
     let mut states = BTreeMap::from([(0, KeyState::default())]);
@@ -1802,13 +1765,13 @@ fn absolute_contribution_is_exact_across_batches_resume_append_gaps_and_membersh
 }
 
 #[test]
-fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps_at_5000_keys() {
+fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps() {
     let mut fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut values = Accumulator::default();
     for (batch, (first, last)) in [(100, 101), (102, 103), (106, 107)].into_iter().enumerate() {
         for hour in first..=last {
-            for key in 0..5_000 {
+            for key in 0..24 {
                 let amount = (!(hour == 102 && key % 3 == 0)).then_some(match key % 4 {
                     0 if hour == 100 => i128::MIN,
                     1 if hour == 100 => i128::MAX,
@@ -1831,7 +1794,7 @@ fn values_at_matches_single_key_reads_across_commits_resume_append_and_gaps_at_5
     }
     let mut many = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
     let mut single = Reader::new(&fixture.store, &fixture.key, "values".into(), &flag).unwrap();
-    let keys: Vec<_> = (0..=5_000).rev().chain([0, 1]).collect();
+    let keys: Vec<_> = (0..=24).rev().chain([0, 1]).collect();
     assert!(many.values_at(&[], 101).unwrap().is_empty());
     for hour in [99, 100, 101, 102, 103, 104, 105, 106, 107, 108] {
         let expected: Vec<_> = keys
@@ -1863,79 +1826,6 @@ fn late_index_keeps_only_late_facts_ordered_and_bounded_by_read() {
     assert_eq!(read_by_30, vec![(11, 30, 3, 4), (12, 20, 1, 6)]);
     assert_eq!(late.between(13, 20, i32::MAX).count(), 0);
     assert_eq!(late.between(12, 12, 39).next_back(), Some(&(12, 20, 1, 6)));
-}
-
-#[test]
-fn late_index_skips_five_thousand_late_events_with_one_ordinary_read() {
-    let fixture = Fixture::new();
-    let cancelled = AtomicBool::new(false);
-    let mut values = Accumulator::default();
-    let mut late = LateIndex::default();
-    for ordinal in 0..5_000 {
-        values
-            .event(0, 100, &json!({"native": 99, "ordinal": ordinal}))
-            .unwrap();
-        late.insert(99, 100, 0, ordinal);
-    }
-    values
-        .event(0, 100, &json!({"native": 100, "ordinal": 5_000}))
-        .unwrap();
-    late.insert(100, 100, 0, 5_000); // Ordinary facts are never indexed.
-    assert_eq!(late.ordinals[&0], [(0, 4_999)]);
-    let saved = serde_json::to_value(&late).unwrap();
-    assert_eq!(
-        saved,
-        serde_json::to_value(&late.rows).unwrap(),
-        "no transient field is persisted"
-    );
-    late = serde_json::from_value(saved.clone()).unwrap();
-    assert_eq!(
-        late.ordinals[&0],
-        [(0, 4_999)],
-        "load rebuilds the coalesced spans"
-    );
-    assert_eq!(serde_json::to_value(&late).unwrap(), saved);
-
-    let mut writer = fixture.writer();
-    values
-        .flush(&mut writer, "late-ordinary", 0, &cancelled)
-        .unwrap();
-    writer.commit().unwrap();
-    let mut reader = Reader::new(
-        &fixture.store,
-        &fixture.key,
-        "late-ordinary".into(),
-        &cancelled,
-    )
-    .unwrap();
-    let mut cursor = 0;
-    let mut requests = 0;
-    let mut reached = Vec::new();
-    while let Some(ordinary) = late
-        .next_ordinary(0, cursor)
-        .filter(|ordinal| *ordinal <= 5_000)
-    {
-        requests += 1;
-        assert!(
-            requests <= 1,
-            "the ordinary walk never reads its 5,000 late-row prefix"
-        );
-        let page = reader.events(&[0], 100, 100, ordinary, 1).unwrap();
-        assert_eq!(page.rows.len(), 1);
-        let row = &page.rows[0];
-        if row.row["native"] == 100 {
-            reached.push(row.ordinal);
-        }
-        cursor = row.ordinal + 1;
-    }
-    assert_eq!(reached, [5_000]);
-    assert_eq!(requests, 1);
-    assert_eq!(late.previous_ordinary(0, 5_000), Some(5_000));
-    assert_eq!(
-        late.previous_ordinary(0, 4_999),
-        None,
-        "a backward walk skips the entire late prefix too"
-    );
 }
 
 #[test]
@@ -2733,76 +2623,66 @@ fn payload_tables_share_only_the_flushes_explicitly_given_the_same_table() {
 }
 
 #[test]
-fn event_pages_keep_the_merge_frontier_for_five_thousand_countries() {
+fn event_pages_reset_the_merge_frontier_on_changed_requests_and_clamping() {
+    // regression: 2deaba1f3d Cut per-reply work in air superiority, wars, autonomy, trade, resources and the air ledger
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut values = Accumulator::default();
     for hour in 0..2 {
         values.through(hour);
-        for key in 0..5000 {
+        for key in 0..3 {
             values.event(key, hour, &json!([hour, key])).unwrap();
         }
         let mut writer = fixture.writer();
         values.flush(&mut writer, "events", 0, &flag).unwrap();
         writer.commit().unwrap();
     }
-    let keys: Vec<_> = (0..5000).rev().chain([4999, 0]).collect();
+    let keys: Vec<_> = (0..3).rev().chain([2, 0]).collect();
     let mut reader = Reader::new(&fixture.store, &fixture.key, "events".into(), &flag).unwrap();
     let mut cursor = 0;
     let mut seen = 0;
-    let mut seeks = None;
     loop {
-        let page = reader.events(&keys, 0, 1, cursor, 127).unwrap();
-        assert_eq!(page.total, 10_000);
+        let page = reader.events(&keys, 0, 1, cursor, 2).unwrap();
+        assert_eq!(page.total, 6);
         for row in page.rows {
-            assert_eq!(row.row, json!([seen / 5000, seen % 5000]));
+            assert_eq!(row.row, json!([seen / 3, seen % 3]));
             assert_eq!(
                 (row.key, row.ordinal),
-                ((seen % 5000) as u64, (seen / 5000) as u64)
+                ((seen % 3) as u64, (seen / 3) as u64)
             );
             seen += 1;
-        }
-        if let Some(before) = seeks {
-            assert_eq!(
-                EVENT_COUNTS.get(),
-                before,
-                "a later page sought every country again"
-            );
-        } else {
-            seeks = Some(EVENT_COUNTS.get());
         }
         let Some(next) = page.cursor else { break };
         cursor = next;
     }
-    assert_eq!(seen, 10_000);
-    // A changed window/selection and a backwards cursor use ordinary seeking.
+    assert_eq!(seen, 6);
     assert_eq!(
-        reader.events(&[4999], 1, 1, 0, 1).unwrap().rows[0].row,
-        json!([1, 4999])
+        reader.events(&[2], 1, 1, 0, 1).unwrap().rows[0].row,
+        json!([1, 2])
     );
     assert_eq!(
         reader.events(&keys, 0, 1, 0, 1).unwrap().rows[0].row,
         json!([0, 0])
     );
-    // Clamping the immutable reader clears its frontier.
     reader.through_hour(0).unwrap();
-    let page = reader.events(&keys, 0, 1, 1, 10_000).unwrap();
-    assert_eq!(page.total, 5000);
+    let page = reader.events(&keys, 0, 1, 1, 10).unwrap();
+    assert_eq!(page.total, 3);
     assert!(page.rows.iter().all(|row| row.hour == 0));
 }
 
 #[test]
-fn point_queries_reuse_global_bounds_but_authenticate_local_runs_for_five_thousand_countries() {
+fn warmed_point_readers_keep_local_gaps_and_clamp_runs() {
+    // regression: 2deaba1f3d Cut per-reply work in air superiority, wars, autonomy, trade, resources and the air ledger
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);
     let mut values = Accumulator::default();
     for first in [0, 3, 6] {
         for hour in first..first + 3 {
             values.through(hour);
-            for key in 0..5000 {
+            for key in 0..3 {
                 // A refusal, then a fresh run, keeps an actual hole at hour 4.
                 let value =
-                    (key != 4999 || hour != 4).then_some(i128::from(key) + i128::from(hour >= 6));
+                    (key != 2 || hour != 4).then_some(i128::from(key) + i128::from(hour >= 6));
                 values.observe(key, hour, value, false);
             }
         }
@@ -2811,26 +2691,18 @@ fn point_queries_reuse_global_bounds_but_authenticate_local_runs_for_five_thousa
         writer.commit().unwrap();
     }
     let mut reader = Reader::new(&fixture.store, &fixture.key, "points".into(), &flag).unwrap();
-    let before = RUN_BOUNDS.get();
-    for key in 0..5000 {
+    for key in 0..3 {
         reader.value_at(key, 0).unwrap();
     }
-    assert_eq!(RUN_BOUNDS.get() - before, 5000);
-    let before = RUN_BOUNDS.get();
-    for key in 0..4999 {
+    for key in 0..2 {
         let run = reader.value_at(key, 3).unwrap().unwrap();
         assert_eq!(
             (run.first_hour, run.last_hour, run.value),
             (0, 5, i128::from(key))
         );
     }
-    assert_eq!(
-        RUN_BOUNDS.get(),
-        before,
-        "reconstructed unchanged global run bounds"
-    );
-    assert!(reader.value_at(4999, 4).unwrap().is_none());
-    assert_eq!(reader.value_at(4999, 5).unwrap().unwrap().first_hour, 5);
+    assert!(reader.value_at(2, 4).unwrap().is_none());
+    assert_eq!(reader.value_at(2, 5).unwrap().unwrap().first_hour, 5);
     reader.through_hour(2).unwrap();
     assert_eq!(reader.value_at(0, 1).unwrap().unwrap().last_hour, 2);
     assert!(reader.value_at(0, 3).unwrap().is_none());

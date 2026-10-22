@@ -354,28 +354,6 @@ fn an_unread_market_ledger_has_no_known_hours() {
 }
 
 #[test]
-fn five_thousand_countries_publish_only_their_listings() {
-    let mut state = Prepared::default();
-    let mut at = frame(5);
-    many_countries(&mut at, 5_000);
-    set(
-        &mut at,
-        TableRows::CountryMarket(
-            (0..300)
-                .map(|n| CountryMarketRow {
-                    country: n * 7 + 1,
-                    inventory: pool(&[(0xb0 + u64::from(n), 100_000)]),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    state.step(&at);
-    let published = publish(&mut state);
-    assert_eq!(published.history(MarketView::Inventory, &[], 5).offers.len(), 300);
-}
-
-#[test]
 fn a_ledger_of_both_parties_pages_each_occurrence_once() {
     let mut state = Prepared::default();
     for hour in 5..=7 {

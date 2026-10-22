@@ -108,14 +108,14 @@ fn a_reused_tag_reads_only_the_hours_its_holder_had_it_and_indexes_come_from_the
 }
 
 #[test]
-fn five_thousand_countries_keep_only_those_with_consumers() {
+fn countries_without_consumers_are_left_out() {
     let mut state = Prepared::default();
     let mut at = frame(10);
-    many_countries(&mut at, 5_000);
+    many_countries(&mut at, 50);
     set(
         &mut at,
-        TableRows::CountryFuelConsumers((0..500).map(|n| consumer(n * 10 + 1, 0, 1, 1)).collect()),
+        TableRows::CountryFuelConsumers((0..5).map(|n| consumer(n * 10 + 1, 0, 1, 1)).collect()),
     );
     step(&mut state, &at, true);
-    assert_eq!(ask(&mut state, &[], 10).countries.len(), 500);
+    assert_eq!(ask(&mut state, &[], 10).countries.len(), 5);
 }

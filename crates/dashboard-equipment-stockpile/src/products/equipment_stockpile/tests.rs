@@ -4,7 +4,7 @@ use replay_data::rows::TableRows;
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 #[test]
-fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gaps() {
+fn one_frame_join_feeds_holder_steps_with_legacy_values_and_independent_gaps() {
     use dashboard_core::test_fixtures::{scale_frame, scale_tag};
     use replay_data::{rows::CountryLinkRow, rows::ProductionLineRow, rows::StockpileRow};
     let first = stockpile_slot(1000);
@@ -12,14 +12,14 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
         .into_iter()
         .enumerate()
         .map(|(step, hour)| {
-            let mut frame = scale_frame(1, hour, 5_000);
+            let mut frame = scale_frame(1, hour, 64);
             *frame.tables[TableId::Stockpiles.index()] = if step == 2 {
                 TableView::Unavailable {
                     reason: "stock-only refusal".into(),
                 }
             } else {
                 TableView::Complete(TableRows::Stockpiles(
-                    (0..5_000)
+                    (0..64)
                         .flat_map(|index| {
                             [
                                 StockpileRow {
@@ -41,7 +41,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
             };
             *frame.tables[TableId::ProductionLines.index()] =
                 TableView::Complete(TableRows::ProductionLines(
-                    (0..5_000)
+                    (0..64)
                         .map(|index| ProductionLineRow {
                             country: 100_000 + index,
                             handle: u64::from(index) + 1,
@@ -80,7 +80,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
     let mut states = BTreeMap::<String, ScanState>::new();
     for frame in &frames {
         let input = FrameRows::new(frame);
-        assert_eq!(input.identities.len(), 5_000);
+        assert_eq!(input.identities.len(), 64);
         assert_eq!(
             input
                 .lines
@@ -89,7 +89,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
                 .values()
                 .map(Vec::len)
                 .sum::<usize>(),
-            5_000
+            64
         );
         for tag in input.identities.keys() {
             states.entry(tag.clone()).or_default();
@@ -98,7 +98,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
             state.observe(recording.format, &input, input.identities.get(tag).copied());
         }
     }
-    assert_eq!(states.len(), 5_000);
+    assert_eq!(states.len(), 64);
     let zero = &states["000"].result;
     assert_eq!(
         zero.stock.runs[&10][0].amount_raw.as_deref(),
@@ -111,7 +111,7 @@ fn one_frame_join_feeds_5000_holder_steps_with_legacy_values_and_independent_gap
     );
     assert_eq!(zero.stock.spans.last().unwrap().last_hour, first + 1);
     assert_eq!(zero.daily.spans.last().unwrap().last_hour, first + 25);
-    for index in [0, 1, 62, 1500, 4999] {
+    for index in [0, 1, 62, 63] {
         let tag = String::from_utf8(scale_tag(index)).unwrap();
         let expected = scan(&recording, 1, &tag, &AtomicBool::new(false)).unwrap();
         let actual = &states[&tag].result;

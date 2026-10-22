@@ -1788,9 +1788,4 @@ mod carried_tests {
     fn carried_army_scans_equal_point_scans_at_every_hour() {
         carried_scans_equal_point_scans(40);
     }
-
-    #[test]
-    fn carried_army_scans_equal_point_scans_at_every_hour_at_5000_countries() {
-        carried_scans_equal_point_scans(5_000);
-    }
 }

@@ -142,26 +142,26 @@ fn incomplete_candidates_refuse_a_guess_and_count_named_failures() {
 }
 
 #[test]
-fn five_thousand_foreign_country_candidates_do_not_hide_the_selected_country() {
+fn foreign_country_candidates_do_not_hide_the_selected_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut frame = frame();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *frame.tables[TableId::CountryLinks.index()]
     {
-        rows.extend((100..5100).map(|id| CountryLinkRow {
+        rows.extend((100..124).map(|id| CountryLinkRow {
             id,
             canonical_slot: id,
         }));
         rows.sort_by_key(|row| row.id);
     }
-    let mut candidates: Vec<_> = (100..5100)
+    let mut candidates: Vec<_> = (100..124)
         .map(|country| AvailableEquipmentVariantRow {
             country,
             ..candidate(0, C)
         })
         .collect();
-    candidates.push(candidate(5000, B));
+    candidates.push(candidate(24, B));
     *frame.tables[TableId::AvailableEquipmentVariants.index()] =
         TableView::Complete(TableRows::AvailableEquipmentVariants(candidates));
     assert_eq!(

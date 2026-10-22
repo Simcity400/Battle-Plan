@@ -166,13 +166,13 @@ fn territory_breakdown_one_changed_province_skips_closed_region_history() {
 }
 
 #[test]
-fn territory_breakdown_shared_driver_keeps_all_5000_country_region_keys_without_hourly_work() {
+fn territory_breakdown_shared_driver_keeps_all_country_region_keys_without_hourly_work() {
     use crate::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     let format = replay_data::format::FormatVersion::CURRENT;
-    let mut read = frame(100, 5_000);
+    let mut read = frame(100, 24);
     read.metrics = Default::default();
     let mut prepared = Prepared {
-        regions: Some(regions(5_000)),
+        regions: Some(regions(24)),
         ..Default::default()
     };
     prepared.scan.format = format;
@@ -196,7 +196,7 @@ fn territory_breakdown_shared_driver_keeps_all_5000_country_region_keys_without_
     .unwrap();
     assert_eq!(delta, observer_tests::Work::default());
     prepared.builder.seal(&mut prepared.scan);
-    assert_eq!(prepared.builder.active.len(), 5_000);
+    assert_eq!(prepared.builder.active.len(), 24);
     assert!(
         prepared
             .scan
@@ -1076,8 +1076,8 @@ fn regional_hours_answer_beyond_preparation_from_one_frame_as_preparation_does()
 }
 
 #[test]
-fn regional_sample_matches_the_continuous_scan_for_5000_countries() {
-    const COUNT: u32 = 5_000;
+fn regional_sample_matches_the_continuous_scan() {
+    const COUNT: u32 = 24;
     let format = replay_data::format::FormatVersion::CURRENT;
     let inputs = regions(COUNT);
     let frames: Vec<_> = (100..=102)

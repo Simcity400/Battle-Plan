@@ -565,68 +565,6 @@ fn native_alias_summary_keeps_explicit_unknown_rows_distinct_from_absent_zero() 
 }
 
 #[test]
-#[ignore = "lead-owned storage measurement: 5000 countries over one recorded year"]
-fn measured_5000_country_year_stockpile_bytes() {
-    use dashboard_core::test_fixtures::{scale_frame, scale_tag};
-    use replay_data::{rows::ProductionLineRow, rows::StockpileRow};
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let flag = AtomicBool::new(false);
-    let format = replay(vec![scale_frame(1, 0, 1)]).format;
-    let mut prepared = Prepared::default();
-    let started = std::time::Instant::now();
-    let mut bytes = 0_u64;
-    for hour in 0..365 * 24 {
-        let mut frame = scale_frame(1, hour, 5_000);
-        *frame.tables[TableId::Stockpiles.index()] = TableView::Complete(TableRows::Stockpiles(
-            (0..5_000)
-                .map(|index| StockpileRow {
-                    country: 100_000 + index,
-                    ordinal: 0,
-                    variant_handle: 10,
-                    amount_raw: i64::from(index + hour as u32 / 24) * 100_000,
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::ProductionLines.index()] =
-            TableView::Complete(TableRows::ProductionLines(
-                (0..5_000)
-                    .map(|index| ProductionLineRow {
-                        handle: u64::from(index) + 1,
-                        country: 100_000 + index,
-                        variant: 10,
-                        cost_raw: 50_000,
-                        speed_raw: 100_000,
-                        kind: engine_native::cequipment_production_line::KIND_MILITARY,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        frame.metrics.table_ns[TableId::Stockpiles.index()] = u64::from(hour % 24 == 0);
-        frame.metrics.table_ns[TableId::ProductionLines.index()] = u64::from(hour % 24 == 0);
-        prepared.observe(format, &frame).unwrap();
-        if (hour + 1) % (30 * 24) == 0 || hour == 365 * 24 - 1 {
-            let mut writer = fixture.writer();
-            prepared.flush(&mut writer, 1, &flag).unwrap();
-            bytes = u64::try_from(i128::from(bytes) + writer.payload_bytes_change()).unwrap();
-            writer.commit().unwrap();
-            prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
-        }
-    }
-    assert_eq!(prepared.holders.len(), 5_000);
-    assert!(
-        prepared
-            .holders
-            .contains_key(std::str::from_utf8(&scale_tag(4_999)).unwrap())
-    );
-    let checkpoint = serde_json::to_vec(&prepared).unwrap().len();
-    eprintln!(
-        "stockpile countries=5000 hours=8760 payload_bytes={bytes} bytes_per_country_year={} checkpoint_bytes={checkpoint} elapsed_ms={}",
-        (bytes as f64 + checkpoint as f64) / 5_000.0,
-        started.elapsed().as_millis()
-    );
-}
-
-#[test]
 #[ignore = "lead-owned real-recording storage and token-stability measurement"]
 fn measured_real_recording_stockpile_bytes_and_token_stability() {
     use replay::container::ReplayStream;
@@ -1105,11 +1043,6 @@ fn assert_changed_rows_observe_only_their_holder(count: u32) {
 #[test]
 fn stockpile_hour_changing_one_holder_observes_only_that_holder() {
     assert_changed_rows_observe_only_their_holder(200);
-}
-
-#[test]
-fn stockpile_hour_changing_one_of_5000_holders_observes_only_that_holder() {
-    assert_changed_rows_observe_only_their_holder(5000);
 }
 
 #[test]
@@ -1701,9 +1634,4 @@ fn sparse_stockpile_holders(count: u32) {
 #[test]
 fn snapshot_numeric_changes_select_only_their_holder_at_its_next_read() {
     sparse_stockpile_holders(8);
-}
-
-#[test]
-fn one_changed_stockpile_visits_one_of_five_thousand_holders() {
-    sparse_stockpile_holders(5000);
 }

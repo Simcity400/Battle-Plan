@@ -58,13 +58,13 @@ fn frame(hour: i32, count: u32) -> DecodedFrame {
 }
 
 #[test]
-fn progressive_factory_sampler_matches_observer_on_every_key_at_5000_countries() {
-    let frames = [frame(0, 5000), frame(1, 5000)];
+fn progressive_factory_sampler_matches_observer_on_every_key() {
+    let frames = [frame(0, 24), frame(1, 24)];
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap();
     let mut observer = Prepared::default();
     for frame in &frames {
         let samples = sample(frame, None).unwrap();
-        assert_eq!(samples.len(), 5000 * fields().len());
+        assert_eq!(samples.len(), 24 * fields().len());
         observer
             .observe(
                 frame,

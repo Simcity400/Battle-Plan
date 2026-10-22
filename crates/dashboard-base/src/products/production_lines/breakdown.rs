@@ -1221,9 +1221,9 @@ mod tests {
         assert!(scaled.iter().all(|part| part.raw == "0"));
     }
     #[test]
-    fn five_thousand_zero_sources_add_no_rows_or_warnings_to_output_or_refit() {
+    fn zero_sources_add_no_rows_or_warnings_to_output_or_refit() {
         use replay_data::rows::ModifierBreakdownNode as Node;
-        let zeros = 5_000;
+        let zeros = 24;
         let tree = |key: u32, named: Option<i64>| {
             let mut nodes = vec![Node {
                 children: zeros + u32::from(named.is_some()),

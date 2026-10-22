@@ -38,7 +38,8 @@ fn frame(hour: i32) -> DecodedFrame {
     );
     set::<tables::Countries>(
         &mut frame,
-        (1..=5_000)
+        [1, 5_000]
+            .into_iter()
             .map(|id| CountryRow {
                 id: id + 10_000,
                 canonical_slot: id,
@@ -49,7 +50,8 @@ fn frame(hour: i32) -> DecodedFrame {
     );
     set::<tables::CountryLinks>(
         &mut frame,
-        (1..=5_000)
+        [1, 5_000]
+            .into_iter()
             .map(|id| CountryLinkRow {
                 id: id + 10_000,
                 canonical_slot: id,
@@ -144,7 +146,7 @@ fn content_source(
 }
 
 #[test]
-fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countries() {
+fn state_names_use_recorded_custom_owner_and_content_precedence() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = catalogue();
@@ -449,7 +451,7 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
 }
 
 #[test]
-fn place_names_use_the_recorded_owner_and_stored_name_precedence_at_5000_countries() {
+fn place_names_use_the_recorded_owner_and_stored_name_precedence() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (cat, _folder) = catalogue();
