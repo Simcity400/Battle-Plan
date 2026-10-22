@@ -283,6 +283,8 @@ impl Family {
 #[test]
 #[ignore = "requires installed GUI effects, compiler and GPU; set BATTLE_PLAN_GAME_DIR"]
 fn compare_installed_native_models() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (layers, mut library) = installed();
     if let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::create_dir_all(report).unwrap();
