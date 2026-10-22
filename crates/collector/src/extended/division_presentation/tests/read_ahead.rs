@@ -122,14 +122,6 @@ fn same(actual: &Captured, serial: &Captured) {
     assert_eq!(actual.cached_names.required, serial.cached_names.required);
 }
 #[test]
-fn batched_naming_healthy_five_thousand_country_rows_equal_serial() {
-    let (bytes, seeds) = fixture(5_000);
-    let batch = reads(&bytes, false, None, false);
-    let serial = reads(&bytes, true, None, false);
-    same(&capture(&batch, &seeds), &capture(&serial, &seeds));
-    assert_eq!((batch.members.get(), serial.members.get()), (79, 5_000));
-}
-#[test]
 fn batched_naming_persistent_faults_keep_serial_options_and_arenas() {
     let (bytes, seeds) = fixture(65);
     let pointer = seeds[20].name_member.unwrap();

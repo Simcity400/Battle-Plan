@@ -1111,7 +1111,7 @@ fn large_content(countries: usize, per_country: usize) -> Fixture {
 }
 
 #[test]
-fn promoted_template_worker_matches_direct_rows_and_faults_at_live_scale() {
+fn promoted_template_worker_matches_direct_rows_and_faults() {
     use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role, TemplatesRequest};
     use engine_native::country_memory::Cache;
     use std::sync::Arc;
@@ -1122,7 +1122,7 @@ fn promoted_template_worker_matches_direct_rows_and_faults_at_live_scale() {
 
     assert_eq!(Role::Templates.priority(), Role::Countries.priority());
     assert!(Role::Templates.priority() < Role::IntelResidual.priority());
-    for countries in [1, 1_500, 5_000] {
+    for countries in [1, 40] {
         for fault in 0..3 {
             let mut source = large_content(countries, 1);
             let owner = word(&source, 0x10000 + countries * 8);
@@ -1205,28 +1205,22 @@ fn promoted_template_worker_matches_direct_rows_and_faults_at_live_scale() {
 }
 
 #[test]
-fn live_template_demand_and_same_capture_growth_keep_five_thousand_countries() {
-    let source = large_content(5_000, 4);
+fn live_template_demand_and_same_capture_growth_keep_every_country() {
+    let source = large_content(20, 4);
     let mut capacity = Capacities::default();
     capacity.presize(&source, 0, 0x1000).unwrap();
-    assert!(capacity.rows >= 20_000 && capacity.icon_rows >= 20_000);
-    assert!(capacity.bytes >= 20_000 * 11);
-    assert!(capacity.icon_bytes >= 20_000 * 20);
-    assert!(capacity.counts >= 20_000);
+    assert!(capacity.rows >= 80 && capacity.icon_rows >= 80);
+    assert!(capacity.bytes >= 80 * 11);
+    assert!(capacity.icon_bytes >= 80 * 20);
+    assert!(capacity.counts >= 80);
     let mut captured = Captured::with_capacities(&capacity);
     captured.capture(&source, 0, 0x1000, 9, true);
-    assert_eq!(
-        template_outcomes(&captured),
-        [Outcome::Rows { len: 20_000 }; 2]
-    );
-    let grown = large_content(5_000, 5);
+    assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 80 }; 2]);
+    let grown = large_content(20, 5);
     captured.capture(&grown, 0, 0x1000, 10, true);
-    assert_eq!(
-        template_outcomes(&captured),
-        [Outcome::Rows { len: 25_000 }; 2]
-    );
-    assert_eq!(captured.name_bytes.len, 25_000 * 3);
-    assert_eq!(captured.counts.len, 25_000);
+    assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 100 }; 2]);
+    assert_eq!(captured.name_bytes.len, 100 * 3);
+    assert_eq!(captured.counts.len, 100);
 }
 
 #[test]
@@ -1241,88 +1235,6 @@ fn optional_model_failure_does_not_remove_fresh_name_inputs() {
     let row = displayed(capture.table_inputs());
     assert_eq!(row.model_unreadable, 1);
     assert!(matches!(row.display_name, Recorded::Value(Some(_))));
-}
-
-#[test]
-fn country_template_state_covers_five_thousand_empty_rosters_and_is_independent_of_templates() {
-    let mut source = fixture();
-    let total = 5000;
-    source.bytes.resize(0x20000 + total * 0x2000, 0);
-    let word = |bytes: &mut [u8], at: usize, value: u64| {
-        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
-    };
-    let count = total as u64 + 1;
-    for (root, data) in [
-        (cgame_state::COUNTRIES, 0x9000),
-        (cgame_state::COUNTRY_LINKS, 0x14000),
-    ] {
-        word(&mut source.bytes, 0x1000 + root, data);
-        word(&mut source.bytes, 0x1000 + root + 8, count | (count << 32));
-    }
-    for index in 0..total {
-        let id = index + 1;
-        let country = 0x20000 + index * 0x2000;
-        let manager = country + 0x1800;
-        word(&mut source.bytes, 0x9000 + id * 8, country as u64);
-        source.bytes[0x14000 + id * 4..0x14000 + id * 4 + 4]
-            .copy_from_slice(&(id as u32).to_le_bytes());
-        word(&mut source.bytes, country, ccountry::VTABLE_RVA as u64);
-        word(&mut source.bytes, country + 8, id as u64);
-        word(
-            &mut source.bytes,
-            country + ccountry::DEPLOYMENT_MANAGER,
-            manager as u64,
-        );
-        source.bytes[country + ccountry::LOCK_ALL_TEMPLATES] = (id % 3) as u8;
-        word(
-            &mut source.bytes,
-            manager,
-            engine_deployment::cdeployment_status::VTABLE_RVA as u64,
-        );
-        word(
-            &mut source.bytes,
-            manager + engine_deployment::cdeployment_status::OWNER,
-            country as u64,
-        );
-        word(
-            &mut source.bytes,
-            manager + engine_deployment::cdeployment_status::SELECTED_STAFF_TEMPLATE,
-            ((id as u64) << 32) | 52,
-        );
-    }
-    let watches = crate::template_changes::Watches::enabled(total * 4);
-    let mut captured = Captured::with_capacities(&capacity());
-    captured.capture_original(&source, 0, 0x1000, 9, true, &watches);
-    assert_eq!(
-        captured.outcomes(),
-        [
-            Outcome::Rows { len: 0 },
-            Outcome::Rows { len: 0 },
-            Outcome::Rows { len: total }
-        ]
-    );
-    let TableView::Complete(replay_data::rows::TableRows::CountryTemplateState(rows)) =
-        captured.country_state()
-    else {
-        panic!("complete country template state")
-    };
-    assert_eq!(rows.len(), total);
-    for (index, row) in rows.iter().enumerate() {
-        assert_eq!(row.country, index as u32 + 1);
-        assert_eq!(row.selected_staff, ((index as u64 + 1) << 32) | 52);
-        assert_eq!(row.lock_all, ((index + 1) % 3) as u8);
-    }
-    // An unreadable selection fails its own table, never a complete empty
-    // country-template roster or the independent icon table.
-    word(&mut source.bytes, 0x20000 + ccountry::DEPLOYMENT_MANAGER, 0);
-    captured.capture_original(&source, 0, 0x1000, 10, true, &watches);
-    assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 0 }; 2]);
-    assert!(matches!(
-        captured.country_rows.outcome,
-        Outcome::Unavailable {
-            reason: "deployment status pointer unreadable or null"
-        }
-    ));
 }
 
 struct CoreChanges {

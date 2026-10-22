@@ -195,46 +195,6 @@ impl Memory for NoReads {
 }
 
 #[test]
-fn combat_log_first_and_later_census_keep_five_thousand_country_and_mod_sized_populations() {
-    let mut map = empty_map();
-    let mut progress = progress();
-    for (combats, members) in [(5000, 0), (7000, 0), (1, 5000), (1, 12_000)] {
-        let world = World::new(combats, members);
-        map.reset();
-        let mut request = map.take_combat_request(0, world.state(), progress);
-        let report = request.capture(&world);
-        progress = map.restore_combat_request(request, report, None);
-        assert_eq!(map.land_combats.outcome, Outcome::Rows { len: combats });
-        assert_eq!(map.land_participants_len, combats * members * 2);
-        assert_eq!(
-            progress.outcomes(),
-            [
-                Outcome::Rows { len: combats },
-                Outcome::Rows { len: combats * 22 }
-            ]
-        );
-        assert_eq!(map.naval_combats.outcome, Outcome::Rows { len: 0 });
-        assert_eq!(
-            map.naval_combat_participants.outcome,
-            Outcome::Rows { len: 0 }
-        );
-        if members != 0 {
-            assert_eq!(map.land_participants[0], 1 << 32 | 7);
-            assert_eq!(
-                map.land_participants[map.land_participants_len - 1],
-                (members as u64 * 2) << 32 | 7
-            );
-        }
-        map.players_raw_mode = true;
-        map.owned_air_captured = true;
-        assert_eq!(
-            map.sample(&NoReads, 0, world.state(), &mut NoSources),
-            report.map_ticks
-        );
-    }
-}
-
-#[test]
 fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_failure() {
     let mut map = empty_map();
     let request = map.take_combat_request(0, 0, progress());

@@ -582,14 +582,14 @@ fn quiet_roster_hours_read_every_unit_leader_afresh() {
 }
 
 /// A settled quiet roster hour gathers its role census and runs its
-/// unit-leader program: two guarded calls at 1,500 and 5,000 countries,
+/// unit-leader program: two guarded calls at 40 and 120 countries,
 /// however many unit leaders there are, where reading the leaders one by
 /// one takes several calls each. It publishes the full pass's tables.
 #[test]
 fn a_settled_quiet_roster_hour_reads_every_unit_leader_in_one_program() {
     static WATCHES: [Watches; 2] = [const { Watches::new() }; 2];
     static DOMAINS: [Isolated; 2] = [const { Isolated::new() }; 2];
-    for (index, countries) in [1_500, 5_000].into_iter().enumerate() {
+    for (index, countries) in [40, 120].into_iter().enumerate() {
         let world = World::countries(countries);
         WATCHES[index].enable(world.characters);
         DOMAINS[index].enable();

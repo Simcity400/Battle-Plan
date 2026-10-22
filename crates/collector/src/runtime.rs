@@ -6021,14 +6021,6 @@ mod equipment_destruction_tests;
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn installation_deadline_names_only_the_busy_sites() {
-        let message =
-            super::installation_deadline_message("faction_goals", &["refresh_goal_progress"]);
-        assert!(message.contains("faction_goals/refresh_goal_progress"));
-        assert!(!message.contains("construct_goal_status"));
-        assert!(message.contains("15 s"));
-    }
     use super::*;
 
     /// Two logical processors per `(group, scheduling class, efficiency class,

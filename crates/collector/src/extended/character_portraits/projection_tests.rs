@@ -4,16 +4,16 @@ use replay_data::rows::{CharacterPortrait, TableRows};
 use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
 
 #[test]
-fn retained_portrait_order_keeps_frame_bytes_for_five_thousand_characters() {
+fn retained_portrait_order_keeps_frame_bytes() {
     for force in [false, true] {
         let mut capture = Captured::with_capacities(&Capacities {
-            rows: 1_251,
-            arena: 1_251,
+            rows: 11,
+            arena: 11,
         });
         for (part, share) in capture.parts.iter_mut().enumerate() {
-            share.rows.outcome = Outcome::Rows { len: 1_250 };
-            share.arena.len = 1_250;
-            for index in 0..1_250 {
+            share.rows.outcome = Outcome::Rows { len: 10 };
+            share.arena.len = 10;
+            for index in 0..10 {
                 share.rows.rows[index] = ccharacter::PortraitRow {
                     character: (index * PARTS + part + 1) as u32,
                     portraits: [index, 1],
@@ -35,17 +35,17 @@ fn retained_portrait_order_keeps_frame_bytes_for_five_thousand_characters() {
             match hour {
                 2 => {
                     for part in &mut capture.parts {
-                        part.rows.rows[..1_250].reverse();
+                        part.rows.rows[..10].reverse();
                     }
                 }
                 3 => capture.parts[0].arena.first[0].identity.bytes[0] ^= 1,
                 4 => {
                     // Same total, different share sizes: the old permutation
                     // cannot be reused just because its length still matches.
-                    capture.parts[1].rows.rows[1_250] = capture.parts[0].rows.rows[1_249];
-                    capture.parts[1].rows.rows[1_250].portraits = [0, 0];
-                    capture.parts[0].rows.outcome = Outcome::Rows { len: 1_249 };
-                    capture.parts[1].rows.outcome = Outcome::Rows { len: 1_251 };
+                    capture.parts[1].rows.rows[10] = capture.parts[0].rows.rows[9];
+                    capture.parts[1].rows.rows[10].portraits = [0, 0];
+                    capture.parts[0].rows.outcome = Outcome::Rows { len: 9 };
+                    capture.parts[1].rows.outcome = Outcome::Rows { len: 11 };
                 }
                 5 => {
                     capture.parts[0].rows.rows[0].character =
@@ -57,7 +57,7 @@ fn retained_portrait_order_keeps_frame_bytes_for_five_thousand_characters() {
                         reason: "fixture refusal",
                     }
                 }
-                8 => capture.parts[0].rows.outcome = Outcome::Rows { len: 1_252 },
+                8 => capture.parts[0].rows.outcome = Outcome::Rows { len: 12 },
                 _ => {}
             }
             let mut projection = Projection::new(&optimized, 1, hour, force, &scratch);

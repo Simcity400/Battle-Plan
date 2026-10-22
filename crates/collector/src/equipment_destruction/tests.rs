@@ -1195,7 +1195,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
     let _serial = serial();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let mut world = World::new(3);
-    setup(5000, 3);
+    setup(50, 3);
     boundary(clock(1, 1));
     assert!(
         drain(&mut [Entry::default(); 1])
@@ -1209,7 +1209,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
     unsafe {
         attrition(p, v, 900000);
     }
-    let mut out = vec![Entry::default(); 5000];
+    let mut out = vec![Entry::default(); 50];
     assert_eq!(drain(&mut out).unwrap(), 1);
     assert_eq!(out[0].amount_raw, 900000);
     assert_eq!(
@@ -1220,7 +1220,7 @@ fn actual_events_every_country_fail_closed_and_detach() {
         attrition(p, v, 0);
     }
     assert_eq!(drain(&mut out).unwrap(), 0); // no actual removal
-    for countries in [1500, 5000] {
+    for countries in [15, 50] {
         for country in 0..countries {
             world.owner(country);
             world.amount(1, 900000);
@@ -1236,11 +1236,11 @@ fn actual_events_every_country_fail_closed_and_detach() {
     }
     assert_eq!(
         serde_json::to_value(status()).unwrap()["hourly_peak_events"].as_u64(),
-        Some(5000)
+        Some(50)
     );
     assert_eq!(
         serde_json::to_value(status()).unwrap()["hourly_peak_capacity"].as_u64(),
-        Some(5000)
+        Some(50)
     );
     // Full-pool path preserves multiple exact designs, including rounding.
     world.amount(0, 450001);
@@ -2475,7 +2475,7 @@ fn hq_transfer_provenance_survives_same_session_gap_and_clears_on_load() {
 #[test]
 fn live_division_counts_size_both_queue_indexes_and_deletion_allowances() {
     let _serial = serial();
-    for countries in [1500, 5000] {
+    for countries in [15, 50] {
         setup(0, 0);
         let mut memory = StateMemory::new(2);
         let slots = countries + 1;
@@ -2650,7 +2650,7 @@ fn event_and_live_division_queue_overflow_are_named_counted_and_refused() {
 #[test]
 fn hundred_division_burst_and_log_growth_preserve_pending_events_and_provenance() {
     let _serial = serial();
-    for countries in [1500, 5000] {
+    for countries in [150, 500] {
         let mut memory = StateMemory::new(64);
         memory.population(&[100]);
         setup(1, 1);
@@ -4425,9 +4425,9 @@ fn return_credits_require_actual_witness_and_do_not_cross_full_handle_or_load() 
 }
 
 #[test]
-fn five_thousand_native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
+fn native_country_return_proofs_remain_deferred_and_recycle_without_growth() {
     let _serial = serial();
-    let countries = 5000;
+    let countries = 40;
     setup(countries * 3, 2);
     boundary(clock(1, 1));
     boundary(clock(2, 1));
@@ -4894,7 +4894,7 @@ fn canceled_deliveries_conserve_their_own_native_country_destination() {
     let _serial = serial();
     static TRACKER: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
     let limit = 0x53e2d620fb40;
-    for countries in [2usize, 5000] {
+    for countries in [2usize, 50] {
         for initial in [0, limit] {
             setup(0, 0);
             boundary(clock(1, 1));

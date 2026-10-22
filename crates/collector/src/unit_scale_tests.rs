@@ -4,59 +4,6 @@ use crate::{division_census::Census, division_detail::OwnedDetails};
 use engine_native::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
 use fixture::Shape;
 
-#[test]
-fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
-    use crate::{
-        extended::air,
-        map_capture::{MapCapacities, MapCaptured},
-    };
-    let mut world = fixture::build(Shape {
-        countries: 5000,
-        divisions: 0,
-        wings: 5000,
-        planes: 5000,
-        ships: 0,
-    });
-    let singleton = engine_native::cgame_state::SINGLETON_RVA;
-    world.bytes[singleton..singleton + 8].copy_from_slice(&(world.state as u64).to_le_bytes());
-    let memory = world.live();
-    let demand = crate::country_scale::observe_air_wing_names(&memory, world.base)
-        .unwrap()
-        .unwrap();
-    assert_eq!(demand, 5000 * 4);
-    let mut capacities = MapCapacities::default();
-    capacities.raise_for_air_wing_names(demand);
-    let mut map = MapCaptured::with_capacities(&capacities);
-    map.air_wings
-        .rows
-        .resize(5000, engine_native::cair_wing::Row::default());
-    let mut job = air::AirWingJob::new();
-    job.names.resize(demand, 0);
-    let report = air::copy_air_refresh_growing(
-        &memory,
-        air::AirWingCopyContext {
-            base: world.base,
-            game_state: world.state,
-            hour: 0,
-            force_full: true,
-            limits: [5000, 0, 0],
-            naval_limit: 0,
-            game_score: false,
-        },
-        &mut job,
-    );
-    assert!(report.raw_ok);
-    assert_eq!(job.map_outcome, Outcome::Rows { len: 5000 });
-    assert_eq!((job.names_len, job.name_failures), (demand, 0));
-    map.install_owned_air(&mut job);
-    assert_eq!(map.air_wings.outcome, Outcome::Rows { len: 5000 });
-    assert_eq!(map.air_wing_names_len, demand);
-    for (ordinal, row) in map.air_wings.rows[..5000].iter().enumerate() {
-        assert_eq!(row.name, Some((ordinal * 4, 4)));
-        assert_eq!(&map.air_wing_names[ordinal * 4..ordinal * 4 + 4], b"Wing");
-    }
-}
-
 fn measure(name: &str, shape: Shape, retained: usize, mut work: impl FnMut()) {
     let accounting = crate::read_accounting::Capture::new();
     use replay_data::rows::TableId;

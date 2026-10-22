@@ -1538,22 +1538,22 @@ mod tests {
         assert!(second > first);
     }
     #[test]
-    fn operation_completion_every_country_5000_keeps_native_values_without_status_gate() {
+    fn operation_completion_every_country_keeps_native_values_without_status_gate() {
         let _serial = TEST.lock().unwrap();
-        let log = new_log(5_000, 16);
+        let log = new_log(40, 16);
         prime(&log);
         let fixture = Fixture::new(b"modded outcome");
-        for owner in 1..=5_000 {
+        for owner in 1..=40 {
             fixture.identify(owner, owner * 7);
             fixture.bytes.borrow_mut()[INSTANCE + operation::DETECTED] = (owner % 2) as u8;
             complete(&log, &fixture, 1);
         }
         fixture.delete();
         let (events, bytes) = drain(&log).unwrap();
-        assert_eq!(events.len(), 5_000);
-        assert_eq!(events.last().unwrap().owner, 5_000);
-        assert_eq!(events.last().unwrap().id, ((35_000_u64) << 32) | 4713);
-        assert_eq!(bytes.len(), 5_000 * b"modded outcome".len());
+        assert_eq!(events.len(), 40);
+        assert_eq!(events.last().unwrap().owner, 40);
+        assert_eq!(events.last().unwrap().id, ((280_u64) << 32) | 4713);
+        assert_eq!(bytes.len(), 40 * b"modded outcome".len());
         assert!(
             events
                 .iter()

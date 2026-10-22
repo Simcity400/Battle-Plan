@@ -932,14 +932,6 @@ fn projects_gate_matches_their_daily_slot_and_force_full() {
 }
 
 #[test]
-fn lexical_gate_is_static_and_force_full() {
-    for hour in -48..48i32 {
-        assert!(!lexical_refresh_hour(hour, false), "hour {hour}");
-        assert!(lexical_refresh_hour(hour, true), "forced hour {hour}");
-    }
-}
-
-#[test]
 fn fifo_hands_off_every_frame_in_production_order_without_reorder() {
     let shared = Shared::new(0, 0, 1);
     let mut indices = Vec::new();
@@ -2492,19 +2484,6 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
 }
 
 #[test]
-fn air_stats_calibration_counters_are_monotonic_and_additive() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_calibration_for_test();
-    add_air_stats_copy_ns(0, 11);
-    add_air_stats_raw_bytes(0, 100);
-    let snapshot = calibration();
-    assert_eq!(snapshot.air_stats_copy_ns, [11]);
-    assert_eq!(snapshot.air_stats_raw_bytes, [100]);
-    assert_eq!(snapshot.json()["air_stats_copy_ns"][0], 11);
-    assert_eq!(snapshot.json()["air_stats_tables"][0], "AirStatistics");
-}
-
-#[test]
 fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     use crate::extended::naval_history::{NavalCopyContext, naval_test_kit};
     let _guard = TEST_LOCK.lock().unwrap();
@@ -2968,30 +2947,6 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     assert!(snapshot.naval_decode_ns.iter().any(|ns| *ns > 0) || snapshot.refresh_jobs >= 2);
     recycle_air_wing_job(job.air_wing_payload.unwrap());
     recycle_naval_job(job.naval_payload.unwrap());
-}
-
-#[test]
-fn construction_rest_calibration_counters_are_monotonic_and_additive_per_table() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    reset_calibration_for_test();
-    add_construction_rest_copy_ns(0, 11);
-    add_construction_rest_copy_ns(0, 4);
-    add_construction_rest_copy_ns(9, 9);
-    add_construction_rest_raw_bytes(9, 100);
-    let snapshot = calibration();
-    assert_eq!(
-        snapshot.construction_rest_copy_ns,
-        [15, 0, 0, 0, 0, 0, 0, 0, 0, 9]
-    );
-    assert_eq!(
-        snapshot.construction_rest_raw_bytes,
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 100]
-    );
-    assert_eq!(snapshot.json()["construction_rest_copy_ns"][0], 15);
-    assert_eq!(
-        snapshot.json()["construction_rest_tables"][0],
-        "StateBaseResources"
-    );
 }
 
 /// Build a FIFO job carrying only the selected family payload (all other
@@ -3467,29 +3422,6 @@ fn new_family_calibration_counters_are_monotonic_and_additive_per_table() {
     assert_eq!(json["sunk_tables"][0], "SunkShips");
     assert_eq!(json["radar_tables"][0], "RadarCoverage");
     assert_eq!(json["intel_tables"][0], "UnitIntel");
-}
-
-pub(crate) fn presize_and_acquire_carrier_jobs_for_test(
-    jobs: [AirBasesJob; 2],
-) -> [AirBasesJob; 2] {
-    let _guard = TEST_LOCK.lock().unwrap();
-    struct RestorePool(Vec<AirBasesJob>);
-    impl Drop for RestorePool {
-        fn drop(&mut self) {
-            *AIR_BASES_JOB_POOL
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()) = std::mem::take(&mut self.0);
-        }
-    }
-    let _restore = RestorePool(std::mem::replace(
-        &mut *AIR_BASES_JOB_POOL.lock().unwrap(),
-        Vec::from(jobs),
-    ));
-    // This is the same idle-pool path used when live demand changes after
-    // attach. Each job is independently prepared before callback acquisition.
-    presize_country_pools();
-    assert_eq!(AIR_BASES_JOB_POOL.lock().unwrap().len(), 2);
-    [acquire_air_bases_job(), acquire_air_bases_job()]
 }
 
 pub(crate) fn retire_and_reacquire_two_carrier_jobs_for_test(

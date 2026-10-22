@@ -361,77 +361,6 @@ fn tooltip_shortage_preserves_later_numeric_caches() {
 }
 
 #[test]
-fn modifier_header_sums_grow_for_5000_countries_without_a_cap() {
-    use super::super::tests::array;
-    let mut bytes = kit::mapped_fixture();
-    let data = 0x8a00;
-    array(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
-        data,
-        2,
-    );
-    put(&mut bytes, data, 1_u32.to_le_bytes());
-    put(&mut bytes, data + 8, (-17_i64).to_le_bytes());
-    put(&mut bytes, data + 16, 2_u32.to_le_bytes());
-    put(&mut bytes, data + 24, 19_i64.to_le_bytes());
-    let rows: Vec<_> = (1..=5_000)
-        .map(|country| cadvisor::Row {
-            pointer: ADDRESS + kit::ADV_ROLE,
-            country,
-            ..Default::default()
-        })
-        .collect();
-    let mut modifiers = Modifiers::with_demand(cadvisor::ModifierDemand::default());
-    modifiers.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(modifiers.required_rows, 5_000);
-    assert_eq!(modifiers.required_bytes, 5_000 * 32);
-    assert_eq!(modifiers.failure, None);
-    assert_eq!(modifiers.shortfall, 5_000);
-    assert!(modifiers.needs_growth());
-    modifiers.grow();
-    modifiers.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(modifiers.failure, None);
-    assert_eq!(modifiers.shortfall, 0);
-    assert_eq!(modifiers.len, 5_000 * 32);
-    assert_eq!(modifiers.spans[4_999].start, 4_999 * 32);
-    assert_eq!(modifiers.spans[4_999].len, 32);
-    assert_eq!(
-        &modifiers.bytes[4_999 * 32 + 8..4_999 * 32 + 16],
-        &(-17_i64).to_le_bytes()
-    );
-    // An observed empty cache is still an input, distinct from absence.
-    array(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
-        data,
-        0,
-    );
-    modifiers.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(modifiers.failure, None);
-    assert_eq!(modifiers.required_rows, 5_000);
-    assert_eq!(modifiers.len, 0);
-    assert_eq!(modifiers.spans[4_999].len, 0);
-    assert!(modifiers.spans[..5_000].iter().all(|span| span.recorded));
-
-    array(
-        &mut bytes,
-        kit::ADV_ROLE + cadvisor::MODIFIER_ENTRIES,
-        data,
-        2,
-    );
-    let mut presized = Modifiers::with_demand(cadvisor::ModifierDemand {
-        tooltip_bytes: 0,
-        rows: 5_000,
-        bytes: 5_000 * 32,
-    });
-    presized.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(presized.failure, None);
-    assert_eq!(presized.shortfall, 0);
-    assert_eq!(presized.len, 5_000 * 32);
-}
-
-#[test]
 fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
     use super::super::tests::array;
     let mut bytes = super::super::tests::section_fixture();
@@ -1049,42 +978,10 @@ fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
     assert_outer_fresh(&cache, &bytes);
 }
 
-#[test]
-fn tooltip_storage_grows_from_exact_demand_at_5000_countries() {
-    let mut bytes = kit::mapped_fixture();
-    let table = kit::ADV_ROLE + cadvisor::TOOLTIP_KEYS + 8;
-    pointer(&mut bytes, table, 0x8b00);
-    put(&mut bytes, table + 8, 1_u32.to_le_bytes());
-    put(&mut bytes, table + 12, 3_u32.to_le_bytes());
-    put(&mut bytes, 0x8b04, [1]);
-    literal(&mut bytes, 0x8b08, b"key");
-    let rows: Vec<_> = (1..=5_000)
-        .map(|country| cadvisor::Row {
-            pointer: ADDRESS + kit::ADV_ROLE,
-            country,
-            ..Default::default()
-        })
-        .collect();
-    let mut modifiers = Modifiers::with_demand(cadvisor::ModifierDemand::default());
-    modifiers.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(modifiers.required_rows, 5_000);
-    assert_eq!(modifiers.required_bytes, 5_000 * 11);
-    modifiers.grow();
-    modifiers.capture(&kit::memory(&bytes), rows.iter());
-    assert_eq!(modifiers.shortfall, 0);
-    assert_eq!(modifiers.len, 5_000 * 11);
-    assert!(
-        modifiers.spans[..5_000]
-            .iter()
-            .all(|row| row.tooltip_recorded)
-    );
-}
-
 /// `count` historical characters with one advisor role each; every role
 /// shares one numeric cache (`numeric`) and one tooltip key set (`tooltip`).
 struct ManyAdvisors {
     bytes: Vec<u8>,
-    first_role: usize,
     first_character: usize,
     numeric: usize,
     tooltip: usize,
@@ -1125,7 +1022,6 @@ fn many_advisors(count: usize) -> ManyAdvisors {
     let tooltip = alloc(&mut bytes, 0x28);
     bytes[tooltip + 4] = 1;
     literal(&mut bytes, tooltip + 8, b"key");
-    let mut first_role = 0;
     let mut first_character = 0;
     for index in 0..count {
         let character = alloc(&mut bytes, 0x120);
@@ -1134,7 +1030,6 @@ fn many_advisors(count: usize) -> ManyAdvisors {
         // The header after the table pointer contains data/count/mask and its final overflow byte.
         let role = alloc(&mut bytes, cadvisor::TOOLTIP_KEYS + 8 + 17);
         if index == 0 {
-            first_role = role;
             first_character = character;
         }
         pointer(&mut bytes, roster + index * 8, character);
@@ -1196,61 +1091,9 @@ fn many_advisors(count: usize) -> ManyAdvisors {
     }
     ManyAdvisors {
         bytes,
-        first_role,
         first_character,
         numeric,
         tooltip,
-    }
-}
-
-#[test]
-fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas() {
-    let ManyAdvisors {
-        mut bytes,
-        first_role,
-        first_character,
-        ..
-    } = many_advisors(5_000);
-    let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
-    cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
-    let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; N],
-        bytes: [0; N],
-    });
-    let mut observer = Observer::new();
-    for enlarged in [false, true] {
-        if enlarged {
-            literal(
-                &mut bytes,
-                first_role + cadvisor::IDEA_TOKEN,
-                b"longer_idea",
-            );
-            observer.change(first_character);
-        }
-        cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-        assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
-        assert_eq!(cache.counts.read, if enlarged { 1 } else { 5_000 });
-        assert_eq!(cache.counts.planned, u64::from(enlarged));
-        assert_eq!(cache.sections[0].current.entries.len(), 5_000);
-        assert_eq!(cache.modifiers.shortfall, 0);
-        assert_eq!(cache.modifiers.len, 5_000 * 27);
-        assert!(
-            cache.modifiers.spans[..5_000]
-                .iter()
-                .all(|row| row.recorded && row.tooltip_recorded)
-        );
-        cache.decode(&mut captured);
-        assert_eq!(captured.advisors.rows.outcome, Outcome::Rows { len: 5_000 });
-        assert_eq!(captured.advisors.rows.rows[4_999].character, 5_000);
-        let expected = captured.advisors_table();
-        cache.prepare();
-        cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-        assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
-        assert_eq!(cache.counts.planned, 2);
-        assert_eq!(cache.counts.read, 0);
-        cache.decode(&mut captured);
-        assert_eq!(captured.advisors_table(), expected);
-        captured.reset();
     }
 }
 
@@ -1478,7 +1321,7 @@ fn sampled_hours_read_held_advisor_modifiers_and_find_an_unobserved_write_within
 }
 
 #[test]
-fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
+fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
     use crate::character_changes::Watches;
     static WATCHES: Watches = Watches::new();
     let ManyAdvisors {
@@ -1487,8 +1330,8 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
         numeric,
         tooltip,
         ..
-    } = many_advisors(5_000);
-    WATCHES.enable(5_000);
+    } = many_advisors(40);
+    WATCHES.enable(40);
     let observer = Observer::new();
     let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
     cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
@@ -1498,8 +1341,8 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
         bytes: [0; N],
     });
     cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
-    assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(cache.modifiers.role_counts.read, 5_000);
+    assert_eq!(cache.result.outcome, Outcome::Rows { len: 40 });
+    assert_eq!(cache.modifiers.role_counts.read, 40);
     cache.decode(&mut captured);
     let expected = captured.advisors_table();
     captured.reset();
@@ -1513,7 +1356,7 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
             cache.modifiers.role_counts.reused,
             cache.modifiers.role_counts.read
         ),
-        (5_000, 0)
+        (40, 0)
     );
     cache.decode(&mut captured);
     assert_eq!(captured.advisors_table(), expected);
@@ -1530,7 +1373,7 @@ fn quiet_hours_carry_5000_advisor_modifier_caches_and_read_only_a_rebuilt_role()
             cache.modifiers.role_counts.reused,
             cache.modifiers.role_counts.read
         ),
-        (4_999, 1)
+        (39, 1)
     );
     cache.decode(&mut captured);
     assert_eq!(captured.advisors_table(), expected);

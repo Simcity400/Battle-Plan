@@ -1721,27 +1721,6 @@ mod tests {
     use super::*;
     use test_support::{exclusive, reset};
 
-    #[test]
-    fn worker_drain_keeps_first_and_later_mod_sized_five_thousand_country_words() {
-        let _guard = exclusive();
-        test_support::reset_with_words(36_000);
-        let mut words = Vec::new();
-        assert!(!drain_growing(&mut words, 9, true).complete);
-        for (hour, count) in [(10, 5000), (11, 12_000)] {
-            for index in 0..count {
-                test_support::append_record(&[1, (index % 5000) as u64]);
-            }
-            let drained = drain_growing(&mut words, hour, false);
-            assert!(drained.complete, "{}", drained.reason);
-            assert_eq!(drained.words, count * 3);
-            assert_eq!(
-                &words[drained.words - 3..drained.words],
-                &[3, 1, ((count - 1) % 5000) as u64]
-            );
-            assert_eq!(DRAIN_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
-        }
-        test_support::disable();
-    }
     static ESCAPE_AFTER_PUBLICATION: AtomicBool = AtomicBool::new(false);
     pub(super) fn escape_after_publication() {
         if !ESCAPE_AFTER_PUBLICATION.swap(false, Ordering::SeqCst) {

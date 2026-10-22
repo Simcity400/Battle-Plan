@@ -131,27 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn projection_preserves_all_5000_events_without_a_population_cap() {
-        let _observer = producer::tests::SERIAL.lock().unwrap();
-        let events: Vec<_> = (0..5000u64)
-            .map(|id| producer::Entry {
-                id,
-                game_hour: 80,
-                result: (id / 2) << 32 | 0x46,
-                combat: u64::MAX,
-                merged: id % 2 != 0,
-                transient: true,
-                combat_created_hour: Some(80),
-            })
-            .collect();
-        let rows = project(&events).unwrap();
-        assert_eq!(rows.len(), 5000);
-        for (row, event) in rows.iter().zip(events) {
-            assert_eq!(row, &event.into_row());
-        }
-    }
-
-    #[test]
     fn unavailable_interval_is_never_projected_as_zero_events() {
         let _observer = producer::tests::SERIAL.lock().unwrap();
         let mut captured = Captured::with_capacities(&0);

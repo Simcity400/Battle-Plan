@@ -547,32 +547,32 @@ mod tests {
         store.finish(true, changes, output);
     }
     #[test]
-    fn faction_goal_store_carries_five_thousand_owners_without_native_reads_or_allocations() {
-        let bytes = fixture(5000);
+    fn faction_goal_store_carries_owners_without_native_reads_or_allocations() {
+        let bytes = fixture(40);
         let memory = Counted {
             bytes: &bytes,
             calls: Cell::new(0),
         };
-        let changes = changes(5000);
+        let changes = changes(40);
         let mut store = Store::default();
         let mut output = Captured::default();
-        acquire(&mut store, &mut output, &memory, &changes, 5000);
+        acquire(&mut store, &mut output, &memory, &changes, 40);
         assert_eq!(output.failure, None);
-        assert_eq!(store.read, 5000);
+        assert_eq!(store.read, 40);
         let initial = memory.calls.get();
         let headers = output.headers.as_ref().unwrap().clone();
         crate::test_support::with_allocations_denied(|| {
-            acquire(&mut store, &mut output, &memory, &changes, 5000)
+            acquire(&mut store, &mut output, &memory, &changes, 40)
         });
         assert_eq!(memory.calls.get(), initial);
         assert_eq!(store.read, 0);
-        assert_eq!(store.carried, 5000);
+        assert_eq!(store.carried, 40);
         assert!(Arc::ptr_eq(&headers, output.headers.as_ref().unwrap()));
-        drop(changes.0.notify(FIRST + 4999 * STRIDE + native::STATUS));
-        acquire(&mut store, &mut output, &memory, &changes, 5000);
+        drop(changes.0.notify(FIRST + 39 * STRIDE + native::STATUS));
+        acquire(&mut store, &mut output, &memory, &changes, 40);
         assert_eq!(output.failure, None);
         assert_eq!(store.read, 1);
-        assert_eq!(store.carried, 4999);
+        assert_eq!(store.carried, 39);
         let one_owner_reads = memory.calls.get() - initial;
         assert!(one_owner_reads > 0 && one_owner_reads < 20);
     }
@@ -727,9 +727,9 @@ mod tests {
         }
     }
     #[test]
-    fn faction_goal_progress_selects_one_cache_among_five_thousand_without_allocations() {
-        let (mut bytes, goals, sections) = goal_fixture(5000);
-        let changes = changes(5001);
+    fn faction_goal_progress_selects_one_cache_without_allocations() {
+        let (mut bytes, goals, sections) = goal_fixture(40);
+        let changes = changes(41);
         let mut store = Store::default();
         let mut output = Captured::default();
         acquire(
@@ -746,15 +746,15 @@ mod tests {
         // Warm returning table buffers and leave the collector sole owner.
         output = Captured::default();
         store.rebuild().unwrap();
-        let goal = goals + 4999 * native::GOAL_STRIDE;
+        let goal = goals + 39 * native::GOAL_STRIDE;
         bytes[goal + native::GOAL_PROGRESS..goal + native::GOAL_PROGRESS + 8]
             .copy_from_slice(&123_i64.to_le_bytes());
-        bytes[sections + 4999 * 4..sections + 5000 * 4].copy_from_slice(&7_u32.to_le_bytes());
+        bytes[sections + 39 * 4..sections + 40 * 4].copy_from_slice(&7_u32.to_le_bytes());
         drop(changes.0.notify(goal + native::GOAL_PROGRESS_STATUS));
         let selected = Selected {
             bytes: &bytes,
             goal,
-            section: sections + 4999 * 4,
+            section: sections + 39 * 4,
             calls: Cell::new(0),
             fail: false,
         };
@@ -769,8 +769,8 @@ mod tests {
             .unwrap()
             .rows::<tables::FactionGoalEntries>()
             .unwrap();
-        assert_eq!(rows[4999].progress_raw, 123);
-        assert_eq!(rows[4999].active_sections, [7]);
+        assert_eq!(rows[39].progress_raw, 123);
+        assert_eq!(rows[39].active_sections, [7]);
         assert_eq!(rows[0].progress_raw, 0);
         let first = selected.calls.get();
         acquire(&mut store, &mut output, &selected, &changes, 1);

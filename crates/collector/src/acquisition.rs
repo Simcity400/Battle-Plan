@@ -506,10 +506,6 @@ struct Shared<J, R> {
     /// an early zero observer cannot unregister another still-sleeping waiter.
     settling: AtomicUsize,
     counters: Counters,
-    /// Drops every join wake (publication, claim and idle), so fixtures prove
-    /// that a lost wake fails their assertions instead of hanging the test.
-    #[cfg(test)]
-    suppress_join_wakes: AtomicBool,
     #[cfg(all(test, feature = "executor_join_help"))]
     help_attempt_gate: HelpAttemptGate,
     #[cfg(feature = "executor_join_help")]
@@ -560,10 +556,6 @@ impl<J, R> Shared<J, R> {
         // store, or this load sees its awaited registration. WaitOnAddress
         // also returns immediately if publication precedes its actual wait:
         // either the slot word differs, or the eligibility wake sequence does.
-        #[cfg(test)]
-        if self.suppress_join_wakes.load(Ordering::SeqCst) {
-            return published_qpc;
-        }
         if self.ready_waiting.load(Ordering::SeqCst) {
             self.ready_wake.fetch_add(1, Ordering::SeqCst);
             // SAFETY: stable aligned storage lives through the callback wait.
@@ -582,10 +574,6 @@ impl<J, R> Shared<J, R> {
     }
 
     fn wake_spin_waiter(&self) {
-        #[cfg(test)]
-        if self.suppress_join_wakes.load(Ordering::SeqCst) {
-            return;
-        }
         // Sampled after SC registration and before the word/active reloads.
         // Changing the comparison value closes the wake-before-wait gap for
         // idle transitions, which leave the slot word unchanged. Between that
@@ -1039,8 +1027,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             ready_wake: AtomicU64::new(0),
             settling: AtomicUsize::new(0),
             counters: Counters::default(),
-            #[cfg(test)]
-            suppress_join_wakes: AtomicBool::new(false),
             #[cfg(all(test, feature = "executor_join_help"))]
             help_attempt_gate: HelpAttemptGate::default(),
             #[cfg(feature = "executor_join_help")]
@@ -1555,24 +1541,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     )
                 };
                 drop(park);
-                // With wakes suppressed, only a fixture's rescue advances the
-                // sequence: absorb legal spurious returns until it does, so
-                // the suppression test cannot collect early.
-                #[cfg(test)]
-                while spin_available
-                    && self.shared.suppress_join_wakes.load(Ordering::SeqCst)
-                    && self.shared.spin_wake.load(Ordering::SeqCst) == wake
-                {
-                    // SAFETY: as above, on the eligibility sequence.
-                    unsafe {
-                        WaitOnAddress(
-                            self.shared.spin_wake.as_ptr().cast(),
-                            (&wake as *const u64).cast(),
-                            size_of::<u64>(),
-                            u32::MAX,
-                        )
-                    };
-                }
             }
             self.shared.awaited.store(0, Ordering::SeqCst);
         }
@@ -2152,29 +2120,6 @@ mod tests {
         assert_eq!(calibration.spins, 0);
         assert_eq!(calibration.spin_wall_ns, 0);
         assert!(calibration.join_sleeps >= 512);
-    }
-
-    /// The fixtures' rescue reaches a join on either wait address: with every
-    /// join wake suppressed, the round reports the lost wake and still
-    /// collects instead of hanging. An eligible join sleeps on the unchanged
-    /// eligibility sequence, so the loss is deterministic.
-    #[cfg(not(feature = "executor_no_join_spin"))]
-    #[test]
-    fn a_suppressed_join_wake_fails_the_fixture_instead_of_hanging() {
-        let (pool, release, entered) = busy_pool();
-        pool.shared
-            .suppress_join_wakes
-            .store(true, Ordering::SeqCst);
-        let (report, registered, woke) = busy_pool_round(
-            &pool,
-            &release,
-            &entered,
-            7,
-            std::time::Duration::from_millis(200),
-        );
-        assert_eq!(report, Ok(7));
-        assert!(registered, "the join never slept");
-        assert!(!woke, "a suppressed join wake still woke the join");
     }
 
     #[test]

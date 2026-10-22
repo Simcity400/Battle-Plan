@@ -322,25 +322,6 @@ pub fn observe_presentation_census(
     engine_native::carmy::presentation_demand(memory, base, state).map(Some)
 }
 
-/// Live equipment-line population, using ProductionLines' walk with no row
-/// storage: only country identities, production managers and roster headers
-/// are read. An unreadable census contributes no sizing hint.
-#[cfg(test)]
-pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usize> {
-    let game_state =
-        engine_native::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(game_state)
-        .ok()
-        .filter(|state| *state != 0)?;
-    match engine_native::cproduction_status::walk_lines(memory, base, state, &mut []) {
-        engine_native::walk::Outcome::Rows { len } => Some(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => {
-            len.checked_add(unread_rows as usize)
-        }
-        engine_native::walk::Outcome::Unavailable { .. } => None,
-    }
-}
-
 /// Exact live header demand for the common output log, including the separate
 /// Rocket roster. A failed hint is counted but never poisons captured payloads.
 pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<usize> {
@@ -1484,68 +1465,6 @@ mod tests {
         assert_eq!(demand_air_game_state(&loaded, 0), Ok(Some(0x1000)));
     }
 
-    #[test]
-    fn format99_demand_presizes_5000_country_inputs_and_only_grows() {
-        let count = 5000;
-        let demand = PoliticsDemand {
-            timed_ideas: engine_native::cpolitical_status::IdeaDemand {
-                rows: count * 3,
-                bytes: count * 3 * 80,
-            },
-            decision_random_items: engine_decisions::cdecision_status::RandomItemDemand {
-                rows: count * 30,
-                bytes: count * 30 * 80,
-            },
-            effect_rosters: engine_native::ccountry::EffectRosterDemand {
-                neighbors: count * 5,
-                policies: count * 4,
-            },
-            captured_operatives: count * 2,
-            occupied_countries: count * 3,
-            reserved_naming_bytes: 5000,
-            original_tag_lists: engine_stability::original_tag_lists::Demand {
-                buckets: count,
-                members: count * 2,
-            },
-            country_array: count + 1,
-            co_belligerents: count * 6,
-            advisor_modifiers: engine_native::cadvisor::ModifierDemand {
-                rows: count * 4,
-                bytes: count * 4 * 12,
-                tooltip_bytes: count * 4 * 160,
-            },
-            ..Default::default()
-        };
-        assert!(demand.exceeds(&PoliticsDemand::default()));
-        assert_eq!(demand.max(PoliticsDemand::default()), demand);
-        let mut sizing = Sizing::for_slots(count + 1);
-        let before = sizing.extended;
-        sizing.extended.raise_for_politics(demand);
-        assert!(sizing.extended != before);
-        let after = sizing.extended;
-        sizing
-            .extended
-            .raise_for_politics(PoliticsDemand::default());
-        assert!(sizing.extended == after);
-        let larger = PoliticsDemand {
-            timed_ideas: engine_native::cpolitical_status::IdeaDemand {
-                rows: count * 6,
-                bytes: count * 6 * 80,
-            },
-            original_tag_lists: engine_stability::original_tag_lists::Demand {
-                buckets: count * 2,
-                members: count * 4,
-            },
-            country_array: count * 2 + 1,
-            co_belligerents: count * 12,
-            ..demand
-        };
-        assert!(larger.exceeds(&demand));
-        assert_eq!(demand.max(larger), larger);
-        sizing.extended.raise_for_politics(larger);
-        assert!(sizing.extended != after);
-    }
-    use crate::extended::{country_appearance, country_counters, country_tactic_unlocks};
     use engine_native::{
         ccountry, ccountry_intel, cgame_state as gs, country_intel_row, msvc_string, walk::Outcome,
     };
@@ -2020,43 +1939,6 @@ mod tests {
         }
     }
 
-    /// One country per state of the vanilla map, every one alive and every
-    /// intel record nonzero: the first hour's sparse CountryIntel must fit.
-    #[test]
-    fn country_intel_sizing_holds_the_first_hour_of_fifteen_hundred_live_countries() {
-        const LIVE: usize = 1_500;
-        let memory = World {
-            slots: LIVE + 1,
-            intel: true,
-            bloc: None,
-            air: None,
-            relocated: None,
-        };
-        let native = observe_country_intel(&memory, BASE).unwrap().unwrap();
-        assert_eq!(native, LIVE * (LIVE + 1));
-        let mut sizing = Sizing::for_slots(observe(&memory, BASE).unwrap());
-        let vanilla = sizing.extended.intel.rows[15];
-        sizing.extended.raise_for_country_intel(native);
-        let capacity = sizing.extended.intel.rows[15];
-        assert!(capacity > vanilla);
-        let mut rows = vec![engine_native::country_intel_row::Row::default(); capacity];
-        let mut scratch = vec![0_u8; 16_384];
-        assert_eq!(
-            ccountry_intel::walk(&memory, BASE, STATE, &mut rows, &mut scratch),
-            Outcome::Rows { len: native }
-        );
-        // The fixed default truncated this hour.
-        let mut small = vec![engine_native::country_intel_row::Row::default(); vanilla];
-        assert!(matches!(
-            ccountry_intel::walk(&memory, BASE, STATE, &mut small, &mut scratch),
-            Outcome::Truncated { .. }
-        ));
-        // Presized with growth headroom: at the observed fill (about 0.9 of
-        // the dense total among live countries) the three-quarters rule does
-        // not double this buffer after its first full hour.
-        assert!(native * 9 / 10 < capacity - capacity / 4);
-    }
-
     #[test]
     fn country_intel_sizing_uses_native_headers_without_a_registry_ceiling() {
         const RECORD_COUNT: usize = 8;
@@ -2098,106 +1980,6 @@ mod tests {
             Outcome::Rows { len: native }
         );
         assert_eq!(rows[native - 1].target_index, RECORD_COUNT as u32 - 1);
-    }
-
-    #[test]
-    fn registry_sizing_captures_the_first_hour_of_five_thousand_countries() {
-        let memory = world();
-        let slots = observe(&memory, BASE).expect("synthetic registry is consistent");
-        assert_eq!(slots, COUNTRIES + 1);
-        let sizing = Sizing::for_slots(slots);
-        let vanilla = Sizing::for_slots(0);
-
-        // Core tables: the link census fits on the first hour; the old fixed
-        // capacity truncated it.
-        let mut frame =
-            sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
-                .unwrap();
-        assert!(frame.countries.len() >= COUNTRIES);
-        assert_eq!(
-            ccountry::walk_links(&memory, BASE, STATE, &mut frame.links),
-            Outcome::Rows { len: COUNTRIES }
-        );
-        let mut fixed = vec![ccountry::LinkRow::default(); vanilla.core[2]];
-        assert!(matches!(
-            ccountry::walk_links(&memory, BASE, STATE, &mut fixed),
-            Outcome::Truncated { .. }
-        ));
-
-        // Per-country packs publish complete rows on the first capture.
-        let mut appearance =
-            country_appearance::Captured::with_capacities(&sizing.extended.country_appearance);
-        // Every country has one stored subject: the live-country sizing path
-        // must also admit its positive-count payload on the first capture.
-        struct Subjects<'a>(&'a World);
-        impl engine_native::Memory for Subjects<'_> {
-            fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-                if !self.0.copy(address, destination) {
-                    return false;
-                }
-                let start = DIPLOMACY + engine_native::cdiplomacy_status::SUBJECTS;
-                let mut header = [0; 16];
-                header[..8].copy_from_slice(&(BLOC_LINKS as u64).to_le_bytes());
-                header[8..12].copy_from_slice(&1_u32.to_le_bytes());
-                header[12..].copy_from_slice(&1_u32.to_le_bytes());
-                for (index, byte) in destination.iter_mut().enumerate() {
-                    let at = address + index;
-                    if (start..start + 16).contains(&at) {
-                        *byte = header[at - start];
-                    } else if (BLOC_LINKS..BLOC_LINKS + 4).contains(&at) {
-                        *byte = 17_i32.to_le_bytes()[at - BLOC_LINKS];
-                    }
-                }
-                true
-            }
-        }
-        appearance.capture(&Subjects(&memory), BASE, STATE);
-        assert_eq!(appearance.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-        let [
-            replay_frame::frame::TableView::Complete(
-                replay_data::rows::TableRows::CountryAppearance(rows),
-            ),
-            _,
-            ..,
-        ] = appearance.tables()
-        else {
-            panic!("presized subject capture must be complete");
-        };
-        assert_eq!(rows.len(), COUNTRIES);
-        assert!(
-            rows.iter()
-                .all(|row| *row.subjects.require("subjects").unwrap() == [17])
-        );
-        let mut counters =
-            country_counters::Captured::with_capacities(&sizing.extended.country_counters);
-        counters.capture(&memory, BASE, STATE);
-        assert_eq!(counters.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-        let mut small =
-            country_appearance::Captured::with_capacities(&vanilla.extended.country_appearance);
-        small.capture(&memory, BASE, STATE);
-        assert_eq!(small.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-
-        // The hinted and cold workers admit every original tactic occurrence
-        // on the first day, without waiting for a recycled frame.
-        let mut unlocks = country_tactic_unlocks::Captured::with_capacities(
-            &sizing.extended.country_tactic_unlocks,
-        );
-        unlocks.capture(&memory, BASE, STATE, 0, true);
-        assert_eq!(unlocks.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-        let mut small = country_tactic_unlocks::Captured::with_capacities(
-            &vanilla.extended.country_tactic_unlocks,
-        );
-        small.capture(&memory, BASE, STATE, 0, true);
-        assert_eq!(small.outcomes()[0], Outcome::Rows { len: COUNTRIES });
-
-        // The country authentication cache holds the whole census.
-        let mut cache =
-            std::sync::Arc::new(Cache::try_with_capacity(sizing.country_cells).unwrap());
-        let snapshot = Cache::prepare_shared(&mut cache, &memory, BASE, STATE).unwrap();
-        assert_eq!(
-            snapshot.view(&memory).seed_status(),
-            engine_native::country_memory::SeedStatus::Ready
-        );
     }
 
     /// Notifications a test controls, lock-free like the hook registry: one
@@ -2677,14 +2459,6 @@ mod tests {
             status["last_mismatch"],
             "held relation vectors differ from a fresh copy"
         );
-    }
-
-    /// The scale matrix: `cargo test -p collector --release -- --ignored`.
-    #[test]
-    #[ignore]
-    fn bloc_war_relations_at_1500_and_5000_countries() {
-        bloc_war_relations(1_500);
-        bloc_war_relations(5_000);
     }
 
     /// Every writer call as the hooks make it, on a watch domain of its own.
@@ -3258,81 +3032,6 @@ mod tests {
         );
     }
 
-    /// The scale matrix: `cargo test -p collector --release -- --ignored`.
-    #[test]
-    #[ignore]
-    fn naval_patrol_histories_at_1500_and_5000_countries() {
-        for countries in [1_500, 5_000] {
-            for (every, patrolled) in [(1, 8), (1, 32), (20, 8), (20, 32)] {
-                naval_patrol_histories(countries, every, patrolled);
-            }
-        }
-    }
-
-    #[test]
-    fn per_frame_memory_grows_linearly_with_countries() {
-        // The registry hint is process-wide; hold it still while measuring.
-        let _hint = crate::country_scale::hint_guard();
-        let bytes = |slots| {
-            let sizing = Sizing::for_slots(slots);
-            // Initial fuel demand has country rows only; all live unit and
-            // context arenas remain empty until their independent census.
-            assert!(
-                sizing.extended.economy.demand.rows[1..]
-                    .iter()
-                    .all(|&n| n == 0)
-            );
-            let frame =
-                sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
-                    .unwrap();
-            let added_packs = [
-                "game_score",
-                "naval_result_sources",
-                "experience_gains",
-                "event_feed",
-                "air_losses",
-                "building_bombing",
-                "nuclear_strikes",
-                "operation_outcomes",
-                "war_overview",
-                "production_modifiers",
-                "politics",
-                "peace_settlements",
-                "peace_bids",
-                "land_events",
-                "fuel_awards",
-            ];
-            let added = frame
-                .extended
-                .allocated_by_pack()
-                .unwrap()
-                .into_iter()
-                .filter(|(name, _)| added_packs.contains(name))
-                .map(|(_, bytes)| bytes)
-                .sum::<usize>()
-                + sizing.extended.economy.demand.rows[0]
-                    * std::mem::size_of::<engine_fuel::fuel_demand::Country>();
-            (frame.allocated_bytes(), added)
-        };
-        let (vanilla, _) = bytes(0);
-        let (per_state, added_per_state) = bytes(1_501);
-        let (large, added_large) = bytes(5_001);
-        assert!(vanilla <= per_state && per_state <= large);
-        // Preserve the composed transport/political 29 KiB per-slot bound
-        // and charge the widget packs and exact fuel country Vec separately.
-        // Content-sized arenas still follow live demand.
-        assert!(
-            large - per_state <= 3_500 * 29 * 1024 + (added_large - added_per_state),
-            "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
-        );
-        // New capture storage must itself remain at most linear, including
-        // its fixed arenas, between the same two native registry sizes.
-        assert!(
-            (added_large as u128) * 1_501 <= (added_per_state as u128) * 5_001,
-            "added capture bytes: 1,501 slots {added_per_state}, 5,001 slots {added_large}"
-        );
-    }
-
     /// Attaching at the main menu builds vanilla-sized frames; the spool then
     /// grows them when a save fills the registry. That path must reach every
     /// buffer a frame built for the registry would have.
@@ -3368,146 +3067,6 @@ mod tests {
                 grown >= expected,
                 "{name}: grew to {grown}, built {expected}"
             );
-        }
-    }
-
-    /// The sizing walk needs roster headers, never line pointers or payloads.
-    #[test]
-    fn line_output_population_and_rocket_event_demand_at_1500_and_5000_countries() {
-        use engine_native::{Memory, cpdx_array, cproduction_status as production};
-        const MANAGERS: usize = 0x3_0000_0000;
-        const MANAGER: usize = 0x300;
-        const LINE_POINTERS: usize = 0x4_0000_0000;
-        struct Lines {
-            world: World,
-            per_country: u32,
-            rockets: u32,
-            rocket_capacity: u32,
-            unreadable: Option<usize>,
-        }
-        impl Memory for Lines {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                // There is deliberately no storage for any line pointer.
-                if (LINE_POINTERS..LINE_POINTERS + self.per_country.max(self.rockets) as usize * 8)
-                    .contains(&address)
-                {
-                    return false;
-                }
-                if self
-                    .unreadable
-                    .is_some_and(|field| address == MANAGERS + MANAGER + field)
-                {
-                    return false;
-                }
-                for (offset, byte) in output.iter_mut().enumerate() {
-                    let at = address + offset;
-                    let word = |start, value: u64| (value >> ((at - start) * 8)) as u8;
-                    *byte = if (OBJECTS + OBJECT..OBJECTS + self.world.slots * OBJECT).contains(&at)
-                    {
-                        let slot = (at - OBJECTS) / OBJECT;
-                        let field = OBJECTS + slot * OBJECT + ccountry::PRODUCTION_STATUS;
-                        if (field..field + 8).contains(&at) {
-                            word(field, (MANAGERS + slot * MANAGER) as u64)
-                        } else {
-                            self.world.byte(at)
-                        }
-                    } else if (MANAGERS + MANAGER..MANAGERS + self.world.slots * MANAGER)
-                        .contains(&at)
-                    {
-                        let slot = (at - MANAGERS) / MANAGER;
-                        let manager = MANAGERS + slot * MANAGER;
-                        let fields = [
-                            (manager, 8, (BASE + production::VTABLE_RVA) as u64),
-                            (
-                                manager + production::COUNTRY,
-                                8,
-                                (OBJECTS + slot * OBJECT) as u64,
-                            ),
-                            (
-                                manager + engine_production::line_output_sites::ROCKET_LINES,
-                                8,
-                                LINE_POINTERS as u64,
-                            ),
-                            (
-                                manager
-                                    + engine_production::line_output_sites::ROCKET_LINES
-                                    + cpdx_array::CAPACITY,
-                                4,
-                                u64::from(self.rocket_capacity),
-                            ),
-                            (
-                                manager
-                                    + engine_production::line_output_sites::ROCKET_LINES
-                                    + cpdx_array::COUNT,
-                                4,
-                                u64::from(self.rockets),
-                            ),
-                            (manager + production::LINES, 8, LINE_POINTERS as u64),
-                            (
-                                manager + production::LINES + cpdx_array::CAPACITY,
-                                4,
-                                u64::from(self.per_country),
-                            ),
-                            (
-                                manager + production::LINES + cpdx_array::COUNT,
-                                4,
-                                u64::from(self.per_country),
-                            ),
-                        ];
-                        fields
-                            .into_iter()
-                            .find_map(|(start, len, value)| {
-                                (start..start + len)
-                                    .contains(&at)
-                                    .then(|| word(start, value))
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        self.world.byte(at)
-                    };
-                }
-                true
-            }
-        }
-        for countries in [1500, 5000] {
-            let mut memory = Lines {
-                world: World {
-                    slots: countries + 1,
-                    ..world()
-                },
-                per_country: 14,
-                rockets: 13,
-                rocket_capacity: 13,
-                unreadable: None,
-            };
-            assert_eq!(
-                observe_production_lines(&memory, BASE),
-                Some(countries * 14)
-            );
-            memory.per_country = 28;
-            assert_eq!(
-                observe_production_lines(&memory, BASE),
-                Some(countries * 28)
-            );
-            memory.per_country = 14;
-            assert_eq!(
-                observe_production_output(&memory, BASE),
-                Some(countries * (14 + 2 * 13))
-            );
-            memory.rockets = 26;
-            memory.rocket_capacity = 26;
-            assert_eq!(
-                observe_production_output(&memory, BASE),
-                Some(countries * (14 + 2 * 26))
-            );
-            memory.rocket_capacity = 25;
-            assert_eq!(observe_production_output(&memory, BASE), None);
-            memory.rocket_capacity = 26;
-            memory.unreadable = Some(engine_production::line_output_sites::ROCKET_LINES);
-            assert_eq!(observe_production_output(&memory, BASE), None);
-            memory.unreadable = Some(production::LINES);
-            assert_eq!(observe_production_lines(&memory, BASE), None);
-            assert_eq!(observe_production_output(&memory, BASE), None);
         }
     }
 

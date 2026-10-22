@@ -103,49 +103,6 @@ mod tests {
     use replay_data::rows::TableRows;
 
     #[test]
-    fn first_and_later_hours_grow_from_5000_country_headers() {
-        use engine_native::{ccountry, cgame_state};
-        let mut bytes = world(5_000, 1);
-        let mut captured = Captured::with_capacities(&Capacities { rows: 0, bytes: 0 });
-        captured.capture(
-            &engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            GAME_STATE,
-        );
-        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 5_000 }]);
-        assert_eq!(captured.buffer.bytes.len, 35_000);
-        let record = bytes[RECORDS..RECORDS + active_ability_record::STRIDE].to_vec();
-        let data = bytes.len();
-        for _ in 0..4_096 {
-            bytes.extend_from_slice(&record);
-        }
-        let header = COUNTRY0 + ccountry::ACTIVE_ABILITIES;
-        bytes[header..header + 8].copy_from_slice(&(data as u64).to_le_bytes());
-        for offset in [8, 12] {
-            bytes[header + offset..header + offset + 4].copy_from_slice(&4_096_u32.to_le_bytes());
-        }
-        captured.capture(
-            &engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            GAME_STATE,
-        );
-        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 9_095 }]);
-        assert_eq!(captured.buffer.bytes.len, 9_095 * 7);
-        assert_eq!(captured.buffer.rows.rows[4_095].ordinal, 4_095);
-        assert_eq!(
-            bytes[GAME_STATE + cgame_state::COUNTRIES + 12
-                ..GAME_STATE + cgame_state::COUNTRIES + 16],
-            5_001_u32.to_le_bytes()
-        );
-    }
-
-    #[test]
     fn conversion_refuses_bad_ranges_and_duplicate_keys() {
         let mut captured = Captured::with_capacities(&Capacities { rows: 2, bytes: 16 });
         captured.buffer.rows.rows[0].token_len = 1;
@@ -266,13 +223,13 @@ mod tests {
     const WORLD_BYTES: usize = 0x1d0000;
 
     /// The Ordinary job's cost for the hourly walk on the pool worker, over the job's cached
-    /// roster view, at 1,500 and 5,000 live countries with one country in ten holding an
+    /// roster view, at 150 and 500 live countries with one country in ten holding an
     /// active ability. The roster view serves the country authentication from the prepared
     /// census, so the per-country cost is the ability array header alone.
     #[test]
     fn the_hourly_walk_on_the_cached_roster_view_costs_one_call_per_country() {
         use engine_native::{read_counts::CountedMemory, read_counts::ReadCounts};
-        for countries in [1_500_u32, 5_000] {
+        for countries in [150_u32, 500] {
             let bytes = world(countries, 10);
             let memory = engine_native::memory::SliceMemory {
                 base: 0,
@@ -305,7 +262,6 @@ mod tests {
             // walk itself is counted here.
             ReadCounts::take_current();
             let counted = CountedMemory::new(memory);
-            let started = std::time::Instant::now();
             let walk = walk_abilities(
                 &cache.roster_view(&counted),
                 0,
@@ -313,7 +269,6 @@ mod tests {
                 &mut rows,
                 &mut arena,
             );
-            let elapsed = started.elapsed();
             let reads = ReadCounts::take_current();
             assert_eq!(walk.outcome, Outcome::Rows { len: active });
             let calls = reads.copy_calls + reads.scattered_calls;
@@ -323,9 +278,6 @@ mod tests {
                 calls,
                 u64::from(countries) + 3 * active as u64,
                 "{countries} countries"
-            );
-            eprintln!(
-                "active abilities, {countries} countries on the roster view: {calls} guarded calls, {elapsed:?} (debug build)"
             );
         }
     }

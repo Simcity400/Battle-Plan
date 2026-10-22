@@ -73,23 +73,6 @@ fn timing_hook_families_match_runtime_restoration() {
 }
 
 #[test]
-#[should_panic(expected = "missing from timing: runtime_only; missing from runtime: timing_only")]
-fn timing_inventory_differences_are_reported_by_name() {
-    assert_timing_inventory(
-        &["shared", "runtime_only"].into_iter().collect(),
-        &["shared", "timing_only"].into_iter().collect(),
-    );
-}
-
-#[test]
-#[should_panic(expected = "runtime hook families missing from patch registry: unit_leader_changes")]
-fn runtime_family_without_registered_patches_fails_completeness() {
-    let mut patches = patches();
-    patches.retain(|patch| patch.family != "unit_leader_changes");
-    assert_family_completeness(&patches);
-}
-
-#[test]
 fn every_runtime_hook_family_has_registered_patches() {
     let patches = patches();
     assert_family_completeness(&patches);

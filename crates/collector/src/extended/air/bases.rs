@@ -741,6 +741,26 @@ pub(super) fn bases_pool_u32(log: &RawLog<AIR_BASES_N>, start: usize) -> u32 {
     u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
 }
 
+/// The one identity read both base walks share.
+fn base_identity(
+    log: &mut RawLog<AIR_BASES_N>,
+    memory: &impl engine_native::Memory,
+    base: usize,
+    pointer: usize,
+) -> (bool, u64) {
+    let identity = bspan(log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
+    match (identity, base.checked_add(cair_base::VTABLE_RVA)) {
+        (Some(start), Some(expected)) => {
+            let handle = bases_pool_u64(log, start + 8);
+            (
+                bases_pool_u64(log, start) == expected as u64 && handle != 0,
+                handle,
+            )
+        }
+        _ => (false, 0),
+    }
+}
+
 /// One mirrored span read. `None` addresses (arithmetic overflow) record
 /// nothing because the typed walk fails locally without reads.
 pub(super) fn bspan(
@@ -2456,17 +2476,7 @@ fn copy_air_bases_vectors(
                         // Shared identity take (both walks read it); a failure or a
                         // failed identity stops both walks, mirroring both typed
                         // walks. Bases-private fields follow on the bases path only.
-                        let identity =
-                            bspan(&mut *log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-                        let expected = base.checked_add(cair_base::VTABLE_RVA);
-                        let (identity_ok, handle) = match (identity, expected) {
-                            (Some(start), Some(expected)) => (
-                                bases_pool_u64(&*log, start) == expected as u64
-                                    && bases_pool_u64(&*log, start + 8) != 0,
-                                bases_pool_u64(&*log, start + 8),
-                            ),
-                            _ => (false, 0),
-                        };
+                        let (identity_ok, handle) = base_identity(&mut *log, memory, base, pointer);
                         if !identity_ok {
                             bases_alive = false;
                             reg_alive = false;
@@ -2528,17 +2538,7 @@ fn copy_air_bases_vectors(
                         // still needs the shared identity take plus its own takes.
                         let _reads = read_accounting::table(TableId::AirBaseRegistrations);
                         let begin = qpc();
-                        let identity =
-                            bspan(&mut *log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-                        let expected = base.checked_add(cair_base::VTABLE_RVA);
-                        let (identity_ok, handle) = match (identity, expected) {
-                            (Some(start), Some(expected)) => (
-                                bases_pool_u64(&*log, start) == expected as u64
-                                    && bases_pool_u64(&*log, start + 8) != 0,
-                                bases_pool_u64(&*log, start + 8),
-                            ),
-                            _ => (false, 0),
-                        };
+                        let (identity_ok, handle) = base_identity(&mut *log, memory, base, pointer);
                         if !identity_ok {
                             reg_alive = false;
                             reg_ticks += elapsed(begin);

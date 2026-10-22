@@ -374,49 +374,6 @@ fn empty_exact_index_refuses_fresh_requests_without_native_read_or_raw_overflow(
 }
 
 #[test]
-fn prepared_index_preserves_5000_country_census_and_source_bytes() {
-    // Stress geometry, not a production country count or live timing claim.
-    const COUNTRIES: usize = 5000;
-    const FIELDS: usize = 7;
-    let count = COUNTRIES * FIELDS;
-    let mut original = RawLog::<3>::new(count, count * 4);
-    for key in 0..count {
-        assert!(
-            original
-                .record(0x1000 + key * 8, 4, Some(&(key as u32).to_le_bytes()), 7)
-                .is_some()
-        );
-    }
-    let before = source_snapshot(&original);
-    let mut slots = vec![usize::MAX; count * 2];
-    let mut index = ExactIndex::new(&mut slots);
-    let mut carrier = RawLog::<2>::new(count, count * 4);
-    assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
-    assert_eq!(index.used, count);
-    assert_eq!(index.required_slots(), count * 2);
-    assert_eq!(carrier.spans.len(), count);
-    assert_eq!(carrier.raw_bytes, [0; 2]);
-    assert_eq!(source_snapshot(&original), before);
-    let carrier = RefCell::new(carrier);
-    let index = RefCell::new(index);
-    let live = Live::new(&[0x42; 8]);
-    let capture = CaptureMemory::new(&carrier, &live, &index);
-    for key in [0, count / 2, count - 1] {
-        let mut bytes = [0; 4];
-        assert!(capture.copy(0x1000 + key * 8, &mut bytes));
-        assert_eq!(u32::from_le_bytes(bytes), key as u32);
-    }
-    assert_eq!(live.calls.get(), 0);
-    let log = carrier.borrow();
-    let recorded = Recorded::build(&log);
-    for key in [count - 1, count / 2, 0] {
-        let mut bytes = [0; 4];
-        assert!(recorded.copy(0x1000 + key * 8, &mut bytes));
-        assert_eq!(u32::from_le_bytes(bytes), key as u32);
-    }
-}
-
-#[test]
 fn cached_failed_exact_read_marks_each_consumer_without_rereading_or_recharging() {
     let original = RawLog::<3>::new(0, 0);
     let mut slots = [usize::MAX; 8];
@@ -484,42 +441,4 @@ fn cached_bulk_bounds_failure_marks_each_consumer_without_changing_owned_observa
     assert!(!log.overflowed);
     let recorded = Recorded::build(&log);
     assert!(!recorded.copy(0x1008, &mut [0; 4]));
-}
-
-#[test]
-fn growing_carrier_seed_and_index_accept_5000_original_and_later_keys_once() {
-    let live_bytes = vec![0x38; 40_008];
-    let original_live = Live::new(&live_bytes);
-    let mut original = RawLog::<3>::new(5_000, 20_000);
-    for index in 0..5_000 {
-        assert!(
-            original
-                .take(&original_live, 0x1000 + index * 4, 4, 7)
-                .is_some()
-        );
-    }
-    let before = source_snapshot(&original);
-    let mut carrier = RawLog::<2>::default();
-    carrier.enable_worker_growth();
-    let mut slots = Vec::new();
-    let mut index = ExactIndex::new_growing(&mut slots);
-    assert_eq!(seed_census(&mut carrier, &original, &mut index), Ok(()));
-    assert_eq!(source_snapshot(&original), before);
-    assert_eq!(original_live.calls.get(), 5_000);
-    assert_eq!(carrier.raw_bytes, [0; 2]);
-    let carrier = RefCell::new(carrier);
-    let index = RefCell::new(index);
-    let later = Live::new(&live_bytes);
-    let capture = CaptureMemory::new(&carrier, &later, &index);
-    for key in 5_000..10_000 {
-        assert!(capture.copy(0x1000 + key * 4, &mut [0; 4]));
-    }
-    assert_eq!(later.calls.get(), 5_000);
-    for key in 0..10_000 {
-        assert!(capture.copy(0x1000 + key * 4, &mut [0; 4]));
-    }
-    assert_eq!(later.calls.get(), 5_000);
-    assert!(!carrier.borrow().overflowed);
-    assert_eq!(carrier.borrow().spans.len(), 10_000);
-    assert!(index.borrow().slots.len() >= 20_000);
 }

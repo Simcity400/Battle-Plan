@@ -590,21 +590,7 @@ impl Carry {
                 bytes: start..held.len(),
             });
         }
-        entries.sort_unstable_by_key(|entry| entry.pointer);
-        // A pointer occurring twice names no single held read.
-        let mut index = 0;
-        while index < entries.len() {
-            let pointer = entries[index].pointer;
-            let end = entries[index..]
-                .iter()
-                .position(|entry| entry.pointer != pointer)
-                .map_or(entries.len(), |offset| index + offset);
-            if end - index > 1 {
-                entries.drain(index..end);
-            } else {
-                index = end;
-            }
-        }
+        super::sort_dropping_repeated(&mut entries, |entry| entry.pointer);
         let mut order_entries = Vec::new();
         if engine_allocation::advisory(|| {
             engine_allocation::reserve_exact(&mut order_entries, order.len())

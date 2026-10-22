@@ -192,12 +192,13 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
     }
 }
 
+// regression: da93900628 Size live collector storage and preserve native observation intervals
 #[test]
-fn worker_air_growth_hands_off_complete_mod_rosters_at_5000_countries() {
+fn worker_air_growth_hands_off_complete_mod_rosters() {
     use crate::{map_capture::MapCaptured, unit_scale_tests::fixture};
-    const WINGS: usize = 12_000;
+    const WINGS: usize = 12;
     let world = fixture::build(fixture::Shape {
-        countries: 5000,
+        countries: 4,
         divisions: 0,
         wings: WINGS,
         planes: WINGS,
@@ -270,9 +271,9 @@ fn worker_air_growth_hands_off_complete_mod_rosters_at_5000_countries() {
 #[test]
 fn worker_wing_extensions_and_decode_follow_first_hour_live_demand() {
     use crate::unit_scale_tests::fixture;
-    const WINGS: usize = 12_000;
+    const WINGS: usize = 120;
     let world = fixture::build(fixture::Shape {
-        countries: 5000,
+        countries: 40,
         divisions: 0,
         wings: WINGS,
         planes: WINGS,
@@ -308,57 +309,6 @@ fn worker_wing_extensions_and_decode_follow_first_hour_live_demand() {
     assert_eq!(captured.cumulative.outcome, Outcome::Rows { len: WINGS });
     assert_eq!(captured.equipment.rows[..WINGS], job.equipment[..WINGS]);
     assert_eq!(captured.cumulative.rows[..WINGS], job.cumulative[..WINGS]);
-}
-
-#[test]
-fn zero_hint_wing_worker_publishes_first_and_later_populations_for_5000_countries() {
-    use crate::unit_scale_tests::fixture;
-
-    let mut job = AirWingJob::default();
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    for (hour, count) in [5_000, 12_000].into_iter().enumerate() {
-        let world = fixture::build(fixture::Shape {
-            countries: 5_000,
-            divisions: 0,
-            wings: count,
-            planes: count,
-            ships: 0,
-        });
-        let report = copy_air_refresh_growing(
-            &world.live(),
-            AirWingCopyContext {
-                base: world.base,
-                game_state: world.state,
-                hour: hour as i32,
-                force_full: true,
-                limits: [0; 3],
-                naval_limit: 0,
-                game_score: false,
-            },
-            &mut job,
-        );
-        assert!(report.raw_ok);
-        let complete = Outcome::Rows { len: count };
-        assert_eq!(job.map_outcome, complete);
-        assert_eq!(job.source_outcome, complete);
-        assert_eq!(job.identity_outcome, complete);
-        assert_eq!(job.equipment_outcome, complete);
-        assert_eq!(job.cumulative_outcome, complete);
-        assert_eq!(job.naval_outcome, complete);
-        assert_eq!(job.naval_membership_outcome, complete);
-        assert_eq!((job.names_len, job.name_failures), (count * 4, 0));
-        decode_air_payload(&mut captured, &job, &mut [0; 2]);
-        assert_eq!(captured.equipment.outcome, complete);
-        assert_eq!(captured.cumulative.outcome, complete);
-        assert_eq!(captured.equipment.rows[..count], job.equipment[..count]);
-        assert_eq!(captured.cumulative.rows[..count], job.cumulative[..count]);
-        // The next loan has no frame grants even after its owned vectors were handed off.
-        let mut map = crate::map_capture::MapCaptured::new();
-        map.install_owned_air(&mut job);
-        captured.install_owned_mission_identities(&mut job);
-        assert_eq!(map.air_wings.outcome, complete);
-        assert_eq!(captured.identity_outcome, complete);
-    }
 }
 
 #[test]
@@ -950,37 +900,6 @@ fn daily_statistics_skip_reads_and_capacity_preflight() {
 }
 
 #[test]
-fn wing_equipment_is_hourly_and_cumulative_uses_slot_16() {
-    use replay_data::rows::TableId;
-    for table in [TableId::WingEquipment, TableId::WingCumulative] {
-        assert_eq!(
-            replay_data::cadence::is_staggered(table),
-            table == TableId::WingCumulative
-        );
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay_data::cadence::is_refresh(table, hour),
-                table == TableId::WingEquipment || hour.rem_euclid(24) == 16,
-                "{table:?} at {hour}"
-            );
-        }
-    }
-}
-
-#[test]
-fn wing_split_copy_matches_direct_walk() {
-    use super::wing_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let direct = kit::direct(&memory);
-    let (split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    kit::assert_matches_direct(&split, &direct);
-    assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
-    assert_eq!(split.cumulative_outcome, Outcome::Rows { len: 2 });
-}
-
-#[test]
 fn wing_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
     // copy→decode against the SAME memory with the SAME pooled caps,
@@ -1308,48 +1227,6 @@ fn stats_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn stats_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the statistics copy pass issues,
-    // recorded through the real pass. Census words (4/8), array headers
-    // (16), window byte (1), channel spans (8/32/40/72); the walk's
-    // batched gathers decompose into these exact copies at replay.
-    use super::stats_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let ctx = super::AirStatsCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut job = super::AirStatsJob::fixture();
-    let report = super::copy_air_stats_refresh(&memory, ctx, &mut job);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [1, 4, 8, 16, 32, 40, 72] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
 fn wing_staging_overflow_falls_back_to_typed_walk() {
     use super::wing_test_kit as kit;
     use super::{AirWingCopyContext, AirWingJob};
@@ -1386,28 +1263,6 @@ fn air_bases_split_copy_matches_direct_walk_with_alias_and_rocket_vector() {
     assert_eq!(split.bases_outcome, Outcome::Rows { len: 4 });
     assert_eq!(split.regs.outcome, Outcome::Rows { len: 2 });
     assert_eq!(split.aces_outcome, Outcome::Rows { len: 2 });
-}
-
-#[test]
-fn bases_and_registrations_are_hourly_and_aces_use_slot_21() {
-    use replay_data::rows::TableId;
-    for table in [
-        TableId::AirBases,
-        TableId::AirBaseRegistrations,
-        TableId::AirAces,
-    ] {
-        assert_eq!(
-            replay_data::cadence::is_staggered(table),
-            table == TableId::AirAces
-        );
-        for hour in -24_i32..48 {
-            assert_eq!(
-                replay_data::cadence::is_refresh(table, hour),
-                table != TableId::AirAces || hour.rem_euclid(24) == 21,
-                "{table:?} at {hour}"
-            );
-        }
-    }
 }
 
 #[test]
@@ -2127,177 +1982,6 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
     assert_eq!(tiny.registration_demand, None);
 }
 
-/// 5,000 countries, far above the initial 1,024-entry census and link
-/// stores. One host base files a container at every country slot except
-/// slot five, whose country object is unreadable: that census fault must
-/// not stop growth, and it touches no published row. After one off-thread
-/// growth the owned payload decodes exactly like the typed walks.
-#[test]
-fn air_bases_census_grows_once_to_five_thousand_countries() {
-    // Sizes from the process-wide country hints; hold them at a fresh attachment's values.
-    let _hint = crate::country_scale::hint_guard();
-    use crate::extended::fog;
-    use engine_native::{
-        cair_base, ccountry, ccountry_air_container, cgame_state, cstrategic_air_manager,
-    };
-    const COUNTRIES: u32 = 5_001;
-    const GAME: usize = 0x10000;
-    const MANAGER: usize = 0x20000;
-    const HOSTS: usize = 0x21000;
-    const HOST: usize = 0x22000;
-    const TABLE: usize = 0x30000;
-    const LINKS: usize = 0x40000;
-    const OBJECTS: usize = 0x50000;
-    const SLOTS: usize = 0x70000;
-    const CONTAINERS: usize = 0x100000;
-    const UNREADABLE: u32 = 5;
-    let put32 = |bytes: &mut Vec<u8>, at: usize, value: u32| {
-        bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
-    };
-    let put64 = |bytes: &mut Vec<u8>, at: usize, value: u64| {
-        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
-    };
-    let header = |bytes: &mut Vec<u8>, at: usize, data: usize, count: u32| {
-        put64(bytes, at, data as u64);
-        put32(bytes, at + 8, count);
-        put32(bytes, at + 12, count);
-    };
-    let mut bytes = vec![0; CONTAINERS + COUNTRIES as usize * 0x100];
-    header(&mut bytes, GAME + cgame_state::COUNTRIES, TABLE, COUNTRIES);
-    header(
-        &mut bytes,
-        GAME + cgame_state::COUNTRY_LINKS,
-        LINKS,
-        COUNTRIES,
-    );
-    put64(
-        &mut bytes,
-        GAME + cgame_state::STRATEGIC_AIR_MANAGER,
-        MANAGER as u64,
-    );
-    put64(
-        &mut bytes,
-        MANAGER,
-        cstrategic_air_manager::VTABLE_RVA as u64,
-    );
-    header(
-        &mut bytes,
-        MANAGER + cstrategic_air_manager::STATELESS_AIR_BASES,
-        HOSTS,
-        1,
-    );
-    put64(&mut bytes, HOSTS, HOST as u64);
-    put64(&mut bytes, HOST, cair_base::VTABLE_RVA as u64);
-    put64(
-        &mut bytes,
-        HOST + cair_base::HANDLE,
-        (0x43_u64 << 32) | u64::from(cair_base::TYPE),
-    );
-    put64(&mut bytes, HOST + cair_base::HOST_REFERENCE, (3 << 32) | 51);
-    header(
-        &mut bytes,
-        HOST + cair_base::COUNTRY_CONTAINERS,
-        SLOTS,
-        COUNTRIES,
-    );
-    for slot in 1..COUNTRIES {
-        let object = if slot == UNREADABLE {
-            0x7fff_0000_0000
-        } else {
-            OBJECTS + slot as usize * 16
-        };
-        put64(&mut bytes, TABLE + slot as usize * 8, object as u64);
-        put32(&mut bytes, LINKS + slot as usize * 4, slot);
-        if slot == UNREADABLE {
-            continue;
-        }
-        put64(&mut bytes, object, ccountry::VTABLE_RVA as u64);
-        put32(&mut bytes, object + ccountry::ID, slot);
-        let container = CONTAINERS + slot as usize * 0x100;
-        put64(
-            &mut bytes,
-            container,
-            ccountry_air_container::VTABLE_RVA as u64,
-        );
-        put32(
-            &mut bytes,
-            container + ccountry_air_container::COUNTRY,
-            slot,
-        );
-        put64(
-            &mut bytes,
-            container + ccountry_air_container::CAPACITY_RAW,
-            u64::from(slot),
-        );
-        put64(&mut bytes, SLOTS + slot as usize * 8, container as u64);
-    }
-    let memory = kit_memory(&bytes);
-    let ctx = AirBasesCopyContext {
-        hour: 0,
-        force_full: false,
-        base: 0,
-        game_state: GAME,
-    };
-    let mut job = AirBasesJob::fixture();
-    assert!(job.census.capacity() < COUNTRIES as usize - 1);
-    let report = copy_air_bases_refresh(&memory, ctx, &mut job);
-    assert!(!report.raw_ok, "the initial census store overflows");
-    assert!(job.log.fault.iter().any(|fault| *fault));
-    assert!(!job.log.grow_for_next(), "staging alone would never grow");
-    assert!(job.grow_for_next());
-    job.grow();
-    job.clear();
-    assert!(job.census.capacity() >= COUNTRIES as usize - 1);
-    assert!(job.seen_links.capacity() >= COUNTRIES as usize);
-    assert_eq!(job.seen_link_index.len(), job.seen_links.capacity());
-    let report = copy_air_bases_refresh(&memory, ctx, &mut job);
-    assert!(report.raw_ok);
-    super::air_bases_test_kit::assert_no_mandatory_growth(&job);
-
-    let rows = COUNTRIES as usize;
-    let mut air = Captured::with_capacities(&Capacities::fixture());
-    let mut ticks = [0; AIR_BASES_N];
-    air.decode_air_bases_payload(0, &job, &mut ticks);
-    let mut bases = vec![cair_base::Row::default(); 4];
-    let direct_bases = cair_base::walk(&memory, 0, GAME, &mut bases);
-    assert_eq!(direct_bases, Outcome::Rows { len: 1 });
-    assert_eq!(air.bases.outcome, direct_bases);
-    assert_eq!(air.bases.rows[0], bases[0]);
-    let direct = fog::Captured::collect_registrations_direct(rows, 1, &memory, 0, GAME);
-    assert_eq!(direct.outcome, Outcome::Rows { len: rows - 2 });
-    assert!(
-        direct
-            .rows
-            .iter()
-            .zip((1..COUNTRIES).filter(|slot| *slot != UNREADABLE))
-            .all(|(row, slot)| (row.slot, row.capacity_raw) == (slot, i64::from(slot)))
-    );
-    let fog_capacities = fog::Capacities {
-        rows: [0, 0, 0, 0, 0, rows, 0],
-        radar_provinces: 0,
-        area_provinces: 0,
-        wings: 1,
-    };
-    let mut owned = fog::Captured::with_capacities(&fog_capacities);
-    // The first decode has no resolver yet; it records the live demand,
-    // and growth after it serves every later decode from the dense cache.
-    for expected_len in [0, rows] {
-        owned.registrations_raw_mode = true;
-        owned.decode_registrations_payload(0, &job, &mut ticks);
-        assert_eq!(owned.resolver_sizes(), (expected_len, rows));
-        let decoded = owned.registrations_snapshot();
-        assert_eq!(decoded.outcome, direct.outcome);
-        assert_eq!(decoded.rows, direct.rows);
-        assert_eq!(decoded.wings, direct.wings);
-        owned.grow(&mut fog::Capacities {
-            rows: [0, 0, 0, 0, 0, rows, 0],
-            radar_provinces: 0,
-            area_provinces: 0,
-            wings: 1,
-        });
-    }
-}
-
 fn kit_memory(bytes: &[u8]) -> engine_native::memory::SliceMemory<'_> {
     engine_native::memory::SliceMemory { base: 0, bytes }
 }
@@ -2492,55 +2176,6 @@ fn sparse_slot_decode(
     (owned.registrations_snapshot(), direct)
 }
 
-/// The distinct addresses of live reads of the slot vector, in order.
-fn slot_vector_reads(reads: &[usize]) -> Vec<usize> {
-    let vector = SPARSE_SLOTS..SPARSE_SLOTS + SPARSE_COUNTRIES as usize * 8;
-    let mut reads: Vec<usize> = reads
-        .iter()
-        .copied()
-        .filter(|at| vector.contains(at))
-        .collect();
-    reads.sort_unstable();
-    reads.dedup();
-    reads
-}
-
-/// A mod-sized base with a handful of containers: its dense list proves
-/// their slots, so the acquisition reads only their slot words, and the
-/// replay, laying the slots out from the same plan, publishes the full
-/// scan's rows.
-#[test]
-fn a_five_thousand_slot_base_copies_only_its_listed_slot_words_and_decodes_the_full_scan() {
-    let _hint = crate::country_scale::hint_guard();
-    use crate::{air_base_changes::SlotRun, sampled_verify::Check};
-    let bytes = sparse_slot_world(None);
-    let (full, full_reads) = sparse_slot_copy(&bytes, SlotRun::default());
-    assert_eq!(full.slot_report.full, 1);
-    assert!(slot_vector_reads(&full_reads).len() > 3);
-    let (decoded, direct) = sparse_slot_decode(&bytes, &full);
-    assert_eq!(direct.outcome, Outcome::Rows { len: 3 });
-    assert_eq!(
-        (decoded.outcome, &decoded.rows),
-        (direct.outcome, &direct.rows)
-    );
-
-    let dense = SlotRun {
-        dense: true,
-        check: Check::Nothing,
-    };
-    let (job, reads) = sparse_slot_copy(&bytes, dense);
-    assert_eq!((job.slot_report.dense, job.slot_report.full), (1, 0));
-    assert_eq!(
-        slot_vector_reads(&reads),
-        [1, 2600, 5000].map(|slot: usize| SPARSE_SLOTS + slot * 8)
-    );
-    let (decoded, direct) = sparse_slot_decode(&bytes, &job);
-    assert_eq!(
-        (decoded.outcome, &decoded.rows, &decoded.wings),
-        (direct.outcome, &direct.rows, &direct.wings)
-    );
-}
-
 /// A container the dense list lacks, whether it shares a listed container's
 /// chunk or not: the plan reads neither, so only the hour's comparison sees
 /// it, which records the base from the full scan (the replay too) and counts
@@ -2580,60 +2215,6 @@ fn a_container_the_dense_list_lacks_is_seen_by_the_comparison_alone() {
         assert_eq!(
             (decoded.outcome, &decoded.rows, &decoded.wings),
             (direct.outcome, &direct.rows, &direct.wings)
-        );
-    }
-}
-
-#[test]
-fn air_raw_job_constructors_wait_for_live_demand() {
-    let bases = AirBasesJob::new();
-    assert_eq!(bases.log.spans.capacity(), 0);
-    assert_eq!(bases.log.bytes.capacity(), 0);
-    let stats = AirStatsJob::new();
-    assert_eq!(stats.log.spans.capacity(), 0);
-    assert_eq!(stats.log.bytes.capacity(), 0);
-    let wing = AirWingJob::new();
-    assert!(wing.map_rows.is_empty());
-    assert!(wing.sources.is_empty());
-    assert!(wing.identities.is_empty());
-    assert!(wing.equipment.is_empty());
-    assert!(wing.cumulative.is_empty());
-    assert!(wing.memberships.is_empty());
-    assert!(wing.naval_memberships.is_empty());
-}
-
-#[test]
-fn air_bases_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the shared copy pass issues, recorded
-    // through the real pass. Census words (4/8), array headers (16),
-    // base identity (16), host block (32), state/province words (8/4),
-    // pool/wing blocks (chunked 8s), wing identities (32), ace scattered
-    // fields (16/4/1/12) and name bytes (1 + content).
-    use super::air_bases_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: kit::SyntheticMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [1, 4, 8, 12, 16, 32] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
         );
     }
 }

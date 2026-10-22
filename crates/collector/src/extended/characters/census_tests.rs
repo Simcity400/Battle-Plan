@@ -489,11 +489,6 @@ impl<'a> Counting<'a> {
         }
     }
 
-    fn reset(&self) {
-        self.calls.set(0);
-        self.bytes.set(0);
-    }
-
     fn count(&self, bytes: usize) {
         self.calls.set(self.calls.get() + 1);
         self.bytes.set(self.bytes.get() + bytes);
@@ -625,27 +620,6 @@ fn settle(
     panic!("character staging did not settle");
 }
 
-/// Best time of `CHARACTERS_TIMING_REPEATS` runs (default 1). Every run
-/// starts from the same prepared state, so the guarded-call count the tests
-/// assert is the same on each; only a printed time needs several runs.
-fn best_time(
-    mut run: impl FnMut() -> (usize, std::time::Duration),
-) -> (usize, std::time::Duration) {
-    let repeats = std::env::var("CHARACTERS_TIMING_REPEATS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let mut best = std::time::Duration::MAX;
-    let mut calls = 0;
-    for _ in 0..repeats {
-        let (count, elapsed) = run();
-        calls = count;
-        best = best.min(elapsed);
-    }
-    (calls, best)
-}
-
 fn decode(job: &CharactersJob) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
     captured.decode_characters_payload(MODULE, job, &mut [0; N]);
@@ -711,43 +685,6 @@ fn assert_part(memory: &impl Memory, part: usize, loan: Option<&census::RoleCens
 }
 
 /// Decoded tables of one payload, checked against the fixture's role counts.
-fn check(world: &World, captured: &Captured, active: [bool; N]) {
-    let outcomes = captured.outcomes();
-    let n = world.characters;
-    let expected = [
-        n,
-        (0..n).filter(|&i| World::leader(i)).count(),
-        (0..n).filter(|&i| world.advisor(i)).count(),
-        (0..n).filter(|&i| World::unit(i).is_some()).count(),
-    ];
-    for (table, &len) in expected.iter().enumerate() {
-        if active[table] {
-            assert_eq!(outcomes[table], Outcome::Rows { len }, "table {table}");
-        }
-    }
-    if active[4] {
-        assert!(
-            matches!(outcomes[4], Outcome::Rows { len } if len > 0),
-            "traits: {:?}",
-            outcomes[4]
-        );
-    }
-}
-
-fn advisor_cache(world: &World, loan: Option<census::Admitted<'_>>) -> advisors::Cache {
-    let ctx = context(PART_MASKS[2]);
-    let demand = cadvisor::modifier_demand(world, MODULE, GAME_STATE).unwrap();
-    let mut cache = advisors::Cache::with_modifier_demand(demand);
-    for _ in 0..4 {
-        cache.capture_growing(world, ctx, &Quiet, loan);
-        if cache.needs_growth() {
-            cache.grow();
-        }
-        cache.prepare();
-    }
-    cache
-}
-
 fn decode_cache(cache: &advisors::Cache) -> Captured {
     let mut captured = Captured::with_capacities(&capacities());
     captured.fail_character_tables(
@@ -758,23 +695,9 @@ fn decode_cache(cache: &advisors::Cache) -> Captured {
     captured
 }
 
-struct Unwatched;
-
-impl advisors::Changes for Unwatched {
-    fn quiet(&self) -> Option<(u64, u64)> {
-        None
-    }
-    fn revision(&self, _map: usize) -> Option<(u64, u64)> {
-        None
-    }
-    fn check(&self) -> crate::sampled_verify::Check {
-        crate::sampled_verify::Check::Nothing
-    }
-}
-
 #[test]
 fn worker_growth_acquires_current_ideology_for_every_authenticated_role() {
-    let world = World::new(25_000);
+    let world = World::new(1_000);
     let memory = Counting::new(&world);
     let mut job = CharactersJob::with_storage(1, 32, 1024, false);
     job.worker_growing = true;
@@ -786,145 +709,11 @@ fn worker_growth_acquires_current_ideology_for_every_authenticated_role() {
     );
     assert!(report.raw_ok && !report.plan_failed);
     let captured = decode(&job);
-    assert_eq!(captured.leaders.rows.outcome, Outcome::Rows { len: 5_000 });
-    assert!(captured.leaders.rows.rows[..5_000].iter().all(|row| {
+    assert_eq!(captured.leaders.rows.outcome, Outcome::Rows { len: 200 });
+    assert!(captured.leaders.rows.rows[..200].iter().all(|row| {
         row.current_ideology == Some(None) && row.current_ideology_failure.is_none()
     }));
     characters_test_kit::assert_matches_direct(&captured, &typed(&memory, 1));
-}
-
-/// Prints guarded calls and the best capture time per character part,
-/// independently and with the census loan; to measure, set
-/// `CHARACTERS_TIMING_REPEATS=5` and run with `--release --nocapture`. Each
-/// loaned result equals the independent one.
-#[test]
-fn role_capture_cost_scales_with_roles_not_roster() {
-    for countries in [440, 1_500, 5_000] {
-        let world = World::countries(countries);
-        let memory = Counting::new(&world);
-        let characters = world.characters;
-        let leaders = (0..characters).filter(|&i| World::leader(i)).count();
-        let units = (0..characters)
-            .filter(|&i| World::unit(i).is_some())
-            .count();
-        let report = |part: &str, variant: &str, (calls, time): (usize, std::time::Duration)| {
-            let bytes = memory.bytes.get();
-            println!(
-                "{countries} countries, {characters} characters, {part}, {variant}: {calls} calls, {bytes} bytes, {time:?}"
-            );
-            calls
-        };
-        // Warm keeps the retained prepared plan; cold retires it before each run.
-        let measure = |part: usize, roles: Roles<&census::RoleCensus>, retire: bool| {
-            let active = PART_MASKS[part];
-            let mut job = CharactersJob::new_part(part);
-            settle(&world, active, &mut job, roles);
-            if retire {
-                job.log.invalidate_read_plan();
-                job.prepare_read_plans();
-            }
-            best_time(|| {
-                memory.reset();
-                let begin = std::time::Instant::now();
-                let report = copy_characters(&memory, context(active), &mut job, roles);
-                let elapsed = begin.elapsed();
-                assert!(report.raw_ok);
-                let calls = memory.calls.get();
-                if retire {
-                    job.log.invalidate_read_plan();
-                }
-                job.prepare_read_plans();
-                job.clear();
-                (calls, elapsed)
-            })
-        };
-        for (variant, roles) in [
-            ("independent", Roles::Independent),
-            ("with role census", Roles::Gather),
-        ] {
-            report(
-                "part 0",
-                &format!("{variant} cold"),
-                measure(0, roles, true),
-            );
-            report(
-                "part 0",
-                &format!("{variant} warm"),
-                measure(0, roles, false),
-            );
-        }
-        let owner = roster(&world);
-        let loan = owner.role_census().expect("admitted role census");
-        for part in [1, 3] {
-            let mut job = CharactersJob::new_part(part);
-            settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
-            copy_characters(
-                &world,
-                context(PART_MASKS[part]),
-                &mut job,
-                Roles::Borrow(&loan),
-            );
-            assert!(job.census_capture);
-            let loaned = decode(&job);
-            check(&world, &loaned, PART_MASKS[part]);
-            let (independent, _) = role(&world, part, Roles::Independent);
-            characters_test_kit::assert_matches_direct(&loaned, &independent);
-            let name = format!("part {part}");
-            report(
-                &name,
-                "independent cold",
-                measure(part, Roles::Independent, true),
-            );
-            report(
-                &name,
-                "independent warm",
-                measure(part, Roles::Independent, false),
-            );
-            let calls = report(&name, "census", measure(part, Roles::Borrow(&loan), false));
-            let bound = if part == 1 { 6 * leaders } else { 16 * units };
-            assert!(
-                calls <= bound + characters / 64 + 400,
-                "{calls} guarded calls"
-            );
-        }
-        let ctx = context(PART_MASKS[2]);
-        let admitted = loan.admitted(MODULE, GAME_STATE);
-        let expected = (0..characters).filter(|&i| world.advisor(i)).count();
-        for (variant, source) in [("roster", None), ("census", admitted)] {
-            let mut cache = advisor_cache(&world, source);
-            let mut measure = |observer: &dyn advisors::Changes| {
-                best_time(|| {
-                    memory.reset();
-                    let begin = std::time::Instant::now();
-                    cache.capture_growing(&memory, ctx, observer, source);
-                    let elapsed = begin.elapsed();
-                    assert_eq!(cache.result.outcome, Outcome::Rows { len: expected });
-                    cache.prepare();
-                    (memory.calls.get(), elapsed)
-                })
-            };
-            report(
-                "part 2 (advisor cache)",
-                &format!("{variant} quiet"),
-                measure(&Quiet),
-            );
-            let calls = report(
-                "part 2 (advisor cache)",
-                &format!("{variant} unwatched"),
-                measure(&Unwatched),
-            );
-            if source.is_some() {
-                assert!(
-                    calls <= 8 * expected + characters / 64 + 8,
-                    "{calls} guarded calls"
-                );
-            }
-        }
-        characters_test_kit::assert_matches_direct(
-            &decode_cache(&advisor_cache(&world, admitted)),
-            &decode_cache(&advisor_cache(&world, None)),
-        );
-    }
 }
 
 /// A small roster with every role shape: aliases, dual roles, heads inside

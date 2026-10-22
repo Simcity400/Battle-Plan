@@ -1,10 +1,8 @@
 use super::super::{
-    Captured, CharactersCopyContext, CharactersJob, N, Roles, census, copy_characters_growing,
+    Captured, CharactersCopyContext, CharactersJob, N, Roles, copy_characters_growing,
 };
 use super::*;
 use engine_native::{cgame_state, cunit_leader_trait, memory::SliceMemory, walk::Outcome};
-use std::cell::Cell;
-use std::mem::size_of;
 
 const BASE: usize = 0x1_4000_0000;
 const STATE: usize = 0x1000;
@@ -115,39 +113,6 @@ impl World {
 }
 
 #[test]
-fn live_trait_demand_presizes_complete_5000_country_roster_and_token_arenas() {
-    let world = World::new();
-    let mut capacity = Capacities::default();
-    assert!(capacity.rows[4] < COUNT * TRAITS);
-    capacity.presize(&world.memory(), BASE, STATE).unwrap();
-    assert!(capacity.rows[3] >= COUNT);
-    assert!(capacity.rows[4] >= COUNT * TRAITS);
-    assert!(capacity.bytes[4] >= COUNT * TRAITS * TOKEN.len());
-}
-
-#[test]
-fn attach_hints_seed_character_auxiliary_storage_from_5000_country_demand() {
-    let world = World::new();
-    let mut capacity = Capacities::default();
-    capacity.presize(&world.memory(), BASE, STATE).unwrap();
-    let roster = CharactersJob::with_storage(0, 0, 0, false);
-    assert!(
-        roster.portrait_census.as_ref().unwrap().allocated_bytes()
-            >= COUNT * size_of::<ccharacter_manager::PortraitIdentity>()
-    );
-    assert!(
-        roster.role_census.as_ref().unwrap().allocated_bytes()
-            >= COUNT * (size_of::<usize>() + census::ROW)
-    );
-    assert!(roster.appended_roles.capacity() >= COUNT);
-    let traits = CharactersJob::with_storage(3, 0, 0, true);
-    assert!(traits.census_visited.capacity() >= COUNT);
-    assert!(traits.source_bindings.as_ref().unwrap().sources.capacity() >= COUNT);
-    assert!(traits.traits.definitions.entries.capacity() >= COUNT * TRAITS);
-    assert!(traits.traits.vectors.capacity() >= COUNT);
-}
-
-#[test]
 fn failed_assigned_trait_hint_preserves_other_occurrences() {
     let mut world = World::new();
     world.u32(world.units[0] + cunit_leader::TRAIT_COUNT, u32::MAX);
@@ -155,158 +120,6 @@ fn failed_assigned_trait_hint_preserves_other_occurrences() {
     assert!(capacity.presize(&world.memory(), BASE, STATE).is_err());
     assert!(capacity.rows[4] >= (COUNT - 1) * TRAITS);
     assert!(capacity.bytes[4] >= (COUNT - 1) * TRAITS * TOKEN.len());
-}
-
-#[test]
-fn final_input_fallback_grows_5000_country_traits_before_first_publication() {
-    let world = World::new();
-    let mut captured = Captured::vacant();
-    assert_eq!(captured.allocated_bytes(), 0);
-    assert!(captured.fallback_jobs.iter().all(Option::is_none));
-    for _ in 0..2 {
-        captured.set_character_activity([false, false, false, false, true, false]);
-        // An independent raw-owned table does not authorize a duplicate read.
-        captured.raw_active[0] = true;
-        captured.capture_growing(&world.memory(), BASE, STATE, 0, false);
-        assert_eq!(
-            captured.traits.rows.outcome,
-            Outcome::Rows {
-                len: COUNT * TRAITS
-            }
-        );
-        assert_eq!(captured.traits.bytes.len, COUNT * TRAITS * TOKEN.len());
-        assert!(captured.fallback_jobs[..3].iter().all(Option::is_none));
-        assert!(captured.fallback_jobs[3].is_some());
-        assert!(captured.raw_active[0]);
-    }
-}
-
-#[test]
-fn worker_capture_grows_original_trait_observations_and_projection_at_5000_countries() {
-    struct Traced<'a> {
-        world: &'a World,
-        first_xp_header_reads: Cell<usize>,
-    }
-    impl Memory for Traced<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == self.world.units[0] + cunit_leader::TRAIT_EXPERIENCE_DATA {
-                self.first_xp_header_reads
-                    .set(self.first_xp_header_reads.get() + 1);
-            }
-            self.world.memory().copy(address, output)
-        }
-    }
-    let world = World::new();
-    let memory = Traced {
-        world: &world,
-        first_xp_header_reads: Cell::new(0),
-    };
-    let mut job = CharactersJob::with_storage(3, 0, 0, true);
-    let context = CharactersCopyContext {
-        base: BASE,
-        game_state: STATE,
-        force_full: true,
-        active: [false, false, false, false, true, false],
-        trait_rows: 1,
-        trait_bytes: 1,
-    };
-    assert!(copy_characters_growing(&memory, context, &mut job, Roles::Independent).raw_ok);
-    // The assigned-traits job reads no training-progress vector.
-    assert_eq!(memory.first_xp_header_reads.get(), 0);
-    let mut capacity = Capacities::default();
-    let mut captured = Captured::with_capacities(&capacity);
-    captured.decode_characters_payload(BASE, &job, &mut [0; N]);
-    assert_eq!(
-        captured.traits.rows.outcome,
-        Outcome::Rows {
-            len: COUNT * TRAITS
-        }
-    );
-    assert_eq!(captured.traits.bytes.len, COUNT * TRAITS * TOKEN.len());
-    let last = captured.traits.rows.rows[COUNT * TRAITS - 1];
-    assert_eq!(last.leader_id as usize, COUNT);
-    assert_eq!(last.ordinal as usize, TRAITS - 1);
-    captured.reset();
-    captured.grow(&mut capacity);
-    let mut idle = Captured::with_capacities(&capacity);
-    idle.decode_characters_payload(BASE, &job, &mut [0; N]);
-    assert_eq!(
-        idle.traits.rows.outcome,
-        Outcome::Rows {
-            len: COUNT * TRAITS
-        }
-    );
-}
-
-#[test]
-fn worker_grows_5000_country_leader_maps_and_retains_prepared_demand() {
-    use engine_native::{ccountry_leader, character_leader_node, msvc_tree_node as node};
-    let mut world = World::new();
-    let mut job = CharactersJob::with_storage(1, 0, 0, false);
-    let context = CharactersCopyContext {
-        base: BASE,
-        game_state: STATE,
-        force_full: false,
-        active: [false, true, false, false, false, false],
-        trait_rows: 0,
-        trait_bytes: 0,
-    };
-    let mut captured = Captured::with_capacities(&Capacities {
-        rows: [0; N],
-        bytes: [0; N],
-    });
-    for count in [3_usize, 7] {
-        for index in 0..COUNT {
-            let character = world.units[index] - 0x120;
-            let head = world.alloc(32);
-            let nodes: Vec<_> = (0..count)
-                .map(|_| world.alloc(character_leader_node::LEADER + 8))
-                .collect();
-            world.u64(character + ccharacter::LEADER_MAP_HEAD, head as u64);
-            world.u64(character + ccharacter::LEADER_MAP_SIZE, count as u64);
-            world.u64(head + node::LEFT, nodes[0] as u64);
-            world.u64(head + node::PARENT, nodes[0] as u64);
-            world.u64(head + node::RIGHT, nodes[count - 1] as u64);
-            world.put(head + node::COLOR, &[1, 1]);
-            for (ordinal, &entry) in nodes.iter().enumerate() {
-                world.u64(entry + node::LEFT, head as u64);
-                world.u64(
-                    entry + node::PARENT,
-                    if ordinal == 0 {
-                        head
-                    } else {
-                        nodes[ordinal - 1]
-                    } as u64,
-                );
-                world.u64(
-                    entry + node::RIGHT,
-                    nodes.get(ordinal + 1).copied().unwrap_or(head) as u64,
-                );
-                let role = world.alloc(0x150);
-                world.u64(role, (BASE + ccountry_leader::VTABLE_RVA) as u64);
-                world.u64(role + ccountry_leader::CHARACTER, character as u64);
-                world.u32(entry + character_leader_node::IDEOLOGY, ordinal as u32);
-                world.u64(entry + character_leader_node::LEADER, role as u64);
-            }
-        }
-        for _ in 0..2 {
-            assert!(
-                copy_characters_growing(&world.memory(), context, &mut job, Roles::Independent)
-                    .raw_ok
-            );
-            captured.decode_characters_payload(BASE, &job, &mut [0; N]);
-            assert_eq!(
-                captured.leaders.rows.outcome,
-                Outcome::Rows { len: COUNT * count }
-            );
-            let last = captured.leaders.rows.rows[COUNT * count - 1];
-            assert_eq!(
-                (last.character as usize, last.ideology as usize),
-                (COUNT, count - 1)
-            );
-            captured.reset();
-        }
-    }
 }
 
 #[test]

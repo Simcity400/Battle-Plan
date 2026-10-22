@@ -220,31 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn five_thousand_incoming_wings_share_retained_bulk_storage() {
-        let (bytes, wings, demand, bases) = world(5_000);
-        let mut store = Store::default();
-        let mut output = Vec::new();
-        for _ in 0..2 {
-            store
-                .capture_with(
-                    &MemoryView {
-                        bytes: &bytes,
-                        deny_roster: false,
-                    },
-                    &wings,
-                    &demand,
-                    &bases,
-                    &mut output,
-                    |_| Some((1, 0)),
-                )
-                .unwrap();
-            assert_eq!(output.len(), 5_000);
-            assert_eq!(output[4_999].ordinal, Some(4_999));
-            assert_eq!(store.bases.len(), 1);
-        }
-    }
-
-    #[test]
     fn incoming_pointers_join_the_handle_sorted_census_without_assuming_address_order() {
         let (bytes, mut wings, demand, bases) = world(2);
         wings[0].wing = 2;

@@ -503,24 +503,10 @@ impl LeaderCache {
             None => Outcome::Rows { len },
         };
         if matches!(self.outcome, Outcome::Rows { .. }) {
-            self.current
-                .entries
-                .sort_unstable_by_key(|entry| entry.certificate.pointer);
-            // A pointer occurring twice names no single held read.
-            let entries = &mut self.current.entries;
-            let mut index = 0;
-            while index < entries.len() {
-                let pointer = entries[index].certificate.pointer;
-                let end = entries[index..]
-                    .iter()
-                    .position(|entry| entry.certificate.pointer != pointer)
-                    .map_or(entries.len(), |offset| index + offset);
-                if end - index > 1 {
-                    entries.drain(index..end);
-                } else {
-                    index = end;
-                }
-            }
+            crate::extended::characters::sort_dropping_repeated(
+                &mut self.current.entries,
+                |entry| entry.certificate.pointer,
+            );
             self.finished = true;
             // Carried whole only when every occurrence holds a certificate;
             // a duplicated pointer dropped its entries and is read afresh.

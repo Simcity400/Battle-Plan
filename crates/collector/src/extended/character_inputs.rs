@@ -253,18 +253,6 @@ impl Captured {
         self.capture_mode(memory, base, game_state, hour, force_full, true)
     }
 
-    #[cfg(test)]
-    fn capture_fixed(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
-        self.capture_mode(memory, base, game_state, hour, force_full, false)
-    }
-
     /// The hour's walk over the roster job's admitted role census, carrying
     /// each certified character's country-leader and advisor rows from
     /// `store`. Without a census the roster is walked and `store` forgets.
@@ -826,14 +814,6 @@ mod tests {
         );
         captured.grow(&mut capacity);
         assert!(capacity.values >= 1 << 20);
-    }
-
-    #[test]
-    fn cold_character_input_defaults_have_no_population_or_text_capacity() {
-        assert_eq!(
-            Captured::with_capacities(&Capacities::default()).allocated_bytes(),
-            0
-        );
     }
 
     #[test]

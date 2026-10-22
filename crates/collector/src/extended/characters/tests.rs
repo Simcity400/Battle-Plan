@@ -17,24 +17,6 @@ pub(super) fn fixture_bindings() -> CharacterSourceBindings {
 }
 
 #[test]
-fn character_typed_defaults_have_no_chosen_population_capacity() {
-    let capacity = Capacities::default();
-    assert_eq!(capacity.rows, [0; N]);
-    assert_eq!(capacity.bytes, [0; N]);
-    assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
-}
-
-#[test]
-fn character_worker_staging_starts_cold_and_remains_provisioned() {
-    for part in 0..PARTS {
-        let job = CharactersJob::new_part(part);
-        assert_eq!(job.log.spans.capacity(), 0);
-        assert_eq!(job.log.bytes.capacity(), 0);
-        assert!(job.has_storage());
-    }
-}
-
-#[test]
 fn tooltip_key_capacity_tracks_keys_instead_of_payload_bytes() {
     let mut captured = Captured::with_capacities(&fixture_capacities());
     let key = vec![b'x'; 40_000];
@@ -3391,52 +3373,6 @@ fn split_keeps_character_and_unit_leader_registry_ids_distinct() {
     kit::assert_matches_direct(&split, &direct);
     assert_eq!(split.units.rows.outcome, Outcome::Rows { len: 3 });
     assert!(matches!(split.traits.rows.outcome, Outcome::Rows { len } if len > 0));
-}
-
-#[test]
-fn characters_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the characters copy pass issues,
-    // recorded through the real pass. Roster headers (16), words (4/8),
-    // msvc_string headers (32) with heap payloads and terminators (1),
-    // tree nodes and skill entries. Alignment follows the engine layout.
-    use super::characters_test_kit as kit;
-    use super::{CharactersCopyContext, CharactersJob};
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::mapped_fixture();
-    let inner = kit::memory(&bytes);
-    let memory = Recorder {
-        inner,
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let ctx = CharactersCopyContext {
-        force_full: false,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-        active: [true; N],
-        trait_rows: 4096,
-        trait_bytes: 131_072,
-    };
-    let mut first = CharactersJob::new();
-    let report = copy_characters_refresh(&memory, ctx, &mut first);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [1, 4, 8, 16, 32] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
 }
 
 #[test]

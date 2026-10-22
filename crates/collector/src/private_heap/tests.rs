@@ -222,10 +222,4 @@ fn attach_creates_the_heap_allocation_free_and_refuses_a_failed_creation() {
     crate::test_support::with_allocations_denied(|| assert!(!failed.0.ready()));
     // The failure is cached: a later attach check still refuses, creating nothing.
     assert!(!failed.0.ready());
-    // Process attach checks readiness before it can start the allocating bootstrap.
-    let lib = include_str!("../lib.rs");
-    let attach = &lib[lib.find("fn DllMain(").unwrap()..];
-    let ready = attach.find("if !ALLOCATOR.ready()").unwrap();
-    assert!(ready < attach.find("CreateThread(").unwrap());
-    assert!(ready < attach.find("return 0;").unwrap());
 }

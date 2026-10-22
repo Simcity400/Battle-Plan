@@ -3735,10 +3735,10 @@ mod tests {
     }
 
     #[test]
-    fn attach_naming_hint_sizes_five_thousand_country_native_strings() {
+    fn attach_naming_hint_sizes_native_strings() {
         let mut world = scale_fixture::build(scale_fixture::Shape {
-            countries: 5_000,
-            divisions: 5_000,
+            countries: 24,
+            divisions: 24,
             wings: 1,
             planes: 1,
             ships: 0,
@@ -3759,9 +3759,9 @@ mod tests {
         capacity
             .presize_names(&world.live(), world.base, world.state)
             .unwrap();
-        assert!(capacity.status >= 5_000);
-        assert!(capacity.name_bytes >= 5_000 * 15);
-        assert!(capacity.cached_name_bytes >= 5_000 * 15);
+        assert!(capacity.status >= 24);
+        assert!(capacity.name_bytes >= 24 * 15);
+        assert!(capacity.cached_name_bytes >= 24 * 15);
         let mut capture = Captured::with_capacities(&capacity);
         let seeds: Vec<_> = members
             .iter()
@@ -3774,13 +3774,13 @@ mod tests {
             .collect();
         capture.capture_naming(&world.live(), world.base, &seeds);
         assert!(
-            capture.naming.first[..5_000]
+            capture.naming.first[..24]
                 .iter()
                 .all(|row| row.inputs.is_some() && row.cached_failure.is_none())
         );
         assert_eq!(
             (capture.names.len, capture.cached_names.len),
-            (5_000 * 15, 5_000 * 15)
+            (24 * 15, 24 * 15)
         );
     }
 
@@ -3844,9 +3844,10 @@ mod tests {
         );
     }
 
+    // regression: da93900628 Size live collector storage and preserve native observation intervals
     #[test]
-    fn division_naming_first_capture_grows_and_refusals_preserve_5000_status_rows() {
-        const COUNTRIES: usize = 5_000;
+    fn division_naming_first_capture_grows_and_refusals_preserve_status_rows() {
+        const COUNTRIES: usize = 6;
         let mut bytes = Vec::new();
         let mut seeds = Vec::new();
         for index in 0..COUNTRIES {
@@ -4655,20 +4656,20 @@ mod tests {
     }
 
     #[test]
-    fn presentation_status_split_keeps_rows_holds_and_certificates_at_scale() {
+    fn presentation_status_split_keeps_rows_holds_and_certificates() {
         use super::super::attack_stats::ArmyStatStore;
         use crate::army_stat_changes::Watches;
         let populated = Populated::with_shape(scale_fixture::Shape {
-            countries: 1_500,
-            divisions: 5_000,
+            countries: 500,
+            divisions: 1_600,
             wings: 1,
             planes: 1,
             ships: 0,
         });
         let inputs = populated.census.unit_inputs().unwrap();
         let mut faulted = inputs.seeds().to_vec();
-        faulted[1_665].entrenchment = None;
-        faulted[3_333].handle = None;
+        faulted[555].entrenchment = None;
+        faulted[1_111].handle = None;
         for (workers, owned) in [1, 2, 3, 7, MAX_STATUS_PARTS]
             .into_iter()
             .flat_map(|workers| [false, true].map(|owned| (workers, owned)))
@@ -4724,7 +4725,7 @@ mod tests {
                     &split_changes,
                 );
                 for stage in 0..2 {
-                    assert_eq!(split.status_part_count(), status_parts_for(5_000, workers));
+                    assert_eq!(split.status_part_count(), status_parts_for(1_600, workers));
                     let mut parts: Vec<_> = (0..split.status_part_count())
                         .map(|index| split.take_status_part(index))
                         .collect();

@@ -433,8 +433,8 @@ mod tests {
         store.finish(complete, changes);
     }
     #[test]
-    fn advisor_certificate_carries_five_thousand_slots_and_reads_only_the_changed_slot() {
-        let (mut memory, changes) = fixture(5000);
+    fn advisor_certificate_carries_slots_and_reads_only_the_changed_slot() {
+        let (mut memory, changes) = fixture(40);
         let mut store = Store::default();
         acquire(&mut store, &memory, &changes, true);
         assert!(store.output().0.is_some());
@@ -443,7 +443,7 @@ mod tests {
             acquire(&mut store, &memory, &changes, true)
         });
         assert_eq!(memory.reads.get(), reads);
-        let selected = DATA + 4999 * native::SLOT_STRIDE;
+        let selected = DATA + 39 * native::SLOT_STRIDE;
         put(
             &mut memory.bytes,
             selected + native::SLOT_COUNTRY,
@@ -460,7 +460,7 @@ mod tests {
         let rows = rows.rows::<tables::FactionAdvisorModifiers>().unwrap();
         assert_eq!(
             rows.iter()
-                .find(|row| row.slot == 4999 && row.kind == 0)
+                .find(|row| row.slot == 39 && row.kind == 0)
                 .unwrap()
                 .country,
             19

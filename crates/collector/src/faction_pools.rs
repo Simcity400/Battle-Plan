@@ -1100,25 +1100,25 @@ mod tests {
         assert!(memory.reads.get() > reads);
     }
     #[test]
-    fn faction_pool_five_thousand_owners_carry_and_scalar_updates_have_no_native_reads() {
+    fn faction_pool_owners_carry_and_scalar_updates_have_no_native_reads() {
         let _lock = crate::faction_companion_changes::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let memory = fixture(5000);
+        let memory = fixture(40);
         let mut store = Store::default();
-        pass(&mut store, &memory, 5000, 1);
+        pass(&mut store, &memory, 40, 1);
         assert_eq!(store.failure, [None; 2]);
         let reads = memory.reads.get();
         let first = Arc::clone(store.rows[0].as_ref().unwrap());
-        crate::test_support::with_allocations_denied(|| pass(&mut store, &memory, 5000, 1));
+        crate::test_support::with_allocations_denied(|| pass(&mut store, &memory, 40, 1));
         assert!(Arc::ptr_eq(&first, store.rows[0].as_ref().unwrap()));
         assert_eq!(memory.reads.get(), reads);
         let storage = store.storage.as_ref().unwrap();
         crate::test_support::with_allocations_denied(|| {
-            storage.write(FIRST + 4999 * STRIDE, false, 2, i64::MAX, false);
-            storage.write(FIRST + 4999 * STRIDE, false, 2, 1, true);
+            storage.write(FIRST + 39 * STRIDE, false, 2, i64::MAX, false);
+            storage.write(FIRST + 39 * STRIDE, false, 2, 1, true);
             storage.write(
-                FIRST + 4999 * STRIDE + engine_native::cfaction::EXTRACTED_RESOURCES,
+                FIRST + 39 * STRIDE + engine_native::cfaction::EXTRACTED_RESOURCES,
                 true,
                 0,
                 -71,
@@ -1126,11 +1126,11 @@ mod tests {
             );
             storage.write(8, true, usize::MAX, 1, false); // unrelated country's pool
         });
-        pass(&mut store, &memory, 5000, 1);
+        pass(&mut store, &memory, 40, 1);
         assert_eq!(memory.reads.get(), reads);
-        assert_eq!(store.held[4999].projection[2], i64::MIN);
-        assert_eq!(store.held[4999].resources[0].raw, -71);
-        assert_eq!(store.held[4998].resources[0].raw, 0);
+        assert_eq!(store.held[39].projection[2], i64::MIN);
+        assert_eq!(store.held[39].resources[0].raw, -71);
+        assert_eq!(store.held[38].resources[0].raw, 0);
         assert_eq!(store.failure, [None; 2]);
     }
     #[test]

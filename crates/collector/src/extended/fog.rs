@@ -965,11 +965,6 @@ impl Captured {
         captured.registrations_snapshot()
     }
 
-    /// Dense resolver length and the live link demand last observed.
-    pub(crate) fn resolver_sizes(&self) -> (usize, usize) {
-        (self.resolved.len(), self.required_links)
-    }
-
     /// Snapshot of the decoded registrations half for harness comparison.
     pub(crate) fn registrations_snapshot(&self) -> RegistrationsSnapshot {
         RegistrationsSnapshot {

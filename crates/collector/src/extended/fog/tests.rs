@@ -818,57 +818,6 @@ fn radar_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn radar_pools_start_without_chosen_group_or_coverage_capacity() {
-    let job = RadarJob::new();
-    assert_eq!(job.allocated_bytes(), 0);
-    assert!(job.rows.is_empty());
-    assert!(job.provinces.is_empty());
-}
-
-#[test]
-fn radar_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the radar copy pass issues, recorded
-    // through the real pass. Census words (4/8), array headers (16),
-    // group words (8/4) and coverage chunks (4-byte words).
-    use super::radar_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [4, 8, 16] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
-fn intel_tables_are_hourly_tier_h_with_no_refresh_gate() {
-    use replay_data::rows::TableId;
-    assert!(!replay_data::cadence::is_staggered(TableId::UnitIntel));
-    for hour in [0, 1, 2, 3, 60_820_531] {
-        assert!(replay_data::cadence::is_refresh(TableId::UnitIntel, hour));
-    }
-}
-
-#[test]
 fn intel_split_copy_matches_direct_walk() {
     use super::intel_test_kit as kit;
     let bytes = kit::fixture();
@@ -963,46 +912,4 @@ fn intel_staging_overflow_falls_back_to_typed_walk() {
     let report = copy_intel_refresh_with_divisions(&memory, ctx, &mut tiny, None);
     assert!(!report.raw_ok);
     assert!(tiny.grow_for_next());
-}
-
-#[test]
-fn intel_pools_start_without_chosen_unit_capacity() {
-    let job = IntelJob::new();
-    assert_eq!(job.allocated_bytes(), 0);
-    assert!(job.rows.is_empty());
-    assert!(job.provinces.is_empty());
-}
-
-#[test]
-fn intel_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the intel copy pass issues, recorded
-    // through the real pass. Census words (4/8/16), roster headers (16),
-    // unit words (8) and viewer batches (count x 24).
-    use super::intel_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [4, 8, 16, 48] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
 }

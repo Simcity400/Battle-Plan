@@ -826,6 +826,24 @@ impl Captured {
     }
 }
 
+/// A pointer occurring twice names no single held read, so all its entries go.
+pub(crate) fn sort_dropping_repeated<T>(entries: &mut Vec<T>, pointer: impl Fn(&T) -> usize) {
+    entries.sort_unstable_by_key(&pointer);
+    let mut index = 0;
+    while index < entries.len() {
+        let at = pointer(&entries[index]);
+        let end = entries[index..]
+            .iter()
+            .position(|entry| pointer(entry) != at)
+            .map_or(entries.len(), |offset| index + offset);
+        if end - index > 1 {
+            entries.drain(index..end);
+        } else {
+            index = end;
+        }
+    }
+}
+
 fn elapsed(begin: i64) -> u64 {
     (qpc() - begin).max(0) as u64
 }

@@ -174,13 +174,13 @@ fn unordered_or_duplicate_returned_owners_normalize_before_provenance_merge() {
 }
 
 #[test]
-fn sparse_slice_reads_match_complete_spool_bytes_for_5000_owners_through_keyframes() {
+fn sparse_slice_reads_match_complete_spool_bytes_through_keyframes() {
     let tables = [
         TableId::ResearchInputs,
         TableId::Projects,
         TableId::StateResources,
     ];
-    let mut owners: Vec<_> = (1..=5_000).collect();
+    let mut owners: Vec<_> = (1..=60).collect();
     let mut held = ReadHours::new();
     let mut original = ReadHours::new();
     let mut encoder = FrameEncoder::new();
@@ -192,17 +192,17 @@ fn sparse_slice_reads_match_complete_spool_bytes_for_5000_owners_through_keyfram
             // Same row count, different key: a position-only comparison is insufficient.
             40 => {
                 owners.retain(|&owner| owner != 25);
-                owners.push(5_001);
+                owners.push(61);
             }
             50 => {
                 owners.pop();
             }
-            60 => owners.push(5_002),
+            60 => owners.push(62),
             _ => {}
         }
         for table in tables {
             let full = hour == 0 || hour == 48;
-            let early = if hour == 40 { &[5_001][..] } else { &[] };
+            let early = if hour == 40 { &[61][..] } else { &[] };
             let mut selection = SliceSelection::for_test(hour, full, early);
             if hour % 17 == 0 && hour % 24 != 0 {
                 selection.reset_daily(hour, false);

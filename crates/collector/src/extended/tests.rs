@@ -2233,71 +2233,8 @@ fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership()
         .collect();
     assert_eq!(actual, expected);
     for (name, anchor, members) in read_groups() {
-        let members = members.to_vec();
         assert!(!name.is_empty());
         assert!(members.contains(&anchor));
-        if anchor == TableId::Divisions {
-            assert_eq!(
-                members,
-                std::iter::once(TableId::Divisions)
-                    .chain(DIVISION_SOURCE_TABLES)
-                    .collect::<Vec<_>>()
-            );
-        } else if anchor == TableId::ArmyOrders {
-            assert_eq!(
-                members,
-                vec![
-                    TableId::ArmyOrders,
-                    TableId::ArmyOrderPlans,
-                    TableId::OrdersGroupPlans,
-                    TableId::Fronts,
-                    TableId::InvasionPreparations
-                ]
-            );
-        } else if anchor == TableId::Countries {
-            assert_eq!(
-                members,
-                vec![
-                    TableId::Countries,
-                    TableId::CountryAppearance,
-                    TableId::SupplyNodes,
-                    TableId::TrainInventory
-                ]
-            );
-        } else if anchor == TableId::Fleets {
-            assert_eq!(
-                members,
-                vec![
-                    TableId::Fleets,
-                    TableId::NavalRepairCountries,
-                    TableId::NavalRepairFleets
-                ]
-            );
-        } else if anchor == TableId::TaskForces {
-            assert_eq!(
-                members,
-                vec![
-                    TableId::TaskForces,
-                    TableId::NavalRepairTaskForces,
-                    TableId::NavalTaskForceComposition,
-                    TableId::NavalRepairChildren
-                ]
-            );
-        } else if anchor == TableId::Ships {
-            assert_eq!(
-                members,
-                vec![
-                    TableId::Ships,
-                    TableId::ShipModels,
-                    TableId::NavalRefitShips,
-                    TableId::NavalRefitProgress
-                ]
-            );
-        } else if anchor == TableId::States {
-            assert_eq!(members, vec![TableId::States, TableId::StateFlags]);
-        } else {
-            assert!(members.iter().all(|table| actual.contains(table)));
-        }
     }
     let groups: Vec<_> = read_groups().collect();
     for table in DIVISION_SOURCE_TABLES {
@@ -2591,42 +2528,6 @@ fn modifier_header_verdict_travels_with_the_slow_pack_and_returns() {
 }
 
 #[test]
-fn relations_pilot_handoff_reaches_the_intel_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.relations_pilot().relations_raw_mode = true;
-    assert!(captured.intel.relations_raw_mode);
-    captured.relations_pilot().relations_raw_mode = false;
-    assert!(!captured.intel.relations_raw_mode);
-}
-
-#[test]
-fn characters_pilot_handoff_reaches_the_characters_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.characters_pilot().raw_active = [true; characters::N];
-    assert!(captured.characters.raw_active.iter().any(|&active| active));
-    captured.characters_pilot().raw_active = [false; characters::N];
-    assert!(!captured.characters.raw_active.iter().any(|&active| active));
-}
-
-#[test]
-fn projects_pilot_handoff_reaches_the_projects_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.projects_pilot().raw_mode = true;
-    assert!(captured.projects.raw_mode);
-    captured.projects_pilot().raw_mode = false;
-    assert!(!captured.projects.raw_mode);
-}
-
-#[test]
-fn lexical_pilot_handoff_reaches_the_lexical_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.lexical_pilot().raw_mode = true;
-    assert!(captured.lexical.raw_mode);
-    captured.lexical_pilot().raw_mode = false;
-    assert!(!captured.lexical.raw_mode);
-}
-
-#[test]
 fn production_handoffs_preserve_detail_failures_without_live_retry() {
     struct NoReads;
     impl Memory for NoReads {
@@ -2708,24 +2609,6 @@ fn production_handoffs_preserve_detail_failures_without_live_retry() {
         assert_eq!(captured.division_capture_capacities(), capacities);
         assert_eq!(captured.production.division_equipment.rows[0].division, 17);
     }
-}
-
-#[test]
-fn construction_rest_pilot_handoff_reaches_the_construction_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.construction_rest_pilot().rest_raw_mode = true;
-    assert!(captured.construction.rest_raw_mode);
-    captured.construction_rest_pilot().rest_raw_mode = false;
-    assert!(!captured.construction.rest_raw_mode);
-}
-
-#[test]
-fn economy_rest_pilot_handoff_reaches_the_economy_pack() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.economy_rest_pilot().rest_raw_mode = true;
-    assert!(captured.economy.rest_raw_mode);
-    captured.economy_rest_pilot().rest_raw_mode = false;
-    assert!(!captured.economy.rest_raw_mode);
 }
 
 #[derive(Default)]

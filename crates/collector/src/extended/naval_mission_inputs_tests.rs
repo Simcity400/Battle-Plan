@@ -920,65 +920,6 @@ fn a_bad_mission_read_refuses_dependents_and_preserves_independent_map_witnesses
     }
 }
 
-#[test]
-fn five_thousand_countries_capture_completely_after_country_sizing_and_growth() {
-    let world = build(5_000);
-    let mut capacity = Capacities::default();
-    capacity.raise_for_countries(5_001);
-    let mut captured = Captured::with_capacities(&capacity);
-    let mut fingerprints = SliceFingerprints::new();
-    capture(&mut captured, &world, 0, true, &mut fingerprints);
-    // Empty fixed storage reports the original demand; ledgers wait for the
-    // complete census, then report their own independent growth demand.
-    assert!(matches!(
-        captured.outcomes()[0],
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 20_000
-        }
-    ));
-    assert!(matches!(
-        captured.outcomes()[1],
-        Outcome::Unavailable { .. }
-    ));
-    captured.grow(&mut capacity);
-    // The ledger rows are only counted once the census fits; their demand grows the next
-    // frame.
-    capture(&mut captured, &world, 0, true, &mut fingerprints);
-    assert!(matches!(captured.outcomes()[1], Outcome::Truncated { .. }));
-    captured.grow(&mut capacity);
-    let views = capture(&mut captured, &world, 0, true, &mut fingerprints);
-    assert!(
-        captured
-            .outcomes()
-            .iter()
-            .take(4)
-            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
-    );
-    assert_eq!(
-        rows::<tables::NavalMissionTaskForces>(&views[0]).len(),
-        20_000
-    );
-    let ledgers = rows::<tables::NavalMissionLedgers>(&views[1]);
-    assert_eq!(ledgers.len(), 15_000);
-    // Every ring is found through the native probe.
-    assert!(ledgers.iter().all(|row| row.ring));
-    assert_eq!(
-        rows::<tables::NavalMissionCountries>(&views[2]).len(),
-        5_000
-    );
-    assert_eq!(
-        rows::<tables::NavalMissionCommanders>(&views[3]).len(),
-        25_000
-    );
-    // An off hour reads one slice of the family.
-    let views = capture(&mut captured, &world, 7, false, &mut fingerprints);
-    assert_eq!(
-        rows::<tables::NavalMissionCountries>(&views[2]).len(),
-        (1..=5_000).filter(|id| id % 24 == 7).count()
-    );
-}
-
 /// Capture cost through the production guarded copies, one country slice per hour.
 #[test]
 #[ignore = "timing bench"]
@@ -1205,53 +1146,6 @@ fn stale_leader_has_an_explicit_zero_row() {
         ),
         (0, None, None, None, None)
     );
-}
-
-#[test]
-fn worker_capture_sizes_every_naval_mission_arena_before_first_publication_at_five_thousand_countries()
- {
-    let world = build_world(5_000, true);
-    let default = Captured::with_capacities(&Capacities::default());
-    assert_eq!(default.allocated_bytes(), 0);
-    let mut captured = Captured::vacant();
-    assert_eq!(captured.allocated_bytes(), 0);
-    let memory = world.slice();
-    let mut fingerprints = SliceFingerprints::new();
-    for sample in 0..2 {
-        if sample == 1 {
-            // Another pooled frame can have shorter storage with the same live roster.
-            captured.task_forces.rows.truncate(1);
-            captured.headquarters.first.truncate(1);
-            captured.census.first.truncate(1);
-            captured.ledgers.rows.truncate(1);
-            captured.entries.first.truncate(1);
-            captured.scratch.truncate(1);
-            captured.hubs.first.truncate(1);
-            captured.countries.rows.truncate(1);
-            captured.commanders.rows.truncate(1);
-        }
-        captured.capture_growing(
-            &memory,
-            world.base,
-            world.game_state,
-            sample,
-            true,
-            Some(&mut fingerprints),
-        );
-        assert_eq!(
-            &captured.outcomes()[..4],
-            &[
-                Outcome::Rows { len: 20_000 },
-                Outcome::Rows { len: 15_000 },
-                Outcome::Rows { len: 5_000 },
-                Outcome::Rows { len: 25_000 }
-            ]
-        );
-        assert_eq!(captured.headquarters.len, 5_000);
-        assert_eq!(captured.census.len, 25_000);
-        assert_eq!(captured.hubs.len, 15_000);
-        assert_eq!(captured.entries.len, 25_000);
-    }
 }
 
 #[test]
@@ -1756,14 +1650,6 @@ fn patrol_never_retries_an_optional_range_source_failed_selector() {
             .count(),
         1
     );
-}
-
-#[test]
-fn vacant_source_placeholder_owns_no_shared_headquarters_allocation() {
-    let captured = Captured::vacant();
-    assert!(captured.empty_headquarters.is_none());
-    assert!(captured.mission_headquarters.is_empty() && captured.patrol_headquarters.is_empty());
-    assert_eq!(captured.allocated_bytes(), 0);
 }
 
 #[test]

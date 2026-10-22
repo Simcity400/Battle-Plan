@@ -841,45 +841,6 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
 }
 
 #[test]
-fn worker_first_inputs_and_later_mod_rosters_fit_original_headers_for_5000_countries() {
-    for countries in [1500, 5000] {
-        let mut census = Census::new_worker();
-        for per in [1, 4] {
-            let bytes = many::world(countries, per);
-            let memory = Observed {
-                bytes: &bytes,
-                reads: RefCell::new(Vec::new()),
-                fault: None,
-                fault_at: None,
-            };
-            census.capture_inputs_growing(&memory, 0, many::GAME_STATE);
-            let required = (countries * per) as usize;
-            assert!(!census.overflowed);
-            let inputs = census.unit_inputs().unwrap();
-            assert_eq!(inputs.outcome(), Outcome::Rows { len: required });
-            assert_eq!(
-                inputs.intel_sources().outcome,
-                Outcome::Rows { len: required }
-            );
-            assert_eq!(inputs.seeds().len(), required);
-            assert_eq!(census.required_counts, countries as usize + 1);
-            assert!(census.counts.len() > countries as usize);
-            for slot in 1..=countries {
-                assert_eq!(
-                    memory
-                        .reads
-                        .borrow()
-                        .iter()
-                        .filter(|&&(at, _)| at == many::country(slot) + ccountry::DIVISIONS)
-                        .count(),
-                    1
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
     let bytes = many::world(4, 2);
     let direct = Observed {

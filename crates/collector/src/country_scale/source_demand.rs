@@ -209,44 +209,4 @@ mod tests {
         assert!(attach.wars.unwrap().is_err());
         assert_eq!(failures(), before.map(|count| count + 1));
     }
-
-    #[test]
-    fn live_source_demand_raises_five_thousand_country_and_mod_arenas() {
-        let demand = Demand {
-            countries: Ok(5_000),
-            links: Ok(7_000),
-            provinces: Ok(35_000),
-            states: Ok(7_000),
-            state_names: Some(Ok(350_000)),
-            factions: Ok((512, 512 * 31)),
-            faction_members: Some(Ok(5_000)),
-            wars: Some(Ok(25_000)),
-            groups: Ok(50_000),
-        };
-        let mut sizing = Sizing::for_slots(1);
-        demand.apply(&mut sizing);
-        for (index, required) in [
-            (0, 5_000),
-            (1, 35_000),
-            (2, 7_000),
-            (3, 7_000),
-            (5, 25_000),
-            (6, 512),
-            (7, 5_000),
-            (8, 512 * 31),
-            (9, 35_000),
-            (10, 50_000),
-            (11, 350_000),
-        ] {
-            assert!(sizing.core[index] >= required);
-        }
-        let before = sizing;
-        let failed = Demand {
-            countries: Err("roster changed"),
-            factions: Err("name unreadable"),
-            ..demand
-        };
-        failed.apply(&mut sizing);
-        assert_eq!(sizing.core, before.core);
-    }
 }

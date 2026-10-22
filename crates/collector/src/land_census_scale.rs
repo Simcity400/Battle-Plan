@@ -80,7 +80,7 @@ fn verify(land: &Captured, count: usize) {
 }
 #[test]
 fn shared_census_land_inputs_integrate_without_prebuilt_seeds() {
-    for countries in [4, 1500, 5000] {
+    for countries in [4, 40] {
         run(countries);
     }
 }

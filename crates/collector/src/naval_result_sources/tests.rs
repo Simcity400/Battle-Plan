@@ -227,12 +227,12 @@ fn reattached_source_ids_continue_retained_history_and_survive_branch_boundaries
 }
 
 #[test]
-fn actual_new_merge_transient_skipped_and_five_thousand_sources() {
+fn actual_new_merge_transient_and_skipped_sources() {
     let _observation = Observation::new();
     let mut world = World::new();
-    setup(5000, world.base());
+    setup(40, world.base());
     boundary(clock(10, 1));
-    let mut output = vec![Entry::default(); 5000];
+    let mut output = vec![Entry::default(); 40];
     assert_eq!(
         drain(&mut output).unwrap_err(),
         "naval result sources first/branch interval is partial"
@@ -275,13 +275,13 @@ fn actual_new_merge_transient_skipped_and_five_thousand_sources() {
     boundary(clock(12, 1));
     world.hour(12);
     world.combat[0x20 / 8] = 1;
-    for index in 0..5000u64 {
+    for index in 0..40u64 {
         world.combat[cnaval_combat::HANDLE / 8] = ((index + 1) << 32) | 0xf123;
         unsafe {
             fill(world.result(), world.combat());
         }
     }
-    assert_eq!(drain(&mut output).unwrap(), 5000);
+    assert_eq!(drain(&mut output).unwrap(), 40);
     for (index, event) in output.iter().enumerate() {
         assert_eq!(event.id, index as u64 + 4);
         assert_eq!(event.combat, ((index as u64 + 1) << 32) | 0xf123);

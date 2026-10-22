@@ -14,9 +14,10 @@ fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
     put32(bytes, at + 12, count);
 }
 
+// regression: 14ed7f8ceb feat: complete Aces and GameScore native input integration
 #[test]
-fn game_score_projection_keeps_5000_countries_independent_values_and_ordered_witnesses() {
-    const COUNT: usize = 5000;
+fn game_score_projection_keeps_countries_independent_values_and_ordered_witnesses() {
+    const COUNT: usize = 3;
     let mut capacity = Capacities::default();
     capacity.raise_for_countries(COUNT + 1);
     capacity.fleets = 3;
@@ -116,7 +117,7 @@ fn game_score_projection_keeps_5000_countries_independent_values_and_ordered_wit
         rows::GameScoreAirSite::ACCESS_UNKNOWN
     );
     assert_eq!(rows[COUNT - 1].country, 0x4000_0000 + COUNT as u32 - 1);
-    assert_eq!(rows[COUNT - 1].army_count, Some(-4999));
+    assert_eq!(rows[COUNT - 1].army_count, Some(1 - COUNT as i32));
     let mut work = Work::default();
     work.observe(&capture).unwrap();
     let status = serde_json::to_value(work.status()).unwrap();

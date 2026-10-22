@@ -32,12 +32,13 @@ impl Changes for ObservedChanges {
     }
 }
 
+// regression: d1569a7b46 Share pass-local province reads in division organisation movement
 #[test]
-fn division_presentation_five_thousand_rows_share_one_experience_certificate() {
-    const DIVISIONS: usize = 5_000;
+fn division_presentation_rows_share_one_experience_certificate() {
+    const DIVISIONS: usize = 48;
     crate::sampled_verify::begin_hour(1);
     let shape = scale_fixture::Shape {
-        countries: 1_500,
+        countries: 16,
         divisions: DIVISIONS,
         wings: 1,
         planes: 1,
@@ -67,7 +68,7 @@ fn division_presentation_five_thousand_rows_share_one_experience_certificate() {
         if hour == 3 {
             // Only the independent XP writer changes. A stat/name carry must
             // not suppress this fresh value, including its signed extremes.
-            for (index, &army) in world.armies.iter().enumerate().step_by(37) {
+            for (index, &army) in world.armies.iter().enumerate().step_by(7) {
                 let at = army - world.base + carmy::EXPERIENCE;
                 let value = if index % 2 == 0 { i64::MIN } else { i64::MAX };
                 world.bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());

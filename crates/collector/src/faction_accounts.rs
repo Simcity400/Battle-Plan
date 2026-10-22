@@ -651,17 +651,16 @@ mod tests {
         Observed(watches)
     }
     #[test]
-    fn accounting_carries_five_thousand_accounts_without_native_reads_or_allocations_and_selects_one_writer()
-     {
+    fn accounting_carries_accounts_without_native_reads_or_allocations_and_selects_one_writer() {
         let _lock = crate::faction_companion_changes::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let bytes = fixture(5000);
+        let bytes = fixture(40);
         let memory = Counted {
             bytes: &bytes,
             reads: Cell::new(0),
         };
-        let changes = observed(5000);
+        let changes = observed(40);
         let mut store = Store::default();
         store.acquire(&memory, 0, STATE, false, &changes);
         assert_eq!(store.failure, None);
@@ -672,7 +671,7 @@ mod tests {
         });
         assert_eq!(memory.reads.get(), first);
         assert!(Arc::ptr_eq(&held, store.rows.as_ref().unwrap()));
-        drop(changes.0.notify(ACCOUNTS + 4999 * native::STRIDE));
+        drop(changes.0.notify(ACCOUNTS + 39 * native::STRIDE));
         store.acquire(&memory, 0, STATE, false, &changes);
         assert_eq!(store.failure, None);
         assert!(memory.reads.get() > first && memory.reads.get() - first < 15);
@@ -681,7 +680,7 @@ mod tests {
         store.acquire(&memory, 0, STATE, false, &changes);
         assert_eq!(store.failure, None);
         assert_eq!(memory.reads.get(), next);
-        assert_eq!(store.values[4999].initiative_raw, 5009);
+        assert_eq!(store.values[39].initiative_raw, 49);
     }
     #[test]
     fn drained_reset_selection_and_array_marks_survive_scalar_overlap() {

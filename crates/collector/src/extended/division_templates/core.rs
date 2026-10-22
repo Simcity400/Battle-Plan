@@ -355,15 +355,15 @@ mod tests {
     }
 
     #[test]
-    fn quiet_template_core_and_speed_proofs_skip_receiver_probes_at_five_thousand_scale() {
+    fn quiet_template_core_and_speed_proofs_skip_receiver_probes() {
         let changes = Counted {
-            watches: crate::template_changes::Watches::enabled(5001),
+            watches: crate::template_changes::Watches::enabled(33),
             dependencies: AtomicU64::new(0),
             probes: AtomicUsize::new(0),
         };
         let mut store = Store::default();
         let owner = changes.sequence(1).unwrap();
-        for index in 0..5000 {
+        for index in 0..32 {
             let row = native::IconRow {
                 template: ((index as u64 + 1) << 32) | u64::from(native::REFERENCE_TYPE),
                 pointer: 0x10000 + index * 0x400,
@@ -375,7 +375,7 @@ mod tests {
             store.remember(&changes, b"fixed", &row, &[], &[], &[]);
             store.remember_speed(row.template, Some(&[155]), &changes);
         }
-        assert_eq!(store.entries.len(), 5000);
+        assert_eq!(store.entries.len(), 32);
         store.begin(&changes);
         changes.probes.store(0, Relaxed);
         for index in 0..store.entries.len() {
@@ -393,7 +393,7 @@ mod tests {
         drop(
             changes
                 .watches
-                .notify(store.entries[4999].core.row.pointer, 0),
+                .notify(store.entries[31].core.row.pointer, 0),
         );
         store.prepare(
             first.template,

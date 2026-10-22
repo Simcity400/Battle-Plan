@@ -873,32 +873,31 @@ mod tests {
         store.finish(true, changes, output);
     }
     #[test]
-    fn faction_companion_certificates_carry_five_thousand_owners_without_reads_or_allocations_and_select_one_list()
+    fn faction_companion_certificates_carry_owners_without_reads_or_allocations_and_select_one_list()
      {
         let _lock = crate::faction_companion_changes::TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let bytes = fixture(5000);
+        let bytes = fixture(40);
         let memory = Counted {
             bytes: &bytes,
             reads: Cell::new(0),
         };
-        let changes = changes(5000);
+        let changes = changes(40);
         let mut store = Store::default();
         let mut output = Captured::default();
-        acquire(&mut store, &mut output, &memory, &changes, 5000);
+        acquire(&mut store, &mut output, &memory, &changes, 40);
         assert_eq!(output.failure, [None; N]);
         let first = memory.reads.get();
         let manpower = Arc::clone(output.rows[2].as_ref().unwrap());
         crate::test_support::with_allocations_denied(|| {
-            acquire(&mut store, &mut output, &memory, &changes, 5000)
+            acquire(&mut store, &mut output, &memory, &changes, 40)
         });
         assert_eq!(memory.reads.get(), first);
         drop(
-            changes.0[0]
-                .notify(FIRST + 4999 * STRIDE + engine_native::cfaction_rule_status::STATUS),
+            changes.0[0].notify(FIRST + 39 * STRIDE + engine_native::cfaction_rule_status::STATUS),
         );
-        acquire(&mut store, &mut output, &memory, &changes, 5000);
+        acquire(&mut store, &mut output, &memory, &changes, 40);
         assert_eq!(output.failure, [None; N]);
         assert!(memory.reads.get() > first && memory.reads.get() - first < 8);
         assert!(Arc::ptr_eq(&manpower, output.rows[2].as_ref().unwrap()));

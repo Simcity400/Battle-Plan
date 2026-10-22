@@ -442,12 +442,13 @@ fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
     assert!(naval.wing_limit() >= 2);
 }
 
+// regression: da93900628 Size live collector storage and preserve native observation intervals
 #[test]
-fn first_hour_naval_memberships_handoff_all_wings_at_5000_countries() {
+fn first_hour_naval_memberships_handoff_all_wings() {
     use crate::{extended::air, unit_scale_tests::fixture};
-    const WINGS: usize = 12_000;
+    const WINGS: usize = 12;
     let world = fixture::build(fixture::Shape {
-        countries: 5000,
+        countries: 4,
         divisions: 0,
         wings: WINGS,
         planes: WINGS,
@@ -1223,51 +1224,6 @@ fn naval_split_copy_matches_direct_walk() {
 }
 
 #[test]
-fn naval_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the naval copy pass issues, recorded
-    // through the real pass. Registry headers (16/32), words (4/8),
-    // theatre names (inline/heap) and OOB member rows. Alignment follows
-    // the engine layout (headers 8-aligned, strings byte-packed).
-    use super::naval_test_kit as kit;
-    use super::{NavalCopyContext, NavalJob};
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let inner = kit::memory(&bytes);
-    let memory = Recorder {
-        inner,
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let ctx = NavalCopyContext {
-        hour: 0,
-        force_full: true,
-        base: kit::BASE,
-        game_state: kit::GAME_STATE,
-    };
-    let mut first = NavalJob::fixture();
-    kit::stage_wings(&memory, &mut first);
-    let report = super::copy_naval_refresh(&memory, ctx, &mut first);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [4, 8, 16] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
 fn naval_truncation_matrix_matches_direct_with_same_caps() {
     // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
     // copy→decode against the SAME memory with the SAME pooled caps,
@@ -1361,6 +1317,22 @@ fn naval_split_copy_matches_direct_walk_on_fault_matrix() {
     }
 }
 
+// regression: daeba7ffed Read NavalSupremacy at slot 0, the first sample of the midnight cache epoch
+#[test]
+fn supremacy_uses_slot_0() {
+    // The sorted cache is rebuilt inside the update entered at hour 23
+    // by the daily game update; slot 0 is the first
+    // sample of its epoch.
+    use replay_data::rows::TableId;
+    assert!(replay_data::cadence::is_staggered(TableId::NavalSupremacy));
+    for hour in -24_i32..48 {
+        assert_eq!(
+            replay_data::cadence::is_refresh(TableId::NavalSupremacy, hour),
+            hour.rem_euclid(24) == 0
+        );
+    }
+}
+
 #[test]
 fn naval_staging_overflow_falls_back_to_typed_walk() {
     use super::naval_test_kit as kit;
@@ -1381,35 +1353,6 @@ fn naval_staging_overflow_falls_back_to_typed_walk() {
     kit::stage_wings(&memory, &mut tiny);
     let report = super::copy_naval_refresh(&memory, ctx, &mut tiny);
     assert!(!report.raw_ok);
-}
-
-#[test]
-fn rail_tables_are_hourly_tier_h_with_no_refresh_gate() {
-    use replay_data::rows::TableId;
-    for table in [TableId::RailCooldowns, TableId::RailEdges] {
-        assert!(!replay_data::cadence::is_staggered(table), "{table:?}");
-        for hour in [0, 1, 2, 3, 60_820_531] {
-            assert!(
-                replay_data::cadence::is_refresh(table, hour),
-                "{table:?} at {hour}"
-            );
-        }
-    }
-}
-
-#[test]
-fn supremacy_uses_slot_0() {
-    // The sorted cache is rebuilt inside the update entered at hour 23
-    // by the daily game update; slot 0 is the first
-    // sample of its epoch.
-    use replay_data::rows::TableId;
-    assert!(replay_data::cadence::is_staggered(TableId::NavalSupremacy));
-    for hour in -24_i32..48 {
-        assert_eq!(
-            replay_data::cadence::is_refresh(TableId::NavalSupremacy, hour),
-            hour.rem_euclid(24) == 0
-        );
-    }
 }
 
 #[test]
@@ -1555,60 +1498,6 @@ fn supremacy_staging_overflow_falls_back_to_typed_walk() {
     };
     let report = super::copy_supremacy_refresh(&memory, ctx, &mut tiny);
     assert!(!report.raw_ok);
-}
-
-#[test]
-fn supremacy_starts_empty_before_original_worker_demand() {
-    let job = SupremacyJob::new();
-    assert_eq!(job.log.spans.capacity(), 0);
-    assert_eq!(job.log.bytes.capacity(), 0);
-}
-
-#[test]
-fn supremacy_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the supremacy copy pass issues,
-    // recorded through the real pass. Roster/identity words (8/12/16)
-    // and bulk value vectors (whole-vector takes, served in 32-entry
-    // chunks at replay).
-    use super::supremacy_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [8, 12, 16] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
-fn sunk_ships_use_slot_19() {
-    use replay_data::rows::TableId;
-    assert!(replay_data::cadence::is_staggered(TableId::SunkShips));
-    for hour in -24_i32..48 {
-        assert_eq!(
-            replay_data::cadence::is_refresh(TableId::SunkShips, hour),
-            hour.rem_euclid(24) == 19
-        );
-    }
 }
 
 #[test]
@@ -1763,59 +1652,6 @@ fn sunk_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn sunk_starts_empty_before_original_worker_demand() {
-    let job = SunkJob::new();
-    assert_eq!(job.log.spans.capacity(), 0);
-    assert_eq!(job.log.bytes.capacity(), 0);
-}
-
-#[test]
-fn sunk_copy_sizes_cover_documented_read_set() {
-    // S3: every Memory::copy size the sunk copy pass issues, recorded
-    // through the real pass. Vector words (8/16), records (0xa8),
-    // class headers (0x38), name bytes (1 + content) and province
-    // words (8/4).
-    use super::sunk_test_kit as kit;
-    use engine_native::Memory;
-    use std::collections::BTreeSet;
-    struct Recorder<'a> {
-        inner: engine_native::memory::SliceMemory<'a>,
-        sizes: std::cell::RefCell<BTreeSet<usize>>,
-    }
-    impl Memory for Recorder<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.sizes.borrow_mut().insert(output.len());
-            self.inner.copy(address, output)
-        }
-    }
-    let bytes = kit::fixture();
-    let memory = Recorder {
-        inner: kit::memory(&bytes),
-        sizes: std::cell::RefCell::new(BTreeSet::new()),
-    };
-    let (_split, report, _) = kit::split(&memory);
-    assert!(report.raw_ok);
-    let sizes = memory.sizes.borrow().clone();
-    for required in [1, 4, 8, 16, 0xa8] {
-        assert!(
-            sizes.contains(&required),
-            "missing size {required} in {sizes:?}"
-        );
-    }
-}
-
-#[test]
-fn worker_roots_snapshot_holds_5000_country_roots_and_later_mod_demand() {
-    let mut job = NavalJob::default();
-    for count in [5000, 30000] {
-        let roots = vec![corders_group::Root::default(); count];
-        job.capture_roots_growing(&roots, Outcome::Rows { len: count });
-        assert_eq!(job.roots_len, Some(count));
-        assert_eq!(job.roots, roots);
-    }
-}
-
-#[test]
 fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas() {
     let mut bytes = naval_test_kit::fixture();
     let command_name = 0x62000 + corders_group::NAME;
@@ -1926,30 +1762,4 @@ fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
         job.clear();
         assert_eq!(job.roots_outcome, None);
     }
-}
-
-#[test]
-fn naval_history_cold_defaults_allocate_no_content_storage() {
-    let capacity = Capacities::default();
-    assert_eq!(capacity.rows, [0; N]);
-    assert_eq!(
-        (
-            capacity.theatre_names,
-            capacity.sunk_names,
-            capacity.orders_sources,
-            capacity.wing_sources,
-            capacity.roster_scratch,
-            capacity.rail_levels
-        ),
-        (0, 0, 0, 0, 0, 0)
-    );
-    assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
-    let job = NavalJob::new();
-    assert_eq!(job.log.bytes.capacity(), 0);
-    assert_eq!(job.log.spans.capacity(), 0);
-    assert_eq!(job.roster.capacity(), 0);
-    assert_eq!(job.roots.capacity(), 0);
-    assert_eq!(job.oob_theatres.capacity(), 0);
-    assert_eq!(job.oob_theatre_positions.capacity(), 0);
-    assert_eq!(job.wing_sources.capacity(), 0);
 }

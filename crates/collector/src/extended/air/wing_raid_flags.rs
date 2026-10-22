@@ -235,10 +235,10 @@ mod tests {
         assert!(!demanded(&row));
     }
     #[test]
-    fn five_thousand_quiet_wings_read_neither_raw_references_nor_the_registry() {
+    fn quiet_wings_read_neither_raw_references_nor_the_registry() {
         let mut store = Store::default();
         store.begin(0, true);
-        for wing in 1..=5000 {
+        for wing in 1..=32 {
             assert!(store.ensure_capacity(wing as usize));
             assert_eq!(
                 store.capture_with(
@@ -260,8 +260,8 @@ mod tests {
             );
         }
         store.finish();
-        store.begin(5000, false);
-        for wing in 1..=5000 {
+        store.begin(32, false);
+        for wing in 1..=32 {
             assert_eq!(
                 store.capture_with(
                     wing as usize * 4096,

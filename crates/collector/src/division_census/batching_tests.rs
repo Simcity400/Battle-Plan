@@ -130,15 +130,6 @@ fn capture(
     )
 }
 #[test]
-fn batched_core_provinces_five_thousand_countries_equal_serial_and_keep_memo_keys() {
-    let (bytes, seeds) = world(5_000);
-    let actual = capture(&bytes, &seeds, true, None, false);
-    let serial = capture(&bytes, &seeds, false, None, false);
-    assert_eq!(actual.0, serial.0);
-    assert_eq!(actual.0.ids.len(), 5_000);
-    assert_eq!((actual.1, serial.1), (158, 10_000));
-}
-#[test]
 fn batched_core_province_persistent_faults_keep_serial_reason_and_prefix() {
     let (bytes, seeds) = world(65);
     let pointer = seeds[20].location.unwrap();

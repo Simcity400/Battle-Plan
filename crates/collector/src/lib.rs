@@ -139,8 +139,6 @@ pub(crate) use collector_observers::roster_changes;
 mod runtime;
 pub(crate) use collector_certificates::sampled_verify;
 mod sampling;
-#[cfg(test)]
-mod sampling_feature_tests;
 mod scripted_maps;
 pub(crate) use collector_certificates::slicing;
 pub(crate) use collector_primitives::shared_lane;

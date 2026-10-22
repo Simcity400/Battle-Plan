@@ -2325,11 +2325,6 @@ impl DecodeQueue {
     }
 
     #[cfg(test)]
-    pub fn capacity(&self) -> usize {
-        self.ready.capacity()
-    }
-
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.ready.is_empty()
     }
@@ -2477,9 +2472,7 @@ pub(crate) fn reset_calibration_for_test() {
 mod tests;
 
 #[cfg(test)]
-pub(crate) use tests::{
-    presize_and_acquire_carrier_jobs_for_test, retire_and_reacquire_two_carrier_jobs_for_test,
-};
+pub(crate) use tests::retire_and_reacquire_two_carrier_jobs_for_test;
 
 #[cfg(test)]
 mod order_group_loan_tests;

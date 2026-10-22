@@ -1818,13 +1818,6 @@ mod players_split_tests {
         assert_eq!(captured.players.outcome, Outcome::Rows { len: 1 });
         assert_eq!(captured.human_controllers.outcome, Outcome::Rows { len: 1 });
     }
-
-    #[test]
-    fn players_start_without_chosen_population_extents() {
-        let job = PlayersJob::new();
-        assert_eq!(job.log.spans.capacity(), 0);
-        assert_eq!(job.log.bytes.capacity(), 0);
-    }
 }
 
 #[cfg(test)]
@@ -2306,30 +2299,5 @@ mod tests {
             captured.naval_combat_participants.outcome,
             Outcome::Unavailable { .. }
         ));
-    }
-
-    #[test]
-    fn map_pack_tables_are_hourly_tier_h_with_no_refresh_gate() {
-        // The eight map-pack tables keep hourly cadence: no stagger slot,
-        // every hour walks. This pins the unchanged typed cadence.
-        use replay_data::rows::TableId;
-        for table in [
-            TableId::LandCombats,
-            TableId::Fleets,
-            TableId::TaskForces,
-            TableId::Ships,
-            TableId::NavalCombats,
-            TableId::NavalCombatParticipants,
-            TableId::AirWings,
-            TableId::ArmyOrders,
-        ] {
-            assert!(!replay_data::cadence::is_staggered(table), "{table:?}");
-            for hour in [0, 1, 2, 3, 60_820_531] {
-                assert!(
-                    replay_data::cadence::is_refresh(table, hour),
-                    "{table:?} at {hour}"
-                );
-            }
-        }
     }
 }

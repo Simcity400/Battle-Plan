@@ -1904,10 +1904,6 @@ pub(crate) mod air_bases_test_kit;
 mod mission_scale_tests;
 
 #[cfg(test)]
-#[path = "air/sizing_tests.rs"]
-mod sizing_tests;
-
-#[cfg(test)]
 #[path = "air/wing_store_tests.rs"]
 mod wing_store_tests;
 

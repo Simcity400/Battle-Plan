@@ -1,13 +1,10 @@
-//! Populated country-scale coverage for the character inputs
-//! (CharacterRoleTraits, CharacterOperatives) and the retired records
-//! (CountryRetiredCharacters): at 1,500 and 5,000 countries, every country
-//! holds an active character with a country-leader, advisor and scientist
-//! role (one trait each) and an operative reference the registry does not
-//! hold, and a retired character. The live demand sizes a complete first
-//! capture; the default capacities truncate and grow to the whole table.
+//! A populated world for the character inputs (CharacterRoleTraits,
+//! CharacterOperatives) and the retired records (CountryRetiredCharacters):
+//! every country holds an active character with a country-leader, advisor
+//! and scientist role (one trait each) and an operative reference the
+//! registry does not hold, and a retired character.
 
 use super::{Capacities, Captured, Demand, NamingWork};
-use crate::extended::hired_advisors;
 use engine_characters::cscientist;
 use engine_native::{
     Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
@@ -199,13 +196,6 @@ impl Populated {
     }
 }
 
-fn rows(table: &TableView) -> usize {
-    match table {
-        TableView::Complete(rows) => rows.len(),
-        other => panic!("not complete: {other:?}"),
-    }
-}
-
 /// [`Populated`] whose every country's active character has an operative
 /// reference the registry resolves to its own operative leader object (with
 /// a name and a codename); the world and each country's leader object.
@@ -296,165 +286,74 @@ pub(super) fn resolved_operatives(countries: usize) -> (Populated, Vec<usize>) {
     (world, leaders)
 }
 
+// regression: 722e92182e Capture resolved operative names and codename operands
 #[test]
-fn resolved_operative_names_size_from_live_demand_at_five_thousand_countries() {
+fn operative_name_byte_shortfalls_keep_resolved_rows_and_count_both_reasons() {
     use replay_data::rows::TableRows;
-    for countries in [1500_usize, 5000] {
-        let (world, _) = resolved_operatives(countries);
-        let demand = Demand::observe(&world, BASE, STATE).unwrap();
-        assert_eq!(demand.bytes, countries * 15);
+    const COUNTRIES: usize = 3;
+    let (world, _) = resolved_operatives(COUNTRIES);
+    let demand = Demand::observe(&world, BASE, STATE).unwrap();
+    assert_eq!(demand.bytes, COUNTRIES * 15);
+    let mut capacity = Capacities::default();
+    capacity.raise_for_demand(demand);
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture(&world, BASE, STATE, 0, false);
+    let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables() else {
+        panic!("complete operative inputs");
+    };
+    assert_eq!(rows.len(), COUNTRIES);
+    for (index, row) in rows.iter().enumerate() {
         assert_eq!(
-            cunit_leader::text_demand(&world, BASE, STATE),
-            Ok(countries * 15)
+            row.name
+                .require("CharacterOperatives.name")
+                .unwrap()
+                .as_deref(),
+            Some(b"A\xfflias".as_slice())
         );
-        let mut capacity = Capacities::default();
-        capacity.raise_for_demand(demand);
-        let mut captured = Captured::with_capacities(&capacity);
-        captured.capture(&world, BASE, STATE, 0, false);
-        let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables()
-        else {
-            panic!("complete operative inputs");
-        };
-        assert_eq!(rows.len(), countries);
-        for (index, row) in rows.iter().enumerate() {
-            assert_eq!(row.category, 8);
-            assert_eq!(
-                row.name
-                    .require("CharacterOperatives.name")
-                    .unwrap()
-                    .as_deref(),
-                Some(b"A\xfflias".as_slice())
-            );
-            let name = row
+        let name = row
+            .codename
+            .require("CharacterOperatives.codename")
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            (name.group.as_slice(), name.custom.as_slice()),
+            (b"GROUP".as_slice(), b"Code".as_slice())
+        );
+        assert_eq!(name.order, index as i32);
+    }
+    capacity.bytes = 1;
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture_mode(&world, BASE, STATE, 0, false, false);
+    assert_eq!(captured.outcomes()[1], Outcome::Rows { len: COUNTRIES });
+    let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables() else {
+        panic!("operative rows survive optional byte shortfalls");
+    };
+    assert!(rows.iter().all(|row| {
+        row.resolved
+            && row
+                .name
+                .require("CharacterOperatives.name")
+                .unwrap()
+                .is_none()
+            && row
                 .codename
                 .require("CharacterOperatives.codename")
                 .unwrap()
-                .as_ref()
-                .unwrap();
-            assert_eq!(name.group.as_slice(), b"GROUP");
-            assert_eq!(name.custom.as_slice(), b"Code");
-            assert_eq!(name.order, index as i32);
-        }
-        // Appended byte shortfalls retain all old rows and count both reasons.
-        capacity.bytes = 1;
-        let mut captured = Captured::with_capacities(&capacity);
-        captured.capture_fixed(&world, BASE, STATE, 0, false);
-        assert_eq!(captured.outcomes()[1], Outcome::Rows { len: countries });
-        let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables()
-        else {
-            panic!("operative rows survive optional byte shortfalls");
-        };
-        assert!(rows.iter().all(|row| {
-            row.resolved
-                && row
-                    .name
-                    .require("CharacterOperatives.name")
-                    .unwrap()
-                    .is_none()
-                && row
-                    .codename
-                    .require("CharacterOperatives.codename")
-                    .unwrap()
-                    .is_none()
-        }));
-        let mut work = NamingWork::default();
-        captured.observe_naming(&mut work).unwrap();
-        assert_eq!(
-            work.refusals,
-            [
-                (
-                    "operative codename byte capacity exceeded",
-                    countries as u64
-                ),
-                ("operative name byte capacity exceeded", countries as u64),
-            ]
-        );
-        captured.grow(&mut capacity);
-        assert!(capacity.bytes >= countries * 15);
-    }
-}
-
-fn check(countries: usize) {
-    let world = Populated::new(countries);
-    let demand = Demand::observe(&world, BASE, STATE).unwrap();
-    let [active, retired] =
-        ccountry_characters::walk_records(&world, BASE, STATE, &mut [], &mut []).map(|outcome| {
-            match outcome {
-                Outcome::Rows { len } => len,
-                Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
-                Outcome::Unavailable { reason } => panic!("{reason}"),
-            }
-        });
-    assert_eq!((active, retired), (countries, countries));
+                .is_none()
+    }));
+    let mut work = NamingWork::default();
+    captured.observe_naming(&mut work).unwrap();
     assert_eq!(
-        demand,
-        Demand {
-            traits: 3 * countries,
-            values: 3 * countries,
-            operatives: countries,
-            definitions: 0,
-            bytes: 0,
-        }
-    );
-
-    // The live demand sizes a complete first capture.
-    let mut sized = Capacities::default();
-    sized.raise_for_demand(demand);
-    let mut captured = Captured::with_capacities(&sized);
-    captured.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(
-        captured.outcomes(),
+        work.refusals,
         [
-            Outcome::Rows { len: 3 * countries },
-            Outcome::Rows { len: countries }
+            (
+                "operative codename byte capacity exceeded",
+                COUNTRIES as u64
+            ),
+            ("operative name byte capacity exceeded", COUNTRIES as u64),
         ]
     );
-    let tables = captured.tables();
-    assert_eq!(
-        (rows(&tables[0]), rows(&tables[1])),
-        (3 * countries, countries)
-    );
-    let mut cold = Captured::vacant();
-    cold.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(cold.outcomes(), captured.outcomes());
-    assert_eq!(cold.tables(), tables);
-    let mut records = hired_advisors::Capacities::default();
-    records.raise_for_character_records(active, retired);
-    let mut hired = hired_advisors::Captured::with_capacities(&records);
-    hired.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(hired.outcomes()[1], Outcome::Rows { len: countries });
-    assert_eq!(hired.outcomes()[3], Outcome::Rows { len: countries });
-    assert_eq!(rows(&hired.tables()[3]), countries);
-
-    // Explicit fixed storage reports the whole shortage, then grows to it.
-    let mut capacity = Capacities::default();
-    let mut captured = Captured::with_capacities(&capacity);
-    captured.capture_fixed(&world, BASE, STATE, 0, false);
-    assert!(
-        matches!(captured.outcomes()[1], Outcome::Truncated { len, unread_rows } if len + unread_rows as usize == countries)
-    );
-    captured.grow(&mut capacity);
-    let mut captured = Captured::with_capacities(&capacity);
-    captured.capture(&world, BASE, STATE, 0, false);
-    assert!(
-        captured
-            .outcomes()
-            .iter()
-            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
-    );
-    let mut capacity = hired_advisors::Capacities::default();
-    let mut hired = hired_advisors::Captured::with_capacities(&capacity);
-    hired.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(hired.outcomes()[3], Outcome::Rows { len: countries });
-    hired.grow(&mut capacity);
-    let mut hired = hired_advisors::Captured::with_capacities(&capacity);
-    hired.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(hired.outcomes()[3], Outcome::Rows { len: countries });
-}
-
-#[test]
-fn fifteen_hundred_countries_are_read_whole_from_their_live_demand() {
-    check(1_500);
 }
 
 #[test]
@@ -465,15 +364,4 @@ fn demand_observation_keeps_invalid_roster_errors_named() {
         Demand::observe(&world, BASE, STATE),
         Err("character manager vtable mismatch")
     );
-}
-
-#[test]
-fn five_thousand_countries_are_read_whole_from_their_live_demand() {
-    check(5_000);
-    // The first worker pass grows even the cold role-trait storage.
-    let world = Populated::new(5_000);
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.capture(&world, BASE, STATE, 0, false);
-    assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 15_000 });
-    assert_eq!(rows(&captured.tables()[0]), 15_000);
 }

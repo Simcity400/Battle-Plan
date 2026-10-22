@@ -748,8 +748,8 @@ mod tests {
         assert_eq!(rows[0].rank_refresh, 0);
     }
     #[test]
-    fn final_operands_select_one_of_five_thousand_accounts_without_native_reads_or_allocations() {
-        let mut rows = (0..5000)
+    fn final_operands_select_one_account_without_native_reads_or_allocations() {
+        let mut rows = (0..40)
             .map(|account| Account {
                 account,
                 influence: vec![0; 5],
@@ -758,20 +758,20 @@ mod tests {
             .collect::<Vec<_>>();
         let storage = Storage::new(0x1000, 0xd0, &rows).unwrap();
         crate::test_support::with_allocations_denied(|| {
-            storage.write(0x1000 + 4999 * 0xd0, true, 2, -7, Operation::Set);
+            storage.write(0x1000 + 39 * 0xd0, true, 2, -7, Operation::Set);
             storage.write(
-                0x1000 + 4999 * 0xd0,
+                0x1000 + 39 * 0xd0,
                 false,
                 CONTRIBUTION,
                 i64::MAX,
                 Operation::Add,
             );
-            storage.write(0x1000 + 4999 * 0xd0, false, CONTRIBUTION, 1, Operation::Add);
+            storage.write(0x1000 + 39 * 0xd0, false, CONTRIBUTION, 1, Operation::Add);
             assert!(storage.drain(&mut rows).unwrap());
             assert!(!storage.drain(&mut rows).unwrap());
         });
-        assert_eq!(rows[4999].influence, [0, 0, -7, 0, 0]);
-        assert_eq!(rows[4999].contribution_raw, i64::MIN);
+        assert_eq!(rows[39].influence, [0, 0, -7, 0, 0]);
+        assert_eq!(rows[39].contribution_raw, i64::MIN);
         assert_eq!(rows[0].contribution_raw, 0);
     }
     #[test]

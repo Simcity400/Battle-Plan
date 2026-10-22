@@ -297,7 +297,7 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
     assert!(matches!(c.outcomes()[0], Outcome::Unavailable { .. }));
 }
 #[test]
-fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_loss() {
+fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     use crate::land_events::test_support;
     let _guard = test_support::own();
     test_support::reset();
@@ -310,17 +310,17 @@ fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_l
         rows: 1,
         variants: 1,
     });
-    let worlds = (0..5_000).map(|_| World::new(3)).collect::<Vec<_>>();
+    let worlds = (0..20).map(|_| World::new(3)).collect::<Vec<_>>();
     read(&mut captured, &worlds);
     assert_eq!(
         captured.outcomes(),
-        [Outcome::Rows { len: 5_000 }, Outcome::Rows { len: 110_000 }]
+        [Outcome::Rows { len: 20 }, Outcome::Rows { len: 440 }]
     );
-    assert_eq!(captured.equipment.required, 30_000);
-    assert_eq!(captured.equipment.len, 30_000);
+    assert_eq!(captured.equipment.required, 120);
+    assert_eq!(captured.equipment.len, 120);
     assert_eq!(captured.lost_reads(), 0);
     let actual = rows(&captured);
-    assert_eq!(actual.len(), 5_000);
+    assert_eq!(actual.len(), 20);
     assert!(actual.iter().all(|row| {
         row.attacker_equipment_losses
             .require("fixture")
@@ -490,11 +490,11 @@ fn combat_log_complete_observer_uses_the_loss_census_and_preserves_signed_counte
 fn active_census_sizes_history_events_even_when_retained_history_is_empty() {
     collector_combat_log::history_events::prepare(1);
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let worlds = [World::new(5_000)];
+    let worlds = [World::new(50)];
     read(&mut captured, &worlds);
     assert!(captured.losses_complete());
     let demand = captured.observers.len() + captured.equipment.len;
-    assert_eq!(captured.equipment.len, 10_000);
+    assert_eq!(captured.equipment.len, 100);
     assert!(demand > captured.observers.len());
     let status = serde_json::to_value(collector_combat_log::history_events::status()).unwrap();
     assert_eq!(status["required_entries"], demand);

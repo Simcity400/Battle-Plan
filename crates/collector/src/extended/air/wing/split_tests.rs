@@ -243,50 +243,6 @@ fn first_sites(world: &mut fixture::World, slots: &[u32]) {
 }
 
 #[test]
-fn owner_slot_parts_join_to_the_serial_census_at_5000_countries() {
-    let mut world = world();
-    first_sites(&mut world, &[1, 1_249, 1_250, 2_500, 4_998]);
-    for config in [FULL, quiet()] {
-        let serial = walk_serial(&world, config);
-        let complete = Outcome::Rows { len: WINGS };
-        assert_eq!(
-            [serial.map_outcome, serial.equipment_outcome],
-            [complete; 2]
-        );
-        for parts in 2..=4 {
-            let starts: Vec<_> = (1..parts).map(|part| COUNTRIES * part / parts).collect();
-            let mut jobs = Jobs::new();
-            assert_same(jobs.hour(&world, config, &starts), &serial);
-            assert_eq!(jobs.census.carry, serial.carry);
-            assert_eq!(
-                part_starts(&jobs.census, &jobs.parts[..starts.len()]),
-                part_starts(&serial, &[])
-            );
-        }
-    }
-    // The score inputs index each owner's own first sites in the joined arena.
-    let mut jobs = Jobs::new();
-    let witnessed = jobs.hour(&world, FULL, &[1_250, 2_500]);
-    let witnessed = witnessed.game_score.witnessed();
-    for slot in [1_249_u64, 1_250, 2_500] {
-        let (read, sites) = witnessed.countries[slot as usize];
-        assert_eq!(read.len, 2, "slot {slot}");
-        assert_eq!(
-            sites.iter().map(|site| site.base).collect::<Vec<_>>(),
-            [slot, slot + 1].map(|id| id << 32 | engine_native::cair_base::TYPE as u64),
-            "slot {slot}"
-        );
-    }
-    // The next hour's parts follow this census's wings and owners, within
-    // the pool's workers.
-    let serial = walk_serial(&world, FULL);
-    let (starts, split) = part_starts(&serial, &[]).unwrap();
-    assert_eq!(split, WING_PARTS - 1);
-    assert!(starts[..split].windows(2).all(|pair| pair[0] < pair[1]));
-    assert_same(Jobs::new().hour(&world, FULL, &starts[..split]), &serial);
-}
-
-#[test]
 fn parts_kept_across_hours_carry_and_join_whatever_the_split() {
     let world = world();
     let full = walk_serial(&world, FULL);

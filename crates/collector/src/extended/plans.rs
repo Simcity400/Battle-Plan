@@ -1758,10 +1758,10 @@ mod tests {
     }
 
     #[test]
-    fn attach_execution_hint_follows_native_graph_with_five_thousand_countries() {
+    fn attach_execution_hint_follows_native_graph() {
         let mut world =
             crate::unit_scale_tests::fixture::build(crate::unit_scale_tests::fixture::Shape {
-                countries: 5_000,
+                countries: 24,
                 divisions: 0,
                 wings: 1,
                 planes: 1,

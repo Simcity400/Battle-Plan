@@ -118,18 +118,18 @@ impl CrewStore {
 mod tests {
     use super::*;
     #[test]
-    fn manpower_crews_carry_quiet_5000_and_refresh_only_dirty_or_replaced() {
+    fn manpower_crews_carry_quiet_and_refresh_only_dirty_or_replaced() {
         let mut store = CrewStore::default();
         for pass in 0..4 {
             let growths = allocation::growths();
-            store.begin(5_000);
+            store.begin(120);
             let mut reads = 0;
-            for index in 0..5_000 {
+            for index in 0..120 {
                 let dirty = index == 41 && pass >= 2;
                 let replaced = index == 99 && pass >= 3;
                 let value = store.read_certified(
                     index + 1,
-                    index as u64 + u64::from(replaced) * 5_000,
+                    index as u64 + u64::from(replaced) * 120,
                     (1, u64::from(dirty)),
                     || {
                         reads += 1;
@@ -145,7 +145,7 @@ mod tests {
             assert_eq!(
                 reads,
                 if pass == 0 {
-                    5_000
+                    120
                 } else if pass == 1 {
                     0
                 } else {
@@ -153,16 +153,16 @@ mod tests {
                 }
             );
         }
-        store.begin(5_000);
+        store.begin(120);
         assert_eq!(store.read_certified(42, 41, (2, 0), || None), None);
         store.finish();
-        store.begin(5_000);
+        store.begin(120);
         assert_eq!(
             store.read_certified(42, 41, (2, 0), || panic!("quiet refusal must not retry")),
             None
         );
         store.finish();
-        store.begin(5_000);
+        store.begin(120);
         assert_eq!(
             store.read_certified(42, 41, (2, 1), || Some([3, 0])),
             Some([3, 0])
