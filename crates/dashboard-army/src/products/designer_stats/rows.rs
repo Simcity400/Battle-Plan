@@ -1,11 +1,7 @@
 //! The designer's stat rows: its three grids' fixed rosters in the game's order, each value
 //! the preview block's word formatted by the stat's own `_VALUE` localisation (or trimmed, for
 //! width, manpower and training time), then the equipment grid's requirement rows, and its
-//! four summary values and width text.
-//!
-//! A row shows its value only when its stat is [`PROVEN`]: its calculator rule is established
-//! and its result matched the game's own recorded division caches. Every other row keeps its
-//! label and names why its value is unavailable.
+//! four summary values and width text. A value the preview cannot compute names why.
 
 use installed_content_localisation::localisation::{Argument, Localisation};
 
@@ -80,92 +76,6 @@ pub const ROSTER: [(Grid, Operand, Option<&str>); 27] = [
     (Grid::Equipment, Operand::Stat("fuel_capacity"), None),
     (Grid::Equipment, Operand::Stat("fuel_consumption"), None),
 ];
-
-/// The stats whose designer value is shown, by the owner's standard: each matched every
-/// deployed-division comparison of a full run against the game's recorded caches, with nonzero
-/// values among them ([`super::validation`]): directly where the deployed pass leaves the
-/// calculator's value, and after rebuilding that pass from the recorded country and commander
-/// modifiers where it does not. Suppression is compared with the stat block's own word, and fuel
-/// capacity with its capacity word. A comparison is not attributed to the operands that built
-/// each cache. The other rows ([`UNPROVEN`]) name why they are not shown.
-pub const PROVEN: [&str; 23] = [
-    "maximum_speed",
-    "max_strength",
-    "max_organisation",
-    "suppression",
-    "weight",
-    "reliability",
-    "reliability_factor",
-    "experience_loss_factor",
-    "soft_attack",
-    "hard_attack",
-    "air_attack",
-    "defense",
-    "breakthrough",
-    "armor_value",
-    "ap_attack",
-    "initiative",
-    "entrenchment",
-    "hardness",
-    "combat_width",
-    "manpower",
-    "training_time",
-    "fuel_capacity",
-    "fuel_consumption",
-];
-
-/// The roster's stats not in [`PROVEN`], each with why: its full-run comparisons do not all
-/// match, match only at zero, or its deployed pass holds terms no recording has. Their calculator
-/// rules are established; the validation names each one's state.
-pub const UNPROVEN: [(&str, &str); 5] = [
-    (
-        "default_morale",
-        "its deployed caches do not all match (some predate their commander's last change)",
-    ),
-    (
-        "recon",
-        "its deployed caches do not all match (some predate their commander's last change)",
-    ),
-    (
-        "supply_consumption",
-        "its deployed pass's regional weather and faction theatre terms are not recorded",
-    ),
-    (
-        "casualty_trickleback",
-        "its deployed caches have matched it only at zero",
-    ),
-    (
-        "equipment_capture_factor",
-        "its deployed pass's state capture terms are not recorded",
-    ),
-];
-
-/// Why a row's value is unavailable while its operand is not proven.
-fn unproven(operand: Operand) -> String {
-    let lacks = match operand {
-        Operand::Stat(stat) => UNPROVEN
-            .iter()
-            .find(|(unproven, _)| *unproven == stat)
-            .map(|(_, lacks)| *lacks),
-        _ => None,
-    };
-    match lacks {
-        Some(lacks) => {
-            format!("its designer value is not yet proven against the game's own division stats: {lacks}")
-        }
-        None => "its designer value is not yet proven against the game's own division stats".into(),
-    }
-}
-
-/// Whether a row's operand is proven.
-fn proven(operand: Operand) -> bool {
-    match operand {
-        Operand::Stat(stat) => PROVEN.contains(&stat),
-        Operand::CombatWidth => PROVEN.contains(&"combat_width"),
-        Operand::Manpower => PROVEN.contains(&"manpower"),
-        Operand::TrainingTime => PROVEN.contains(&"training_time"),
-    }
-}
 
 /// One drawn row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,8 +155,6 @@ pub fn rows(
             };
             let value = if empty {
                 localise(localisation, "DESIGNER_NO_STAT", &[])
-            } else if !proven(operand) {
-                Err(unproven(operand))
             } else {
                 match operand {
                     Operand::Stat(stat) => block().and_then(|block| {
@@ -332,22 +240,13 @@ pub fn summary(
             .map_err(Clone::clone)
     };
     let value = |stat: &'static str| -> Result<String, String> {
-        if !PROVEN.contains(&stat) {
-            return Err(format!(
-                "{stat} is not yet proven against the game's own division stats"
-            ));
-        }
         let index = installed_content_core::equipment::stat_index(stat.as_bytes())
             .ok_or_else(|| format!("the executable's stat metadata has no {stat}"))?;
         let raw = block()?.stats[index]
             .ok_or_else(|| format!("the calculator's {stat} rule is not established"))?;
         stat_value(localisation, stat, raw)
     };
-    let width = if PROVEN.contains(&"combat_width") {
-        block().map(|block| trimmed(block.combat_width))
-    } else {
-        Err("combat width is not yet proven against the game's own division stats".into())
-    };
+    let width = block().map(|block| trimmed(block.combat_width));
     (
         [
             value("hardness"),
@@ -435,25 +334,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Every roster stat is either proven or names what its proof lacks, never both, and an
-    /// unproven row's reason names it.
+    /// Every fixed row shows its computed value through its stat's value key, recovery, recon,
+    /// trickleback, supply and capture included, zero as readily as any other; a stat the block
+    /// lacks names why.
     #[test]
-    fn every_unproven_row_names_what_its_proof_lacks() {
+    fn every_fixed_row_shows_its_computed_value() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_designer_every_row_{}",
+            std::process::id()
+        ));
+        let file = root.join("localisation/english/designer_l_english.yml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut text = String::from("\u{feff}l_english:\n");
         for (_, operand, _) in ROSTER {
-            let Operand::Stat(stat) = operand else {
-                continue;
-            };
-            let unproven_listed = UNPROVEN.iter().any(|(listed, _)| *listed == stat);
-            assert_ne!(PROVEN.contains(&stat), unproven_listed, "{stat}");
-            if unproven_listed {
-                assert!(unproven(operand).contains(": "), "{stat}");
+            if let Operand::Stat(stat) = operand {
+                text += &format!(" {}_VALUE:0 \"[$VALUE$]\"\n", label_key(stat).unwrap());
             }
         }
-        assert!(
-            UNPROVEN
+        std::fs::write(&file, text).unwrap();
+        let layers =
+            installed_content_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
+        let index = |stat: &str| installed_content_core::equipment::stat_index(stat.as_bytes()).unwrap();
+        let mut stats = [None; installed_content_core::equipment::STAT_COUNT];
+        for (_, operand, _) in ROSTER {
+            if let Operand::Stat(stat) = operand {
+                stats[index(stat)] = Some(0);
+            }
+        }
+        stats[index("default_morale")] = Some(27_666);
+        let preview = |stats| {
+            Ok(Preview {
+                block: Ok(Block {
+                    stats,
+                    combat_width: 1_500_000,
+                    manpower: 10_000,
+                    training_time: 90,
+                }),
+                manpower: 10_000,
+                training_time: 90,
+                requirements: Vec::new(),
+            })
+        };
+        let shown = rows(&localisation, &preview(stats), false, None);
+        for ((_, operand, _), row) in ROSTER.iter().zip(&shown) {
+            assert!(row.value.is_ok(), "{operand:?}: {:?}", row.value);
+        }
+        let at = |stat| {
+            ROSTER
                 .iter()
-                .all(|(stat, _)| ROSTER.iter().any(|(_, operand, _)| *operand == Operand::Stat(stat)))
+                .position(|(_, operand, _)| *operand == Operand::Stat(stat))
+                .unwrap()
+        };
+        assert_ne!(shown[at("default_morale")].value, shown[at("recon")].value);
+        stats[index("casualty_trickleback")] = None;
+        let lacking = rows(&localisation, &preview(stats), false, None);
+        assert!(
+            lacking[at("casualty_trickleback")]
+                .value
+                .as_ref()
+                .is_err_and(|why| why.contains("casualty_trickleback"))
         );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! Root, entry and control names are the binding contract: a stack that renames them refuses
 //! the window or the control by name. A fact the recording cannot give (the country's
 //! brigade-height unlock, the effective special-forces count, the equipment warning's
-//! candidates, a stat not yet proven) leaves its control hidden or its cells out, named in the
+//! candidates, an unread stat operand) leaves its control hidden or its cells out, named in the
 //! reply's slots, never filled with a guess.
 
 pub mod slots;

@@ -13,12 +13,10 @@
 //! equipment short of a requirement, a fuel-using design below full fuel) is counted by reason,
 //! never compared.
 //!
-//! The proof is the owner's chosen standard: a shown row matches every comparison of a full run,
-//! with at least [`MINIMUM_NONZERO`] nonzero values among them and every term of its pass
-//! reproduced; one mismatch fails it. The run asserts that for every shown row and names each
-//! unshown row's state. It does not attribute a deployed cache to the operands that built it (a
-//! recording holds no evidence of them: a cache can predate a pool, bonus or commander change),
-//! so these are full-run comparisons, not attributed ones.
+//! The run reports, for every designer row, its full-run matches and mismatches, and fails on any
+//! mismatch: no mismatch is explained away, since a recording cannot show which operands built a
+//! cache. Each mismatch's detail lists the current roots its pass read, as a lead only. Supply use
+//! and capture are not compared: their passes read terms no recording holds.
 //!
 //! Run read-only on a recording (it writes nothing beside it):
 //! `BATTLE_PLAN_GAME_DIR=<game> BATTLE_PLAN_DESIGNER_REPLAY=<recording> BATTLE_PLAN_DESIGNER_USER=<user folder>
@@ -84,9 +82,10 @@ struct Report {
     levels: BTreeMap<i32, u64>,
     mismatches: BTreeMap<&'static str, Vec<String>>,
     skipped: BTreeMap<String, u64>,
-    /// Nonzero caches of unshown rows a refused division held, by stat and reason: where the
-    /// witnesses a proof still needs were lost.
+    /// Nonzero caches a refused division held, by stat and reason.
     lost: BTreeMap<(&'static str, String), u64>,
+    /// Comparisons left out because the stat's pass reads a term no recording holds.
+    not_comparable: BTreeMap<&'static str, u64>,
 }
 
 impl Report {
@@ -94,7 +93,18 @@ impl Report {
         *self.skipped.entry(why.into()).or_default() += 1;
     }
 
-    /// Skips a division whose cache holds nonzero `witnesses` of unshown rows, counting them.
+    /// The rows with a mismatch: each fails the run.
+    fn mismatched_rows(&self) -> Vec<&'static str> {
+        ROWS.into_iter()
+            .filter(|stat| {
+                self.compared
+                    .get(stat)
+                    .is_some_and(|(compared, matched)| compared != matched)
+            })
+            .collect()
+    }
+
+    /// Skips a division whose cache holds nonzero `witnesses`, counting them.
     fn refuse(&mut self, witnesses: &[&'static str], why: impl Into<String>) {
         let why = why.into();
         for &stat in witnesses {
@@ -373,15 +383,10 @@ fn designer_rows_of_named_countries() {
                             Some(i64::from(block.training_time) * kernel::ONE),
                         ),
                     };
-                    let shown = if super::rows::PROVEN.contains(&key) {
-                        "shown"
-                    } else {
-                        "unavailable"
-                    };
                     let value = value.map_or("none".into(), |value| {
                         installed_content_core::fixed5::fixed5_to_string(value, 3)
                     });
-                    println!("  {key} = {value} ({shown})");
+                    println!("  {key} = {value}");
                 }
             }
             Err(why) => println!("  preview refused: {why}"),
@@ -617,16 +622,14 @@ fn designer_stats_match_recorded_division_caches() {
                     continue;
                 };
                 let panel = &panels[panel];
-                // The unshown rows this cache holds a nonzero witness of.
-                let witnesses: Vec<&'static str> = super::rows::UNPROVEN
-                    .iter()
-                    .map(|(stat, _)| *stat)
-                    .filter(|stat| {
-                        installed_content_core::equipment::stat_index(stat.as_bytes())
-                            .and_then(DivisionPanelStatsRow::stored)
-                            .and_then(|at| panel.panel_stats[at])
-                            .is_some_and(|value| value != 0)
-                    })
+                let status = statuses
+                    .binary_search_by_key(&division.id, |row| row.division)
+                    .ok()
+                    .map(|at| &statuses[at]);
+                // The rows this division's caches hold a nonzero word of.
+                let witnesses: Vec<&'static str> = ROWS
+                    .into_iter()
+                    .filter(|stat| recorded_word(stat, panel, status).is_some_and(|value| value != 0))
                     .collect();
                 let Ok(template) =
                     templates.binary_search_by_key(&division.template, |row| row.template)
@@ -646,10 +649,6 @@ fn designer_stats_match_recorded_division_caches() {
                 // The designer's preview is at full strength: a division short of manpower or
                 // equipment (its recorded strength factor below one) exercises fill operands the
                 // preview never reaches, and its current manpower source is not the game's own.
-                let status = statuses
-                    .binary_search_by_key(&division.id, |row| row.division)
-                    .ok()
-                    .map(|at| &statuses[at]);
                 match status.map(|status| status.strength_factor) {
                     Some(kernel::ONE) => {}
                     Some(_) => {
@@ -1045,6 +1044,10 @@ fn designer_stats_match_recorded_division_caches() {
                 }
                 if let Ok(sources) = &sources {
                     for pass in passes {
+                        if pass.unreproduced.is_some() {
+                            *report.not_comparable.entry(pass.stat).or_default() += 1;
+                            continue;
+                        }
                         let Some((index, Some(value))) = recorded(pass.stat) else {
                             report.skip(format!("{} cache unavailable", pass.stat));
                             continue;
@@ -1142,48 +1145,96 @@ fn designer_stats_match_recorded_division_caches() {
         report.compared.values().any(|(compared, _)| *compared > 0),
         "nothing was compared"
     );
-    println!("nonzero caches of rows not shown, on divisions not compared:");
+    println!("nonzero caches on divisions not compared, by row and reason:");
     for ((stat, why), count) in &report.lost {
         println!("  {stat}: {why} (count: {count})");
     }
-    println!("acceptance of the rows not shown (full-run comparisons, not attributed to the operands that built each cache):");
-    for (stat, _) in super::rows::UNPROVEN {
+    println!("not comparable, their passes' terms unrecorded:");
+    for (stat, count) in &report.not_comparable {
+        println!("  {stat} (count: {count})");
+    }
+    println!("every row (full-run comparisons):");
+    for stat in ROWS {
         println!("  {stat}: {}", report.acceptance(stat));
     }
-    // The owner's standard: every stat the designer shows matched every full-run comparison, with
-    // at least the minimum of nonzero values among them and no term of its pass left
-    // unreproduced. One mismatch fails it.
-    for stat in super::rows::PROVEN {
-        assert_eq!(report.acceptance(stat), Acceptance::Proven, "{stat}");
+    let mismatched = report.mismatched_rows();
+    assert!(mismatched.is_empty(), "mismatched rows: {mismatched:?}");
+}
+
+/// Every designer row and summary the run compares; supply use and capture are counted as not
+/// comparable instead.
+const ROWS: [&str; 27] = [
+    "maximum_speed",
+    "max_strength",
+    "max_organisation",
+    "default_morale",
+    "recon",
+    "suppression",
+    "weight",
+    "reliability",
+    "reliability_factor",
+    "casualty_trickleback",
+    "experience_loss_factor",
+    "soft_attack",
+    "hard_attack",
+    "air_attack",
+    "defense",
+    "breakthrough",
+    "armor_value",
+    "ap_attack",
+    "initiative",
+    "entrenchment",
+    "combat_width",
+    "manpower",
+    "training_time",
+    "fuel_capacity",
+    "fuel_consumption",
+    "hardness",
+    "maximum_speed (moving)",
+];
+
+/// A division's recorded word for `stat`: the panel cache's, or for anti-air and fuel capacity
+/// the stat block's movement words.
+fn recorded_word(
+    stat: &str,
+    panel: &DivisionPanelStatsRow,
+    status: Option<&replay_data::rows::DivisionStatusRow>,
+) -> Option<i64> {
+    let movement = || {
+        status?
+            .movement_stats
+            .require("movement")
+            .ok()
+            .cloned()
+            .flatten()
+    };
+    match stat {
+        "air_attack" => movement().map(|movement| movement.air_defense),
+        "fuel_capacity" => movement().map(|movement| movement.fuel_rate),
+        _ => installed_content_core::equipment::stat_index(stat.as_bytes())
+            .and_then(DivisionPanelStatsRow::stored)
+            .and_then(|at| panel.panel_stats[at]),
     }
 }
 
-/// The fewest nonzero recorded values a shown row's comparisons must hold: a match only at zero
-/// does not exercise its rule.
-const MINIMUM_NONZERO: u64 = 1;
-
-/// What a stat's comparisons establish about its designer value.
+/// What a row's full-run comparisons show.
 #[derive(Debug, PartialEq, Eq)]
 enum Acceptance {
-    /// Every comparison matched, nonzero among them, with every term of its pass reproduced.
-    Proven,
+    Matched,
     NotCompared,
     Mismatched { matched: u64, compared: u64 },
     OnlyZero,
-    /// Every comparison matched, but its pass holds a term the recording lacks.
-    Unreproduced(&'static str),
 }
 
 impl std::fmt::Display for Acceptance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Proven => write!(f, "every comparison matched, nonzero among them"),
+            Self::Matched => write!(f, "every comparison matched, nonzero among them"),
             Self::NotCompared => write!(f, "never compared"),
-            Self::Mismatched { matched, compared } => write!(f, "{matched}/{compared} matched"),
-            Self::OnlyZero => write!(f, "matched, but with fewer than {MINIMUM_NONZERO} nonzero values"),
-            Self::Unreproduced(term) => {
-                write!(f, "matched, but its pass's {term} is not reproduced")
+            Self::Mismatched { matched, compared } => {
+                write!(f, "{matched}/{compared} matched; every mismatch fails the run")
             }
+            Self::OnlyZero => write!(f, "every comparison matched, all at zero"),
         }
     }
 }
@@ -1197,16 +1248,73 @@ impl Report {
         if matched != compared {
             return Acceptance::Mismatched { matched, compared };
         }
-        if self.nonzero.get(stat).copied().unwrap_or_default() < MINIMUM_NONZERO {
+        if self.nonzero.get(stat).copied().unwrap_or_default() == 0 {
             return Acceptance::OnlyZero;
         }
-        match post::PASSES
-            .iter()
-            .find(|pass| pass.stat == stat)
-            .and_then(|pass| pass.unreproduced)
-        {
-            Some(term) => Acceptance::Unreproduced(term),
-            None => Acceptance::Proven,
-        }
+        Acceptance::Matched
     }
+}
+
+/// A recovery word the calculator no longer reproduces, as a formula change would leave it,
+/// fails the report, and nothing in the report clears it.
+#[test]
+fn an_unexplained_recovery_mismatch_fails_the_report() {
+    use super::kernel::{Definition, Group, ONE, Operands, Slots, calculate};
+    let names = [
+        "max_strength", "max_organisation", "default_morale", "recon", "entrenchment",
+        "initiative", "casualty_trickleback", "supply_consumption", "supply_consumption_factor",
+        "suppression", "suppression_factor", "experience_loss_factor", "equipment_capture_factor",
+        "reliability", "reliability_factor", "weight", "fuel_capacity", "fuel_consumption",
+        "fuel_consumption_factor", "soft_attack", "hard_attack", "air_attack", "defense",
+        "breakthrough", "armor_value", "ap_attack", "hardness", "maximum_speed", "build_cost_ic",
+    ];
+    let slots = Slots::new(|name| names.iter().position(|known| *known == name)).unwrap();
+    let recovery = |morale| {
+        let mut stats = [0; installed_content_core::equipment::STAT_COUNT];
+        stats[slots.default_morale] = morale;
+        let definition = Definition {
+            stats,
+            combat_width: 0,
+            manpower: 0,
+            training_time: 0,
+            support_type: false,
+            support_group: false,
+            categories: Vec::new(),
+            grants: Vec::new(),
+            requirements: Vec::new(),
+            critical: Vec::new(),
+            transport: None,
+            own_fuel_consumption: ONE,
+            affects_speed: true,
+        };
+        let groups = [Group {
+            definition: &definition,
+            count: 2,
+            critical: ONE,
+        }];
+        let operands = Operands {
+            manpower_fill: ONE,
+            fuel_fill: ONE,
+            armor_vs_average: 0,
+            pen_vs_average: 0,
+            out_of_fuel_equipment: 0,
+            fuel_capacity_hours: 0,
+            army_fuel_cost: ONE,
+            slowest_speed: 0,
+        };
+        calculate(&slots, &groups, &[], &operands).unwrap().stats[slots.default_morale].unwrap()
+    };
+    let recorded = recovery(30_000);
+    let mut report = Report::default();
+    report.compare("default_morale", recorded, recovery(30_000) == recorded, String::new);
+    assert!(report.mismatched_rows().is_empty());
+    // The same template under a changed recovery rule.
+    let changed = recovery(30_001);
+    report.compare("default_morale", recorded, changed == recorded, String::new);
+    assert_eq!(report.mismatched_rows(), ["default_morale"]);
+    // Later matches do not clear it.
+    for _ in 0..3 {
+        report.compare("default_morale", recorded, true, String::new);
+    }
+    assert_eq!(report.mismatched_rows(), ["default_morale"]);
 }
