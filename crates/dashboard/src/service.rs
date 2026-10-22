@@ -166,8 +166,13 @@ type RefreshHook = Box<dyn FnOnce(&Inner) + Send>;
 struct Inner {
     lease_namespace: uuid::Uuid,
     map_settings: Mutex<map_settings::Store>,
-    content: Mutex<Option<ContentOptions>>,
+    /// The configured content, with the generation every change of it, or of the saved map
+    /// settings, bumps; bindings are derived from it ([`Inner::rebind`]).
+    content: crate::presentation::Config<Option<ContentOptions>>,
     visual_catalogue: Mutex<Option<VisualCatalogue>>,
+    /// Advances whenever an open source's presentation changes ([`Inner::present`]), so a
+    /// client fetches its content-dependent replies again.
+    presentation_generation: std::sync::atomic::AtomicU64,
     sources: Mutex<Sources>,
     pending: Mutex<Pending>,
     loader: Mutex<Option<Lanes>>,
@@ -192,6 +197,9 @@ struct Inner {
     /// Run by a refresh between its store check and its admission.
     #[cfg(test)]
     test_refresh_checked: Mutex<Option<RefreshHook>>,
+    /// Run once by a rebind between deriving a binding and installing it.
+    #[cfg(test)]
+    test_rebind_derived: Mutex<Option<RefreshHook>>,
     /// Refreshes that reached their admission decision.
     #[cfg(test)]
     test_refreshes: std::sync::atomic::AtomicU64,
@@ -222,8 +230,9 @@ impl Service {
         let inner = Arc::new(Inner {
             lease_namespace: uuid::Uuid::new_v4(),
             map_settings: Mutex::new(map_settings::Store::open()),
-            content: Mutex::new(None),
+            content: crate::presentation::Config::new(None),
             visual_catalogue: Mutex::new(None),
+            presentation_generation: std::sync::atomic::AtomicU64::new(0),
             sources: Mutex::new(Sources::default()),
             pending: Mutex::new(Pending::default()),
             loader: Mutex::new(Some(Lanes {
@@ -250,6 +259,8 @@ impl Service {
             test_revisions_locked: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             test_refresh_checked: Mutex::new(None),
+            #[cfg(test)]
+            test_rebind_derived: Mutex::new(None),
             #[cfg(test)]
             test_refreshes: std::sync::atomic::AtomicU64::new(0),
         });
@@ -325,6 +336,7 @@ impl Service {
         self.replace_content(Some(ContentOptions {
             options,
             allow_unverified,
+            presentation: Default::default(),
         }));
         Ok(())
     }
@@ -337,11 +349,6 @@ impl Service {
             .preparation_actions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut current = self
-            .inner
-            .content
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
         let key = |value: Option<&ContentOptions>| {
             value.map(|value| {
                 (
@@ -350,12 +357,18 @@ impl Service {
                 )
             })
         };
-        let changed = key(current.as_ref()) != key(content.as_ref());
-        *current = content;
-        drop(current);
+        let changed = self.inner.content.update(|current| {
+            let changed = key(current.as_ref()) != key(content.as_ref());
+            *current = content.clone();
+            changed
+        });
         if !changed {
             return;
         }
+        // The new folders and the mods they install are each source's new binding, swapped in
+        // whole; without folders the sources are unbound. Only the service closing stops the
+        // catch-up: its rebinds retry only while the configuration keeps changing.
+        let _ = self.inner.catch_up();
         self.inner.invalidate_checks();
         drop(admission);
         self.inner.preparation.notify_change();

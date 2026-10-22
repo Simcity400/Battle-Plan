@@ -114,8 +114,8 @@ use ts_rs::TS;
 mod breakdown;
 mod saved;
 pub use breakdown::{
-    ProductionBreakdownParams, factory_output, ProductionLineBreakdown, ProductionLineBreakdownReply,
-    ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun,
+    ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
+    ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun, factory_output,
 };
 pub use saved::{SavedLines, SavedModifierRun};
 
@@ -2281,7 +2281,7 @@ fn same_scan<T>(a: &ScanKey<T>, b: &ScanKey<T>) -> bool {
 }
 
 /// Decoded pictures by key, for one catalogue (held, so its identity stays unique).
-type Images<T = Catalogue> = (Arc<T>, BTreeMap<String, Option<String>>);
+type Images<T = Catalogue> = (Arc<T>, BTreeMap<String, catalogue::Drawn<Option<String>>>);
 
 /// A decoded picture of `owner`'s, if one is cached.
 fn cached_image<T>(
@@ -2292,7 +2292,7 @@ fn cached_image<T>(
     images
         .as_ref()
         .filter(|(held, _)| Arc::ptr_eq(held, owner))
-        .and_then(|(_, images)| images.get(key).cloned())
+        .and_then(|(_, images)| images.get(key).map(|image| image.get().clone()))
 }
 
 /// Keeps a picture decoded from `owner`, under that owner alone: another owner's
@@ -2301,7 +2301,7 @@ fn keep_image<T>(
     images: &mut Option<Images<T>>,
     owner: &Arc<T>,
     key: String,
-    image: Option<String>,
+    image: catalogue::Drawn<Option<String>>,
 ) {
     match images {
         Some((held, images)) if Arc::ptr_eq(held, owner) => {
@@ -2469,10 +2469,9 @@ fn scan_content(
     warnings: &mut Vec<String>,
 ) -> (Option<Arc<Catalogue>>, Option<Arc<IconContent>>) {
     let state = source.state::<Cache>();
-    let catalogue = match context
-        .content()
-        .and_then(|content| catalogue::catalogue(source, content))
-    {
+    let catalogue = match context.content().and_then(|content| {
+        catalogue::recorded_catalogue(source, content)
+    }) {
         Ok(catalogue) => {
             warnings.extend(catalogue.verification.iter().cloned());
             warnings.extend(catalogue.warnings.iter().cloned());
@@ -3116,12 +3115,20 @@ impl Product for ProductionLines {
         let (variants, unnamed, unknown_icons) =
             variant_entries(&scanned, texts, catalogue.is_some(), &mut shown);
         warnings.extend(scanned.variants.warnings());
+        // The scan's icon choices are the recording's (they are kept with prepared scans); the
+        // pictures this reply draws follow the source's visual mods.
+        let pictured = catalogue.as_ref().and_then(|_| {
+            context
+                .content()
+                .and_then(|content| catalogue::catalogue(source, content))
+                .ok()
+        });
         // Organisations.
         let mut organisations = Vec::new();
         for (id, versions) in &scanned.organisations {
             let mut previous: Option<OrganisationName> = None;
             for raw in versions {
-                let icon = catalogue
+                let icon = pictured
                     .as_ref()
                     .and_then(|catalogue| {
                         organisation_icon(raw, |name| {
@@ -3157,7 +3164,7 @@ impl Product for ProductionLines {
         }
         // Pictures, decoded once per catalogue.
         let mut icons_out = Vec::new();
-        if let Some(catalogue) = &catalogue {
+        if let Some(catalogue) = &pictured {
             for (key, icon) in &shown {
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancelled_error());
@@ -3173,13 +3180,14 @@ impl Product for ProductionLines {
                 let image = match cached {
                     Some(image) => image,
                     None => {
-                        let image = match icon_image(catalogue, icon) {
+                        let drawn = catalogue::Drawn::new(|| match icon_image(catalogue, icon) {
                             Ok(image) => Some(image),
                             Err(error) => {
                                 warnings.push(format!("{key}: picture unavailable: {error}"));
                                 None
                             }
-                        };
+                        });
+                        let image = drawn.get().clone();
                         keep_image(
                             &mut state
                                 .lock()
@@ -3187,7 +3195,7 @@ impl Product for ProductionLines {
                                 .images,
                             catalogue,
                             key.clone(),
-                            image.clone(),
+                            drawn,
                         );
                         image
                     }

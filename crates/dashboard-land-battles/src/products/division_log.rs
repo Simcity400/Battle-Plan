@@ -819,7 +819,7 @@ struct Cache {
     branch: Option<(u64, Arc<Scan>)>,
     catalogue: Option<Arc<Catalogue>>,
     names: Option<CachedLegacyNames>,
-    icons: HashMap<String, Result<String, String>>,
+    icons: HashMap<String, catalogue::Drawn<Result<String, String>>>,
     icon_bytes: usize,
     #[cfg(any(test, feature = "test-support"))]
     totals: Option<Totals>,
@@ -1100,15 +1100,18 @@ fn icon(
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
     cache.select_content(cat);
     if let Some(icon) = cache.icons.get(&key) {
-        return icon.clone();
+        return icon.get().clone();
     }
     let sprite = cat
         .sprites
         .find(&key)?
         .ok_or_else(|| format!("Division sprite {key} is unavailable"))?;
-    let result =
-        catalogue::sprite_frame_png(&cat.content.layers, sprite, cat.gui_decode.clone()?, 0, 48)
-            .map_err(|why| format!("Division sprite {key}: {why}"));
+    let decode = cat.gui_decode.clone()?;
+    let drawn = catalogue::Drawn::new(|| {
+        catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, 0, 48)
+            .map_err(|why| format!("Division sprite {key}: {why}"))
+    });
+    let result = drawn.get().clone();
     let bytes = key.len()
         + result
             .as_ref()
@@ -1120,7 +1123,7 @@ fn icon(
             cache.icon_bytes = 0;
         }
         cache.icon_bytes += bytes;
-        cache.icons.insert(key, result.clone());
+        cache.icons.insert(key, drawn);
     }
     result
 }

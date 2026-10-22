@@ -198,6 +198,63 @@ fn overlay_sees(defines_visible: bool, lower: &[u8]) -> bool {
 /// The start of the lines [`UncoveredReads::append_to`] keeps current for visual mod reads.
 const OVERLAY_READS: &str = "Artwork from visual mods";
 
+/// The line naming and counting `refusals`: artwork the selected visual mods could not supply,
+/// drawn in the recording's own style instead ([`ResolvedLayers::note_overlay_refusal`]). The
+/// map reports its content's refusals with it and each widget the refusals its own reply
+/// fell back on ([`observe_overlay_refusals`]), so both read alike.
+pub fn overlay_refusal_line(refusals: &BTreeSet<String>) -> Option<String> {
+    (!refusals.is_empty()).then(|| {
+        format!(
+            "{OVERLAY_READS} not shown: {} file(s) could not be loaded, so the recorded artwork is drawn: {}.",
+            refusals.len(),
+            refusals.iter().cloned().collect::<Vec<_>>().join("; ")
+        )
+    })
+}
+
+thread_local! {
+    /// What each [`observe_overlay_refusals`] active on this thread has seen, innermost last.
+    static OVERLAY_OBSERVERS: std::cell::RefCell<Vec<BTreeSet<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `run` and returns, with its value, every refusal [`ResolvedLayers::note_overlay_refusal`]
+/// noted on this thread meanwhile, whichever stack noted it: what `run` drew from the recording
+/// because the selected visual mods could not supply it. Observers nest; each sees what is
+/// noted inside it. A consumer that shares one stack with others reports its own fallbacks
+/// with it rather than the stack's whole tally.
+pub fn observe_overlay_refusals<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
+    // Pops the observer when `run` returns or unwinds.
+    struct Exit<'a>(&'a mut BTreeSet<String>);
+    impl Drop for Exit<'_> {
+        fn drop(&mut self) {
+            if let Some(seen) = OVERLAY_OBSERVERS.with(|observers| observers.borrow_mut().pop()) {
+                *self.0 = seen;
+            }
+        }
+    }
+    OVERLAY_OBSERVERS.with(|observers| observers.borrow_mut().push(BTreeSet::new()));
+    let mut seen = BTreeSet::new();
+    let value = {
+        let _exit = Exit(&mut seen);
+        run()
+    };
+    (value, seen)
+}
+
+/// Adds `refusals` to every observer active on this thread, as if noted here: a memo of
+/// artwork loaded once replays what its load fell back on to each later user.
+pub fn credit_overlay_refusals(refusals: &BTreeSet<String>) {
+    if refusals.is_empty() {
+        return;
+    }
+    OVERLAY_OBSERVERS.with(|observers| {
+        for seen in observers.borrow_mut().iter_mut() {
+            seen.extend(refusals.iter().cloned());
+        }
+    });
+}
+
 impl UncoveredReads {
     pub fn warning(&self) -> Option<String> {
         let paths = self.paths.lock().unwrap_or_else(|error| error.into_inner());
@@ -246,22 +303,13 @@ impl UncoveredReads {
 
     /// The artwork that could not be loaded from visual mods, which the recording's replaced.
     pub fn overlay_refusals(&self) -> Option<String> {
-        let diagnostics = self
-            .overlays
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        (!diagnostics.refusals.is_empty()).then(|| {
-            format!(
-                "{OVERLAY_READS} not shown: {} file(s) could not be loaded, so the recorded artwork is drawn: {}.",
-                diagnostics.refusals.len(),
-                diagnostics
-                    .refusals
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )
-        })
+        overlay_refusal_line(
+            &self
+                .overlays
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .refusals,
+        )
     }
 
     /// Refresh a cached warning list rather than accumulating stale counts.
@@ -1820,6 +1868,7 @@ impl ResolvedLayers {
     /// Names artwork a visual mod supplies that is drawn from the recording instead, with why
     /// ([`UncoveredReads::overlay_refusals`]).
     pub fn note_overlay_refusal(&self, refusal: String) {
+        credit_overlay_refusals(&BTreeSet::from([refusal.clone()]));
         self.overlay_reads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1929,6 +1978,17 @@ impl ResolvedLayers {
     /// Whether this stack mounts visual mods (a presentation stack).
     pub fn shows_visual_mods(&self) -> bool {
         self.layers.iter().any(|layer| layer.overlay.is_some())
+    }
+
+    /// This stack sharing every inventory, memo and cache, but whose visual mod diagnostics
+    /// (files they supplied, artwork drawn from the recording instead, refusals) start empty and
+    /// are its own: a presentation [`visual::apply`] mounts on it reports apart from the stack it
+    /// came from and from any other presentation of it.
+    pub fn with_own_overlay_diagnostics(&self) -> ResolvedLayers {
+        ResolvedLayers {
+            overlay_reads: OverlayReads::default(),
+            ..self.clone()
+        }
     }
 
     /// This recorded stack without its presentation: what is drawn when no visual mod is.

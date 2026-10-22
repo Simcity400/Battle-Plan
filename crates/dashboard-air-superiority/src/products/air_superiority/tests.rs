@@ -2462,6 +2462,7 @@ fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_l
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let source = Source::from_replay(
         dashboard_base::source::SourceKey {
@@ -2924,6 +2925,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let frames = (0..4)
         .map(|hour| {
@@ -3026,6 +3028,7 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let source = Source::from_replay(
         dashboard_base::source::SourceKey {
@@ -3091,6 +3094,7 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let mut frame = air(0, 200_000);
     *frame.tables[TableId::AirTheatres.index()] = TableView::Complete(TableRows::AirTheatres(

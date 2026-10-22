@@ -902,7 +902,7 @@ impl Sampled for Trade {
 
     fn configure(&mut self, block: &Block<'_>) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        self.naming = Some(ResourceNaming::of(block.source, block.context));
+        self.naming = Some(ResourceNaming::stored(block.source, block.context));
         Ok(())
     }
 

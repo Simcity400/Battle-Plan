@@ -520,12 +520,14 @@ pub fn bind(
         },
     };
     // Windows draw one at a time per session; the hour was read before it was held.
+    // Native windows show the presentation's text.
+    let localisation = catalogue.presentation_localisation()?;
     let mut session = session.lock().unwrap_or_else(|error| error.into_inner());
     check_cancel(cancelled)?;
     let mut bound = draw(
         &mut session,
         &catalogue.content.layers,
-        &catalogue.localisation,
+        &localisation,
         &read.shown,
         &read.withheld,
         scroll,

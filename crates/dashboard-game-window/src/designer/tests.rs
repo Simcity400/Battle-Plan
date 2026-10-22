@@ -106,6 +106,7 @@ fn draw_on(layers: &ResolvedLayers, designer: &Designer) -> Bound {
         installed_content_image::native::Decode::default(),
         [1920, 1080],
         crate::session::Opener::Request,
+        &|| true,
     )
     .unwrap()
     .unwrap();
@@ -357,7 +358,10 @@ fn a_mods_sprites_and_fonts_restyle_the_designer() {
             ("gfx/interface/div_unit_item_bg_1.dds", dds(&tga(98, 34))),
             // The stat rows' font: its glyphs and its page.
             ("gfx/fonts/hoi4_typewriter16_inverted.fnt", fnt()),
-            ("gfx/fonts/hoi4_typewriter16_inverted.dds", dds(&tga(37, 41))),
+            (
+                "gfx/fonts/hoi4_typewriter16_inverted.dds",
+                dds(&tga(37, 41)),
+            ),
         ],
     );
     let restyled = draw_on(&installed(&[&restyle]), &designer("infantry", "engineer"));
@@ -373,6 +377,74 @@ fn a_mods_sprites_and_fonts_restyle_the_designer() {
             textures(&restyled)
         );
     }
+}
+
+/// The same restyle selected as a visual mod over the installed game, not recorded with it, styles
+/// the designer too: the session reads the stack's presentation.
+#[test]
+fn a_selected_visual_mod_restyles_the_designer() {
+    use installed_content_core::content::visual;
+    tables();
+    let restyle = folder(
+        "designer_visual_restyle",
+        &[
+            ("gfx/interface/div_unit_item_bg_1.dds", dds(&tga(98, 34))),
+            ("gfx/fonts/hoi4_typewriter16_inverted.fnt", fnt()),
+            (
+                "gfx/fonts/hoi4_typewriter16_inverted.dds",
+                dds(&tga(37, 41)),
+            ),
+            // The window's own text, replaced.
+            (
+                "localisation/replace/designer_visual_l_english.yml",
+                "\u{feff}l_english:\n DESIGNER_ARMY_EXPERIENCE:0 \"Styled $VALUE$\"\n"
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        ],
+    );
+    let user = folder(
+        "designer_visual_user",
+        &[(
+            "mod/restyle.mod",
+            format!(
+                "name=\"Restyle\"\npath=\"{}\"\n",
+                restyle.display().to_string().replace('\\', "/")
+            )
+            .into_bytes(),
+        )],
+    );
+    let mut layers = installed(&[]);
+    let options = installed_content_core::ResolveOptions {
+        game_dir: user.clone(),
+        user_dir: user.clone(),
+        cache_dir: user.join("cache"),
+    };
+    let choice = visual::Choice {
+        id: "mod/restyle.mod".into(),
+        name: "Restyle".into(),
+    };
+    let plan = visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let restyled = draw_on(&layers, &designer("infantry", "engineer"));
+    let textures: Vec<[u32; 2]> = restyled
+        .scene
+        .as_ref()
+        .unwrap()
+        .textures
+        .iter()
+        .map(|texture| [texture.width, texture.height])
+        .collect();
+    for size in [[98, 34], [37, 41]] {
+        assert!(textures.contains(&size), "{size:?} not drawn: {textures:?}");
+    }
+    // The text the designer formats is the selected mod's; the recorded text stays recorded.
+    let catalogue = dashboard_text::catalogue::Catalogue::of_layers(layers, "english").unwrap();
+    let shown = catalogue.presentation_localisation().unwrap();
+    let styled = super::experience_text(&shown, 100_000_000).unwrap();
+    assert!(styled.starts_with("Styled "), "{styled}");
+    let recorded = super::experience_text(&catalogue.localisation, 100_000_000).unwrap();
+    assert!(!recorded.starts_with("Styled "), "{recorded}");
 }
 
 #[test]

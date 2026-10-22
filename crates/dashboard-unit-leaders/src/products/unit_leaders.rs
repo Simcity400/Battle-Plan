@@ -1143,7 +1143,8 @@ impl Content {
     ) -> io::Result<Option<Self>> {
         catalogue
             .map(|catalogue| {
-                let politics = politics_content::politics_content(source, context.content()?)?;
+                let politics =
+                    politics_content::recorded_politics_content(source, context.content()?)?;
                 Self::load(catalogue, politics)
             })
             .transpose()

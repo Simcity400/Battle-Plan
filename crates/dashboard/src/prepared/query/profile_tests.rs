@@ -33,6 +33,7 @@ fn readiness_prepared_queries_time_and_store_work() {
     let content = ContentOptions {
         options: config.resolve_options().unwrap(),
         allow_unverified: false,
+        presentation: Default::default(),
     };
     let restored = super::super::pipeline::restore(&source, Some(&content), &cancelled).unwrap();
     let (store, key) = super::super::files(&source, Some(&content)).unwrap();

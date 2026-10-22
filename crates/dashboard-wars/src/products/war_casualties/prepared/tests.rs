@@ -298,6 +298,7 @@ fn static_casualty_label_is_bound_once_for_success_empty_text_and_refusal() {
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::clone(&catalogue));
         let context = LoadContext {
@@ -377,6 +378,7 @@ fn restored_casualties_publish_what_continuous_observation_publishes() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::clone(&catalogue));
     let content = prepared_content(
@@ -445,6 +447,7 @@ fn catalogue_refusal_is_bound_before_casualty_observation() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let context = LoadContext {
         content: Some(options.clone()),

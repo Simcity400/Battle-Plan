@@ -6,7 +6,11 @@
 //! in [`GameWindowReply::slots`]; their controls keep what the game's construction leaves, or
 //! are hidden where the authored text is a placeholder, never filled with an invented value.
 
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use dashboard_base::{
     Source, catalogue,
@@ -169,7 +173,7 @@ impl Product for GameWindow {
     ) -> io::Result<Self::Reply> {
         check_cancel(cancelled)?;
         let options = context.content()?;
-        let (catalogue, shared) = open(source, options, session::Opener::Request)?;
+        let (catalogue, shared) = open(source, options, session::Opener::Request, cancelled)?;
         let shared = shared.expect("a request always has its session");
         let branch = params.branch_id.parse().expect("validated branch");
         let scroll: BTreeMap<String, i32> = params
@@ -231,7 +235,7 @@ fn nato(options: &ContentOptions) -> io::Result<bool> {
         .map_err(invalid)
 }
 
-/// The stack identity of the content `options` bind.
+/// The stack identity of the content `options` bind: their folders and presentation.
 fn stack(options: &ContentOptions) -> String {
     format!("{:?}", catalogue::binding(options))
 }
@@ -244,12 +248,13 @@ pub fn open(
     source: &Source,
     options: &ContentOptions,
     opener: session::Opener,
+    cancelled: &AtomicBool,
 ) -> io::Result<(
     std::sync::Arc<catalogue::Catalogue>,
     Option<std::sync::Arc<std::sync::Mutex<session::Session>>>,
 )> {
     let catalogue = catalogue::catalogue(source, options)?;
-    let shared = session_of(source, options, &catalogue, opener)?;
+    let shared = session_of(source, options, &catalogue, opener, Some(cancelled))?;
     Ok((catalogue, shared))
 }
 
@@ -259,6 +264,7 @@ fn session_of(
     options: &ContentOptions,
     catalogue: &catalogue::Catalogue,
     opener: session::Opener,
+    cancelled: Option<&AtomicBool>,
 ) -> io::Result<Option<std::sync::Arc<std::sync::Mutex<session::Session>>>> {
     let viewport = session::viewport(&options.options.user_dir).map_err(|why| {
         invalid(format!(
@@ -270,6 +276,9 @@ fn session_of(
             "Game windows need the game's texture settings: {why}"
         ))
     })?;
+    // A request admitted under content the source's latest work is no longer bound to (other
+    // folders, another unverified-content choice or other visual mods), or which was
+    // cancelled, answers alone; this is decided under the sessions' lock.
     session::session(
         &source.state::<session::Sessions>(),
         &stack(options),
@@ -278,7 +287,19 @@ fn session_of(
         decode,
         viewport,
         opener,
+        &|| still_current(source, options, cancelled),
     )
+}
+
+/// Whether a request admitted under `options` still holds what its source's latest work is
+/// bound to (`Source::still_admitted`), and was not cancelled.
+pub(crate) fn still_current(
+    source: &Source,
+    options: &ContentOptions,
+    cancelled: Option<&AtomicBool>,
+) -> bool {
+    source.still_admitted(options)
+        && !cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
 }
 
 /// Whether a source's read-ahead has been started: one per source, however often it opens.
@@ -298,17 +319,21 @@ fn claim(state: &std::sync::Mutex<ReadAhead>) -> bool {
 /// a step runs: once the source is dropped, or a window's request has read other content, no
 /// further step starts, and its session is never published over a newer request's. A failure
 /// is left for the window to report.
-pub fn warm_in_background(source: &std::sync::Arc<Source>, options: ContentOptions) {
+pub fn warm_in_background(source: &std::sync::Arc<Source>, mut options: ContentOptions) {
     if !claim(&source.state::<ReadAhead>()) {
         return;
     }
-    let source = std::sync::Arc::downgrade(source);
     let stack = stack(&options);
+    let source = std::sync::Arc::downgrade(source);
     let _ = std::thread::Builder::new()
         .name("game window read-ahead".into())
         .spawn(move || {
             let ahead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            job_priority::JobPriority::run(ahead, || {
+            job_priority::JobPriority::run(ahead, move || {
+                // The read-ahead's entry: its mount is resolved before any stage takes a lock.
+                if let Some(source) = source.upgrade() {
+                    source.resolve_bound(&mut options);
+                }
                 // Every stage reads the catalogue only over content already bound for these
                 // folders ([`catalogue::bound_catalogue`]): an obsolete read-ahead binds
                 // nothing a reply would report.
@@ -316,8 +341,14 @@ pub fn warm_in_background(source: &std::sync::Arc<Source>, options: ContentOptio
                 let catalogue = |source: &Source| bound(source).is_some();
                 let session = |source: &Source| {
                     bound(source).is_some_and(|catalogue| {
-                        session_of(source, &options, &catalogue, session::Opener::ReadAhead)
-                            .is_ok_and(|session| session.is_some())
+                        session_of(
+                            source,
+                            &options,
+                            &catalogue,
+                            session::Opener::ReadAhead,
+                            None,
+                        )
+                        .is_ok_and(|session| session.is_some())
                     })
                 };
                 let policies = |source: &Source| {

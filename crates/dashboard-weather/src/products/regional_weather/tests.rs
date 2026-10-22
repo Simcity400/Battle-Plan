@@ -1020,6 +1020,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
             cache_dir: root.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let mut frame = theatre_frame();
     *frame.tables[TableId::ModifierDefinitions.index()] =

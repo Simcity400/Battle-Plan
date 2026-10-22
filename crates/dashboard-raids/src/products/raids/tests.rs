@@ -1649,8 +1649,14 @@ fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
     );
     {
         let mut icons = content.icons.lock().unwrap();
-        icons.insert("GFX_mod".into(), Ok("used-image".into()));
-        icons.insert("GFX_unused".into(), Ok("unused-image".into()));
+        icons.insert(
+            "GFX_mod".into(),
+            catalogue::Drawn::new(|| Ok("used-image".into())),
+        );
+        icons.insert(
+            "GFX_unused".into(),
+            catalogue::Drawn::new(|| Ok("unused-image".into())),
+        );
     }
     let art = log_artwork(&content, &result.episodes);
     assert_eq!(art.len(), 1);

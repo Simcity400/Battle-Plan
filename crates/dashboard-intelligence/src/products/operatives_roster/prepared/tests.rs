@@ -435,6 +435,7 @@ fn restored_intelligence_observer_publishes_what_continuous_observation_publishe
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     dashboard_base::catalogue::set_test_catalogue(
         &source,

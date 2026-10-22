@@ -251,13 +251,16 @@ pub fn visit_ship_runs(
 }
 
 type PartResults = catalogue::KeyedResults<(ClassKey, usize), (NavyPart, Vec<String>)>;
+/// The parts of the last catalogue read, kept apart for the recording's own catalogue (which
+/// preparation configures) and the shown one ([`catalogue::ByCatalogue`]).
 #[derive(Default)]
 struct UnitContent {
     binding: Option<(Option<Arc<Catalogue>>, Arc<PartResults>)>,
 }
 fn part_content(source: &Source, catalogue: Option<&Arc<Catalogue>>) -> Arc<PartResults> {
-    let state = source.state::<UnitContent>();
+    let state = source.state::<catalogue::ByCatalogue<UnitContent>>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let state = state.of_optional(catalogue.map(|catalogue| &**catalogue));
     if !state
         .binding
         .as_ref()

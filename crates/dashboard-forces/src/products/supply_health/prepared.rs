@@ -774,7 +774,7 @@ fn progressive_query(
                 context
                     .content
                     .as_ref()
-                    .map(dashboard_base::catalogue::binding),
+                    .map(dashboard_base::catalogue::recorded_binding),
             ),
             cancelled,
             PointSample::bytes,

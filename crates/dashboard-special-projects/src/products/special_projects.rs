@@ -16,7 +16,7 @@ use dashboard_base::{
     products::character_portraits::{portrait_png, recorded_portrait},
     products::country_groups::HourSpan,
     products::country_history::{self, CountryIdentityRun},
-    products::politics_content::{PoliticsContent, politics_content},
+    products::politics_content::{PoliticsContent, politics_content, recorded_politics_content},
 };
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::link_slot;
@@ -301,7 +301,7 @@ struct Content {
     catalogue: Arc<Catalogue>,
     politics: Arc<PoliticsContent>,
     definitions: Catalog,
-    icons: BTreeMap<String, Result<String, String>>,
+    icons: BTreeMap<String, catalogue::Drawn<Result<String, String>>>,
     scoped: Vec<(u64, Arc<history::Names>)>,
     refusals: Mutex<catalogue::Refusals>,
 }
@@ -334,7 +334,8 @@ impl Content {
     fn icon(&mut self, key: &str) -> Result<String, String> {
         self.icons
             .entry(key.to_owned())
-            .or_insert_with(|| project_icon(&self.catalogue, key))
+            .or_insert_with(|| catalogue::Drawn::new(|| project_icon(&self.catalogue, key)))
+            .get()
             .clone()
     }
 
@@ -1647,9 +1648,9 @@ impl Product for SpecialProjects {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let politics = context
-            .content()
-            .and_then(|options| politics_content(source, options));
+        let politics = context.content().and_then(|options| {
+            recorded_politics_content(source, options)
+        });
         let state = source.state::<Cache>();
         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
         prepare_cache(&mut cache, &politics);

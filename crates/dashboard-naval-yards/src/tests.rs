@@ -729,6 +729,7 @@ fn changing_design_suppliers_and_content_binding_change_names_not_hourly_progres
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::new(cat));
         let query = Query {
@@ -1032,6 +1033,7 @@ fn ship_names_query_resolves_only_demanded_cache_and_rebuilt_tokens_without_fram
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::new(cat));
     let prefix = prefix(100, 101, true);

@@ -892,6 +892,7 @@ pub fn run(settings: Settings, path: &Path) -> io::Result<bool> {
     let content = ContentOptions {
         options: config.resolve_options()?,
         allow_unverified: settings.allow_unverified,
+        presentation: Default::default(),
     };
     let revision = dashboard::protocol::replay_revision(&recording)?;
     let warm_open_ms = if settings.warm_content {

@@ -4,6 +4,7 @@ import type { PreparationAction, PreparationRequest, PreparationReply, Preparati
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
+import { contentRevision } from './contentRevision.ts';
 import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
@@ -84,11 +85,13 @@ export const browserDashboardClient: DashboardClient = {
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
     const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings, flip: null, target }, signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    contentRevision(browserDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
   async flipMapSetting(sourceId, revision, setting, signal, target) {
     const reply = await request<MapSettingsReply>({ type: 'mapSettings', sourceId, revision, settings: null, flip: setting, target }, signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    contentRevision(browserDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
 
@@ -106,6 +109,7 @@ export const browserDashboardClient: DashboardClient = {
       throw new DOMException('Request cancelled', 'AbortError');
     }
     leases.add(source.id);
+    contentRevision(browserDashboardClient).observePresentation(source.presentationGeneration);
     return { id: source.id, path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 

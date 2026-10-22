@@ -23,7 +23,7 @@ type ArtKey = (Presentation, String, String);
 /// Art that reads no recorded state, kept within a byte budget: the least
 /// recently used goes first.
 pub(crate) struct Kept {
-    entries: BTreeMap<ArtKey, (artwork::ResolvedArt, u64, usize)>,
+    entries: BTreeMap<ArtKey, (crate::catalogue::Drawn<artwork::ResolvedArt>, u64, usize)>,
     used: BTreeMap<u64, ArtKey>,
     next: u64,
     bytes: usize,
@@ -59,8 +59,10 @@ impl Kept {
     fn size(key: &ArtKey, (art, reason): &artwork::ResolvedArt) -> usize {
         let text = |text: &Option<String>| text.as_ref().map_or(0, String::capacity);
         // A whole node of each map bounds its place there.
-        node::<(ArtKey, (artwork::ResolvedArt, u64, usize))>()
-            + node::<(u64, ArtKey)>()
+        node::<(
+            ArtKey,
+            (crate::catalogue::Drawn<artwork::ResolvedArt>, u64, usize),
+        )>() + node::<(u64, ArtKey)>()
             + 2 * (key.1.capacity() + key.2.capacity())
             + art.token.capacity()
             + text(&art.name)
@@ -76,13 +78,17 @@ impl Kept {
         *used = self.next;
         self.used.insert(self.next, key.clone());
         self.next += 1;
-        Some(item.clone())
+        Some(item.get().clone())
     }
 
     /// Keep `item`, evicting the least recently used until it fits; an item
     /// larger than the whole budget is not kept.
-    pub(crate) fn insert(&mut self, key: ArtKey, item: artwork::ResolvedArt) {
-        let size = Self::size(&key, &item);
+    pub(crate) fn insert(
+        &mut self,
+        key: ArtKey,
+        item: crate::catalogue::Drawn<artwork::ResolvedArt>,
+    ) {
+        let size = Self::size(&key, item.get());
         if let Some((_, used, old)) = self.entries.remove(&key) {
             self.used.remove(&used);
             self.bytes -= old;
@@ -225,12 +231,15 @@ impl Evaluator {
             Vec::new()
         } else {
             context.focuses_in(&requests, inputs, true, mode, |items| {
-                items
-                    .map(|item| {
-                        check_cancel(cancelled)?;
-                        Ok(item)
-                    })
-                    .collect::<io::Result<Vec<_>>>()
+                // Each item keeps what its own draw fell back on.
+                std::iter::from_fn(|| {
+                    crate::catalogue::Drawn::try_new(|| items.next().ok_or(())).ok()
+                })
+                .map(|item| {
+                    check_cancel(cancelled)?;
+                    Ok(item)
+                })
+                .collect::<io::Result<Vec<_>>>()
             })?
         };
         let mut evaluated = evaluated.into_iter();
@@ -239,11 +248,12 @@ impl Evaluator {
             let item = match kept {
                 Some(item) => item,
                 None => {
-                    let item = evaluated
+                    let drawn = evaluated
                         .next()
                         .ok_or_else(|| io::Error::other("Focus presentation omitted token"))?;
+                    let item = drawn.get().clone();
                     if !dynamic {
-                        self.kept.insert(key, item.clone());
+                        self.kept.insert(key, drawn);
                     }
                     item
                 }

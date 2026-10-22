@@ -247,7 +247,7 @@ pub struct Content {
     names: StateNames,
     types: Vec<RaidTypeInfo>,
     warnings: Vec<String>,
-    icons: Mutex<BTreeMap<String, Result<String, String>>>,
+    icons: Mutex<BTreeMap<String, catalogue::Drawn<Result<String, String>>>>,
 }
 
 fn icon_key(cat: &Catalogue, kind: &RaidType, template: Option<&str>) -> Result<String, String> {
@@ -411,7 +411,8 @@ fn log_artwork(content: &Content, episodes: &[RaidEpisode]) -> Vec<RaidArtwork> 
         .map(|key| {
             let result = icons
                 .entry(key.to_owned())
-                .or_insert_with(|| decode_icon(&content.catalogue, key));
+                .or_insert_with(|| catalogue::Drawn::new(|| decode_icon(&content.catalogue, key)))
+                .get();
             if let Err(reason) = result {
                 content.catalogue.refuse(reason, key);
             }
@@ -1480,7 +1481,7 @@ pub fn prepared_content(
     let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
     let cat = context
         .content()
-        .and_then(|options| catalogue::catalogue(source, options));
+        .and_then(|options| catalogue::recorded_catalogue(source, options));
     let mut warnings = Vec::new();
     let content = match cat {
         Ok(cat) => {

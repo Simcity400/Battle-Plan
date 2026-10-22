@@ -688,6 +688,7 @@ fn failed_delivery_stops_admission_and_shutdown_still_joins() {
         path: "memory.battleplan".into(),
         revision: source.key().revision.clone(),
         metadata: source.metadata(),
+        presentation_generation: 0,
     };
     {
         let mut pending = service.inner.pending.lock().unwrap();
@@ -3346,4 +3347,170 @@ fn first_ask_priority_is_bounded_on_prepared_and_sampled_lanes() {
             "{lane:?} did not apply the first-ask burst bound"
         );
     }
+}
+
+/// A source opening while the folders change is registered before its first binding, so the
+/// folder change's writer rebinds it too, and the opening's own stale rebind retries: it opens
+/// bound to the newest folders, never to the ones it started with or to none.
+#[test]
+fn a_source_opening_while_the_folders_change_is_bound_to_the_newest() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let path = folder.0.join("opening.battleplan");
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+        )],
+    )
+    .unwrap();
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let root = folder.0.clone();
+    let folders = move |user: &str| ContentOptions {
+        options: installed_content_core::ResolveOptions {
+            game_dir: root.clone(),
+            user_dir: root.join(user),
+            cache_dir: root.join("cache"),
+        },
+        allow_unverified: true,
+        presentation: Default::default(),
+    };
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let old = folders("old");
+    service.inner.content.update(|content| *content = Some(old));
+    let newer = folders("new");
+    let seen = Arc::new(AtomicBool::new(false));
+    *service.inner.test_rebind_derived.lock().unwrap() = Some(Box::new({
+        let seen = Arc::clone(&seen);
+        move |inner: &Inner| {
+            // The folders change while the opening source's binding is derived; the change's
+            // writer rebinds every source it sees, the opening one included.
+            inner.content.update(|content| *content = Some(newer));
+            let sources = inner.bound_sources();
+            seen.store(!sources.is_empty(), Ordering::Release);
+            inner.present(&sources, &AtomicBool::new(false)).unwrap();
+        }
+    }));
+    let source = service
+        .inner
+        .open(&path, None, &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        seen.load(Ordering::Acquire),
+        "the opening source is registered before it is bound"
+    );
+    let binding = source.binding().expect("bound");
+    assert_eq!(binding.options.user_dir, folder.0.join("new"));
+    service.shutdown();
+}
+
+/// A committed settings change catches every source up even when the request that made it is
+/// cancelled during the rebind: the catch-up is the service's, so a newer change landing
+/// meanwhile is caught up too, and no source stays on a selection no longer saved.
+#[test]
+fn a_cancelled_settings_request_still_catches_every_source_up() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let path = folder.0.join("catch_up.battleplan");
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+        )],
+    )
+    .unwrap();
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    let options = installed_content_core::ResolveOptions {
+        game_dir: folder.0.clone(),
+        user_dir: folder.0.join("user"),
+        cache_dir: folder.0.join("cache"),
+    };
+    service.inner.content.update(|content| {
+        *content = Some(ContentOptions {
+            options: options.clone(),
+            allow_unverified: true,
+            presentation: Default::default(),
+        })
+    });
+    let never = AtomicBool::new(false);
+    let source = service.inner.open(&path, None, &never).unwrap();
+    // The source shows a selection the saved settings no longer hold.
+    let stale = crate::presentation::Presentation {
+        visual_mods: vec![installed_content_core::content::visual::Choice {
+            id: "mod/art.mod".into(),
+            name: "Art".into(),
+        }],
+        revision: "stale".into(),
+    };
+    source.bind(Some((&options, true)), stale.clone());
+    let request = Request::new("settings".into());
+    *service.inner.test_rebind_derived.lock().unwrap() = Some(Box::new({
+        let request = Arc::clone(&request);
+        move |inner: &Inner| {
+            // The panel closes while the rebind derives, and another change lands meanwhile.
+            request.cancel();
+            inner.content.update(|_| ());
+        }
+    }));
+    let _ = service.inner.map_settings_job(super::jobs::MapSettingsJob {
+        target: Default::default(),
+        request: Arc::clone(&request),
+        source_id: String::new(),
+        source: Some(Arc::clone(&source)),
+        settings: None,
+        flip: None,
+        options,
+    });
+    assert!(request.cancelled());
+    let binding = source.binding().expect("bound");
+    assert_ne!(binding.presentation, stale, "the source caught up");
+    assert!(binding.presentation.visual_mods.is_empty());
+    service.shutdown();
+}
+
+/// A rebind in flight when the service shuts down (here a map settings save's) installs
+/// nothing: shutdown closes the configuration before unbinding, so the source it unbound stays
+/// unbound, and no rebind starts afterwards.
+#[test]
+fn a_rebind_paused_across_shutdown_leaves_the_source_unbound() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    let path = folder.0.join("closing.battleplan");
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![crate::test_fixtures::source(1, 0, Some(1))],
+        )],
+    )
+    .unwrap();
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let service = Service::new(Arc::new(|_| true)).unwrap();
+    service.inner.content.update(|content| {
+        *content = Some(ContentOptions {
+            options: installed_content_core::ResolveOptions {
+                game_dir: folder.0.clone(),
+                user_dir: folder.0.join("user"),
+                cache_dir: folder.0.join("cache"),
+            },
+            allow_unverified: true,
+            presentation: Default::default(),
+        })
+    });
+    let never = AtomicBool::new(false);
+    let source = service.inner.open(&path, None, &never).unwrap();
+    assert!(source.binding().is_some());
+    let closed = Arc::new(AtomicBool::new(false));
+    *service.inner.test_rebind_derived.lock().unwrap() = Some(Box::new({
+        let closed = Arc::clone(&closed);
+        move |inner: &Inner| {
+            inner.stop();
+            closed.store(true, Ordering::Release);
+        }
+    }));
+    assert!(service.inner.rebind(&source, &never).is_err());
+    assert!(closed.load(Ordering::Acquire), "shutdown ran during the rebind");
+    assert!(source.binding().is_none(), "the stale binding is not installed");
+    assert!(service.inner.rebind(&source, &never).is_err());
+    assert!(source.binding().is_none());
 }

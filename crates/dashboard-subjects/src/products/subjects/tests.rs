@@ -28,6 +28,7 @@ fn prepared_observer_roundtrip_preserves_reply_names_with_and_without_content() 
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let frames = [
         subject_frame(100, &[(9001, 44, 40)], Some(&[(44, "mod_level")])),

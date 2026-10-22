@@ -119,11 +119,16 @@ fn update(path: &Path, change: impl FnOnce(&mut Config)) -> io::Result<()> {
 }
 
 /// Game and user folders chosen in Settings, needed by products that read
-/// artwork or localisation.
+/// artwork or localisation, and the visual mods one request's game-look artwork shows.
 #[derive(Clone)]
 pub struct ContentOptions {
     pub options: ResolveOptions,
     pub allow_unverified: bool,
+    /// The source's presentation as the service admitted the request, and its mount once the
+    /// request reads its artwork ([`crate::presentation::Admitted`]): every catalogue,
+    /// binding and artwork read the request makes, on any thread, reads this value, so a
+    /// selection changed while it runs never mixes two presentations in one reply.
+    pub presentation: crate::presentation::Admitted,
 }
 
 pub struct LoadContext {

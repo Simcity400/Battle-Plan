@@ -1298,7 +1298,7 @@ pub(crate) fn reply(
     cancelled: &AtomicBool,
 ) -> io::Result<TradeFlowsReply> {
     reply_named(
-        &ResourceNaming::of(source, context),
+        &ResourceNaming::stored(source, context),
         params,
         scanned,
         cancelled,

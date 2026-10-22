@@ -1097,7 +1097,7 @@ fn portrait(facts: &PortraitOperands, cat: &Catalogue) -> Result<String, String>
 #[derive(Default)]
 struct PortraitCache {
     catalogue: Option<Arc<Catalogue>>,
-    entries: HashMap<PortraitOperands, Result<String, String>>,
+    entries: HashMap<PortraitOperands, catalogue::Drawn<Result<String, String>>>,
 }
 fn cached_portrait(
     source: &Source,
@@ -1119,19 +1119,19 @@ fn cached_portrait(
             };
         }
         if let Some(found) = state.entries.get(&key) {
-            return found.clone();
+            return found.get().clone();
         }
     }
-    let found = portrait(facts, cat);
+    let found = catalogue::Drawn::new(|| portrait(facts, cat));
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if state
         .catalogue
         .as_ref()
         .is_some_and(|previous| Arc::ptr_eq(previous, cat))
     {
-        return state.entries.entry(key).or_insert(found).clone();
+        return state.entries.entry(key).or_insert(found).get().clone();
     }
-    found
+    found.get().clone()
 }
 
 fn ace_warnings(result: &mut AirAcesReply, cat: Result<&Catalogue, &io::Error>) {

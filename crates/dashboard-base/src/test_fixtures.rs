@@ -38,6 +38,7 @@ pub fn content_identity(
             cache_dir: root.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     std::fs::create_dir_all(root.join("dlc")).unwrap();
     let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {

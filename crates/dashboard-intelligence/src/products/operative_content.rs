@@ -30,8 +30,11 @@ impl From<Assignment> for FixedAssignment {
         Self { value, icon: None }
     }
 }
+/// Operative content is built from the recording's own catalogue alone, so it is bound to the
+/// recorded content and serves preparation and requests showing visual mods alike. Its load
+/// credits no note: the replies that read it name its artwork by product.
 type Cached = Option<(
-    catalogue::Binding,
+    catalogue::RecordedBinding,
     Arc<catalogue::CachedResult<OperativeContent>>,
 )>;
 
@@ -90,16 +93,11 @@ pub fn content(
     let Some(options) = context.content.as_ref() else {
         return Ok(None);
     };
+    let key = catalogue::recorded_binding(options);
     let state = source.state::<Cached>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if !state
-        .as_ref()
-        .is_some_and(|(binding, _)| catalogue::binding_matches(binding, options))
-    {
-        *state = Some((
-            catalogue::binding(options),
-            Arc::new(catalogue::CachedResult::default()),
-        ));
+    if !state.as_ref().is_some_and(|(binding, _)| *binding == key) {
+        *state = Some((key, Arc::new(catalogue::CachedResult::default())));
     }
     let result = Arc::clone(&state.as_ref().expect("operative binding").1);
     drop(state);
@@ -107,7 +105,9 @@ pub fn content(
         .get_or_init(|| {
             #[cfg(test)]
             super::intelligence_prepared::work(|work| work.content_loads += 1);
-            OperativeContent::load(politics_content::politics_content(source, options)?)
+            OperativeContent::load(politics_content::recorded_politics_content(
+                source, options,
+            )?)
         })
         .map(Some)
 }

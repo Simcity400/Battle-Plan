@@ -552,9 +552,9 @@ pub fn completion_events(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<ProjectCompletions>> {
-    let politics = context
-        .content()
-        .and_then(|options| politics_content(source, options));
+    let politics = context.content().and_then(|options| {
+        recorded_politics_content(source, options)
+    });
     let state = source.state::<Cache>();
     let catalogue = politics
         .as_ref()

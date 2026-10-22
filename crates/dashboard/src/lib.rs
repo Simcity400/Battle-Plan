@@ -18,8 +18,8 @@ mod reply_dto;
 pub mod service;
 
 pub use dashboard_base::{
-    catalogue, content, prepared_chart, prepared_measure, prepared_production, ranking, read_runs,
-    research_dto::*, source,
+    catalogue, content, prepared_chart, prepared_measure, prepared_production, presentation,
+    ranking, read_runs, research_dto::*, source,
 };
 pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, map_display, map_settings, protocol, transport};

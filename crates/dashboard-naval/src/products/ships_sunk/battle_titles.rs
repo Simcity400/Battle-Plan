@@ -127,13 +127,16 @@ impl Geography {
 
 type CachedGeography = (Arc<Catalogue>, Result<Arc<Geography>, String>);
 
+/// The geography of the last catalogue read, kept apart for the recording's own catalogue
+/// (which preparation configures) and the shown one (which requests read).
 #[derive(Default)]
 struct Cache {
     content: Option<CachedGeography>,
 }
 fn geography(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<Geography>, String> {
-    let state = source.state::<Cache>();
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    let state = source.state::<catalogue::ByCatalogue<Cache>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let cache = state.of(cat);
     if let Some((from, geo)) = &cache.content
         && Arc::ptr_eq(from, cat)
     {
@@ -145,8 +148,9 @@ fn geography(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<Geography>, St
 }
 
 pub fn configure_geography(source: &Source, cat: &Arc<Catalogue>, content: &super::NameContent) {
-    let state = source.state::<Cache>();
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    let state = source.state::<catalogue::ByCatalogue<Cache>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let cache = state.of(cat);
     if cache
         .content
         .as_ref()

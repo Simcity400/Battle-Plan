@@ -72,10 +72,10 @@ pub struct PoliticsContent {
     /// Standing notes about the content: files left out, closed or ambiguous.
     pub warnings: Vec<String>,
     /// Artwork already built, by token, with why its icon is missing if it is.
-    artwork: Mutex<BTreeMap<String, (Artwork, Option<String>)>>,
+    artwork: Mutex<BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>>,
     /// Recorded portraits already loaded, by kind, identity and requested edge.
-    portraits: Mutex<BTreeMap<PortraitKey, Result<String, String>>>,
-    portrait_thumbnails: Mutex<BTreeMap<PortraitKey, Result<String, String>>>,
+    portraits: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
+    portrait_thumbnails: Mutex<BTreeMap<PortraitKey, catalogue::Drawn<Result<String, String>>>>,
     // World borrows these facts for the event scope's lifetime. The shared
     // outcome owns loading/refusal policy; this stable Arc supplies that borrow.
     power: OnceLock<Arc<PowerContent>>,
@@ -110,36 +110,56 @@ pub fn politics_content(
     options: &ContentOptions,
 ) -> io::Result<Arc<PoliticsContent>> {
     let catalogue = catalogue::catalogue(source, options)?;
-    let state = source.state::<CachedPolitics>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if !state
-        .as_ref()
-        .is_some_and(|(bound, _)| Arc::ptr_eq(bound, &catalogue))
-    {
-        *state = Some((
-            Arc::clone(&catalogue),
-            Arc::new(catalogue::CachedResult::default()),
-        ));
-    }
-    let result = Arc::clone(&state.as_ref().expect("politics content binding retained").1);
-    drop(state);
+    kept(source, catalogue)
+}
+
+/// [`politics_content`] over [`catalogue::recorded_catalogue`], for prepared families whose
+/// stored payloads hold artwork.
+pub fn recorded_politics_content(
+    source: &Source,
+    options: &ContentOptions,
+) -> io::Result<Arc<PoliticsContent>> {
+    kept(source, catalogue::recorded_catalogue(source, options)?)
+}
+
+/// `catalogue`'s politics content, kept apart for the recording's own catalogue and the shown
+/// one ([`catalogue::ByCatalogue`]) and bound anew for another catalogue; it is loaded once the
+/// cache's lock is released.
+fn kept(source: &Source, catalogue: Arc<Catalogue>) -> io::Result<Arc<PoliticsContent>> {
+    let result = {
+        let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = state.of(&catalogue);
+        if !slot
+            .as_ref()
+            .is_some_and(|(bound, _)| Arc::ptr_eq(bound, &catalogue))
+        {
+            *slot = Some((
+                Arc::clone(&catalogue),
+                Arc::new(catalogue::CachedResult::default()),
+            ));
+        }
+        Arc::clone(&slot.as_ref().expect("politics content binding retained").1)
+    };
     result.get_or_init(|| PoliticsContent::load(catalogue))
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn content_loads(source: &Source) -> usize {
-    source
-        .state::<CachedPolitics>()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map_or(0, |(_, result)| {
+    let state = source.state::<catalogue::ByCatalogue<CachedPolitics>>();
+    let state = state.lock().unwrap();
+    state
+        .both()
+        .into_iter()
+        .flatten()
+        .map(|(_, result)| {
             let loads = result.loads();
             match result.get_or_init(|| unreachable!("binding was loaded")) {
                 Ok(content) => loads + content.power_result.loads(),
                 Err(_) => loads,
             }
         })
+        .sum()
 }
 
 impl PoliticsContent {
@@ -724,15 +744,16 @@ impl PoliticsContent {
             .unwrap_or_else(|error| error.into_inner())
             .get(&key)
         {
-            return cached.clone();
+            return cached.get().clone();
         }
-        let loaded = self.load_recorded_portrait(kind, text, edge);
+        let drawn = catalogue::Drawn::new(|| self.load_recorded_portrait(kind, text, edge));
+        let loaded = drawn.get().clone();
         let mut cached = store.lock().unwrap_or_else(|error| error.into_inner());
         // Start over rather than grow without bound, as idea artwork does.
         if cached.len() >= MAX_CACHED_PORTRAITS {
             cached.clear();
         }
-        cached.insert(key, loaded.clone());
+        cached.insert(key, drawn);
         loaded
     }
 
@@ -817,7 +838,7 @@ impl PoliticsContent {
             .unwrap_or_else(|error| error.into_inner())
             .get(&key)
         {
-            return cached.clone();
+            return cached.get().clone();
         }
         // Content that cannot say what the token is (a file that could
         // define it stops short) leaves the idea's artwork unknown.
@@ -836,6 +857,33 @@ impl PoliticsContent {
                 return (art, Some(format!("{token}: {reason}")));
             }
         };
+        let drawn = catalogue::Drawn::new(|| {
+            self.draw_idea_artwork(token, character, country, saved, idea, role)
+        });
+        let result = drawn.get().clone();
+        let mut cached = self
+            .artwork
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // A long campaign names a few hundred ideas; start over rather than grow without bound.
+        if cached.len() >= MAX_CACHED_ARTWORK {
+            cached.clear();
+        }
+        cached.insert(key, drawn);
+        result
+    }
+
+    /// An idea's name, description and icon from the content that says what it is, with why
+    /// the icon is missing if it is.
+    fn draw_idea_artwork(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: Option<IdeaCountry<'_>>,
+        saved: Option<&str>,
+        idea: Option<&Idea>,
+        role: Option<&AdvisorRole>,
+    ) -> (Artwork, Option<String>) {
         let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
         // One source is selected, then localised: a key content lacks or a
         // refused text leaves the name unknown, and no other text stands in.
@@ -909,15 +957,6 @@ impl PoliticsContent {
             base_duration_days: None,
             icon,
         };
-        let mut cached = self
-            .artwork
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // A long campaign names a few hundred ideas; start over rather than grow without bound.
-        if cached.len() >= MAX_CACHED_ARTWORK {
-            cached.clear();
-        }
-        cached.insert(key, (art.clone(), problem.clone()));
         (art, problem)
     }
 }

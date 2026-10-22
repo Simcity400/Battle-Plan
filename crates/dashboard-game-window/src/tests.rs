@@ -196,7 +196,11 @@ fn a_grid_overflowing_its_container_scrolls_it() {
     tables();
     let (rest, container) = scrolled_grid("UPPER_LEFT", 0, None);
     // Five 20-pixel items in a 60-pixel container: it scrolls over 40 pixels.
-    let area = rest.lists.iter().find(|list| list.path == container).unwrap();
+    let area = rest
+        .lists
+        .iter()
+        .find(|list| list.path == container)
+        .unwrap();
     assert_eq!((area.offset, area.max, area.horizontal), (0, 40, false));
     assert!(
         rest.hovers
@@ -209,7 +213,10 @@ fn a_grid_overflowing_its_container_scrolls_it() {
         assert_eq!(rest - scrolled, 30.0);
     }
     // Past its range it stops at the far end.
-    assert_eq!(scrolled_grid("UPPER_LEFT", 0, Some(99)).0.lists[0].offset, 40);
+    assert_eq!(
+        scrolled_grid("UPPER_LEFT", 0, Some(99)).0.lists[0].offset,
+        40
+    );
     // Each item's hover is clipped to the container.
     assert!(scrolled.hovers.iter().all(|hover| hover.clip.is_some()));
 }
@@ -221,7 +228,11 @@ fn a_grid_overflowing_its_container_scrolls_it() {
 fn a_grid_overflowing_upward_scrolls_below_zero() {
     tables();
     let (rest, container) = scrolled_grid("LOWER_LEFT", 20, None);
-    let area = rest.lists.iter().find(|list| list.path == container).unwrap();
+    let area = rest
+        .lists
+        .iter()
+        .find(|list| list.path == container)
+        .unwrap();
     assert!(area.max > 0, "{area:?}");
     assert_eq!(area.offset, area.max, "{area:?}");
     let (near, _) = scrolled_grid("LOWER_LEFT", 20, Some(0));
@@ -580,6 +591,7 @@ fn drawn(
         installed_content_image::native::Decode::default(),
         [1920, 1080],
         crate::session::Opener::Request,
+        &|| true,
     )
     .unwrap()
     .unwrap();
@@ -702,6 +714,275 @@ fn mod_layers_supply_icons_and_replace_templates() {
     );
 }
 
+/// A visual mod mounted as the stack's presentation styles the window (its own template), and
+/// a texture it breaks is the recording's, named on the window that drew it and on every later
+/// window of the session.
+#[test]
+fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_name() {
+    use installed_content_core::content::{observe_overlay_refusals, visual};
+    tables();
+    let icon = "gfx/interface/synthetic_policy_icon.tga";
+    let recorded = folder(
+        "recorded_icons",
+        &[
+            (
+                "interface/synthetic_policy_icons.gfx",
+                br#"spriteTypes = { spriteType = { name = "GFX_synthetic_policy_icon" texturefile = "gfx/interface/synthetic_policy_icon.tga" } }"#.to_vec(),
+            ),
+            (icon, tga(36, 20)),
+        ],
+    );
+    let art = folder(
+        "visual_art",
+        &[
+            (icon, b"not a texture".to_vec()),
+            (
+                "interface/military_industrial_organization/industrial_org_policy.gui",
+                br#"guiTypes = {
+                containerWindowType = { name = "industrial_organisation_policy_window" size = { width = 300 height = 200 }
+                    containerWindowType = { name = "policy_list_window" size = { width = 300 height = 200 }
+                        smoothListBoxType = { name = "policy_list" size = { x = 280 y = 180 } } } }
+                containerWindowType = { name = "policy_item" size = { width = 280 height = 40 }
+                    iconType = { name = "icon" } instantTextboxType = { name = "name" }
+                    instantTextboxType = { name = "ai_value" } } }"#
+                    .to_vec(),
+            ),
+        ],
+    );
+    let user = folder(
+        "visual_user",
+        &[(
+            "mod/art.mod",
+            format!(
+                "name=\"Art\"\npath=\"{}\"\n",
+                art.display().to_string().replace('\\', "/")
+            )
+            .into_bytes(),
+        )],
+    );
+    let mut layers = installed(&[&recorded]);
+    let options = installed_content_core::ResolveOptions {
+        game_dir: user.clone(),
+        user_dir: user.clone(),
+        cache_dir: user.join("cache"),
+    };
+    let choice = visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    };
+    let plan = visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let rows = synthetic_rows(1, Some(b"GFX_synthetic_policy_icon"));
+    let ((bound, session), fallbacks) =
+        observe_overlay_refusals(|| drawn(&layers, &rows, &BTreeMap::new()));
+    let scene = bound.scene.unwrap();
+    assert_eq!(scene.size, [300, 200], "the visual mod's own window");
+    assert!(
+        scene
+            .textures
+            .iter()
+            .any(|texture| [texture.width, texture.height] == [36, 20]),
+        "the recording's icon: {:?}",
+        scene.textures
+    );
+    assert!(
+        fallbacks
+            .iter()
+            .any(|refusal| refusal.starts_with(&format!("texture {icon} ("))),
+        "{fallbacks:?}"
+    );
+    let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
+    let (_, again) = observe_overlay_refusals(|| {
+        mio::draw(
+            &mut session.lock().unwrap(),
+            &layers,
+            &localisation,
+            &rows,
+            &[],
+            &BTreeMap::new(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        again, fallbacks,
+        "a later window of the session names it again"
+    );
+}
+
+/// A request that passes its check and pauses before publishing never retires a newer
+/// request's session: the check and the publication are one step under the sessions' lock, so
+/// the newer request, admitted while the first is paused, publishes after it and its session
+/// survives. A cancelled request, or one whose presentation the source has left, never becomes
+/// current.
+#[test]
+fn a_paused_request_never_retires_a_newer_requests_session() {
+    use crate::session::{Opener, Sessions, current, is_current, session};
+    use std::sync::{
+        Barrier, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    tables();
+    let layers = installed(&[]);
+    let open = |sessions: &Mutex<Sessions>, stack: &str, still: &dyn Fn() -> bool| {
+        session(
+            sessions,
+            stack,
+            &layers,
+            "english",
+            installed_content_image::native::Decode::default(),
+            [1920, 1080],
+            Opener::Request,
+            still,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let sessions = Mutex::new(Sessions::default());
+    // A's presentation is the source's while A checks it; the selection then moves to B.
+    let shows_a = AtomicBool::new(true);
+    let (passed, resume) = (Barrier::new(2), Barrier::new(2));
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            open(&sessions, "a", &|| {
+                let still = shows_a.load(Ordering::SeqCst);
+                // A has passed its check: it pauses here, before publishing.
+                passed.wait();
+                resume.wait();
+                still
+            })
+        });
+        passed.wait();
+        // While A is paused, the selection moves to B and B's request is admitted.
+        shows_a.store(false, Ordering::SeqCst);
+        let b = scope.spawn(|| open(&sessions, "b", &|| !shows_a.load(Ordering::SeqCst)));
+        // B cannot publish while A holds the step it paused in.
+        assert!(sessions.try_lock().is_err());
+        resume.wait();
+        let a = a.join().unwrap().lock().unwrap().id.clone();
+        let b = b.join().unwrap().lock().unwrap().id.clone();
+        (a, b)
+    });
+    assert!(is_current(&sessions, "b") && !is_current(&sessions, "a"));
+    assert!(current(&sessions, &b).is_some(), "B's session survives");
+    assert!(
+        current(&sessions, &a).is_none(),
+        "A's was retired by the newer B"
+    );
+    // A request cancelled, or admitted under a presentation the source has left, answers from a
+    // session of its own and never becomes current.
+    let cancelled = open(&sessions, "a", &|| false);
+    let cancelled = cancelled.lock().unwrap().id.clone();
+    assert!(current(&sessions, &cancelled).is_none());
+    assert!(is_current(&sessions, "b") && current(&sessions, &b).is_some());
+}
+
+/// A request admitted under folders the source's latest work is no longer bound to is obsolete
+/// though no visual mod is selected and its presentation is unchanged: paused after its check,
+/// it cannot retire the session of the request admitted under the new folders, and admitted
+/// again after them it answers privately.
+#[test]
+fn a_request_of_replaced_folders_never_retires_the_new_folders_session() {
+    use crate::{
+        products::game_window::still_current,
+        session::{Opener, Sessions, current, is_current, session},
+    };
+    use dashboard_base::{
+        catalogue::binding,
+        products::ContentOptions,
+        test_fixtures::{CAMPAIGN, records, source as frame},
+    };
+    use std::sync::{Barrier, Mutex};
+    tables();
+    let source = dashboard_base::Source::from_replay(
+        dashboard_base::SourceKey {
+            source_id: "folders".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        std::sync::Arc::new(
+            replay::container::Replay::from_records(
+                CAMPAIGN.into(),
+                &[records(1, vec![frame(1, 100, Some(1))])],
+            )
+            .unwrap(),
+        ),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let folders = |user: &str| ContentOptions {
+        options: installed_content_core::ResolveOptions {
+            game_dir: "game".into(),
+            user_dir: user.into(),
+            cache_dir: "cache".into(),
+        },
+        allow_unverified: false,
+        presentation: Default::default(),
+    };
+    let old = folders("old user");
+    let stack = |options: &ContentOptions| format!("{:?}", binding(options));
+    let layers = installed(&[]);
+    let open = |sessions: &Mutex<Sessions>, options: &ContentOptions, still: &dyn Fn() -> bool| {
+        session(
+            sessions,
+            &stack(options),
+            &layers,
+            "english",
+            installed_content_image::native::Decode::default(),
+            [1920, 1080],
+            Opener::Request,
+            still,
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let sessions = Mutex::new(Sessions::default());
+    source.bind(
+        Some((&old.options, old.allow_unverified)),
+        Default::default(),
+    );
+    let old = source.admit(dashboard_base::source::Work::Ahead).unwrap();
+    let (passed, resume) = (Barrier::new(2), Barrier::new(2));
+    let new = std::sync::OnceLock::new();
+    let newer = std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            open(&sessions, &old, &|| {
+                let still = still_current(&source, &old, None);
+                passed.wait();
+                resume.wait();
+                still
+            })
+        });
+        passed.wait();
+        // While A is paused, the folders change and B is admitted under them.
+        source.bind(
+            Some((&folders("new user").options, false)),
+            Default::default(),
+        );
+        let admitted =
+            new.get_or_init(|| source.admit(dashboard_base::source::Work::Ahead).unwrap());
+        let b = scope.spawn(|| {
+            open(&sessions, admitted, &|| {
+                still_current(&source, admitted, None)
+            })
+        });
+        resume.wait();
+        a.join().unwrap();
+        b.join().unwrap().lock().unwrap().id.clone()
+    });
+    let new = new.get().unwrap();
+    assert!(is_current(&sessions, &stack(new)));
+    assert!(current(&sessions, &newer).is_some(), "B's session survives");
+    // A request of the old folders admitted before the change, uncancelled, answers privately.
+    assert!(!still_current(&source, &old, None));
+    let late = open(&sessions, &old, &|| still_current(&source, &old, None));
+    let late = late.lock().unwrap().id.clone();
+    assert!(current(&sessions, &late).is_none());
+    assert!(is_current(&sessions, &stack(new)) && current(&sessions, &newer).is_some());
+    // A cancelled request of the current folders never becomes current either.
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert!(!still_current(&source, new, Some(&cancelled)));
+}
+
 /// The monitors are read per-monitor DPI aware on any thread (a test thread is not), and the
 /// thread keeps its own awareness afterwards.
 #[cfg(windows)]
@@ -736,6 +1017,7 @@ fn sessions_are_freed_with_their_owner_not_kept_by_their_stack() {
             installed_content_image::native::Decode::default(),
             [1920, 1080],
             crate::session::Opener::Request,
+            &|| true,
         )
         .unwrap()
         .unwrap()
@@ -768,17 +1050,22 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
     use std::sync::{Arc, Barrier, Mutex};
     tables();
     let layers = Arc::new(installed(&[]));
+    let open_while =
+        |sessions: &Mutex<Sessions>, stack: &str, opener: Opener, current: &dyn Fn() -> bool| {
+            session(
+                sessions,
+                stack,
+                &layers,
+                "english",
+                installed_content_image::native::Decode::default(),
+                [1920, 1080],
+                opener,
+                current,
+            )
+            .unwrap()
+        };
     let open = |sessions: &Mutex<Sessions>, stack: &str, opener: Opener| {
-        session(
-            sessions,
-            stack,
-            &layers,
-            "english",
-            installed_content_image::native::Decode::default(),
-            [1920, 1080],
-            opener,
-        )
-        .unwrap()
+        open_while(sessions, stack, opener, &|| true)
     };
     // The publication itself is guarded: once a request made `new` current, the read-ahead of
     // `old` gets nothing and leaves the request's session in place.
@@ -786,6 +1073,25 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
     let requested = open(&sessions, "new", Opener::Request).unwrap();
     let id = requested.lock().unwrap().id.clone();
     assert!(open(&sessions, "old", Opener::ReadAhead).is_none());
+    assert!(current(&sessions, &id).is_some());
+    assert!(!is_current(&sessions, "old") && is_current(&sessions, "new"));
+    // A request admitted under visual mods the source has since replaced answers from a session
+    // of its own, which neither retires the current one nor becomes current. Whether it still
+    // holds what the source shows is decided under the sessions' lock, so no request can pass
+    // the check, pause, and then publish over a newer request's session.
+    let late = open_while(&sessions, "old", Opener::Request, &|| {
+        assert!(
+            sessions.try_lock().is_err(),
+            "decided under the sessions' lock"
+        );
+        false
+    })
+    .expect("a late request still answers");
+    let late = late.lock().unwrap().id.clone();
+    assert!(
+        current(&sessions, &late).is_none(),
+        "nothing kept for the late request"
+    );
     assert!(current(&sessions, &id).is_some());
     assert!(!is_current(&sessions, "old") && is_current(&sessions, "new"));
     // And the stages: the read-ahead of `old` is inside its first stage when the request
@@ -816,6 +1122,7 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
                     installed_content_image::native::Decode::default(),
                     [1920, 1080],
                     Opener::ReadAhead,
+                    &|| true,
                 )
                 .unwrap();
                 *published.lock().unwrap() = Some(opened.is_some());

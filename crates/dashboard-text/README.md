@@ -8,7 +8,7 @@ The catalogue supplies war participation's four lend-lease factors from the comp
 
 Occupation badge descriptions share effect sessions and the raw modifier formatter. Their active, non-detailed description shows the definition name, disable effects, eligible state modifiers and authored tooltip, retaining independent fragments and counted refusals. The caller supplies the recorded state or controller root and its controller/occupied-country scope links.
 
-Nothing here names a product or a source. The [dashboard](../dashboard/README.md) loads one catalogue per source and folders, and re-exports every module at its old `dashboard::` path. The map's tooltip crates (viewer-foundation, viewer-world, viewer-combat, viewer-counters, viewer-counter-products and viewer-raids) depend on this crate and [dashboard-core](../dashboard-core/README.md) instead of the whole dashboard, so editing a product doesn't rebuild them.
+Nothing here names a product or a source. The [dashboard](../dashboard/README.md) loads one catalogue per source, folders and presentation, and re-exports every module at its old `dashboard::` path. The map's tooltip crates (viewer-foundation, viewer-world, viewer-combat, viewer-counters, viewer-counter-products and viewer-raids) depend on this crate and [dashboard-core](../dashboard-core/README.md) instead of the whole dashboard, so editing a product doesn't rebuild them.
 
 | Module | What it does |
 |---|---|
@@ -23,7 +23,7 @@ Nothing here names a product or a source. The [dashboard](../dashboard/README.md
 | [air_wing_names.rs](src/air_wing_names.rs) | Retained air wing names and the authenticated active-raid projection older prefixes use. |
 | [flag_choices.rs](src/flag_choices.rs) | Flag asset candidates per recorded country at one hour, shared by the flag product and map tooltips. |
 | [cryptology.rs](src/cryptology.rs), [naval_battle_name.rs](src/naval_battle_name.rs), [state_resources.rs](src/state_resources.rs) | Native helpers shared by products and viewer tooltips. |
-| [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. Sprites draw through [catalogue/sprite.rs](src/catalogue/sprite.rs). Masked shields draw through [catalogue/shield.rs](src/catalogue/shield.rs) as the game draws them: the flag through the shield's own effect and mask, then the overlay through the program the game's code names. |
+| [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies; the per-source loader is in the dashboard. Recorded facts read the recorded stack; sprites, GUI, textures and native-window text read its presentation, drawing what the visual mods cannot supply from the recording, named on the consumer's own refusals ([dashboard](../dashboard/README.md#widget-presentation)). Sprites draw through [catalogue/sprite.rs](src/catalogue/sprite.rs). Masked shields draw through [catalogue/shield.rs](src/catalogue/shield.rs) as the game draws them: the flag through the shield's own effect and mask, then the overlay through the program the game's code names. |
 | [metadata.rs](src/metadata.rs) | Branch bounds, gaps, initial country catalogue, frame checks, country-link resolution and supplying-read detection. |
 
 The metadata helpers can date every table's supplying read together

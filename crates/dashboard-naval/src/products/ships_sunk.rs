@@ -536,7 +536,7 @@ fn reply(
 
 #[derive(Default)]
 struct Cache {
-    named: Vec<(u64, Arc<Catalogue>, Arc<Named>)>,
+    named: Vec<(u64, Arc<Catalogue>, catalogue::Drawn<Arc<Named>>)>,
 }
 
 /// Uses the same recorded text/content resolution as Ships sunk, without a
@@ -550,7 +550,7 @@ pub fn cached_names(
 ) -> io::Result<Arc<Named>> {
     let cat = context
         .content()
-        .and_then(|content| catalogue::catalogue(source, content));
+        .and_then(|content| catalogue::recorded_catalogue(source, content));
     match cat {
         Ok(cat) => {
             let state = source.state::<Cache>();
@@ -560,11 +560,13 @@ pub fn cached_names(
                 .iter()
                 .find(|(id, from, _)| *id == branch && Arc::ptr_eq(from, &cat))
             {
-                Arc::clone(names)
+                Arc::clone(names.get())
             } else {
-                let names = Arc::new(named(scan, Some(&cat), flag)?);
+                let drawn =
+                    catalogue::Drawn::try_new(|| named(scan, Some(&cat), flag).map(Arc::new))?;
+                let names = Arc::clone(drawn.get());
                 cache.named.retain(|(id, _, _)| *id != branch);
-                cache.named.push((branch, cat, Arc::clone(&names)));
+                cache.named.push((branch, cat, drawn));
                 if cache.named.len() > 2 {
                     cache.named.remove(0);
                 }

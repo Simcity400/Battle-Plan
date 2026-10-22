@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import { loadProduct } from '../dashboard/products';
+import { useContentRevision } from '../dashboard/contentRevision';
 import { countryFlagUnavailable, fitCountryFlag } from './countryFlagPresentation';
 export { countryFlagUnavailable } from './countryFlagPresentation';
 export type { CountryFlagLook } from './countryFlagPresentation';
@@ -65,7 +66,9 @@ export function SourceFlag({ client, source, tag, size = 'panel' }: { client: Da
   const country = tag ? source.metadata.countries.find(item => item.tag === tag) : undefined;
   const branch = source.metadata.branches.find(item => item.id === country?.observedBranchId) ?? source.metadata.branches[0];
   const hour = country && country.observedBranchId === branch?.id ? country.observedHour : branch?.firstHour;
-  const key = `${source.id}:${source.revision}:${tag}:${branch?.id}:${hour}:${size}`;
+  // The flag follows the content and the visual mods the source's widgets show.
+  const content = useContentRevision(client);
+  const key = `${source.id}:${source.revision}:${tag}:${branch?.id}:${hour}:${size}:${content}`;
   const [flag, setFlag] = useState<{ key: string; image?: CountryFlagImage }>({ key: '' });
   useEffect(() => {
     if (!tag || !branch || hour == null) return;
@@ -74,6 +77,6 @@ export function SourceFlag({ client, source, tag, size = 'panel' }: { client: Da
       .then(reply => { if (!controller.signal.aborted) setFlag({ key, image: reply.flags.find(image => image.tag === tag) }); },
         () => { if (!controller.signal.aborted) setFlag({ key }); });
     return () => controller.abort();
-  }, [client, source.id, source.revision, tag, branch?.id, hour, size, key]);
+  }, [client, source.id, source.revision, tag, branch?.id, hour, size, key, content]);
   return <CountryFlag image={flag.key === key ? flag.image : undefined} />;
 }

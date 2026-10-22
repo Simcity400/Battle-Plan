@@ -216,6 +216,10 @@ pub struct SourceReply {
     pub path: String,
     pub revision: String,
     pub metadata: ReplayMetadata,
+    /// The service's presentation generation as the source opened: a later one means some
+    /// source's widget artwork changed and content-dependent replies are fetched again.
+    #[ts(type = "number")]
+    pub presentation_generation: u64,
 }
 
 /// Bytes the history cache holds, and its size limit.

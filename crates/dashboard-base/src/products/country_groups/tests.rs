@@ -1538,6 +1538,7 @@ fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: false,
+            presentation: Default::default(),
         }),
     };
     let source = faction_source(template_frame(100, "My Pact", None));
@@ -1616,6 +1617,7 @@ fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let source = faction_source(template_frame(100, "", Some((17, "demo"))));
     source.set_test_content(options.options.clone(), content);

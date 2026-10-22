@@ -441,11 +441,14 @@ impl Prepared {
         }
         self.replay = Some(source.replay());
         self.metadata.content_error = None;
+        // Built from the recording's own catalogue alone, so bound to the recorded content: it
+        // serves preparation and requests showing visual mods alike. Its load credits no note:
+        // the replies that read it name its artwork by product.
         type BoundContent = Option<(
-            Option<catalogue::Binding>,
+            Option<catalogue::RecordedBinding>,
             Arc<catalogue::CachedResult<Content>>,
         )>;
-        let key = context.content.as_ref().map(catalogue::binding);
+        let key = context.content.as_ref().map(catalogue::recorded_binding);
         let slot = source.state::<BoundContent>();
         let cache = {
             let mut slot = slot.lock().unwrap_or_else(|error| error.into_inner());
@@ -461,7 +464,9 @@ impl Prepared {
             }
             let politics = context
                 .content()
-                .and_then(|options| politics_content(source, options))
+                .and_then(|options| {
+                    recorded_politics_content(source, options)
+                })
                 .map_err(|error| {
                     io::Error::new(
                         error.kind(),

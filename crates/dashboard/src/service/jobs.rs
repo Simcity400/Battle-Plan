@@ -20,6 +20,16 @@ use std::{
     },
 };
 
+/// What a request's work is: content work, cancelled by the request, or work that reads no
+/// content, which reads the recording's own artwork and never mounts a binding's.
+fn work(content_dependent: bool, request: &Arc<Request>) -> crate::source::Work {
+    if content_dependent {
+        crate::source::Work::Content(Arc::clone(request) as Arc<dyn crate::presentation::Cancel>)
+    } else {
+        crate::source::Work::Recorded
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Sources {
     next: u64,
@@ -29,6 +39,9 @@ pub(super) struct Sources {
     pub(super) completed: BTreeMap<PathBuf, String>,
     pub(super) suppressed: BTreeSet<PathBuf>,
     pub(super) entries: BTreeMap<(PathBuf, String), Weak<Source>>,
+    /// Sources opening: registered before their first binding so every configuration writer
+    /// rebinds them too, and handed to no one until they are bound ([`Inner::bound_sources`]).
+    pub(super) binding: Vec<Weak<Source>>,
     // Failed openers leave their waiters' gate discoverable; idle gates expire.
     opening: BTreeMap<(PathBuf, String), Weak<Mutex<()>>>,
 }
@@ -323,10 +336,11 @@ impl Inner {
             .store(admission == Admission::Library, Ordering::Release);
         drop(progress);
         // `prepared::start` checks the outcome's epoch in this critical section.
+        let content = self.content_for(&source, crate::source::Work::Recorded);
         let started = crate::prepared::start(
             &self.preparation,
             source,
-            self.content(),
+            content,
             checked.restored,
             checked.epoch,
             cancelled,
@@ -415,7 +429,7 @@ impl Inner {
     /// before the content, so a rebind in between shows as a changed epoch.
     pub(super) fn check_store(&self, source: &Source, room: bool) -> Checked {
         let epoch = crate::prepared::store_epoch(source);
-        let content = self.content();
+        let content = self.content_for(source, crate::source::Work::Recorded);
         let identity = store_identity(source);
         Checked {
             epoch,
@@ -991,10 +1005,131 @@ impl Inner {
     }
 
     pub(super) fn content(&self) -> Option<ContentOptions> {
-        self.content
+        self.content.get()
+    }
+
+    /// The content options of work on `source` admitted now (`Source::admit`): the source's
+    /// binding as it is, which everything the work reads and every reply it gives keeps to, on
+    /// any thread. This is the work's entry: the mount it draws is resolved here, before any
+    /// product code runs, waiting on another request's mount only while the work is not
+    /// cancelled (`Source::admit_resolved`).
+    pub(super) fn content_for(
+        &self,
+        source: &Source,
+        work: crate::source::Work,
+    ) -> Option<ContentOptions> {
+        source.admit_resolved(work)
+    }
+
+    /// Every source a configuration writer must rebind: those open and those still opening
+    /// (registered before their first binding, not yet handed to anyone).
+    pub(super) fn bound_sources(&self) -> Vec<Arc<Source>> {
+        let sources = self
+            .sources
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .unwrap_or_else(|error| error.into_inner());
+        sources
+            .entries
+            .values()
+            .chain(&sources.binding)
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// Binds `source` to the configuration as it is ([`crate::presentation::rebind`]): the
+    /// configured content and its campaign's visual mods, as the Campaign map shows them, with
+    /// what they mount now ([`crate::presentation::Presentation::current`]), or no binding
+    /// without configured content. The identity is derived outside every lock and installed
+    /// (`Source::bind`, one swap of the whole binding) only while the configuration (folders,
+    /// unverified choice, cache folder, saved map settings) is still the one it was derived
+    /// from; otherwise it is derived again, so the newest configuration always wins. A change
+    /// advances the presentation generation, which clients refetch on.
+    pub(super) fn rebind(&self, source: &Source, cancelled: &AtomicBool) -> Result<(), String> {
+        use crate::presentation::Presentation;
+        let result = crate::presentation::rebind(
+            &self.content,
+            cancelled,
+            |content| {
+                let Some(content) = content else {
+                    return Ok(None);
+                };
+                let selected = self
+                    .map_settings
+                    .lock()
+                    .map_err(|error| std::io::Error::other(error.to_string()))?
+                    .get(source.campaign_key())
+                    .visual_mods
+                    .unwrap_or_default();
+                let identity = match Presentation::current(
+                    &content.options,
+                    source.replay_ref(),
+                    &selected,
+                    cancelled,
+                ) {
+                    Ok(identity) => identity,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        return Err(error);
+                    }
+                    // Shown as unavailable when mounted; a later check that reads the mods is
+                    // another identity.
+                    Err(error) => Presentation {
+                        visual_mods: selected,
+                        revision: format!("unreadable: {error}"),
+                    },
+                };
+                #[cfg(test)]
+                {
+                    // Taken before it runs: a hook that rebinds reaches this lock again.
+                    let hook = self
+                        .test_rebind_derived
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                    if let Some(hook) = hook {
+                        hook(self);
+                    }
+                }
+                Ok(Some(identity))
+            },
+            |content, identity| {
+                let bound = content
+                    .as_ref()
+                    .map(|content| (&content.options, content.allow_unverified));
+                if source.bind(bound, identity.unwrap_or_default()) {
+                    self.presentation_generation.fetch_add(1, Ordering::AcqRel);
+                }
+            },
+        );
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                Err("Cancelled".into())
+            }
+            result => result.map_err(|error| error.to_string()),
+        }
+    }
+
+    /// Catches every source up to the configuration as committed now ([`Self::present`]). Once
+    /// a change is committed the catch-up belongs to the service: only its closing stops it,
+    /// never the request that made the change, so no source stays on a configuration that is
+    /// no longer the one saved. A newer change landing meanwhile is caught up by the same loop.
+    pub(super) fn catch_up(&self) -> Result<(), String> {
+        self.present(&self.bound_sources(), &self.closed)
+    }
+
+    /// [`Self::rebind`] for each of `sources`.
+    pub(super) fn present(
+        &self,
+        sources: &[Arc<Source>],
+        cancelled: &AtomicBool,
+    ) -> Result<(), String> {
+        for source in sources {
+            self.rebind(source, cancelled)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn presentation_generation(&self) -> u64 {
+        self.presentation_generation.load(Ordering::Acquire)
     }
 
     /// Duplicate opens share a per-revision gate. Disk reads and opted-in cache
@@ -1060,13 +1195,36 @@ impl Inner {
         if let Some(previous) = previous {
             source.inherit_append_states(&previous);
         }
-        self.check_open(cancelled)?;
+        // Registered before its first binding, so a configuration change from here on rebinds
+        // it too; handed to no one until it is bound to the configuration as it is.
+        let registered = Arc::downgrade(&source);
         self.sources
             .lock()
             .map_err(|error| error.to_string())?
-            .entries
-            .insert(cache_key, Arc::downgrade(&source));
-        Ok(source)
+            .binding
+            .push(Weak::clone(&registered));
+        let bound = self.rebind(&source, cancelled);
+        let unregister = || {
+            self.sources
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .binding
+                .retain(|opening| !Weak::ptr_eq(opening, &registered));
+        };
+        if let Err(error) = bound {
+            unregister();
+            return Err(error);
+        }
+        let checked = self.check_open(cancelled);
+        let mut sources = self.sources.lock().map_err(|error| error.to_string())?;
+        if checked.is_ok() {
+            sources.entries.insert(cache_key, Weak::clone(&registered));
+        }
+        sources
+            .binding
+            .retain(|opening| !Weak::ptr_eq(opening, &registered));
+        drop(sources);
+        checked.map(|()| source)
     }
 
     fn check_open(&self, cancelled: &AtomicBool) -> Result<(), String> {
@@ -1123,7 +1281,7 @@ impl Inner {
         }
     }
 
-    fn map_settings_job(&self, job: MapSettingsJob) -> Result<String, String> {
+    pub(super) fn map_settings_job(&self, job: MapSettingsJob) -> Result<String, String> {
         let MapSettingsJob {
             target,
             request,
@@ -1193,19 +1351,13 @@ impl Inner {
                 .map_err(|e| e.to_string())?;
         }
         let replay = source.as_ref().map(|source| source.replay_ref());
-        let recorded_mods: Vec<_> = replay
-            .as_ref()
-            .into_iter()
-            .flat_map(|replay| replay.identity.mods.iter())
+        let recorded = replay
+            .map(crate::presentation::recorded_mods)
+            .unwrap_or_default();
+        let recorded_mods = recorded
+            .iter()
             .map(|recorded| map_settings::RecordedMod {
                 recorded_id: recorded.id.clone(),
-                name: recorded.display_name.clone(),
-            })
-            .collect();
-        let recorded: Vec<_> = recorded_mods
-            .iter()
-            .map(|recorded| installed_content_core::content::visual::RecordedMod {
-                id: recorded.recorded_id.clone(),
                 name: recorded.name.clone(),
             })
             .collect();
@@ -1225,8 +1377,15 @@ impl Inner {
             sample_counts: map_settings::sample_counts(),
             game_graphics: store.game().map(|game| game.graphics),
             game_settings_error: store.game_error(),
+            presentation_generation: 0,
         };
         drop(store);
+        // Widgets follow every source's campaign selection as saved now, and the mods as they
+        // are now: a save, a Refresh or a mod installed, updated or removed since. Saved
+        // settings are part of the configuration bindings are derived from.
+        self.content.update(|_| ());
+        self.catch_up()?;
+        reply.presentation_generation = self.presentation_generation();
         // The order the resolved selection mounts in, read from the descriptors alone. The
         // settings are saved by now, so a failure to read the mods is a note, not an error.
         match installed_content_core::content::visual::plan(
@@ -1416,7 +1575,7 @@ impl Inner {
                     return;
                 };
                 let context = LoadContext {
-                    content: self.content(),
+                    content: self.content_for(&source, work(product.content_dependent, &request)),
                 };
                 let result = (product.load)(
                     &source,
@@ -1450,7 +1609,15 @@ impl Inner {
                     crate::prepared::query::query(
                         &source,
                         &body,
-                        self.content().as_ref(),
+                        self.content_for(
+                            &source,
+                            work(
+                                products::find(&body.product)
+                                    .is_none_or(|product| product.content_dependent),
+                                &request,
+                            ),
+                        )
+                        .as_ref(),
                         &request.cancelled,
                     )
                     .map_err(|error| error.to_string())
@@ -1480,7 +1647,7 @@ impl Inner {
                     return;
                 }
                 let result = request_result(|| {
-                    let content = self.content();
+                    let content = self.content_for(&source, crate::source::Work::Recorded);
                     match action {
                         crate::prepared::Action::Status => {}
                         crate::prepared::Action::Start => {
@@ -1644,7 +1811,14 @@ impl Inner {
         }
         // What the source's first game window reads is read ahead at low priority, once the
         // open has answered.
-        let ahead = result.as_ref().ok().map(Arc::clone).zip(self.content());
+        let ahead = result.as_ref().ok().map(|source| {
+            // The read-ahead is cancelled once its binding is retired: a swap, an unbinding,
+            // the source dropped or the service closing.
+            // Its mount is resolved on the read-ahead's own thread, not before this open answers.
+            let content = source.admit(crate::source::Work::Ahead);
+            (Arc::clone(source), content)
+        });
+        let ahead = ahead.and_then(|(source, content)| Some((source, content?)));
         let mut pending = self
             .pending
             .lock()
@@ -1665,6 +1839,7 @@ impl Inner {
                         path: source.path().to_string_lossy().into_owned(),
                         revision: source.key().revision.clone(),
                         metadata: source.metadata(),
+                        presentation_generation: self.presentation_generation(),
                     };
                     let json = bounded_json(&reply, &job.request.cancelled);
                     match json {

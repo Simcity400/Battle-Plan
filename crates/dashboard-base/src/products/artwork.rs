@@ -206,9 +206,9 @@ pub struct Context {
     technology_names: Arc<BTreeMap<String, TechnologyName>>,
     /// The source's shared localisation and sprites for these folders.
     catalogue: Arc<Catalogue>,
-    artwork_cache: BTreeMap<String, (Artwork, Vec<String>)>,
+    artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
     artwork_bytes: usize,
-    icon_cache: BTreeMap<String, Result<Option<String>, String>>,
+    icon_cache: BTreeMap<String, catalogue::Drawn<Result<Option<String>, String>>>,
     definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
@@ -1230,9 +1230,9 @@ impl Context {
 
     fn cached_icon(&mut self, name: &str) -> io::Result<Option<String>> {
         if let Some(result) = self.icon_cache.get(name) {
-            return result.clone().map_err(invalid);
+            return result.get().clone().map_err(invalid);
         }
-        let result = (|| -> io::Result<Option<String>> {
+        let render = || -> io::Result<Option<String>> {
             let Some(sprite) = self.catalogue.sprites.find(name).map_err(invalid)? else {
                 return Ok(None);
             };
@@ -1250,8 +1250,9 @@ impl Context {
                 0,
                 ICON_EDGE,
             )?))
-        })()
-        .map_err(|error| error.to_string());
+        };
+        let drawn = catalogue::Drawn::new(|| render().map_err(|error| error.to_string()));
+        let result = drawn.get().clone();
         let size = name.len()
             + result.as_ref().map_or_else(
                 |error| error.len(),
@@ -1263,7 +1264,7 @@ impl Context {
             self.artwork_bytes = 0;
         }
         self.artwork_bytes = self.artwork_bytes.saturating_add(size);
-        self.icon_cache.insert(name.into(), result.clone());
+        self.icon_cache.insert(name.into(), drawn);
         result.map_err(invalid)
     }
 
@@ -1347,13 +1348,17 @@ impl Context {
                 return Err(invalid("Widget request cancelled"));
             }
             if !self.artwork_cache.contains_key(token) {
-                let (art, findings) = self.prepare(token);
-                let messages: Vec<String> = findings
-                    .into_iter()
-                    .map(|finding| format!("{token}: {}", finding.message))
-                    .collect();
+                let drawn = catalogue::Drawn::new(|| {
+                    let (art, findings) = self.prepare(token);
+                    let messages: Vec<String> = findings
+                        .into_iter()
+                        .map(|finding| format!("{token}: {}", finding.message))
+                        .collect();
+                    (art, messages)
+                });
+                let (art, messages) = drawn.get();
                 let size =
-                    artwork_bytes(&art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
+                    artwork_bytes(art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
                 // Retain a multi-country dashboard's working set of compressed
                 // icons so switching countries does not repeatedly decode them.
                 if self.artwork_bytes + size > MAX_RETAINED_ARTWORK_BYTES {
@@ -1362,9 +1367,9 @@ impl Context {
                     self.artwork_bytes = 0;
                 }
                 self.artwork_bytes += size;
-                self.artwork_cache.insert(token.into(), (art, messages));
+                self.artwork_cache.insert(token.into(), drawn);
             }
-            let (art, messages) = &self.artwork_cache[token];
+            let (art, messages) = self.artwork_cache[token].get();
             bytes += artwork_bytes(art);
             if bytes > 8 * 1024 * 1024 {
                 return Err(invalid("Widget artwork exceeds output budget"));
@@ -2479,10 +2484,10 @@ mod catalogue_reads {
         )
         .unwrap();
         assert_eq!(
-            cached[&("synthetic".into(), 1)].name.as_deref(),
+            cached[&("synthetic".into(), 1)].get().name.as_deref(),
             Some("Localized resource")
         );
-        assert!(cached[&("synthetic".into(), 1)].icon.is_none());
+        assert!(cached[&("synthetic".into(), 1)].get().icon.is_none());
         assert!(
             warnings.iter().any(|warning| warning.contains(gui_path)),
             "{warnings:?}"

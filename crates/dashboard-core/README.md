@@ -14,6 +14,7 @@ these types and re-exports each module at its old path.
 | [config.rs](src/config.rs) | The host's saved game/user folders and preparation choice (`APPDATA/battle-plan/content.json`, written under a lock), and the content options a product load receives. |
 | [map_display.rs](src/map_display.rs) | Every map choice and show/hide switch, the map volumes and the counter filter, each resolving on its own through the HOI4, global, campaign and widget scopes. |
 | [map_settings.rs](src/map_settings.rs) | The stored global, campaign and widget map preferences and the game's own graphics and volume settings. A map-settings request saves a scope's choices or flips one setting (the map-mode picker's day/night and allied plans): the flip reads the value when it runs, the scope's own or the one it inherits, and writes only its opposite, under the same lock as every save. |
+| [presentation.rs](src/presentation.rs) | The presentation identity a source's widgets share: its campaign's resolved visual mod selection and `visual::revision` of what it mounts ([dashboard](../dashboard/README.md#widget-presentation)). |
 | [map_pairs.rs](src/map_pairs.rs) | Serde helpers that persist hash maps and sets as key-ordered pair arrays, maps and sets. |
 | [findings.rs](src/findings.rs) | Content findings by kind, as readers, the catalogue and product checks record them. |
 | [blocks.rs](src/blocks.rs) | Block lists read ahead on spare cores and handed over in order, under one core budget: whole-branch scans, and any list with its own reader and read-ahead depth. |

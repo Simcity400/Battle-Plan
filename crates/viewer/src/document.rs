@@ -1343,6 +1343,7 @@ impl Document {
                 Some(dashboard::products::ContentOptions {
                     options,
                     allow_unverified,
+                    presentation: Default::default(),
                 }),
             ));
     }
@@ -1509,27 +1510,7 @@ impl Document {
         // simulation section stays recorded, for every consumer. A graphics value of another
         // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
         // keep the recorded defines, each named.
-        let art_defines = match content.layers.presentation_defines() {
-            None => defines.clone(),
-            Some(stack) => match installed_content_core::defines::read(stack)
-                .and_then(|shown| defines.with_graphics_of(&shown))
-            {
-                Ok((graphics, kept)) => {
-                    for why in kept {
-                        content
-                            .layers
-                            .note_overlay_refusal(format!("graphics define {why}"));
-                    }
-                    graphics
-                }
-                Err(error) => {
-                    content
-                        .layers
-                        .note_overlay_refusal(format!("graphics defines ({error})"));
-                    defines.clone()
-                }
-            },
-        };
+        let art_defines = defines.graphics_for(&content.layers);
         // The defines an artwork loader reads with the stack it was handed: graphics defines
         // with the visual mods, recorded defines when it falls back to the recording.
         let defines_for = |stack: &installed_content_core::ResolvedLayers| {

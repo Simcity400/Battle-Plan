@@ -1,29 +1,129 @@
 //! The content catalogue ([dashboard-text](../../dashboard-text/README.md)) and its
-//! loader: one catalogue per source and folders, held in the source's own cache.
+//! loader: one catalogue per source, folders and presentation, held in the source's own
+//! cache.
 
 pub use dashboard_text::catalogue::*;
 
-use crate::{Source, content, products::ContentOptions};
+use crate::{
+    Source, content,
+    presentation::{Presentation, Presented},
+    products::ContentOptions,
+};
 use std::{io, sync::Arc};
 
-/// The recording's catalogue for these folders: its verified content, the
+/// The recording's catalogue for these folders over `presented`, a mount already resolved
+/// outside every cache lock: its verified content with the visual mods mounted over it, the
 /// localisation in the user's game language and the client's texture settings.
-fn load(source: &Source, options: &ContentOptions) -> io::Result<Catalogue> {
-    load_with(source, options, || source.content(&options.options))
+fn load(
+    source: &Source,
+    options: &ContentOptions,
+    presented: Arc<Presented>,
+) -> io::Result<Catalogue> {
+    load_with(
+        source,
+        options,
+        || source.content(&options.options),
+        || Ok(presented),
+    )
 }
 
-/// [`load`] over the content `resolved` gives.
+/// A source's catalogue slot: the shown one ([`Cached`]) or the recording's own.
+trait Slot: Default + Send + 'static {
+    fn slot(&mut self) -> &mut Cached;
+}
+
+impl Slot for Cached {
+    fn slot(&mut self) -> &mut Cached {
+        self
+    }
+}
+
+/// The recording's own catalogue slot, apart so neither it nor the catalogue of the visual mods
+/// requests show displaces the other.
+#[derive(Default)]
+struct Recorded(Cached);
+
+impl Slot for Recorded {
+    fn slot(&mut self) -> &mut Cached {
+        &mut self.0
+    }
+}
+
+/// Whether `options` read the recording's own catalogue: recorded-only work, or work showing
+/// no visual mod, which share it ([`recorded_slot`]).
+fn reads_recorded(options: &ContentOptions) -> bool {
+    options.presentation.is_recorded() || options.presentation.identity().is_empty()
+}
+
+/// `change` run on the catalogue slot `options` read, under its lock.
+fn with_slot<R>(source: &Source, options: &ContentOptions, change: impl FnOnce(&mut Cached) -> R) -> R {
+    if reads_recorded(options) {
+        change(
+            source
+                .state::<Recorded>()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .slot(),
+        )
+    } else {
+        change(
+            &mut source
+                .state::<Cached>()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
+    }
+}
+
+/// The catalogue the source's `S` slot keeps for `key`, loaded on first use over the mount
+/// `presented` gives. The mount is resolved before the catalogue's cell is entered, and only
+/// when nothing is loaded yet, so no cache lock is ever held while a mount is computed.
+fn kept_in<S: Slot>(
+    key: Binding,
+    source: &Source,
+    options: &ContentOptions,
+    presented: impl FnOnce() -> io::Result<Arc<Presented>>,
+) -> io::Result<Arc<Catalogue>> {
+    let result = {
+        let state = source.state::<S>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let slot = state.slot();
+        if !slot.as_ref().is_some_and(|(cached, _)| *cached == key) {
+            *slot = Some((key, Arc::new(CachedResult::default())));
+        }
+        Arc::clone(&slot.as_ref().expect("catalogue binding retained").1)
+    };
+    if let Some(loaded) = result.get() {
+        return loaded;
+    }
+    let presented = presented()?;
+    result.get_or_init(|| load(source, options, presented))
+}
+
+/// The recording's own catalogue for these folders.
+fn recorded_slot(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
+    kept_in::<Recorded>(
+        binding_with(options, Presentation::default()),
+        source,
+        options,
+        || source.recorded_presented(&options.options),
+    )
+}
+
+/// [`load`] over the recorded content `resolved` gives and the presentation `presented`
+/// mounts.
 fn load_with(
     source: &Source,
     options: &ContentOptions,
     resolved: impl Fn() -> io::Result<Arc<installed_content_core::content::ResolvedContent>>,
+    presented: impl FnOnce() -> io::Result<Arc<Presented>>,
 ) -> io::Result<Catalogue> {
     let mut verification = Vec::new();
     let replay = source.replay();
     content::check_replay(&replay, options.allow_unverified, &mut verification)?;
     let language = &replay.identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
-    let content = resolved()?;
+    let presented = presented()?;
     let mut warnings = Vec::new();
     let settings = installed_content_settings::settings::read_keys(&options.options.user_dir);
     let language = match &settings {
@@ -49,7 +149,8 @@ fn load_with(
         .map(|settings| settings.texture_decode())
         .map_err(|why| format!("settings.txt is unavailable: {why}"));
     Catalogue::from_content(
-        content,
+        Arc::clone(&presented.content),
+        presented.presentation.clone(),
         localisation,
         verification,
         warnings,
@@ -58,10 +159,30 @@ fn load_with(
     )
 }
 
-pub type Binding = (content::ContentKey, std::path::PathBuf);
+/// What a catalogue, and every cache derived from one, is bound to: the folders, the
+/// unverified-content choice, the cache folder and the presentation the request's artwork shows
+/// (`ContentOptions::presentation`).
+pub type Binding = (content::ContentKey, std::path::PathBuf, Presentation);
 type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
 
+/// The binding of the catalogue [`catalogue`] gives for these options.
 pub fn binding(options: &ContentOptions) -> Binding {
+    binding_with(options, options.presentation.identity().clone())
+}
+
+fn binding_with(options: &ContentOptions, presentation: Presentation) -> Binding {
+    (
+        content::content_key(Some(options)).expect("content options given"),
+        options.options.cache_dir.clone(),
+        presentation,
+    )
+}
+
+/// What a cache of recorded facts alone (no artwork, interface or game-look text) is bound to:
+/// [`Binding`] without the presentation, which cannot change a recorded fact.
+pub type RecordedBinding = (content::ContentKey, std::path::PathBuf);
+
+pub fn recorded_binding(options: &ContentOptions) -> RecordedBinding {
     (
         content::content_key(Some(options)).expect("content options given"),
         options.options.cache_dir.clone(),
@@ -69,33 +190,96 @@ pub fn binding(options: &ContentOptions) -> Binding {
 }
 
 pub fn binding_matches(key: &Binding, options: &ContentOptions) -> bool {
-    key.0.0 == options.options.game_dir
-        && key.0.1 == options.options.user_dir
-        && key.0.2 == options.allow_unverified
-        && key.1 == options.options.cache_dir
+    *key == binding(options)
 }
 
-/// The shared catalogue for these folders, loaded on first use and replaced when
-/// the folders, the cache folder or the unverified-content choice change.
+/// The shared catalogue for these options (folders and presentation), loaded on first use and
+/// replaced when the folders, the cache folder, the unverified-content choice or the
+/// presentation change. A request admitted under a presentation the source has since left
+/// gets a catalogue of its own, which displaces nothing.
+///
+/// Recorded-only work (preparation) gets the recording's own catalogue and never mounts a
+/// visual mod.
 pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
-    let state = source.state::<Cached>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if !state
-        .as_ref()
-        .is_some_and(|(cached, _)| binding_matches(cached, options))
-    {
-        *state = Some((binding(options), Arc::new(CachedResult::default())));
+    // Without a visual mod the recording's own catalogue is the one shown: recorded-only work
+    // and requests share it, so caches built from it serve both.
+    if reads_recorded(options) {
+        return recorded_slot(source, options);
     }
-    let result = Arc::clone(&state.as_ref().expect("catalogue binding retained").1);
-    drop(state);
-    result.get_or_init(|| load(source, options))
+    if !source.still_admitted(options) {
+        return load(source, options, source.presented_for(options)?).map(Arc::new);
+    }
+    kept_in::<Cached>(binding(options), source, options, || {
+        source.presented_for(options)
+    })
 }
 
-/// The catalogue for these folders only when reading it binds nothing a request did not: the
-/// source's content must already be resolved for them ([`Source::bound_content`]), and its
-/// catalogue bound to them or to none. Otherwise `None`, having read and published nothing.
-/// Work done ahead of a request uses it, so content a request has since replaced is never
-/// bound again for its replies to report.
+/// The catalogue of these folders drawing the recording's own artwork whatever visual mods the
+/// request shows, for prepared families whose stored payloads hold artwork: the prepared store
+/// keeps them by recorded content alone, so they never mix two presentations. It credits
+/// nothing: the replies of those families name it by product ([`credit_stored_artwork`]).
+/// Without visual mods it is [`catalogue`]'s.
+pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
+    if options.presentation.is_empty() {
+        return catalogue(source, options);
+    }
+    recorded_slot(source, options)
+}
+
+/// Names `what`, artwork a prepared family stores with its payloads, as drawn from the recording
+/// on a reply drawn while the request it answers shows visual mods, in the line the map names
+/// its own fallbacks with. Each reply credits it from its own admission when it is served (by
+/// product), never a shared load: a load kept for later replies would replay it after the
+/// selection changed.
+pub fn credit_stored_artwork(options: &ContentOptions, what: &str) {
+    if !options.presentation.is_empty() {
+        installed_content_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
+            format!("{what} (prepared data keeps the recording's artwork)"),
+        ]));
+    }
+}
+
+/// A source cache built from one catalogue at a time, kept once for the recording's own
+/// catalogue (what preparation reads, and requests while no visual mod is shown) and once for
+/// the catalogue showing the source's visual mods: preparation and requests showing visual
+/// mods each keep their entry, under the cache's own retention rules, instead of displacing
+/// each other's.
+#[derive(Default)]
+pub struct ByCatalogue<T> {
+    recorded: T,
+    shown: T,
+}
+
+impl<T> ByCatalogue<T> {
+    /// The cache kept for catalogues of `catalogue`'s kind.
+    pub fn of(&mut self, catalogue: &Catalogue) -> &mut T {
+        self.of_optional(Some(catalogue))
+    }
+
+    /// [`Self::of`] for a cache that may be built from no catalogue, which reads as the
+    /// recording's.
+    pub fn of_optional(&mut self, catalogue: Option<&Catalogue>) -> &mut T {
+        if catalogue.is_none_or(|catalogue| catalogue.presentation.is_empty()) {
+            &mut self.recorded
+        } else {
+            &mut self.shown
+        }
+    }
+
+    /// Both caches, the recording's first.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn both(&self) -> [&T; 2] {
+        [&self.recorded, &self.shown]
+    }
+}
+
+/// The catalogue for these options only when reading it binds nothing a request did not: the
+/// source's content must already be resolved for them ([`Source::bound_content`]), they must
+/// show the source's presentation now, and its catalogue must be bound to them or to none; the
+/// presentation is mounted over the bound content if no request has yet
+/// ([`Source::bound_presented_for`]). Otherwise `None`, having read and published
+/// nothing. Work done ahead of a request uses it, so content or a presentation a request has
+/// since replaced is never bound again for its replies to report.
 pub fn bound_catalogue(
     source: &Source,
     options: &ContentOptions,
@@ -111,37 +295,48 @@ pub(crate) fn bound_catalogue_with(
     before_load: impl FnOnce(),
 ) -> Option<io::Result<Arc<Catalogue>>> {
     let content = source.bound_content(&options.options)?;
-    let state = source.state::<Cached>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    let result = match state.as_ref() {
-        Some((cached, result)) if binding_matches(cached, options) => Arc::clone(result),
-        Some(_) => return None,
-        None => {
-            let result = Arc::new(CachedResult::default());
-            *state = Some((binding(options), Arc::clone(&result)));
-            result
+    // The binding's mount, computed outside the catalogue's slot, and only while `options` still
+    // hold the source's binding.
+    let presented = source.bound_presented_for(options)?;
+    let key = binding(options);
+    let result = with_slot(source, options, |slot| {
+        // A catalogue a request bound to anything else is left alone.
+        if slot.as_ref().is_some_and(|(cached, _)| *cached != key) {
+            return None;
         }
-    };
-    drop(state);
+        Some(match slot.as_ref() {
+            Some((_, result)) => Arc::clone(result),
+            None => {
+                let result = Arc::new(CachedResult::default());
+                *slot = Some((key, Arc::clone(&result)));
+                result
+            }
+        })
+    })?;
     before_load();
-    Some(result.get_or_init(|| load_with(source, options, || Ok(Arc::clone(&content)))))
+    Some(result.get_or_init(|| {
+        load_with(
+            source,
+            options,
+            || Ok(Arc::clone(&content)),
+            || Ok(Arc::clone(&presented)),
+        )
+    }))
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_test_catalogue(source: &Source, options: &ContentOptions, catalogue: Arc<Catalogue>) {
-    let result = CachedResult::loaded(catalogue);
-    *source.state::<Cached>().lock().unwrap() = Some((binding(options), Arc::new(result)));
+    let result = Arc::new(CachedResult::loaded(catalogue));
+    with_slot(source, options, |slot| *slot = Some((binding(options), result)));
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn catalogue_loads(source: &Source, options: &ContentOptions) -> usize {
-    source
-        .state::<Cached>()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .filter(|(key, _)| binding_matches(key, options))
-        .map_or(0, |(_, result)| result.loads())
+    with_slot(source, options, |slot| {
+        slot.as_ref()
+            .filter(|(key, _)| binding_matches(key, options))
+            .map_or(0, |(_, result)| result.loads())
+    })
 }
 
 #[cfg(test)]

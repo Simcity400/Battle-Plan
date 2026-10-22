@@ -160,7 +160,7 @@ fn best_variants(
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     content: Option<Arc<IconContent>>,
-    images: BTreeMap<Icon, Result<String, String>>,
+    images: BTreeMap<Icon, catalogue::Drawn<Result<String, String>>>,
     image_bytes: usize,
 }
 
@@ -336,14 +336,17 @@ impl Product for StockpileArtwork {
             let (icon, reason) = match selected {
                 Ok(Some(icon)) => {
                     let decoded = match cache.images.get(&icon) {
-                        Some(image) => image.clone(),
+                        Some(image) => image.get().clone(),
                         None => {
-                            let image = equipment_icon::image(
-                                &catalogue,
-                                &icon,
-                                dashboard_base::products::artwork::ICON_EDGE,
-                            )
-                            .map_err(|why| why.to_string());
+                            let drawn = catalogue::Drawn::new(|| {
+                                equipment_icon::image(
+                                    &catalogue,
+                                    &icon,
+                                    dashboard_base::products::artwork::ICON_EDGE,
+                                )
+                                .map_err(|why| why.to_string())
+                            });
+                            let image = drawn.get().clone();
                             let bytes = match &image {
                                 Ok(text) | Err(text) => text.len(),
                             } + match &icon {
@@ -357,7 +360,7 @@ impl Product for StockpileArtwork {
                                     cache.image_bytes = 0;
                                 }
                                 cache.image_bytes += bytes;
-                                cache.images.insert(icon, image.clone());
+                                cache.images.insert(icon, drawn);
                             }
                             image
                         }

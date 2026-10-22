@@ -16,6 +16,12 @@ pub(super) struct Request {
     pub(super) refresh: AtomicBool,
 }
 
+impl crate::presentation::Cancel for Request {
+    fn flag(&self) -> &AtomicBool {
+        &self.cancelled
+    }
+}
+
 impl Request {
     pub(super) fn new(id: String) -> Arc<Self> {
         Arc::new(Self {
@@ -218,6 +224,12 @@ impl Inner {
             .unwrap_or_else(|error| error.into_inner())
             .take();
         drop(pending);
+        // Close the configuration, so a rebind still in flight installs nothing and none starts,
+        // then retire every source's binding, cancelling work still done ahead under it.
+        self.content.close();
+        for source in self.bound_sources() {
+            source.bind(None, Default::default());
+        }
         self.signal.notify();
     }
 }

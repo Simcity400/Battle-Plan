@@ -26,7 +26,7 @@ use dashboard_text::{
     subunit_requirements,
     table_access::TokenNames,
 };
-use installed_content_localisation::localisation::Argument;
+use installed_content_localisation::localisation::{Argument, Localisation};
 use replay::container::SeekResult;
 use replay_data::rows::{TableId, TemplateSettings, tables};
 use replay_frame::frame::DecodedFrame;
@@ -236,10 +236,13 @@ fn same_country(links: &BTreeMap<u32, u32>, a: u32, b: u32) -> bool {
                 .is_some_and(|slot| links.get(&b) == Some(slot)))
 }
 
-/// The designer of `template` at the frame's hour.
+/// The designer of `template` at the frame's hour: its facts and stats from the recorded
+/// catalogue, its text (name, Army experience, stat labels and values, summaries) in `shown`,
+/// the localisation the window is drawn in (`Catalogue::presentation_localisation`).
 pub fn inputs(
     frame: &DecodedFrame,
     catalogue: &Catalogue,
+    shown: &Localisation,
     template: u64,
     nato: bool,
 ) -> Result<Designer, String> {
@@ -284,7 +287,7 @@ pub fn inputs(
             .map(str::to_owned)
             .map_err(|why| format!("definition token {token}: {why}"))
     };
-    let localisation = &catalogue.localisation;
+    let localisation = shown;
     let name = dashboard_text::template_facts::display_name(frame, template, localisation);
     let defines = catalogue.defines();
     let layout = icon.layout.require("template layout").and_then(|layout| {
@@ -453,14 +456,7 @@ pub fn inputs(
                 .find(|row| same_country(&links, row.country, owner))
                 .ok_or_else(|| "the country's Army experience is not recorded".to_owned())
         })
-        .and_then(|row| {
-            localisation
-                .localise_with(
-                    EXPERIENCE_KEY.as_bytes(),
-                    &[("VALUE", Argument::Int32(experience_points(row.army_raw)))],
-                )
-                .map_err(|why| format!("{EXPERIENCE_KEY}: {why:?}"))
-        });
+        .and_then(|row| experience_text(localisation, row.army_raw));
     // The designer's empty-template test: the leading line and support slots hold nothing.
     let empty = layout.as_ref().is_ok_and(|layout| {
         slots::real(&layout.regiments, 0, 0).is_none()
@@ -510,6 +506,16 @@ pub fn inputs(
     })
 }
 
+/// The Army experience line for `raw` recorded experience, in `localisation`.
+pub fn experience_text(localisation: &Localisation, raw: i64) -> Result<String, String> {
+    localisation
+        .localise_with(
+            EXPERIENCE_KEY.as_bytes(),
+            &[("VALUE", Argument::Int32(experience_points(raw)))],
+        )
+        .map_err(|why| format!("{EXPERIENCE_KEY}: {why:?}"))
+}
+
 /// Whether every grouped real definition of the composition may be parachuted.
 fn paradrop(
     catalogue: &Catalogue,
@@ -557,7 +563,9 @@ fn hour(
         }
     };
     check_cancel(cancelled)?;
-    Ok(inputs(&frame, catalogue, template, nato))
+    // The window's text is the presentation's; its facts and stats are recorded.
+    let shown = catalogue.presentation_localisation()?;
+    Ok(inputs(&frame, catalogue, &shown, template, nato))
 }
 
 /// The designer of `template` at `at`.
@@ -585,12 +593,14 @@ pub fn bind(
             });
         }
     };
+    // The window shows the presentation's text; the stats above read the recorded facts.
+    let localisation = catalogue.presentation_localisation()?;
     let mut session = session.lock().unwrap_or_else(|error| error.into_inner());
     check_cancel(cancelled)?;
     let mut bound = draw(
         &mut session,
         &catalogue.content.layers,
-        &catalogue.localisation,
+        &localisation,
         &designer,
         nato,
         scroll,

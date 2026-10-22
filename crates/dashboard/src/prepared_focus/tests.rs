@@ -775,17 +775,19 @@ fn a_block_retains_each_country_s_completions_once_and_each_change() {
 /// once.
 #[test]
 fn kept_art_stays_within_its_budget_evicting_the_least_recently_used() {
-    let art = |token: &str, icon: usize| -> artwork::ResolvedArt {
-        (
-            Artwork {
-                token: token.into(),
-                name: Some("Name".into()),
-                description: None,
-                base_duration_days: None,
-                icon: Some("i".repeat(icon)),
-            },
-            None,
-        )
+    let art = |token: &str, icon: usize| -> crate::catalogue::Drawn<artwork::ResolvedArt> {
+        crate::catalogue::Drawn::new(|| {
+            (
+                Artwork {
+                    token: token.into(),
+                    name: Some("Name".into()),
+                    description: None,
+                    base_duration_days: None,
+                    icon: Some("i".repeat(icon)),
+                },
+                None,
+            )
+        })
     };
     let key = |token: &str| (Presentation::Display, token.to_owned(), String::new());
     let mut kept = art::Kept::with_budget(100_000);
@@ -1020,6 +1022,7 @@ fn focus_art_matches_hourly_presentation_and_reads_frames_only_for_dynamic_token
             cache_dir: folders[0].0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let catalogue = Arc::new(catalogue);
     crate::catalogue::set_test_catalogue(&source, &content, Arc::clone(&catalogue));

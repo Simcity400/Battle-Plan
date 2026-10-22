@@ -647,6 +647,7 @@ mod tests {
                 cache_dir: root.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         crate::catalogue::set_test_catalogue(&source, &content, Arc::new(catalogue));
         (

@@ -15,6 +15,7 @@ use crate::{
     ReplayMetadata,
     content::{ContentKey, content_key, name_localisation},
     metadata::{self, warn},
+    presentation::{Admitted, Binding, Cancel, Presentation, Presented},
     products::ContentOptions,
 };
 use installed_content_country_names::country_names::CountryNames;
@@ -65,6 +66,9 @@ pub struct Source {
     /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(Option<ContentKey>, ReplayMetadata)>>,
     content: Mutex<ContentCache>,
+    /// What work on this source is bound to now ([`Self::bind`]), swapped in whole, never
+    /// changed in place; `None` until the service binds it.
+    binding: Mutex<Option<Arc<Binding>>>,
     state: Mutex<HashMap<TypeId, StateEntry>>,
 }
 
@@ -97,6 +101,7 @@ impl Source {
                 cached_inputs: Some(restored.inputs),
                 named: Mutex::new(None),
                 content: Mutex::new(None),
+                binding: Mutex::new(None),
                 state: Mutex::new(HashMap::new()),
             });
         }
@@ -121,6 +126,7 @@ impl Source {
             cached_inputs: None,
             named: Mutex::new(None),
             content: Mutex::new(None),
+            binding: Mutex::new(None),
             state: Mutex::new(HashMap::new()),
         })
     }
@@ -170,6 +176,23 @@ impl Source {
             .as_ref()
         {
             reads.append_to(warnings);
+        }
+    }
+
+    /// What the binding a content reply was admitted under cannot show
+    /// ([`Presented::append_to`]), from the mount its entry resolved, never the source's binding
+    /// now. Work that reads no content or shows no visual mod names nothing, and work cancelled
+    /// while the mount was resolved names nothing either.
+    pub fn append_presentation_warnings(
+        &self,
+        warnings: &mut Vec<String>,
+        content: Option<&ContentOptions>,
+    ) {
+        if let Some(content) = content.filter(|content| {
+            content.presentation.content_work() && content.presentation.shows_mods()
+        }) && let Ok(presented) = self.presented_for(content)
+        {
+            presented.append_to(warnings);
         }
     }
 
@@ -348,6 +371,172 @@ impl Source {
             .map(|(_, content, _)| Arc::clone(content))
     }
 
+    /// What work on this source is bound to now, `None` until the service binds it.
+    pub fn binding(&self) -> Option<Arc<Binding>> {
+        self.binding
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// The visual mods this source's widgets show now. Work reads the binding it was admitted
+    /// under from its `ContentOptions::presentation`, never this, so nothing changed while it
+    /// runs reaches it.
+    pub fn presentation(&self) -> Presentation {
+        self.binding()
+            .map(|binding| binding.presentation.clone())
+            .unwrap_or_default()
+    }
+
+    /// Makes work on this source bound to `options`, `allow_unverified` and `presentation`, as
+    /// one swap of the whole binding, returning whether anything changed. Unchanged, the current
+    /// binding and its mount are kept. `None` options unbind it.
+    pub fn bind(
+        &self,
+        options: Option<(&ResolveOptions, bool)>,
+        presentation: Presentation,
+    ) -> bool {
+        let mut binding = self
+            .binding
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some((options, allow_unverified)) = options else {
+            let retired = binding.take();
+            retired.iter().for_each(|retired| retired.retire());
+            return retired.is_some();
+        };
+        if binding
+            .as_ref()
+            .is_some_and(|current| current.binds(options, allow_unverified, &presentation))
+        {
+            return false;
+        }
+        let replaced = binding.replace(Arc::new(Binding::new(
+            options.clone(),
+            allow_unverified,
+            presentation,
+        )));
+        replaced.iter().for_each(|replaced| replaced.retire());
+        true
+    }
+
+    /// Admits work on this source: its current binding, taken whole under one short lock, so
+    /// work never reads one binding's folders with another's mods. `None` until the source is
+    /// bound.
+    pub fn admit(&self, work: Work) -> Option<ContentOptions> {
+        let binding = self.binding()?;
+        let options = binding.options.clone();
+        let allow_unverified = binding.allow_unverified;
+        let presentation = match work {
+            Work::Content(cancel) => Admitted::admitted(binding, true, cancel),
+            Work::Ahead => {
+                let cancel = Arc::clone(&binding) as Arc<dyn Cancel>;
+                Admitted::admitted(binding, false, cancel)
+            }
+            Work::Recorded => Admitted::recorded(binding),
+        };
+        Some(ContentOptions {
+            options,
+            allow_unverified,
+            presentation,
+        })
+    }
+
+    /// Whether work admitted under `content` still holds the source's current binding: no
+    /// folder, choice or visual mod change has replaced it. Work admitted outside the service
+    /// (the source never bound) holds it while its presentation is the source's.
+    pub fn still_admitted(&self, content: &ContentOptions) -> bool {
+        match self.binding() {
+            Some(current) => Arc::ptr_eq(&current, content.presentation.binding()),
+            None => content.presentation.identity().is_empty(),
+        }
+    }
+
+    /// [`Source::admit`], with the mount the work draws resolved before any of its code runs
+    /// ([`Source::resolve`]): what every entry of work (a product request, a prepared query,
+    /// read-ahead) admits with.
+    pub fn admit_resolved(&self, work: Work) -> Option<ContentOptions> {
+        let mut content = self.admit(work)?;
+        self.resolve(&mut content);
+        Some(content)
+    }
+
+    /// Resolves the mount work admitted under `content` draws, at its entry and outside every
+    /// lock, so no code of the work, under whatever cache lock, ever mounts: its binding's mount,
+    /// computed once by the first work that needs it, the others waiting on it while watching
+    /// their own cancellation ([`Binding::mount`]). Work showing no visual mod needs none.
+    pub fn resolve(&self, content: &mut ContentOptions) {
+        if !content.presentation.shows_mods() {
+            return;
+        }
+        let admitted = &content.presentation;
+        let mount = admitted.binding().mount.get_or_mount(admitted.cancel(), || {
+            let recorded = self.content(&content.options)?;
+            Presented::mount(
+                &recorded,
+                &content.options,
+                &self.replay,
+                admitted.identity(),
+                admitted.cancel(),
+            )
+            .map(Arc::new)
+        });
+        content.presentation.set_mount(&mount);
+    }
+
+    /// The mount the art reads of work admitted under `content` draw from, as its entry resolved
+    /// it ([`Source::resolve`]); it never mounts. Recorded-only work and work showing no visual
+    /// mod get the recording's own artwork.
+    pub fn presented_for(&self, content: &ContentOptions) -> io::Result<Arc<Presented>> {
+        if !content.presentation.shows_mods() {
+            return self.recorded_presented(&content.options);
+        }
+        content.presentation.mount().unwrap_or_else(|| {
+            debug_assert!(false, "work showing visual mods reads art its entry did not resolve");
+            Err(io::Error::other(
+                "The selected visual mods were not prepared for this work",
+            ))
+        })
+    }
+
+    /// [`Source::resolve`] at the entry of work done ahead of a request: only over content
+    /// already resolved for its folders, and only while `content` holds the source's current
+    /// binding, so it never mounts over content or for a presentation a request has replaced.
+    pub fn resolve_bound(&self, content: &mut ContentOptions) {
+        if self.bound_content(&content.options).is_some() && self.still_admitted(content) {
+            self.resolve(content);
+        }
+    }
+
+    /// The mount of work done ahead of a request, as its entry resolved it
+    /// ([`Source::resolve_bound`]), while `content` still holds the source's current binding over
+    /// content already resolved for its folders: it never binds content or a presentation a
+    /// request has replaced. `None` otherwise, or when its entry resolved none.
+    pub fn bound_presented_for(&self, content: &ContentOptions) -> Option<Arc<Presented>> {
+        self.bound_content(&content.options)?;
+        if !self.still_admitted(content) {
+            return None;
+        }
+        if content.presentation.shows_mods() {
+            return content.presentation.mount()?.ok();
+        }
+        self.recorded_presented(&content.options).ok()
+    }
+
+    /// The recording's own artwork for these folders: no visual mod mounted, for prepared
+    /// families whose stored payloads hold artwork.
+    pub fn recorded_presented(&self, options: &ResolveOptions) -> io::Result<Arc<Presented>> {
+        let recorded = self.content(options)?;
+        Presented::mount(
+            &recorded,
+            options,
+            &self.replay,
+            &Presentation::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .map(Arc::new)
+    }
+
     /// A product's own cache for this source, created on first use. Requests
     /// for the same product serialise on it; different products run in parallel.
     pub fn state<T: Default + Send + 'static>(&self) -> Arc<Mutex<T>> {
@@ -456,6 +645,34 @@ impl Source {
                     .iter()
                     .any(|block| block.branch == gap.branch && gap.first_hour <= block.last_hour)
             })
+    }
+}
+
+/// What work a source admits ([`Source::admit`]).
+pub enum Work {
+    /// Work answering a request, cancelled by the request: its art follows the binding's visual
+    /// mods, and its replies name what their mount cannot show.
+    Content(Arc<dyn Cancel>),
+    /// Work done ahead of requests (read-ahead): its art follows the binding's visual mods, and
+    /// it is cancelled once its binding is retired.
+    Ahead,
+    /// Work that reads the recording's own artwork whatever its source shows, and that nobody
+    /// cancels: preparation and the store checks it makes, and work that reads no content. It
+    /// never mounts a binding's visual mods.
+    Recorded,
+}
+
+/// A dropped source retires its binding, cancelling work still done ahead under it.
+impl Drop for Source {
+    fn drop(&mut self) {
+        if let Some(binding) = self
+            .binding
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            binding.retire();
+        }
     }
 }
 

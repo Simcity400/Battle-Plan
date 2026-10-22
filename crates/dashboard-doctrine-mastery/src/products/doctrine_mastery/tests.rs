@@ -341,6 +341,7 @@ fn content_failure_preserves_numbers_and_is_cached_per_binding() {
             cache_dir: fixture.directory.join("content-cache"),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     };
     let params = json!({"branchId":"1", "tag":"GER"});
     let prefix = prefix(100, 100, true);
@@ -1018,6 +1019,7 @@ fn s2_options(fixture: &Fixture) -> dashboard_core::config::ContentOptions {
             cache_dir: fixture.directory.join("content-cache"),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     }
 }
 

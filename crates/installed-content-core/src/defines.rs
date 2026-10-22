@@ -366,6 +366,30 @@ pub const GRAPHICS_SECTIONS: [&str; 6] = [
 ];
 
 impl Defines {
+    /// The defines artwork consumers of `layers` read: these (the recorded defines) with the
+    /// graphics sections of `layers`' presentation defines ([`Self::with_graphics_of`]), or these
+    /// alone without visual mods' defines. A graphics value the mods retype keeps the recorded
+    /// one, and mods' scripts that cannot run keep these whole; each is named on `layers` as
+    /// artwork drawn from the recording ([`ResolvedLayers::note_overlay_refusal`]). The map and
+    /// the dashboard's widgets read graphics defines through it alike.
+    pub fn graphics_for(&self, layers: &ResolvedLayers) -> Defines {
+        let Some(stack) = layers.presentation_defines() else {
+            return self.clone();
+        };
+        match read(stack).and_then(|shown| self.with_graphics_of(&shown)) {
+            Ok((graphics, kept)) => {
+                for why in kept {
+                    layers.note_overlay_refusal(format!("graphics define {why}"));
+                }
+                graphics
+            }
+            Err(error) => {
+                layers.note_overlay_refusal(format!("graphics defines ({error})"));
+                self.clone()
+            }
+        }
+    }
+
     /// These (recorded) defines with the [`GRAPHICS_SECTIONS`] of `shown`, the defines the
     /// visual mods' scripts were merged into: every simulation section stays recorded, and every
     /// graphics value the mods set is theirs. A graphics value the mods give in another type

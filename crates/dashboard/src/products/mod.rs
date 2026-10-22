@@ -20,20 +20,23 @@ pub mod technology_artwork;
 pub use dashboard_air_aces::products::air_aces;
 pub use dashboard_air_operations::products::{air_missions, air_statistics};
 pub use dashboard_air_superiority::products::air_superiority;
+pub use dashboard_army::products::{
+    division_careers, division_equipment, division_templates, training_queue,
+};
 pub use dashboard_base::products::*;
 pub use dashboard_construction::products::construction_log;
 pub use dashboard_construction::products::construction_spending;
 pub use dashboard_country_fuel::products::country_fuel;
 pub use dashboard_country_nukes::products::country_nukes;
-pub use dashboard_doctrine_mastery::products::doctrine_mastery;
 pub use dashboard_diplomacy::products::diplomacy_state;
+pub use dashboard_doctrine_mastery::products::doctrine_mastery;
+pub use dashboard_economy::products::{
+    convoy_health, fuel_branches, lend_lease_balance, market, production_catalogue,
+};
 pub use dashboard_equipment_losses::products::equipment_losses;
 pub use dashboard_equipment_stockpile::products::equipment_stockpile;
 pub use dashboard_factions::products::faction_state;
 pub use dashboard_forces::products::air_force;
-pub use dashboard_army::products::{
-    division_careers, division_equipment, division_templates, training_queue,
-};
 pub use dashboard_forces::products::army_size;
 pub use dashboard_forces::products::naval_management;
 pub use dashboard_forces::products::navy;
@@ -68,6 +71,7 @@ pub use dashboard_occupation::products::occupation_reserve;
 pub use dashboard_occupation::products::{occupation_trend, occupied_states};
 pub use dashboard_party_history::products::party_history;
 pub use dashboard_peace_deals::products::peace_deals;
+pub use dashboard_politics::products::politics_state;
 pub use dashboard_politics_ledger::products::politics_ledger;
 pub use dashboard_raids::products::raids;
 pub use dashboard_resource_balance::products::market_lendlease;
@@ -79,11 +83,7 @@ pub use dashboard_subjects::products::{autonomy, subjects};
 pub use dashboard_unit_leaders::products::unit_leaders;
 pub use dashboard_wars::products::{war_casualties, wargoals, wars};
 pub use dashboard_weather::products::regional_weather;
-pub use dashboard_politics::products::politics_state;
 pub use dashboard_world_tension::products::world_tension;
-pub use dashboard_economy::products::{
-    convoy_health, fuel_branches, lend_lease_balance, market, production_catalogue,
-};
 
 use std::sync::atomic::AtomicBool;
 
@@ -150,6 +150,30 @@ fn refuse<P: Product>(
     Err(prepared_only(P::KEY))
 }
 
+/// The artwork a product's replies draw from what the prepared store keeps by recorded content
+/// alone (`catalogue::recorded_catalogue` and its kin), named on every reply, fresh or kept,
+/// served while its request shows visual mods (`catalogue::credit_stored_artwork`).
+pub(crate) fn stored_artwork(product: &str) -> Option<&'static str> {
+    Some(match product {
+        "resource-balance" | "trade-flows" => "resource icons",
+        "special-projects" | "event-feed" => "special project icons and portraits",
+        "operatives-roster" => "operative portraits and icons",
+        "unit-leaders" => "unit leader trait icons",
+        "construction-log" | "construction-log-manifest" | "construction-spending" => {
+            "construction icons"
+        }
+        "ships-sunk" | "ships-sunk-manifest" | "naval-battle-details" => "ship class icons",
+        "occupied-states" | "occupied-states-manifest" => "occupation law icons",
+        "raids" => "raid icons",
+        "politics-ledger" => "politics ledger icons",
+        "production-catalogue"
+        | "production-lines"
+        | "production-line-detail"
+        | "production-line-breakdown" => "production line icon choices",
+        _ => return None,
+    })
+}
+
 fn load_json<P: Product>(
     source: &Source,
     lease_id: &str,
@@ -186,12 +210,33 @@ fn load_json<P: Product>(
     let data = match stored {
         Some(data) => data,
         None => {
-            let mut data =
-                P::load(source, &params, context, cancelled).map_err(|error| error.to_string())?;
+            // What this reply drew in the recording's style because the selected visual mods
+            // could not supply it, named and counted as the map names its own: the reply's
+            // own fallbacks, with those of shared loads it reused.
+            let (data, own) = crate::catalogue::capture(|| {
+                let data = P::load(source, &params, context, cancelled);
+                // What the product's stored payloads keep from the recording, named from this
+                // reply's own admission ([`stored_artwork`]).
+                if let (Some(what), Some(content)) = (stored_artwork(P::KEY), &context.content) {
+                    crate::catalogue::credit_stored_artwork(content, what);
+                }
+                data
+            });
+            let mut data = data.map_err(|error| error.to_string())?;
             source.append_content_warnings(data.warnings_mut());
+            // What the presentation the request was admitted under shows, never the source's now.
+            source.append_presentation_warnings(data.warnings_mut(), context.content.as_ref());
+            data.warnings_mut().extend(own.fallback_line());
             let data = bounded_json(&data, cancelled)?;
+            // Kept under the identity it was drawn with (the recording's own for recorded-only
+            // work, whatever is selected), and only while its admission still holds the source's
+            // current binding: a reply of a binding the source has left is not kept.
             if let Some(entry) = &entry
                 && !source.reads_uncovered()
+                && context
+                    .content
+                    .as_ref()
+                    .is_none_or(|content| source.still_admitted(content))
             {
                 entry.put(&data);
             }
@@ -378,6 +423,8 @@ mod recording_tests;
 
 #[cfg(test)]
 mod casualty_route_tests;
+#[cfg(test)]
+mod presentation_tests;
 #[cfg(test)]
 mod source_warning_tests;
 #[cfg(test)]

@@ -46,10 +46,10 @@ fn membership(query: &Query<'_>) -> io::Result<Arc<Membership>> {
     })?;
     query
         .source
-        .state::<KeyedResults<catalogue::Binding, Membership>>()
+        .state::<KeyedResults<catalogue::RecordedBinding, Membership>>()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get_or_init(&catalogue::binding(options), |_| {
+        .get_or_init(&catalogue::recorded_binding(options), |_| {
             dashboard_text::metadata::check_cancel(query.cancelled)?;
             let mut warnings = Vec::new();
             content::check_replay(

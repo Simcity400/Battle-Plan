@@ -1859,22 +1859,42 @@ fn scans_are_keyed_by_the_content_they_were_made_with() {
 fn pictures_are_served_only_for_the_catalogue_they_were_decoded_from() {
     let (a, b) = (Arc::new("folder A"), Arc::new("folder B"));
     let mut images: Option<Images<&str>> = None;
-    keep_image(&mut images, &b, "path:x.dds".into(), Some("B".into()));
+    keep_image(
+        &mut images,
+        &b,
+        "path:x.dds".into(),
+        catalogue::Drawn::new(|| Some("B".into())),
+    );
     // A's decode, started before the switch, lands late: B never reads it as its own.
-    keep_image(&mut images, &a, "path:x.dds".into(), Some("A".into()));
+    keep_image(
+        &mut images,
+        &a,
+        "path:x.dds".into(),
+        catalogue::Drawn::new(|| Some("A".into())),
+    );
     assert_eq!(cached_image(&images, &b, "path:x.dds"), None);
     assert_eq!(
         cached_image(&images, &a, "path:x.dds"),
         Some(Some("A".into()))
     );
-    keep_image(&mut images, &b, "path:x.dds".into(), Some("B".into()));
+    keep_image(
+        &mut images,
+        &b,
+        "path:x.dds".into(),
+        catalogue::Drawn::new(|| Some("B".into())),
+    );
     assert_eq!(
         cached_image(&images, &b, "path:x.dds"),
         Some(Some("B".into()))
     );
     assert_eq!(cached_image(&images, &a, "path:x.dds"), None);
     // A cached miss is the owner's own too.
-    keep_image(&mut images, &b, "path:gone.dds".into(), None);
+    keep_image(
+        &mut images,
+        &b,
+        "path:gone.dds".into(),
+        catalogue::Drawn::new(|| None),
+    );
     assert_eq!(cached_image(&images, &b, "path:gone.dds"), Some(None));
     assert_eq!(cached_image(&images, &a, "path:gone.dds"), None);
 }

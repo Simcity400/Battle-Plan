@@ -1,9 +1,11 @@
 //! Whole-recording product replies kept on disk between sessions, so reopening a
 //! campaign answers its widgets without reading the recording again.
 //!
-//! A reply is a pure function of the recording, this build, the request, and
-//! the game content the recording pins by hash in the user's game language. An
-//! entry is keyed by all of them. A reply that read content outside the
+//! A reply is a pure function of the recording, this build, the request, the
+//! game content the recording pins by hash in the user's game language, and the
+//! visual mods its widgets show (the source's presentation, whose revision
+//! changes when a mod is installed, updated or removed). An entry is keyed by
+//! all of them. A reply that read content outside the
 //! recorded coverage depends on unverified local files: it is never stored, and
 //! nothing is served while such reads are being reported. The folder is
 //! disposable: an unreadable entry is a miss, and the least recently used
@@ -65,12 +67,13 @@ impl Entry {
         let language = settings.language().ok()?;
         let decode = settings.texture_decode();
         let key = format!(
-            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}",
+            "{}\n{}\n{product}\n{params}\n{}\n{}\n{}\n{language}\n{decode:?}\n{:?}",
             String::from_utf8_lossy(MAGIC),
             build()?,
             content.options.game_dir.display(),
             content.options.user_dir.display(),
             content.allow_unverified,
+            content.presentation,
         );
         let name = hex(&Sha256::digest(key.as_bytes())[..16]);
         let path = folder(&content.options)

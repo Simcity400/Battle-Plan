@@ -754,6 +754,7 @@ fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_
         path: metadata.path.clone(),
         revision: "revision".into(),
         metadata,
+        presentation_generation: 0,
     };
     let bytes = serde_json::to_vec(&reply).unwrap().len();
     assert!(

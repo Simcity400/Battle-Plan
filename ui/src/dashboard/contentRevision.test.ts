@@ -26,6 +26,51 @@ test('folder and readiness changes invalidate content; repeated native status up
   assert.equal(changes, 4);
 });
 
+test('a later presentation generation invalidates content; the first seen, repeats and older ones do not', () => {
+  const revision = new ContentRevision();
+  let changes = 0;
+  revision.subscribe(() => changes++);
+  // The generation an opened source carries is where its replies start.
+  revision.observePresentation(3);
+  assert.equal(changes, 0);
+  revision.observePresentation(3);
+  // A late reply of an older job never undoes a newer change.
+  revision.observePresentation(2);
+  assert.equal(changes, 0);
+  // Selected visual mods changed, reordered to another set, updated or removed.
+  revision.observePresentation(4);
+  assert.equal(changes, 1);
+  assert.equal(revision.snapshot(), 1);
+  // Folder changes still count apart.
+  revision.observe({ game: 'game', user: 'user', contentReady: true });
+  revision.observePresentation(4);
+  assert.equal(changes, 2);
+});
+
+test('a content reply that answers after the visual mods changed never fills the new presentation\'s cache', async () => {
+  const answers: (() => void)[] = [];
+  let calls = 0;
+  const client = { product: async (request: ProductRequest) => {
+    const style = ++calls === 1 ? 'old style' : 'new style';
+    await new Promise<void>(resolve => answers.push(resolve));
+    return { ...request, data: { style } };
+  } } as unknown as DashboardClient;
+  const request = { sourceId: 'same', revision: 'same', product: 'sprite-artwork', params: { sprites: [{ key: 'GFX_icon', frame: 0 }] } };
+  const signal = () => new AbortController().signal;
+  const revision = contentRevision(client);
+  revision.observePresentation(1);
+  const late = loadProduct(client, request, signal());
+  await Promise.resolve();
+  revision.observePresentation(2);
+  const current = loadProduct(client, request, signal());
+  await Promise.resolve();
+  for (const answer of answers) answer();
+  assert.deepEqual(await late, { style: 'old style' });
+  assert.deepEqual(await current, { style: 'new style' });
+  assert.deepEqual(await loadProduct(client, request, signal()), { style: 'new style' });
+  assert.equal(calls, 2);
+});
+
 test('only products declared to read content change their request identity', () => {
   const recorded = { sourceId: 'same', revision: 'same', product: 'country-measure', params: {} };
   assert.equal(productKey(recorded, 1), productKey(recorded, 2));

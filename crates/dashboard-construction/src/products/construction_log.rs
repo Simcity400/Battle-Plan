@@ -2221,7 +2221,7 @@ fn named_inventory(
 #[derive(Default)]
 struct Cache {
     /// Names for the catalogue they were read from, per branch.
-    named: Vec<(u64, Arc<Catalogue>, Arc<Named>)>,
+    named: Vec<(u64, Arc<Catalogue>, catalogue::Drawn<Arc<Named>>)>,
 }
 
 /// The branches' scans. Its lock is held through a cold scan, so concurrent
@@ -2365,7 +2365,9 @@ impl NameSource {
             cache: source.state::<Cache>(),
             catalogue: context
                 .content()
-                .and_then(|content| catalogue::catalogue(source, content))
+                .and_then(|content| {
+                    catalogue::recorded_catalogue(source, content)
+                })
                 .map_err(|error| error.to_string()),
         }
     }
@@ -2388,7 +2390,7 @@ impl NameSource {
                         .named
                         .iter()
                         .find(|(cached, from, _)| *cached == branch && Arc::ptr_eq(from, catalogue))
-                        .map(|(_, _, named)| Arc::clone(named))
+                        .map(|(_, _, named)| Arc::clone(named.get()))
                 };
                 let named = match cached {
                     Some(named) => named,
@@ -2401,13 +2403,13 @@ impl NameSource {
                             gui_decode: &catalogue.gui_decode,
                             localise: &localise,
                         };
-                        let named =
-                            Arc::new(named(&view, &log.types, &project_states(log), cancelled)?);
+                        let drawn = catalogue::Drawn::try_new(|| {
+                            named(&view, &log.types, &project_states(log), cancelled).map(Arc::new)
+                        })?;
+                        let named = Arc::clone(drawn.get());
                         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
                         cache.named.retain(|(cached, _, _)| *cached != branch);
-                        cache
-                            .named
-                            .push((branch, Arc::clone(catalogue), Arc::clone(&named)));
+                        cache.named.push((branch, Arc::clone(catalogue), drawn));
                         if cache.named.len() > CACHED_BRANCHES {
                             cache.named.remove(0);
                         }

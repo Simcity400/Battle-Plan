@@ -285,6 +285,7 @@ mod tests {
                 cache_dir: guards[1].0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         catalogue::set_test_catalogue(&source, &options, Arc::new(cat));
         let mut reply = FactionDetailReply::default();

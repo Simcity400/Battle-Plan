@@ -33,6 +33,7 @@ fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     // At recording time only policy-2 paths exist, so this is its exact hash.
     let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {

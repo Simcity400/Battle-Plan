@@ -42,7 +42,7 @@
 pub use dashboard_base::products::resources::{RESOURCE_DECIMALS, ResourceInfo, ordinals};
 use dashboard_base::products::{
     CountryParams, Product,
-    resources::{Learned, resource_infos},
+    resources::{Learned, stored_resource_infos},
 };
 use dashboard_base::{
     prepared::frame_changes::field_mask, products::country_groups::HourSpan, source::Source,
@@ -1354,7 +1354,8 @@ pub(crate) fn reply(
     cancelled: &AtomicBool,
 ) -> io::Result<ResourceBalanceReply> {
     // Without game folders resources keep their tokens and no icons.
-    let (resources, mut warnings) = resource_infos(source, context, &scanned.resources, cancelled)?;
+    let (resources, mut warnings) =
+        stored_resource_infos(source, context, &scanned.resources, cancelled)?;
     if scanned.unnamed > 0 {
         warnings.push(format!(
             "{} recorded rows name a resource the recorded definitions do not; they are left out.",

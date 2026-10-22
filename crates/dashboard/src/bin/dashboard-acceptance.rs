@@ -1923,6 +1923,7 @@ fn run(options: Options) -> io::Result<bool> {
                     cache_dir: path.join("cache/content"),
                 },
                 allow_unverified: options.allow_unverified,
+                presentation: Default::default(),
             }),
             (None, None) => None,
             _ => return Err(invalid("Supply both the game and user folders, or neither")),

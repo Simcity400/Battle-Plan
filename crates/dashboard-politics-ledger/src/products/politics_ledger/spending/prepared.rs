@@ -15,7 +15,7 @@ pub fn prepared_content(
     options: Option<&dashboard_core::config::ContentOptions>,
 ) -> PreparedContent {
     let content = options
-        .map(|options| politics_content(source, options))
+        .map(|options| recorded_politics_content(source, options))
         .transpose()
         .map_err(|reason| reason.to_string())?;
     if let Some(content) = &content {

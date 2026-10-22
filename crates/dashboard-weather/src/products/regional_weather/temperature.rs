@@ -88,7 +88,10 @@ pub(super) struct Observation {
     content_warnings: Vec<String>,
     refused: BTreeMap<String, u64>,
     #[serde(skip)]
-    binding: Option<(dashboard_base::SourceKey, Option<catalogue::Binding>)>,
+    binding: Option<(
+        dashboard_base::SourceKey,
+        Option<catalogue::RecordedBinding>,
+    )>,
     #[serde(skip)]
     content: Option<Arc<Bound>>,
     #[serde(skip)]
@@ -114,17 +117,20 @@ impl Observation {
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
-        let binding = (source.key().clone(), options.map(catalogue::binding));
+        let binding = (
+            source.key().clone(),
+            options.map(catalogue::recorded_binding),
+        );
         if self.binding.as_ref() == Some(&binding) {
             return Ok(());
         }
         let loaded = (|| {
             let options = options.ok_or_else(|| dashboard_core::invalid("game folders are not chosen; temperature needs the recorded stack's province geometry, adjacency, terrain, weather settings and strategic-region membership/periods"))?;
             source
-                .state::<catalogue::KeyedResults<catalogue::Binding, Bound>>()
+                .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .get_or_init(&catalogue::binding(options), |_| {
+                .get_or_init(&catalogue::recorded_binding(options), |_| {
                     let mut warnings = Vec::new();
                     content::check_replay(
                         source.replay_ref(),

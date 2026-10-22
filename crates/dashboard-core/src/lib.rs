@@ -15,6 +15,7 @@ pub mod findings;
 pub mod map_display;
 pub mod map_pairs;
 pub mod map_settings;
+pub mod presentation;
 pub mod protocol;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;

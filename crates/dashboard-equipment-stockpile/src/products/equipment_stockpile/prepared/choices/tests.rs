@@ -607,6 +607,7 @@ fn stockpile_static_content_resolves_once_before_success_and_refusal_observation
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         catalogue::set_test_catalogue(&source, &options, catalogue.clone());
         let content = Content::load(&source, Some(&options));

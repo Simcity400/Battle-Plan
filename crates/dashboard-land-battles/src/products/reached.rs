@@ -92,6 +92,7 @@ mod tests {
                 cache_dir: "cache".into(),
             },
             allow_unverified,
+            presentation: Default::default(),
         }
     }
 
@@ -115,5 +116,8 @@ mod tests {
         textures.gui_decode = Err("settings.txt is unavailable".into());
         assert_ne!(verified, Presentation::of(Some(catalogue::binding(&options(false))), Some(&textures)), "other texture settings");
         assert_ne!(verified, Presentation::of(Some(catalogue::binding(&options(false))), None), "an unloaded catalogue");
+        let mut styled = options(false);
+        styled.presentation = dashboard_core::presentation::Admitted::new(dashboard_core::presentation::Presentation { visual_mods: vec![installed_content_core::content::visual::Choice { id: "mod/art.mod".into(), name: "Art".into() }], revision: String::new() });
+        assert_ne!(verified, Presentation::of(Some(catalogue::binding(&styled)), Some(&english)), "other visual mods");
     }
 }

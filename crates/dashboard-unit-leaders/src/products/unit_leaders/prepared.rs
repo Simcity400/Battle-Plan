@@ -536,9 +536,9 @@ pub fn at_hour(
     let branch = params.branch_id.parse().expect("validated branch");
     let replay = source.replay_ref();
     let mut scan = Scan::new(replay, branch)?;
-    let cat = context
-        .content()
-        .and_then(|options| catalogue::catalogue(source, options));
+    let cat = context.content().and_then(|options| {
+        catalogue::recorded_catalogue(source, options)
+    });
     let content = Content::for_catalogue(source, context, cat.ok())?;
     let sampled = UnitLeadersParams {
         selection: match &params.selection {

@@ -1,11 +1,16 @@
 //! Content facts every product shares: the recording's localisation in the
-//! user's game language and its interface sprites, read once per source and
-//! folders, plus the texture decoding every image reply uses. Everything is
-//! resolved through the recorded content stack; nothing names a vanilla asset.
+//! user's game language and its interface sprites, read once per source,
+//! folders and presentation, plus the texture decoding every image reply uses.
+//! Recorded facts resolve through the recorded content stack; artwork,
+//! interface, fonts and game-look text through its presentation, the visual
+//! mods the source's widgets show above it. Nothing names a vanilla asset.
 
 use crate::invalid;
 use base64::Engine;
-use dashboard_core::findings::{Finding, Kind};
+use dashboard_core::{
+    findings::{Finding, Kind},
+    presentation::Presentation,
+};
 use installed_content_core::{
     ResolvedLayers, content::ResolvedContent, gui::native::resources, gui::native::sprites::Plain,
 };
@@ -70,6 +75,15 @@ impl<T> Default for CachedResult<T> {
     }
 }
 impl<T> CachedResult<T> {
+    /// The result already loaded, crediting what its load noted as a later use does, or `None`
+    /// when nothing is loaded yet.
+    pub fn get(&self) -> Option<io::Result<Arc<T>>> {
+        let value = self.value.lock().unwrap_or_else(|error| error.into_inner());
+        let result = value.as_ref()?;
+        credit(&self.noted.lock().unwrap_or_else(|error| error.into_inner()));
+        Some(result.as_ref().map(Arc::clone).map_err(ContentError::error))
+    }
+
     pub fn get_or_init(&self, read: impl FnOnce() -> io::Result<T>) -> io::Result<Arc<T>> {
         let mut value = self.value.lock().unwrap_or_else(|error| error.into_inner());
         if value.is_none() {
@@ -147,6 +161,43 @@ impl<K: Ord + Clone, T> KeyedResults<K, T> {
             .unwrap_or_else(|error| error.into_inner())
             .get(key)
             .map_or(0, |result| result.loads())
+    }
+}
+
+/// A memoised artwork result with what its render drew from the recording because the
+/// visual mods could not supply it, replayed to every consumer that uses it
+/// (`installed_content_core::content::credit_overlay_refusals`), so a widget served from the memo
+/// names the fallback as the widget that first drew it did.
+#[derive(Clone)]
+pub struct Drawn<T> {
+    value: T,
+    fallbacks: BTreeSet<String>,
+}
+
+impl<T> Drawn<T> {
+    /// `render`'s result, with every fallback noted on this thread while it ran.
+    pub fn new(render: impl FnOnce() -> T) -> Self {
+        let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+        Self { value, fallbacks }
+    }
+
+    /// [`Drawn::new`] for a render that can fail: a failure is returned rather than kept,
+    /// its fallbacks credited to the consumers active on this thread as a value's are.
+    pub fn try_new<E>(render: impl FnOnce() -> Result<T, E>) -> Result<Self, E> {
+        let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+        match value {
+            Ok(value) => Ok(Self { value, fallbacks }),
+            Err(error) => {
+                installed_content_core::content::credit_overlay_refusals(&fallbacks);
+                Err(error)
+            }
+        }
+    }
+
+    /// The result, crediting its fallbacks to the consumers active on this thread.
+    pub fn get(&self) -> &T {
+        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
+        &self.value
     }
 }
 
@@ -483,16 +534,28 @@ pub enum Reader {
 pub struct OwnRefusals {
     texts: Refusals,
     readers: BTreeSet<Reader>,
+    /// Artwork the consumer drew in the recording's own style because the selected visual mods
+    /// could not supply it, named with why (`ResolvedLayers::note_overlay_refusal`).
+    #[serde(default)]
+    fallbacks: BTreeSet<String>,
 }
 
 impl OwnRefusals {
     fn is_empty(&self) -> bool {
-        self.texts.is_empty() && self.readers.is_empty()
+        self.texts.is_empty() && self.readers.is_empty() && self.fallbacks.is_empty()
     }
 
     pub fn merge(&mut self, other: &Self) {
         self.texts.merge(&other.texts);
         self.readers.extend(other.readers.iter().copied());
+        self.fallbacks.extend(other.fallbacks.iter().cloned());
+    }
+
+    /// The consumer's line for what it drew in the recording's style instead of the selected
+    /// visual mods', named and counted as the map names its own
+    /// (`installed_content_core::content::overlay_refusal_line`).
+    pub fn fallback_line(&self) -> Option<String> {
+        installed_content_core::content::overlay_refusal_line(&self.fallbacks)
     }
 }
 
@@ -525,7 +588,15 @@ fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T
         });
     });
     let _exit = Exit(own);
-    run()
+    // What the selected visual mods could not supply joins this scope, as its text refusals
+    // do; enclosing scopes observe it too.
+    let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(run);
+    SCOPES.with(|scopes| {
+        if let Some(active) = scopes.borrow_mut().last_mut() {
+            active.own.fallbacks.extend(fallbacks);
+        }
+    });
+    value
 }
 
 /// Runs `run` as one consumer of catalogue text. Every text refusal a
@@ -558,6 +629,8 @@ pub fn credit(noted: &OwnRefusals) {
             active.own.merge(noted);
         }
     });
+    // Observers outside every scope (a reply's own, for one) see the fallbacks too.
+    installed_content_core::content::credit_overlay_refusals(&noted.fallbacks);
 }
 
 /// Notes that the consumers active on this thread used `reader`.
@@ -681,14 +754,30 @@ pub fn display_text(bytes: &[u8]) -> Result<String, String> {
         .map_err(|reason| format!("holds {reason}"))
 }
 
-/// One source's shared content facts for one set of folders.
+/// One source's shared content facts for one set of folders and one presentation.
 pub struct Catalogue {
+    /// The recorded layers, with the source's visual mods mounted as their presentation stack.
+    /// Recorded facts read `content.layers` itself; artwork, interface and fonts read the
+    /// presentation through `ResolvedLayers::artwork` and its kin (every texture helper here
+    /// does), which draw what the mods cannot supply from the recording, by name.
     pub content: Arc<ResolvedContent>,
-    /// Shared with country naming (`content::localisation`): parsed once per source.
+    /// The visual mods the presentation shows.
+    pub presentation: Presentation,
+    /// The recorded localisation, shared with country naming (`content::localisation`): parsed
+    /// once per source. Analytics labels read it; game-look text reads
+    /// [`Catalogue::presentation_localisation`].
     pub localisation: Arc<Localisation>,
+    /// Interface sprites of the presentation.
     pub sprites: SpriteSet,
-    /// Shared native templates, loaded only when a consumer needs GUI declarations.
-    guis: OnceLock<Result<installed_content_core::gui::native::Guis, String>>,
+    /// Shared native templates of the presentation, loaded only when a consumer needs GUI
+    /// declarations, with what their load drew from the recording instead.
+    guis: OnceLock<(
+        Result<installed_content_core::gui::native::Guis, String>,
+        BTreeSet<String>,
+    )>,
+    /// The presentation's localisation, which native windows show, read on first use, with
+    /// what its load drew from the recording instead.
+    presentation_localisation: OnceLock<(Result<Arc<Localisation>, String>, BTreeSet<String>)>,
     /// The current client's texture decode settings, used by native GUI artwork.
     pub gui_decode: Result<installed_content_image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
@@ -714,19 +803,53 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
-    /// Load the complete native registry once, retaining its template order and
-    /// post-load pass. A failure refuses GUI-dependent fields; text stays usable.
+    /// Load the presentation's complete native registry once, retaining its template order
+    /// and post-load pass. A failure refuses GUI-dependent fields; text stays usable.
     pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
-        self.guis
-            .get_or_init(|| {
-                #[cfg(any(test, feature = "test-support"))]
-                self.content_loads
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                installed_content_core::gui::native::read_layers(&self.content.layers)
-                    .map_err(|error| error.to_string())
-            })
-            .as_ref()
-            .map_err(invalid)
+        let (guis, fallbacks) = self.guis.get_or_init(|| {
+            #[cfg(any(test, feature = "test-support"))]
+            self.content_loads
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let (guis, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+                self.content.layers.artwork(
+                    "interface windows",
+                    installed_content_core::gui::native::read_layers,
+                )
+            });
+            (guis.map_err(|error| error.to_string()), fallbacks)
+        });
+        // Every consumer reports what the shared load drew from the recording.
+        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        guis.as_ref().map_err(invalid)
+    }
+
+    /// The presentation's localisation in the language of [`Self::localisation`], which
+    /// game-look text (native windows) shows, read once; without visual mods it is that
+    /// localisation.
+    pub fn presentation_localisation(&self) -> io::Result<Arc<Localisation>> {
+        let layers = &self.content.layers;
+        if !layers.presentation().shows_visual_mods() {
+            return Ok(Arc::clone(&self.localisation));
+        }
+        let (localisation, fallbacks) = self.presentation_localisation.get_or_init(|| {
+            let (localisation, fallbacks) =
+                installed_content_core::content::observe_overlay_refusals(|| {
+                    layers.artwork("localisation", |stack| {
+                        installed_content_localisation::localisation::read(
+                            stack,
+                            &self.localisation.language,
+                        )
+                    })
+                });
+            (
+                localisation
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string()),
+                fallbacks,
+            )
+        });
+        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        localisation.clone().map_err(invalid)
     }
 
     /// Whether the native GUI registry has been read, for tests that check a
@@ -752,13 +875,18 @@ impl Catalogue {
     /// loader builds it.
     pub fn from_content(
         content: Arc<ResolvedContent>,
+        presentation: Presentation,
         localisation: Arc<Localisation>,
         verification: Vec<String>,
         mut warnings: Vec<String>,
         recorded_language: String,
         gui_decode: Result<installed_content_image::native::Decode, String>,
     ) -> io::Result<Self> {
-        let sprites = installed_content_gfx::gfx::read(&content.layers)?;
+        // What this load draws from the recording is credited to every later user of the
+        // catalogue's memo ([`CachedResult`]).
+        let sprites = content
+            .layers
+            .artwork("interface sprites", installed_content_gfx::gfx::read)?;
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
             ("refused localisation forms", localisation.refused.len()),
@@ -779,9 +907,11 @@ impl Catalogue {
         }
         Ok(Self {
             content,
+            presentation,
             localisation,
             sprites,
             guis: OnceLock::new(),
+            presentation_localisation: OnceLock::new(),
             gui_decode,
             verification,
             warnings,
@@ -807,6 +937,7 @@ impl Catalogue {
         });
         Self::from_content(
             content,
+            Presentation::default(),
             localisation,
             Vec::new(),
             Vec::new(),
@@ -1195,7 +1326,23 @@ pub fn texture_frame_png(
 /// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
 /// then RGBA8. Raw texture paths and shields use this path; decoded edges are
 /// bounded only by the decoder's device limit.
+///
+/// The texture is read from the presentation of `layers` (the recorded stack a
+/// catalogue holds); one the visual mods cannot supply is the recording's, named
+/// like the map's (`ResolvedLayers::artwork`).
 pub fn gui_texture(layers: &ResolvedLayers, name: &[u8], decode: Decode) -> io::Result<Rgba8Image> {
+    layers.artwork(
+        &format!("texture {}", String::from_utf8_lossy(name)),
+        |stack| stack_gui_texture(stack, name, decode),
+    )
+}
+
+/// [`gui_texture`] from `layers` alone.
+fn stack_gui_texture(
+    layers: &ResolvedLayers,
+    name: &[u8],
+    decode: Decode,
+) -> io::Result<Rgba8Image> {
     let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
         let extra = if why.native_failure() {
             "; the game draws no texture either"
@@ -1243,6 +1390,9 @@ fn image_frame_png(
 
 /// A sprite's authored frame at time zero, using native strip geometry and
 /// the content's resolved Up program, including overrides of the default effect.
+/// It is drawn from the presentation of `layers`, or, when the visual mods cannot
+/// supply its texture or effect, from the recording, named
+/// (`ResolvedLayers::artwork`); the presentation stack keeps the image.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
     sprite: &installed_content_gfx::gfx::SpriteType,
@@ -1250,10 +1400,47 @@ pub fn sprite_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    let cache = layers.derived::<SpriteImages>();
+    let cache = layers.presentation().derived::<SpriteImages>();
     cache.get(sprite_image_key(sprite, decode, frame, max_edge), || {
-        render_sprite_frame_png(layers, sprite, decode, frame, max_edge)
+        sprite_artwork(layers, sprite, |stack, sprite| {
+            render_sprite_frame_png(stack, sprite, decode, frame, max_edge)
+        })
     })
+}
+
+/// What `render` draws of `sprite` (a sprite of the presentation of `layers`) from that
+/// presentation, or, when the visual mods cannot supply it, of the recording's own sprite of
+/// that name from the recording, named (`ResolvedLayers::artwork`): the mods' declaration is
+/// never retried against the recording's files.
+pub fn sprite_artwork<T>(
+    layers: &ResolvedLayers,
+    sprite: &installed_content_gfx::gfx::SpriteType,
+    mut render: impl FnMut(&ResolvedLayers, &installed_content_gfx::gfx::SpriteType) -> io::Result<T>,
+) -> io::Result<T> {
+    let shown = layers.presentation().shows_visual_mods();
+    layers.artwork(&format!("sprite {}", sprite.name), |stack| {
+        if !shown || stack.shows_visual_mods() {
+            return render(stack, sprite);
+        }
+        let recorded = recorded_sprites(stack);
+        let own = (*recorded)
+            .as_ref()
+            .map_err(|why| invalid(why.clone()))?
+            .find(&sprite.name)
+            .map_err(invalid)?
+            .ok_or_else(|| invalid(format!("the recording declares no sprite {}", sprite.name)))?;
+        render(stack, own)
+    })
+}
+
+/// The recording's interface sprites, read once per recorded stack (`layers`), which artwork the
+/// visual mods cannot supply is drawn with.
+pub fn recorded_sprites(layers: &ResolvedLayers) -> Arc<Result<SpriteSet, String>> {
+    #[derive(Default)]
+    struct Recorded(OnceLock<Arc<Result<SpriteSet, String>>>);
+    Arc::clone(layers.derived::<Recorded>().0.get_or_init(|| {
+        Arc::new(installed_content_gfx::gfx::read(layers).map_err(|error| error.to_string()))
+    }))
 }
 
 pub fn sprite_image_key(
@@ -1275,9 +1462,10 @@ pub fn authored_frame(frame: i32) -> u32 {
     u32::try_from(frame).map_or(0, |frame| frame.saturating_sub(1))
 }
 
-/// Render requested (sprite, frame) draws together into the session's sprite
-/// images. Callers retry a refused or oversized batch through
-/// [`sprite_frame_png`], preserving each draw's refusal.
+/// Render requested (sprite, frame) draws together from the presentation of
+/// `layers` into its sprite images. Callers retry a refused or oversized batch
+/// through [`sprite_frame_png`], preserving each draw's refusal and drawing what
+/// the visual mods cannot supply from the recording.
 pub fn sprite_frames_png(
     layers: &ResolvedLayers,
     requests: &[(&installed_content_gfx::gfx::SpriteType, u32)],
@@ -1285,6 +1473,7 @@ pub fn sprite_frames_png(
     max_edge: u32,
 ) -> io::Result<()> {
     use installed_content_core::gui::native::sprites::SpriteKind;
+    let layers = layers.presentation();
     let mut draws = Vec::new();
     let mut transient_bytes = 0_u64;
     for &(sprite, frame) in requests {
@@ -1331,7 +1520,9 @@ pub fn sprite_frames_png(
 
 #[derive(Default)]
 struct ImageEntry {
-    result: OnceLock<Result<String, String>>,
+    /// The image, and what its render drew from the recording instead of the visual mods,
+    /// credited to every later user.
+    result: OnceLock<(Result<String, String>, BTreeSet<String>)>,
     charged: std::sync::atomic::AtomicBool,
 }
 
@@ -1363,10 +1554,12 @@ impl SpriteImages {
                 .unwrap_or_else(|error| error.into_inner());
             Arc::clone(entries.entries.entry(key.clone()).or_default())
         };
-        let result = slot
-            .result
-            .get_or_init(|| render().map_err(|error| error.to_string()))
-            .clone();
+        let (result, fallbacks) = slot.result.get_or_init(|| {
+            let (result, fallbacks) = installed_content_core::content::observe_overlay_refusals(render);
+            (result.map_err(|error| error.to_string()), fallbacks)
+        });
+        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        let result = result.clone();
         let mut entries = self
             .entries
             .lock()
@@ -2041,9 +2234,11 @@ pub mod tests {
                 layers,
                 stats: Default::default(),
             }),
+            presentation: Presentation::default(),
             localisation: Arc::new(localisation),
             sprites,
             guis: OnceLock::new(),
+            presentation_localisation: OnceLock::new(),
             gui_decode: Ok(Default::default()),
             verification: Vec::new(),
             warnings: Vec::new(),

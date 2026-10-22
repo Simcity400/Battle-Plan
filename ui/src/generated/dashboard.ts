@@ -364,13 +364,23 @@ gameGraphics: MapGraphics | null,
 /**
  * Why the game's settings (graphics and volumes) could not be read.
  */
-gameSettingsError: string | null, };
+gameSettingsError: string | null,
+/**
+ * The service's presentation generation once this job checked every open source's visual
+ * mods: a later one than a client has seen means widget artwork changed.
+ */
+presentationGeneration: number, };
 export type HistoryCacheReply = { bytes: number, limit: number, };
 export type SourceReply = {
 /**
  * A client lease. Several leases may share one underlying source and cache.
  */
-id: string, path: string, revision: string, metadata: ReplayMetadata, };
+id: string, path: string, revision: string, metadata: ReplayMetadata,
+/**
+ * The service's presentation generation as the source opened: a later one means some
+ * source's widget artwork changed and content-dependent replies are fetched again.
+ */
+presentationGeneration: number, };
 export type PreparationState = "idle" | "queued" | "preparing" | "paused" | "ready" | "cancelled" | "failed";
 export type PreparationPauseReason = "requested" | "newerRecording" | "diskSpace" | "game";
 export type PreparationAction = "status" | "start" | "cancel" | "clear";

@@ -1,6 +1,8 @@
 //! A content stack's game-window resources: the GUI templates read in one interface viewport,
 //! the native GUI resources and every texture page they loaded, for one font language and
-//! texture decode. A source owns its sessions ([`Sessions`], in its own state): a session holds
+//! texture decode. They are read from the stack's presentation (the visual mods the source's
+//! widgets show) as the map reads its windows: templates the mods cannot supply come from the
+//! recording, and so does each sprite, font or texture, by name. A source owns its sessions ([`Sessions`], in its own state): a session holds
 //! its stack, so the stack must not hold it, or neither would ever be dropped. Sessions of
 //! another stack are dropped when one of a new stack opens. Pages are numbered in load order;
 //! artwork requests name them with the session's id, so a page of another session is never
@@ -29,6 +31,12 @@ pub struct Session {
     pub guis: native::Guis,
     pub gui: GuiResources,
     pub images: Vec<dds::Texture>,
+    /// Whether the templates were read from the visual mods; otherwise everything is read
+    /// from the recording.
+    presented: bool,
+    /// Everything the session drew from the recording because the visual mods could not
+    /// supply it, which every window it draws reports ([`Self::load`]).
+    fallbacks: std::collections::BTreeSet<String>,
     /// Encoded pages, by id, kept within [`ENCODED_BYTES`]: eviction changes reuse only.
     encoded: std::collections::BTreeMap<usize, Arc<str>>,
     encoded_bytes: usize,
@@ -38,15 +46,25 @@ pub struct Session {
 const ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
 impl Session {
+    /// Opens the session of `layers`, a recorded stack with the source's visual mods mounted
+    /// as its presentation.
     fn open(
         layers: &ResolvedLayers,
         language: &str,
         decode: Decode,
         viewport: [i32; 2],
     ) -> io::Result<Self> {
-        let guis = native::read_layers_at(layers, viewport)?;
-        let registry = Registry::load(layers)?;
-        let map_size = shader_pipeline::artwork::map_size(layers).map_err(invalid)?;
+        let (opened, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            layers.artwork("game windows", |stack| {
+                Ok((
+                    native::read_layers_at(stack, viewport)?,
+                    Registry::load(stack)?,
+                    shader_pipeline::artwork::map_size(stack).map_err(invalid)?,
+                    stack.shows_visual_mods(),
+                ))
+            })
+        });
+        let (guis, registry, map_size, presented) = opened?;
         // Font families are selected by the complete `l_` language key.
         let gui = GuiResources::new(
             registry,
@@ -60,14 +78,29 @@ impl Session {
             guis,
             gui,
             images: Vec::new(),
+            presented,
+            fallbacks,
             encoded: Default::default(),
             encoded_bytes: 0,
         })
     }
 
-    /// Loads every sprite, font and texture `assets` names that is not loaded yet.
+    /// Loads every sprite, font and texture `assets` names that is not loaded yet, from the
+    /// presentation of `layers` (the stack the session was opened for) when the templates came
+    /// from it. The window being drawn reports everything the session has drawn from the
+    /// recording instead, its earlier windows' loads included.
     pub fn load(&mut self, layers: &ResolvedLayers, assets: &Assets) -> io::Result<()> {
-        self.gui.load(layers, assets, &mut self.images)
+        let stack = if self.presented {
+            layers.presentation()
+        } else {
+            layers
+        };
+        let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            self.gui.load(stack, assets, &mut self.images)
+        });
+        self.fallbacks.extend(fallbacks);
+        installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
+        loaded
     }
 
     /// A page already encoded as a PNG data URL.
@@ -141,6 +174,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// makes `stack` current; the read-ahead gets nothing, and changes nothing, once a request has
 /// made another stack current, so it never replaces the session a newer request opened. The
 /// check, the opening and the publication happen under one lock.
+///
+/// `current` says, under that same lock, whether the request still holds what its source shows
+/// (its presentation, and it is not cancelled). A request that no longer does answers from a
+/// session of its own, neither kept nor made current, so it never retires the session of what
+/// the source shows now, however long it paused before publishing.
+#[allow(clippy::too_many_arguments)]
 pub fn session(
     sessions: &Mutex<Sessions>,
     stack: &str,
@@ -149,9 +188,15 @@ pub fn session(
     decode: Decode,
     viewport: [i32; 2],
     opener: Opener,
+    current: &dyn Fn() -> bool,
 ) -> io::Result<Option<Arc<Mutex<Session>>>> {
     let mut kept = lock(sessions);
     match opener {
+        Opener::Request if !current() => {
+            drop(kept);
+            let session = Session::open(layers, language, decode, viewport)?;
+            return Ok(Some(Arc::new(Mutex::new(session))));
+        }
         Opener::Request => kept.current = Some(stack.to_owned()),
         Opener::ReadAhead => {
             if kept

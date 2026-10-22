@@ -252,6 +252,10 @@ pub struct Reply {
     pub game_graphics: Option<MapGraphics>,
     /// Why the game's settings (graphics and volumes) could not be read.
     pub game_settings_error: Option<String>,
+    /// The service's presentation generation once this job checked every open source's visual
+    /// mods: a later one than a client has seen means widget artwork changed.
+    #[ts(type = "number")]
+    pub presentation_generation: u64,
 }
 
 pub fn catalogue(

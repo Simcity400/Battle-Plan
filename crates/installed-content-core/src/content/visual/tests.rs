@@ -241,6 +241,57 @@ fn replace_path_hides_recorded_artwork_in_lookups_and_listings() {
     assert_eq!(layers.listed_paths("map/terrain").len(), 2);
 }
 
+/// Each consumer sees the fallbacks it caused, nested observers each see them, a memo's replay
+/// reaches its user, and a presentation mounted on a stack with its own diagnostics reports
+/// apart from the stack it came from, in the line the map uses.
+#[test]
+fn consumers_observe_their_own_fallbacks_and_presentations_report_apart() {
+    use super::super::{credit_overlay_refusals, observe_overlay_refusals, overlay_refusal_line};
+    let machine = Machine::new("observe");
+    machine.write("base/map/terrain/strait.dds", b"recorded strait");
+    machine.local(
+        "art.mod",
+        "name=\"Art\"\nreplace_path=\"map/terrain/\"",
+        "art",
+    );
+    let recorded = machine.recorded(&["base"]);
+    let mut shown = recorded.with_own_overlay_diagnostics();
+    apply(
+        &mut shown,
+        &machine.options,
+        &[pick("mod/art.mod", "Art")],
+        &[],
+        &never(),
+    )
+    .unwrap();
+    let read = || {
+        shown
+            .artwork("strait", |stack| stack.read("map/terrain/strait.dds"))
+            .unwrap()
+    };
+    let (inner, outer) = observe_overlay_refusals(|| observe_overlay_refusals(read));
+    let (bytes, inner) = inner;
+    assert_eq!(bytes, b"recorded strait");
+    assert_eq!(inner.len(), 1, "{inner:?}");
+    assert_eq!(
+        outer, inner,
+        "an enclosing observer sees what its inner one saw"
+    );
+    assert!(inner.iter().next().unwrap().starts_with("strait ("));
+    let ((), replayed) = observe_overlay_refusals(|| credit_overlay_refusals(&inner));
+    assert_eq!(replayed, inner);
+    assert_eq!(
+        read(),
+        b"recorded strait",
+        "nothing observes outside an observer"
+    );
+    assert_eq!(
+        shown.read_warnings().overlay_refusals(),
+        overlay_refusal_line(&inner)
+    );
+    assert_eq!(recorded.read_warnings().overlay_refusals(), None);
+}
+
 /// Artwork a visual mod cannot supply (here a lower file its `replace_path` hides, or a file the
 /// loader refuses) is drawn from the recording and named; the recording still loads.
 #[test]

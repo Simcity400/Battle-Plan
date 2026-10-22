@@ -501,6 +501,7 @@ fn naming_pages_keep_the_incoming_version_without_counting_an_extra_change() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     dashboard_base::catalogue::set_test_catalogue(&source, &content, Arc::new(catalogue));
     let context = LoadContext {
@@ -674,6 +675,7 @@ fn measured_real_recording_stockpile_bytes_and_token_stability() {
             cache_dir: root.join("content-cache"),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     };
     let key = store::SourceKey::capture(&recording, &[]).unwrap();
     let store = store::Store::local(uuid::Uuid::new_v4()).unwrap();

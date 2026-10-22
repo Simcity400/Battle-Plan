@@ -20,9 +20,13 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
   stack in the user's interface viewport (the game's window size over its interface scale,
   from the user folder's display settings, as the map viewer computes it) and loads sprites,
   fonts and textures through `viewer_foundation::map::native_resources::GuiResources`, the
-  native GUI loader. Nothing here parses `.gui`, `.gfx` or `.fnt` files of its own. A source
-  owns its sessions (one per interface viewport, language and texture decode of its current
-  stack): a session holds its stack, so the stack must not hold it, and closing the source
+  native GUI loader. Nothing here parses `.gui`, `.gfx` or `.fnt` files of its own. It reads
+  the stack's presentation, the visual mods the source's widgets show, as the map reads its
+  windows: templates the mods cannot supply come from the recording, as does each sprite, font
+  or texture, and every window the session draws names what it drew that way. Texts show the
+  presentation's localisation (`Catalogue::presentation_localisation`). A source owns its
+  sessions (one per interface viewport, language and texture decode of its current stack and
+  presentation): a session holds its stack, so the stack must not hold it, and closing the source
   frees them. Texture page ids are a session's load order, and a request naming a session the
   source no longer holds is refused.
 - **Layout.** A window's binder constructs the root and its row windows as

@@ -148,12 +148,15 @@ impl Product for CountryFlags {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let content = context.content()?;
+        let presentation = content.presentation.identity().clone();
+        // The binding's mount, resolved in its cancellable cell before any flag lock is taken.
+        let presented = source.presented_for(content)?;
         let shared = source.state::<FlagState>();
         let mut state = shared.lock().unwrap_or_else(|error| error.into_inner());
         match state
             .contexts
             .iter()
-            .position(|cached| cached.matches(&content.options, params))
+            .position(|cached| cached.matches(&content.options, &presentation, params))
         {
             Some(0) => {}
             Some(index) => {
@@ -161,20 +164,27 @@ impl Product for CountryFlags {
                 state.contexts.insert(0, recent);
             }
             None => {
-                let resolved = source.content(&content.options)?;
+                // Flags follow the source's visual mods; recorded facts read the recorded layers.
+                let resolved = Arc::clone(&presented.content);
                 // The cells are content facts: kept across hours, reread with new content.
                 let cells = state
                     .contexts
                     .iter()
                     .find(|cached| Arc::ptr_eq(&cached.content, &resolved))
-                    .map(|cached| cached.cells);
+                    .map(|cached| (cached.cells, cached.cell_fallbacks.clone()));
                 // Other hours' requests use the cache while this one reads the recording.
                 drop(state);
-                let cells = match cells {
+                let (cells, cell_fallbacks) = match cells {
                     Some(cells) => cells,
-                    None => flag_cells(&resolved.layers)?,
+                    None => {
+                        let (cells, fallbacks) =
+                            installed_content_core::content::observe_overlay_refusals(|| {
+                                flag_cells(&resolved.layers)
+                            });
+                        (cells?, fallbacks)
+                    }
                 };
-                let loaded = FlagContext::load(
+                let mut loaded = FlagContext::load(
                     source.replay(),
                     resolved,
                     cells,
@@ -183,40 +193,18 @@ impl Product for CountryFlags {
                     params,
                     cancelled,
                 )?;
+                loaded.presentation = presented.presentation.clone();
+                loaded.cell_fallbacks = cell_fallbacks;
                 state = shared.lock().unwrap_or_else(|error| error.into_inner());
                 state.contexts.insert(0, loaded);
                 state.contexts.truncate(RECENT_HOURS);
             }
         }
+        installed_content_core::content::credit_overlay_refusals(&state.contexts[0].cell_fallbacks);
         let mut load_shield = || -> io::Result<Arc<ShieldStyle>> {
+            // The catalogue and the flag context are both of the request's admitted presentation.
             let catalogue = crate::catalogue::catalogue(source, content)?;
-            let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
-                invalid(format!(
-                    "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
-                ))
-            })?;
-            let current = state
-                .shield
-                .as_ref()
-                .filter(|(owner, setting, _)| {
-                    Arc::ptr_eq(owner, &state.contexts[0].content) && *setting == decode
-                })
-                .map(|(_, _, style)| style.clone());
-            let style = match current {
-                Some(style) => style,
-                None => {
-                    let style = ShieldStyle::load(&catalogue)
-                        .map(Arc::new)
-                        .map_err(|error| error.to_string());
-                    state.shield = Some((
-                        Arc::clone(&state.contexts[0].content),
-                        decode,
-                        style.clone(),
-                    ));
-                    style
-                }
-            };
-            style.map_err(invalid)
+            cached_shield(&mut state.shield, &catalogue)
         };
         let shield = matches!(
             params.size,
@@ -233,28 +221,64 @@ impl Product for CountryFlags {
     }
 }
 
+/// The shield `catalogue` supplies, kept in `slot` by that catalogue's content and decode, so a
+/// shield is never served for a catalogue (a presentation) other than the one it came from.
+fn cached_shield(
+    slot: &mut Option<CachedShield>,
+    catalogue: &Catalogue,
+) -> io::Result<Arc<ShieldStyle>> {
+    let decode = *catalogue.gui_decode.as_ref().map_err(|why| {
+        invalid(format!(
+            "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
+        ))
+    })?;
+    let current = slot
+        .as_ref()
+        .filter(|(owner, setting, _)| Arc::ptr_eq(owner, &catalogue.content) && *setting == decode)
+        .map(|(_, _, style)| style.get().clone());
+    let style = match current {
+        Some(style) => style,
+        None => {
+            let drawn = crate::catalogue::Drawn::new(|| {
+                ShieldStyle::load(catalogue)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            });
+            let style = drawn.get().clone();
+            *slot = Some((Arc::clone(&catalogue.content), decode, drawn));
+            style
+        }
+    };
+    style.map_err(invalid)
+}
+
 #[derive(Default)]
 struct FlagState {
     /// Most recently used first.
     contexts: Vec<FlagContext>,
-    /// The shield read from the content it belongs to; new content rereads it.
+    /// The shield read from the catalogue it belongs to; another catalogue rereads it.
     shield: Option<CachedShield>,
 }
 
-/// The shield as last loaded for (content, decode), a refusal included, so a
+/// The shield as last loaded for (the catalogue's content, decode), a refusal included, so a
 /// refused shield is not decoded again on every request.
 type CachedShield = (
     Arc<ResolvedContent>,
     installed_content_image::native::Decode,
-    Result<Arc<ShieldStyle>, String>,
+    crate::catalogue::Drawn<Result<Arc<ShieldStyle>, String>>,
 );
 
-/// The top bar's `player_flag` sprite as the recorded content declares it (a
-/// `maskedShieldType`, `GFX_shield_medium` in vanilla), drawn as the game draws it.
+/// The top bar's `player_flag` sprite as the content declares it (a `maskedShieldType`,
+/// `GFX_shield_medium` in vanilla), drawn as the game draws it: the visual mods' when they
+/// supply one that loads and draws, else the recording's own, named.
 pub(crate) struct ShieldStyle {
     shield: crate::catalogue::MaskedShield,
     /// The shield as `Panel` draws it: its overlay evened once per content stack.
     panel: crate::catalogue::MaskedShield,
+    /// When the visual mods' shield cannot load or draw, the recording's layers and flag cells
+    /// it and the flags it frames are read from, as the recording draws them. `None` reads the
+    /// presentation of the flag context's content.
+    recorded: Option<(installed_content_core::ResolvedLayers, [[u32; 2]; 3])>,
     decode: installed_content_image::native::Decode,
     pub(crate) warnings: Vec<String>,
 }
@@ -266,16 +290,56 @@ impl ShieldStyle {
                 "the top bar's {PLAYER_FLAG} shield artwork is unavailable: {why}"
             ))
         })?;
+        let layers = &catalogue.content.layers;
         let mut warnings = Vec::new();
-        let name = installed_content_core::gui::native::window_button_sprite(
-            catalogue.guis()?,
-            TOP_BAR,
-            PLAYER_FLAG,
-            &mut warnings,
-        )?;
-        let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
-        let shield =
-            crate::catalogue::MaskedShield::load(&catalogue.content.layers, sprite, decode)?;
+        let shown = (|| {
+            let name = installed_content_core::gui::native::window_button_sprite(
+                catalogue.guis()?,
+                TOP_BAR,
+                PLAYER_FLAG,
+                &mut warnings,
+            )?;
+            let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
+            let shield =
+                crate::catalogue::MaskedShield::load(layers.presentation(), sprite, decode)?;
+            if layers.presentation().shows_visual_mods() {
+                // A shield that loads may still not draw (an effect the mods break): it is
+                // drawn once here, so the recording's shield replaces it before any flag is
+                // chosen for it.
+                let cells = flag_cells(layers)?;
+                let cell = cells[if shield.small() { 2 } else { 0 }];
+                let probe = Rgba8Image {
+                    width: cell[0],
+                    height: cell[1],
+                    pixels: vec![255; (cell[0] * cell[1] * 4) as usize],
+                };
+                shield.draw(layers.presentation(), &[&probe], decode)?;
+            }
+            io::Result::Ok(shield)
+        })();
+        let (shield, recorded) = match shown {
+            Ok(shield) => (shield, None),
+            Err(error) if layers.presentation().shows_visual_mods() => {
+                // The recording's own top bar binding, its declaration, flag set and cells.
+                let recorded = layers.recorded_only();
+                let guis = installed_content_core::gui::native::read_layers(&recorded)?;
+                warnings.clear();
+                let name = installed_content_core::gui::native::window_button_sprite(
+                    &guis,
+                    TOP_BAR,
+                    PLAYER_FLAG,
+                    &mut warnings,
+                )?;
+                let sprites = crate::catalogue::recorded_sprites(&recorded);
+                let sprites = (*sprites).as_ref().map_err(|why| invalid(why.clone()))?;
+                let sprite = crate::catalogue::created_gui_sprite(sprites, &name)?;
+                let shield = crate::catalogue::MaskedShield::load(&recorded, sprite, decode)?;
+                let cells = flag_cells(&recorded)?;
+                layers.note_overlay_refusal(format!("shield {PLAYER_FLAG} ({error})"));
+                (shield, Some((recorded, cells)))
+            }
+            Err(error) => return Err(error),
+        };
         // A shield without an overlay has no shading to even.
         let panel = match shield.overlay()? {
             Some(overlay) => shield.with_overlay(even_overlay(&overlay)),
@@ -284,9 +348,23 @@ impl ShieldStyle {
         Ok(Self {
             shield,
             panel,
+            recorded,
             decode,
             warnings,
         })
+    }
+
+    /// The layers and cells the flags this shield frames are read at: the recording's when it
+    /// is the recording's shield, else the flag context's own.
+    fn flags_from<'a>(
+        &'a self,
+        layers: &'a installed_content_core::ResolvedLayers,
+        cells: &'a [[u32; 2]; 3],
+    ) -> (&'a installed_content_core::ResolvedLayers, &'a [[u32; 2]; 3]) {
+        match &self.recorded {
+            Some((recorded, cells)) => (recorded, cells),
+            None => (layers, cells),
+        }
     }
 
     /// The flag set the shield samples: the small set when its descriptor says
@@ -299,15 +377,21 @@ impl ShieldStyle {
         }
     }
 
-    /// Each flag in the shield, `Panel`'s app styling when `panel`.
+    /// Each flag in the shield, `Panel`'s app styling when `panel`, drawn from the stack the
+    /// shield was loaded from: the presentation of `layers` or the recording. A recorded
+    /// shield names, on every reply it draws, that it stands in for the visual mods'.
     fn draw(
         &self,
         layers: &installed_content_core::ResolvedLayers,
         flags: &[&Rgba8Image],
         panel: bool,
     ) -> io::Result<Vec<Rgba8Image>> {
+        let stack = match &self.recorded {
+            Some((recorded, _)) => recorded,
+            None => layers.presentation(),
+        };
         let shield = if panel { &self.panel } else { &self.shield };
-        shield.draw(layers, flags, self.decode)
+        shield.draw(stack, flags, self.decode)
     }
 }
 
@@ -337,13 +421,18 @@ pub(crate) enum FlagSearch {
     Absent,
 }
 
+/// The normal, medium and small flag cells of the graphics defines `layers`' artwork reads
+/// (`Defines::graphics_for`): the visual mods' where they set them, else the recording's, named.
 pub(crate) fn flag_cells(layers: &installed_content_core::ResolvedLayers) -> io::Result<[[u32; 2]; 3]> {
-    let defines = installed_content_core::defines::read(layers)?;
-    Ok([
-        FlagSet::Normal.cell(&defines)?,
-        FlagSet::Medium.cell(&defines)?,
-        FlagSet::Small.cell(&defines)?,
-    ])
+    let recorded = installed_content_core::defines::read(layers)?;
+    let graphics = recorded.graphics_for(layers);
+    layers.graphics_define("flag cells", &graphics, &recorded, |defines| {
+        Ok::<_, io::Error>([
+            FlagSet::Normal.cell(defines)?,
+            FlagSet::Medium.cell(defines)?,
+            FlagSet::Small.cell(defines)?,
+        ])
+    })
 }
 
 #[derive(Clone)]
@@ -356,7 +445,15 @@ enum FlagFile {
 /// One decoding per file/set, shared across the country's key ladders.
 #[derive(Default)]
 pub(crate) struct FlagCache {
-    files: BTreeMap<(usize, String), FlagFile>,
+    /// Each file as decoded, and why the visual mods' file could not be shown when the
+    /// recording's is ([`find_flag`]).
+    files: BTreeMap<(usize, String), (FlagFile, Option<String>)>,
+    /// The recorded layers below the visual mods, read when a mod's flag cannot be shown, and
+    /// the cells of the recording's own defines its files are decoded at.
+    recorded: Option<(
+        installed_content_core::ResolvedLayers,
+        Result<[[u32; 2]; 3], String>,
+    )>,
     reported: BTreeSet<(usize, String)>,
     substitutions: BTreeSet<String>,
     unresolvable: BTreeSet<String>,
@@ -366,6 +463,11 @@ pub(crate) struct FlagCache {
 /// file or one the game's decoder refuses falls through to the next candidate.
 /// A candidate [`safe_flag_key`] refuses stops the search, because falling
 /// past it would draw a flag the game does not.
+///
+/// Files are read from the presentation of `layers`: a candidate the visual mods
+/// leave missing or undecodable that the recording draws is the recording's,
+/// named as the map names its own (`ResolvedLayers::note_overlay_refusal`) on
+/// every search that uses it.
 pub(crate) fn find_flag(
     layers: &installed_content_core::ResolvedLayers,
     sets: &[FlagSet],
@@ -393,17 +495,50 @@ pub(crate) fn find_flag(
             let asset = format!("{}{key}.tga", set.directory());
             let cache_key = (set_index, asset.clone());
             if !cache.files.contains_key(&cache_key) {
-                let file = match layers.read_uncovered(&asset) {
-                    Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
+                let read = |stack: &installed_content_core::ResolvedLayers, cell| match stack
+                    .read_uncovered(&asset)
+                {
+                    Ok(bytes) => Ok(match installed_content_core::flags::decode_checked(&bytes, cell) {
                         Ok(image) => FlagFile::Image(Arc::new(image)),
                         Err(reason) => FlagFile::Refused(reason),
-                    },
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
-                    Err(error) => return Err(error),
+                    }),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FlagFile::Missing),
+                    Err(error) => Err(error),
                 };
-                cache.files.insert(cache_key.clone(), file);
+                let presentation = layers.presentation();
+                let shown = read(presentation, cell);
+                let mut entry = None;
+                if presentation.shows_visual_mods() && !matches!(shown, Ok(FlagFile::Image(_))) {
+                    // The recording's own file, at the recording's own cell size.
+                    let (recorded, cells) = cache.recorded.get_or_insert_with(|| {
+                        let recorded = layers.recorded_only();
+                        let cells = flag_cells(&recorded).map_err(|error| error.to_string());
+                        (recorded, cells)
+                    });
+                    if let Ok(cells) = cells
+                        && let Ok(FlagFile::Image(image)) = read(recorded, cells[set_index])
+                    {
+                        let why = match &shown {
+                            Ok(FlagFile::Refused(reason)) => format!("{reason:?}"),
+                            Err(error) => error.to_string(),
+                            _ => "the visual mods give no such file".to_owned(),
+                        };
+                        let refusal = format!("flag {asset} ({why})");
+                        layers.note_overlay_refusal(refusal.clone());
+                        entry = Some((FlagFile::Image(image), Some(refusal)));
+                    }
+                }
+                let entry = match entry {
+                    Some(entry) => entry,
+                    None => (shown?, None),
+                };
+                cache.files.insert(cache_key.clone(), entry);
+            } else if let (_, Some(refusal)) = &cache.files[&cache_key] {
+                installed_content_core::content::credit_overlay_refusals(&BTreeSet::from(
+                    [refusal.clone()],
+                ));
             }
-            match &cache.files[&cache_key] {
+            match &cache.files[&cache_key].0 {
                 FlagFile::Missing => {}
                 FlagFile::Refused(reason) => {
                     if !cache.reported.insert(cache_key.clone()) {
@@ -556,9 +691,16 @@ const CHOICE_TABLES: [TableId; 5] = [
 
 pub struct FlagContext {
     options: ResolveOptions,
+    /// The visual mods `content` shows.
+    presentation: crate::presentation::Presentation,
+    /// The recorded content with the source's visual mods mounted as its presentation, which
+    /// flag files are read from.
     content: Arc<ResolvedContent>,
     /// The normal, medium and small cells from the content's defines.
     cells: [[u32; 2]; 3],
+    /// What reading `cells` drew from the recording instead of the visual mods' defines,
+    /// credited to every reply.
+    cell_fallbacks: BTreeSet<String>,
     /// The first choice per tag, in raw country id order.
     choices: HashMap<String, FlagChoice>,
     branch_id: String,
@@ -567,8 +709,14 @@ pub struct FlagContext {
 }
 
 impl FlagContext {
-    fn matches(&self, options: &ResolveOptions, request: &CountryFlagParams) -> bool {
-        self.options.game_dir == options.game_dir
+    fn matches(
+        &self,
+        options: &ResolveOptions,
+        presentation: &crate::presentation::Presentation,
+        request: &CountryFlagParams,
+    ) -> bool {
+        self.presentation == *presentation
+            && self.options.game_dir == options.game_dir
             && self.options.user_dir == options.user_dir
             && self.options.cache_dir == options.cache_dir
             && self.branch_id == request.branch_id
@@ -607,8 +755,10 @@ impl FlagContext {
         }
         Ok(Self {
             options,
+            presentation: Default::default(),
             content,
             cells,
+            cell_fallbacks: BTreeSet::new(),
             choices: by_tag,
             branch_id: request.branch_id.clone(),
             hour: request.hour,
@@ -668,10 +818,15 @@ impl FlagContext {
             // A flag key is the recorded tag (any bytes but NUL, spaces
             // included) with a cosmetic tag or party token; one this reader
             // cannot resolve costs only this country's flag.
+            // A recorded shield frames the recording's own flags, at its own cells.
+            let (flag_layers, cells) = shield_style
+                .map_or((&self.content.layers, &self.cells), |style| {
+                    style.flags_from(&self.content.layers, &self.cells)
+                });
             let (found, findings) = find_flag(
-                &self.content.layers,
+                flag_layers,
                 shield_style.map_or_else(|| request.size.sets(), ShieldStyle::sets),
-                &self.cells,
+                cells,
                 &choice.candidates,
                 &mut cache,
             )?;
@@ -1114,6 +1269,7 @@ mod tests {
             ),
         ] {
             let context = FlagContext {
+                presentation: Default::default(),
                 options: ResolveOptions {
                     game_dir: "G".into(),
                     user_dir: "U".into(),
@@ -1121,6 +1277,7 @@ mod tests {
                 },
                 content: Arc::clone(&catalogue.content),
                 cells: [[1, 1]; 3],
+                cell_fallbacks: BTreeSet::new(),
                 choices: HashMap::from([(
                     "mod tag".into(),
                     FlagChoice {
@@ -1184,6 +1341,7 @@ mod tests {
 
     fn assert_shield_warning(catalogue: &crate::catalogue::Catalogue, reason: &str) {
         let context = FlagContext {
+            presentation: Default::default(),
             options: ResolveOptions {
                 game_dir: "G".into(),
                 user_dir: "U".into(),
@@ -1191,6 +1349,7 @@ mod tests {
             },
             content: Arc::clone(&catalogue.content),
             cells: [[1, 1]; 3],
+            cell_fallbacks: BTreeSet::new(),
             choices: HashMap::new(),
             branch_id: "1".into(),
             hour: 0,
@@ -1381,6 +1540,7 @@ mod tests {
         );
         let style = ShieldStyle::load(&catalogue).unwrap();
         let context = FlagContext {
+            presentation: Default::default(),
             options: ResolveOptions {
                 game_dir: "G".into(),
                 user_dir: "U".into(),
@@ -1388,6 +1548,7 @@ mod tests {
             },
             content: Arc::clone(&catalogue.content),
             cells,
+            cell_fallbacks: BTreeSet::new(),
             choices: HashMap::from([(
                 "MOD".to_owned(),
                 FlagChoice {
@@ -1428,6 +1589,347 @@ mod tests {
         let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
         assert!(near(drawn[0], [0, 43, 0, 255]), "{:?}", drawn[0]);
         assert!(near(drawn[1], [0, 200, 0, 255]), "{:?}", drawn[1]);
+    }
+
+    /// #660's shield fixture as a recorded folder: a small-set shield whose opaque mask sits
+    /// under an overlay clear but for a dark edge, and the green small flag it frames.
+    fn recorded_shield() -> (crate::catalogue::tests::Folder, [[u32; 2]; 3]) {
+        use crate::catalogue::texture_tests::shield_programs;
+        let programs = shield_programs();
+        let mut files: Vec<_> = programs
+            .iter()
+            .map(|(path, text)| (*path, text.as_str()))
+            .collect();
+        files.extend([
+            // The cells the flags below are drawn at, as the recording's defines give them.
+            (
+                "common/defines/00_flags.lua",
+                "NDefines = { NGraphics = { COUNTRY_FLAG_TEX_WIDTH = 4, COUNTRY_FLAG_TEX_HEIGHT = 2, COUNTRY_FLAG_TEX_MAX_SIZE = 8, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 2, COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 2, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 8, COUNTRY_FLAG_SMALL_TEX_WIDTH = 2, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 8 } }",
+            ),
+            (
+                "interface/topbar.gui",
+                "guiTypes = { containerWindowType = { name = topbar buttonType = { name = player_flag spriteType = GFX_mod_shield } } }",
+            ),
+            (
+                "interface/art.gfx",
+                "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png effectFile = gfx/FX/shield_flag.lua small = yes } }",
+            ),
+        ]);
+        let (_, folder) = crate::catalogue::tests::folder_catalogue(&files);
+        let cells = [[4, 2], [2, 2], [2, 1]];
+        let mut written = vec![
+            ("gfx/mod/mask.png", shield_square(&|_, _| [255; 4])),
+            (
+                "gfx/mod/overlay.png",
+                shield_square(&|x, y| {
+                    let edge = x.min(y).min(7 - x).min(7 - y) == 0;
+                    [0, 0, 0, if edge { 200 } else { 0 }]
+                }),
+            ),
+        ];
+        written.extend([
+            ("gfx/flags/MOD.tga", shield_flag(cells[0], [0, 0, 200])),
+            (
+                "gfx/flags/small/MOD.tga",
+                shield_flag(cells[2], [0, 200, 0]),
+            ),
+        ]);
+        for (path, bytes) in written {
+            let file = folder.0.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, bytes).unwrap();
+        }
+        (folder, cells)
+    }
+
+    /// An 8 by 8 PNG of `pixel`.
+    fn shield_square(pixel: &dyn Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+        crate::catalogue::texture_tests::png_bytes(&Rgba8Image {
+            width: 8,
+            height: 8,
+            pixels: (0..64).flat_map(|at| pixel(at % 8, at / 8)).collect(),
+        })
+    }
+
+    /// A true-colour Targa of one colour, as the flag decoder reads it.
+    fn shield_flag([width, height]: [u32; 2], rgb: [u8; 3]) -> Vec<u8> {
+        let mut bytes = vec![0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        bytes.extend((width as u16).to_le_bytes());
+        bytes.extend((height as u16).to_le_bytes());
+        bytes.extend([24, 0x20]);
+        for _ in 0..width * height {
+            bytes.extend([rgb[2], rgb[1], rgb[0]]);
+        }
+        bytes
+    }
+
+    /// The shield `MOD`'s flag is drawn in from `layers` (the recorded folder, with any visual
+    /// mod mounted over it), as the centre and edge pixels of its Shield reply, with what the
+    /// load and the reply named as drawn from the recording.
+    fn shield_pixels(
+        layers: installed_content_core::ResolvedLayers,
+        cells: [[u32; 2]; 3],
+    ) -> ([u8; 4], [u8; 4], BTreeSet<String>) {
+        let ((centre, edge), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            let catalogue = Catalogue::of_layers(layers, "english").unwrap();
+            let style = ShieldStyle::load(&catalogue).unwrap();
+            let context = FlagContext {
+                presentation: Default::default(),
+                options: ResolveOptions {
+                    game_dir: "G".into(),
+                    user_dir: "U".into(),
+                    cache_dir: "C".into(),
+                },
+                content: Arc::clone(&catalogue.content),
+                cells,
+                cell_fallbacks: BTreeSet::new(),
+                choices: HashMap::from([(
+                    "MOD".to_owned(),
+                    FlagChoice {
+                        raw: 0,
+                        tag: "MOD".into(),
+                        candidates: vec!["MOD".into()],
+                        refusal: None,
+                    },
+                )]),
+                branch_id: "1".into(),
+                hour: 0,
+                warnings: Vec::new(),
+            };
+            let request = CountryFlagParams {
+                branch_id: "1".into(),
+                hour: 0,
+                tags: vec!["MOD".into()],
+                size: CountryFlagSize::Shield,
+            };
+            let reply = context
+                .reply(&request, Some(Ok(&style)), &AtomicBool::new(false))
+                .unwrap();
+            assert!(reply.unavailable.is_empty(), "{:?}", reply.unavailable);
+            let image = &reply.flags[0];
+            let pixel = |x: u32, y: u32| {
+                let at = ((y * image.width + x) * 4) as usize;
+                <[u8; 4]>::try_from(&image.pixels[at..at + 4]).unwrap()
+            };
+            (pixel(4, 4), pixel(0, 4))
+        });
+        (centre, edge, fallbacks)
+    }
+
+    /// `layers` with the folder mod at `mod_root` selected as a visual mod, installed through a
+    /// user folder under `user`.
+    fn with_visual_mod(
+        mut layers: installed_content_core::ResolvedLayers,
+        user: &std::path::Path,
+        mod_root: &std::path::Path,
+    ) -> installed_content_core::ResolvedLayers {
+        let descriptor = user.join("mod/shield.mod");
+        std::fs::create_dir_all(descriptor.parent().unwrap()).unwrap();
+        std::fs::write(
+            &descriptor,
+            format!(
+                "name=\"Shield\"\npath=\"{}\"\n",
+                mod_root.display().to_string().replace('\\', "/")
+            ),
+        )
+        .unwrap();
+        let options = ResolveOptions {
+            game_dir: user.to_owned(),
+            user_dir: user.to_owned(),
+            cache_dir: user.join("cache"),
+        };
+        let choice = installed_content_core::content::visual::Choice {
+            id: "mod/shield.mod".into(),
+            name: "Shield".into(),
+        };
+        let plan = installed_content_core::content::visual::apply(
+            &mut layers,
+            &options,
+            &[choice],
+            &[],
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        layers
+    }
+
+    /// The topbar shield follows the selected visual mods: their own shield draws, one whose
+    /// textures they do not supply is the recording's own declaration, and one that loads but
+    /// does not draw is the recording's drawn shield, each named; mods that leave the shield
+    /// alone, and no mods at all, draw the recording's shield exactly as before, naming nothing.
+    #[test]
+    fn the_shield_follows_the_selected_visual_mods_and_falls_back_by_name() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1);
+        let (recorded, cells) = recorded_shield();
+        let base =
+            || installed_content_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
+        // No visual mods: #660's draw, the dark edge shaded in, nothing named.
+        let (centre, edge, fallbacks) = shield_pixels(base(), cells);
+        assert_eq!(centre, [0, 200, 0, 255]);
+        assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
+        assert!(fallbacks.is_empty(), "{fallbacks:?}");
+        let visual = |name: &str, files: &[(&str, Vec<u8>)]| {
+            let (_, root) = crate::catalogue::tests::folder_catalogue(&[]);
+            for (path, bytes) in files {
+                let file = root.0.join(name).join(path);
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, bytes).unwrap();
+            }
+            let layers = with_visual_mod(base(), &root.0.join("user"), &root.0.join(name));
+            shield_pixels(layers, cells)
+        };
+        let named = |name: &str, overlay: &str, mask: &str, effect: &str, small: &str| {
+            format!(
+                "spriteTypes = {{ maskedShieldType = {{ name = {name} textureFile1 = {overlay} textureFile2 = {mask} effectFile = {effect} small = {small} }} }}"
+            )
+            .into_bytes()
+        };
+        let declared = |overlay: &str, mask: &str, effect: &str| {
+            named("GFX_mod_shield", overlay, mask, effect, "yes")
+        };
+        let fell_back = |fallbacks: &BTreeSet<String>| {
+            fallbacks
+                .iter()
+                .any(|why| why.starts_with("shield player_flag ("))
+        };
+        // The mod's own shield, an overlay without the dark edge: the edge stays green.
+        let clear = shield_square(&|_, _| [0, 0, 0, 0]);
+        let (centre, edge, fallbacks) = visual(
+            "own",
+            &[
+                (
+                    "interface/art.gfx",
+                    declared(
+                        "gfx/visual/overlay.png",
+                        "gfx/mod/mask.png",
+                        "gfx/FX/shield_flag.lua",
+                    ),
+                ),
+                ("gfx/visual/overlay.png", clear),
+            ],
+        );
+        assert_eq!((centre, edge), ([0, 200, 0, 255], [0, 200, 0, 255]));
+        assert!(fallbacks.is_empty(), "{fallbacks:?}");
+        // A declaration whose mask the mod does not supply: the recording's own shield.
+        let (centre, edge, fallbacks) = visual(
+            "missing",
+            &[(
+                "interface/art.gfx",
+                declared(
+                    "gfx/mod/overlay.png",
+                    "gfx/visual/absent_mask.png",
+                    "gfx/FX/shield_flag.lua",
+                ),
+            )],
+        );
+        assert_eq!(centre, [0, 200, 0, 255]);
+        assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
+        assert!(fell_back(&fallbacks), "{fallbacks:?}");
+        // A mod that binds the top bar to a shield of its own name, which does not load: the
+        // recording's own binding and declaration, not the mod's name looked up in the
+        // recording.
+        let (centre, edge, fallbacks) = visual(
+            "renamed",
+            &[
+                (
+                    "interface/topbar.gui",
+                    b"guiTypes = { containerWindowType = { name = topbar buttonType = { name = player_flag spriteType = GFX_visual_shield } } }"
+                        .to_vec(),
+                ),
+                (
+                    "interface/visual.gfx",
+                    named(
+                        "GFX_visual_shield",
+                        "gfx/mod/overlay.png",
+                        "gfx/visual/absent_mask.png",
+                        "gfx/FX/shield_flag.lua",
+                        "yes",
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(centre, [0, 200, 0, 255]);
+        assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
+        assert!(fell_back(&fallbacks), "{fallbacks:?}");
+        // A mod that restyles other artwork and leaves the shield alone: the stack resolves the
+        // recording's own shield, a plain draw with nothing named.
+        let (centre, edge, fallbacks) = visual(
+            "untouched",
+            &[
+                (
+                    "interface/other.gfx",
+                    b"spriteTypes = { spriteType = { name = GFX_other textureFile = gfx/visual/other.png } }"
+                        .to_vec(),
+                ),
+                ("gfx/visual/other.png", shield_square(&|_, _| [9, 9, 9, 255])),
+            ],
+        );
+        assert_eq!(centre, [0, 200, 0, 255]);
+        assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
+        assert!(fallbacks.is_empty(), "{fallbacks:?}");
+        // A shield that loads but whose effect does not draw, from the large flag set: the
+        // recording's drawn shield, framing the recording's own small-set flag (green, not the
+        // large set's blue) at its own cells.
+        let (centre, edge, fallbacks) = visual(
+            "undrawn",
+            &[(
+                "interface/art.gfx",
+                named(
+                    "GFX_mod_shield",
+                    "gfx/mod/overlay.png",
+                    "gfx/mod/mask.png",
+                    "gfx/FX/absent_flag.lua",
+                    "no",
+                ),
+            )],
+        );
+        assert_eq!(centre, [0, 200, 0, 255]);
+        assert!(near(edge, [0, 43, 0, 255]), "{edge:?}");
+        assert!(fell_back(&fallbacks), "{fallbacks:?}");
+    }
+
+    /// A kept shield is served only for the catalogue it came from: once the visual mods change,
+    /// the new presentation's catalogue loads its own, never the old one's.
+    #[test]
+    fn a_kept_shield_belongs_to_the_catalogue_it_came_from() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (recorded, _) = recorded_shield();
+        let base =
+            || installed_content_core::ResolvedLayers::from_folders(&[(&recorded.0, &[][..])]).unwrap();
+        let (_, root) = crate::catalogue::tests::folder_catalogue(&[]);
+        let broken = root.0.join("broken");
+        std::fs::create_dir_all(broken.join("interface")).unwrap();
+        std::fs::write(
+            broken.join("interface/art.gfx"),
+            "spriteTypes = { maskedShieldType = { name = GFX_mod_shield textureFile1 = gfx/mod/overlay.png textureFile2 = gfx/mod/mask.png effectFile = gfx/FX/absent_flag.lua small = yes } }",
+        )
+        .unwrap();
+        let shown = Catalogue::of_layers(base(), "english").unwrap();
+        let selected = Catalogue::of_layers(
+            with_visual_mod(base(), &root.0.join("user"), &broken),
+            "english",
+        )
+        .unwrap();
+        let mut slot = None;
+        let first = cached_shield(&mut slot, &shown).unwrap();
+        assert!(first.recorded.is_none());
+        assert!(Arc::ptr_eq(
+            &first,
+            &cached_shield(&mut slot, &shown).unwrap()
+        ));
+        let switched = cached_shield(&mut slot, &selected).unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &switched),
+            "another catalogue loads its own"
+        );
+        assert!(
+            switched.recorded.is_some(),
+            "the selected mods' broken shield falls back"
+        );
     }
 
     #[test]

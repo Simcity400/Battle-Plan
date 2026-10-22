@@ -1098,6 +1098,7 @@ mod tests {
                     cache_dir: folder.0.join("cache"),
                 },
                 allow_unverified: true,
+                presentation: Default::default(),
             };
             catalogue::set_test_catalogue(&source, &options, Arc::new(catalogue));
             let context = LoadContext {

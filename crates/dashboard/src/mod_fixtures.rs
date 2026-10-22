@@ -261,7 +261,7 @@ fn resource_balance_names_and_draws_a_mod_resource_from_the_mod_s_own_art() {
     )
     .unwrap();
     let shown = |token: &str| {
-        let found = &declared[&(token.to_owned(), 1)];
+        let found = declared[&(token.to_owned(), 1)].get();
         (found.name.clone(), found.icon.clone())
     };
     assert_eq!(
@@ -806,7 +806,7 @@ fn a_resource_icon_is_the_trade_row_s_button_whatever_file_declares_it() {
             &AtomicBool::new(false),
         )
         .unwrap();
-        let icon = &declared[&("mod_ore".to_owned(), 1)].icon;
+        let icon = &declared[&("mod_ore".to_owned(), 1)].get().icon;
         if drawn {
             assert_eq!(icon, &Some(pixel_png(BLUE)));
             assert!(warnings.is_empty(), "{warnings:?}");
@@ -1263,6 +1263,89 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
     );
 }
 
+/// Flags are read from the visual mods the source's widgets show, at the cells their graphics
+/// defines give; one the mods leave undecodable is the recording's, decoded at the recording's
+/// own cells and named on every search that uses it, kept or not.
+#[test]
+fn flags_follow_the_visual_mods_and_fall_back_to_the_recording_by_name() {
+    use crate::products::country_flags::FlagCache;
+    use installed_content_core::{content::visual, flags::FlagSet};
+    let stack = Stack::new("flag_presentation");
+    let (base, art) = (stack.base(), stack.addon());
+    // The recording draws flags one texel wide, the visual mod two.
+    stack.write(
+        &base,
+        "common/defines/00_flags.lua",
+        "NDefines = { NGraphics = { COUNTRY_FLAG_TEX_WIDTH = 1, COUNTRY_FLAG_TEX_HEIGHT = 1, \
+         COUNTRY_FLAG_TEX_MAX_SIZE = 4, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 1, \
+         COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 1, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 4, \
+         COUNTRY_FLAG_SMALL_TEX_WIDTH = 1, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, \
+         COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 4 } }",
+    );
+    stack.write(&base, "gfx/flags/AAA.tga", tga_row(&[RED]));
+    stack.write(&base, "gfx/flags/BBB.tga", tga_row(&[RED]));
+    stack.write(&art, "gfx/flags/AAA.tga", tga_row(&[GREEN, GREEN]));
+    let mut broken = tga_row(&[GREEN, GREEN]);
+    broken[2] = 10;
+    stack.write(&art, "gfx/flags/BBB.tga", broken);
+    let user = stack.root.join("user");
+    stack.write(
+        &user,
+        "mod/art.mod",
+        format!(
+            "name=\"Art\"\npath=\"{}\"\n",
+            art.display().to_string().replace('\\', "/")
+        ),
+    );
+    let mut layers = ResolvedLayers::from_folders(&[(&base, &[])]).unwrap();
+    let options = installed_content_core::ResolveOptions {
+        game_dir: base.clone(),
+        user_dir: user,
+        cache_dir: stack.root.join("cache"),
+    };
+    let choice = visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    };
+    visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+    let mut cache = FlagCache::default();
+    let mut search = |tag: &str| {
+        installed_content_core::content::observe_overlay_refusals(|| {
+            match find_flag(
+                &layers,
+                &[FlagSet::Normal],
+                &[[2, 1]; 3],
+                &[tag.into()],
+                &mut cache,
+            )
+            .unwrap()
+            .0
+            {
+                FlagSearch::Found { image, .. } => image.pixels[..4].to_vec(),
+                other => panic!("{other:?}"),
+            }
+        })
+    };
+    let (pixel, fallbacks) = search("AAA");
+    assert_eq!((pixel, fallbacks.len()), (GREEN.to_vec(), 0));
+    let (pixel, fallbacks) = search("BBB");
+    assert_eq!(pixel, RED.to_vec(), "the recording's own flag");
+    assert_eq!(fallbacks.len(), 1);
+    assert!(
+        fallbacks
+            .iter()
+            .next()
+            .unwrap()
+            .starts_with("flag gfx/flags/BBB.tga ("),
+        "{fallbacks:?}"
+    );
+    assert_eq!(
+        search("BBB"),
+        (RED.to_vec(), fallbacks),
+        "a kept file names it again"
+    );
+}
+
 #[test]
 fn flag_search_reports_rejected_files_and_reuses_each_decode() {
     use crate::{
@@ -1634,7 +1717,7 @@ fn missing_resource_keys_are_content_and_shared_icon_refusals_are_not_repeated()
     )
     .unwrap();
     assert_eq!(
-        cached[&("mod_ore".into(), 1)].name.as_deref(),
+        cached[&("mod_ore".into(), 1)].get().name.as_deref(),
         Some("PRODUCTION_MATERIALS_MOD_ORE")
     );
     assert_eq!(

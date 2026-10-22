@@ -375,6 +375,60 @@ fn a_later_source_of_the_same_recording_is_answered_from_disk() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A reply of recorded-only work is the recording's own whatever visual mods are selected: it is
+/// kept under a selection, and served from the same entry once the selection changes. A reply
+/// admitted on a binding the source has since left is not kept.
+#[test]
+fn recorded_only_replies_are_kept_whatever_the_selection() {
+    let root = root("recorded_only");
+    let (source, context) =
+        source_with_content(vec![crate::test_fixtures::source(1, 100, Some(1))], &root);
+    let folders = context.content.unwrap();
+    let select = |name: &str| {
+        source.bind(
+            Some((&folders.options, folders.allow_unverified)),
+            crate::presentation::Presentation {
+                visual_mods: vec![installed_content_core::content::visual::Choice {
+                    id: format!("mod/{name}.mod"),
+                    name: name.into(),
+                }],
+                revision: name.into(),
+            },
+        );
+        LoadContext {
+            content: source.admit(crate::source::Work::Recorded),
+        }
+    };
+    let params = json!({"branchId": "1"});
+    let art = select("art");
+    let computed = load(&source, "art", &params, &art);
+    let entry = Entry::new(&source, "world-tension", false, &params, &art).unwrap();
+    let stored: Value =
+        serde_json::from_str(&entry.get().expect("kept under a selection")).unwrap();
+    assert_eq!(stored, computed["data"]);
+    // Another selection reads the same entry.
+    let other = select("other");
+    assert_eq!(
+        Entry::new(&source, "world-tension", false, &params, &other)
+            .unwrap()
+            .path,
+        entry.path
+    );
+    entry.put(r#"{"stored":true}"#);
+    assert_eq!(
+        load(&source, "other", &params, &other)["data"],
+        json!({"stored": true})
+    );
+    // A reply admitted on the retired binding is drawn but not kept.
+    fs::remove_file(&entry.path).unwrap();
+    load(&source, "late", &params, &art);
+    assert!(
+        entry.get().is_none(),
+        "a retired binding's reply is not kept"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn entries_are_kept_apart_by_request_recording_and_content() {
     let root = root("apart");

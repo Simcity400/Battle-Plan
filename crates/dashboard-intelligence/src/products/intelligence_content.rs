@@ -69,7 +69,7 @@ impl DefenseTemplate {
 
 #[derive(Default)]
 struct ArtworkCache {
-    entries: BTreeMap<String, (Artwork, Option<String>)>,
+    entries: BTreeMap<String, catalogue::Drawn<(Artwork, Option<String>)>>,
 }
 
 pub fn intelligence_content(
@@ -93,6 +93,8 @@ enum ContentScope {
     Operations,
 }
 
+/// The content of the last catalogue read, kept apart for the recording's own catalogue (which
+/// preparation reads) and the shown one ([`catalogue::ByCatalogue`]).
 #[derive(Default)]
 struct Cached {
     catalogue: Option<Arc<Catalogue>>,
@@ -106,23 +108,25 @@ fn prepared_content(
     scope: ContentScope,
 ) -> io::Result<Arc<IntelligenceContent>> {
     let catalogue = catalogue::catalogue(source, options)?;
-    let state = source.state::<Cached>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-    if !state
-        .catalogue
-        .as_ref()
-        .is_some_and(|cached| Arc::ptr_eq(cached, &catalogue))
-    {
-        *state = Cached {
-            catalogue: Some(Arc::clone(&catalogue)),
-            ..Default::default()
-        };
-    }
-    let cached = Arc::clone(match scope {
-        ContentScope::Agency => &state.agency,
-        ContentScope::Operations => &state.operations,
-    });
-    drop(state);
+    let cached = {
+        let state = source.state::<catalogue::ByCatalogue<Cached>>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let kept = state.of(&catalogue);
+        if !kept
+            .catalogue
+            .as_ref()
+            .is_some_and(|cached| Arc::ptr_eq(cached, &catalogue))
+        {
+            *kept = Cached {
+                catalogue: Some(Arc::clone(&catalogue)),
+                ..Default::default()
+            };
+        }
+        Arc::clone(match scope {
+            ContentScope::Agency => &kept.agency,
+            ContentScope::Operations => &kept.operations,
+        })
+    };
     cached.get_or_init(|| match scope {
         ContentScope::Agency => Ok(IntelligenceContent::load_acquired_agency(catalogue)),
         ContentScope::Operations => IntelligenceContent::load(catalogue),
@@ -339,7 +343,7 @@ impl IntelligenceContent {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         if let Some(artwork) = cached.entries.get(token) {
-            return artwork.clone();
+            return artwork.get().clone();
         }
         let mut artwork = Artwork {
             token: token.into(),
@@ -367,24 +371,27 @@ impl IntelligenceContent {
                 return (artwork, Some(why));
             }
         };
-        artwork.name = self.operation_name(token).ok();
-        let icon = self.sprite_png(&definition.sprite);
-        let reason = match icon {
-            Ok(icon) => {
-                artwork.icon = Some(icon);
-                None
-            }
-            Err(why) => {
-                self.catalogue.refuse(&why.to_string(), &definition.sprite);
-                Some(format!(
-                    "operation {token}: artwork {} unavailable: {why}",
-                    definition.sprite
-                ))
-            }
-        };
-        let result = (artwork, reason);
+        let drawn = catalogue::Drawn::new(|| {
+            artwork.name = self.operation_name(token).ok();
+            let icon = self.sprite_png(&definition.sprite);
+            let reason = match icon {
+                Ok(icon) => {
+                    artwork.icon = Some(icon);
+                    None
+                }
+                Err(why) => {
+                    self.catalogue.refuse(&why.to_string(), &definition.sprite);
+                    Some(format!(
+                        "operation {token}: artwork {} unavailable: {why}",
+                        definition.sprite
+                    ))
+                }
+            };
+            (artwork, reason)
+        });
+        let result = drawn.get().clone();
         // Cache authored definitions once each; the product budgets its full reply.
-        cached.entries.insert(token.to_owned(), result.clone());
+        cached.entries.insert(token.to_owned(), drawn);
         result
     }
 

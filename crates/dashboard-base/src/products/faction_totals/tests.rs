@@ -2050,6 +2050,7 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
             cache_dir: folder.0.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     source.set_test_content(

@@ -21,6 +21,7 @@ pub mod prepared_chart;
 pub mod prepared_map;
 pub mod prepared_measure;
 pub mod prepared_production;
+pub mod presentation;
 pub mod products;
 pub mod ranking;
 pub mod read_runs;

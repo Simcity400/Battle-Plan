@@ -118,6 +118,7 @@ fn bind(source: &dashboard_base::Source, stack: &Stack) -> ContentOptions {
             cache_dir: base.parent().unwrap().join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     source.set_test_content(
         options.options.clone(),
@@ -407,9 +408,12 @@ fn reached_hour_reads_only_its_block_and_reuses_frame_cache_without_preparation(
     assert!(!blocked);
     assert_eq!(cached.unwrap(), reply);
     assert_eq!(frames::reads(&source), (0, 1));
-    let cache = source.state::<KeyedResults<catalogue::Binding, Membership>>();
+    let cache = source.state::<KeyedResults<catalogue::RecordedBinding, Membership>>();
     assert_eq!(
-        cache.lock().unwrap().loads(&catalogue::binding(&options)),
+        cache
+            .lock()
+            .unwrap()
+            .loads(&catalogue::recorded_binding(&options)),
         1
     );
     assert_eq!(source.state::<Temperatures>().lock().unwrap().0.len(), 1);

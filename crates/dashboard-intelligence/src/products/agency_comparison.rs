@@ -1354,6 +1354,7 @@ mod tests {
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         let mut first = source(1, 16, Some(1));
         let mut agency = row(11, 125_000);

@@ -75,9 +75,9 @@ fn encoded_reply(value: &impl Serialize) -> io::Result<Vec<u8>> {
 impl Prepared {
     pub fn configure(&mut self, source: &Source, context: &LoadContext) {
         if !self.bound {
-            let catalogue = context
-                .content()
-                .and_then(|options| catalogue::catalogue(source, options));
+            let catalogue = context.content().and_then(|options| {
+                catalogue::recorded_catalogue(source, options)
+            });
             if let Err(error) = &catalogue {
                 let warning =
                     format!("State names and occupation law artwork unavailable: {error}");

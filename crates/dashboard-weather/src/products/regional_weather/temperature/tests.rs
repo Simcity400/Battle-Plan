@@ -296,12 +296,13 @@ fn install_cached(source: &Source, content: Bound) -> ContentOptions {
             cache_dir: "synthetic-temperature-cache".into(),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     };
     source
-        .state::<catalogue::KeyedResults<catalogue::Binding, Bound>>()
+        .state::<catalogue::KeyedResults<catalogue::RecordedBinding, Bound>>()
         .lock()
         .unwrap()
-        .get_or_init(&catalogue::binding(&options), |_| Ok(content))
+        .get_or_init(&catalogue::recorded_binding(&options), |_| Ok(content))
         .unwrap();
     options
 }
@@ -615,6 +616,7 @@ fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_s
             cache_dir: base.parent().unwrap().join("cache"),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     };
     source.set_test_content(options.options.clone(), layers);
     let cancelled = AtomicBool::new(false);

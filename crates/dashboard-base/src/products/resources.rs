@@ -128,7 +128,8 @@ pub fn ordinals(resources: &[(u32, String)]) -> Vec<u32> {
 }
 
 /// Names and icons, and the standing warnings, for the catalogue they were read
-/// from; one per source, whichever resource product asks.
+/// from; one per source and kind of catalogue ([`catalogue::ByCatalogue`]: stored payloads
+/// read the recording's own), whichever resource product asks.
 #[derive(Default)]
 struct ContentState {
     content: Option<ContentCache>,
@@ -137,7 +138,7 @@ struct ContentState {
 struct ContentCache {
     catalogue: Arc<Catalogue>,
     /// By token and which declaration of it (from 1).
-    resources: BTreeMap<(String, u32), Declared>,
+    resources: BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
     warnings: Vec<String>,
 }
 
@@ -242,7 +243,7 @@ fn resource_name(
 pub fn resource_content(
     view: &ContentView,
     wanted: &[(String, u32)],
-    cached: &mut BTreeMap<(String, u32), Declared>,
+    cached: &mut BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
     warnings: &mut Vec<String>,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<dashboard_core::findings::Finding>> {
@@ -333,42 +334,49 @@ pub fn resource_content(
             warnings.extend(notes);
         }
         let Some(icons) = &icons else {
-            cached.insert((token.clone(), *ordinal), Declared { name, icon: None });
+            let declared = catalogue::Drawn::new(|| Declared { name, icon: None });
+            cached.insert((token.clone(), *ordinal), declared);
             continue;
         };
-        let icon = match (
-            frame_of(icons, token, *ordinal),
-            decode.filter(|_| !refused),
-        ) {
-            (Some(frame), Some(decode)) => match catalogue::sprite_frame_png(
-                view.layers,
-                &icons.sprite,
-                decode,
-                frame - 1,
-                ICON_EDGE,
+        let declared = catalogue::Drawn::new(|| {
+            let icon = match (
+                frame_of(icons, token, *ordinal),
+                decode.filter(|_| !refused),
             ) {
-                Ok(icon) => Some(icon),
-                Err(error) => {
-                    refused = true;
-                    let message = format!("Resource icons are unavailable: {error}");
-                    findings.push(Finding::new(Kind::Refused, "resource icons", &message));
+                (Some(frame), Some(decode)) => match catalogue::sprite_frame_png(
+                    view.layers,
+                    &icons.sprite,
+                    decode,
+                    frame - 1,
+                    ICON_EDGE,
+                ) {
+                    Ok(icon) => Some(icon),
+                    Err(error) => {
+                        refused = true;
+                        let message = format!("Resource icons are unavailable: {error}");
+                        findings.push(Finding::new(Kind::Refused, "resource icons", &message));
+                        warnings.push(message);
+                        None
+                    }
+                },
+                (Some(_), None) => None,
+                (None, _) => {
+                    let message =
+                        format!("{token}: the recorded content gives no usable icon frame.");
+                    findings.push(Finding::new(
+                        Kind::Fallback,
+                        format!("resource {token} declaration {ordinal}"),
+                        &message,
+                    ));
                     warnings.push(message);
                     None
                 }
-            },
-            (Some(_), None) => None,
-            (None, _) => {
-                let message = format!("{token}: the recorded content gives no usable icon frame.");
-                findings.push(Finding::new(
-                    Kind::Fallback,
-                    format!("resource {token} declaration {ordinal}"),
-                    &message,
-                ));
-                warnings.push(message);
-                None
-            }
-        };
-        cached.insert((token.clone(), *ordinal), Declared { name, icon });
+            };
+            Declared { name, icon }
+        });
+        // What the draw fell back on reaches this request as it does every later one.
+        declared.get();
+        cached.insert((token.clone(), *ordinal), declared);
     }
     Ok(findings)
 }
@@ -385,23 +393,46 @@ pub fn resource_infos(
     ResourceNaming::of(source, context).infos(resources, cancelled)
 }
 
+/// [`resource_infos`] for payloads the prepared store keeps ([`ResourceNaming::stored`]).
+pub fn stored_resource_infos(
+    source: &Source,
+    context: &LoadContext,
+    resources: &[(u32, String)],
+    cancelled: &AtomicBool,
+) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
+    ResourceNaming::stored(source, context).infos(resources, cancelled)
+}
+
 /// What naming recorded resources reads of a source, held apart from it: the
 /// content catalogue of its content stack (or why it is unavailable) and the
 /// source's resource cache. A preparation that publishes names where it holds
 /// no source takes it when it last observed one.
 pub struct ResourceNaming {
     catalogue: Result<Arc<Catalogue>, String>,
-    cache: Arc<std::sync::Mutex<ContentState>>,
+    cache: Arc<std::sync::Mutex<catalogue::ByCatalogue<ContentState>>>,
 }
 
 impl ResourceNaming {
+    /// Naming as a reply shows it when it answers: icons follow the source's visual mods.
     pub fn of(source: &Source, context: &LoadContext) -> Self {
         Self {
             catalogue: context
                 .content()
                 .and_then(|content| catalogue::catalogue(source, content))
                 .map_err(|error| error.to_string()),
-            cache: source.state::<ContentState>(),
+            cache: source.state(),
+        }
+    }
+
+    /// Naming for payloads the prepared store keeps by recorded content alone: icons are the
+    /// recording's (`catalogue::recorded_catalogue`), which their replies name by product.
+    pub fn stored(source: &Source, context: &LoadContext) -> Self {
+        Self {
+            catalogue: context
+                .content()
+                .and_then(|content| catalogue::recorded_catalogue(source, content))
+                .map_err(|error| error.to_string()),
+            cache: source.state(),
         }
     }
 
@@ -417,7 +448,7 @@ impl ResourceNaming {
 
 fn infos(
     catalogue: &Result<Arc<Catalogue>, String>,
-    state: &std::sync::Mutex<ContentState>,
+    state: &std::sync::Mutex<catalogue::ByCatalogue<ContentState>>,
     resources: &[(u32, String)],
     cancelled: &AtomicBool,
 ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
@@ -440,7 +471,8 @@ fn infos(
     };
     let infos = match catalogue {
         Ok(catalogue) => {
-            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            let cache = state.of(catalogue);
             if !cache
                 .content
                 .as_ref()
@@ -466,7 +498,9 @@ fn infos(
             let infos: Vec<ResourceInfo> = declarations
                 .iter()
                 .enumerate()
-                .map(|(index, key)| info(index, content.resources.get(key)))
+                .map(|(index, key)| {
+                    info(index, content.resources.get(key).map(catalogue::Drawn::get))
+                })
                 .collect();
             if infos.iter().any(|resource| resource.icon.is_some()) {
                 warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
@@ -622,7 +656,7 @@ mod tests {
         )
         .unwrap();
         (
-            wanted.iter().map(|key| cached[key].clone()).collect(),
+            wanted.iter().map(|key| cached[key].get().clone()).collect(),
             warnings,
         )
     }
@@ -706,7 +740,13 @@ mod tests {
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
-        let icon = from_url(cached[&("mod_ore".into(), 1)].icon.as_deref().unwrap());
+        let icon = from_url(
+            cached[&("mod_ore".into(), 1)]
+                .get()
+                .icon
+                .as_deref()
+                .unwrap(),
+        );
         assert_eq!((icon.width, icon.height), (2, 4));
         assert_eq!(&icon.pixels[..8], [3, 20, 30, 200, 4, 20, 30, 200]);
         assert_eq!(&icon.pixels[24..], [0; 8]);
@@ -757,9 +797,13 @@ mod tests {
             assert_eq!(findings[0].subject, "resource icons");
             assert_eq!(warnings.len(), 1, "{warnings:?}");
             assert!(warnings[0].starts_with("Resource icons are unavailable:"));
-            assert_eq!(cached[&wanted[0]].name.as_deref(), Some("Ore"));
-            assert_eq!(cached[&wanted[1]].name.as_deref(), Some("Metal"));
-            assert!(cached.values().all(|declared| declared.icon.is_none()));
+            assert_eq!(cached[&wanted[0]].get().name.as_deref(), Some("Ore"));
+            assert_eq!(cached[&wanted[1]].get().name.as_deref(), Some("Metal"));
+            assert!(
+                cached
+                    .values()
+                    .all(|declared| declared.get().icon.is_none())
+            );
             let repeated = resource_content(
                 &ContentView::of(&catalogue),
                 &wanted,
@@ -809,7 +853,10 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        let icons = wanted.iter().map(|key| cached[key].icon.clone()).collect();
+        let icons = wanted
+            .iter()
+            .map(|key| cached[key].get().icon.clone())
+            .collect();
         // The fixture's resources have no names; only icon findings are kept.
         let findings = findings
             .into_iter()

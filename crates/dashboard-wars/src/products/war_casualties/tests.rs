@@ -1358,6 +1358,7 @@ fn loaded_content(source: &Source) -> (LoadContext, TestFolder) {
             cache_dir: root.join("cache"),
         },
         allow_unverified: true,
+        presentation: Default::default(),
     };
     dashboard_base::catalogue::set_test_catalogue(source, &options, catalogue);
     (
@@ -1391,6 +1392,7 @@ fn casualty_titles_preserve_empty_and_key_equal_localisations() {
                 cache_dir: folder.0.join("cache"),
             },
             allow_unverified: true,
+            presentation: Default::default(),
         };
         dashboard_base::catalogue::set_test_catalogue(&source, &options, Arc::new(catalogue));
         let reply = WarCasualties::load(

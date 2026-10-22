@@ -9,6 +9,7 @@ import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
+import { contentRevision } from './contentRevision.ts';
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
@@ -84,11 +85,13 @@ export const nativeDashboardClient: DashboardClient = {
   async mapSettings(sourceId, revision, settings, signal, target = { scope: 'campaign' }) {
     const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings, flip: null, target }), signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    contentRevision(nativeDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
   async flipMapSetting(sourceId, revision, setting, signal, target) {
     const reply = await request<MapSettingsReply>('dashboard_map_settings', () => ({ sourceId, revision, settings: null, flip: setting, target }), signal);
     if (reply.sourceId !== sourceId || reply.revision !== revision) throw new Error('Map settings do not match this campaign');
+    contentRevision(nativeDashboardClient).observePresentation(reply.presentationGeneration);
     return reply;
   },
 
@@ -108,6 +111,7 @@ export const nativeDashboardClient: DashboardClient = {
     if (signal.aborted) throw cancelled();
     const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,
       late => invoke('dashboard_release_source', { sourceId: late.id }));
+    contentRevision(nativeDashboardClient).observePresentation(source.presentationGeneration);
     return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
   },
 

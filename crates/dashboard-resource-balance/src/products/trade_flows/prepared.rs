@@ -449,7 +449,7 @@ impl Prepared {
     ) -> io::Result<()> {
         self.flush_named(
             writer,
-            &dashboard_base::products::resources::ResourceNaming::of(source, context),
+            &dashboard_base::products::resources::ResourceNaming::stored(source, context),
             branch,
             cancelled,
         )

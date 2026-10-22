@@ -3,7 +3,7 @@
 //! anniversary. Reconciliation, grants and refunds are never payments.
 use super::*;
 use dashboard_base::products::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
-use dashboard_base::products::politics_content::{PoliticsContent, politics_content};
+use dashboard_base::products::politics_content::{PoliticsContent, recorded_politics_content};
 use dashboard_base::products::{
     idea_format::{self, LocalisedText, ModifierFormat},
     idea_history::{self, IdeaInfo},

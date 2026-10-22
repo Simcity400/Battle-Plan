@@ -8,6 +8,8 @@ pub(crate) use dashboard_base::prepared::query::progressive;
 mod factions_tests;
 #[cfg(test)]
 mod forces_tests;
+#[cfg(test)]
+mod presentation_tests;
 
 use crate::{
     Source,
@@ -81,6 +83,9 @@ struct CachedQuery {
     data: Value,
     short: std::collections::BTreeSet<&'static str>,
     summaries: super::series::SummaryCache,
+    /// What computing `data` drew in the recording's style because the source's visual mods
+    /// could not supply it, named on every reply served from it.
+    fallbacks: std::collections::BTreeSet<String>,
 }
 
 /// Content files and the recorded mod stack are bound by the observation
@@ -361,17 +366,23 @@ fn economy(
             )?)?
         }
         "market-history" => {
-            let params: market::MarketHistoryParams = serde_json::from_value(request.params.clone())?;
+            let params: market::MarketHistoryParams =
+                serde_json::from_value(request.params.clone())?;
             let catalogue = catalogue(&mut warnings);
-            let texts = catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+            let texts = catalogue
+                .as_deref()
+                .map(|catalogue| catalogue as &dyn Texts);
             serde_json::to_value(market::history(
                 store, key, &params, through, texts, warnings, cancelled,
             )?)?
         }
         "market-ledger" => {
-            let params: market::MarketLedgerParams = serde_json::from_value(request.params.clone())?;
+            let params: market::MarketLedgerParams =
+                serde_json::from_value(request.params.clone())?;
             let catalogue = catalogue(&mut warnings);
-            let texts = catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts);
+            let texts = catalogue
+                .as_deref()
+                .map(|catalogue| catalogue as &dyn Texts);
             serde_json::to_value(market::ledger(
                 store, key, &params, through, texts, warnings, cancelled,
             )?)?
@@ -407,7 +418,9 @@ fn economy(
                 None => Err("content is unavailable".to_owned()),
             };
             let naming = production_catalogue::Naming {
-                texts: catalogue.as_deref().map(|catalogue| catalogue as &dyn Texts),
+                texts: catalogue
+                    .as_deref()
+                    .map(|catalogue| catalogue as &dyn Texts),
                 units: units.as_deref(),
                 sprite: &sprite,
                 image: &image,
@@ -429,7 +442,10 @@ fn economy(
                         .collect(),
                     notes,
                 ),
-                Err(error) => (Default::default(), vec![format!("Resource names unavailable: {error}")]),
+                Err(error) => (
+                    Default::default(),
+                    vec![format!("Resource names unavailable: {error}")],
+                ),
             };
             serde_json::to_value(convoy_health::query(
                 store, key, &params, through, &regions, &resources, warnings, cancelled,
@@ -993,8 +1009,7 @@ fn query_data(
                     });
                 }
                 let first = params.first_hour.unwrap_or(prefix.coverage.first_hour);
-                let mut data =
-                    serde_json::to_value(script::empty(&params, first, requested))?;
+                let mut data = serde_json::to_value(script::empty(&params, first, requested))?;
                 prefix.mark(&mut data)?;
                 return Ok(data);
             }
@@ -1225,15 +1240,13 @@ fn query_data(
             cancelled,
         )?
         .unwrap_or(Value::Null),
-        "military-factory-spending" => {
-            crate::products::military_factory_spending::prepared::query(
-                source,
-                request.params.clone(),
-                content,
-                cancelled,
-            )?
-            .unwrap_or(Value::Null)
-        }
+        "military-factory-spending" => crate::products::military_factory_spending::prepared::query(
+            source,
+            request.params.clone(),
+            content,
+            cancelled,
+        )?
+        .unwrap_or(Value::Null),
 
         "casualty-breakdown" => {
             let params: crate::products::war_casualties::breakdown::CasualtyBreakdownParams =
@@ -2736,6 +2749,66 @@ pub(in crate::prepared) fn append_stack_warnings(
     }
 }
 
+/// The lines every served reply adds to its first content warning list, a fresh answer and a
+/// kept one alike: what the presentation the request was admitted under could not show, then
+/// what the answer drew in the recording's style instead ([`served_fallbacks`]).
+pub(crate) fn served_lines(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    product: &str,
+    name: &str,
+    answered: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    source.append_presentation_warnings(&mut lines, content);
+    let fallbacks = served_fallbacks(content, product, name, answered);
+    lines.extend(installed_content_core::content::overlay_refusal_line(&fallbacks));
+    lines
+}
+
+/// What a served reply names as drawn from the recording: its answer's own fallbacks, and the
+/// artwork the prepared store kept from the recording while the request shows visual mods,
+/// whenever it was prepared.
+fn served_fallbacks(
+    content: Option<&ContentOptions>,
+    product: &str,
+    name: &str,
+    answered: &std::collections::BTreeSet<String>,
+) -> std::collections::BTreeSet<String> {
+    let ((), stored) = installed_content_core::content::observe_overlay_refusals(|| {
+        if let (Some(what), Some(content)) = (
+            crate::products::stored_artwork(product)
+                .or_else(|| crate::products::stored_artwork(name)),
+            content,
+        ) {
+            dashboard_base::catalogue::credit_stored_artwork(content, what);
+        }
+    });
+    answered.iter().chain(&stored).cloned().collect()
+}
+
+/// `lines` added to a reply's first content warning list, each once.
+fn append_lines(product: &str, name: &str, lines: Vec<String>, data: &mut Value) {
+    if lines.is_empty() {
+        return;
+    }
+    let mut lines = Some(lines);
+    for path in content_warning_paths(product, name) {
+        each_at(data, path, &mut |warnings| {
+            if let (Value::Array(warnings), Some(lines)) = (warnings, lines.take()) {
+                for line in lines {
+                    if !warnings.iter().any(|kept| kept.as_str() == Some(&line)) {
+                        warnings.push(Value::String(line));
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// One prepared query's reply. The key its answer is kept under and the artwork it draws both
+/// read the presentation `content` carries (`ContentOptions::presentation`), so another
+/// presentation's art is never kept under it.
 pub fn query(
     source: &Source,
     request: &ProductRequest,
@@ -2779,12 +2852,14 @@ pub fn query(
     let read = |previous: Option<std::sync::Arc<CachedQuery>>| {
         let scope = cache_product(&request.product)
             .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
-        let (data, short) =
-            super::coverage::waiting(|| query_data(source, request, content, cancelled));
+        let ((data, short), fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            super::coverage::waiting(|| query_data(source, request, content, cancelled))
+        });
         Ok(CachedQuery {
             data: data?,
             short,
             summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
+            fallbacks,
         })
     };
     dashboard_base::prepared::query::observations::bind(source, &key);
@@ -2829,6 +2904,7 @@ pub fn query(
                 |reply: &CachedQuery| {
                     let mut bytes = dashboard_base::prepared::prepass::HeldBytes::default();
                     bytes.heap(&reply.short);
+                    bytes.heap(&reply.fallbacks);
                     std::mem::size_of::<CachedQuery>()
                         + dashboard_base::prepared::query::observations::json_bytes(&reply.data)
                         + bytes.total() as usize
@@ -2856,6 +2932,8 @@ pub fn query(
         }
     });
     append_stack_warnings(source, &request.product, name, &mut data);
+    let lines = served_lines(source, content, &request.product, name, &answer.fallbacks);
+    append_lines(&request.product, name, lines, &mut data);
     bounded_json(
         &Reply {
             source_id: &request.source_id,

@@ -225,6 +225,7 @@ fn open() -> (Source, std::sync::Arc<dashboard_text::catalogue::Catalogue>) {
             cache_dir: std::env::temp_dir().join("hoi4-designer-validation"),
         },
         allow_unverified: false,
+        presentation: Default::default(),
     };
     let catalogue = dashboard_base::catalogue::catalogue(&source, &options).unwrap();
     (source, catalogue)
