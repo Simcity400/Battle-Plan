@@ -1,4 +1,4 @@
-//! engine-air-history ownership; see README.md.
+//! Native air history readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, allocation, cair_wing, cair_wing_pool, ccountry, cdiplomacy_status, cfleet,

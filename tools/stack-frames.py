@@ -18,7 +18,7 @@ reachable function's frame exceeds MAX_FRAME or the deepest acyclic chain from a
 root exceeds MAX_DEPTH, and prints the offending call chains. Indirect calls, such
 as job runners and panic hooks, are not followed. A failure means a large value
 sits in a hook-path frame: build it, hold it and consume it out of line, or keep
-it in preallocated storage (crates/collector/README.md, Acquisition rules).
+it in preallocated storage.
 Needs llvm-objdump and llvm-pdbutil (the LLVM toolchain that supplies lld-link).
 """
 import argparse

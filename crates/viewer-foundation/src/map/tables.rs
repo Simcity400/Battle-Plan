@@ -2,8 +2,8 @@
 //!
 //! The collector grows its buffers over the first hours of a session, so an
 //! early frame records several tables truncated and a staggered table not at
-//! all. `README.md` ("Truth") says the viewer shows gaps, truncated tables and
-//! unavailable tables **as such** — it does not say it refuses the hour — so a
+//! all. The viewer shows gaps, truncated tables and unavailable tables **as
+//! such** rather than refusing the hour, so a
 //! pass reads what the hour holds through `rows` and states what it could not
 //! draw through `Limitations`.
 //!

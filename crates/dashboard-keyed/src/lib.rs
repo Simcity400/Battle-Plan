@@ -3,7 +3,7 @@
 //! planes on one mission, a country's mines in one sea, one channel of one
 //! region's air statistics), and whose prepared pages hold each name's runs.
 //!
-//! One crate above [dashboard-base](../dashboard-base/README.md) shared by the
+//! One crate above `dashboard-base` shared by the
 //! product crates whose widgets look values up at playback: each declares an
 //! [`Observer`] (its tables, the fields it watches, the table that dates its
 //! reads and how one frame reads), and this crate does the rest the same way

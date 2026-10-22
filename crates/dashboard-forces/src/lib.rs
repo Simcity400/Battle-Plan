@@ -1,6 +1,6 @@
 //! Force sizes: army size, supply health, air force and navy by country, with the parts-race families that prepare and query them.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! modules keep their dashboard paths (`products::<name>`) and name what they
 //! use at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports them, registers them and prepares

@@ -2,8 +2,8 @@
 //! and lend-lease, lend-lease balances, production licences, industrial
 //! organisations, equipment designs and convoy efficiency.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md),
-//! laid out like [dashboard-politics-ledger](../dashboard-politics-ledger/README.md):
+//! One product crate above `dashboard-base`,
+//! laid out like `dashboard-politics-ledger`:
 //! each family is prepared on its own and answers its prepared queries; the
 //! dashboard re-exports the modules at `products::<name>`, registers them and
 //! prepares and queries them in its pipeline.

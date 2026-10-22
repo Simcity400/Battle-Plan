@@ -1,6 +1,6 @@
 """Exercise the real Windows desktop app on a separate, inactive desktop.
 
-See crates/desktop/README.md. Python 3; Pillow is needed only for capture.
+Python 3; Pillow is needed only for capture.
 Never switches desktops or moves the system cursor.
 """
 import ctypes as c

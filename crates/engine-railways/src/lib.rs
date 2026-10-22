@@ -1,4 +1,4 @@
-//! engine-railways ownership; see README.md.
+//! Native railways readers and their operands, layouts and synthetic tests.
 
 use engine_equipment::cequipment_upgrades_instance;
 use engine_fixed_layout::fixed_layout;

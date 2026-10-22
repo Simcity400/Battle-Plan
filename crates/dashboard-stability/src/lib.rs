@@ -1,6 +1,6 @@
 //! Stability: displayed stability, war support and maximum command power over a branch with the breakdown behind them, each part over time, and the daily country scans that feed their prepared series.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::country_stability`), names what it
 //! uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

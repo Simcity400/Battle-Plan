@@ -1,4 +1,4 @@
-//! engine-naval-history ownership; see README.md.
+//! Native naval history readers and their operands, layouts and synthetic tests.
 
 use engine_executable::modifier_keys;
 use engine_native::{

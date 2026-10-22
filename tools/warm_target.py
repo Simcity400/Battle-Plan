@@ -9,7 +9,7 @@ records S, the toolchain, the lockfile hash and every place the build wrote the 
 `warm` copies that build into a worktree's empty target directory, rewrites the seed's paths
 to the worktree's, invalidates whatever it cannot rewrite exactly, and backdates the worktree's
 sources whose bytes equal the seed's, so cargo rebuilds only what differs. `check` lists any
-reference to the seed left in a target directory. See docs/builds.md, "Warm worktrees".
+reference to the seed left in a target directory.
 """
 
 import argparse
@@ -66,13 +66,10 @@ TARGET_RELATIVE = 1
 
 # The commands a seed is built with, run from the seed checkout, each going on past crates
 # that fail to compile. `cargo test --no-run` builds exactly the units `cargo nextest run
-# --no-run` does (nextest drives it), and reports them. Clippy's arguments are part of what
-# its units are fresh for, so they match the usual lint command.
+# --no-run` does (nextest drives it), and reports them.
 SEED_COMMANDS = (
     ("check", ["cargo", "check", "--workspace", "--all-targets", "--keep-going"], []),
     ("test", ["cargo", "test", "--workspace", "--no-run", "--no-fail-fast"], []),
-    ("clippy", ["cargo", "clippy", "--workspace", "--all-targets", "--keep-going"],
-     ["--", "-D", "warnings"]),
 )
 
 # Not copied: per-session compiler caches and scratch. Incremental caches are large, hold

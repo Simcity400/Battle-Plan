@@ -1,4 +1,4 @@
-//! engine-fixed-layout ownership; see README.md.
+//! Native fixed layout readers and their operands, layouts and synthetic tests.
 
 use engine_executable::{build, executable_tables, modifier_keys};
 use engine_native::{

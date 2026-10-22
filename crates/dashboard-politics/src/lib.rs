@@ -1,7 +1,7 @@
 //! Country political state: elections, governments in exile and balances of
 //! power at one hour, and the balance-of-power history.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::politics_state`), names what it
 //! uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

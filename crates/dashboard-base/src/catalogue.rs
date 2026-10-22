@@ -1,4 +1,4 @@
-//! The content catalogue ([dashboard-text](../../dashboard-text/README.md)) and its
+//! The content catalogue (`dashboard-text`) and its
 //! loader: one catalogue per source, folders and presentation, held in the source's own
 //! cache.
 

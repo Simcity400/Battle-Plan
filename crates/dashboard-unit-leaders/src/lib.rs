@@ -1,6 +1,6 @@
 //! Unit leaders: military leader careers from hourly reads, with their portraits.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::unit_leaders`) and names what it
 //! uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

@@ -1,4 +1,4 @@
-//! engine-scripts ownership; see README.md.
+//! Native scripts readers and their operands, layouts and synthetic tests.
 
 #[cfg(test)]
 use engine_native::read_census;

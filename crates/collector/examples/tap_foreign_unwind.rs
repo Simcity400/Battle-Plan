@@ -1,6 +1,5 @@
 //! Parent-run oracle for actual foreign exceptions through the production Tap.
 //! Requires its system-unwind observer API; a non-unwind callback is not cast.
-//! Build/run instructions and proof limits: tools/tap-foreign-unwind/README.md.
 #[cfg(not(all(windows, target_arch = "x86_64", target_env = "msvc")))]
 compile_error!("this oracle requires Windows x64 MSVC");
 

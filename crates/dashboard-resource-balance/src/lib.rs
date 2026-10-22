@@ -1,6 +1,6 @@
 //! Resource balance and trade flows: one country's strategic resources over a branch, and who trades what with whom.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! modules keep their dashboard paths (`products::resource_balance`,
 //! `products::trade_flows`) and name what they use at the crates that own it
 //! (dashboard-base, dashboard-text and dashboard-core); the dashboard

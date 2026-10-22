@@ -316,7 +316,7 @@ fn an_unresolved_reference_is_named_and_takes_no_fill() {
 
 /// A hour the collector had not finished filling still has a political map:
 /// the fill is a function of the three core tables alone, and every other
-/// table's gap is stated rather than refused (`README.md`, "Truth").
+/// table's gap is stated rather than refused.
 #[test]
 fn a_truncated_non_core_table_still_renders_the_political_layer_and_is_stated() {
     let mut frame = occupied();

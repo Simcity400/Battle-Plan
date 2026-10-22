@@ -2,7 +2,7 @@
 //! careers and division equipment, each one country or division at a reached
 //! hour.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! modules keep their dashboard paths (`products::<name>`); the dashboard
 //! re-exports and registers them.
 

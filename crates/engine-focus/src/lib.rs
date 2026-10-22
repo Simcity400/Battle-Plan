@@ -1,4 +1,4 @@
-//! engine-focus ownership; see README.md.
+//! Native focus readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, batch_fallback, ccountry, cpdx_array, memory, msvc_string, read, read_slice, walk,

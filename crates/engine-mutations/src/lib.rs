@@ -1,4 +1,4 @@
-//! engine-mutations ownership; see README.md.
+//! Native mutations readers and their operands, layouts and synthetic tests.
 
 use engine_deployment::cdeployment_status;
 #[cfg(test)]

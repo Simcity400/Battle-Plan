@@ -1,6 +1,6 @@
 //! Intelligence: agency comparison, the espionage log, decryption, the operatives roster and operative placements, with the content they read and the observer that prepares them.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! modules keep their dashboard paths (`products::<name>`) and name what they
 //! use at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports them, registers them and prepares

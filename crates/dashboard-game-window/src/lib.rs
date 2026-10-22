@@ -3,7 +3,7 @@
 //! by the same native GUI code the map viewer draws with ([`viewer_foundation::map::native_gui`]),
 //! and bound to the recorded state of one entity at one hour.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the dashboard
+//! One product crate above `dashboard-base`: the dashboard
 //! re-exports its product at `products::game_window` and registers it.
 
 /// Tests run on the allocator the viewer ships with.

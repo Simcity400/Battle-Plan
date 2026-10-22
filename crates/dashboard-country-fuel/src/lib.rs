@@ -1,6 +1,6 @@
 //! Country fuel: each country's fuel stock, gains, consumption by use and demand, with the awards behind each change.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::country_fuel`), names what it
 //! uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

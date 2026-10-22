@@ -1,4 +1,4 @@
-//! engine-occupation ownership; see README.md.
+//! Native occupation readers and their operands, layouts and synthetic tests.
 
 use engine_deployment::manpower_value_entry;
 #[cfg(test)]

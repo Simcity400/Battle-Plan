@@ -1,4 +1,4 @@
-//! engine-raid-inputs ownership; see README.md.
+//! Native raid inputs readers and their operands, layouts and synthetic tests.
 
 use engine_executable::modifier_keys;
 use engine_intelligence::{cstrategic_operative, cstrategic_operative_manager};

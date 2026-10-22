@@ -2,7 +2,7 @@
 //! triggers and scopes, scripted localisation, effect descriptions, modifier
 //! text, the game's name rules, the content catalogue and the recording
 //! metadata helpers products and map tooltips share. Nothing here names a
-//! product or a source; the [dashboard](../dashboard/README.md) loads the
+//! product or a source; the `dashboard` loads the
 //! catalogue for each source and re-exports every module at its old path.
 //!
 //! The `test-support` feature compiles the fixtures and test instrumentation the

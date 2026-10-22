@@ -3,7 +3,7 @@
 //! frame changes, group sums, progressive queries), the product contract and
 //! the shared products other products build on. The product registry, the
 //! preparation pipeline and the service stay in the
-//! [dashboard](../dashboard/README.md), which re-exports every module here at
+//! `dashboard`, which re-exports every module here at
 //! its old path.
 //!
 //! The `test-support` feature compiles the fixtures and test oracles the tests

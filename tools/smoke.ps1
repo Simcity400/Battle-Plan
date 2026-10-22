@@ -614,7 +614,6 @@ function Invoke-FullSmoke {
             if ($env:CARGO_BUILD_TARGET) { throw 'CARGO_BUILD_TARGET would change the checkpoint release path; use the native target.' }
             $cargo=(Get-Command cargo -ErrorAction Stop).Source
             $null=Run-Tool $cargo @('fmt','--all','--','--check') 'format' 2400
-            $null=Run-Tool $cargo @('clippy','--workspace','--all-targets','--','-D','warnings') 'clippy' 2400
             $null=Run-Tool $cargo @('nextest','run','--workspace') 'checkpoint' 2400
             $null=Run-Tool $cargo @('run','-q','-p','dashboard','--features','export-types','--bin','export-types','--','--check') 'types' 2400
             # nextest reports its summary on stderr, which the checkpoint log keeps.

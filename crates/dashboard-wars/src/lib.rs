@@ -1,6 +1,6 @@
 //! Wars and war casualties: each war's sides, participants, names and outcome, and the casualties each country took and dealt, by pair and by domain.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::wars`), names what it
 //! uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

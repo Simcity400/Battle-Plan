@@ -1,6 +1,6 @@
 //! Equipment stockpile: one country's stockpile and production of each variant over a branch, with dated variant artwork.
 //!
-//! One product crate above [dashboard-base](../dashboard-base/README.md): the
+//! One product crate above `dashboard-base`: the
 //! module keeps its dashboard path (`products::equipment_stockpile`) and names
 //! what it uses at the crates that own it (dashboard-base, dashboard-text and
 //! dashboard-core); the dashboard re-exports it, registers it and prepares and

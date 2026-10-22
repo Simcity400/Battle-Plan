@@ -1,4 +1,4 @@
-//! engine-peace ownership; see README.md.
+//! Native peace readers and their operands, layouts and synthetic tests.
 
 use engine_native::{
     Memory, allocation, cgame_state, cpdx_array, cship, cstate, memory, msvc_string,

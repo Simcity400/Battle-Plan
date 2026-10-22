@@ -1,4 +1,4 @@
-//! engine-native ownership; see README.md.
+//! Native layouts, guarded memory operations, shared containers, authentication and coupled native readers.
 
 use engine_executable::modifier_keys;
 

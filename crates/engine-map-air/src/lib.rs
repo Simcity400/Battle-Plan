@@ -1,4 +1,4 @@
-//! engine-map-air ownership; see README.md.
+//! Native map air readers and their operands, layouts and synthetic tests.
 
 #[cfg(test)]
 use engine_native::reference_bucket;
