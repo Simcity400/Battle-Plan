@@ -998,6 +998,7 @@ dependencies = [
  "engine-mutations",
  "engine-native",
  "engine-naval-history",
+ "foldhash 0.2.0",
  "replay-data",
  "replay-frame",
  "replay-identity",

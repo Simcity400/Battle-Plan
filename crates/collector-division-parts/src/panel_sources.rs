@@ -19,10 +19,13 @@ use engine_native::{
 };
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::{Arc, OnceLock},
 };
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;
+/// Range-local lookup memos, never iterated. Keys include full handles, whose
+/// low 32 bits are the shared kind, so the hasher must mix high bits down.
+type Map<K, V> = std::collections::HashMap<K, V, foldhash::fast::FixedState>;
 const VARIANT_WITHDRAWN: &str = "held variant terrain availability capability expired";
 pub struct SourceSnapshot {
     rows: Arc<RowSnapshot>,
@@ -106,9 +109,9 @@ pub struct Selection {
 /// Reused range-local read memos; cold writer-certificate admission stays ordered.
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
-    countries: HashMap<u32, Result<ccountry::Country, &'static str>>,
-    commanders: HashMap<usize, u64>,
-    provinces: HashMap<usize, Option<(u32, usize)>>,
+    countries: Map<u32, Result<ccountry::Country, &'static str>>,
+    commanders: Map<usize, u64>,
+    provinces: Map<usize, Option<(u32, usize)>>,
     reads: NativeReads,
     local_province_refusal: bool,
 }
@@ -116,9 +119,9 @@ impl Default for Preparation {
     fn default() -> Self {
         Self {
             memo: carmy_leader::LeaderMemo::vacant(),
-            countries: HashMap::new(),
-            commanders: HashMap::new(),
-            provinces: HashMap::new(),
+            countries: Map::default(),
+            commanders: Map::default(),
+            provinces: Map::default(),
             reads: NativeReads::default(),
             local_province_refusal: false,
         }
@@ -1005,6 +1008,21 @@ impl Store {
             reason: Vec::new(),
         }))
     }
+    /// A re-read equal to its certified row inserts nothing, so it needs no row allocation.
+    fn terrain_operand(&mut self, owner: u64, ordinal: u32, raw: i64) -> Result<(), &'static str> {
+        let value = engine_native::modifier_breakdown::SourceValue { key: 0, raw };
+        if self.rows.get(key(3, owner, ordinal)).is_some_and(|row| {
+            row.reason.is_empty()
+                && row.node.as_ref().is_some_and(|node| {
+                    node.children == 0
+                        && node.name.is_empty()
+                        && node.values.as_slice() == std::slice::from_ref(&value)
+                })
+        }) {
+            return Ok(());
+        }
+        self.operand(3, owner, ordinal, vec![value])
+    }
     #[cfg(test)]
     fn variant(
         &mut self,
@@ -1071,12 +1089,7 @@ impl Store {
                 )
             }) {
                 for (ordinal, &raw) in observed.values.iter().enumerate() {
-                    self.operand(
-                        3,
-                        handle,
-                        ordinal as u32,
-                        vec![engine_native::modifier_breakdown::SourceValue { key: 0, raw }],
-                    )?;
+                    self.terrain_operand(handle, ordinal as u32, raw)?;
                 }
                 observed.result
             } else {
@@ -1085,14 +1098,7 @@ impl Store {
                     base,
                     pointer,
                     handle,
-                    |ordinal, raw| {
-                        self.operand(
-                            3,
-                            handle,
-                            ordinal,
-                            vec![engine_native::modifier_breakdown::SourceValue { key: 0, raw }],
-                        )
-                    },
+                    |ordinal, raw| self.terrain_operand(handle, ordinal, raw),
                 )
             };
             result.and_then(|count| {
@@ -2395,6 +2401,167 @@ mod tests {
             "reset during acquisition must withdraw partial values"
         );
         assert_eq!(refused.reason, VARIANT_WITHDRAWN.as_bytes());
+    }
+
+    #[test]
+    fn memo_hashing_spreads_handles_that_share_their_kind() {
+        use std::hash::BuildHasher;
+        // Same-kind handles differ only above bit 32; their bucket bits must still vary.
+        let hasher = Map::<u64, ()>::default().hasher().clone();
+        let buckets: std::collections::BTreeSet<u64> = (1..=1024u64)
+            .map(|id| hasher.hash_one((id << 32) | 0x27) & 1023)
+            .collect();
+        assert!(buckets.len() > 512, "{} of 1024 buckets", buckets.len());
+        let pairs: std::collections::BTreeSet<u64> = (1..=1024u64)
+            .map(|id| hasher.hash_one(((id << 32) | 0x27, 3usize)) & 1023)
+            .collect();
+        assert!(pairs.len() > 512, "{} of 1024 buckets", pairs.len());
+    }
+
+    #[test]
+    fn an_equal_terrain_reread_allocates_nothing_and_each_change_publishes_only_its_rows() {
+        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        let _serial = MEMBERSHIP_TEST.lock().unwrap();
+        operands::demand(0, 1, 0);
+        operands::presize();
+        operands::boundary(true);
+        observe(true);
+        let _enabled = Enabled;
+        let pointer = 0x100;
+        let handle = (19u64 << 32) | variant::REFERENCE_TYPE as u64;
+        let values = 0x800;
+        let mut world = World {
+            bytes: vec![0u8; 0x1000],
+            reads: Cell::new(0),
+            deny: Cell::new(false),
+        };
+        let put = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
+        };
+        let terrain = pointer + division_panel_operands::VARIANT_TERRAIN_ATTRITION;
+        let resize = |bytes: &mut [u8], count: u64| {
+            put(
+                bytes,
+                terrain + engine_native::cpdx_array::CAPACITY,
+                (count << 32) | count,
+            )
+        };
+        put(&mut world.bytes, pointer, variant::VTABLE_RVA as u64);
+        put(&mut world.bytes, pointer + 8, handle);
+        put(&mut world.bytes, terrain, values as u64);
+        resize(&mut world.bytes, 3);
+        for ordinal in 0..3 {
+            put(&mut world.bytes, values + ordinal * 8, ordinal as u64 + 5);
+        }
+        // Every hour must publish what a store without history publishes.
+        let fresh = |world: &World| {
+            let mut fresh = Store::default();
+            fresh.variant(world, 0, handle, pointer).unwrap();
+            fresh
+                .rows
+                .finish()
+                .unwrap()
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap()
+        };
+        let moved = || {
+            operands::variant_before(pointer);
+            operands::variant_after(pointer, false);
+        };
+        let mut store = Store::default();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        let first = store.rows.finish().unwrap();
+        assert_eq!(
+            first
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap(),
+            fresh(&world)
+        );
+
+        // A writer moved the certificate but left every value: the reread
+        // reaches native memory, yet inserts and allocates nothing.
+        moved();
+        world.reads.set(0);
+        collector_test_support::with_allocations_denied(|| {
+            store.variant(&world, 0, handle, pointer).unwrap();
+            assert!(Arc::ptr_eq(&first, &store.rows.finish().unwrap()));
+        });
+        assert!(world.reads.get() > 0, "a moved certificate must reread");
+
+        // One changed ordinal publishes exactly that ordinal.
+        put(&mut world.bytes, values + 8, (-3i64) as u64);
+        moved();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        let changed = store.rows.finish().unwrap();
+        assert_eq!(
+            changed.ranges.as_slice(),
+            std::slice::from_ref(&(key(3, handle, 1)..key(3, handle, 2)))
+        );
+        assert_eq!(changed.changed.len(), 1);
+        assert_eq!(
+            changed
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap(),
+            fresh(&world)
+        );
+
+        // Growth adds only the new ordinal; shrinking removes only the old one.
+        resize(&mut world.bytes, 4);
+        put(&mut world.bytes, values + 24, 11);
+        moved();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        let grown = store.rows.finish().unwrap();
+        assert_eq!(
+            grown.ranges.as_slice(),
+            std::slice::from_ref(&(key(3, handle, 3)..key(3, handle, 4)))
+        );
+        resize(&mut world.bytes, 3);
+        moved();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        let shrunk = store.rows.finish().unwrap();
+        assert_eq!(
+            shrunk.ranges.as_slice(),
+            std::slice::from_ref(&(key(3, handle, 3)..key(3, handle, 4)))
+        );
+        assert!(shrunk.changed.is_empty());
+        assert_eq!(
+            shrunk
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap(),
+            fresh(&world)
+        );
+
+        // A held refusal is never equal to a value: recovering with the
+        // values it replaced republishes ordinal zero and the later rows.
+        let refusals = || {
+            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
+                .as_u64()
+                .unwrap()
+        };
+        let before = refusals();
+        world.deny.set(true);
+        moved();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        assert_eq!(refusals(), before + 1);
+        let refused = store.rows.get(key(3, handle, 0)).unwrap();
+        assert!(refused.node.is_none());
+        assert!(store.rows.get(key(3, handle, 1)).is_none());
+        let refused = store.rows.finish().unwrap();
+        world.deny.set(false);
+        moved();
+        store.variant(&world, 0, handle, pointer).unwrap();
+        let recovered = store.rows.finish().unwrap();
+        assert_eq!(refusals(), before + 1);
+        assert_eq!(recovered.parent, refused.revision);
+        assert_eq!(recovered.changed.len(), 3);
+        assert_eq!(
+            recovered
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap(),
+            shrunk
+                .complete::<replay_data::rows::tables::DivisionPanelSources>()
+                .unwrap()
+        );
     }
 
     #[test]
