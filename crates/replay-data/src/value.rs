@@ -857,29 +857,23 @@ mod fleet_membership_tests {
     use super::*;
     use std::sync::Arc;
     #[test]
-    fn immutable_full_reference_membership_shares_payload_and_keeps_repeats() {
-        let values = Arc::new(vec![u64::MAX, 0, u64::MAX]);
-        let cloned = Value::try_clone(&values).unwrap();
-        assert!(Arc::ptr_eq(&values, &cloned));
-        let mut bytes = Vec::new();
-        values.encode(&mut bytes).unwrap();
-        assert_eq!(
-            Arc::<Vec<u64>>::decode(&mut Decoder::new(&bytes)).unwrap(),
-            values
-        );
-    }
-
-    #[test]
-    fn immutable_fleet_membership_clone_shares_payload_and_codec_keeps_repeats() {
-        let values = Arc::new(vec![2_u32, 2, 7]);
-        let cloned = Value::try_clone(&values).unwrap();
-        assert!(Arc::ptr_eq(&values, &cloned));
-        let mut bytes = Vec::new();
-        values.encode(&mut bytes).unwrap();
-        assert_eq!(
-            Arc::<Vec<u32>>::decode(&mut Decoder::new(&bytes)).unwrap(),
-            values
-        );
+    fn immutable_memberships_share_payload_and_keep_repeats() {
+        fn check<T: Value + PartialEq + std::fmt::Debug>(values: Arc<Vec<T>>)
+        where
+            Arc<Vec<T>>: Value,
+        {
+            let cloned = Value::try_clone(&values).unwrap();
+            assert!(Arc::ptr_eq(&values, &cloned));
+            let mut bytes = Vec::new();
+            values.encode(&mut bytes).unwrap();
+            assert_eq!(
+                Arc::<Vec<T>>::decode(&mut Decoder::new(&bytes)).unwrap(),
+                values
+            );
+        }
+        // Full references and fleet memberships.
+        check(Arc::new(vec![u64::MAX, 0, u64::MAX]));
+        check(Arc::new(vec![2_u32, 2, 7]));
     }
 
     #[test]

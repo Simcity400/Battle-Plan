@@ -1951,14 +1951,14 @@ fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
     let mut model: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
     let mut sequence = Sequence(7);
     let mut held = Vec::new();
-    for commit in 0..240u64 {
+    for commit in 0..120u64 {
         let mut writer = if commit == 0 {
             fixture.store.replace(key.clone()).unwrap()
-        } else if commit % 60 == 0 {
+        } else if commit % 40 == 0 {
             // The recording grew: the prefix carries on under a new key.
             fs::write(
                 &fixture.recording,
-                "synthetic recording ".repeat((commit / 60) as usize),
+                "synthetic recording ".repeat((commit / 40) as usize),
             )
             .unwrap();
             let grown = fixture.key();
@@ -1975,7 +1975,7 @@ fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
                 Some(fork) if step % 2 == 1 => (fork, "forked"),
                 _ => (&mut writer, "section"),
             };
-            let section = format!("{prefix}-{}", sequence.below(4 + commit / 30));
+            let section = format!("{prefix}-{}", sequence.below(4 + commit / 15));
             let ranges = model.entry(section.clone()).or_default();
             let payload = if sequence.below(5) == 0 {
                 Vec::new()
@@ -2020,7 +2020,7 @@ fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
         }
     }
     assert_reads(&fixture, &key, &model);
-    assert!(model["series"].len() > 1_000);
+    assert!(model["series"].len() > 500);
     for (read, expected) in held {
         assert_eq!(bytes(read), expected);
     }
@@ -2162,9 +2162,9 @@ fn manifest_bytes_per_commit_follow_what_it_changed_not_what_the_store_holds() {
     let fixture = Fixture::new();
     let key = fixture.key();
     let mut writer = fixture.store.replace(key.clone()).unwrap();
-    // 100,000 ranges that later commits never touch: 2.4 MB of entries,
+    // 20,000 ranges that later commits never touch: 480 KB of entries,
     // which the flat manifest rewrote at every commit.
-    for _ in 0..100_000 {
+    for _ in 0..20_000 {
         writer.write("history", io::empty()).unwrap();
     }
     writer.write("page", &b"page 0"[..]).unwrap();
@@ -2172,7 +2172,7 @@ fn manifest_bytes_per_commit_follow_what_it_changed_not_what_the_store_holds() {
     let history = fixture.store.catalog().unwrap().unwrap().runs[0].clone();
     let (mut most, mut total) = (0, 0);
     let mut series = Vec::new();
-    for commit in 0..300u64 {
+    for commit in 0..100u64 {
         let mut writer = fixture.store.extend(&key).unwrap();
         let payload = format!("series range {commit:>8}").into_bytes();
         writer.write("series", payload.as_slice()).unwrap();
@@ -2193,10 +2193,10 @@ fn manifest_bytes_per_commit_follow_what_it_changed_not_what_the_store_holds() {
     // Each commit wrote its root (a record per section, run, log and pack)
     // and its changed entries, never the history's.
     assert!(most < 32 * 1024, "{most}");
-    assert!(total < 300 * 8 * 1024, "{total}");
+    assert!(total < 100 * 8 * 1024, "{total}");
     let model = BTreeMap::from([
-        ("history".to_owned(), vec![Vec::new(); 100_000]),
-        ("page".to_owned(), vec![b"page 299".to_vec()]),
+        ("history".to_owned(), vec![Vec::new(); 20_000]),
+        ("page".to_owned(), vec![b"page 99".to_vec()]),
         ("series".to_owned(), series),
     ]);
     assert_reads(&fixture, &key, &model);

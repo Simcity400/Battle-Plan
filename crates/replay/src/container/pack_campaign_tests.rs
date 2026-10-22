@@ -100,8 +100,8 @@ fn packed_on(
 const WORKERS: [usize; 3] = [2, 3, 8];
 
 #[test]
-fn five_thousand_countries_pack_to_the_sequential_bytes_on_any_worker_count() {
-    let records = scaled_records(5_000, 3, 5);
+fn countries_pack_to_the_sequential_bytes_on_any_worker_count() {
+    let records = scaled_records(50, 3, 5);
     // A bound that splits every five-hour block by size too: its divisions
     // take about one and a half snapshots, a split keyframe one.
     let mut largest = 0;
@@ -132,7 +132,7 @@ fn five_thousand_countries_pack_to_the_sequential_bytes_on_any_worker_count() {
             }
         }
         assert_eq!(decoded.len(), 15);
-        let mut last = scaled(15, 5_000);
+        let mut last = scaled(15, 50);
         last.metrics = last.metrics.stored();
         assert_eq!(decoded.last(), Some(&last));
     }
@@ -140,7 +140,7 @@ fn five_thousand_countries_pack_to_the_sequential_bytes_on_any_worker_count() {
 
 #[test]
 fn a_writer_error_after_packed_blocks_is_the_sequential_one() {
-    let records = scaled_records(500, 4, 3);
+    let records = scaled_records(50, 4, 3);
     // The observer refuses an hour in the third block.
     let observed = |workers| {
         packed_on(

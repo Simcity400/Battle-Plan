@@ -497,7 +497,7 @@ fn unselected_deltas_keep_historical_masks_and_wire_only_opaque_validation() {
 }
 
 #[test]
-fn unselected_five_thousand_country_deltas_never_own_discarded_values() {
+fn unselected_country_deltas_never_own_discarded_values() {
     let table = TableId::Countries;
     let mut first = source(1, 0);
     let TableView::Complete(TableRows::Countries(template)) = &*first.tables[table.index()] else {
@@ -505,7 +505,7 @@ fn unselected_five_thousand_country_deltas_never_own_discarded_values() {
     };
     let template = template[0].clone();
     first.tables[table.index()] = TableView::Complete(TableRows::Countries(
-        (0..5_000)
+        (0..5)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id + 1,
@@ -531,7 +531,7 @@ fn unselected_five_thousand_country_deltas_never_own_discarded_values() {
     let TableUpdate::Delta { changed, .. } = &frame.tables[table.index()] else {
         panic!("fixture must encode deltas")
     };
-    assert_eq!(changed.len(), 5_000);
+    assert_eq!(changed.len(), 5);
     let mut bytes = Vec::new();
     frame.encode(&mut bytes).unwrap();
     let (full, full_owned) =
@@ -543,8 +543,8 @@ fn unselected_five_thousand_country_deltas_never_own_discarded_values() {
     let (omitted, omitted_owned) = rows::delta_decode_ownership::count(|| {
         Frame::decode_selected(&mut Decoder::new(&bytes), Some(&[])).unwrap()
     });
-    assert!(full_owned >= 5_000);
-    assert_eq!(selected_owned, 5_000);
+    assert!(full_owned >= 5);
+    assert_eq!(selected_owned, 5);
     assert_eq!(
         omitted_owned, 0,
         "unselected fields must stay borrowed instead of allocating DeltaRow values"

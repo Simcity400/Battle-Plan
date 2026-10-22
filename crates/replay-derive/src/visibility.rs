@@ -261,6 +261,31 @@ pub fn reserved_faction(row: &ReservedCountryNamingRow) -> Result<u64, &'static 
     }
 }
 
+/// Country0's fresh reverse-visibility cell toward `target`.
+fn reverse_cell<'a>(
+    frame: &DecodedFrame,
+    row: &'a ReservedCountryNamingRow,
+    target: u32,
+) -> Result<&'a crate::rows::ReverseZeroVisibilityInputs, &'static str> {
+    let packet = match &row.reverse_visibility {
+        Recorded::NotRecorded => {
+            return Err("ReservedCountryNaming.reverse_visibility not recorded");
+        }
+        Recorded::Value(None) => {
+            return Err("ReservedCountryNaming.reverse_visibility capture refused");
+        }
+        Recorded::Value(Some(packet)) => packet,
+    };
+    if !packet.sample_hour.fresh_at(frame.hour) {
+        return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
+    }
+    packet
+        .cells
+        .get(target as usize)
+        .and_then(Option::as_ref)
+        .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused")
+}
+
 /// Test subject parties in order against the reached cell's raw target. Null or wrong-type
 /// subjects decide before requiring that target. A known second match can preserve truth after an
 /// unavailable first party.
@@ -305,23 +330,7 @@ pub fn reverse_zero_shared(
     target: u32,
 ) -> Result<bool, &'static str> {
     let reserved = reserved(frame)?;
-    let packet = match &reserved.reverse_visibility {
-        Recorded::NotRecorded => {
-            return Err("ReservedCountryNaming.reverse_visibility not recorded");
-        }
-        Recorded::Value(None) => {
-            return Err("ReservedCountryNaming.reverse_visibility capture refused");
-        }
-        Recorded::Value(Some(packet)) => packet,
-    };
-    if !packet.sample_hour.fresh_at(frame.hour) {
-        return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
-    }
-    let cell = packet
-        .cells
-        .get(target as usize)
-        .and_then(Option::as_ref)
-        .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused")?;
+    let cell = reverse_cell(frame, reserved, target)?;
     if active_war(
         cell.war
             .ok_or("ReservedCountryNaming.reverse_visibility war capture refused")?,
@@ -474,23 +483,7 @@ pub fn event_shared(
     }
     if owner == 0 {
         let row = reserved(frame)?;
-        let packet = match &row.reverse_visibility {
-            Recorded::NotRecorded => {
-                return Err("ReservedCountryNaming.reverse_visibility not recorded");
-            }
-            Recorded::Value(None) => {
-                return Err("ReservedCountryNaming.reverse_visibility capture refused");
-            }
-            Recorded::Value(Some(packet)) => packet,
-        };
-        if !packet.sample_hour.fresh_at(frame.hour) {
-            return Err("ReservedCountryNaming.reverse_visibility sample hour mismatch");
-        }
-        let cell = packet
-            .cells
-            .get(target as usize)
-            .and_then(Option::as_ref)
-            .ok_or("ReservedCountryNaming.reverse_visibility cell capture refused")?;
+        let cell = reverse_cell(frame, row, target)?;
         if active_war(
             cell.war
                 .ok_or("ReservedCountryNaming.reverse_visibility war capture refused")?,

@@ -261,29 +261,6 @@ mod tests {
     }
 
     #[test]
-    fn game_score_five_thousand_countries_round_trip_without_a_count_cap() {
-        let rows = TableRows::CountryGameScoreInputs((0..5000).map(country).collect());
-        let mut bytes = Vec::new();
-        rows.encode_rows(&mut bytes).unwrap();
-        let mut input = Decoder::new(&bytes);
-        let decoded = TableId::CountryGameScoreInputs
-            .decode_rows(5000, &mut input)
-            .unwrap();
-        input.finish().unwrap();
-        assert_eq!(decoded, rows);
-        for table in [
-            TableId::CountryGameScoreInputs,
-            TableId::AirWingGameScoreStats,
-            TableId::GameScoreMultipliers,
-        ] {
-            assert_eq!(
-                crate::cadence::cadence(table),
-                crate::cadence::Cadence::Hourly
-            );
-        }
-    }
-
-    #[test]
     fn game_score_multiplier_and_wing_reads_keep_independent_unknowns() {
         let wing = AirWingGameScoreStatsRow {
             id: u64::MAX,

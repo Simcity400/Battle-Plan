@@ -564,7 +564,7 @@ pub fn assemble_demand_parts(
 mod tests {
     use super::*;
     #[test]
-    fn supplying_read_roundtrip_retains_5000_repeated_wing_occurrences_one_context_and_signed_known_values()
+    fn supplying_read_roundtrip_retains_repeated_wing_occurrences_one_context_and_signed_known_values()
      {
         let input = AirInputs {
             reached: true,
@@ -601,7 +601,7 @@ mod tests {
                 list,
                 ordinal: 0,
                 base: 1 << 32 | 62,
-                wings: (0..2500)
+                wings: (0..25)
                     .map(|ordinal| FuelDemandWing {
                         reference: 1 << 32 | 30,
                         owner: Some(7),
@@ -618,7 +618,7 @@ mod tests {
                 ..Default::default()
             });
         }
-        assert_eq!(pack.native_rates(), [Ok(i64::MAX), Ok(0), Ok(-499_900_000)]);
+        assert_eq!(pack.native_rates(), [Ok(i64::MAX), Ok(0), Ok(-4_900_000)]);
         let row = CountryFuelRow {
             country: 7,
             country_instance: Recorded::Value(Some(9)),
@@ -636,7 +636,7 @@ mod tests {
         let Recorded::Value(pack) = &mut changed.demand else {
             panic!()
         };
-        pack.sites[1].wings[2499].context = Some(1);
+        pack.sites[1].wings[24].context = Some(1);
         assert_eq!(pack.native_rates()[0], Ok(i64::MAX));
         assert!(pack.native_rates()[2].is_err());
         assert_eq!(

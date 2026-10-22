@@ -165,31 +165,11 @@ impl NavalMissionCountryRow {
         use engine_executable::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => Ok(self.coordination),
-            keys::NAVAL_DETECTION => self
-                .detection
-                .require("naval mission detection")
-                .copied()
-                .map_err(|_| "naval mission detection not recorded"),
-            keys::NAVAL_SPEED_FACTOR => self
-                .speed
-                .require("naval mission speed")
-                .copied()
-                .map_err(|_| "naval mission speed not recorded"),
-            keys::SPOTTING_CHANCE => self
-                .spotting
-                .require("naval mission spotting")
-                .copied()
-                .map_err(|_| "naval mission spotting not recorded"),
-            keys::NIGHT_SPOTTING_CHANCE => self
-                .night_spotting
-                .require("naval mission night_spotting")
-                .copied()
-                .map_err(|_| "naval mission night_spotting not recorded"),
-            keys::NAVY_VISIBILITY => self
-                .visibility
-                .require("naval mission visibility")
-                .copied()
-                .map_err(|_| "naval mission visibility not recorded"),
+            keys::NAVAL_DETECTION => recorded(&self.detection, "naval mission detection not recorded"),
+            keys::NAVAL_SPEED_FACTOR => recorded(&self.speed, "naval mission speed not recorded"),
+            keys::SPOTTING_CHANCE => recorded(&self.spotting, "naval mission spotting not recorded"),
+            keys::NIGHT_SPOTTING_CHANCE => recorded(&self.night_spotting, "naval mission night_spotting not recorded"),
+            keys::NAVY_VISIBILITY => recorded(&self.visibility, "naval mission visibility not recorded"),
             keys::CONVOY_RAIDING_EFFICIENCY_FACTOR => Ok(self.raiding),
             keys::CONVOY_ESCORT_EFFICIENCY => Ok(self.escort),
             keys::NAVY_WEATHER_PENALTY => Ok(self.weather_reduction),
@@ -198,6 +178,16 @@ impl NavalMissionCountryRow {
             keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR => Ok(self.underway),
             _ => unreachable!("unexpected naval mission country modifier key"),
         }
+    }
+}
+/// A recorded mission accumulator, refused by name when the recording lacks it.
+fn recorded(
+    value: &Recorded<Option<i64>>,
+    missing: &'static str,
+) -> Result<Option<i64>, &'static str> {
+    match value {
+        Recorded::Value(value) => Ok(*value),
+        Recorded::NotRecorded => Err(missing),
     }
 }
 typed_codec!(NavalMissionCountryRow, 32, |row| row.country as u128, |key| Self { country: key as u32, ..Default::default() },
@@ -241,31 +231,11 @@ impl NavalMissionCommanderRow {
         use engine_executable::modifier_keys as keys;
         match key {
             keys::NAVAL_COORDINATION => Ok(self.coordination),
-            keys::NAVAL_DETECTION => self
-                .detection
-                .require("naval mission detection")
-                .copied()
-                .map_err(|_| "naval mission detection not recorded"),
-            keys::NAVAL_SPEED_FACTOR => self
-                .speed
-                .require("naval mission speed")
-                .copied()
-                .map_err(|_| "naval mission speed not recorded"),
-            keys::SPOTTING_CHANCE => self
-                .spotting
-                .require("naval mission spotting")
-                .copied()
-                .map_err(|_| "naval mission spotting not recorded"),
-            keys::NIGHT_SPOTTING_CHANCE => self
-                .night_spotting
-                .require("naval mission night_spotting")
-                .copied()
-                .map_err(|_| "naval mission night_spotting not recorded"),
-            keys::NAVY_VISIBILITY => self
-                .visibility
-                .require("naval mission visibility")
-                .copied()
-                .map_err(|_| "naval mission visibility not recorded"),
+            keys::NAVAL_DETECTION => recorded(&self.detection, "naval mission detection not recorded"),
+            keys::NAVAL_SPEED_FACTOR => recorded(&self.speed, "naval mission speed not recorded"),
+            keys::SPOTTING_CHANCE => recorded(&self.spotting, "naval mission spotting not recorded"),
+            keys::NIGHT_SPOTTING_CHANCE => recorded(&self.night_spotting, "naval mission night_spotting not recorded"),
+            keys::NAVY_VISIBILITY => recorded(&self.visibility, "naval mission visibility not recorded"),
             keys::CONVOY_RAIDING_EFFICIENCY_FACTOR => Ok(self.raiding),
             keys::NAVAL_RANGE => Ok(self.range),
             keys::NAVAL_RANGE_FACTOR => Ok(self.range_factor),

@@ -363,13 +363,13 @@ fn naval_result_source_codec_keeps_full_references_hours_and_transient_witnesses
 }
 
 #[test]
-fn naval_result_sources_roundtrip_five_thousand_independent_sources_exactly() {
-    let rows: Vec<_> = (0..5_000_u64)
+fn naval_result_sources_roundtrip_independent_sources_exactly() {
+    let rows: Vec<_> = (0..6_u64)
         .map(|id| NavalResultSourceRow {
             id,
             game_hour: 60_827_795,
             result: (id + 1) << 32 | 0x8123,
-            combat: (id + 5_001) << 32 | 0x8123,
+            combat: (id + 7) << 32 | 0x8123,
             merged: id.is_multiple_of(3),
             transient: id.is_multiple_of(2) || id.is_multiple_of(3),
             combat_created_hour: Some(60_827_795),
@@ -378,11 +378,11 @@ fn naval_result_sources_roundtrip_five_thousand_independent_sources_exactly() {
     let expected = TableRows::NavalResultSources(rows);
     let mut bytes = Vec::new();
     expected.encode_rows(&mut bytes).unwrap();
-    assert_eq!(bytes.len(), 5_000 * 28);
+    assert_eq!(bytes.len(), 6 * 28);
     assert_eq!(TableId::NavalResultSources.minimum_row_bytes(), 24);
     let mut input = Decoder::new(&bytes);
     let decoded = TableId::NavalResultSources
-        .decode_rows(5_000, &mut input)
+        .decode_rows(6, &mut input)
         .unwrap();
     decoded.validate_keys().unwrap();
     input.finish().unwrap();

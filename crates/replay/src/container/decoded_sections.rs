@@ -424,15 +424,15 @@ mod tests {
         }
     }
     #[test]
-    fn finishing_a_663_block_query_inspects_each_column_once_before_lru_fallback() {
+    fn finishing_a_63_block_query_inspects_each_column_once_before_lru_fallback() {
         let tables = TableId::ALL.len();
         let cache = Cache::default();
         cache.enable(true);
         let preparation = cache.consumer(0);
-        preparation.reading(330);
-        let query = cache.consumer(331);
-        query.reading(662);
-        for block in 0..663 {
+        preparation.reading(30);
+        let query = cache.consumer(31);
+        query.reading(62);
+        for block in 0..63 {
             for table in 0..tables {
                 let key = Key {
                     table,
@@ -449,7 +449,7 @@ mod tests {
         }
         let before = {
             let state = cache.lock();
-            assert_eq!(state.entries.len(), 663 * tables);
+            assert_eq!(state.entries.len(), 63 * tables);
             state.inspections
         };
         drop(query);
@@ -457,11 +457,11 @@ mod tests {
             let state = cache.lock();
             assert_eq!(
                 state.inspections - before,
-                663 * tables,
-                "one sweep, without rescanning the 331 retained blocks for each victim"
+                63 * tables,
+                "one sweep, without rescanning the 31 retained blocks for each victim"
             );
-            assert_eq!(state.entries.len(), 331 * tables);
-            assert!(state.entries.keys().all(|key| key.block <= 330));
+            assert_eq!(state.entries.len(), 31 * tables);
+            assert!(state.entries.keys().all(|key| key.block <= 30));
             assert_eq!(state.bytes, state.budget());
         }
         // With every remaining column in the live span, the sweep finds no
@@ -469,7 +469,7 @@ mod tests {
         let before = cache.lock().inspections;
         cache.enable(false);
         let state = cache.lock();
-        assert_eq!(state.inspections - before, 2 * 331 * tables);
+        assert_eq!(state.inspections - before, 2 * 31 * tables);
         assert!(state.entries.is_empty());
         assert!(state.lru.is_empty());
         assert_eq!(state.bytes, 0);

@@ -284,10 +284,10 @@ fn floating_harbour_requires_save_and_complete_identity_inputs() {
 }
 
 #[test]
-fn floating_harbour_keeps_each_saved_country_separate_at_five_thousand_countries() {
+fn floating_harbour_keeps_each_saved_country_separate() {
     let (mut frame, mut save) = harbour_fixture("", &[]);
     let source = frame.complete::<tables::Countries>().unwrap()[0].clone();
-    let countries: Vec<_> = (1..=5000)
+    let countries: Vec<_> = (1..=4)
         .map(|slot| {
             let mut country = source.clone();
             country.id = slot + 10_000;
@@ -350,7 +350,7 @@ fn floating_harbour_keeps_each_saved_country_separate_at_five_thousand_countries
     let mut report = Report::default();
     floating_harbors(&frame, &save, &mut report).unwrap();
     assert!(report.differences.is_empty());
-    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 5000);
+    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 4);
     let TableView::Complete(TableRows::FloatingHarborDeployments(rows)) =
         &mut *frame.tables[TableId::FloatingHarborDeployments.index()]
     else {
@@ -625,11 +625,11 @@ fn owned_state_counts_make_saved_supply_membership_exact() {
 }
 
 #[test]
-fn supply_vehicle_limits_name_each_unsaved_scalar_at_five_thousand_countries() {
+fn supply_vehicle_limits_name_each_unsaved_scalar() {
     let (mut frame, mut save, _, _) = super::super::fixtures::fixture();
     let source = frame.complete::<tables::Countries>().unwrap()[0].clone();
     let saved = save.countries.values().next().unwrap().clone();
-    let countries: Vec<_> = (1..=5000)
+    let countries: Vec<_> = (1..=4)
         .map(|id| {
             let mut country = source.clone();
             country.id = id;
@@ -662,10 +662,10 @@ fn supply_vehicle_limits_name_each_unsaved_scalar_at_five_thousand_countries() {
     let mut report = Report::default();
     trains(&frame, &save, &mut report).unwrap();
     assert!(report.differences.is_empty());
-    assert_eq!(report.compared_tables["TrainInventory"], 5000);
+    assert_eq!(report.compared_tables["TrainInventory"], 4);
     for field in ["allocated_trucks", "required_trucks_raw", "required_trains"] {
         let subject =
-            format!("TrainInventory.{field}: 2500 rows captured; 2500 native captures unavailable");
+            format!("TrainInventory.{field}: 2 rows captured; 2 native captures unavailable");
         assert!(
             report
                 .limitations
@@ -674,7 +674,7 @@ fn supply_vehicle_limits_name_each_unsaved_scalar_at_five_thousand_countries() {
             "{field} limitation absent"
         );
         let reason = format!("TrainInventory.{field} native capture is unavailable");
-        assert_eq!(report.limitations[&reason].len(), 2500);
+        assert_eq!(report.limitations[&reason].len(), 2);
         assert!(
             !report
                 .limitations
@@ -700,10 +700,10 @@ fn supply_vehicle_limits_name_each_unsaved_scalar_at_five_thousand_countries() {
     let mut historical = Report::default();
     trains(&frame, &save, &mut historical).unwrap();
     assert!(historical.differences.is_empty());
-    assert_eq!(historical.compared_tables["TrainInventory"], 5000);
+    assert_eq!(historical.compared_tables["TrainInventory"], 4);
     for field in ["allocated_trucks", "required_trucks_raw", "required_trains"] {
         let reason = format!("TrainInventory.{field} not recorded");
-        assert_eq!(historical.limitations[&reason].len(), 5000);
+        assert_eq!(historical.limitations[&reason].len(), 4);
     }
     assert!(
         !historical

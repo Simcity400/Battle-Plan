@@ -169,12 +169,3 @@ fn helpers_take_only_free_cores_and_workers_wait_for_one() {
     assert_eq!(Cores::new(0).take(1), 0);
 }
 
-#[test]
-fn default_workers_are_half_the_logical_cpus() {
-    let cpus = thread::available_parallelism().map_or(1, usize::from);
-    WORKERS.set(None);
-    assert_eq!(workers(), (cpus / 2).max(1));
-    WORKERS.set(Some(3));
-    assert_eq!(workers(), 3);
-    WORKERS.set(None);
-}

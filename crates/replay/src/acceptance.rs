@@ -1920,9 +1920,22 @@ fn assert_relations(frame: &DecodedFrame) {
     }
 }
 
+/// One campaign, synthesized once, checked three ways: its packing on any
+/// worker count, its direct state through faults and appends, and its
+/// selected-table reads.
 #[test]
-fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
+fn two_thousand_hours_pack_survive_faults_and_read_selected_tables_exactly() {
     let campaign = synthesize();
+    let (first, appended) = packs_to_the_sequential_bytes_on_any_worker_count(&campaign);
+    survives_faults_and_appends_with_exact_direct_state(&campaign, &first, &appended);
+    selected_tables_reconstruct_as_the_whole_decoder_in_every_codec(&appended);
+}
+
+fn survives_faults_and_appends_with_exact_direct_state(
+    campaign: &Campaign,
+    first: &Replay,
+    appended: &Replay,
+) {
     assert_eq!(campaign.expected.len() + campaign.missing.len(), HOURS);
     assert!(campaign.missing.len() > 20);
     assert_eq!(campaign.starts.len(), 7);
@@ -2091,11 +2104,8 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
     assert!(coverage.member_ordinal_only_deltas > 100);
     assert!(coverage.member_faction_changes > 10);
 
-    let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
     assert_eq!(first.sessions.len(), 1);
-    let old_bytes = first.bytes().to_vec();
-    let appended = first.append_recovered(&campaign.segments[2..]).unwrap();
-    assert_eq!(first.bytes(), old_bytes);
+    let old_bytes = first.bytes();
     for block in &first.index {
         let start = block.offset as usize;
         let end = start + block.length as usize;
@@ -2204,12 +2214,8 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
 /// allocation, with every delta applied to rows no reader holds. Every other
 /// table is the one unselected view, which each block's decoder shares anew
 /// only at its first hour and then moves on.
-#[test]
-fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec() {
+fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec(replay: &Replay) {
     use crate::frame::{SharedView, TABLE_COUNT, ViewIdentity, count_unselected, not_selected};
-    let campaign = synthesize();
-    let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2]).unwrap();
-    let replay = first.append_recovered(&campaign.segments[2..]).unwrap();
     let unselected = not_selected();
     for block in &replay.index {
         let mut whole = FrameDecoder::new();
@@ -2273,33 +2279,37 @@ fn selected_tables_reconstruct_as_the_whole_decoder_in_every_codec() {
 }
 
 /// The written layout's recording of the campaign, and its appended sessions,
-/// packed on 1, 2 and many threads: blocks follow sessions, branches, spool
+/// packed on one thread and on many (the pack tests compare two, three and
+/// eight workers on a smaller campaign): blocks follow sessions, branches, spool
 /// keyframes and the file's earlier keyframes, and every table changes in
 /// every form, so a block whose bytes depended on another's packing differs.
-#[test]
-fn the_campaign_packs_to_the_sequential_bytes_on_any_worker_count() {
+/// Returns the sequential recording and its appended sessions.
+fn packs_to_the_sequential_bytes_on_any_worker_count(campaign: &Campaign) -> (Replay, Replay) {
     use crate::container::PACK_WORKERS;
-    let campaign = synthesize();
-    let written: Vec<_> = [1, 2, parallel_budget().max(3)]
+    let mut written: Vec<_> = [1, parallel_budget().max(3)]
         .into_iter()
         .map(|workers| {
             PACK_WORKERS.set(Some(workers));
             let failed = |error: io::Error| panic!("{workers} workers: {error}");
             let first = Replay::from_recovered(CAMPAIGN.to_vec(), &campaign.segments[..2])
                 .unwrap_or_else(failed);
+            let old_bytes = first.bytes().to_vec();
             let appended = first
                 .append_recovered(&campaign.segments[2..])
                 .unwrap_or_else(failed);
-            (workers, first.bytes().to_vec(), appended.bytes().to_vec())
+            assert_eq!(first.bytes(), old_bytes, "{workers} workers: appending changed the file");
+            (workers, first, appended)
         })
         .collect();
     PACK_WORKERS.set(None);
     for (workers, first, appended) in &written[1..] {
         assert!(
-            (first, appended) == (&written[0].1, &written[0].2),
+            (first.bytes(), appended.bytes()) == (written[0].1.bytes(), written[0].2.bytes()),
             "{workers} workers"
         );
     }
+    let (_, first, appended) = written.swap_remove(0);
+    (first, appended)
 }
 
 /// Each cold seek decodes its block independently, so the checks share no state

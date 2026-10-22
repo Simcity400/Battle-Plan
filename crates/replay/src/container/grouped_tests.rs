@@ -1078,14 +1078,13 @@ fn chosen_blocks_list_rotating_slices_and_decode_every_hour_in_every_view() {
             expected.tables[TableId::SliceReads.index()]
         );
     }
-    for hour in 1..=240 {
+    // Seeks cover every phase and the block's boundaries; sequential reads
+    // above already decoded every hour.
+    for hour in (1..=23).chain([44, 45, 121, 220, 239, 240]) {
         assert!(
             matches!(chosen.seek(1, hour).unwrap(), SeekResult::Frame(frame) if *frame == expected[hour as usize - 1]),
             "hour {hour}"
         );
-    }
-    // Selected seeks cover every phase and the block's boundaries.
-    for hour in (1..=23).chain([44, 45, 121, 220, 239, 240]) {
         let SeekResult::Frame(frame) = chosen
             .seek_selected(1, hour, Some(&[TableId::SliceReads]))
             .unwrap()

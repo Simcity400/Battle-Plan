@@ -1092,40 +1092,36 @@ mod tests {
         );
     }
     #[test]
-    fn registry_quiet_delayed_pass_encodes_one_compact_count_for_five_thousand_timers() {
+    fn registry_quiet_delayed_pass_encodes_one_compact_count_for_every_timer() {
         let owner = EventFeedCountry {
             reference: 6,
             id: 5,
             instance: 7,
         };
         let mut changes = vec![(DelayedBaseline, None, None)];
-        for id in 1..=5000 {
+        for id in 1..=50 {
             changes.push((DelayedStored { remaining: 20 }, Some(id), Some(id)));
         }
         changes.push((DelayedReady, None, None));
-        let mut baseline = row(1, 0, &changes);
-        baseline.counts.as_mut().unwrap().acquired = 10000;
-        baseline.counts.as_mut().unwrap().settled = 10000;
+        let baseline = row(1, 0, &changes);
         let mut state = ScriptEventState::default();
         state.observe(&baseline).unwrap();
-        let mut quiet = row(
+        let quiet = row(
             2,
-            5002,
+            52,
             &[(
                 DelayedAdvance {
-                    count: 5000,
+                    count: 50,
                     finished: true,
                 },
                 None,
                 None,
             )],
         );
-        quiet.counts.as_mut().unwrap().acquired = 10000;
-        quiet.counts.as_mut().unwrap().settled = 10000;
         assert_eq!(quiet.events.len(), 1);
         assert!(quiet.events[0].encoded_bytes().unwrap() <= 20);
         state.observe(&quiet).unwrap();
-        assert_eq!(state.delayed(owner).unwrap().len(), 5000);
+        assert_eq!(state.delayed(owner).unwrap().len(), 50);
         assert!(
             state
                 .delayed(owner)

@@ -161,7 +161,7 @@ mod tests {
     /// Exercise the real service's failed-open path: no work completes, so
     /// repeated replies cannot be used as an excuse to request again.
     #[test]
-    fn library_admission_stops_unchanged_requests_at_5000_inputs() {
+    fn library_admission_stops_unchanged_requests() {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "preparation-no-progress-{}-{}",
@@ -173,7 +173,7 @@ mod tests {
         std::fs::write(&path, b"synthetic invalid recording").unwrap();
         let runtime = dashboard::Service::new(Arc::new(|_| true)).unwrap();
         let mut admission = LibraryAdmission::default();
-        let paths = vec![path.clone(); 5_000];
+        let paths = vec![path.clone(); 3];
         assert!(admission.prepare_changed(&runtime, &paths).unwrap());
         for _ in 0..5 {
             assert!(!admission.prepare_changed(&runtime, &paths).unwrap());

@@ -744,6 +744,82 @@ pub(super) fn put_residual(
     Ok(true)
 }
 
+/// Where a residual entry's rows go: a plain update's bytes or a direct
+/// table update.
+trait Residuals {
+    /// The byte fields' encodings, as the rows so far left them.
+    fn shadow(&self) -> &Shadow;
+    /// Bytes the entry holds so far.
+    fn written(&self) -> usize;
+    fn no_rows(&self) -> bool;
+    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()>;
+    fn push_deleted(&mut self, deleted: Vec<u128>) -> io::Result<()>;
+}
+
+/// A plain update being framed after its header.
+struct Plain<'a> {
+    plain: &'a mut Vec<u8>,
+    bases: &'a Shadow,
+    start: usize,
+    count_at: usize,
+    width: usize,
+    rows: u32,
+    previous_key: u128,
+}
+
+impl Residuals for Plain<'_> {
+    fn shadow(&self) -> &Shadow {
+        self.bases
+    }
+    fn written(&self) -> usize {
+        self.plain.len() - self.start
+    }
+    fn no_rows(&self) -> bool {
+        self.rows == 0
+    }
+    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()> {
+        put_varint(self.plain, key - self.previous_key);
+        self.previous_key = key;
+        self.plain
+            .extend_from_slice(&mask.to_le_bytes()[..self.width]);
+        self.plain.extend_from_slice(values);
+        self.rows = self
+            .rows
+            .checked_add(1)
+            .ok_or_else(|| invalid("too many residual rows"))?;
+        Ok(())
+    }
+    fn push_deleted(&mut self, deleted: Vec<u128>) -> io::Result<()> {
+        self.plain[self.count_at..self.count_at + 4].copy_from_slice(&self.rows.to_le_bytes());
+        self.plain
+            .extend_from_slice(&(deleted.len() as u32).to_le_bytes());
+        let mut previous_key = 0;
+        for &key in &deleted {
+            put_varint(self.plain, key - previous_key);
+            previous_key = key;
+        }
+        Ok(())
+    }
+}
+
+impl Residuals for super::direct::Delta<'_> {
+    fn shadow(&self) -> &Shadow {
+        self.bases()
+    }
+    fn written(&self) -> usize {
+        self.len()
+    }
+    fn no_rows(&self) -> bool {
+        self.is_empty()
+    }
+    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()> {
+        self.row(key, mask, std::mem::take(values))
+    }
+    fn push_deleted(&mut self, deleted: Vec<u128>) -> io::Result<()> {
+        self.deleted(deleted)
+    }
+}
+
 /// Frame an incompatible table's residual entry, or with no `input` a frame
 /// with no entry, and move the predictor on to its changes; `bases` are the
 /// byte fields' encodings before it. With `coding` (a keyed block), row keys
@@ -756,233 +832,83 @@ pub(super) fn take_residual(
     table: TableId,
     fields: usize,
     previous: Hour,
-    mut input: Option<&mut ColumnReader<'_>>,
+    input: Option<&mut ColumnReader<'_>>,
     predictor: &mut Predictor,
     bases: &Shadow,
     plain: &mut Vec<u8>,
     budget: &Budget,
     layout: Layout,
-    mut coding: Option<RowCoding<'_>>,
+    coding: Option<RowCoding<'_>>,
 ) -> io::Result<()> {
-    predictor.transitions.clear();
     let start = plain.len();
     plain.push(DELTA);
     plain.extend_from_slice(&previous.to_le_bytes());
     let count_at = plain.len();
     plain.extend_from_slice(&0_u32.to_le_bytes());
-    // Every stored key has a key byte, so counts are bounded by the keys
-    // column; a modelled row can cost less, so the rows held at the frame
-    // before count too.
-    let count = |input: &mut ColumnReader<'_>, held: usize| -> io::Result<usize> {
-        let count = varint_usize(&mut input.0[CONTROL])?;
-        if count > input.0[KEYS].remaining().saturating_add(held) {
-            return Err(invalid("grouped row count exceeds its keys"));
-        }
-        Ok(count)
+    let mut output = Plain {
+        plain,
+        bases,
+        start,
+        count_at,
+        width: fields.div_ceil(8),
+        rows: 0,
+        previous_key: 0,
     };
-    let mut deleted = Vec::new();
-    let mut residuals = 0;
-    if let Some(input) = input.as_deref_mut() {
-        let mut key = 0_u128;
-        let mut run = coding.as_ref().map(|coding| KeyReader::new(coding.keys));
-        for index in 0..count(input, 0)? {
-            if let (Some(run), Some(coding)) = (&mut run, &mut coding) {
-                let (key, _) = run.take(table, &mut input.0[KEYS])?;
-                coding.note_deleted(key);
-                deleted.push(key);
-                continue;
-            }
-            let difference = input.0[KEYS].varint()?;
-            if index != 0 && difference == 0 {
-                return Err(invalid("deleted keys did not advance"));
-            }
-            key = key
-                .checked_add(difference)
-                .ok_or_else(|| invalid("row key addition overflow"))?;
-            table.check_key(key)?;
-            deleted.push(key);
-        }
-        residuals = count(input, coding.as_ref().map_or(0, RowCoding::held_rows))?;
-    }
-    let mut run = match (&mut coding, input.as_deref_mut()) {
-        (Some(coding), Some(input)) => Some(coding.read(table, residuals, &mut input.0)?),
-        _ => None,
-    };
-    let schema = table.schema();
-    let width = fields.div_ceil(8);
-    let mut cursor = Cursor {
-        moving: &predictor.moving,
-    };
-    let mut next = std::mem::take(&mut predictor.spare);
-    next.clear();
-    let mut predicted = predicted_keys(&predictor.moving, &deleted).peekable();
-    let mut residual_key = 0_u128;
-    let mut read = 0_usize;
-    let mut stored: Option<(u128, u64)> = None;
-    let mut rows = 0_u32;
-    let mut previous_key = 0_u128;
-    let mut values = Vec::new();
-    loop {
-        if stored.is_none() && read < residuals {
-            let input = input.as_deref_mut().expect("residual rows have an entry");
-            let mask = match (&mut run, &mut coding) {
-                (Some(run), Some(coding)) => {
-                    let (key, mask) = coding.take_row(run, table, width, &mut input.0)?;
-                    residual_key = key;
-                    mask
-                }
-                _ => {
-                    let difference = input.0[KEYS].varint()?;
-                    if read != 0 && difference == 0 {
-                        return Err(invalid("residual row keys did not advance"));
-                    }
-                    residual_key = residual_key
-                        .checked_add(difference)
-                        .ok_or_else(|| invalid("row key addition overflow"))?;
-                    table.check_key(residual_key)?;
-                    let mut bytes = [0; 8];
-                    bytes[..width].copy_from_slice(input.0[MASKS].take(width)?);
-                    u64::from_le_bytes(bytes)
-                }
-            };
-            read += 1;
-            if mask == 0 || (fields < 64 && mask >> fields != 0) {
-                return Err(invalid("invalid residual field mask"));
-            }
-            stored = Some((residual_key, mask));
-        }
-        let key = match (stored, predicted.peek()) {
-            (None, None) => break,
-            (Some((key, _)), None) => key,
-            (None, Some(&key)) => key,
-            (Some((key, _)), Some(&predicted)) => key.min(predicted),
-        };
-        let mask = match stored {
-            Some((stored_key, mask)) if stored_key == key => {
-                stored = None;
-                mask
-            }
-            _ => 0,
-        };
-        predicted.next_if(|predicted| *predicted == key);
-        if mask != 0 && deleted.binary_search(&key).is_ok() {
-            return Err(invalid("residual row is also deleted"));
-        }
-        values.clear();
-        let mut plain_mask = 0_u64;
-        // A field neither stored nor moving stays unchanged and leaves no
-        // motion, so only stored fields and fields with a motion are visited.
-        let mut from = 0;
-        loop {
-            let stored_next = mask
-                .checked_shr(from as u32)
-                .filter(|rest| *rest != 0)
-                .map(|rest| from + rest.trailing_zeros() as usize);
-            let field = match (stored_next, cursor.next_field(key, from)) {
-                (None, None) => break,
-                (Some(field), None) | (None, Some(field)) => field,
-                (Some(stored), Some(moving)) => stored.min(moving),
-            };
-            if field >= fields {
-                break;
-            }
-            from = field + 1;
-            #[cfg(test)]
-            VISITED.with(|visited| visited.set(visited.get() + 1));
-            let kind = schema[field];
-            let stored_field = mask & (1 << field) != 0;
-            let before = cursor.find(key, field);
-            let motion = if table.byte_field(field) {
-                let base = base(bases, key, field);
-                let prediction = byte_prediction(base, before);
-                let at = values.len();
-                let changed = if stored_field {
-                    let input = input.as_deref_mut().expect("stored fields have an entry");
-                    let used = plain.len() - start + at;
-                    take_byte_field(
-                        table,
-                        field,
-                        &mut input.0[FIELDS + field],
-                        base,
-                        prediction.as_deref(),
-                        &mut values,
-                        used,
-                        budget,
-                        layout,
-                    )?
-                } else if let Some(prediction) = &prediction {
-                    values.extend_from_slice(prediction);
-                    true
-                } else {
-                    false
-                };
-                if !changed {
-                    continue;
-                }
-                plain_mask |= 1 << field;
-                byte_motion(base, &values[at..], before)
-            } else {
-                let prediction = number_prediction(before);
-                let step = if stored_field {
-                    let input = input.as_deref_mut().expect("stored fields have an entry");
-                    let zero = prediction
-                        .or_else(|| super::advance_change(table, layout, bases, key, field));
-                    step_from_code(kind, prediction, zero, input.0[FIELDS + field].varint()?)?
-                } else {
-                    prediction.map_or(Step::Same, Step::Number)
-                };
-                if step != Step::Same {
-                    plain_mask |= 1 << field;
-                    put_step(kind, step, &mut values);
-                }
-                predictor.transitions.after(step, before, layout)
-            };
-            if let Some(motion) = motion {
-                next.push(Moving { key, field, motion });
-            }
-        }
-        if plain_mask != 0 {
-            put_varint(plain, key - previous_key);
-            previous_key = key;
-            plain.extend_from_slice(&plain_mask.to_le_bytes()[..width]);
-            plain.extend_from_slice(&values);
-            rows = rows
-                .checked_add(1)
-                .ok_or_else(|| invalid("too many residual rows"))?;
-            budget.check(plain.len() - start)?;
-        }
-    }
-    drop(predicted);
-    if input.is_some() && rows == 0 && deleted.is_empty() {
-        return Err(invalid("residual entry changes nothing"));
-    }
-    plain[count_at..count_at + 4].copy_from_slice(&rows.to_le_bytes());
-    plain.extend_from_slice(&(deleted.len() as u32).to_le_bytes());
-    let mut previous_key = 0;
-    for &key in &deleted {
-        put_varint(plain, key - previous_key);
-        previous_key = key;
-    }
-    std::mem::swap(&mut predictor.moving, &mut next);
-    next.clear();
-    predictor.spare = next;
-    budget.spend(plain.len() - start)
+    take_residual_rows(
+        table,
+        fields,
+        input,
+        predictor,
+        &mut output,
+        budget,
+        layout,
+        coding,
+    )?;
+    budget.spend(output.written())
 }
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn take_residual_direct(
     table: TableId,
     fields: usize,
     format: u16,
     previous: Hour,
-    mut input: Option<&mut ColumnReader<'_>>,
+    input: Option<&mut ColumnReader<'_>>,
     predictor: &mut Predictor,
     bases: &mut Shadow,
     budget: &Budget,
     layout: Layout,
-    mut coding: Option<RowCoding<'_>>,
+    coding: Option<RowCoding<'_>>,
 ) -> io::Result<super::TableUpdate> {
-    predictor.transitions.clear();
     let mut output = super::direct::Delta::new(table, fields, format, previous, bases);
+    take_residual_rows(
+        table,
+        fields,
+        input,
+        predictor,
+        &mut output,
+        budget,
+        layout,
+        coding,
+    )?;
+    budget.spend(output.len())?;
+    Ok(output.finish())
+}
+
+/// Read a residual entry's deleted keys and rows into `output`, predicting
+/// every moving field, and move the predictor on to its changes.
+#[allow(clippy::too_many_arguments)]
+fn take_residual_rows(
+    table: TableId,
+    fields: usize,
+    mut input: Option<&mut ColumnReader<'_>>,
+    predictor: &mut Predictor,
+    output: &mut impl Residuals,
+    budget: &Budget,
+    layout: Layout,
+    mut coding: Option<RowCoding<'_>>,
+) -> io::Result<()> {
+    predictor.transitions.clear();
     // Every stored key has a key byte, so counts are bounded by the keys
     // column; a modelled row can cost less, so the rows held at the frame
     // before count too.
@@ -1104,12 +1030,12 @@ pub(super) fn take_residual_direct(
             let stored_field = mask & (1 << field) != 0;
             let before = cursor.find(key, field);
             let motion = if table.byte_field(field) {
-                let base = base(output.bases(), key, field);
+                let base = base(output.shadow(), key, field);
                 let prediction = byte_prediction(base, before);
                 let at = values.len();
                 let changed = if stored_field {
                     let input = input.as_deref_mut().expect("stored fields have an entry");
-                    let used = output.len() + at;
+                    let used = output.written() + at;
                     take_byte_field(
                         table,
                         field,
@@ -1137,7 +1063,7 @@ pub(super) fn take_residual_direct(
                 let step = if stored_field {
                     let input = input.as_deref_mut().expect("stored fields have an entry");
                     let zero = prediction.or_else(|| {
-                        super::advance_change(table, layout, output.bases(), key, field)
+                        super::advance_change(table, layout, output.shadow(), key, field)
                     });
                     step_from_code(kind, prediction, zero, input.0[FIELDS + field].varint()?)?
                 } else {
@@ -1154,20 +1080,19 @@ pub(super) fn take_residual_direct(
             }
         }
         if plain_mask != 0 {
-            output.row(key, plain_mask, std::mem::take(&mut values))?;
-            budget.check(output.len())?;
+            output.push_row(key, plain_mask, &mut values)?;
+            budget.check(output.written())?;
         }
     }
     drop(predicted);
-    if input.is_some() && output.is_empty() && deleted.is_empty() {
+    if input.is_some() && output.no_rows() && deleted.is_empty() {
         return Err(invalid("residual entry changes nothing"));
     }
-    output.deleted(deleted)?;
+    output.push_deleted(deleted)?;
     std::mem::swap(&mut predictor.moving, &mut next);
     next.clear();
     predictor.spare = next;
-    budget.spend(output.len())?;
-    Ok(output.finish())
+    Ok(())
 }
 #[cfg(test)]
 thread_local! {

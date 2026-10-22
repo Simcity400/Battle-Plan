@@ -423,7 +423,6 @@ fn advance_shadow(
     if !has_byte_fields(table, table.last_change().fields(table, format)) {
         return Ok(());
     }
-    let (head, list) = advance_pair(table).unzip();
     let mut key = 0;
     let mut counts = 0;
     let mut allocation_failure = None;
@@ -436,40 +435,9 @@ fn advance_shadow(
                 shadow.remove(&value);
             }
         }
-        Token::Field(field) if Some(field) == head => {
-            // A value the field cannot hold leaves no head, so writer and
-            // reader alike store that row's next change without its advance.
-            let fields = shadow.entry(key).or_default();
-            match head_value(status, bytes, fields.get(&field)) {
-                Ok(value) => fields.insert(field, value.to_le_bytes().to_vec()),
-                Err(error) if engine_allocation::is_allocation_error(&error) => {
-                    allocation_failure = Some(error);
-                    None
-                }
-                Err(_) => fields.remove(&field),
-            };
-        }
-        Token::Field(field) if table.byte_field(field) => {
-            let fields = shadow.entry(key).or_default();
-            // A delta's list that dropped its first element: keep the element.
-            if Some(field) == list
-                && status == DELTA
-                && let Some(before) = fields.get(&field)
-                && without_first(before, 4).as_deref() == Some(bytes)
-            {
-                let element = before[4..8].to_vec();
-                fields.insert(DROPPED, element);
-            }
-            // The base before is replaced in its own storage when that is
-            // not much larger, rather than freed and allocated again.
-            match fields.get_mut(&field) {
-                Some(base) if base.capacity() <= 2 * bytes.len().max(8) => {
-                    base.clear();
-                    base.extend_from_slice(bytes);
-                }
-                _ => {
-                    fields.insert(field, bytes.to_vec());
-                }
+        Token::Field(field) => {
+            if let Err(error) = observe_shadow(table, status, key, field, bytes, shadow) {
+                allocation_failure = Some(error);
             }
         }
         _ => {}
@@ -479,9 +447,10 @@ fn advance_shadow(
     allocation_failure.map_or(walked, Err)
 }
 
-/// Observe an already validated field after its entire row has been recovered
-/// against the old bases. These are the writer's patch-base rules, including
-/// the movement head and dropped-list dependency.
+/// Observe one field of a plain update; a direct delta observes its fields
+/// only after their entire row has been recovered against the old bases.
+/// These are the writer's patch-base rules, including the movement head and
+/// dropped-list dependency.
 #[inline]
 fn observe_shadow(
     table: TableId,

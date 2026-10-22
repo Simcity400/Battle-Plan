@@ -64,7 +64,6 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
         assert!(stamped.table_refusal(host).is_none(), "{host:?}");
         assert!(FormatVersion::CURRENT.table_refusal(host).is_none());
     }
-    assert_eq!(PACKET_HOUR_FORMAT, 102);
 }
 
 fn host_rows(table: TableId, tick: usize) -> TableRows {

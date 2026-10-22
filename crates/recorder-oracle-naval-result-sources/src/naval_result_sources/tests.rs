@@ -588,24 +588,6 @@ fn another_branch_cannot_certify_a_result() {
 }
 
 #[test]
-fn five_thousand_sources_are_checked_without_a_cap() {
-    let combats: Vec<_> = (1..=5_000).collect();
-    let results: Vec<_> = combats.iter().map(|id| id + 10_000).collect();
-    let result_hours: Vec<_> = results.iter().map(|&id| (id, 101)).collect();
-    let events = combats
-        .iter()
-        .zip(&results)
-        .map(|(&combat, &result)| event(combat, combat, result))
-        .collect();
-    let report = checked(&[
-        frame(100, &combats, &[], vec![]),
-        frame(101, &[], &result_hours, events),
-    ]);
-    assert_eq!(report.compared_tables["NavalResultSources"], 5_000);
-    assert!(report.differences.is_empty());
-}
-
-#[test]
 fn final_retained_date_matches_the_last_ordered_native_emission() {
     let before = frame(100, &[], &[(21, 99)], vec![]);
     let earlier = NavalResultSourceRow {

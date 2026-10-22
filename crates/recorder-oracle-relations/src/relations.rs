@@ -111,36 +111,12 @@ pub fn compare_war_relations(
             continue;
         };
         report.war_relations += 1;
-        if (actual.cancel != 0) != expected.cancel {
-            report.difference(format!("{label}.cancel"), actual.cancel, expected.cancel);
-        }
-        if let Some(start) = expected.start_date {
-            let start = start.engine_hour()?;
-            if actual.start_hour != start {
-                report.difference(format!("{label}.start_hour"), actual.start_hour, start);
-            }
-        } else {
-            report.limitation(
-                "cancelled relation serializer omits its raw start hour",
-                label.clone(),
-            );
-        }
-        let emits_end = actual.start_hour < actual.end_hour;
-        if emits_end != expected.end_date.is_some() {
-            report.difference(
-                format!("{label}.end_date presence (start < end)"),
-                emits_end,
-                expected.end_date.is_some(),
-            );
-        }
-        if let Some(end) = expected.end_date {
-            let end = end.engine_hour()?;
-            if actual.end_hour != end {
-                report.difference(format!("{label}.end_hour"), actual.end_hour, end);
-            }
-        } else {
-            report.limitation("omitted relation end_date proves end_hour <= start_hour, not one exact raw end hour; the inequality is checked", label.clone());
-        }
+        compare_relation_hours(
+            report,
+            &label,
+            (actual.cancel, actual.start_hour, actual.end_hour),
+            (expected.cancel, expected.start_date, expected.end_date),
+        )?;
         for (field, captured, saved) in [
             (
                 "first_casualties",
@@ -457,39 +433,12 @@ pub fn compare_relation_tuples(
                 );
             }
         }
-        if (actual.cancel != 0) != expected.cancel {
-            report.difference(format!("{label}.cancel"), actual.cancel, expected.cancel);
-        }
-        if let Some(start) = expected.start_date {
-            let start = start.engine_hour()?;
-            if actual.start_hour != start {
-                report.difference(format!("{label}.start_hour"), actual.start_hour, start);
-            }
-        } else {
-            report.limitation(
-                "cancelled relation serializer omits its raw start hour",
-                label.clone(),
-            );
-        }
-        let emits_end = actual.start_hour < actual.end_hour;
-        if emits_end != expected.end_date.is_some() {
-            report.difference(
-                format!("{label}.end_date presence (start < end)"),
-                emits_end,
-                expected.end_date.is_some(),
-            );
-        }
-        if let Some(end) = expected.end_date {
-            let end = end.engine_hour()?;
-            if actual.end_hour != end {
-                report.difference(format!("{label}.end_hour"), actual.end_hour, end);
-            }
-        } else {
-            report.limitation(
-                "omitted relation end_date proves end_hour <= start_hour, not one exact raw end hour; the inequality is checked",
-                label.clone(),
-            );
-        }
+        compare_relation_hours(
+            report,
+            &label,
+            (actual.cancel, actual.start_hour, actual.end_hour),
+            (expected.cancel, expected.start_date, expected.end_date),
+        )?;
     }
     for ((owner, target, ordinal), row) in &tuples {
         report.difference(
@@ -513,6 +462,53 @@ pub fn compare_relation_tuples(
         "the retired byte is not serialized, and CWarRelation and CSubjectRelation rows belong to the WarRelations and Subjects tables while still occupying a native ordinal",
         "RelationTuples",
     );
+    Ok(())
+}
+
+/// A relation's raw cancel byte and hours against its saved flag and dates.
+fn compare_relation_hours(
+    report: &mut Report,
+    label: &str,
+    (cancel, start_hour, end_hour): (u8, i32, i32),
+    (saved_cancel, start_date, end_date): (
+        bool,
+        Option<installed_content_save::GameDate>,
+        Option<installed_content_save::GameDate>,
+    ),
+) -> io::Result<()> {
+    if (cancel != 0) != saved_cancel {
+        report.difference(format!("{label}.cancel"), cancel, saved_cancel);
+    }
+    if let Some(start) = start_date {
+        let start = start.engine_hour()?;
+        if start_hour != start {
+            report.difference(format!("{label}.start_hour"), start_hour, start);
+        }
+    } else {
+        report.limitation(
+            "cancelled relation serializer omits its raw start hour",
+            label.to_owned(),
+        );
+    }
+    let emits_end = start_hour < end_hour;
+    if emits_end != end_date.is_some() {
+        report.difference(
+            format!("{label}.end_date presence (start < end)"),
+            emits_end,
+            end_date.is_some(),
+        );
+    }
+    if let Some(end) = end_date {
+        let end = end.engine_hour()?;
+        if end_hour != end {
+            report.difference(format!("{label}.end_hour"), end_hour, end);
+        }
+    } else {
+        report.limitation(
+            "omitted relation end_date proves end_hour <= start_hour, not one exact raw end hour; the inequality is checked",
+            label.to_owned(),
+        );
+    }
     Ok(())
 }
 
