@@ -3,7 +3,8 @@
 Automated same-save throughput benchmark loop for recorder candidates.
 .DESCRIPTION
 For every candidate in the plan: reloads the same benchmark save, attaches the
-frozen recorder (if any), runs the game at native speed 4 (displayed 5) while
+frozen recorder (if any), runs the game at the plan's native speed (default 4,
+displayed 5, uncapped; lower speeds wait between ticks) while
 sampling its clock from outside the process, pauses and detaches. A screen ends
 at the planned seconds or max_hours, whichever comes first. An hour-capped
 screen is not a full-duration run. These are throughput screens, not correctness
@@ -32,7 +33,8 @@ Plan JSON:
     { "name": "candidate", "frozen": "candidate-bin" }
   ]
 }
-"frozen" is a directory holding recorder.exe and collector.dll. "max_hours"
+"frozen" is a directory holding recorder.exe and collector.dll. "speed" is the
+native game speed 0-4 (default 4). "max_hours"
 defaults to 420; choose a cap above the expected progress for a full-duration run.
 Ordinary recorder candidates require -MetricsTool pointing to a reader built for
 their replay format. Missing or incomplete metrics, failed drains, drops and write
@@ -131,6 +133,8 @@ $expectedSeed = [int]$spec.expected_seed
 $seconds = if ($spec.seconds) { [int]$spec.seconds } else { 30 }
 $maxHours = $(if ($spec.PSObject.Properties['max_hours'] -and $spec.max_hours) { [int64]$spec.max_hours } else { 420 })
 $repeats = if ($spec.repeats) { [int]$spec.repeats } else { 1 }
+$speed = if ($spec.PSObject.Properties['speed'] -and $null -ne $spec.speed) { [int]$spec.speed } else { 4 }
+if ($speed -lt 0 -or $speed -gt 4) { throw "Plan speed must be 0-4, found $speed." }
 $historicalBaselineRate = if ($spec.PSObject.Properties['baseline_hours_per_s'] -and $spec.baseline_hours_per_s) { [double]$spec.baseline_hours_per_s } else { $null }
 foreach ($candidate in $spec.candidates) {
     if ($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic -isnot [bool]) { throw 'diagnostic must be a JSON boolean.' }
@@ -311,11 +315,19 @@ function Set-Paused([bool]$paused) {
     throw "Pause state did not become $paused."
 }
 function Set-Speed([int]$speed) {
+    # The game's speed shortcuts (numpad + and -), one press at a time as
+    # Set-Paused does: a clicked speed button can keep stepping while the
+    # game still treats it as held, past any speed below the maximum.
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
         $clock = Read-Clock
         if ($clock.speed -eq $speed) { return }
-        if ($clock.speed -lt $speed) { Send-Click $ui.speed_up } else { Send-Click $ui.speed_down }
-        Start-Sleep -Milliseconds 150
+        $before = $clock.speed
+        if ($before -lt $speed) { Send-Key 0x6B } else { Send-Key 0x6D }
+        $limit = [DateTime]::UtcNow.AddSeconds(3)
+        do {
+            Start-Sleep -Milliseconds 100
+            $clock = Read-Clock
+        } while ($clock.speed -eq $before -and [DateTime]::UtcNow -lt $limit)
     }
     throw "Speed did not reach $speed."
 }
@@ -974,7 +986,7 @@ function Invoke-Screen($attached, [string]$runDir) {
     Wait-Quiet
     $identity = Set-Paused $true
     if ($identity.hour -ne $expectedHour -and -not $script:chainStarted) { throw "Screen must start at hour $expectedHour, found $($identity.hour)." }
-    Set-Speed 4; Send-Move $ui.cursor_park
+    Set-Speed $speed; Send-Move $ui.cursor_park
     $statusBefore = $null
     if ($attached) { $statusBefore = Read-Status $attached.status; Write-Json (Join-Path $runDir 'status_before.json') $statusBefore }
     $log = [IO.StreamWriter]::new((Join-Path $runDir 'samples.jsonl'), $false, $utf8)
@@ -1016,7 +1028,7 @@ function Invoke-Screen($attached, [string]$runDir) {
             if ($null -eq $clock) { $missing++ }
             else {
                 Assert-Identity $clock $identity
-                if ($clock.paused -ne 0 -or $clock.speed -ne 4) { throw 'Speed or pause changed during the timed window.' }
+                if ($clock.paused -ne 0 -or $clock.speed -ne $speed) { throw 'Speed or pause changed during the timed window.' }
                 if ($null -ne $last -and $clock.hour -lt $last.hour) { throw 'Backwards clock.' }
                 $valid++
                 if ($null -eq $first) { $first = $clock; $firstQpc = $qpc }
@@ -1252,7 +1264,7 @@ $table = foreach ($r in $rows) {
 }
 $baselineText = if ($sameRunBaseline) { ('same-run no-recorder baseline {0:n3} h/s (mean of {1})' -f $sameRunBaseline, $sameRunRates.Count) } else { 'no same-run baseline' }
 $historicalText = if ($historicalBaselineRate) { "Optional historical reference $historicalBaselineRate h/s; it is not the matched baseline." } else { 'No historical reference supplied.' }
-$md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 $saveSha), screens capped at ${seconds}s or $maxHours game hours at native speed 4; $baselineText. $historicalText", '',
+$md = @("# Benchmark $(Split-Path -Leaf $Out)", '', "Save $($spec.save) (SHA256 $saveSha), screens capped at ${seconds}s or $maxHours game hours at native speed $speed; $baselineText. $historicalText", '',
     'Elapsed time and stop reason are reported per screen. max_hours runs are shorter diagnostic screens, including when requested_seconds is 120. This report does not establish correctness or performance acceptance.', '',
     'Direct ms/game-hour is the game thread''s time in the recorder (the hourly pause plus in-tick hooks), with its share of the game''s own hourly update timed in the same run: steady under contention, but blind to the game''s own code running slower beside the recorder. Recorder CPU is the collector threads'' cycle time per game hour.', '',
     '| candidate | rep | h/s | % same-run baseline | extra ms/game-hour | % historical reference | callback own/mean ms | native tick mean ms | direct ms/game-hour (of native) | recorder CPU ms/game-hour | exact callback mean/p50/p95 ms | elapsed s | stop reason | contaminated | error |',

@@ -4680,7 +4680,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Back off capacity hints only when current-boundary acquisition can grow
-/// without them. Loading and new demand keep the original fast cadence.
+/// without them. Loading, world invalidation and a refused hint keep the
+/// original fast cadence. Capacity raises and failed observations do not:
+/// raises creep every second in a growing world, and a skipped hint supplies
+/// no recorded value or failure.
 struct SizingBackoff {
     last: Option<Instant>,
     interval: Duration,
@@ -4750,7 +4753,8 @@ struct SizingShared {
     /// An explicit spool pass requests live preparation. Retiring encoded
     /// rows wakes the worker to free them, not to repeat that preparation.
     pass_requested: AtomicBool,
-    /// A raise or refusal since the sizing thread last checked its hints.
+    /// A refused hint (source demand or combat hint growth) since the sizing
+    /// thread last checked; it restores the one-second census.
     hint_demand: AtomicBool,
     #[cfg(test)]
     before_recycle_idle_growth: Mutex<Option<RecycleIdleCheck>>,
@@ -4786,7 +4790,6 @@ impl SizingShared {
     }
 
     fn error(&self, reason: &'static str) {
-        self.hint_demand.store(true, Ordering::Release);
         let mut pending = lock(&self.pending);
         pending.errors = pending.errors.saturating_add(1);
         pending.last_error = Some(reason);
@@ -4803,7 +4806,6 @@ impl SizingShared {
             let before = *capacities;
             let result = step(capacities);
             if *capacities != before {
-                self.hint_demand.store(true, Ordering::Release);
                 capacities.grow_idle(shared);
             }
             result
@@ -4837,7 +4839,6 @@ impl SizingShared {
                 observe(capacities)
             };
             if *capacities != current {
-                self.hint_demand.store(true, Ordering::Release);
                 capacities.grow_idle(shared);
             }
             failures
@@ -4888,7 +4889,6 @@ impl SizingShared {
         }
         shared.recycle_frame_prepared(index);
         if *capacities != previous {
-            self.hint_demand.store(true, Ordering::Release);
             #[cfg(test)]
             {
                 let check = lock(&self.before_recycle_idle_growth).take();
@@ -6621,22 +6621,23 @@ mod tests {
     }
 
     #[test]
-    fn sizing_raises_and_refusals_request_fast_census_retries() {
+    fn capacity_raises_and_failed_observations_leave_the_census_backed_off() {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let take_demand = || sizing.hint_demand.swap(false, Ordering::AcqRel);
-        sizing.raise(&shared, |_| {});
-        assert!(!take_demand());
+        let before = sizing.with_capacities(&shared, |capacities| *capacities);
         sizing.raise(&shared, |capacities| capacities.core[5] += 1);
-        assert!(take_demand());
-        assert!(!take_demand());
         sizing.raise_from_live_observation(&shared, |capacities| {
             capacities.core[6] += 1;
             [None; 2]
         });
-        assert!(take_demand());
-        sizing.error("synthetic sizing refusal");
-        assert!(take_demand());
+        sizing.error("synthetic failed observation");
+        assert!(!take_demand());
+        // The raises still apply and the failure is still counted.
+        let after = sizing.with_capacities(&shared, |capacities| *capacities);
+        assert_eq!(after.core[5], before.core[5] + 1);
+        assert_eq!(after.core[6], before.core[6] + 1);
+        assert_eq!(lock(&sizing.pending).errors, 1);
     }
 
     #[test]
@@ -6862,7 +6863,8 @@ mod tests {
             check_seen.store(true, Ordering::Relaxed);
         }));
         sizing.recycle_frame(&shared, returning, before, &mut WorkerWork::new());
-        assert!(sizing.hint_demand.load(Ordering::Acquire));
+        // The returning frame's own growth raised the capacity: no census is owed.
+        assert!(!sizing.hint_demand.load(Ordering::Acquire));
         assert!(checked.load(Ordering::Relaxed));
         assert!(lock(&sizing.capacities).core[5] >= wars);
         assert_idle_war_and_faction_capacities(&shared, sizing);
