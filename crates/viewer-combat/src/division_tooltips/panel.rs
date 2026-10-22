@@ -190,7 +190,7 @@ pub(super) fn text(
         }
         Err(why) => refused.push(format!("fresh deployed attrition: {why}")),
     }
-    match sources(content, frame, unit, status) {
+    match sources(content, frame, status) {
         Ok((lines, reasons)) => {
             refused.extend(reasons);
             text.push('\n');
@@ -361,7 +361,6 @@ mod tests {
 fn sources(
     content: &StaticContent,
     frame: &DecodedFrame,
-    _unit: &replay_data::rows::DivisionRow,
     status: &DivisionStatusRow,
 ) -> Result<(String, Vec<String>), String> {
     use crate::modifier_text::{Block, Definitions};

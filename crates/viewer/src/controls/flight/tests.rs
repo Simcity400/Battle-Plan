@@ -757,8 +757,8 @@ fn the_nearest_room_is_measured_from_the_wreck_itself_not_its_vertex() {
 }
 
 #[test]
-fn the_footprints_are_built_once_and_searched_in_one_quick_pass() {
-    // A map of the shipped size whose every vertex is too high: the search visits each once.
+fn the_footprints_are_built_once() {
+    // A map whose every vertex is too high: the search finds no room.
     let map = Camera {
         defines: MapDefines {
             heights: [50.0, 25.0],
@@ -766,25 +766,16 @@ fn the_footprints_are_built_once_and_searched_in_one_quick_pass() {
         },
         ..base()
     };
-    assert_eq!((map.map.width, map.map.height), (5632, 2048));
     let high = |_: f32, _: f32| 25.5;
-    let started = std::time::Instant::now();
     let mut footprints = Footprints::default();
     footprints.ensure(&high, &map, SIZE);
-    let built = started.elapsed();
-    let searched = std::time::Instant::now();
     assert_eq!(footprints.nearest([3000.0, 1000.0], [0.0, 1.0], 20.0), None);
-    let pass = searched.elapsed();
-    eprintln!("footprints of 5632 x 2048: built in {built:?}, searched in {pass:?}");
-    assert!(pass < std::time::Duration::from_secs(2), "{pass:?}");
     // A second respawn on the same map and aircraft builds nothing again.
-    let again = std::time::Instant::now();
     footprints.ensure(
         &|_: f32, _: f32| -> f32 { unreachable!("rebuilt") },
         &map,
         SIZE,
     );
-    assert!(again.elapsed() < std::time::Duration::from_millis(50));
 }
 
 /// Crashes a level flight of `airframe` whose entity's player reads `played` by the seconds

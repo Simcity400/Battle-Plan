@@ -53,7 +53,6 @@ pub(super) fn append(context: &Context<'_>, selected: &[u64], out: &mut Tooltip)
         context,
         out,
         super::naval_mines::build(context.content, context.frame, context.vision, region, true),
-        1,
     );
 }
 

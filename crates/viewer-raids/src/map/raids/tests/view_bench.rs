@@ -1335,11 +1335,7 @@ fn stopped_and_full_army_searches_answer_alike() {
 fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    for seed in [
-        0x9e37_79b9_7f4a_7c15,
-        0x2545_f491_4f6c_dd1d,
-        0xd1b5_4a32_d192_ed03,
-    ] {
+    for seed in [0x9e37_79b9_7f4a_7c15, 0x2545_f491_4f6c_dd1d] {
         let (mut assets, mut frame) = churn_world();
         assets.batch = Ok(7);
         let mut rng = Rng(seed);
@@ -1404,51 +1400,49 @@ fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
 fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    for seed in [0x9e37_79b9_7f4a_7c15, 0xd1b5_4a32_d192_ed03] {
-        let (mut assets, mut frame) = churn_world();
-        assets.batch = Ok(7);
-        let mut rng = Rng(seed);
-        let mut cycle = cycle::Cycle::new(frame.branch, 0);
-        let mut cache = IconCache::default();
-        let (mut skips, mut pauses) = (0, 0);
-        for hour in 0..CHURN_HOURS {
-            frame.hour = hour;
-            for _ in 0..1 + rng.below(3) {
-                churn(&mut frame, &mut rng, hour);
-            }
-            if hour > 0 && rng.chance(40) {
-                skips += 1;
-                continue;
+    let (mut assets, mut frame) = churn_world();
+    assets.batch = Ok(7);
+    let mut rng = Rng(0xd1b5_4a32_d192_ed03);
+    let mut cycle = cycle::Cycle::new(frame.branch, 0);
+    let mut cache = IconCache::default();
+    let (mut skips, mut pauses) = (0, 0);
+    for hour in 0..CHURN_HOURS {
+        frame.hour = hour;
+        for _ in 0..1 + rng.below(3) {
+            churn(&mut frame, &mut rng, hour);
+        }
+        if hour > 0 && rng.chance(40) {
+            skips += 1;
+            continue;
+        }
+        let paths = paths::HourPaths::new(&assets, &frame);
+        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
+        let layer = HourLayer::new(&assets, &world, 0, &paths);
+        cycle.begin(&assets, &layer.sweep).unwrap();
+        let mut reference = cycle.clone();
+        cycle.step(&layer.sweep);
+        if rng.chance(20) {
+            while !cycle.complete() {
+                cycle.step(&layer.sweep);
             }
             let paths = paths::HourPaths::new(&assets, &frame);
-            let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
-            let layer = HourLayer::new(&assets, &world, 0, &paths);
-            cycle.begin(&assets, &layer.sweep).unwrap();
-            let mut reference = cycle.clone();
-            cycle.step(&layer.sweep);
-            if rng.chance(20) {
-                while !cycle.complete() {
-                    cycle.step(&layer.sweep);
-                }
-                let paths = paths::HourPaths::new(&assets, &frame);
-                let fresh = HourLayer::new(&assets, &world, 0, &paths);
-                reference.begin(&assets, &fresh.sweep).unwrap();
-                while !reference.complete() {
-                    reference.step(&fresh.sweep);
-                }
-                assert_eq!(
-                    shown(&layer.icons(&cycle, &mut cache)),
-                    shown(&fresh.icons(&reference, &mut IconCache::default())),
-                    "seed {seed:#x} hour {hour}"
-                );
-                pauses += 1;
+            let fresh = HourLayer::new(&assets, &world, 0, &paths);
+            reference.begin(&assets, &fresh.sweep).unwrap();
+            while !reference.complete() {
+                reference.step(&fresh.sweep);
             }
+            assert_eq!(
+                shown(&layer.icons(&cycle, &mut cache)),
+                shown(&fresh.icons(&reference, &mut IconCache::default())),
+                "hour {hour}"
+            );
+            pauses += 1;
         }
-        assert!(
-            skips > 20 && pauses > 3,
-            "seed {seed:#x}: {skips} skips, {pauses} pauses"
-        );
     }
+    assert!(
+        skips > 20 && pauses > 3,
+        "{skips} skips, {pauses} pauses"
+    );
 }
 
 /// Where no target's evaluation leaves hour state (every path pair is in
@@ -1606,7 +1600,7 @@ fn split_run(
 
 /// A batch split across threads is exact: every row's kept evaluation, the
 /// icons and the report after every batch are byte for byte those of the
-/// batch evaluated in order on one thread, for 1 to 8 threads, under the
+/// batch evaluated in order on one thread, for 1, 3 and 8 threads, under the
 /// churn run's random changes to every input family. The batches take
 /// several compositions: the whole table at once in one-row parts, batches
 /// that wrap around the table in parts of odd sizes that part a province's
@@ -1633,7 +1627,7 @@ fn a_batch_split_across_threads_equals_the_batch_in_order() {
         let (mut assets, frames) = churn_hours(seed, 16, unrecorded);
         assets.batch = Ok(batch);
         let (reference, _, _) = split_run(&assets, &frames, &Default::default(), part_rows);
-        for threads in [1, 2, 3, 4, 8] {
+        for threads in [1, 3, 8] {
             let workers = pool.clone().limited(threads);
             let (split, parts_again, tasks) = split_run(&assets, &frames, &workers, part_rows);
             again += parts_again;

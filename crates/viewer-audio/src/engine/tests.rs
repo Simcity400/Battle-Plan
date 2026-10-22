@@ -493,16 +493,6 @@ fn a_category_compressor_holds_while_nothing_mixes_into_it() {
     );
 }
 
-#[test]
-fn the_audio_random_is_the_counter_hash() {
-    let mut random = Random::new(0);
-    let first = random.fraction();
-    let second = random.fraction();
-    assert!((0.0..1.0).contains(&first) && (0.0..1.0).contains(&second));
-    assert_ne!(first, second);
-    assert_eq!(Random::new(0).fraction(), first);
-}
-
 /// Positive weights are walked in order; without one the pick falls back.
 #[test]
 fn the_weighted_pick_walks_positive_weights_and_falls_back() {

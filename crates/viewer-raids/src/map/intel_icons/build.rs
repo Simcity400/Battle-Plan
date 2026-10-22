@@ -69,8 +69,6 @@ pub(super) struct Shared<'h, 'f> {
     pub names: CountryNames<'h>,
     /// Each province's state and signed victory points.
     provinces: HashMap<u32, &'f ProvinceRow>,
-    /// Each country slot's capital state (`Politics.capital` is a state id).
-    capitals: Result<HashMap<u32, i32>, String>,
     /// Root-out efficiencies after stacking, by owner slot and state.
     root_out: RootOutStacks,
 }
@@ -207,7 +205,6 @@ impl<'h, 'f> Hour<'h, 'f> {
             root_out: self.root_out_stacks(&tables),
             tables,
             provinces,
-            capitals,
         };
         for (state, gathered) in gathered {
             if gathered.items.is_empty() && !gathered.more {
@@ -476,7 +473,7 @@ impl<'h, 'f> Hour<'h, 'f> {
                 (key, self.operative(row, shared, report))
             }
             Item::Operation(row) => {
-                let (entry, priority) = self.operation(row, shared);
+                let (entry, priority) = self.operation(row);
                 (
                     (2, Vec::new(), i64::from(priority), row.definition_token),
                     entry,
@@ -796,7 +793,7 @@ impl<'h, 'f> Hour<'h, 'f> {
     }
 
     /// The operation's entry and the priority it sorts by.
-    fn operation(&self, row: &'f OperationRow, shared: &Shared<'h, 'f>) -> (Entry, i32) {
+    fn operation(&self, row: &'f OperationRow) -> (Entry, i32) {
         let hour = self.frame.hour;
         let state = values::operation_state(row, hour);
         let value = matches!(state, OperationState::Preparing).then(|| values::preparation(row));
@@ -929,7 +926,6 @@ impl<'h, 'f> Hour<'h, 'f> {
                 definition.ok(),
                 state,
                 value,
-                shared,
             )),
         };
         (entry, priority)
@@ -992,14 +988,6 @@ impl<'h, 'f> Hour<'h, 'f> {
                 localise(self.localisation, &key, &[])
             },
         )
-    }
-
-    /// A capital state, for the tooltips.
-    #[allow(dead_code)]
-    pub fn capital(&self, shared: &Shared<'h, 'f>, slot: u32) -> Option<u32> {
-        let capitals = shared.capitals.as_ref().ok()?;
-        let state = *capitals.get(&slot)?;
-        (state > 0).then_some(state as u32)
     }
 }
 

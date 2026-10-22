@@ -426,7 +426,7 @@ fn the_lane_serves_a_wanted_hour_past_its_window() {
 
 #[test]
 fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
-    let hours: Vec<Hour> = (10..=700).collect();
+    let hours: Vec<Hour> = (10..=300).collect();
     let replay = long_replay(&hours);
     let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
     let shared = LaneShared {
@@ -434,26 +434,26 @@ fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
         state: Mutex::new(LaneState::default()),
         changed: Condvar::new(),
     };
-    // Nothing wants 690: the walk stops after its first step.
-    assert!(!DecodeLane::walk(&shared, &mut playback, (1, 690)));
-    assert_eq!(playback.walk_start(1, 690), Some(9 + DECODE_STEP));
+    // Nothing wants 290: the walk stops after its first step.
+    assert!(!DecodeLane::walk(&shared, &mut playback, (1, 290)));
+    assert_eq!(playback.walk_start(1, 290), Some(9 + DECODE_STEP));
     // Wanted, the walk goes all the way to the last step before it.
-    Mutex::lock(&shared.state).unwrap().urgent = Some((1, 690));
-    assert!(DecodeLane::walk(&shared, &mut playback, (1, 690)));
+    Mutex::lock(&shared.state).unwrap().urgent = Some((1, 290));
+    assert!(DecodeLane::walk(&shared, &mut playback, (1, 290)));
     assert!(
         playback
-            .walk_start(1, 690)
-            .is_some_and(|at| 690 - at <= DECODE_STEP)
+            .walk_start(1, 290)
+            .is_some_and(|at| 290 - at <= DECODE_STEP)
     );
 }
 
 #[test]
 fn a_new_want_mid_walk_is_served() {
-    let hours: Vec<Hour> = (10..=700).collect();
+    let hours: Vec<Hour> = (10..=300).collect();
     let replay = long_replay(&hours);
     let lane = Arc::new(lane_over(&replay));
-    lane.want(vec![(1, 690)], 2);
-    // Seek away before or while the lane walks to 690.
+    lane.want(vec![(1, 290)], 2);
+    // Seek away before or while the lane walks to 290.
     lane.want(vec![(1, 12), (1, 13)], 2);
     match frame_within(&lane, 1, 12) {
         Current::Frame(frame) => assert_eq!(frame.hour, 12),
@@ -934,20 +934,20 @@ fn skipped_colour_refreshes_carry_in_recorded_order_and_gaps_start_cold() {
 
 #[test]
 fn forward_playback_retains_only_targets_not_cancellation_endpoints_or_behind_hours() {
-    let replay = long_replay(&(10..=710).collect::<Vec<_>>());
+    let replay = long_replay(&(10..=310).collect::<Vec<_>>());
     let lane = Arc::new(lane_over(&replay));
-    lane.want(vec![(1, 690)], 0);
-    let Current::Frame(actual) = frame_within(&lane, 1, 690) else {
+    lane.want(vec![(1, 290)], 0);
+    let Current::Frame(actual) = frame_within(&lane, 1, 290) else {
         panic!("target frame")
     };
-    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 690).unwrap() else {
+    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 290).unwrap() else {
         panic!("expected frame")
     };
     assert_eq!(actual.as_ref(), expected.as_ref());
     let state = DecodeLane::lock(&lane.shared);
     assert_eq!(
         state.frames.frames.keys().copied().collect::<Vec<_>>(),
-        [(1, 690)]
+        [(1, 290)]
     );
 }
 

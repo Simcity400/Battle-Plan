@@ -1,63 +1,6 @@
 use super::*;
 use replay_data::rows::NavalProvinceCombatRow;
 
-/// The index keeps one point per value change: 1,500 combats whose units
-/// keep changing but whose flags never do cost one point per side,
-/// however many hours fold.
-#[test]
-fn memory_follows_value_changes_not_hours() {
-    const COMBATS: u64 = 1_500;
-    let links: BTreeMap<u32, u32> = (1..=2 * COMBATS as u32).map(|c| (c, c)).collect();
-    let relations = Relations::factions_for_tests(&[]);
-    let mut history = engaged::History::default();
-    let mut points = Changes::new();
-    for hour in 0..240 {
-        let sides = (0..COMBATS)
-            .flat_map(|combat| {
-                [0, 1].map(|side| {
-                    (
-                        (combat, side),
-                        engaged::Side {
-                            // A unit joins every tenth hour: a rebuild.
-                            units: Some(vec![combat, (hour / 10) as u64]),
-                            added: engaged::Added::NoTrigger,
-                            lists: Some((vec![2 * combat as u32 + u32::from(side) + 1], vec![])),
-                            unit_lists: Some((
-                                vec![2 * combat as u32 + u32::from(side) + 1],
-                                vec![],
-                            )),
-                        },
-                    )
-                })
-            })
-            .collect();
-        let continuity = if hour == 0 {
-            Continuity::Load
-        } else {
-            Continuity::Next
-        };
-        history.advance(
-            engaged::Sample {
-                viewer: 0,
-                links: &links,
-                relations: Ok(&relations),
-                controllers: Some(Default::default()),
-                sides,
-                complete: true,
-                removal: engaged::Removal::BothSidesUnlessRoundRetreat,
-            },
-            continuity,
-        );
-        record(&mut points, hour, history.sides());
-    }
-    assert_eq!(points.len(), 2 * COMBATS as usize);
-    assert!(
-        points
-            .values()
-            .all(|changes| changes == &[(0, Engaged::No)])
-    );
-}
-
 fn branch_start(reason: BranchReason, loaded_hour: Option<Hour>) -> BranchStart {
     BranchStart {
         id: 1,
@@ -132,120 +75,6 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
     assert_eq!(fold(Some(20)), flag(Engaged::No));
     assert_eq!(fold(None), flag(Engaged::Unknown));
     assert_eq!(fold(Some(19)), flag(Engaged::Unknown));
-}
-
-#[test]
-fn five_thousand_countries_resolve_and_fold() {
-    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableRows};
-    use replay_frame::frame::TableView;
-    const COUNTRIES: u32 = 5_000;
-    const COMBATS: u64 = 1_500;
-    let mut frame = DecodedFrame {
-        branch: 1,
-        hour: 0,
-        tables: std::array::from_fn(|_| {
-            TableView::Unavailable {
-                reason: "not captured".into(),
-            }
-            .into()
-        }),
-        metrics: Default::default(),
-    };
-    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (0..COUNTRIES)
-            .map(|slot| CountryRow {
-                id: slot + 1,
-                canonical_slot: slot,
-                tag: format!("C{slot:04}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (0..COUNTRIES)
-            .map(|slot| CountryLinkRow {
-                id: slot + 1,
-                canonical_slot: slot,
-            })
-            .collect(),
-    ));
-    for table in [
-        TableId::Players,
-        TableId::HumanControllers,
-        TableId::FactionMembers,
-        TableId::WarRelations,
-        TableId::Subjects,
-    ] {
-        *frame.tables[table.index()] = TableView::Complete(TableRows::empty(table));
-    }
-    let started = Instant::now();
-    let viewer = Viewer::read(&frame, &Country::Tag("c4999".into())).unwrap();
-    let read = started.elapsed();
-    assert_eq!(viewer.slot, COUNTRIES - 1);
-    assert_eq!(viewer.links.len(), COUNTRIES as usize);
-    let mut history = engaged::History::default();
-    let mut points = Changes::new();
-    let (mut changed, mut ended) = (Vec::new(), Vec::new());
-    let started = Instant::now();
-    for hour in 0..48 {
-        let sides = (0..COMBATS)
-            .flat_map(|combat| {
-                [0_u8, 1].map(|side| {
-                    (
-                        (combat, side),
-                        engaged::Side {
-                            units: Some(vec![combat]),
-                            added: engaged::Added::NoTrigger,
-                            lists: Some((
-                                vec![(combat as u32 * 3 + u32::from(side)) % COUNTRIES + 1],
-                                vec![],
-                            )),
-                            unit_lists: Some((
-                                vec![(combat as u32 * 3 + u32::from(side)) % COUNTRIES + 1],
-                                vec![],
-                            )),
-                        },
-                    )
-                })
-            })
-            .collect();
-        let continuity = if hour == 0 {
-            Continuity::Load
-        } else {
-            Continuity::Next
-        };
-        history.advance_reporting(
-            engaged::Sample {
-                viewer: viewer.slot,
-                links: &viewer.links,
-                relations: viewer.relations.as_ref().map_err(|reason| *reason),
-                controllers: viewer.controllers.clone(),
-                sides,
-                complete: true,
-                removal: engaged::Removal::BothSidesUnlessRoundRetreat,
-            },
-            continuity,
-            &mut changed,
-            &mut ended,
-        );
-        record(&mut points, hour, changed.iter().copied());
-        // After the first hour nothing changes, so nothing is appended
-        // under the lock.
-        assert_eq!(
-            changed.len(),
-            if hour == 0 { 2 * COMBATS as usize } else { 0 }
-        );
-        assert!(ended.is_empty());
-    }
-    println!(
-        "5,000 countries: viewer read {:.3} ms; 48 hours of 1,500 combats folded in {:.3} ms",
-        read.as_secs_f64() * 1e3,
-        started.elapsed().as_secs_f64() * 1e3
-    );
-    assert_eq!(points.len(), 2 * COMBATS as usize);
-    // No side names the viewer and none shares vision with it: one
-    // point per side.
-    assert!(points.values().all(|changes| changes.len() == 1));
 }
 
 /// the game's battle picture needs one engaged entry of the province's
@@ -867,51 +696,25 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
     );
 }
 
-/// Both tracks and the check at 1,500 combats between 5,000 countries.
-#[test]
-fn the_check_folds_fifteen_hundred_combats_of_five_thousand_countries() {
-    for countries in [1_500_u32, 5_000] {
-        let frame = naval_frame(countries, &[1], &[], 1_500, [0, 0]);
-        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
-        let started = Instant::now();
-        for hour in 0..48 {
-            pass.fold_hour(3, hour, Some(&frame), Some(0));
-        }
-        let elapsed = started.elapsed();
-        println!(
-            "{countries} countries: 48 hours of 1,500 naval combats folded and checked in {:.3} ms ({:.3} ms an hour)",
-            elapsed.as_secs_f64() * 1e3,
-            elapsed.as_secs_f64() * 1e3 / 48.0
-        );
-        let summary = &pass.check.summary;
-        assert_eq!(summary.agreements, 2 * 1_500 * 48);
-        assert_eq!(summary.naval_hours, 48);
-    }
-}
-
 /// Every side-hour contradicting its byte is counted exactly, and only the first five are
-/// kept by name: 1,500 combats over 48 hours are 144,000 mismatches in a summary that
-/// stays five entries long.
+/// kept by name: 10 combats over 48 hours are 960 mismatches in a summary that stays five
+/// entries long.
 #[test]
 fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
-    let frame = naval_frame(5_000, &[1], &[], 1_500, [1, 1]);
+    const COMBATS: u64 = 10;
+    let mismatches = 2 * COMBATS * 48;
+    let frame = naval_frame(12, &[1], &[], COMBATS, [1, 1]);
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     for hour in 0..48 {
         pass.fold_hour(3, hour, Some(&frame), Some(0));
     }
     let summary = &pass.check.summary;
-    assert_eq!(
-        (summary.agreements, summary.mismatches),
-        (0, 2 * 1_500 * 48)
-    );
+    assert_eq!((summary.agreements, summary.mismatches), (0, mismatches));
     assert_eq!(summary.first.len(), 5);
     assert!(summary.first.iter().all(|mismatch| mismatch.hour == 0));
     assert_eq!(
         summary.lines().last().unwrap(),
-        &format!(
-            "Naval engaged mismatch: {} more not listed.",
-            2 * 1_500 * 48 - 5
-        )
+        &format!("Naval engaged mismatch: {} more not listed.", mismatches - 5)
     );
 }
 

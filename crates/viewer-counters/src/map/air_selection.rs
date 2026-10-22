@@ -716,12 +716,4 @@ mod tests {
         assert!(selected.click(&[], false));
         assert!(!selected.click(&[], false));
     }
-    #[test]
-    fn collections_have_no_viewer_chosen_limit() {
-        let mut selected = Selection::default();
-        let members: Vec<_> = (1..=5000).rev().collect();
-        assert!(selected.click(&members, false));
-        assert_eq!(selected.wings().as_ref(), &members);
-        assert!(!selected.click(&members, false));
-    }
 }

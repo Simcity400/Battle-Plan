@@ -1108,17 +1108,23 @@ impl BaseTables {
             states,
             complete,
             aircraft_complete: rows::<tables::AirWings>(frame)?.is_complete(),
-            controlled: rows::<tables::Provinces>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.id, row.controller > 0))
-                .collect(),
+            controlled: controlled_provinces(frame)?,
             locations,
             location_notes,
             radar: radar_states(frame, vision.ours())?,
             site_bases,
         })
     }
+}
+
+/// Whether each recorded province has a controller (a positive raw controller link), as
+/// the game requires of an air-base, rocket-site or gun-emplacement icon.
+pub(super) fn controlled_provinces(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, bool>> {
+    Ok(rows::<tables::Provinces>(frame)?
+        .rows()
+        .iter()
+        .map(|row| (row.id, row.controller > 0))
+        .collect())
 }
 
 type LocationIcons = (BTreeMap<u32, Option<String>>, Vec<String>);
@@ -1577,22 +1583,6 @@ pub(super) fn air_base_frame(count: &AirBaseCount, detail: Option<bool>) -> u32 
         } else {
             0
         }
-}
-
-/// Whether a province has a controller (a positive raw controller link), as
-/// the game requires of an air-base, rocket-site or gun-emplacement icon;
-/// `None` when the hour records no row for it.
-#[cfg(test)]
-pub(super) fn province_controlled(
-    frame: &DecodedFrame,
-) -> io::Result<impl Fn(u32) -> Option<bool> + '_> {
-    let provinces = rows::<tables::Provinces>(frame)?;
-    let controllers: BTreeMap<u32, u32> = provinces
-        .rows()
-        .iter()
-        .map(|row| (row.id, row.controller))
-        .collect();
-    Ok(move |province| controllers.get(&province).map(|&controller| controller > 0))
 }
 
 /// The one-based frame of a rocket-site or gun-emplacement icon's buttons.

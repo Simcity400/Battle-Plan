@@ -18,8 +18,7 @@
 //! retained duration cache and route option are local presentation state the viewer does not
 //! read or capture.
 //!
-//! Both sites use [`engine_native::cunit::eta_hours`], narrowed to i32.
-//! The division view's legacy `arrival` test helper omits nonpositive hours. The map
+//! Both sites use [`engine_native::cunit::eta_hours`], narrowed to i32. The map
 //! counter's [`map_arrival`] formats every reached duration: signed days<1
 //! uses total hours, otherwise days and the hours remainder.
 
@@ -33,20 +32,6 @@ pub struct Arrival {
     pub days: i32,
     /// The `hours % 24`.
     pub hours: i32,
-}
-
-/// What `remaining` fixed5 hours arrive at, or `None` where the game writes no line at all: a
-/// route already run out or any duration whose narrowed total hours is nonpositive.
-#[cfg(test)]
-pub fn arrival(remaining: i64) -> Option<Arrival> {
-    let total = eta_hours(remaining) as i32;
-    if total < 1 {
-        return None;
-    }
-    Some(Arrival {
-        days: total / 24,
-        hours: total % 24,
-    })
 }
 
 /// Format every reached query result. When the whole-day count is below one,
@@ -107,35 +92,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_duration_ceilings_to_whole_hours() {
-        // 4.43806 h, the RENDERING.md 7.3 worked example, ceilings to 5.
-        assert_eq!(arrival(443_806), Some(Arrival { days: 0, hours: 5 }));
-        // Exact hours do not ceiling past themselves.
-        assert_eq!(arrival(100_000).unwrap().hours, 1);
-        assert_eq!(arrival(100_001).unwrap().hours, 2);
-    }
-
-    #[test]
-    fn days_and_hours_split_as_the_game_splits_them() {
-        let arrival = arrival(2_900_000).expect("29 h remaining");
-        assert_eq!((arrival.days, arrival.hours), (1, 5));
-    }
-
-    #[test]
-    fn nothing_is_shown_for_an_arrived_or_negative_duration() {
-        // 0 is arrived or no route; a negative remaining is the progress subtraction.
-        assert_eq!(arrival(0), None);
-        assert_eq!(arrival(-1), None);
-        assert_eq!(arrival(-100_000), None);
-        // Any part of an hour still ceilings to one, so it is shown.
-        assert_eq!(arrival(1).unwrap().hours, 1);
-        // 4294967295 is the engine's zero-denominator sentinel: a duration like any
-        // other here, and the game words it the same way.
-        assert_eq!(arrival(4_294_967_295).unwrap().days, 1789);
-    }
-
-    #[test]
     fn map_counter_formats_zero_negative_and_narrowed_total_hours() {
+        // 4.43806 h, the RENDERING.md 7.3 worked example, ceilings to 5; exact hours do
+        // not ceiling past themselves.
+        assert_eq!(map_arrival(443_806), Arrival { days: 0, hours: 5 });
+        assert_eq!(map_arrival(100_000).hours, 1);
+        assert_eq!(map_arrival(100_001).hours, 2);
         assert_eq!(map_arrival(0), Arrival { days: 0, hours: 0 });
         assert_eq!(
             map_arrival(-2_900_000),

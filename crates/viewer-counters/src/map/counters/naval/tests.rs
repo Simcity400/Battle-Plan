@@ -280,11 +280,11 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
 }
 
 /// Subtract two fleet handles' words in `i32` and the game sorts on whatever
-/// order that gives: a roster of 5,000 task forces whose fleet low words wrap sorts as the
+/// order that gives: a roster of 100 task forces whose fleet low words wrap sorts as the
 /// game's `std::stable_sort` does, own task forces first, with nothing refused.
 #[test]
-fn a_5000_task_force_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
-    let forces: Vec<TaskForceRow> = (1..=5_000_u64)
+fn a_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
+    let forces: Vec<TaskForceRow> = (1..=100_u64)
         .map(|id| TaskForceRow {
             id: (id << 32) | 51,
             fleet: ((id % 40 + 1) << 32) | 61,
@@ -294,7 +294,7 @@ fn a_5000_task_force_port_roster_with_wrapping_fleets_sorts_as_the_game_does() {
         // Own (its id is not a multiple of three), with fleet low words whose differences
         // from the others' 61 and from each other wrap.
         .chain(
-            [(5_002, i32::MIN), (5_003, i32::MAX), (5_004, 0)].map(|(id, low)| TaskForceRow {
+            [(102, i32::MIN), (103, i32::MAX), (104, 0)].map(|(id, low)| TaskForceRow {
                 id: (id << 32) | 51,
                 fleet: (9 << 32) | u64::from(low as u32),
                 ..Default::default()

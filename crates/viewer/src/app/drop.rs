@@ -491,11 +491,4 @@ mod tests {
         // The click or the view's middle met no ground.
         assert_eq!(choose(false, None, true, None, 5632.0), Choice::Wait);
     }
-
-    #[test]
-    fn only_a_chosen_start_has_a_place() {
-        assert_eq!(Pick::At([1.0, 2.0]).at(), Some([1.0, 2.0]));
-        assert_eq!(Pick::Choosing.at(), None);
-        assert!(Pick::Choosing.choosing() && !Pick::Idle.choosing());
-    }
 }

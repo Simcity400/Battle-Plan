@@ -429,7 +429,6 @@ pub(super) fn operation(
     definition: Option<&installed_content_core::intelligence::Operation>,
     state: OperationState,
     value: Option<Result<i64, String>>,
-    _shared: &Shared<'_, '_>,
 ) -> Tooltip {
     let mut text = Tooltip::default();
     let loc = hour.localisation;

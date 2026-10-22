@@ -1612,11 +1612,6 @@ pub struct RaidInputs<'a> {
     pub reach: Option<RaidReach>,
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn counter_fixture() -> (RaidAssets, DecodedFrame) {
-    (test_support::path_assets(), test_support::positive_frame())
-}
-
 #[cfg(test)]
 mod tests;
 

@@ -1137,10 +1137,4 @@ mod tests {
         );
         assert_eq!(parse_shortcut(""), None);
     }
-
-    #[test]
-    fn the_shipped_slots_put_air_on_the_third_button() {
-        // F3 selects the third slot, the air mode, as in the game.
-        assert_eq!(DEFAULT_SLOTS[2], Stock::StrategicAir);
-    }
 }

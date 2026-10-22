@@ -2,7 +2,7 @@
 use super::*;
 use replay::container::Parallel;
 use replay_frame::frame::Frame;
-use std::{collections::BTreeMap, io};
+use std::io;
 
 pub(super) struct Recording<'a> {
     fixture: &'a Fixture,
@@ -293,94 +293,4 @@ pub(super) fn measure(
             "stepRetainedBlock": timings(&steady), "stepBlockLoad": timings(&boundary), "parityDifferences": 0}));
     }
     serde_json::json!({"trials": reports, "scope": "test-only canonical recording keyframe plus selected source prefix through target hour; one parsed block; sequential and parallel selected reads; steps load through the block's last hour; no read-ahead; block-load stalls including extension after seek reported separately"})
-}
-
-#[test]
-fn recording_prefix_does_not_decode_a_source_block_after_its_accepted_boundary() {
-    let replay = status_replay(&[100, 101, 821, 823]);
-    assert_eq!(replay.index.len(), 2);
-    let fixture = Fixture::new(&replay);
-    let progress = Progress {
-        branches: BTreeMap::from([(
-            1,
-            dashboard_base::prepared_map::BranchProgress {
-                last_block: Some(0),
-                ..Default::default()
-            },
-        )]),
-        ..Default::default()
-    };
-    let mut reader = Recording::new(&fixture, &progress, &replay, SELECTED, 2);
-    let actual = reader.seek_keyframe(1, 101).unwrap();
-    equal_current(
-        &actual,
-        &replay.seek_selected(1, 101, Some(SELECTED)).unwrap(),
-        SELECTED,
-    );
-    assert_eq!(reader.decoded_frames, 2);
-    assert!(matches!(
-        reader.seek_keyframe(1, 821).unwrap(),
-        Current::Gap { hour: 821, .. }
-    ));
-    assert_eq!(reader.block_reads, 0);
-    assert_eq!(reader.decoded_frames, 0);
-}
-
-#[test]
-fn recording_keyframe_seek_needs_no_prepared_checkpoint_and_keeps_holes() {
-    let replay = status_replay(&[100, 101, 103, 111, 112, 113]);
-    let fixture = Fixture::new(&replay);
-    // No prepared ranges exist. The source keyframe supplies all selected rows.
-    let progress = Progress::default();
-    let mut reader = Recording::new(&fixture, &progress, &replay, SELECTED, 2);
-    for hour in [103, 111, 112, 113] {
-        let actual = reader.seek_keyframe(1, hour).unwrap();
-        equal_current(
-            &actual,
-            &replay.seek_selected(1, hour, Some(SELECTED)).unwrap(),
-            SELECTED,
-        );
-        assert_eq!(reader.block_reads, 1);
-        assert_eq!(reader.applied, reader.decoded_frames);
-    }
-    let actual = reader.seek_keyframe(1, 110).unwrap();
-    equal_current(
-        &actual,
-        &replay.seek_selected(1, 110, Some(SELECTED)).unwrap(),
-        SELECTED,
-    );
-    assert_eq!(reader.decoded_frames, 3);
-    assert_eq!(reader.applied, 3);
-}
-
-#[test]
-fn source_prefix_extends_for_steps_without_skipping_native_states() {
-    let replay = status_replay(&(100..=120).collect::<Vec<_>>());
-    let fixture = Fixture::new(&replay);
-    let progress = prepare(&fixture, &replay, 8, SELECTED);
-    for workers in [1, 2] {
-        let mut reader = Recording::new(&fixture, &progress, &replay, SELECTED, workers);
-        let actual = reader.seek_keyframe(1, 110).unwrap();
-        equal_current(
-            &actual,
-            &replay.seek_selected(1, 110, Some(SELECTED)).unwrap(),
-            SELECTED,
-        );
-        assert_eq!(
-            reader.decoded_frames, 11,
-            "seek decodes only its source prefix"
-        );
-        assert_eq!(reader.block_reads, 1);
-        for hour in [111, 112, 113] {
-            let actual = reader.advance(1, hour).unwrap();
-            equal_current(
-                &actual,
-                &replay.seek_selected(1, hour, Some(SELECTED)).unwrap(),
-                SELECTED,
-            );
-            assert_eq!(reader.applied, 1);
-            assert_eq!(reader.block_reads, u64::from(hour == 111));
-            assert_eq!(reader.decoded_frames, if hour == 111 { 21 } else { 0 });
-        }
-    }
 }

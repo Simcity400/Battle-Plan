@@ -1680,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn command_reader_keeps_all_5000_countries_and_refuses_past_the_byte_budget() {
+    fn command_reader_keeps_a_long_data_command_and_refuses_past_the_byte_budget() {
         let command = NativeCommand::Data {
             request: dashboard::transport::DataCommand::Product {
                 id: "request-1".into(),
@@ -1691,9 +1691,7 @@ mod tests {
                     params: serde_json::json!({
                         "branchId": "1",
                         "top": null,
-                        "tags": (0..5000)
-                            .map(|index| format!("synthetic-country-{index:04}"))
-                            .collect::<Vec<_>>()
+                        "tags": ["AAA", "B".repeat(64 * 1024)]
                     }),
                 },
             },

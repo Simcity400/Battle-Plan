@@ -41,9 +41,6 @@ impl CoordinatorProfile {
     pub(super) fn new() -> Self {
         Self(profiling())
     }
-    fn snapshot(&self, _at: Stamp) -> [Duration; 3] {
-        [Duration::ZERO; 3]
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -117,7 +114,6 @@ struct Record {
     assembly_blocks: [Duration; 3],
 }
 struct Inner {
-    coordinator: CoordinatorProfile,
     record: Mutex<Record>,
 }
 impl Drop for Inner {
@@ -146,7 +142,6 @@ impl TargetTrace {
         };
         static TARGET: AtomicU64 = AtomicU64::new(1);
         Self(Some(Arc::new(Inner {
-            coordinator: coordinator.clone(),
             record: Mutex::new(Record {
                 id: TARGET.fetch_add(1, Ordering::Relaxed),
                 epoch,
@@ -164,26 +159,22 @@ impl TargetTrace {
                 emitted: false,
                 decodes: Vec::new(),
                 parts: Default::default(),
-                dispatch_blocks: coordinator.snapshot(dispatch),
+                dispatch_blocks: [Duration::ZERO; 3],
                 assembly_blocks: [Duration::ZERO; 3],
             }),
         })))
     }
-    fn update(&self, work: impl FnOnce(&Inner, &mut Record, Stamp)) {
+    fn update(&self, work: impl FnOnce(&mut Record, Stamp)) {
         if let Some(inner) = &self.0 {
             let at = now(true).expect("enabled");
-            work(
-                inner,
-                &mut inner.record.lock().unwrap_or_else(|p| p.into_inner()),
-                at,
-            );
+            work(&mut inner.record.lock().unwrap_or_else(|p| p.into_inner()), at);
         }
     }
     pub(super) fn enabled(&self) -> bool {
         self.0.is_some()
     }
     pub(super) fn ticket(&self, ticket: u64) {
-        self.update(|_, r, _| r.ticket = Some(ticket));
+        self.update(|r, _| r.ticket = Some(ticket));
     }
     pub(super) fn decoded(
         &self,
@@ -193,7 +184,7 @@ impl TargetTrace {
         sample: Option<DecodeSample>,
     ) {
         if let Some(request) = request {
-            self.update(|_, r, returned| {
+            self.update(|r, returned| {
                 r.decodes.push(Decode {
                     branch,
                     hour,
@@ -214,7 +205,7 @@ impl TargetTrace {
         sample: Option<DecodeSample>,
     ) {
         if let Some(request) = request {
-            self.update(|_, r, returned| {
+            self.update(|r, returned| {
                 let mut line = format!(
                     "PROFILE hour_colour_read id {} ticket {} decode=",
                     r.id,
@@ -236,50 +227,48 @@ impl TargetTrace {
         }
     }
     pub(super) fn enqueue(&self, name: &str) {
-        self.part(name, |_, p, at| p.enqueue = Some(at));
+        self.part(name, |p, at| p.enqueue = Some(at));
     }
     pub(super) fn accepted(&self, name: &str) {
-        self.part(name, |_, p, at| p.accepted = Some(at));
+        self.part(name, |p, at| p.accepted = Some(at));
     }
     pub(super) fn start(&self, name: &str) {
-        self.part(name, |_, p, at| {
+        self.part(name, |p, at| {
             p.start = Some(at);
             p.state = "running";
         });
     }
     pub(super) fn finish(&self, name: &str, state: &'static str) {
-        self.part(name, |inner, p, at| {
+        self.part(name, |p, at| {
             p.finish = Some(at);
-            p.ready_blocks = inner.coordinator.snapshot(at);
             p.state = state;
         });
     }
-    fn part(&self, name: &str, work: impl FnOnce(&Inner, &mut Part, Stamp)) {
-        self.update(|inner, r, at| {
+    fn part(&self, name: &str, work: impl FnOnce(&mut Part, Stamp)) {
+        self.update(|r, at| {
             if let Some(index) = PARTS.iter().position(|part| *part == name) {
-                work(inner, &mut r.parts[index], at);
+                work(&mut r.parts[index], at);
             }
         });
     }
     pub(super) fn assembled(&self) {
-        self.update(|inner, r, at| {
+        self.update(|r, at| {
             r.assembly = Some(at);
-            r.assembly_blocks = inner.coordinator.snapshot(at);
             r.state = "assembled";
         });
     }
     pub(super) fn sending(&self) {
-        self.update(|_, r, at| {
+        self.update(|r, at| {
             r.send_start = Some(at);
             r.state = "unread";
         });
     }
     pub(super) fn sent(&self) {
-        self.update(|_, r, at| r.send_finish = Some(at));
+        self.update(|r, at| r.send_finish = Some(at));
         self.emit_delivered();
     }
     pub(super) fn delivered(&self) {
-        self.update(|_, r, at| {
+        self.update(|r, at| {
             r.delivery = Some(at);
             r.state = "delivered";
         });
@@ -432,14 +421,6 @@ mod tests {
         assert!(trace.0.is_none());
         assert!(now(false).is_none());
         assert!(DecodeClock::start(false).finish(2, 3).is_none());
-    }
-    #[test]
-    fn target_trace_nonblocking_coordinator_has_zero_wait_cause_totals() {
-        for enabled in [false, true] {
-            let coordinator = CoordinatorProfile(enabled);
-            assert_eq!(coordinator.snapshot(at(17)), [Duration::ZERO; 3]);
-            assert_eq!(coordinator.snapshot(at(21)), [Duration::ZERO; 3]);
-        }
     }
     #[test]
     fn target_trace_line_preserves_speculation_zeros_missing_and_fixed_part_order() {

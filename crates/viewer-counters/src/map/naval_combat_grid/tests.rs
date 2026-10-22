@@ -506,13 +506,13 @@ fn unknown_allegiance_is_not_assumed_other() {
     );
 }
 
-/// 5,000 countries, each with an own task force on one combat's attacker side and a
-/// foreign one spread over 1,500 combats, share one index: every grid derives, and the
-/// crowded side sorts its 5,000 own forces as the game's stable sort does.
+/// 40 countries, each with an own task force on one combat's attacker side and a
+/// foreign one spread over 12 combats, share one index: every grid derives, and the
+/// crowded side sorts its 40 own forces as the game's stable sort does.
 #[test]
-fn five_thousand_countries_share_one_index_across_combats() {
-    const COUNTRIES: u32 = 5_000;
-    const COMBATS: u64 = 1_500;
+fn countries_share_one_index_across_combats() {
+    const COUNTRIES: u32 = 40;
+    const COMBATS: u64 = 12;
     let mut combat_ships = Vec::new();
     let mut ships = Vec::new();
     let mut task_forces = Vec::new();

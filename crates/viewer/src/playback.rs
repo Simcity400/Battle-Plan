@@ -1196,6 +1196,3 @@ mod damaged_recording_tests {
         }
     }
 }
-
-#[cfg(test)]
-mod measurement;

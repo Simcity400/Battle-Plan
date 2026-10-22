@@ -78,7 +78,6 @@ pub(super) fn append(
         context,
         out,
         super::naval_mines::build(context.content, context.frame, context.vision, region, true),
-        1,
     );
     access_section(context, out, access(context, region));
     let region_content = match context.content.strategic_regions.get(&region) {
@@ -549,25 +548,9 @@ fn section(context: &Context<'_>, out: &mut Tooltip, name: &str, value: Result<S
         Err(reason) => out.refuse(name, reason),
     }
 }
-pub(super) fn merge_sections(
-    context: &Context<'_>,
-    out: &mut Tooltip,
-    value: Tooltip,
-    _gap: usize,
-) {
+pub(super) fn merge_sections(context: &Context<'_>, out: &mut Tooltip, value: Tooltip) {
     if !value.title.is_empty() {
         separation(context, out);
-        out.title.push_str(&value.title);
-    }
-    for (reason, count) in value.refused {
-        *out.refused.entry(reason).or_default() += count;
-    }
-}
-
-#[cfg(test)]
-pub(super) fn merge(out: &mut Tooltip, value: Tooltip, gap: usize) {
-    if !value.title.is_empty() {
-        ensure_newlines(&mut out.title, gap);
         out.title.push_str(&value.title);
     }
     for (reason, count) in value.refused {
@@ -634,20 +617,8 @@ mod tests {
         );
     }
     #[test]
-    fn equal_targets_do_not_demand_unused_cadence_defines_and_gap_merge_keeps_refusals() {
+    fn equal_targets_do_not_demand_unused_cadence_defines() {
         let row = NavalSupremacyRow::default();
         assert!(current_text(&row, 0, &Defines::default(), |key, _| Ok(key.into())).is_ok());
-        let mut out = Tooltip {
-            title: "first".into(),
-            ..Default::default()
-        };
-        let mut second = Tooltip {
-            title: "next".into(),
-            ..Default::default()
-        };
-        second.refuse("exact operand", "missing".into());
-        merge(&mut out, second, 2);
-        assert_eq!(out.title, "first\n\nnext");
-        assert_eq!(out.refused["exact operand: missing"], 1);
     }
 }

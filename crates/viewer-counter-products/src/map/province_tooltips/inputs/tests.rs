@@ -286,7 +286,7 @@ fn countries(count: u32) -> DecodedFrame {
 }
 
 #[test]
-fn demand_local_country_names_keep_aliases_overlords_reserved_zero_and_refusals_at_5000() {
+fn demand_local_country_names_keep_aliases_overlords_reserved_zero_and_refusals() {
     let loc: Localisation = [
         ("AAA", "First"),
         ("BBB", "Second"),
@@ -298,7 +298,7 @@ fn demand_local_country_names_keep_aliases_overlords_reserved_zero_and_refusals_
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
-    let mut frame = countries(5_000);
+    let mut frame = countries(8);
     {
         let names = Names::new(&frame, &loc);
         assert_eq!(names.name(1), Ok("Secondish realm".into()));

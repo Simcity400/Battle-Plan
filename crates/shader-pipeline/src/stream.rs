@@ -231,8 +231,13 @@ impl Stream {
             }
             _ => false,
         };
-        program
-            && self.vertex_strides == other.vertex_strides
+        program && self.same_state(other) && self.textures == other.textures
+    }
+
+    /// Strides, states, samplers, depth-stencil, rasterizer and constants compare equal.
+    #[cfg(any(test, feature = "test-support"))]
+    fn same_state(&self, other: &Self) -> bool {
+        self.vertex_strides == other.vertex_strides
             && self.state.blend == other.state.blend
             && self.state.write_mask == other.state.write_mask
             && self
@@ -249,7 +254,6 @@ impl Stream {
             && self.rasterizer.as_ref().map(raster_key) == other.rasterizer.as_ref().map(raster_key)
             && self.constants == other.constants
             && self.known_constants == other.known_constants
-            && self.textures == other.textures
     }
 
     /// Independent-owner fixture comparison: shader sources, defines, layouts,
@@ -270,23 +274,7 @@ impl Stream {
             _ => false,
         };
         program
-            && self.vertex_strides == other.vertex_strides
-            && self.state.blend == other.state.blend
-            && self.state.write_mask == other.state.write_mask
-            && self
-                .state
-                .samplers
-                .iter()
-                .map(|(k, s)| (*k, gpu::sampler_key(s)))
-                .eq(other
-                    .state
-                    .samplers
-                    .iter()
-                    .map(|(k, s)| (*k, gpu::sampler_key(s))))
-            && self.depth_stencil == other.depth_stencil
-            && self.rasterizer.as_ref().map(raster_key) == other.rasterizer.as_ref().map(raster_key)
-            && self.constants == other.constants
-            && self.known_constants == other.known_constants
+            && self.same_state(other)
             && self.textures.len() == other.textures.len()
             && self.textures.iter().zip(&other.textures).all(|((a_key, a), (b_key, b))| {
                 a_key == b_key && match (a, b) {

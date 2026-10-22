@@ -1648,18 +1648,6 @@ fn add_railway_guns(
 /// The grouping pass's kind for a land counter; see `Icon::kind`.
 pub(super) const LAND_KIND: u32 = 0;
 
-/// Only camera-admitted provinces offer division sources.
-#[cfg(test)]
-pub(super) fn admitted_divisions<'a>(
-    bounds: &'a BTreeMap<u32, Bounds>,
-    admission: &'a Admission,
-    divisions: &'a [replay_data::rows::DivisionRow],
-) -> impl Iterator<Item = &'a replay_data::rows::DivisionRow> {
-    divisions
-        .iter()
-        .filter(move |division| admission.admits_province(bounds, division.province))
-}
-
 /// Division operands in province and visual-slot order. Movement stays in the hour's
 /// shared movement table and is borrowed only by camera-admitted sources.
 pub(super) type DivisionCounters = BTreeMap<StackKey, Vec<LandUnit<'static>>>;

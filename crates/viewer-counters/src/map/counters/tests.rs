@@ -696,6 +696,7 @@ fn a_base_holding_only_empty_wings_is_not_occupied() {
 /// controller shows, controller zero does not, and a province the hour does
 /// not record is withheld. Before, a province with no controller kept its
 /// icon.
+// regression: 528fb4138c Occupy a base only with planes, and show base icons only where controlled
 #[test]
 fn base_icons_need_a_controlled_province() {
     let (mut frame, _) = wings_frame(TableView::Complete(TableRows::StateFlags(Vec::new())));
@@ -708,10 +709,10 @@ fn base_icons_need_a_controlled_province() {
         province(9, 100),
         province(10, 0),
     ]));
-    let controlled = province_controlled(&frame).unwrap();
+    let controlled = controlled_provinces(&frame).unwrap();
     assert_eq!(
-        (controlled(9), controlled(10), controlled(11)),
-        (Some(true), Some(false), None)
+        (controlled.get(&9), controlled.get(&10), controlled.get(&11)),
+        (Some(&true), Some(&false), None)
     );
 }
 
@@ -3262,16 +3263,9 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
     }
     .on(MapSize::TEST, MapDefines::test());
     let bounds = edge_boxes();
-    let divisions: Vec<_> = (0..=7)
-        .map(|province| replay_data::rows::DivisionRow {
-            id: u64::from(province),
-            province,
-            ..Default::default()
-        })
-        .collect();
     let admission = Admission::new(camera, [1024, 768]);
-    let sources: Vec<_> = admitted_divisions(&bounds, &admission, &divisions)
-        .map(|division| division.id)
+    let sources: Vec<u32> = (0..=7)
+        .filter(|&province| admission.admits_province(&bounds, province))
         .collect();
     // Neither the absent box nor province zero offers a source.
     assert_eq!(sources, [1, 2, 5, 6]);
