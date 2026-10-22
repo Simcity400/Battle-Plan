@@ -154,11 +154,12 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" what="country groups" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || grouped && !groups.data) return <WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} />;
-  if (militaryAirPreparing(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!data.available) return <WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} />;
-  if (!air && selected.reason) return <WidgetState kind="unavailable" message={selected.reason} />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" what="country groups" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label={'Loading ' + title.toLowerCase() + '…'} /></>;
+  if (militaryAirPreparing(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={air ? "Aircraft losses were not recorded." : "Bombing damage was not recorded."} /></>;
+  if (!air && selected.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={selected.reason} /></>;
   const open = (row: LedgerRow, dealt: boolean) => {
     if (active && airPickRef.current === airPickOwner)
       setDrill({ owner: airScope, tag: row.tag, identity: row.identity, dealt, hour: runtime.clock.getSnapshot().playing ? null : hour });
@@ -215,14 +216,14 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
         ? { tag: widget.countries.tags[0], identity: pinnedIdentity } : null}
       from={from} hour={airAt} end={end} dealt={metric === 'dealt'} active={active} afterPlayhead={options.afterPlayhead === true} onPick={pickAirDay} pickOwner={airPickOwner} />
       : <WidgetState kind="empty" message="Choose a country to see its aircraft loss causes." />;
-    if (pinnedAir) return <div ref={root} className="military-air-ledger">
+    if (pinnedAir) return <div ref={root} className="military-air-ledger">{groupFailure}
       {!airActor && countrySlot && createPortal(<DatedCountryChip label={null} hour={airAt}
         reason={pinnedIdentity ? 'Country unavailable at this time.'
           : 'Saved country unavailable.'} />, countrySlot)}
       <p className="chart-line-key">{formatDateTime(airAt)} {liveHour != null && airActor
         && <FollowControl following={airFollowing} onFollow={followAir} onPause={() => pickAirDay(airAt)} />}</p>{detail}
     </div>;
-    return <div ref={root} className="military-air-ledger">
+    return <div ref={root} className="military-air-ledger">{groupFailure}
       <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={airOpen} title={metric === 'dealt' ? 'Enemy losses by cause' : 'Own losses by cause'}
         day={formatDateTime(airAt)} following={airFollowing} canFollow={!airChoices && !!airActor && liveHour != null} anchor={root} returnFocus=".country-race-chart canvas"
         onClose={() => { if (active && airPickRef.current === airPickOwner) dispatchAir({ type: 'close' }); }} onFollow={followAir} onPause={() => pickAirDay(airAt)}
@@ -245,7 +246,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     </div>;
   }
   const shown = drill ? drill.hour ?? clockHour ?? hour : hour;
-  return <div ref={root} className="military-air-ledger">
+  return <div ref={root} className="military-air-ledger">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={!!drill} title="Bombing damage breakdown" day={formatDateTime(shown)} following={drill?.hour === null}
       canFollow={!!drill && liveHour != null} anchor={root}
       onClose={() => { if (active && airPickRef.current === airPickOwner) setDrill(null); }}

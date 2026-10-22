@@ -25,6 +25,7 @@ use crate::{
         native::{self, Field, Shape},
     },
     scope::ScopeKind,
+    script_files::ScriptPath,
     triggers::{self, Triggers},
 };
 use std::{
@@ -754,10 +755,10 @@ pub struct Characters {
     /// Portraits by character, then (category, size): `civilian`/`army` and `large`/`small`.
     portraits: BTreeMap<String, BTreeMap<(String, String), Authored>>,
     /// Each read template's roles by the file and line the game
-    /// stores on it (see [`LeaderTemplate`]), with its tag.
-    built: BTreeMap<(String, u32), Vec<TaggedRoles>>,
-    /// Files whose templates cannot all be placed by line, and why.
-    unplaced: BTreeMap<String, String>,
+    /// stores on it (see [`LeaderTemplate`]), with its tag and byte-exact file path.
+    built: BTreeMap<(Vec<u8>, u32), Vec<TaggedRoles>>,
+    /// Files whose templates cannot all be placed by line, and why, by their paths' bytes.
+    unplaced: BTreeMap<Vec<u8>, String>,
     /// Which file decides each advisor's idea token, and the files that
     /// stop short.
     pub(crate) advisor_coverage: Coverage,
@@ -859,7 +860,7 @@ impl Characters {
         let file = String::from_utf8_lossy(&built.file).into_owned();
         let candidates: Vec<&Vec<AdvisorRole>> = u32::try_from(built.line)
             .ok()
-            .and_then(|line| self.built.get(&(file.clone(), line)))
+            .and_then(|line| self.built.get(&(built.file.clone(), line)))
             .into_iter()
             .flatten()
             .filter(|roles| roles.tag.eq_ignore_ascii_case(&built.tag))
@@ -868,7 +869,7 @@ impl Characters {
         let roles = match candidates.as_slice() {
             [roles] => roles,
             [] => {
-                return Err(match self.unplaced.get(&file) {
+                return Err(match self.unplaced.get(&built.file) {
                     Some(reason) => format!(
                         "{disagree}, and the templates of {file} cannot be placed by line: {reason}"
                     ),
@@ -1246,7 +1247,7 @@ pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut tokens = BTreeSet::new();
     for path in paths(layers) {
         let read = native::read(
-            &layers.read(&path)?,
+            &path.read(layers)?,
             native::Mode::SkipMark,
             native::Top::File(false),
             None,
@@ -1271,7 +1272,7 @@ pub fn tokens(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
 
 /// Direct `.txt` files under `common/characters` in load order;
 /// see [`crate::script_files::paths`].
-pub fn paths(layers: &ResolvedLayers) -> Vec<String> {
+pub fn paths(layers: &ResolvedLayers) -> Vec<crate::script_files::ScriptPath> {
     crate::script_files::paths(layers, "common/characters/", Some(".txt"))
 }
 
@@ -1351,12 +1352,12 @@ impl Characters {
     /// database makes of the same file, in the same order, with their lines
     /// ([`parse_leader_templates`]). A template whose tag differs from its
     /// character's leaves that one and the rest unplaced, named.
-    fn place(&mut self, path: &str, input: &[u8], roles: TemplateRoles) {
+    fn place(&mut self, path: &ScriptPath, input: &[u8], roles: TemplateRoles) {
         let templates = match parse_leader_templates(path, input) {
             Ok(templates) => templates,
             Err(error) => {
                 self.unplaced.insert(
-                    path.to_owned(),
+                    path.as_bytes().to_vec(),
                     format!("its lines cannot be read: {error}"),
                 );
                 return;
@@ -1370,7 +1371,7 @@ impl Characters {
                     Some(site) if site.tag == token => site.line,
                     other => {
                         self.unplaced.insert(
-                            path.to_owned(),
+                            path.as_bytes().to_vec(),
                             format!(
                                 "character {token}'s template is read as {} in the database's order",
                                 other.as_ref().map_or("none".to_owned(), |site| format!(
@@ -1385,12 +1386,12 @@ impl Characters {
                 match line {
                     Some(line) => self
                         .built
-                        .entry((path.to_owned(), line))
+                        .entry((path.as_bytes().to_vec(), line))
                         .or_default()
                         .push(template_roles),
                     None => {
                         self.unplaced.insert(
-                            path.to_owned(),
+                            path.as_bytes().to_vec(),
                             format!("character {token} has a template the database never reads"),
                         );
                         return;
@@ -1470,9 +1471,10 @@ pub fn read(
     let mut result = templates;
     let mut warnings = Vec::new();
     let names = layers.key_names()?;
-    for path in paths(layers) {
+    for listed in paths(layers) {
+        let path = listed.to_string();
         result.next_file();
-        let input = layers.read(&path)?;
+        let input = listed.read(layers)?;
         match parse_file(&input, &names) {
             Ok((mut file, stop, roles)) => {
                 warnings.extend(
@@ -1484,7 +1486,7 @@ pub fn read(
                 if let Some(cause) = stop {
                     result.gap(&path, &cause);
                 }
-                file.place(&path, &input, roles);
+                file.place(&listed, &input, roles);
                 result.merge(file);
             }
             Err(error) => {
@@ -1516,8 +1518,8 @@ fn is_key(item: &Item, key: &str) -> bool {
 /// and skips unread. Template reads store the starting file and line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LeaderTemplate {
-    /// The file as the database lists it.
-    pub path: String,
+    /// Byte-exact file path, matching what the game stores on the template.
+    pub path: ScriptPath,
     /// The authored character token used as its template tag.
     pub tag: String,
     /// The template read starts at the character block's `{`, or an
@@ -1530,14 +1532,14 @@ pub struct LeaderTemplate {
 
 /// The templates one character block makes, in database order.
 fn character_templates(
-    path: &str,
+    path: &ScriptPath,
     tag: &str,
     value: &Value,
     lines: &BTreeMap<*const Value, parser::BlockLines>,
     roles: &[&str],
 ) -> Vec<LeaderTemplate> {
     let template = |line: Option<u32>, role| LeaderTemplate {
-        path: path.to_owned(),
+        path: path.clone(),
         tag: tag.to_owned(),
         line,
         role,
@@ -1644,11 +1646,14 @@ fn index_lines(
 
 /// The templates of one characters file, in database order. Only `characters`
 /// roots are read; others are reported.
-pub fn parse_leader_templates(path: &str, input: &[u8]) -> io::Result<Vec<LeaderTemplate>> {
+pub fn parse_leader_templates(
+    path: &ScriptPath,
+    input: &[u8],
+) -> io::Result<Vec<LeaderTemplate>> {
     parse_visibility_templates(path, input, &UNIT_LEADER_ROLES)
 }
 fn parse_visibility_templates(
-    path: &str,
+    path: &ScriptPath,
     input: &[u8],
     roles: &[&str],
 ) -> io::Result<Vec<LeaderTemplate>> {
@@ -1751,8 +1756,8 @@ fn visibility_templates(
         .map_err(|error| format!("common/characters cannot be listed: {error}"))?;
     let mut templates = Vec::new();
     for path in paths {
-        let bytes = layers
-            .read_uncovered(&path)
+        let bytes = path
+            .read_uncovered(layers)
             .map_err(|error| format!("{path} cannot be read: {error}"))?;
         templates.extend(
             parse_visibility_templates(&path, &bytes, roles)
@@ -1789,7 +1794,8 @@ add_scientist_role={scientist={
     fn scientist_visibility_uses_its_own_role_and_retains_instance_origin() {
         let input=b"characters={c={field_marshal={visible={always=no}} scientist={visible={always=yes} VISIBLE={has_country_flag=mod_science}}} d={instance={allowed={} scientist={}}}}";
         let templates =
-            parse_visibility_templates("common/characters/mod.txt", input, &["scientist"]).unwrap();
+            parse_visibility_templates(&"common/characters/mod.txt".into(), input, &["scientist"])
+                .unwrap();
         assert_eq!(templates.len(), 2);
         assert_eq!(
             templates[0].role.as_ref().unwrap().as_ref().unwrap().len(),
@@ -2053,12 +2059,14 @@ add_scientist_role={scientist={
         assert!(characters.advisor("").unwrap().is_none());
         assert_eq!(characters.leader("c", "").unwrap().unwrap().ideology, "");
         assert!(characters.notes[0].1.contains("native role defaults"));
+        let file = b"common/characters/\x80test.txt";
         characters.place(
-            "common/characters/test.txt",
+            &ScriptPath::new(file.to_vec()),
             b"characters={c={advisor={slot=army_chief} country_leader={desc=only_desc}}}",
             roles,
         );
         assert!(!characters.built.is_empty());
+        assert!(characters.built.keys().all(|(path, _)| path == file));
     }
 
     const FILE: &[u8] = br#"characters = {
@@ -2470,7 +2478,7 @@ add_scientist_role={scientist={
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let templates = parse_leader_templates(
-            "common/characters/X.txt",
+            &"common/characters/X.txt".into(),
             br#"characters = {
     plain = { field_marshal = { skill = 2 visible = { has_government = neutrality } } }
     joined = {

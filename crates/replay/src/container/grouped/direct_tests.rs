@@ -652,6 +652,45 @@ fn replace_columns(replay: &Replay, table: TableId, raw: &[u8]) -> (BlockIndex, 
     (index, bytes)
 }
 
+/// Oversized frame counts must not wrap into a valid signed-hour range.
+#[test]
+fn a_frame_count_beyond_any_hour_range_is_refused_before_decoding() {
+    let (replay, _) = fixture(LAYOUTS[0]);
+    let original = &replay.index[0];
+    let bytes = replay.block_bytes(original).unwrap();
+    let directory = Directory::parse(&bytes, original).unwrap();
+    let sections: Vec<_> = directory
+        .sections
+        .iter()
+        .enumerate()
+        .filter_map(|(id, section)| section.as_ref().map(|&section| (id, section)))
+        .collect();
+    let mut header = Vec::new();
+    put_varint(&mut header, 1_u128 << 63);
+    put_varint(&mut header, sections.len() as u128);
+    for &(id, (_, length, raw)) in &sections {
+        put_varint(&mut header, id as u128);
+        put_varint(&mut header, raw as u128);
+        put_varint(&mut header, length as u128);
+    }
+    let mut crafted = directory.layout.magic().to_vec();
+    crafted.extend_from_slice(&crc32fast::hash(&header).to_le_bytes());
+    crafted.extend_from_slice(&header);
+    for &(_, (offset, length, _)) in &sections {
+        crafted.extend_from_slice(&bytes[offset..offset + length]);
+    }
+    let mut index = original.clone();
+    index.length = crafted.len() as u64;
+    for last_hour in [index.first_hour, index.last_hour] {
+        index.last_hour = last_hour;
+        let error = Directory::parse(&crafted, &index).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "grouped frame count disagrees with its hour range"
+        );
+    }
+}
+
 #[test]
 fn direct_delta_malformed_columns_have_fixed_refusals_in_every_layout() {
     let mut rejected = 0;

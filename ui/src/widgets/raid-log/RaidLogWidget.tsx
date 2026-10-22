@@ -70,12 +70,13 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
     total: rows.length, hour, from, rows: rows.map(row => ({ id: row.id, hour: row.hour, item: row.item })) }));
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raids." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading raids…" />;
-  if (data.available !== true && preparedPrefix(data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} />;
-  if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raids unavailable.'} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading raids…" /></>;
+  if (data.available !== true && preparedPrefix(data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} /></>;
+  if (data.available !== true) return <>{groupFailure}<WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raids unavailable.'} /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!inBranch) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const chosen = contentSet(types);
   const renderRow = (row: LogRow<RaidAt>) => {
@@ -94,7 +95,7 @@ export default function RaidLogWidget({ widget, runtime, active, onDiagnostics, 
       <span className="log-tag">{raidTypeName(type)}</span>
     </>;
   };
-  return <div ref={root} className="log-widget">
+  return <div ref={root} className="log-widget">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(data as { exact?: number }).exact} />
     {log.chips && chips.length > 0 && <div className="log-chips"><ChipSet label="Raid types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
       chips={[{ value: '', label: 'All types' }, ...chips]} onToggle={value => {

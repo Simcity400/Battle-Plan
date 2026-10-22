@@ -187,8 +187,9 @@ export default function MapAppearance({ source, client, global = false, viewId, 
       </div>
       {source && shownFilter.kind === 'countries' && <div className="map-counter-countries">
         <CountryPicker source={source} client={client} countries={source.metadata.countries} playerCountryId={source.metadata.playerCountryId ?? null} selectedTag={null} field chosen={chosen}
-          addLabel={`${chosen.length} ${chosen.length === 1 ? 'country' : 'countries'}: add or remove`} onChange={tag => {
-            if (!tag || !draft) return;
+          disabled={!enabled} addLabel={`${chosen.length} ${chosen.length === 1 ? 'country' : 'countries'}: add or remove`} onChange={tag => {
+            // Applying replaces the draft with what was saved, so no edit is taken meanwhile.
+            if (!tag || !draft || !enabled) return;
             setDraft({ ...draft, counters: { kind: 'countries', tags: chosen.includes(tag) ? chosen.filter(item => item !== tag) : [...chosen, tag] } });
           }} />
       </div>}

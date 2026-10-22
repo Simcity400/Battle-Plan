@@ -251,7 +251,7 @@ pub fn base_save_xp(
     if cost == 0 {
         return Ok(0);
     }
-    let families = content.designer_families(equipment(frame, source, content)?);
+    let families = content.designer_families(equipment(frame, source, content)?)?;
     if families.iter().any(|family| *family) {
         let [features] = frame
             .complete::<tables::SimulationFeatures>()
@@ -335,7 +335,7 @@ pub fn module_save_xp(
     if base.wrapping_add(applied_slots) == 0 {
         return Ok(0);
     }
-    let [tank, air, ship] = content.designer_families(equipment);
+    let [tank, air, ship] = content.designer_families(equipment)?;
     let family = if ship {
         0x1d8
     } else if tank {

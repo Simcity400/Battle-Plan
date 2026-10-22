@@ -103,16 +103,17 @@ export default function AcesWidget({ widget, runtime, active, onDiagnostics, set
   if (!track) return <WidgetState kind="empty" icon="star" message="Load a campaign to see its aces." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (loaded.error && !display) return <WidgetState kind="error" detail={loaded.error} onRetry={loaded.retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading aces…" />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data.available) return <WidgetState kind="unavailable" message={preparing ? "Aces were not recorded at this time." : "Aces: Not in this recording."} />;
-  if (!recorded) return <WidgetState kind="unavailable" message="Aces were not recorded at this time." />;
-  if (!display) return <WidgetState kind="loading" label="Loading aces..." />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading aces…" /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={preparing ? "Aces were not recorded at this time." : "Aces: Not in this recording."} /></>;
+  if (!recorded) return <>{groupFailure}<WidgetState kind="unavailable" message="Aces were not recorded at this time." /></>;
+  if (!display) return <>{groupFailure}<WidgetState kind="loading" label="Loading aces..." /></>;
   // Aces are matched at the hour read: a country whose membership there is still being prepared is not known to be left out.
-  if (!rows.length && read !== null && !match.known(read)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!rows.length) return <WidgetState kind="empty" icon="star" message="No aces match these settings." />;
-  return <div ref={root} className="aces-widget">{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
+  if (!rows.length && read !== null && !match.known(read)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="star" message="No aces match these settings." /></>;
+  return <div ref={root} className="aces-widget">{groupFailure}{preparing && <p className="chart-line-key" role="status">Ace and death dates are still being prepared. Current roster sorted by name.</p>}{(pending || loaded.error) && <div className="aces-loading" role="status">{loaded.error ? 'Couldn’t load aces.' : 'Updating…'}{loaded.error && <button onClick={loaded.retry}>Retry</button>}</div>}<Table key={identity} label="Aces" rows={rows} columns={columns} rowKey={keyOf} sort={sort} setOption={setOption}
     rowHeight={50} cellBars={false} rankMarkers={false} density="comfortable" narrow={narrowTableOf(options)}
     muted={row => !row.run.alive} menu={row => row.preparing ? [] : [jumpItem(runtime, track.id, aceJump(row))]} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={speed}
     {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, item: aceRowModel } } : {})} /></div>;

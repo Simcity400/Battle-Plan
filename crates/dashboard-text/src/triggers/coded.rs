@@ -24,6 +24,24 @@ fn field_name(item: &Item) -> Option<String> {
         .map(|keyword| String::from_utf8_lossy(&keyword.folded()).into_owned())
 }
 
+/// Non-map country triggers need only their declared core tables; map triggers need all.
+fn country_core(name: &str) -> Option<&'static [replay_data::rows::TableId]> {
+    use replay_data::rows::TableId::{Countries, CountryLinks};
+    Some(match name {
+        "has_stability" | "has_war_support" | "num_of_controlled_states" | "exists"
+        | "has_focus_tree" => &[Countries],
+        "is_neighbor_of" | "has_template" | "has_civil_war" | "has_dynamic_modifier"
+        | "is_ally_with" => &[Countries, CountryLinks],
+        "has_tech" | "has_war" | "is_ai" | "has_idea_with_trait" | "is_in_tech_sharing_group"
+        | "has_war_with" | "is_in_faction_with" | "is_faction_leader" | "is_subject"
+        | "has_elections" | "is_special_project_completed" | "num_of_nukes"
+        | "has_country_leader" | "has_country_leader_with_trait" | "has_idea"
+        | "has_cosmetic_tag" | "is_subject_of" | "has_any_captured_general"
+        | "is_leader_visible" => &[CountryLinks],
+        _ => return None,
+    })
+}
+
 impl Evaluator<'_, '_> {
     /// The country-scope triggers (accepted scope 4)
     /// this evaluator reproduces, on the
@@ -138,7 +156,14 @@ impl Evaluator<'_, '_> {
                 }
             }));
         }
-        self.core()?;
+        match country_core(name) {
+            Some(tables) => {
+                for &table in tables {
+                    world.table_status(table)?;
+                }
+            }
+            None => self.core()?,
+        }
         let is = |value: bool| -> Option<Eval> {
             // Simple boolean assignment
             // retains false on a failed read.

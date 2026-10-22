@@ -126,19 +126,20 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
   useDiagnostics(onDiagnostics, diagnostics);
   if (!track) return <WidgetState kind="empty" icon="handshake" message="Load a campaign to see opinions." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error && widget.countries.kind === 'group') return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (resolved?.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-  if (options.show === PAIR.id) return savedPair
+  const groupFailure = groups.error && widget.countries.kind === 'group' ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (resolved?.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
+  if (options.show === PAIR.id) return <>{groupFailure}{savedPair
     ? <PairHistory runtime={runtime} track={track} pair={savedPair} hour={hour} active={active} />
-    : <WidgetState kind="empty" message="Choose a pair: click a cell in a Diplomatic relations matrix and pin it." />;
+    : <WidgetState kind="empty" message="Choose a pair: click a cell in a Diplomatic relations matrix and pin it." />}</>;
   // A group with no member found yet says what the hour was once read, not that too few were chosen.
   const none = resolved && noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
-  if (none) return <NoMembersState reason={none.reason} icon="handshake" />;
+  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="handshake" /></>;
   // A group's members at an hour still being prepared are not known yet: too few is not proof.
-  if (tags.length < 2 && resolved && !resolved.known(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (tags.length < 2) return <WidgetState kind="empty" icon="handshake" message="Choose at least two countries." />;
-  if (opinions.error) return <WidgetState kind="error" detail={opinions.error} onRetry={opinions.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading opinions…" />;
+  if (tags.length < 2 && resolved && !resolved.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (tags.length < 2) return <>{groupFailure}<WidgetState kind="empty" icon="handshake" message="Choose at least two countries." /></>;
+  if (opinions.error) return <>{groupFailure}<WidgetState kind="error" detail={opinions.error} onRetry={opinions.retry} /></>;
+  if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading opinions…" /></>;
   const main = <HeatMatrix label="Opinions" rows={axis} columns={axis} cell={cell} revision={`${data.hour}:${ordered.join(',')}:${low}:${high}:${grey}`} active={active && (!picked || options.drill === 'popout')}
     tooltip={tooltip} onVisible={(rows, columns) => setVisibleTags(previous => { const next = [...new Set([...rows, ...columns])];
       return previous.length === next.length && previous.every((tag, index) => tag === next[index]) ? previous : next; })}
@@ -146,7 +147,7 @@ export default function DiplomaticRelationsWidget({ widget, runtime, active, onD
     menu={(row) => { const read = data.owners.find(owner => owner.tag === ordered[row])?.readHour; return read != null && read !== hour ? [jumpItem(runtime, track.id, read)] : []; }}
     legend={[{ id: 'low', label: low < 0 ? opinionText(low) : '0', color: low < 0 ? tokens.error : grey }, { id: 'zero', label: '0', color: grey },
       { id: 'high', label: high > 0 ? opinionText(high) : '0', color: high > 0 ? tokens.positive : grey }]} />;
-  return <div ref={anchor} className="diplomatic-relations">
+  return <div ref={anchor} className="diplomatic-relations">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null && picked != null} title="Pair history" day={dayLabel(hour)}
       following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} onFollow={() => {}}
       onPin={picked ? () => { const pinned = pinnedBreakdown(widget, PAIR, track.id);

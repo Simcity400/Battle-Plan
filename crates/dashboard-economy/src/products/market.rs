@@ -31,7 +31,7 @@
 //! reads; only variants the market names are published.
 
 use super::keyed::{
-    EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of,
+    EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of, clip_text, selected_spans,
 };
 use dashboard_base::{
     invalid,
@@ -613,8 +613,8 @@ pub fn history(
         reply.warnings = warnings;
         return Ok(reply);
     };
-    let chosen: Option<BTreeSet<u32>> = (!params.tags.is_empty())
-        .then(|| published.holder_spans(&params.tags).into_keys().collect());
+    let chosen: Option<BTreeMap<u32, Vec<(i32, i32)>>> =
+        (!params.tags.is_empty()).then(|| published.holder_spans(&params.tags));
     let all = [(i32::MIN, i32::MAX)];
     let table = match params.view {
         MarketView::Contracts | MarketView::Requests => 1,
@@ -665,6 +665,7 @@ pub fn history(
     let mut holders = BTreeSet::new();
     let item = |published: &mut Published<'_, Field, Extra>,
                     named: &mut BTreeSet<u64>,
+                    spans: &[(i32, i32)],
                     id: u64,
                     pool: u8,
                     ordinal: u32,
@@ -675,7 +676,7 @@ pub fn history(
             pool,
             ordinal,
             variant: format!("{variant:x}"),
-            amounts: published.text(id, &all)?,
+            amounts: published.text(id, spans)?,
         })
     };
     let party = |runs: &[EconomyRun]| -> Vec<u32> {
@@ -694,18 +695,15 @@ pub fn history(
     };
     for ((owner, handle, _kind), fields) in owners {
         published.check()?;
-        let skipped = |parties: &[u32]| {
-            chosen.as_ref().is_some_and(|chosen| {
-                !chosen.contains(&owner) && !parties.iter().any(|party| chosen.contains(party))
-            })
-        };
         match params.view {
             MarketView::Contracts | MarketView::Requests => {
                 let buyer = counterpart(&mut published, &fields, |field| matches!(field, Field::ContractBuyer(..)))?;
-                let buyers = party(&buyer);
-                if skipped(&buyers) {
+                let spans = selected_spans(chosen.as_ref(), &[owner], &buyer);
+                if spans.is_empty() {
                     continue;
                 }
+                let buyer = clip_text(&buyer, &spans);
+                let buyers = party(&buyer);
                 let mut buyer_runs = Vec::new();
                 let mut contract = ContractHistory {
                     seller: owner.to_string(),
@@ -718,14 +716,14 @@ pub fn history(
                 };
                 for (id, field) in fields {
                     match field {
-                        Field::ContractBuyer(..) => buyer_runs = published.runs(id, &all)?,
-                        Field::ContractSpeed(..) => contract.speed = published.text(id, &all)?,
-                        Field::ContractPool(_, _, _, pool, ordinal, variant) => contract
-                            .items
-                            .push(item(&mut published, &mut named, id, pool, ordinal, variant)?),
+                        Field::ContractBuyer(..) => buyer_runs = published.runs(id, &spans)?,
+                        Field::ContractSpeed(..) => contract.speed = published.text(id, &spans)?,
+                        Field::ContractPool(_, _, _, pool, ordinal, variant) => contract.items.push(
+                            item(&mut published, &mut named, &spans, id, pool, ordinal, variant)?,
+                        ),
                         Field::ContractLevel(_, _, _, variant) => contract
                             .levels
-                            .push(item(&mut published, &mut named, id, 2, 0, variant)?),
+                            .push(item(&mut published, &mut named, &spans, id, 2, 0, variant)?),
                         _ => {}
                     }
                 }
@@ -737,7 +735,8 @@ pub fn history(
                 reply.contracts.push(contract);
             }
             MarketView::Inventory => {
-                if chosen.as_ref().is_some_and(|chosen| !chosen.contains(&owner)) {
+                let spans = selected_spans(chosen.as_ref(), &[owner], &[]);
+                if spans.is_empty() {
                     continue;
                 }
                 let mut offer = OfferHistory {
@@ -749,10 +748,10 @@ pub fn history(
                     match field {
                         Field::Inventory(_, ordinal, variant) => offer
                             .inventory
-                            .push(item(&mut published, &mut named, id, 0, ordinal, variant)?),
+                            .push(item(&mut published, &mut named, &spans, id, 0, ordinal, variant)?),
                         Field::OfferLevel(_, variant) => offer
                             .levels
-                            .push(item(&mut published, &mut named, id, 2, 0, variant)?),
+                            .push(item(&mut published, &mut named, &spans, id, 2, 0, variant)?),
                         _ => {}
                     }
                 }
@@ -761,10 +760,12 @@ pub fn history(
             }
             MarketView::Agreements => {
                 let receiver = counterpart(&mut published, &fields, |field| matches!(field, Field::LeaseReceiver(..)))?;
-                let receivers = party(&receiver);
-                if skipped(&receivers) {
+                let spans = selected_spans(chosen.as_ref(), &[owner], &receiver);
+                if spans.is_empty() {
                     continue;
                 }
+                let receiver = clip_text(&receiver, &spans);
+                let receivers = party(&receiver);
                 let mut agreement = AgreementHistory {
                     giver: owner.to_string(),
                     id: format!("{handle:016x}"),
@@ -777,15 +778,15 @@ pub fn history(
                 };
                 for (id, field) in fields {
                     match field {
-                        Field::LeaseRevision(..) => agreement.revision = published.text(id, &all)?,
-                        Field::LeaseSince(..) => agreement.since = published.text(id, &all)?,
-                        Field::LeaseLast(..) => agreement.last = published.text(id, &all)?,
+                        Field::LeaseRevision(..) => agreement.revision = published.text(id, &spans)?,
+                        Field::LeaseSince(..) => agreement.since = published.text(id, &spans)?,
+                        Field::LeaseLast(..) => agreement.last = published.text(id, &spans)?,
                         Field::LeaseFuel(_, _, which) if which < 5 => {
-                            agreement.fuel[usize::from(which)] = published.text(id, &all)?;
+                            agreement.fuel[usize::from(which)] = published.text(id, &spans)?;
                         }
-                        Field::LeasePool(_, _, pool, ordinal, variant) => agreement
-                            .items
-                            .push(item(&mut published, &mut named, id, pool, ordinal, variant)?),
+                        Field::LeasePool(_, _, pool, ordinal, variant) => agreement.items.push(
+                            item(&mut published, &mut named, &spans, id, pool, ordinal, variant)?,
+                        ),
                         _ => {}
                     }
                 }

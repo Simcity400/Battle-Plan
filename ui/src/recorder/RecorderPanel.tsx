@@ -8,7 +8,7 @@ import { Select } from '../components/Select';
 import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, stopPromptVisible, whatToRecord } from './status';
+import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, stopPromptVisible, untilNextMinute, whatToRecord } from './status';
 import type { Head, NextLoad, RecorderSettings, Snapshot } from './status';
 import './recorder.css';
 
@@ -159,19 +159,25 @@ export default function RecorderPanel() {
   const [view, setView] = useState<View>('main');
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [, setMinute] = useState(0);
   const root = useRef<HTMLDivElement>(null);
+  const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
 
   useEffect(() => {
     let active = true;
+    const loadSettings = () => {
+      void queue.refresh().catch(cause => { if (active) setError(errorMessage(cause)); });
+    };
     const listeners = [
       api.onStatus(value => { if (active) setSnapshot(value); }),
       api.onAskStop(() => { if (active) { setView('main'); setAsking(true); } }),
+      api.onSettings(() => { if (active) loadSettings(); }),
     ];
     void api.recorderStatus().then(value => { if (active) setSnapshot(value); }, cause => { if (active) setError(errorMessage(cause)); });
-    void api.recorderSettings().then(value => { if (active) setSettings(value); }, cause => { if (active) setError(errorMessage(cause)); });
+    loadSettings();
     void (opened ??= api.panelOpened()).then(({ askStop }) => { if (active && askStop) setAsking(true); }, () => {});
     return () => { active = false; for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
-  }, []);
+  }, [queue]);
 
   // The window takes the panel's height and stays above the tray icon.
   const ready = snapshot != null;
@@ -195,15 +201,25 @@ export default function RecorderPanel() {
     return () => window.removeEventListener('keydown', key);
   }, []);
 
+  // Paused games emit no new hour status, so the Stop prompt needs its own minute timer.
+  const prompting = snapshot != null && stopPromptVisible(asking, snapshot);
+  const startedAt = snapshot?.startedAt ?? null;
+  useEffect(() => {
+    if (!prompting) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      timer = setTimeout(() => { setMinute(minute => minute + 1); schedule(); }, untilNextMinute(startedAt, Date.now()));
+    };
+    schedule();
+    return () => clearTimeout(timer);
+  }, [prompting, startedAt]);
+
   if (!snapshot) return <div ref={root} className="recorder" />;
   const run = (work: () => Promise<unknown>) => {
     setError(null);
     void work().catch(cause => setError(errorMessage(cause)));
   };
-  const save = (work: () => Promise<RecorderSettings | null>) => run(async () => {
-    const next = await work();
-    if (next) setSettings(next);
-  });
+  const save = (work: () => Promise<RecorderSettings | null>) => run(() => queue.save(work));
   const actions: PanelActions = {
     view: setView,
     // Pressing Stop again cancels the prompt, and a Quit waiting on it.

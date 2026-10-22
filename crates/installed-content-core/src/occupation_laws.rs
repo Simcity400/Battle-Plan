@@ -146,7 +146,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Laws> {
     // object of the same token.
     let names = layers.key_names()?;
     for path in script_files::paths(layers, "common/occupation_laws/", Some(".txt")) {
-        match parse(&layers.read(&path)?, &names) {
+        match parse(&path.read(layers)?, &names) {
             Ok(items) => {
                 for law in items {
                     laws.definitions.insert(law.token.clone(), law);

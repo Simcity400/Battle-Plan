@@ -19,6 +19,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     headerReads: [] as { tag: string; hour: number }[],
     rows: [] as { onClick: () => void; 'aria-label'?: string; 'data-tooltip'?: string }[],
     scroll: undefined as ((event: { currentTarget: { scrollTop: number; clientHeight: number } }) => void) | undefined,
+    search: undefined as ((event: { currentTarget: { value: string } }) => void) | undefined,
     changed: [] as (string | null)[], rosterLoads: 0, rosterError: null as string | null,
     rosterReply: null as unknown, flagsError: null as string | null, retryAction: undefined as (() => void) | undefined };
   const globals = globalThis as typeof globalThis & { __pickerWitness?: typeof state };
@@ -44,6 +45,7 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
         const walk = nodes => Children.forEach(nodes, node => { if (!isValidElement(node)) return;
           if (node.props.role === 'option') s.rows.push(node.props);
           if (node.props.className === 'country-picker-list') s.scroll = node.props.onScroll;
+          if (node.props['aria-label'] === 'Search countries') s.search = node.props.onChange;
           if (node.type === 'button' && node.props.children === 'Retry') s.retryAction = node.props.onClick;
           walk(node.props.children); }); walk(props.children); return createElement('div', null, props.children); };`,
     '/components/CountryFlag.tsx': `import { createElement } from 'react'; export const CountryFlag = ({ image }) => createElement('span', { 'data-flag': image?.tag });`,
@@ -114,6 +116,12 @@ test('the actual Picker uses per-choice witnesses lazily and masks obsolete name
     state.content = '2'; state.names.clear(); html = render(); assert.doesNotMatch(html, /New client name|data-flag="successor"/);
     state.scroll!({ currentTarget: { scrollTop: 36000, clientHeight: 340 } }); render(); await flush();
     assert.ok(state.wanted.length < 30); assert.ok(state.wanted.some(read => read.tag === 'read 1000'));
+    state.search!({ currentTarget: { value: 'Searched name' } }); render(); await flush();
+    assert.ok(state.wanted.some(read => read.tag === 'read 4000' && read.hour === 100), 'a search asks for names of rows not yet viewed');
+    state.names.set(nameKey(100, 'read 4000'), 'Searched name'); render(); await flush(); html = render();
+    assert.match(html, /Searched name/, 'the searched name finds its row');
+    state.search!({ currentTarget: { value: '' } }); render(); await flush();
+    assert.ok(state.wanted.length < 30, 'clearing the search asks only for the rows in view again');
     state.open = false; render(); assert.deepEqual(state.wanted, [{ tag: 'successor', hour: 102 }], 'closing the menu retains only the selected trigger');
     assert.equal(state.rosterLoads, 0, 'authoritative choices never request the metadata roster');
     state.open = true; state.scroll!({ currentTarget: { scrollTop: 0, clientHeight: 340 } });

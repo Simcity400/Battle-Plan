@@ -109,13 +109,13 @@ impl Selector {
             }
         }
         if matches.is_empty() {
+            // Map icons also open completed results (readiness zero), not just pending ones.
             let results = rows::<tables::NavalResults>(frame)?;
             let newest = results
                 .rows()
                 .iter()
                 .filter(|row| {
                     row.result_hour <= frame.hour
-                        && row.readiness != 0
                         && match self {
                             Self::Id(id) => id == row.id,
                             Self::Province(id) => id == row.province,
@@ -917,6 +917,44 @@ mod tests {
             update(Selection::NavalResult(4), &flags(Engaged::No)),
             Update::Refresh(true)
         );
+    }
+
+    #[test]
+    fn the_selector_opens_completed_and_pending_retained_naval_results() {
+        use replay_data::rows::{NavalResultRow, TableId, TableRows};
+        use replay_frame::frame::{DecodedFrame, TableView};
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour: 100,
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "missing".into(),
+                }
+                .into()
+            }),
+            metrics: Default::default(),
+        };
+        let result = |id, result_hour, readiness| NavalResultRow {
+            id,
+            province: 362,
+            result_hour,
+            readiness,
+            ..Default::default()
+        };
+        *frame.tables[TableId::NavalResults.index()] =
+            TableView::Complete(TableRows::NavalResults(vec![
+                result(7, 90, 0),
+                result(8, 80, 1),
+                result(9, 120, 0),
+            ]));
+        let resolved = |selector: Selector| selector.resolve(&frame).ok();
+        assert_eq!(resolved(Selector::Id(7)), Some(Selection::NavalResult(7)));
+        assert_eq!(resolved(Selector::Id(8)), Some(Selection::NavalResult(8)));
+        assert_eq!(
+            resolved(Selector::Province(362)),
+            Some(Selection::NavalResult(7))
+        );
+        assert_eq!(resolved(Selector::Id(9)), None);
     }
 
     fn scope(branch: u64, hour: i32, viewer: u32) -> super::Scope {

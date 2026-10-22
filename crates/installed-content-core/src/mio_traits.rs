@@ -854,7 +854,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
         "common/military_industrial_organization/organizations/",
         Some(".txt"),
     ) {
-        match parse(&layers.read(&path)?, &names) {
+        match parse(&path.read(layers)?, &names) {
             Ok((rows, warnings)) => {
                 result
                     .warnings

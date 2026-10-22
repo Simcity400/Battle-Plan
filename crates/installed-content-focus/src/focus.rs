@@ -10,6 +10,7 @@ use crate::{
     },
     scope::ScopeKind,
 };
+use installed_content_core::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
 
 /// The default focus icon resolved through content.
@@ -480,32 +481,50 @@ pub fn read_national(layers: &ResolvedLayers) -> io::Result<(Focuses, Vec<crate:
     read_databases(layers, false)
 }
 
+/// Folder lookup ignores case, but paths retain their layer's spelling.
+fn focus_database(path: &[u8]) -> Option<Database> {
+    let lower = path.to_ascii_lowercase();
+    if lower.starts_with(b"common/national_focus/") {
+        Some(Database::National)
+    } else if lower.starts_with(b"common/continuous_focus/") {
+        Some(Database::Continuous)
+    } else {
+        None
+    }
+}
+
+/// Layer then byte-path order; non-UTF-8 archive filenames must still load.
+fn database_paths(layers: &ResolvedLayers, continuous: bool) -> Vec<(usize, ScriptPath)> {
+    let mut paths = layers
+        .effective_paths()
+        .filter(|(path, _)| {
+            focus_database(path)
+                .is_some_and(|database| continuous || database == Database::National)
+                && path.ends_with(b".txt")
+        })
+        .map(|(path, layer)| (layer, ScriptPath::new(path.to_vec())))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
 fn read_databases(
     layers: &ResolvedLayers,
     continuous: bool,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
-    let mut paths = layers
-        .paths()
-        .filter(|p| {
-            (p.starts_with("common/national_focus/")
-                || continuous && p.starts_with("common/continuous_focus/"))
-                && p.ends_with(".txt")
-        })
-        .map(|p| (layers.layer_index(p).unwrap_or(0), p.to_owned()))
-        .collect::<Vec<_>>();
-    paths.sort();
+    let paths = database_paths(layers, continuous);
     let names = layers.key_names()?;
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
-    read_files(&paths, &names, workers, |path| layers.read(path), parse)
+    read_files(&paths, &names, workers, |path| path.read(layers), parse)
 }
 
 type ParsedFile = Result<(Focuses, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
 
 fn read_files(
-    paths: &[(usize, String)],
+    paths: &[(usize, ScriptPath)],
     names: &KeyNames,
     workers: usize,
-    mut read: impl FnMut(&str) -> io::Result<Vec<u8>>,
+    mut read: impl FnMut(&ScriptPath) -> io::Result<Vec<u8>>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut result = BTreeMap::new();
@@ -518,12 +537,8 @@ fn read_files(
             .iter()
             .map(|(_, path)| read(path).map(|bytes| (path, bytes)))
             .collect::<io::Result<Vec<_>>>()?;
-        let parse_one = |(path, bytes): &(&String, Vec<u8>)| {
-            let database = if path.starts_with("common/national_focus/") {
-                Database::National
-            } else {
-                Database::Continuous
-            };
+        let parse_one = |(path, bytes): &(&ScriptPath, Vec<u8>)| {
+            let database = focus_database(path.as_bytes()).unwrap_or(Database::Continuous);
             parser(bytes, database, names)
         };
         let parsed = if files.len() == 1 {

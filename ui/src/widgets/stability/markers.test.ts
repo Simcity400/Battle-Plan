@@ -185,3 +185,11 @@ test('faction events use dated names and display overrides without backfilling g
   const custom = stabilityMarkers({ ...base, groups: gap, factionName: () => ({ name: 'My pact', reason: null }) }, new Set<MarkerKind>(['factions']));
   assert.deepEqual(custom.map(badge => badge.label), ['Joined My pact', 'Left My pact']);
 });
+
+test('a membership ending where preparation is still pending is not a departure', () => {
+  const faction = { ...groups.factions[1], firstHour: 100, lastHour: 299, names: [{ firstHour: 100, lastHour: 299, name: 'Pact', reason: null }],
+    members: [{ tag: 'GER', firstHour: 150, lastHour: 299 }], leaders: [], incomplete: [] };
+  const prefix = { ...groups, factions: [faction], unobserved: { humans: [], factions: [], wars: [] },
+    coverage: { firstHour: 0, lastHour: 299, complete: false }, pending: [{ firstHour: 300, lastHour: 499 }] } as CountryGroupReply;
+  assert.deepEqual(stabilityMarkers({ ...base, groups: prefix }, new Set<MarkerKind>(['factions'])).map(badge => badge.label), ['Joined Pact']);
+});

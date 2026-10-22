@@ -97,7 +97,7 @@ impl Definitions {
         let names = layers.key_names()?;
         let mut out = Self::default();
         for path in layers.directory_files("common/resistance_compliance_modifiers", ".txt")? {
-            match parse_with_notes(&layers.read(&path)?, &names) {
+            match parse_with_notes(&path.read(layers)?, &names) {
                 Ok((definitions, notes)) => {
                     out.notes
                         .extend(notes.into_iter().map(|why| format!("{path}: {why}")));

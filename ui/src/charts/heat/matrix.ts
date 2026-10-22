@@ -46,10 +46,11 @@ export function matrixCellAt(x: number, y: number, layout: { gutter: number; hea
   return row >= 0 && row < rows && column >= 0 && column < columns ? { row, column } : null;
 }
 
-/** Arrow keys step a cell, Home/End go to the row's first/last column, Page keys a viewport. */
-export function matrixKey(key: string, at: { row: number; column: number }, rows: number, columns: number, page: number): { row: number; column: number } | null {
+/** Coordinates are clamped even when a previously focused cell has left the axes. */
+export function matrixKey(key: string, from: { row: number; column: number }, rows: number, columns: number, page: number): { row: number; column: number } | null {
   if (!rows || !columns) return null;
   const clamp = (value: number, count: number) => Math.max(0, Math.min(count - 1, value));
+  const at = { row: clamp(from.row, rows), column: clamp(from.column, columns) };
   switch (key) {
     case 'ArrowDown': return { row: clamp(at.row + 1, rows), column: at.column };
     case 'ArrowUp': return { row: clamp(at.row - 1, rows), column: at.column };
@@ -61,6 +62,21 @@ export function matrixKey(key: string, at: { row: number; column: number }, rows
     case 'End': return { row: at.row, column: columns - 1 };
     default: return null;
   }
+}
+
+export interface MatrixKeyed { row: number; column: number; rowId: string; columnId: string }
+
+/** Follows row and column IDs; missing IDs fall back to the nearest in-range position. */
+export function matrixKeyed(at: MatrixKeyed, rows: readonly MatrixAxisItem[], columns: readonly MatrixAxisItem[]): MatrixKeyed | null {
+  if (!rows.length || !columns.length) return null;
+  const place = (items: readonly MatrixAxisItem[], index: number, id: string) => {
+    if (items[index]?.id === id) return index;
+    const found = items.findIndex(item => item.id === id);
+    return found >= 0 ? found : Math.max(0, Math.min(items.length - 1, index));
+  };
+  const row = place(rows, at.row, at.rowId), column = place(columns, at.column, at.columnId);
+  return row === at.row && column === at.column && rows[row].id === at.rowId && columns[column].id === at.columnId ? at
+    : { row, column, rowId: rows[row].id, columnId: columns[column].id };
 }
 
 /** The scroll offset that brings an item fully into a viewport of `size`. */

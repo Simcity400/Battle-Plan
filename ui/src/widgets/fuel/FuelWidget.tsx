@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { Segmented } from '../../components/Segmented';
 import CountryPicker from '../../components/CountryPicker';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -53,7 +54,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   const digits = fuelDecimals(options);
-  const { track, countries, pending, contentPending: groupContentPending, error: groupError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
+  const { track, countries, pending, contentPending: groupContentPending, error: groupError, refreshError: groupRefreshError, retry: retryGroups } = useComparisonCountries(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const heldExtent = track && options.show !== 'main' ? readFuelExtent(options.fuelExtent, track.source.metadata.campaignKey, track.branch.id) : null;
@@ -64,7 +65,8 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const prepared = usePreparedFuel(runtime.client, track, countries.tags, Math.floor(playhead ?? extent[1]), active, ['fuel','capacity','stripGain','stripBurn'], countries.membership ?? undefined);
   const legacyProduct = useProducts<FuelReply>(runtime.client, requests, active && !prepared.enabled, validateFuelReply);
   const product = prepared.enabled ? prepared : legacyProduct;
-  const { error, retry } = product;
+  const { retry } = product;
+  const error = useHeldFailure(product.error, product.data !== undefined, retry);
   const retained = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify(requests), product.data, fuelNumbers);
   const data = product.data ?? numbers;
@@ -117,6 +119,7 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     return result;
   });
   const actorProduct = actorPrepared.enabled ? actorPrepared : actorLegacyProduct;
+  const actorError = useHeldFailure(actorProduct.error, actorProduct.data !== undefined, actorProduct.retry);
   const actorStore = useMemo(() => new NumericReply<FuelReply[]>(), [runtime.client]);
   const actorNumbers = actorStore.update(JSON.stringify(actorRequests), actorProduct.data, fuelNumbers);
   const actorData = actorProduct.data ?? actorNumbers;
@@ -236,17 +239,17 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
     || (saved.id === 'consumption' && options.fuelConsumption && (!savedConsumption || wrongSavedConsumption))
     || (saved.id === 'consumption' && options.fuelConsumptionLevel && (!savedLevel || !selectedConsumption && chosen && savedLevel.tag !== chosen.tag))
     || (options.fuelCountry && !savedCountry) || (options.fuelExtent && !heldExtent));
-  const actorState = selectedCountry ? catalogue.error ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
+  const actorState = selectedCountry ? catalogue.error && !identityNumbers ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
     : !identityNumbers ? <WidgetState kind="loading" label="Loading country…" />
       : !actorSpans ? <WidgetState kind="unavailable" message="Choose a country again." />
-        : actorProduct.error ? <WidgetState kind="error" detail={actorProduct.error} onRetry={actorProduct.retry} />
+        : actorError ? <WidgetState kind="error" detail={actorError} onRetry={actorProduct.retry} />
           : !actorData ? <WidgetState kind="loading" label="Loading the selected country's fuel…" /> : undefined : undefined;
   const headerReason = invalidSaved ? 'Choose a country again.'
-    : (catalogue.error ? 'Couldn’t load country.' : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
+    : (catalogue.error && !identityNumbers ? 'Couldn’t load country.' : null) ?? (!selectedCountry ? 'Country unavailable at this time.'
       : !identityNumbers ? 'Loading country…'
         : !actorSpans ? 'Choose a country again.'
           : !shownTag ? 'Country unavailable at this time.'
-            : (actorProduct.error ? 'Couldn’t load fuel data.' : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
+            : (actorError ? 'Couldn’t load fuel data.' : null) ?? (!actorData?.some(reply => reply.tag === shownTag && at !== null && runAt(reply.reads, at))
               ? 'The selected country’s fuel is not recorded at this moment.' : null));
   const headerReady = !!saved && !!options.fuelCountry && !!countrySlot && active && headerReason === null && at !== null && !!shownTag;
   const headerWanted = useMemo(() => headerReady && shownTag && at !== null ? [{ tag: shownTag, hour: at }] : [], [headerReady, shownTag, at]);
@@ -272,15 +275,18 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
         measure={drillMeasure} hour={detailHour} tokens={tokens} runtime={runtime} track={track}
         selection={selectedRecipient} onSelection={setRecipient} digits={digits} {...chart} />}</>
     : <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>);
+  const refreshNotices = <>{groupRefreshError && <WidgetState kind="error" detail={groupRefreshError} onRetry={retryGroups} />}
+    {selectedCountry && catalogue.error && identityNumbers ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} /> : null}</>;
   if (saved) return <div ref={anchor} className="drill-body">
     {pinnedHeader}
+    {refreshNotices}
     {(drill.breakdown === null ? widget.time.mode !== 'follow' : !drill.follow) && <button type="button" className="button small quiet" onClick={() => {
       if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner || actorState || invalidSaved) return;
       setDrillOwner(pickOwner); dispatch({ type: 'open', breakdown: saved.id,
         hour: actualHour ?? extent[1], playing: true, playhead: actualHour });
     }}>Follow playback</button>}
     {breakdown}{menu.menu}</div>;
-  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}><DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+  return <div ref={anchor} style={{ height: '100%', minHeight: 0 }}>{refreshNotices}<DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
     open={drill.breakdown !== null} title="Fuel consumption and daily accounting" day={at === null ? '' : dayLabel(at)} following={drill.follow} canFollow={actualHour !== null && !!chosen}
     onClose={() => dispatch({ type: 'close' })} onFollow={() => {
       if (!pickRef.current.active || pickRef.current.detail !== detailPickOwner || actorState) return;

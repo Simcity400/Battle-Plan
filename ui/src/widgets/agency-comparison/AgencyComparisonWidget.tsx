@@ -93,16 +93,17 @@ function AgencyTable({ widget, runtime, active, onDiagnostics, setOption }: Widg
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading intelligence agencies…" />;
-  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!data.available) return <WidgetState kind="unavailable" message={preparedPrefix(data) && !preparedPrefix(data)?.coverage?.complete
-    ? 'Agency values were not recorded at this time.' : 'Intelligence agencies are not in this recording.'} />;
-  if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this time." />;
-  if (!rows.length && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;
-  return <div ref={root} className="agency-comparison">
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
+  if (!data || (needsGroups && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading intelligence agencies…" /></>;
+  if (pendingAt(preparedPrefix(data), hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!data.available) return <>{groupFailure}<WidgetState kind="unavailable" message={preparedPrefix(data) && !preparedPrefix(data)?.coverage?.complete
+    ? 'Agency values were not recorded at this time.' : 'Intelligence agencies are not in this recording.'} /></>;
+  if (!runAt(data.observed, hour)) return <>{groupFailure}<WidgetState kind="unavailable" message="Agency values were not recorded at this time." /></>;
+  if (!rows.length && !filter.known) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." /></>;
+  return <div ref={root} className="agency-comparison">{groupFailure}
     <Table key={`${track.source.id}:${track.branch.id}`} label="Intelligence agencies" rows={rows} rowKey={rowKey} columns={columns} sort={sort} setOption={setOption}
       cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} muted={row => !row.value.created}

@@ -174,8 +174,9 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   if (exact.error) return <WidgetState kind="error" detail={exact.error} onRetry={exact.retry} />;
   if (state === 'unavailable' && !current?.available) return preparedThrough != null
     ? <WidgetState kind="loading" label="This range is still being prepared." /> : <WidgetState kind="unavailable" />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !prepared) return <WidgetState kind="loading" label="Loading wars…" />;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !prepared) return <>{groupFailure}<WidgetState kind="loading" label="Loading wars…" /></>;
 
   const tooltip = (lane: TimelineLane, span: TimelineSpan | null, hour: number, full = false): TooltipContent | null => {
     const about = info.get(lane.id);
@@ -218,7 +219,7 @@ export default function WarsWidget({ widget, runtime, active, onDiagnostics }: W
   const seenAs = viewpoint ? countries(viewpoint) : null;
   const summary = viewpointSummary(seenAs);
   const pendingAt = preparedThrough != null && at > preparedThrough;
-  return <div ref={root} className="timeline-scroll">
+  return <div ref={root} className="timeline-scroll">{groupFailure}
     {current && <CurrentWars current={current} country={countries} />}
     {!lanes.length ? current ? null : pendingAt ? <WidgetState kind="loading" label="This range is still being prepared." />
       : <WidgetState kind="empty" message={data.unobserved.some(gap => gap.firstHour <= at && at <= gap.lastHour) ? 'Not recorded.' : 'No wars yet.'} />

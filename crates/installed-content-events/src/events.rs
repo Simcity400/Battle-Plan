@@ -2,6 +2,7 @@
 use crate::{
     ResolvedContent, ResolvedLayers,
     key_names::KeyNames,
+    script_files::ScriptPath,
     parser::{
         Item,
         native::{self, Shape},
@@ -483,14 +484,14 @@ impl Deref for EventLayers {
 struct Cache {
     index: Option<Result<Index, String>>,
     events: BTreeMap<Vec<u8>, Result<Arc<Event>, String>>,
-    // Only nested-variable files retain full reads to settle later headers.
-    files: BTreeMap<String, EventRead>,
+    // Retain full reads only for nested-variable files, to settle later headers.
+    files: BTreeMap<ScriptPath, EventRead>,
     trees: BTreeMap<EventRef, Result<Arc<Event>, String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct EventRef {
-    path: String,
+    path: ScriptPath,
     ordinal: usize,
 }
 
@@ -575,7 +576,7 @@ fn read_headers(bytes: &[u8]) -> native::Read {
 }
 
 impl Index {
-    fn add(&mut self, read: &native::Read, path: &str, full: bool) {
+    fn add(&mut self, read: &native::Read, path: &ScriptPath, full: bool) {
         self.namespaces.extend(namespaces(read));
         if !full {
             self.refused.extend(
@@ -595,7 +596,7 @@ impl Index {
         {
             let fields = item.value.items().unwrap_or_default();
             let reference = EventRef {
-                path: path.to_owned(),
+                path: path.clone(),
                 ordinal,
             };
             if let Ok(key) = identifier_key(string_field(fields, "id")) {
@@ -650,9 +651,8 @@ impl LazyEvents {
                     .directory_files("events", ".txt")
                     .map_err(|error| error.to_string())?
                 {
-                    let bytes = self
-                        .layers
-                        .read(&path)
+                    let bytes = path
+                        .read(&self.layers)
                         .map_err(|error| format!("{path}: {error}"))?;
                     if dynamic_headers(&bytes) {
                         let names = self.layers.key_names().map_err(|error| error.to_string())?;
@@ -683,7 +683,7 @@ impl LazyEvents {
     }
 
     fn cache_trees<'a>(&self, cache: &mut Cache, references: impl Iterator<Item = &'a EventRef>) {
-        let mut wanted: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+        let mut wanted: BTreeMap<&ScriptPath, BTreeSet<usize>> = BTreeMap::new();
         for reference in references {
             if !cache.trees.contains_key(reference) {
                 wanted
@@ -695,10 +695,10 @@ impl LazyEvents {
         for (path, ordinals) in wanted {
             if let Some(file) = cache.files.get_mut(path) {
                 for ordinal in ordinals {
-                    let event = file.event(path, ordinal).map(Arc::new);
+                    let event = file.event(&path.text(), ordinal).map(Arc::new);
                     cache.trees.insert(
                         EventRef {
-                            path: path.to_owned(),
+                            path: path.clone(),
                             ordinal,
                         },
                         event,
@@ -710,9 +710,8 @@ impl LazyEvents {
             // Unrelated bodies are neither interpreted nor retained; a later
             // novel request may walk that file again through the same reader.
             let file = (|| {
-                let bytes = self
-                    .layers
-                    .read(path)
+                let bytes = path
+                    .read(&self.layers)
                     .map_err(|error| format!("{path}: {error}"))?;
                 let names = self.layers.key_names().map_err(|error| error.to_string())?;
                 Ok::<_, String>(read_events(&bytes, &names, Some(&ordinals)))
@@ -720,10 +719,10 @@ impl LazyEvents {
             match file {
                 Ok(mut file) => {
                     for ordinal in ordinals {
-                        let event = file.event(path, ordinal).map(Arc::new);
+                        let event = file.event(&path.text(), ordinal).map(Arc::new);
                         cache.trees.insert(
                             EventRef {
-                                path: path.to_owned(),
+                                path: path.clone(),
                                 ordinal,
                             },
                             event,
@@ -734,7 +733,7 @@ impl LazyEvents {
                     for ordinal in ordinals {
                         cache.trees.insert(
                             EventRef {
-                                path: path.to_owned(),
+                                path: path.clone(),
                                 ordinal,
                             },
                             Err(error.clone()),

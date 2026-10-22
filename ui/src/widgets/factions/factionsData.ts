@@ -7,6 +7,7 @@ import type { CountryIdentityIndex } from '../../dashboard/countryIdentity';
 import type { FactionName } from '../../dashboard/factionNames';
 import { UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import { preparedPrefix, unobservedOrPending } from '../../dashboard/preparedPrefix.ts';
 import type { CountryGroupReply, FactionGroup, HourSpan, MembershipRun } from '../../generated/dashboard';
 
 /** The Factions widget's data: every recorded faction (any number, including ones
@@ -68,12 +69,18 @@ function merged(spans: readonly HourRange[]): HourSpan[] {
   return result;
 }
 
+/** Edges beside unrecorded or pending hours are gaps, never faction or membership events. */
+export function factionGaps(reply: CountryGroupReply): HourSpan[] {
+  return unobservedOrPending(reply.unobserved.factions, preparedPrefix(reply));
+}
+
 /** Each faction of the reply, ready to draw: its name (`name`), colour (`colour`),
  * existence, members, leaders and member counts. Aliases of the same recorded
  * native holder stay one member; a replacement holder starts its own lane. */
 export function factionViews(reply: CountryGroupReply, name: (faction: FactionGroup, hour?: number) => FactionName, colour: (id: string) => string): FactionView[] {
   const identities = countryIdentityIndex(reply.countryIdentities);
-  const allUnobserved = merged(reply.unobserved.factions);
+  const gaps = factionGaps(reply);
+  const allUnobserved = merged(gaps);
   return reply.factions.map(faction => {
     const byHolder = new Map<string, MembershipRun[]>();
     const missing: HourRange[] = [];
@@ -86,7 +93,7 @@ export function factionViews(reply: CountryGroupReply, name: (faction: FactionGr
         if (runs) runs.push(run); else byHolder.set(key, [run]);
       }
     }
-    const unknown = merged([...reply.unobserved.factions, ...faction.incomplete, ...missing]);
+    const unknown = merged([...gaps, ...faction.incomplete, ...missing]);
     const members = [...byHolder].map(([key, runs]) => {
       runs.sort((a, b) => a.firstHour - b.firstHour);
       return { key, runs, stretches: bridgeGaps(runs, unknown).map(({ firstHour, lastHour }) => ({ firstHour, lastHour })) };

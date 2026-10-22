@@ -268,7 +268,8 @@ fn read(gilrs: &Gilrs, id: GamepadId) -> GamepadState {
     let buttons = BUTTONS
         .iter()
         .filter(|(button, _)| pad.is_pressed(*button))
-        .fold(0, |bits, (_, bit)| bits | bit.bit());
+        .fold(0, |bits, (_, bit)| bits | bit.bit())
+        | hat_bits(pad.value(Axis::DPadX), pad.value(Axis::DPadY));
     GamepadState {
         sticks: [
             stick(Axis::LeftStickX, Axis::LeftStickY),
@@ -280,6 +281,19 @@ fn read(gilrs: &Gilrs, id: GamepadId) -> GamepadState {
         ],
         buttons,
     }
+}
+
+/// With gilrs filters disabled, hat axes are not converted to directional-pad buttons.
+fn hat_bits(x: f32, y: f32) -> u32 {
+    [
+        (x >= 1.0, GamepadButton::DpadRight),
+        (x <= -1.0, GamepadButton::DpadLeft),
+        (y >= 1.0, GamepadButton::DpadUp),
+        (y <= -1.0, GamepadButton::DpadDown),
+    ]
+    .into_iter()
+    .filter(|(pressed, _)| *pressed)
+    .fold(0, |bits, (_, bit)| bits | bit.bit())
 }
 
 /// A stick at rest reads as centred; otherwise its value in steps, within the unit square.
@@ -516,6 +530,23 @@ mod tests {
         assert!(router.holder.is_some());
         router.route(&Gone, Some(Target::Campaign), held(0.2));
         assert!(router.holder.is_none());
+    }
+
+    #[test]
+    fn a_hat_switch_presses_the_directional_pad() {
+        assert_eq!(hat_bits(0.0, 0.0), 0);
+        assert_eq!(hat_bits(1.0, 0.0), GamepadButton::DpadRight.bit());
+        assert_eq!(hat_bits(0.0, -1.0), GamepadButton::DpadDown.bit());
+        assert_eq!(
+            hat_bits(-1.0, 1.0),
+            GamepadButton::DpadLeft.bit() | GamepadButton::DpadUp.bit()
+        );
+        assert_eq!(hat_bits(f32::NAN, 0.5), 0);
+        let state = GamepadState {
+            buttons: hat_bits(0.0, 1.0),
+            ..GamepadState::default()
+        };
+        assert_eq!(last_touched(None, 'h', &state), Some('h'));
     }
 
     #[test]

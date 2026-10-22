@@ -591,6 +591,17 @@ impl Engine {
             .and_then(|content| content.catalog.music_compressor)
             .map(Dynamics::new);
         self.player.stop();
+        // The history numbers the old content's songs; only the same song list keeps it.
+        let same_songs = match (&self.content, &content) {
+            (Some(old), Some(new)) => {
+                Arc::ptr_eq(old, new)
+                    || (old.music.songs == new.music.songs && old.music.tracks == new.music.tracks)
+            }
+            _ => false,
+        };
+        if !same_songs {
+            self.player.forget_history();
+        }
         self.buses = vec![(Vec::new(), false); self.categories.len() + 1];
         self.content = content;
     }

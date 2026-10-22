@@ -7,7 +7,8 @@ import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
 import type { WidgetRuntime } from './definitions';
 
 const replacements: Record<string, string> = {
-  '/dashboard/widgets.tsx': 'export const WidgetBody = () => null;',
+  '/dashboard/widgets.tsx': `import { useContext } from 'react'; import { HeldFailuresContext } from './heldFailures.ts';
+    export const WidgetBody = () => { globalThis.__frameFailures = useContext(HeldFailuresContext); return null; };`,
   '/dashboard/WidgetSettingsMenu.tsx': 'export default props => { globalThis.__frameReset = props.onReset; return null; };',
   '/dashboard/definitions.ts': `export const widgetDefinition = kind => ({ icon: 'grid', data: kind !== 'decoration', version: 1, title: 'Synthetic',
     history: true, countrySelection: false, timeModes: ['follow', 'campaign'], defaultTime: 'follow', defaultCountries: { kind: 'tags', tags: [] } });`,
@@ -162,4 +163,34 @@ test('a widget header draws its kind\'s own icon and colour, and an image in its
       createElement(Preview, { definition, runtime: { ...runtime, tracks: [], campaignTracks: [] } as WidgetRuntime })));
     assert.ok(preview.includes(renderToStaticMarkup(createElement(Icon, { name: 'anchor', style: { color: '#00ff00' } }))), 'the catalogue preview draws the kind\'s icon');
   } finally { await vite.close(); }
+});
+
+test('a frame says each failure its body holds beside published data once, above the body, with Retry', async () => {
+  const vite = await frameServer();
+  const host = globalThis as typeof globalThis & { __frameFailures?: unknown };
+  try {
+    const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
+    const { default: Notices } = await vite.ssrLoadModule('/ui/src/dashboard/HeldFailureNotices.tsx') as typeof import('./HeldFailureNotices');
+    const { HeldFailures } = await vite.ssrLoadModule('/ui/src/dashboard/heldFailures.ts') as typeof import('./heldFailures.ts');
+    const tracks = syntheticTracks();
+    const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
+    const widget: WidgetSpec = { id: 'held', kind: 'synthetic', configVersion: 1, title: 'Synthetic', campaign: 'default',
+      trackIds: ['track-one'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } };
+    const template = { tracks, widgets: [widget], layouts: {} } as unknown as DashboardTemplate;
+    renderToStaticMarkup(createElement(Grid, { template, runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    assert.ok(host.__frameFailures instanceof HeldFailures, 'the body is drawn inside its frame\'s failures');
+
+    const failures = new HeldFailures();
+    assert.equal(renderToStaticMarkup(createElement(Notices, { failures })), '', 'nothing failed, nothing said');
+    const asked: string[] = [];
+    failures.put({}, [{ error: 'Preparation stopped', retry: () => asked.push('roster') }]);
+    failures.put({}, [{ error: 'Preparation stopped', retry: () => asked.push('labels') }]);
+    failures.put({}, [{ error: 'Source released', retry: () => asked.push('history') }]);
+    const html = renderToStaticMarkup(createElement(Notices, { failures }));
+    assert.equal(html.match(/data-detail="Preparation stopped"/g)?.length, 1, 'one failure is said once');
+    assert.match(html, /data-detail="Source released"/);
+    assert.equal(html.match(/>Retry</g)?.length, 2);
+    failures.retry('Preparation stopped');
+    assert.deepEqual(asked, ['roster', 'labels'], 'its Retry asks every reader holding it again');
+  } finally { await vite.close(); delete host.__frameFailures; }
 });

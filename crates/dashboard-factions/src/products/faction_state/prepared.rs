@@ -8,7 +8,11 @@ use dashboard_base::{
         prefix::Prefix,
         series::{self, Accumulator, CatalogueWriter, Reader},
     },
-    products::{check_reply_budget, faction_details::selectors},
+    products::{
+        check_reply_budget,
+        faction_details::{FactionRuleDetail, selectors},
+    },
+    triggers::inputs as reuse,
 };
 use replay_data::rows::{RowCodec, TableId, TableSchema, tables};
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
@@ -311,8 +315,86 @@ pub struct Prepared {
     pub(super) account_projections: usize,
     #[serde(skip)]
     publisher: CatalogueWriter,
+    /// Cached dynamic-name inputs require whole frames while any expansion is held.
+    #[serde(skip)]
+    labels: BTreeMap<(u64, Kind, u32), reuse::Inputs>,
+    #[serde(skip)]
+    dynamic: BTreeMap<u32, bool>,
 }
 impl Prepared {
+    fn dynamic_name(
+        &mut self,
+        frame: &DecodedFrame,
+        token: u32,
+        cat: Option<&catalogue::Catalogue>,
+    ) -> bool {
+        let Some(cat) = cat else {
+            return false;
+        };
+        if let Some(&dynamic) = self.dynamic.get(&token) {
+            return dynamic;
+        }
+        let Ok(Some(spelling)) = dashboard_base::faction_names::template_spelling(frame, Some(token))
+        else {
+            return false;
+        };
+        let dynamic = cat
+            .localisation
+            .localise(spelling.as_bytes())
+            .is_ok_and(|text| text.contains('['));
+        self.dynamic.insert(token, dynamic);
+        dynamic
+    }
+    fn label(
+        &mut self,
+        frame: &DecodedFrame,
+        kind: Kind,
+        (faction, ordinal): (u64, u32),
+        token: u32,
+        cat: Option<&catalogue::Catalogue>,
+        name: impl FnOnce() -> FactionRuleDetail,
+    ) -> FactionRuleDetail {
+        if !self.dynamic_name(frame, token, cat) {
+            return name();
+        }
+        let (detail, inputs) = reuse::capture(frame, name);
+        self.labels.insert((faction, kind, ordinal), inputs);
+        detail
+    }
+    /// Dynamic names need whole frames because kept frames may hold stale trigger-kit rows.
+    pub fn needs_whole(
+        &mut self,
+        source: &Source,
+        context: &LoadContext,
+        frame: &DecodedFrame,
+    ) -> bool {
+        if !self.labels.is_empty() {
+            return true;
+        }
+        let Some(cat) = context
+            .content
+            .as_ref()
+            .and_then(|options| catalogue::catalogue(source, options).ok())
+        else {
+            return false;
+        };
+        let tokens: Vec<u32> = frame
+            .complete::<tables::FactionRules>()
+            .into_iter()
+            .flatten()
+            .map(|row| row.token)
+            .chain(
+                frame
+                    .complete::<tables::FactionDoctrine>()
+                    .into_iter()
+                    .flatten()
+                    .map(|row| row.token),
+            )
+            .collect();
+        tokens
+            .into_iter()
+            .any(|token| self.dynamic_name(frame, token, Some(&*cat)))
+    }
     #[cfg(test)]
     pub fn country_rebuilds(&self) -> usize {
         self.countries.rebuilds
@@ -321,6 +403,11 @@ impl Prepared {
         self.series.bytes()
     }
     pub fn quiet(&mut self, first: i32, last: i32, reads: [bool; 7]) -> io::Result<()> {
+        if !self.labels.is_empty() {
+            return Err(io::Error::other(
+                "Faction dynamic names are observed on whole frames",
+            ));
+        }
         if self.last.and_then(|hour| hour.checked_add(1)) != Some(first) {
             return Err(io::Error::other(
                 "Faction quiet span lacks its preceding observation",
@@ -484,6 +571,20 @@ impl Prepared {
         let supplying = dirty.supplying(source, frame, cancelled)?;
         let accounts = self.changed_accounts(frame, &dirty, &joins);
         self.accounts(frame, accounts, joins.joined, !continues, cat.as_deref());
+        // Dynamic names use the viewing country; changing its identity or link invalidates them.
+        let viewer_changed = [TableId::LocalPlayer, TableId::CountryLinks]
+            .iter()
+            .any(|table| changes.rows_changed[table.index()]);
+        // Re-expand when a previous input changes or becomes a gap; otherwise the value holds.
+        self.labels
+            .retain(|&(faction, _, _), _| owners.contains(&faction));
+        let since = reuse::Since::hour_before(frame, changes);
+        let mut stale = BTreeSet::new();
+        for (&(faction, _, _), inputs) in &mut self.labels {
+            if !since.as_ref().is_some_and(|since| inputs.advance(since)) {
+                stale.insert(faction);
+            }
+        }
         for faction in owners {
             check_cancel(cancelled)?;
             let owner_known = witnessed.contains(&faction);
@@ -512,13 +613,15 @@ impl Prepared {
                     !continues,
                 );
             }
-            if dirty.affects(Kind::Rule, faction) || !owner_known {
-                self.channel(frame, faction, &rules, !continues, |_, row| {
-                    (
-                        row.ordinal,
-                        0,
-                        selectors::rule(frame, faction, row, cat.as_deref()).into(),
-                    )
+            let renamed = viewer_changed || stale.contains(&faction);
+            if dirty.affects(Kind::Rule, faction) || renamed || !owner_known {
+                self.labels
+                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Rule);
+                self.channel(frame, faction, &rules, !continues, |state, row| {
+                    let detail = state.label(frame, Kind::Rule, (faction, row.ordinal), row.token, cat.as_deref(), || {
+                        selectors::rule(frame, faction, row, cat.as_deref())
+                    });
+                    (row.ordinal, 0, detail.into())
                 });
             }
             if dirty.programme_operands || dirty.affects(Kind::Programme, faction) || !owner_known {
@@ -543,13 +646,14 @@ impl Prepared {
                     (row.ordinal, row.group, detail.into())
                 });
             }
-            if dirty.affects(Kind::Doctrine, faction) || !owner_known {
-                self.channel(frame, faction, &doctrines, !continues, |_, row| {
-                    (
-                        row.ordinal,
-                        0,
-                        selectors::doctrine(frame, faction, row, cat.as_deref()).into(),
-                    )
+            if dirty.affects(Kind::Doctrine, faction) || renamed || !owner_known {
+                self.labels
+                    .retain(|&(owner, kind, _), _| owner != faction || kind != Kind::Doctrine);
+                self.channel(frame, faction, &doctrines, !continues, |state, row| {
+                    let detail = state.label(frame, Kind::Doctrine, (faction, row.ordinal), row.token, cat.as_deref(), || {
+                        selectors::doctrine(frame, faction, row, cat.as_deref())
+                    });
+                    (row.ordinal, 0, detail.into())
                 });
             }
             if dirty.affects(Kind::Manpower, faction)

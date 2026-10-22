@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as React from 'react';
 import { forgetProducts, loadProduct, useProduct, useProducts } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
+import { HeldFailures } from './heldFailures.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client.ts';
 
 const source = { id: 'progressive', revision: '1' } as DashboardSource;
@@ -16,9 +17,8 @@ function gate<T>() {
   return { promise, resolve };
 }
 
-/** A small hook renderer installs React's dispatcher, while exercising the real
- * useProduct, cache and query code. No transport or polling module is replaced. */
-function mount<T>(read: () => T) {
+/** Uses real product, cache and polling code; only React's dispatcher is synthetic. */
+function mount<T>(read: () => T, frame: HeldFailures | null = null) {
   type Slot = { value?: unknown; initialized?: boolean; deps?: readonly unknown[]; cleanup?: () => void };
   const slots: Slot[] = [];
   let cursor = 0, effects: (() => void)[] = [];
@@ -38,6 +38,7 @@ function mount<T>(read: () => T) {
       }
     },
     useSyncExternalStore(_subscribe: unknown, snapshot: () => unknown) { cursor++; return snapshot(); },
+    useContext() { return frame; },
   };
   return {
     render() {
@@ -108,6 +109,84 @@ test('mounted preparation failure preserves its partial publication without cach
     assert.equal(await loadProduct(client, request, new AbortController().signal, undefined, source), complete);
     assert.equal(queries, 3, 'failed partial was never installed in the cache');
   } finally { hook.unmount(); }
+});
+
+test('in a widget frame a failure after a publication keeps the reply, said once by the frame with its Retry', async () => {
+  let queries = 0;
+  const client = { preparedQuery: async () => { queries++; return partial; },
+    preparationStatus: async (input: object) => ({ ...input, state: 'failed', sections: [], backgroundEnabled: true, bytes: '0', error: 'synthetic preparation failure' }),
+  } as unknown as DashboardClient;
+  const frame = new HeldFailures();
+  let heard = 0;
+  const unsubscribe = frame.subscribe(() => { heard++; });
+  const hook = mount(() => useProduct(client, request, true, undefined, source), frame);
+  try {
+    hook.render(); await flush();
+    const failed = hook.render();
+    assert.equal(failed.data, partial, 'the published reply stays');
+    assert.equal(failed.error, undefined, 'the body says an error only when nothing was published');
+    assert.deepEqual(frame.read(), ['synthetic preparation failure'], 'the frame says the failure');
+    hook.render();
+    assert.equal(heard, 1, 'the same failure is said once');
+    const asked = queries;
+    frame.retry('synthetic preparation failure');
+    assert.equal(hook.render().data, undefined, 'Retry asks again');
+    assert.deepEqual(frame.read(), [], 'the notice leaves while the reply is asked again');
+    await flush();
+    assert.ok(queries > asked);
+    assert.equal(hook.render().data, partial);
+    assert.deepEqual(frame.read(), ['synthetic preparation failure']);
+  } finally { hook.unmount(); unsubscribe(); }
+  assert.deepEqual(frame.read(), [], 'a reader that leaves takes its notice with it');
+});
+
+test('in a widget frame a failure with nothing published stays the body\'s own error', async () => {
+  const client = { preparedQuery: async () => { throw new Error('synthetic query failure'); },
+    preparationStatus: async () => { throw new Error('unused'); } } as unknown as DashboardClient;
+  const frame = new HeldFailures();
+  const hook = mount(() => useProducts(client, [{ ...request } as ProductRequest], true, undefined, source), frame);
+  try {
+    hook.render(); await flush();
+    const failed = hook.render();
+    assert.equal(failed.data, undefined);
+    assert.equal(failed.error, 'synthetic query failure');
+    assert.deepEqual(frame.read(), [], 'nothing is said twice');
+  } finally { hook.unmount(); }
+});
+
+test('a request of several that failed stays said while another publishes again, until Retry', async () => {
+  const accepted = gate<void>();
+  const owners = new Map<AbortSignal, string>(), asked: string[] = [];
+  const client = {
+    preparedQuery: async (_source: unknown, _product: string, params: { tag: string }, options: { signal: AbortSignal }) => {
+      owners.set(options.signal, params.tag); asked.push(params.tag);
+      return params.tag === 'B' && asked.filter(tag => tag === 'B').length > 1 ? { ...complete, rows: ['B complete'] } : { ...partial, rows: [`${params.tag} prefix`] };
+    },
+    preparationStatus: async (input: object, signal: AbortSignal) => {
+      if (owners.get(signal) === 'A') return { ...input, state: 'failed', sections: [], backgroundEnabled: true, bytes: '0', error: 'A stopped' };
+      await accepted.promise;
+      return { ...input, state: 'ready', sections: [], backgroundEnabled: true, bytes: '0', error: null, coverage: { '1': complete.coverage } };
+    },
+  } as unknown as DashboardClient;
+  const requests = ['A', 'B'].map(tag => ({ ...request, params: { branchId: '1', tag } })) as ProductRequest[];
+  const rows = (state: { data?: unknown[] }) => state.data?.map(reply => (reply as typeof partial).rows[0]);
+  const frame = new HeldFailures();
+  const hook = mount(() => useProducts(client, requests, true, undefined, source), frame);
+  try {
+    hook.render(); await flush();
+    const stopped = hook.render();
+    assert.deepEqual(rows(stopped), ['A prefix', 'B prefix'], 'both prefixes were published');
+    assert.equal(stopped.error, undefined);
+    assert.deepEqual(frame.read(), ['A stopped'], 'A stopped after publishing');
+    accepted.resolve(); await flush();
+    const later = hook.render();
+    assert.deepEqual(rows(later), ['A prefix', 'B complete'], 'B publishes again');
+    assert.equal(later.error, undefined);
+    assert.deepEqual(frame.read(), ['A stopped'], 'A is still stopped, and still said with its Retry');
+    frame.retry('A stopped');
+    hook.render();
+    assert.deepEqual(frame.read(), [], 'Retry asks again');
+  } finally { hook.unmount(); accepted.resolve(); }
 });
 
 test('mounted product content changes cancel old coverage polling and reject late publications', async () => {

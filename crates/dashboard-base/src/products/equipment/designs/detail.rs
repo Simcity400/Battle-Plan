@@ -1092,11 +1092,10 @@ impl Product for EquipmentDesignDetail {
             })
             .unwrap_or_default();
         if let Some(id) = handle(&params.variant).map_err(crate::invalid)? {
-            let target_country = params.target_country.unwrap_or(
-                queries::definition(&frame, id)
-                    .map_err(crate::invalid)?
-                    .creator_link,
-            );
+            // An absent design must not suppress the roster or the Saved design refusal.
+            let target_country = params.target_country.map(Ok).unwrap_or_else(|| {
+                queries::definition(&frame, id).map(|definition| definition.creator_link)
+            });
             let observer: Result<u32, String> = params.observer.map(Ok).unwrap_or_else(|| {
                 let [row] = frame
                     .complete::<tables::LocalPlayer>()
@@ -1110,13 +1109,15 @@ impl Product for EquipmentDesignDetail {
             let fields = match observer {
                 Ok(observer) => vec![
                     DesignField::known("Observer", observer),
-                    DesignField::known("Target country", target_country),
+                    DesignField::result(
+                        "Target country",
+                        target_country.clone().map(|target| target.to_string()),
+                    ),
                     DesignField::result(
                         "Design details revealed",
-                        defines
-                            .as_deref()
-                            .map_err(Clone::clone)
-                            .and_then(|defines| {
+                        target_country
+                            .and_then(|target_country| {
+                                let defines = defines.as_deref().map_err(Clone::clone)?;
                                 queries::reveal(
                                     &frame,
                                     id,

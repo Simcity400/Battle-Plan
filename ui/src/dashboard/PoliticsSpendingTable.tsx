@@ -46,7 +46,7 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
   const digits = powerDecimals(options);
   const unit = currency === 'Political' ? 'PP' : 'CP';
   const noun = currency === 'Political' ? 'political power' : 'command power';
-  const { track, tags, data, error, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
+  const { track, tags, data, error, groupError, retry, ready, reason, known, selection, groupWarnings } = usePoliticsSpending(widget, runtime, active);
   const window = track && resolveWindow(widget, track, runtime.tracks, clockHour);
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
@@ -149,18 +149,19 @@ export default function PoliticsSpendingTable({ currency, widget, runtime, activ
 
   if (!track) return <WidgetState kind="empty" icon={icon} message="Load a campaign and choose a country to see its spending." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!ready) return <WidgetState kind="loading" label="Loading group membership…" />;
-  if (reason) return <WidgetState kind="empty" message="Selected country unavailable at this time." />;
+  const groupNotice = groupError && <WidgetState kind="error" detail={groupError} onRetry={retry} />;
+  if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading group membership…" /></>;
+  if (reason) return <>{groupNotice}<WidgetState kind="empty" message="Selected country unavailable at this time." /></>;
   // A group's members at hours still being prepared are not known yet: no country, or nothing spent, is not proof of none.
   const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!tags.length) return known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose a country to see its spending." /> : preparing;
-  if (!data) return <WidgetState kind="loading" label={`Loading ${noun} spending…`} />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (data.every(reply => !reply.spendingCoverage.length)) return <WidgetState kind="unavailable" message={`${noun[0].toUpperCase()}${noun.slice(1)} spending wasn’t recorded.`} />;
+  if (!tags.length) return <>{groupNotice}{known(track.branch.firstHour, track.branch.lastHour) ? <WidgetState kind="empty" message="Choose a country to see its spending." /> : preparing}</>;
+  if (!data) return <>{groupNotice}<WidgetState kind="loading" label={`Loading ${noun} spending…`} /></>;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (data.every(reply => !reply.spendingCoverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message={`${noun[0].toUpperCase()}${noun.slice(1)} spending wasn’t recorded.`} /></>;
 
   const shownSpent = chosen.length ? rows.reduce((sum, row) => sum + (row.amount ?? 0n), 0n) : null;
   const notes = [spendingGapNote(gaps), ...spendingCostNotes(summary), ...(gain && !gain.complete ? ['Gain wasn’t recorded on some days.'] : [])].filter(Boolean);
-  return <div className="politics-spending" ref={parityRoot}>
+  return <div className="politics-spending" ref={parityRoot}>{groupNotice}
     {options.chips !== false && chips.length > 0 && <div className="politics-spending-chips"><ChipSet label="Shown spending categories" max={Number.MAX_SAFE_INTEGER}
       selected={chosen.length ? chosen : [ALL]} chips={[{ value: ALL, label: 'All categories' }, ...chips.map(chip => ({ ...chip, colour: colours.get(chip.value) }))]}
       onToggle={value => {

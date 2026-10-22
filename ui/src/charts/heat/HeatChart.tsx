@@ -132,12 +132,10 @@ export default function HeatChart(props: HeatChartProps) {
         if (!rect) return;
         if (cell.filtered) {
           ctx.strokeStyle = tokens.border; ctx.lineWidth = tokens.lineWidth.grid;
-          ctx.strokeRect(rect.left, rect.top, rect.width, rect.height); return;
-        }
-        if (cell.unknown) {
-          drawUnknownHatch(ctx, tokens, rect); return;
-        }
-        if (props.look === 'split') for (const stripe of splitStripes(cell.parts, rect.top, rect.height)) {
+          ctx.strokeRect(rect.left, rect.top, rect.width, rect.height);
+        } else if (cell.unknown) {
+          drawUnknownHatch(ctx, tokens, rect);
+        } else if (props.look === 'split') for (const stripe of splitStripes(cell.parts, rect.top, rect.height)) {
           ctx.fillStyle = stripe.color; ctx.fillRect(rect.left, stripe.top, rect.width, stripe.height);
         } else {
           let cached = colours.get(cell.parts);

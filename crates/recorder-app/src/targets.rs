@@ -51,40 +51,39 @@ fn new_folder_name(root: &Path, campaign: &str) -> String {
 /// file starts a new folder when the campaign already has a recording: one in
 /// its current folder, or (`recorded`) hours of an earlier load in the running
 /// session's spool, which become that recording when the session saves. It is
-/// used up either way, so later sessions continue the new recording.
+/// used up either way; the returned flag records consumption under the settings lock.
 pub fn session_target_at(
     settings_path: &Path,
     root: &Path,
     campaign: &str,
     recorded: bool,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, bool), String> {
     let settings = RecorderSettings::load_from(settings_path)
         .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
     if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile) {
-        return Ok(current_folder(&settings, root, campaign));
+        return Ok((current_folder(&settings, root, campaign), false));
     }
     RecorderSettings::update_at(settings_path, |settings| {
         let choice = settings.campaigns.entry(campaign.to_owned()).or_default();
         let current = campaign_folder(root, choice.folder.as_deref());
         if choice.next != NextLoad::NewFile {
-            return current;
+            return (current, false);
         }
         choice.next = NextLoad::Continue;
         if !recorded && !recording_path(&current, campaign).exists() {
-            return current;
+            return (current, true);
         }
         let name = new_folder_name(root, campaign);
         let folder = root.join(&name);
         choice.folder = Some(name);
-        folder
+        (folder, true)
     })
-    .map(|(_, folder)| folder)
+    .map(|(_, target)| target)
     .map_err(|error| format!("Recorder settings could not be saved: {error}"))
 }
 
-/// Where a session attaching for this campaign records; nothing of it is in
-/// that session's spool yet.
-pub fn session_target(root: &Path, campaign: &str) -> Result<PathBuf, String> {
+/// Returns the folder and whether it consumed New file; this session has no spooled hours yet.
+pub fn session_target(root: &Path, campaign: &str) -> Result<(PathBuf, bool), String> {
     session_target_at(&RecorderSettings::path(), root, campaign, false)
 }
 
@@ -117,7 +116,7 @@ mod tests {
         // Continue records in the save folder itself.
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            root
+            (root.clone(), false)
         );
         // New file with no earlier recording: nothing to keep apart; used up.
         RecorderSettings::update_at(&settings, |settings| {
@@ -126,7 +125,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            root
+            (root.clone(), true)
         );
         let saved = RecorderSettings::load_from(&settings).unwrap();
         assert!(
@@ -144,7 +143,7 @@ mod tests {
         let second = root.join(format!("{CAMPAIGN} (2)"));
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            second
+            (second.clone(), true)
         );
         assert_eq!(fs::read(&earlier).unwrap(), b"earlier recording");
         let saved = RecorderSettings::load_from(&settings).unwrap();
@@ -156,7 +155,7 @@ mod tests {
         // Later sessions continue the new recording.
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            second
+            (second.clone(), false)
         );
         // Another New file skips folders already in use.
         fs::create_dir_all(&second).unwrap();
@@ -168,7 +167,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            root.join(format!("{CAMPAIGN} (4)"))
+            (root.join(format!("{CAMPAIGN} (4)")), true)
         );
         fs::remove_dir_all(scratch).unwrap();
     }
@@ -189,13 +188,13 @@ mod tests {
         let second = root.join(format!("{CAMPAIGN} (2)"));
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, true).unwrap(),
-            second
+            (second.clone(), true)
         );
         let saved = RecorderSettings::load_from(&settings).unwrap();
         assert_eq!(saved.campaigns[CAMPAIGN].next, NextLoad::Continue);
         assert_eq!(
             session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
-            second
+            (second, false)
         );
         fs::remove_dir_all(scratch).unwrap();
     }

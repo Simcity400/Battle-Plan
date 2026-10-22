@@ -89,7 +89,7 @@ impl Groups {
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut groups = Self::default();
         for path in crate::script_files::paths(layers, GROUPS_DIRECTORY, Some(".txt")) {
-            groups.read_file(&layers.read(&path)?, &path);
+            groups.read_file(&path.read(layers)?, &path.text());
             if groups.lost.is_some() {
                 break;
             }

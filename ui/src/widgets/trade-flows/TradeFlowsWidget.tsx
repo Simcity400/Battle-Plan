@@ -5,6 +5,7 @@ import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
 import { useContextMenu } from '../../components/ContextMenu';
 import type { MenuItem } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { dayLabel } from '../../charts/draw';
 import FlowDiagram from '../../charts/flow/FlowDiagram';
 import type { FlowHit, FlowLink, FlowNode } from '../../charts/flow/FlowDiagram';
@@ -86,7 +87,8 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   const [capacity, setCapacity] = useState<number | null>(null);
   const perSide = capacity == null ? asked : Math.max(1, Math.min(asked, capacity - 1));
   const incoming = useTradeFlows(widget, runtime, active, marketDrillHour);
-  const { track, all, resolved, groups, data, scope, error, retry } = incoming;
+  const { track, all, resolved, groups, data, scope, retry } = incoming;
+  const error = useHeldFailure(incoming.error, data !== undefined, retry);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
@@ -364,17 +366,18 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
   if (!track) return <>{pinnedHeader}<WidgetState kind="empty" icon="flows" message="Load a campaign to see who trades with whom." /></>;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if ((widget.countries.kind === 'group' || marketView && !all) && groups.error) return <>{pinnedHeader}<WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /></>;
+  const groupFailure = (widget.countries.kind === 'group' || marketView && !all) && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return <>{pinnedHeader}{groupFailure}</>;
   if (marketView) {
-    if (incoming.marketReason) return <WidgetState kind="unavailable" message={incoming.marketReason} />;
-    if (incoming.market?.error) return <WidgetState kind="error" detail={incoming.market.error} onRetry={incoming.market.retry} />;
-    if (!incoming.market?.data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading market and lend-lease…" />;
+    if (incoming.marketReason) return <>{groupFailure}<WidgetState kind="unavailable" message={incoming.marketReason} /></>;
+    if (incoming.market?.error) return <>{groupFailure}<WidgetState kind="error" detail={incoming.market.error} onRetry={incoming.market.retry} /></>;
+    if (!incoming.market?.data || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading market and lend-lease…" /></>;
     const pickedMarket = pinnedView ? savedSelection?.kind === 'market' ? savedSelection.key : null : marketSelection;
-    if (pinnedView && !pickedMarket) return <WidgetState kind="unavailable" message="This market selection is unavailable. Select it again." />;
+    if (pinnedView && !pickedMarket) return <>{groupFailure}<WidgetState kind="unavailable" message="This market selection is unavailable. Select it again." /></>;
     const main = <TradeMarketView data={incoming.market.data} onPick={key => {
       setMarketSelection(key); dispatchDrill(openContributions(widget, incoming.market.data!.hour, clock.playing, playhead));
     }} />;
-    return <div className="trade-flows" ref={anchor}>
+    return <div className="trade-flows" ref={anchor}>{groupFailure}
       <DrillHost mode={!pinnedView && options.drill === 'popout' ? 'popout' : 'inline'} open={effectiveDrill.breakdown != null} anchor={anchor}
         title="Market & lend-lease" day={drillAt == null ? '' : dayLabel(drillAt)} following={effectiveDrill.follow} canFollow
         returnFocus=".market-lendlease summary" onClose={() => { dispatchDrill({ type: 'close' }); if (pinnedView) setOption?.('show', 'main'); }}
@@ -388,16 +391,16 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
     </div>;
   }
   const selectionReason = selectionMessage(resolved, atMoment, measure, from, moment, groupUnobserved);
-  if (selectionReason && !pinnedView && !drill.breakdown) return <WidgetState kind="empty" message={selectionReason} />;
-  if (error) return <>{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (selectionReason && !pinnedView && !drill.breakdown) return <>{groupFailure}<WidgetState kind="empty" message={selectionReason} /></>;
+  if (error) return <>{groupFailure}{pinnedHeader}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
   // A group with no member found yet asks for nothing, so no reply will come: the moment shown
   // says why. Totals over time can't say so from one moment, and wait for the whole branch.
   const none = measure === 'current' && resolved ? noMembersAt(widget.countries, resolved, groups.data, moment, lastHour) : null;
-  if (none && !pinnedView && !drill.breakdown) return <>{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
-  if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
-  if (!data.reads.length) return <>{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
-  if (resourceIds && !resourceIds.size) return <>{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
-  if (pinnedView && options.tradeSelection && (!savedSelection || savedSelection.kind === 'market')) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;
+  if (none && !pinnedView && !drill.breakdown) return <>{groupFailure}{pinnedHeader}<NoMembersState reason={none.reason} icon="flows" /></>;
+  if (!data || !trade || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}{pinnedHeader}<WidgetState kind="loading" label="Loading trade…" /></>;
+  if (!data.reads.length) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="Trade was not recorded." /></>;
+  if (resourceIds && !resourceIds.size) return <>{groupFailure}{pinnedHeader}<WidgetState kind="empty" message="None of the chosen resources is in this campaign. Choose others in the widget settings." /></>;
+  if (pinnedView && options.tradeSelection && (!savedSelection || savedSelection.kind === 'market')) return <>{groupFailure}{pinnedHeader}<WidgetState kind="unavailable" message="This trade selection is unavailable. Select trades again." /></>;
 
   const caption = measure === 'current' ? 'Per day'
     : `${measure === 'total' ? 'Delivered' : 'Average per trading day'} · ${dayLabel(from)} – ${dayLabel(moment)}`;
@@ -416,7 +419,7 @@ export default function TradeFlowsWidget({ widget, runtime, active, countrySlot,
       onLabelPick={openLabel}
       active={active && !(effectiveDrill.breakdown && (pinnedView || options.drill !== 'popout'))} />
   </div>;
-  return <div className="trade-flows" ref={anchor}>
+  return <div className="trade-flows" ref={anchor}>{groupFailure}
     {pinnedHeader}
     <DrillHost mode={pinnedView || options.drill !== 'popout' ? 'inline' : 'popout'} open={effectiveDrill.breakdown != null} anchor={anchor}
       title={drillTitle} day={drillAt == null ? '' : dayLabel(drillAt)} following={effectiveDrill.follow} canFollow

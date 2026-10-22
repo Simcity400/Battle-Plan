@@ -113,6 +113,41 @@ fn asset_files_load_recursively_and_resolve_after_every_file() {
 }
 
 #[test]
+fn weighted_sound_fields_beyond_its_sound_and_weight_are_refused_by_name() {
+    let stack = Stack::new("sound_weighted_fields");
+    let base = stack.base();
+    stack.write(
+        &base,
+        "sound/effects.asset",
+        r#"sound = { name = s file = "s.wav" }
+           soundeffect = { name = e
+             sounds = { weighted_sound = { SOUND = s Weight = 2 unsupported_field = yes } } }"#,
+    );
+    let catalog = Catalog::read(&stack.layers(&[])).unwrap();
+    let effect = &catalog.effects[catalog.effect("e").unwrap()];
+    let choices: Vec<_> = effect
+        .choices
+        .iter()
+        .map(|choice| (catalog.sounds[choice.sound].name.as_str(), choice.weight))
+        .collect();
+    assert_eq!(choices, [("s", 2)]);
+    let notes = catalog.notes.lines();
+    assert!(
+        notes.contains(
+            &"sound/effects.asset: soundeffect e weighted_sound refused field unsupported_field"
+                .to_owned()
+        ),
+        "{notes:?}"
+    );
+    assert!(
+        !notes
+            .iter()
+            .any(|note| note.contains("field SOUND") || note.contains("field Weight")),
+        "{notes:?}"
+    );
+}
+
+#[test]
 fn first_declarations_win_and_later_categories_take_effects_over() {
     let stack = Stack::new("sound_catalog_duplicates");
     let (base, addon) = (stack.base(), stack.addon());

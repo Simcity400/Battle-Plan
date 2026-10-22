@@ -92,7 +92,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Locations> {
     let names = layers.key_names()?;
     let mut all = Locations::default();
     for path in script_files::paths(layers, "common/strategic_locations/", Some(".txt")) {
-        match parse(&layers.read(&path)?, &names) {
+        match parse(&path.read(layers)?, &names) {
             Ok(file) => all.locations.extend(file.locations),
             Err(why) => {
                 all.gap.get_or_insert_with(|| format!("{path}: {why}"));

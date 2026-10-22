@@ -190,7 +190,7 @@ fn colours_follow_component_reads_in_order() {
 fn a_group_that_is_not_text_stops_the_file() {
     let (read, _, _) = read_file_in(
         b"ideologies = { a = { } \"\xfe\" = { } b = { } }",
-        "",
+        &"".into(),
         &BTreeMap::new(),
     );
     let (found, cause) = groups(&read.items);
@@ -210,7 +210,7 @@ fn a_group_that_is_not_text_stops_the_file() {
 fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
     let (read, _, _) = read_file_in(
         b"ideologies = { fascism = { color = rgb { 150 75 0 } types = { nazism = { } } } }",
-        "",
+        &"".into(),
         &BTreeMap::new(),
     );
     let (groups, _) = groups(&read.items);
@@ -232,7 +232,7 @@ fn a_tagged_colour_leaves_its_block_to_the_group_reader() {
 fn a_sub_ideologys_other_keys_are_its_modifier() {
     let (read, undecided, _) = read_file_in(
             b"ideologies = { a = { types = { x = { political_power_factor = 0.1 odd = { @v = 1 } } } } }",
-            "",
+            &"".into(),
             &BTreeMap::new(),
         );
     assert!(read.misreads.is_empty(), "{:?}", read.misreads);
@@ -248,7 +248,7 @@ fn the_replay_classes_hold_for_ideologies() {
     let (read, _, _) = read_file_in(
             b"@blue = 255 ideologies = { a = { \"color\" = { 1 2 3 } COLOR = { 0 0 @blue } Types = { x = { } } } \
               b = { can_be_boosted = { color = { 9 9 9 } } } }",
-            "",
+            &"".into(),
             &BTreeMap::new(),
         );
     let (found, _) = groups(&read.items);
@@ -267,7 +267,7 @@ fn the_replay_classes_hold_for_ideologies() {
     );
     let (read, _, _) = read_file_in(
         b"ideologies = { c = { types = { y = { } ",
-        "",
+        &"".into(),
         &BTreeMap::new(),
     );
     assert!(read.misreads.is_empty());

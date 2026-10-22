@@ -163,7 +163,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     ] {
         for path in script_files::paths(layers, folder, Some(".txt")) {
             catalog.coverage.next_file();
-            let bytes = layers.read(&path)?;
+            let bytes = path.read(layers)?;
             let read = if templates {
                 faction_templates::parse(&bytes, &names)
             } else {
@@ -191,7 +191,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
                     .map(|why| format!("Faction goals in {path}: {why}")),
             );
             if let Some(why) = read.unsettled {
-                catalog.coverage.gap(&path, why.to_string());
+                catalog.coverage.gap(&path.text(), why.to_string());
             }
         }
     }

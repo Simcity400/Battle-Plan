@@ -570,7 +570,7 @@ fn a_memoised_portrait_names_its_fallback_on_every_request() {
     let (colour, first) = request();
     assert_eq!(colour, RED.to_vec());
     assert!(
-        first.as_deref().unwrap().contains("sprite GFX_icon ("),
+        first.as_deref().unwrap().contains("portrait GFX_icon ("),
         "{first:?}"
     );
     assert_eq!(

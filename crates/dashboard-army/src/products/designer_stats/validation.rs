@@ -481,7 +481,12 @@ fn designer_stats_match_recorded_division_caches() {
                             definition.database_index
                         })
                         .ok()
-                        .and_then(|at| technologies.get(&definitions[at].id).ok().flatten())
+                        .and_then(|at| {
+                            technologies
+                                .template(row.database_index, &definitions[at].id)
+                                .ok()
+                                .flatten()
+                        })
                         .is_some_and(|template| !template.unit_bonus.is_empty());
                     if bonus {
                         *report.levels.entry(row.level).or_default() += 1;
@@ -875,7 +880,12 @@ fn designer_stats_match_recorded_division_caches() {
                             .map(|definition| String::from_utf8_lossy(&definition.id).into_owned());
                         let bonus = id
                             .as_ref()
-                            .and_then(|id| technologies.get(id.as_bytes()).ok().flatten())
+                            .and_then(|id| {
+                                technologies
+                                    .template(row.database_index, id.as_bytes())
+                                    .ok()
+                                    .flatten()
+                            })
                             .map(|template| template.unit_bonus.len());
                         println!(
                             "  tech {:?} applied {} level {} unit bonus blocks {:?}",

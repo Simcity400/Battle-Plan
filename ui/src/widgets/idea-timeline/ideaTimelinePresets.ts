@@ -16,8 +16,8 @@ export function useIdeaTimelinePresets(definition: WidgetMeta, runtime: WidgetRu
   const categories = data ? timelineCategories(data.categories) : [];
   const reason = !track ? 'Load a campaign to list its idea categories.'
     : !tag ? 'Choose a country to list this campaign’s idea categories.'
-    : error ?? (!data ? 'Loading this campaign’s idea categories…'
-      : !categories.length ? 'This campaign’s content has no political-screen idea categories with slots.' : null);
+    : !data ? error ?? 'Loading this campaign’s idea categories…'
+      : !categories.length ? 'This campaign’s content has no political-screen idea categories with slots.' : null;
   if (reason !== null) return { presets: [], reason };
   return { reason: null, presets: categories.map(category => {
     // A known empty name keeps the widget's own editable title rather than an invented one.

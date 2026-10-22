@@ -29,7 +29,7 @@ impl AceContent {
         let names = installed_content_core::key_names::KeyNames::read(layers)?;
         let mut result = Self::default();
         for path in layers.directory_files("common/aces", ".txt")? {
-            result.read(&layers.read(&path)?, &names);
+            result.read(&path.read(layers)?, &names);
         }
         Ok(result)
     }

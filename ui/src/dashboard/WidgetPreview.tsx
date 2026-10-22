@@ -6,6 +6,8 @@ import type { WidgetDefinition, WidgetRuntime } from './definitions';
 import { createWidget, recordingEndTime } from './model';
 import type { WidgetSpec } from './model';
 import { WidgetBody } from './widgets';
+import { HeldFailures, HeldFailuresContext } from './heldFailures';
+import HeldFailureNotices from './HeldFailureNotices';
 
 // The grid's row geometry, so a preview is as tall as the widget sits on the page.
 const ROW = 26, GAP = 6;
@@ -29,6 +31,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
   const icon = useContext(WidgetIconsContext).style(definition.kind);
   const [summary, setSummary] = useState<HTMLSpanElement | null>(null);
   const [country, setCountry] = useState<HTMLSpanElement | null>(null);
+  const [failures] = useState(() => new HeldFailures());
   if (definition.preview === false || !widget || !runtime.tracks.length) return <div className="widget-preview is-empty">
     <StyledIcon icon={icon.icon} fallback={definition.icon} colour={icon.colour} /><span>{definition.preview === false ? 'This widget draws on the page itself, so it has no preview here.' : 'Load a campaign to preview widgets with its data.'}</span></div>;
   const height = Math.min(Math.max(definition.defaultSize.h * (ROW + GAP) - GAP, HEIGHT.min), HEIGHT.max);
@@ -41,8 +44,11 @@ export default function WidgetPreview({ definition, initial, runtime }: {
         <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={setSummary} /></h2></div>
         <span ref={setCountry} />
       </header>
+      <HeldFailureNotices failures={failures} />
       <div className="dash-widget-content"><div className="dash-widget-scaled">
-        <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} />
+        <HeldFailuresContext.Provider value={failures}>
+          <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} />
+        </HeldFailuresContext.Provider>
       </div></div>
     </article>
   </div>;

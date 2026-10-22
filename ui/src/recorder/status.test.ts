@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, spanText, stopPromptVisible, whatToRecord } from './status.ts';
+import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, spanText, stopPromptVisible, untilNextMinute, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
@@ -81,6 +81,11 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
   assert.equal(sessionLength(started, started + 3 * 3_600_000), '3 h');
   assert.equal(sessionLength(started, started + 20_000), '1 min');
   assert.equal(sessionLength(null, started), '1 min');
+  const now = started + (2 * 60 + 14) * 60_000 + 59_000;
+  assert.equal(untilNextMinute(started, now), 1_000);
+  assert.equal(sessionLength(started, now + untilNextMinute(started, now)), '2 h 15 min');
+  assert.equal(untilNextMinute(started, started + 3 * 3_600_000), 60_000);
+  assert.equal(untilNextMinute(null, started), 60_000);
   assert.equal(discardTooltip(true), 'Deletes this session only. Earlier recording in this file is kept.');
   assert.equal(discardTooltip(false), 'Deletes this recording.');
   assert.equal(stopPromptVisible(true, recording()), true);
@@ -101,4 +106,26 @@ test('campaign choices follow the global default until set', () => {
   assert.equal(nextLoad(settings, 'other'), 'continue');
   assert.equal(whatToRecord(settings), 'Everything');
   assert.equal(whatToRecord({ ...settings, politics: false }), 'Custom');
+});
+
+test('settings reads and saves run one at a time, and a failed save is followed by a read', async () => {
+  let stored = 'initial';
+  const shown: string[] = [];
+  const queue = settingsQueue(async () => stored, value => { shown.push(value); });
+  let finishFirst!: () => void;
+  const firstStored = new Promise<void>(resolve => { finishFirst = resolve; });
+  const first = queue.save(() => firstStored.then(() => { stored = 'game score off'; return stored; }));
+  let secondSaw: string | undefined;
+  const second = queue.save(async () => { secondSaw = stored; stored = 'game score and politics off'; return stored; });
+  const read = queue.refresh();
+  finishFirst();
+  await Promise.all([first, second, read]);
+  assert.equal(secondSaw, 'game score off');
+  assert.deepEqual(shown, ['game score off', 'game score and politics off', 'game score and politics off']);
+  stored = 'stored before the flush failed';
+  await assert.rejects(queue.save(async () => { throw new Error('flush failed'); }), /flush failed/);
+  await queue.refresh();
+  assert.deepEqual(shown.slice(-2), ['stored before the flush failed', 'stored before the flush failed']);
+  await queue.save(async () => null);
+  assert.equal(shown.length, 5);
 });

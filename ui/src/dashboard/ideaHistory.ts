@@ -35,7 +35,9 @@ export function usePreparedIdeaHistory(client: DashboardClient, track: BoundTrac
       undefined, undefined, publish)
       .then(validateIdeaHistoryReply).then(
         data => { if (!controller.signal.aborted) setState({ client, key, data }); },
-        error => { if (!controller.signal.aborted) setState({ client, key, error: error instanceof Error ? error.message : String(error) }); },
+        error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
+          data: previous?.client === client && previous.key === key ? previous.data : undefined,
+          error: error instanceof Error ? error.message : String(error) })); },
       );
     return () => controller.abort();
     // The structured key owns source, branch, country and content revision.

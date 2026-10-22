@@ -144,8 +144,9 @@ pub fn technology_bonuses(
             })?;
         let name =
             String::from_utf8_lossy(installed_content_core::parser::c_string(&definition.id)).into_owned();
+        // The game applies each recorded template independently, even when technology IDs repeat.
         let template = catalogue
-            .get(&definition.id)?
+            .template(row.database_index, &definition.id)?
             .ok_or_else(|| format!("technology {name} is not in the content"))?;
         if template.unit_bonus.is_empty() {
             continue;

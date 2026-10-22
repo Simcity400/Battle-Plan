@@ -1241,7 +1241,7 @@ pub fn read(
             coverage.next_file();
             advisors.next_file();
             let read = read_file(
-                &layers.read(&path)?,
+                &path.read(layers)?,
                 database.groups(loader, officers),
                 &names,
             );
@@ -1262,13 +1262,13 @@ pub fn read(
                 // The ideas, categories and advisors from the stop on are
                 // known by name only, and the rest of the file may define
                 // any other: every lookup this file could answer is refused.
-                coverage.gap(&path, stop.cause.clone());
-                advisors.gap(&path, &stop.cause);
+                coverage.gap(&path.text(), stop.cause.clone());
+                advisors.gap(&path.text(), &stop.cause);
                 if database.tags.cut.is_none() {
                     database.tags.cut = Some((
                         known + stop.categories,
                         Gap {
-                            path: path.clone(),
+                            path: path.to_string(),
                             cause: stop.cause.clone(),
                         },
                     ));

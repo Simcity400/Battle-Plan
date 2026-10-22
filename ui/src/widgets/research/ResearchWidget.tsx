@@ -36,8 +36,8 @@ import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
 import { ResearchWithDoctrines } from './DoctrinePanel';
 import { researchJourney } from './researchJourney';
-import { isUnjoinedResearch, researchAt, researchEntryAt, researchFolderList, researchFolderLooks, researchHeldRuns, researchLatestProgress, researchStateAt } from './researchData';
-import type { ResearchFolderLook } from './researchData';
+import { isUnjoinedResearch, researchArt, researchArtwork, researchAt, researchEntryAt, researchFolderAt, researchFolderList, researchFolderLooks, researchHeldRuns, researchLatestProgress, researchRecordedTemplates, researchStateAt } from './researchData';
+import type { ResearchFolderLook, ResearchFolderLooks } from './researchData';
 import { completedRow, completedTooltip, coverageAt, currentTooltip, gapTooltip, heldRow, heldTooltip, researchDate, researchDateRange, researchDays, researchItemDate, researchLanesAt, researchRows } from './researchLayout';
 import type { ResearchItem, ResearchLane, ResearchRow, ResearchText } from './researchLayout';
 import { historyTokens, useResearchReply } from './useResearch';
@@ -53,6 +53,8 @@ type Breakdown = { slotIndex: number; entry: ResearchEntry };
 type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
 type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
+/** Legacy slot states have no occurrence index; only completion assignments record it. */
+const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex ?? null : null;
 
 /** A technology's picture, or the flask when content has none. */
 function Art({ icon, className }: { icon: string | undefined; className: string }) {
@@ -72,16 +74,18 @@ function tipProps(tip: Tip, untip: () => void, key: string, content: () => Toolt
 /** One row of a slot's lane. A completion opens its breakdown; what an older
  * recording's slot held, the gaps and the opening are read-only. */
 function LaneRow({ item, slots, coverage, text, dimmed, tip, untip, jump, onOpen }: {
-  item: ResearchItem; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; text: ResearchText; dimmed: (token: string) => boolean;
+  item: ResearchItem; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; text: ResearchText;
+  dimmed: (token: string, databaseIndex?: number | null) => boolean;
   tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
 }) {
   if (item.kind === 'gap') return <div className="research-marker is-gap" tabIndex={0} {...tipProps(tip, untip, item.key, () => gapTooltip(item))}>
     <span>Not recorded<br />{researchDateRange(item.hour, item.lastHour)}</span></div>;
   if (item.kind === 'opened' || item.kind === 'closed') return <div className={`research-marker is-${item.kind}`}><span>{researchItemDate(item)}</span></div>;
   const token = item.kind === 'completed' ? item.entry.token : item.run.token;
-  const name = text.name(token), date = researchItemDate(item);
+  const databaseIndex = item.kind === 'completed' ? item.entry.databaseIndex ?? null : null;
+  const name = text.name(token, databaseIndex), date = researchItemDate(item);
   const body = <><Art icon={text.icon(token)} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></>;
-  const className = `research-cell${dimmed(token) ? ' is-dimmed' : ''}`;
+  const className = `research-cell${dimmed(token, databaseIndex) ? ' is-dimmed' : ''}`;
   if (item.kind === 'held') return <div className={`${className} is-held`} tabIndex={0} aria-label={`${name}, ${date}`}
     {...tipProps(tip, untip, item.key, () => heldTooltip(heldRow(coverage, item.slot, item.run, item.hour), text))}
     {...jump(item.run.endedByHour ?? item.run.lastHour)}>{body}</div>;
@@ -109,10 +113,11 @@ function NowCell({ lane, slots, hour, text, tip, untip, jump, onOpen }: {
       <b className="research-idle">Idle</b>{banked > 0n && <small>{researchNumber(banked)} days saved</small>}</div>;
   }
   const token = entry?.token ?? state.token!;
-  const name = text.name(token);
+  const databaseIndex = entry?.databaseIndex ?? null;
+  const name = text.name(token, databaseIndex);
   const progress = researchLatestProgress(slot, state, hour);
   const left = state.details?.remainingDays ?? null;
-  const content = () => currentTooltip(token, slot.index, progress, left, !!entry, text);
+  const content = () => currentTooltip(token, slot.index, progress, left, !!entry, text, null, databaseIndex);
   const body = <>
     <Art icon={text.icon(token)} className="research-now-art" /><b>{name}</b>
     {progress && <small className="is-progress">{Math.round(progress.fraction * 100)}%</small>}
@@ -159,7 +164,8 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const folders = useMemo(() => researchFolderList(looks), [looks]);
   const chosenTokens = useMemo(() => contentSet(options.folders), [options.folders]);
   const chosen = useMemo(() => new Set(chosenTokens.map(contentKey)), [chosenTokens]);
-  const dimmed = useCallback((token: string) => chosen.size > 0 && !chosen.has(looks.get(token)?.key ?? ''), [chosen, looks]);
+  const dimmed = useCallback((token: string, databaseIndex?: number | null) =>
+    chosen.size > 0 && !chosen.has(researchFolderAt(looks, token, databaseIndex)?.key ?? ''), [chosen, looks]);
   const completedTokens = useMemo(() => lanes.flatMap(lane => [
     ...lane.items.flatMap(item => item.kind === 'completed' ? [item.entry.token] : []),
     ...lane.items.flatMap(item => item.kind === 'held' ? [item.run.token] : []),
@@ -170,14 +176,15 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   }) : [];
   const assignmentKey = JSON.stringify(assignments);
   const imageTokens = useMemo(() => [...new Set([...assignments, ...completedTokens])], [completedTokens, assignmentKey]);
-  const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data);
+  const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
+  const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data, recorded);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
-  const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, { ...art, icon: images.artwork.get(art.token)?.icon ?? art.icon }])), [data, images.artwork]);
+  const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const text = useMemo<ResearchText>(() => ({
-    name: token => contentTitle(artwork.get(token)?.name, token, 'Technology name unavailable'),
+    name: (token, databaseIndex) => contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'),
     icon: token => artwork.get(token)?.icon ?? undefined,
-    folder: token => looks.get(token),
+    folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
   }), [artwork, looks]);
   const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
@@ -196,10 +203,11 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   </>;
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{header}<div className="dash-empty" role="status">This time is outside the recording.</div></>;
-  if (error) return <>{header}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  if (failure && !data) return <>{header}{failure}</>;
   if (!data || !slots) return <>{header}{preparing ? <PreparedLogCoverage coverage={null} /> : <ListSkeleton label="Loading research…" />}</>;
-  if (!lanes.length && preparedPrefix(data)?.pending.length) return <>{header}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} /></>;
-  if (!lanes.length) return <>{header}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
+  if (!lanes.length && preparedPrefix(data)?.pending.length) return <>{header}{failure}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} /></>;
+  if (!lanes.length) return <>{header}{failure}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
     <p>No research slots recorded by {researchDate(hour)}.</p></div></>;
   const shownSlot = shown ? detailsSlots?.find(owner => owner.index === shown.slotIndex) : undefined;
   const shownEntry = shownSlot?.entries.find(entry => entry.firstObservedHour === shown!.entry.firstObservedHour && entry.token === shown!.entry.token);
@@ -207,6 +215,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const toggle = (token: string) => { const next = toggleContentSet(options.folders, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('folders', next); };
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="research-widget" aria-label="Research history">
     {header}
+    {failure}
     {held && <p className="research-note" role="note"><Icon name="info" /><span>This recording is too old to show when research finished.
       {view === 'columns' ? ' Each column lists what that slot worked on, in order; “until” is when it had left the slot, not a completion.'
         : ' Rows are what each slot held; “until” is when it had left the slot, not a completion.'}</span></p>}
@@ -224,8 +233,9 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && shownSlot && shownEntry && <>
-        <PopoverHeading title={text.name(shownEntry.token)} menu={breakdown} />
-        <ResearchExplanation history={data.history} slots={detailsSlots!} slot={shownSlot} entry={shownEntry} description={artwork.get(shownEntry.token)?.description} />
+        <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
+        <ResearchExplanation history={data.history} slots={detailsSlots!} slot={shownSlot} entry={shownEntry}
+          description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />
       </>}
     </Popover>
     {menu.menu}
@@ -276,7 +286,7 @@ function ResearchColumns({ lanes, slots, coverage, hour, moment, text, dimmed, t
  * table row; the recording's gaps keep their place while sorted by date. */
 function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort, density, narrow, setOption, menu, onOpen }: {
   lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; coverage: readonly ResearchCoverage[]; held: boolean; text: ResearchText;
-  chosen: ReadonlySet<string>; looks: ReadonlyMap<string, ResearchFolderLook>; sort: { column: string; direction: 'ascending' | 'descending' };
+  chosen: ReadonlySet<string>; looks: ResearchFolderLooks; sort: { column: string; direction: 'ascending' | 'descending' };
   density: 'comfortable' | 'compact'; narrow: NarrowTable; setOption: WidgetProps['setOption'];
   menu: (row: ResearchRow) => ReturnType<typeof jumpItem>[]; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
 }) {
@@ -285,17 +295,17 @@ function ResearchList({ lanes, slots, coverage, held, text, chosen, looks, sort,
   // cannot change an already revealed row or the gaps between earlier spans.
   const knownRows = useMemo(() => researchRows(lanes, slots, coverage), [lanes, slots, coverage.length]);
   const rows = useMemo(() => knownRows.filter(row => row.kind === 'gap'
-    ? sort.column === 'date' : chosen.size === 0 || chosen.has(looks.get(row.token)?.key ?? '')), [knownRows, sort.column, chosen, looks]);
+    ? sort.column === 'date' : chosen.size === 0 || chosen.has(researchFolderAt(looks, row.token, rowIndex(row))?.key ?? '')), [knownRows, sort.column, chosen, looks]);
   const columns = useMemo<readonly TableColumn<ResearchRow>[]>(() => [
     { key: 'date', label: 'Date', header: 'Date', width: 'max-content', value: row => row.hour, renderMissing: true,
       render: row => <span className="research-list-date">{row.kind === 'gap' ? 'Not recorded' : researchItemDate(row)}</span> },
     { key: 'technology', label: held ? 'Technology held' : 'Technology', header: held ? 'Technology held' : 'Technology', width: 'minmax(var(--table-name-min), 1fr)',
-      value: row => row.kind === 'gap' ? null : text.name(row.token), renderMissing: true,
+      value: row => row.kind === 'gap' ? null : text.name(row.token, rowIndex(row)), renderMissing: true,
       render: row => row.kind === 'gap' ? <span className="research-list-gap">{researchDateRange(row.hour, row.lastHour)}</span>
-        : <span className="research-list-tech"><Art icon={text.icon(row.token)} className="research-list-art" /><span>{text.name(row.token)}</span></span> },
+        : <span className="research-list-tech"><Art icon={text.icon(row.token)} className="research-list-art" /><span>{text.name(row.token, rowIndex(row))}</span></span> },
     { key: 'folder', label: 'Folder', header: 'Folder', width: 'minmax(6em, 0.6fr)', priority: 2,
-      value: row => row.kind === 'gap' ? null : looks.get(row.token)?.name ?? null, renderMissing: true,
-      render: row => { const look = row.kind === 'gap' ? undefined : looks.get(row.token);
+      value: row => row.kind === 'gap' ? null : researchFolderAt(looks, row.token, rowIndex(row))?.name ?? null, renderMissing: true,
+      render: row => { const look = row.kind === 'gap' ? undefined : researchFolderAt(looks, row.token, rowIndex(row));
         return look ? <span className="research-list-folder"><i style={{ background: look.colour }} />{look.name}</span> : null; } },
     { key: 'slot', label: 'Slot', header: 'Slot', numeric: true, width: 'max-content', priority: 3, value: row => row.kind === 'gap' ? null : row.slot.index + 1, renderMissing: true,
       render: row => row.kind === 'gap' ? null : row.slot.index + 1 },

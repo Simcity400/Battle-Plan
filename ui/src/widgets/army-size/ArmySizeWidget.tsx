@@ -247,7 +247,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" detail={metadata.error} onRetry={metadata.retry} />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="shield" message={resolved.reason} />;
     if (metadata.data && !metadata.data.measures.length) return <WidgetState kind="unavailable" message="Not in this recording" />;
     if (metadata.data && !metadata.data.measures.includes(measure)) {
@@ -290,7 +290,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
         dispatchDrill({ type: 'choose', key: choices.key, tag, hour: drillAt });
       }} />
   </div> : breakdown;
-  if (pinned) return <>{neutralHeader}<div ref={drillAnchor} className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null;
+  if (pinned) return <>{neutralHeader}{groupNotice}<div ref={drillAnchor} className="army-size-drill parts-race-drill">{state ?? choice}</div></>;
   const main = <CountryRaceView runtime={runtime} track={track} state={state} active={active && (!drillOpen || options.drill === 'popout')} onPick={open} pickOwner={pickOwner} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={entries} lines={lines} badges={badges} parts={parts} mix={mix} segmentAt={segmentAt} countryTags={shownTags}
     label="Army size" empty={resolved.known(moment) ? `No known army sizes on ${dayLabel(moment)}.` : MEMBERSHIP_PREPARING} formatValue={formatArmyValue}
@@ -325,7 +326,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
           swatch: country(tag), short: true, countryFlag: label };
       }) : [{ label: 'Not recorded', tone: 'muted' as const }],
     }]} />;
-  return <div className="army-size-drill parts-race" ref={drillAnchor}>
+  return <div className="army-size-drill parts-race" ref={drillAnchor}>{groupNotice}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title="Army breakdown" day={dayLabel(drillAt)} following={drill.follow} canFollow={choices === null && track !== undefined}
       returnFocus=".race-chart canvas, .time-chart canvas" onClose={() => dispatchDrill({ type: 'close' })} onFollow={follow}

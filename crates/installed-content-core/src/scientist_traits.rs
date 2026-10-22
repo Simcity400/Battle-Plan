@@ -197,7 +197,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ScientistTraits, Vec<crate::
     let mut earlier = BTreeSet::new();
     for path in script_files::paths(layers, "common/scientist_traits/", Some(".txt")) {
         result.coverage.next_file();
-        let file = parse(&layers.read(&path)?, &names, &earlier);
+        let file = parse(&path.read(layers)?, &names, &earlier);
         notes.extend(
             file.notes
                 .into_iter()
@@ -210,7 +210,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(ScientistTraits, Vec<crate::
             result.definitions.entry(token).or_insert(found);
         }
         if let Some(why) = file.gap {
-            result.coverage.gap(&path, why.clone());
+            result.coverage.gap(&path.text(), why.clone());
             notes.push((
                 crate::DiagnosticKind::Unsettled,
                 format!("Scientist traits in {path}: {why}; unread definitions are unknown"),

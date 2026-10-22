@@ -687,6 +687,39 @@ fn metadata_skips_an_unavailable_first_census_warns_on_bad_links_and_stops_when_
 }
 
 #[test]
+fn a_branch_without_a_complete_census_is_catalogued_from_a_later_block() {
+    let mut first = source(1, 100, Some(1));
+    *first.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "census failed".into(),
+    };
+    let path = Path::new("memory.battleplan");
+    let flag = AtomicBool::new(false);
+    let early =
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap());
+    let previous = crate::metadata::read(&early, path, &flag).unwrap();
+    assert!(previous.countries.is_empty());
+    assert_eq!(previous.branches[0].catalogue_hour, None);
+    let later = Arc::new(
+        early
+            .append(&[crate::test_fixtures::continuation_records(
+                &early,
+                1,
+                vec![source(1, 101, Some(1))],
+            )])
+            .unwrap(),
+    );
+    assert_eq!(later.index.len(), 2);
+    for metadata in [
+        crate::metadata::read(&later, path, &flag).unwrap(),
+        crate::metadata::read_append(&later, path, &flag, &previous, early.index.len()).unwrap(),
+    ] {
+        assert_eq!(metadata.branches[0].catalogue_hour, Some(101));
+        assert_eq!(metadata.countries.len(), 1);
+        assert_eq!(metadata.countries[0].observed_hour, 101);
+    }
+}
+
+#[test]
 fn metadata_catalogue_lists_every_country_once_across_branches_within_the_reply_budget() {
     const COUNTRIES: u32 = 65_535;
     let branches: Vec<_> = (1..=3)

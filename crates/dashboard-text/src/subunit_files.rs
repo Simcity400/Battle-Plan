@@ -5,12 +5,12 @@ use std::{collections::BTreeSet, io};
 
 /// Sub-units live in the files directly under `common/units`; its child
 /// directories hold equipment, historical names and unrelated data.
-pub fn is_subunit_file(path: &str) -> bool {
+pub fn is_subunit_file(path: &[u8]) -> bool {
     let lower = path.to_ascii_lowercase();
-    lower.ends_with(".txt")
+    lower.ends_with(b".txt")
         && lower
-            .strip_prefix("common/units/")
-            .is_some_and(|relative| !relative.contains('/'))
+            .strip_prefix(b"common/units/")
+            .is_some_and(|relative| !relative.contains(&b'/'))
 }
 
 /// Every authored sub-unit key, from the files [`crate::subunit_requirements::Content::load`] reads sub-units
@@ -18,8 +18,9 @@ pub fn is_subunit_file(path: &str) -> bool {
 pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
     for path in subunit_paths(layers.paths()) {
-        let document = parser::parse(&layers.read(path)?)
-            .map_err(|error| invalid(format!("{path}: {error}")))?;
+        let document = parser::parse(&layers.read_path(path)?).map_err(|error| {
+            invalid(format!("{}: {error}", String::from_utf8_lossy(path)))
+        })?;
         for root in document
             .items
             .iter()
@@ -41,9 +42,9 @@ pub fn subunit_keys(layers: &ResolvedLayers) -> io::Result<BTreeSet<String>> {
 
 /// ResolvedLayers has already applied same-path mount replacement;
 /// The game then reads the effective files in path byte order.
-pub fn subunit_paths<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+pub fn subunit_paths<'a>(paths: impl Iterator<Item = &'a [u8]>) -> Vec<&'a [u8]> {
     let mut paths: Vec<_> = paths.filter(|path| is_subunit_file(path)).collect();
-    paths.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    paths.sort();
     paths
 }
 
@@ -53,7 +54,7 @@ mod tests {
     #[test]
     fn sub_units_come_from_the_direct_unit_files_in_path_byte_order() {
         for path in ["common/units/infantry.txt", "common/units/Armor.TXT"] {
-            assert!(is_subunit_file(path), "{path}");
+            assert!(is_subunit_file(path.as_bytes()), "{path}");
         }
         for path in [
             "common/units/equipment/infantry.txt",
@@ -62,7 +63,7 @@ mod tests {
             "common/units/codenames_operatives/GER.txt",
             "common/units/infantry.asset",
         ] {
-            assert!(!is_subunit_file(path), "{path}");
+            assert!(!is_subunit_file(path.as_bytes()), "{path}");
         }
         assert_eq!(
             subunit_paths(
@@ -72,8 +73,12 @@ mod tests {
                     "common/units/B.txt",
                 ]
                 .into_iter()
+                .map(str::as_bytes)
             ),
-            ["common/units/B.txt", "common/units/z_base.txt"]
+            [
+                b"common/units/B.txt".as_slice(),
+                b"common/units/z_base.txt".as_slice()
+            ]
         );
     }
 }

@@ -295,6 +295,61 @@ pub fn clip(runs: Vec<Run>, spans: &[(i32, i32)], through: i32) -> Vec<Run> {
     out
 }
 
+pub fn merged(mut spans: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    spans.sort_unstable();
+    let mut out: Vec<(i32, i32)> = Vec::with_capacity(spans.len());
+    for (from, to) in spans {
+        match out.last_mut() {
+            Some(last) if from <= last.1.saturating_add(1) => last.1 = last.1.max(to),
+            _ => out.push((from, to)),
+        }
+    }
+    out
+}
+
+/// With a tag selection, a record answers only for hours when a chosen country was a party.
+pub fn selected_spans(
+    chosen: Option<&BTreeMap<u32, Vec<(i32, i32)>>>,
+    fixed: &[u32],
+    parties: &[EconomyRun],
+) -> Vec<(i32, i32)> {
+    let Some(chosen) = chosen else {
+        return vec![(i32::MIN, i32::MAX)];
+    };
+    let mut spans: Vec<(i32, i32)> = fixed
+        .iter()
+        .filter_map(|slot| chosen.get(slot))
+        .flatten()
+        .copied()
+        .collect();
+    for EconomyRun(first, last, value) in parties {
+        let Some(tagged) = value.parse::<u32>().ok().and_then(|slot| chosen.get(&slot)) else {
+            continue;
+        };
+        for &(from, to) in tagged {
+            let (from, to) = ((*first).max(from), (*last).min(to));
+            if from <= to {
+                spans.push((from, to));
+            }
+        }
+    }
+    merged(spans)
+}
+
+pub fn clip_text(runs: &[EconomyRun], spans: &[(i32, i32)]) -> Vec<EconomyRun> {
+    let mut out = Vec::new();
+    for EconomyRun(first, last, value) in runs {
+        for &(from, to) in spans {
+            let (from, to) = ((*first).max(from), (*last).min(to));
+            if from <= to {
+                out.push(EconomyRun(from, to, value.clone()));
+            }
+        }
+    }
+    out.sort_by_key(|run| run.0);
+    out
+}
+
 /// Country identities at one read: native links to canonical slots, and
 /// each slot's tag.
 pub struct Tags<'a> {

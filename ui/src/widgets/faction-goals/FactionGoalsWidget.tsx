@@ -76,15 +76,16 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
     {completedCount(all)} completed</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see faction goals." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!groups.data) return <WidgetState kind="loading" label="Loading faction goals…" />;
-  if (!faction) return <WidgetState kind="empty" icon="target" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} />;
-  if (details.error) return <WidgetState kind="error" detail={details.error} onRetry={details.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading faction goals…" />;
-  if (data.goalReason) return <WidgetState kind="unavailable" message="This faction’s goals were not recorded at this time." />;
-  if (!all.length) return <>{header}<WidgetState kind="empty" icon="target" message="This faction has no goals." /></>;
-  if (!rows.length) return <>{header}<WidgetState kind="empty" icon="target" message="No goals match this setting." /></>;
-  return <div className="faction-goals">
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction goals…" /></>;
+  if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="target" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
+  if (details.error) return <>{groupFailure}<WidgetState kind="error" detail={details.error} onRetry={details.retry} /></>;
+  if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction goals…" /></>;
+  if (data.goalReason) return <>{groupFailure}<WidgetState kind="unavailable" message="This faction’s goals were not recorded at this time." /></>;
+  if (!all.length) return <>{groupFailure}{header}<WidgetState kind="empty" icon="target" message="This faction has no goals." /></>;
+  if (!rows.length) return <>{groupFailure}{header}<WidgetState kind="empty" icon="target" message="No goals match this setting." /></>;
+  return <div className="faction-goals">{groupFailure}
     {header}
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, hour)} goals`}
       rows={rows} columns={columns} rowKey={rowKey} groupBy={groupBy} sort={tableSortOf(options.tableSort, DEFAULT_SORT)} setOption={setOption}

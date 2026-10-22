@@ -23,6 +23,8 @@ test('line styles read all 439 and 5,000 countries within native request admissi
       if (!old || !same(old.deps, deps)) slots.set(index, { deps: [...deps], value: make() });
       return (slots.get(index) as { value: unknown }).value;
     },
+    // Outside a widget frame.
+    useContext() { return null; },
     useEffect(run: Effect['run'], deps: readonly unknown[]) {
       const index = cursor++, old = effects.get(index);
       if (!old || !same(old.deps, deps)) pending.set(index, { run, deps: [...deps] });
@@ -49,6 +51,8 @@ test('line styles read all 439 and 5,000 countries within native request admissi
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'line-styles-fixture', enforce: 'pre',
       transform(source, id) {
         const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
+          "import { createContext } from 'react'; const { useContext, useEffect, useState } = globalThis.__lineStylesFixture;");
         if (['useCountryLineStyles', 'products'].some(name => path.endsWith(`/dashboard/${name}.ts`)))
           return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__lineStylesFixture;');
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(

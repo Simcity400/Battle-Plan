@@ -59,7 +59,7 @@ impl Catalog {
         // Direct directory, mode 0, shared with the equipment projection,
         // including @variable consumption.
         for path in layers.directory_files("common/technologies", ".txt")? {
-            let (read, undecided, refused) = read_templates(&layers.read(&path)?, &registry, names);
+            let (read, undecided, refused) = read_templates(&path.read(layers)?, &registry, names);
             catalog
                 .notes
                 .extend(read.misreads.iter().map(|note| format!("{path}: {note}")));
@@ -122,7 +122,10 @@ impl Catalog {
                     if field.keyword_is("parent") {
                         definition.parent = field.value.read_string().unwrap_or_default().to_vec();
                     } else if field.keyword_is("force_use_small_tech_layout") {
-                        definition.small_layout = field.value_keyword().as_deref() == Some("yes");
+                        // Only `yes` and `no` convert; invalid input keeps the prior value.
+                        if let Some(value) = field.value.scalar().and_then(parser::read_bool) {
+                            definition.small_layout = value;
+                        }
                     } else if field.keyword_is("enable_equipments") {
                         definition
                             .equipment
@@ -213,6 +216,29 @@ impl Catalog {
             .by_name
             .get(&parser::c_string(operand).to_ascii_lowercase())
             .map(|&index| &self.definitions[index]))
+    }
+
+    /// Recorded indices are one-based; repeated IDs remain separate templates whose IDs must match.
+    pub fn template(&self, database_index: i32, id: &[u8]) -> Result<Option<&Definition>, String> {
+        if let Some(why) = &self.refusal {
+            return Err(why.clone());
+        }
+        let Some(definition) = usize::try_from(database_index)
+            .ok()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|at| self.definitions.get(at))
+        else {
+            return Ok(None);
+        };
+        let id = parser::c_string(id);
+        if !parser::c_string(&definition.id).eq_ignore_ascii_case(id) {
+            return Err(format!(
+                "technology {}: recorded template {database_index} is {} in the content",
+                String::from_utf8_lossy(id),
+                String::from_utf8_lossy(&definition.id)
+            ));
+        }
+        Ok(Some(definition))
     }
 
     /// Each definition's `enable_building` entries after loading's inheritance pass, in
@@ -367,6 +393,33 @@ mod tests {
             definition.equipment[0].value.scalar(),
             Some(&b"mod_equipment"[..])
         );
+    }
+
+    #[test]
+    fn small_layout_takes_exact_booleans_and_keeps_the_preceding_value() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for (assignments, expected) in [
+            (
+                "force_use_small_tech_layout=yes force_use_small_tech_layout=invalid",
+                true,
+            ),
+            ("force_use_small_tech_layout=YES", false),
+            (
+                "force_use_small_tech_layout=yes force_use_small_tech_layout=no",
+                false,
+            ),
+        ] {
+            let text = format!("technologies={{mod_tech={{{assignments}}}}}");
+            let registry = units::Registry::default();
+            let names = KeyNames::default();
+            let (read, _, _) = read_templates(text.as_bytes(), &registry, &names);
+            assert!(read.unsettled.is_none(), "{read:?}");
+            let mut catalog = Catalog::default();
+            catalog.append(&read.items, &registry, &names);
+            let definition = catalog.get(b"mod_tech").unwrap().unwrap();
+            assert_eq!(definition.small_layout, expected, "{assignments}");
+        }
     }
 
     #[test]

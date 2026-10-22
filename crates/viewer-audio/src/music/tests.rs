@@ -84,6 +84,23 @@ fn the_history_keeps_the_recently_played_size() {
     assert_eq!(player.update(&music, None, 1), None);
 }
 
+#[test]
+fn a_smaller_size_or_another_song_list_leaves_no_stale_history() {
+    let music = music(4);
+    let chances = chances(vec![Some(1.0); 4]);
+    let mut player = Player::new(0);
+    for _ in 0..4 {
+        player.update(&music, Some(&chances), 4).unwrap();
+        player.stop();
+    }
+    assert_eq!(player.history.len(), 4);
+    player.update(&music, Some(&chances), 2).unwrap();
+    player.stop();
+    assert_eq!(player.history.len(), 2);
+    player.forget_history();
+    assert!(player.history.is_empty());
+}
+
 /// A track plays sample by sample as its stream delivers them: a chunk not
 /// yet decoded leaves the rest of the callback silent without ending the
 /// track, a failure is named once and ends it, and the end of the stream

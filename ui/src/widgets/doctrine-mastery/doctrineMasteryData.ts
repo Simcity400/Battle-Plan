@@ -57,14 +57,20 @@ export const folderName = (folder: DoctrineFolder) => folder.name ?? 'Doctrine f
 export const trackName = (track: DoctrineTrack) => track.name ?? 'Track name unavailable';
 export const rewardName = (reward: DoctrineReward) => reward.name ?? 'Reward name unavailable';
 
-/** The country's folders and tracks at `hour`, in content order; null when not recorded. Only
- * folders and tracks the country's record holds are kept. */
+/** Without exactly one witnessed holder, inventory is unknown, never empty. */
 export function doctrinesAt(reply: DoctrineMasteryReply, tag: string, hour: number): { folders: FolderState[]; readHour: number | undefined } | null {
   if (!keyedKnown(reply.window, hour)) return null;
+  const holders = new Set<string>();
+  for (const series of reply.window.series) {
+    const [country, ...rest] = series.name.split('|');
+    if (rest.length === 1 && rest[0] === 'present' && countryPart(country)?.tag === tag && runAtHour(series.runs, hour)) holders.add(country);
+  }
+  if (holders.size !== 1) return null;
+  const [holder] = holders;
   const values = new Map<string, string>();
   for (const series of reply.window.series) {
     const [country, ...rest] = series.name.split('|');
-    if (countryPart(country)?.tag !== tag) continue;
+    if (country !== holder) continue;
     const run = runAtHour(series.runs, hour);
     if (run) values.set(rest.join('|'), run[2]);
   }

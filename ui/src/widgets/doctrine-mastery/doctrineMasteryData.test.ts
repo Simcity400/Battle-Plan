@@ -4,6 +4,7 @@ import { activeTracks, chosen, dailyText, doctrineIcons, doctrinesAt, requiremen
 
 const reply = validateDoctrineMastery({
   window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
+    { name: 'GER@7|present', runs: [[0, 10, '1', true]] },
     { name: 'GER@7|land|t1|mastery', runs: [[0, 10, '15000000', true]] },
     { name: 'GER@7|land|t1|bank', runs: [[0, 10, '0', true]] },
     { name: 'GER@7|land|t1|effective', runs: [[0, 10, '250000', true]] },
@@ -49,7 +50,20 @@ test('a track without thresholds has no scale and unrecorded hours are unknown',
   assert.equal(trackRatio(empty), null);
   assert.deepEqual(trackMarks(empty, true), []);
   assert.equal(doctrinesAt(reply, 'GER', 11), null);
-  assert.deepEqual(doctrinesAt(reply, 'ITA', 5)!.folders, []);
+  assert.equal(doctrinesAt(reply, 'ITA', 5), null);
+});
+
+test('an inventory is known only through its holder presence witness', () => {
+  const window = (series: unknown) => validateDoctrineMastery({ ...reply, window: { ...reply.window, series } });
+  assert.deepEqual(doctrinesAt(window([{ name: 'ITA@8|present', runs: [[0, 10, '1', true]] }]), 'ITA', 5)!.folders, []);
+  const unwitnessed = reply.window.series.filter(series => series.name !== 'GER@7|present');
+  assert.equal(doctrinesAt(window(unwitnessed), 'GER', 5), null);
+  const reused = (last: number) => [{ name: 'GER@9|present', runs: [[0, last, '1', true]] },
+    { name: 'GER@9|land|t1|mastery', runs: [[0, 10, '1', true]] },
+    ...reply.window.series.map(series => series.name === 'GER@7|present' ? { ...series, runs: [[5, 10, '1', true]] } : series)];
+  assert.equal(doctrinesAt(window(reused(4)), 'GER', 5)!.folders[0].tracks[0].mastery, '15000000');
+  assert.equal(doctrinesAt(window(reused(4)), 'GER', 2)!.folders[0].tracks[0].mastery, '1');
+  assert.equal(doctrinesAt(window(reused(10)), 'GER', 5), null);
 });
 
 test('doctrine icons are the sprite keys of folders, grand doctrines and subdoctrines', () => {
@@ -93,6 +107,7 @@ test('a recorded choice joins by its interned id, with or without content or a s
   // Recorded structure only: no names, rewards or spellings, yet mastery stays reachable.
   const bare = validateDoctrineMastery({
     window: { firstHour: 0, lastHour: 10, known: [{ firstHour: 0, lastHour: 10 }], reads: [[0, 10, 0]], series: [
+      { name: 'GER@7|present', runs: [[0, 10, '1', true]] },
       { name: 'GER@7|0|3|mastery', runs: [[0, 10, '15000000', true]] },
       { name: 'GER@7|0|3|sub', runs: [[0, 10, '44', true]] },
     ] },

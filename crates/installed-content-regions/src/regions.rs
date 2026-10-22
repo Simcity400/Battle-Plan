@@ -263,7 +263,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
     let mut database = StrategicRegions::default();
     let mut sources: BTreeMap<u32, String> = BTreeMap::new();
     for path in layers.directory_files("map/strategicregions", ".txt")? {
-        let regions = parse_file(&layers.read(&path)?)
+        let regions = parse_file(&path.read(layers)?)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
         for (id, region) in regions {
             if id < 1 {
@@ -272,7 +272,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
                 ));
                 continue;
             }
-            if let Some(previous) = sources.insert(region.id, path.clone()) {
+            if let Some(previous) = sources.insert(region.id, path.to_string()) {
                 database.notes.push(format!(
                     "{path}: strategic region {id} replaces the one {previous} defined"
                 ));

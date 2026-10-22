@@ -3,7 +3,7 @@ use super::*;
 use replay_data::identity::IdentityCodec;
 use serde::{Deserialize, Serialize};
 
-const SCHEMA: u32 = 1;
+const SCHEMA: u32 = 2;
 const SECTION: &str = "source-metadata-v1";
 type IndexEntry = (u64, i32, i32, u64, u64, u64);
 

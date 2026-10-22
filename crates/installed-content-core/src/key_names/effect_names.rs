@@ -52,7 +52,7 @@ impl EffectNames {
         // least one category does not apply to token lookup.
         let mut definitions = terrain::TerrainDefinitions::default();
         for path in terrain::definition_paths(layers)? {
-            if let Err(error) = definitions.append(&layers.read(&path)?) {
+            if let Err(error) = definitions.append(&path.read(layers)?) {
                 result.terrains_gap = Some(format!("{path}: {error}"));
                 break;
             }

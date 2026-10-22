@@ -14,9 +14,10 @@ const modeLabel: Record<ThemeMode, string> = { dark: 'Dark', light: 'Light' };
 
 /** Edits a custom theme and previews it across the whole app while open. */
 export default function ThemeEditor({ draft: initial, onSave, onClose, onPreview }: {
-  draft: ThemeDraft; onSave: (draft: ThemeDraft) => void; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
+  draft: ThemeDraft; onSave: (draft: ThemeDraft) => string | null; onClose: () => void; onPreview: (preview: ThemePreview | null) => void;
 }) {
   const [draft, setDraft] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(initial.id !== null);
   const [filter, setFilter] = useState('');
   const colors = draft.variants[draft.mode];
@@ -79,9 +80,10 @@ export default function ThemeEditor({ draft: initial, onSave, onClose, onPreview
         {warnings.length > 0 && <div className="notice warning" role="status"><Icon name="alert" /><div>{warnings.map(warning => <div key={warning}>{warning}</div>)}</div></div>}
       </>}
     </div>
+    {error && <p className="map-menu-error" role="alert">{error}</p>}
     <footer className="theme-editor-footer">
       <button type="button" className="button quiet" onClick={onClose}>Cancel</button>
-      <button type="button" className="button primary" disabled={!name || (!draft.variants.dark && !draft.variants.light)} onClick={() => onSave({ ...draft, name })}><Icon name="check" />Save theme</button>
+      <button type="button" className="button primary" disabled={!name || (!draft.variants.dark && !draft.variants.light)} onClick={() => setError(onSave({ ...draft, name }))}><Icon name="check" />Save theme</button>
     </footer>
   </aside>;
 }

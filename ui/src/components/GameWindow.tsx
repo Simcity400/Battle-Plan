@@ -190,10 +190,12 @@ export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf,
       if (!(scale > 0)) return;
       const list = listAt(scene, (event.clientX - bounds.left) / scale, (event.clientY - bounds.top) / scale);
       if (!list || list.max <= 0) return;
+      const delta = list.horizontal && event.deltaX !== 0 ? event.deltaX : event.deltaY;
+      if (delta === 0) return;
       event.preventDefault();
       const offset = offsetOf(list.path, list.offset);
       // CSS pixels over the window's zoom are window pixels, over the list's scale offset units.
-      const next = scrolledOffset(offset, wheelPixels(event.deltaY, event.deltaMode, list.rect[list.horizontal ? 2 : 3] * scale), scale * (list.scale > 0 ? list.scale : 1),
+      const next = scrolledOffset(offset, wheelPixels(delta, event.deltaMode, list.rect[list.horizontal ? 2 : 3] * scale), scale * (list.scale > 0 ? list.scale : 1),
         list.max);
       if (next !== offset) onScroll(list.path, next);
     };

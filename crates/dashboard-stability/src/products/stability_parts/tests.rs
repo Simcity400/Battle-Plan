@@ -51,6 +51,46 @@ fn appearance_projection_visits_only_changed_naming_rows() {
 }
 
 #[test]
+fn refused_unpaired_labels_stay_distinct_parts_and_are_warned() {
+    use crate::products::stability_parts::scan_parts;
+    use replay_data::rows::CountryStabilityLineRow as Line;
+    let line = |line, value, text: &[u8]| Line {
+        country: 9001,
+        line,
+        key: 0x8d,
+        kind: Line::UNPAIRED,
+        value,
+        text: text.to_vec(),
+        ..Default::default()
+    };
+    let lines = vec![line(0, 10_000, b"caf\xc3"), line(1, 15_000, b"Front\x14")];
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![stability_frame(100, stability_inputs(), 100, lines)],
+        )],
+    )
+    .unwrap();
+    let (stability, _, warnings) = scan_parts(&replay, 1, "GER").unwrap();
+    let value = |id: &str| {
+        stability
+            .parts
+            .iter()
+            .find(|part| part.id == id)
+            .map(|part| part.runs[0].value_raw.clone())
+    };
+    assert_eq!(value(r"unpaired-refused:caf\xc3"), Some("10000".to_owned()));
+    assert_eq!(value(r"unpaired-refused:Front\x14"), Some("15000".to_owned()));
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("stability tree labels are not shown")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn stability_parts_add_up_to_the_value_and_are_known_only_where_recorded() {
     use crate::products::stability_parts::scan_parts;
     use dashboard_base::products::country_groups::HourSpan;

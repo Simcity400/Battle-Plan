@@ -58,6 +58,11 @@ test('registered production pins publish local body dates and native aliases, re
           if (tag && key) globalThis.__productionPin.requests.push({ branchId: track.branch.id, tag, key, group, originHour });
           return { data: { runs: [], groups: [], warnings: [] } };
         };`;
+      // The body is called outside React, so outside a widget frame: its errors stay its own.
+      if (path.endsWith('/dashboard/heldFailures.ts')) return `import { createContext } from 'react'; const none = [];
+        export class HeldFailures { subscribe = () => () => {}; read = () => none; retry() {} }
+        export const HeldFailuresContext = createContext(null); export const useHeldFailure = error => error;
+        export const useHeldFailures = () => false;`;
       if (path.endsWith('/production-lines/ProductionDrill.tsx')) return 'export default props => { globalThis.__productionPin.drill = props; return String(props.hour); };';
       if (path.endsWith('/dashboard/countryFlagsAt.ts')) return `export const useCountryLabelsAt = () => ({ labelAt: hour => tag => ({
         name: tag + ' at ' + hour, flag: 'data:flag-' + tag + '@' + hour, known: true }) });`;

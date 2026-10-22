@@ -21,7 +21,9 @@ export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: 
     const publish = (complete: boolean) => (data: CountryGroupReply) => { if (!controller.signal.aborted) setState({ client, key, data, complete }); };
     void loadCountryGroups(client, track.source, track.branch.id, controller.signal, attempt > 0, publish(false)).then(
       publish(true),
-      error => { if (!controller.signal.aborted) setState({ client, key, error: error instanceof Error ? error.message : String(error) }); },
+      error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
+        ...(previous?.client === client && previous.key === key ? { data: previous.data, complete: previous.complete } : {}),
+        error: error instanceof Error ? error.message : String(error) })); },
     );
     return () => controller.abort();
     // The structured key owns source, branch and content revision.

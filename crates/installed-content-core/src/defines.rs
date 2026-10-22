@@ -10,13 +10,13 @@
 //! need `io`, `os`, `package` or `debug` are refused instead of receiving
 //! access to this machine.
 
-use crate::ResolvedLayers;
+use crate::{ResolvedLayers, script_files::ScriptPath};
 use mlua::{HookTriggers, Lua, LuaOptions, StdLib, Table, Value, VmState};
 use std::{
     io,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
 };
 
@@ -28,6 +28,25 @@ fn invalid(message: impl Into<String>) -> io::Error {
 /// stopped: 10^8 instructions, far past the shipped scripts' few thousand.
 const HOOK_INTERVAL: u32 = 1_000_000;
 const HOOK_LIMIT: u32 = 100;
+const BUDGET_SPENT: &str = "define script exceeded its instruction limit";
+
+/// Lua error handlers can swallow the budget error; wrappers rethrow it once the limit is spent.
+const BUDGET_GUARD: &str = r#"
+local spent, message = ...
+local raise, catch, handled = error, pcall, xpcall
+local function guard(...)
+    if spent() then
+        raise(message, 0)
+    end
+    return ...
+end
+pcall = function(...) return guard(catch(...)) end
+xpcall = function(...) return guard(handled(...)) end
+if type(coroutine) == "table" and coroutine.resume then
+    local resume = coroutine.resume
+    coroutine.resume = function(...) return guard(resume(...)) end
+end
+"#;
 
 /// Memory the define state may allocate; a runaway string or table fails
 /// the load instead of exhausting the process.
@@ -38,6 +57,8 @@ const MEMORY_LIMIT: usize = 256 << 20;
 pub struct Defines {
     lua: Lua,
     sealed: bool,
+    /// The instruction limit was reached: no later result of the state is a load.
+    spent: Arc<AtomicBool>,
 }
 
 // Dump the Lua values, never Lua handles (whose Debug contains addresses).
@@ -91,13 +112,13 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
     let mut slot = shared.0.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(defines) = &*slot {
         for path in script_paths(layers) {
-            layers.read(&path)?;
+            path.read(layers)?;
         }
         return Ok(defines.clone());
     }
     let mut defines = Defines::new()?;
     for path in script_paths(layers) {
-        defines.load(&path, &layers.read(&path)?)?;
+        defines.load(&path.text(), &path.read(layers)?)?;
     }
     defines.sealed = true;
     *slot = Some(defines.clone());
@@ -108,15 +129,12 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
 /// in `lua`, case-sensitive and in byte order, then its subdirectories in
 /// byte order, depth first. A path repeated across layers uses the winning
 /// layer; paths differing only in case remain separate tree entries.
-pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
-    load_order(
-        "common/defines/",
-        "lua",
-        layers
-            .listed_paths("common/defines/")
-            .iter()
-            .map(String::as_str),
-    )
+pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<ScriptPath> {
+    let listed = layers.listed_layer_paths(b"common/defines/");
+    load_order_paths(b"common/defines/", b"lua", listed.iter().map(Vec::as_slice))
+        .into_iter()
+        .map(ScriptPath::new)
+        .collect()
 }
 
 /// Names under `root` ending in `filter`, with files before subdirectories
@@ -124,12 +142,16 @@ pub(crate) fn script_paths(layers: &ResolvedLayers) -> Vec<String> {
 pub fn load_order<'a>(
     root: &str,
     filter: &str,
-    paths: impl Iterator<Item = &'a str>,
-) -> Vec<String> {
-    load_order_paths(root.as_bytes(), filter.as_bytes(), paths.map(str::as_bytes))
-        .into_iter()
-        .map(|path| String::from_utf8(path).expect("text paths order as text"))
-        .collect()
+    paths: impl IntoIterator<Item = &'a ScriptPath>,
+) -> Vec<ScriptPath> {
+    load_order_paths(
+        root.as_bytes(),
+        filter.as_bytes(),
+        paths.into_iter().map(ScriptPath::as_bytes),
+    )
+    .into_iter()
+    .map(ScriptPath::new)
+    .collect()
 }
 
 /// [`load_order`] over layer paths' bytes, which the enumeration compares and
@@ -183,20 +205,34 @@ impl Defines {
             globals.raw_remove(name).map_err(lua_error)?;
         }
         let hooks = Arc::new(AtomicU32::new(0));
-        lua.set_hook(
+        let spent = Arc::new(AtomicBool::new(false));
+        let spending = Arc::clone(&spent);
+        // Global, so a script's coroutines count against the same limit as the main thread.
+        lua.set_global_hook(
             HookTriggers::new().every_nth_instruction(HOOK_INTERVAL),
             move |_, _| {
                 if hooks.fetch_add(1, Ordering::Relaxed) >= HOOK_LIMIT {
-                    Err(mlua::Error::runtime(
-                        "define script exceeded its instruction limit",
-                    ))
+                    spending.store(true, Ordering::Relaxed);
+                    Err(mlua::Error::runtime(BUDGET_SPENT))
                 } else {
                     Ok(VmState::Continue)
                 }
             },
         )
         .map_err(lua_error)?;
-        Ok(Self { lua, sealed: false })
+        let checked = Arc::clone(&spent);
+        let check = lua
+            .create_function(move |_, ()| Ok(checked.load(Ordering::Relaxed)))
+            .map_err(lua_error)?;
+        lua.load(BUDGET_GUARD)
+            .set_name("define instruction limit")
+            .call::<()>((check, BUDGET_SPENT))
+            .map_err(lua_error)?;
+        Ok(Self {
+            lua,
+            sealed: false,
+            spent,
+        })
     }
 
     /// Runs `source` as the next script of the load order; an error refuses the reader.
@@ -215,7 +251,11 @@ impl Defines {
             .load(source)
             .set_name(name)
             .exec()
-            .map_err(lua_error)
+            .map_err(lua_error)?;
+        if self.spent.load(Ordering::Relaxed) {
+            return Err(invalid(BUDGET_SPENT));
+        }
+        Ok(())
     }
 
     fn value(&self, section: &str, name: &str) -> io::Result<Value> {
@@ -427,8 +467,9 @@ impl Defines {
         let (recorded, mods) = (root(self)?, root(shown)?);
         let into = lua.create_table().map_err(lua_error)?;
         // One copier per source state, so each state's shared tables stay shared and its cycles
-        // stay cycles ([`Copier`]).
+        // stay cycles; copy graphics apart so mod writes cannot reach shared simulation tables.
         let mut from_recording = Copier::new(lua);
+        let mut graphics_from_recording = Copier::new(lua);
         let mut from_mods = Copier::new(lua);
         // Keys of one source state made in the other's, to look a value up there.
         let mut in_recording = Copier::new(&self.lua);
@@ -436,7 +477,12 @@ impl Defines {
         if let Some(recorded) = &recorded {
             for pair in recorded.pairs::<Value, Value>() {
                 let (key, value) = pair.map_err(lua_error)?;
-                into.raw_set(from_recording.copy(key)?, from_recording.copy(value)?)
+                let copier = if graphics_section(&key) {
+                    &mut graphics_from_recording
+                } else {
+                    &mut from_recording
+                };
+                into.raw_set(copier.copy(key)?, copier.copy(value)?)
                     .map_err(lua_error)?;
             }
         }
@@ -505,6 +551,12 @@ impl Defines {
         kept.sort();
         Ok((graphics, kept))
     }
+}
+
+fn graphics_section(key: &Value) -> bool {
+    matches!(key, Value::String(name) if GRAPHICS_SECTIONS
+        .iter()
+        .any(|section| &*name.as_bytes() == section.as_bytes()))
 }
 
 /// A define value's kind for [`Defines::with_graphics_of`]: a Lua number is one kind however
@@ -710,6 +762,41 @@ mod tests {
     }
 
     #[test]
+    fn a_simulation_section_sharing_a_graphics_table_stays_recorded() {
+        let recorded = super::Defines::new().unwrap();
+        recorded
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 1 } } NDefines.NMilitary = NDefines.NGraphics",
+            )
+            .unwrap();
+        let shown = super::Defines::new().unwrap();
+        shown
+            .load(
+                "common/defines/00_defines.lua",
+                b"NDefines = { NGraphics = { A = 2 } }",
+            )
+            .unwrap();
+        let (graphics, kept) = recorded.with_graphics_of(&shown).unwrap();
+        assert!(kept.is_empty(), "{kept:?}");
+        assert_eq!(graphics.number("NGraphics", "A").unwrap(), 2.0);
+        assert_eq!(graphics.number("NMilitary", "A").unwrap(), 1.0);
+    }
+
+    #[test]
+    fn a_caught_instruction_limit_still_ends_the_load() {
+        let defines = super::Defines::new().unwrap();
+        let error = defines
+            .load(
+                "common/defines/probe.lua",
+                b"NDefines = { Probe = { Done = 0 } } \
+                  while true do pcall(function() while true do end end) end",
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("instruction limit"), "{error}");
+    }
+
+    #[test]
     fn number_lists_read_each_inner_table_and_refuse_a_flat_one() {
         let defines = super::Defines::new().unwrap();
         defines
@@ -883,21 +970,18 @@ mod tests {
 
     #[test]
     fn scripts_load_by_byte_name_with_files_before_subdirectories() {
-        let order = load_order(
-            "common/defines/",
-            "lua",
-            [
-                "common/defines/zz_mod.lua",
-                "common/defines/sub/a.lua",
-                "common/defines/00_defines.lua",
-                "common/defines/Z_upper.lua",
-                "common/defines/readme.txt",
-                "common/defines/sub/deeper/b.lua",
-                "common/defines/sub/B.lua",
-                "common/other/x.lua",
-            ]
-            .into_iter(),
-        );
+        let listed = [
+            "common/defines/zz_mod.lua",
+            "common/defines/sub/a.lua",
+            "common/defines/00_defines.lua",
+            "common/defines/Z_upper.lua",
+            "common/defines/readme.txt",
+            "common/defines/sub/deeper/b.lua",
+            "common/defines/sub/B.lua",
+            "common/other/x.lua",
+        ]
+        .map(ScriptPath::from);
+        let order = load_order("common/defines/", "lua", &listed);
         assert_eq!(
             order,
             [

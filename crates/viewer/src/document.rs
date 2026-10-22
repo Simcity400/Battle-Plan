@@ -531,6 +531,8 @@ pub struct DumpOverlay<'a> {
     pub sprites: Batch,
     /// The sprites as a free camera shows them ([`free_icons::present`]).
     presented: Batch,
+    /// How a free camera shows each icon, which hover follows; `None` when drawn as laid out.
+    looks: Option<free_icons::Looks>,
     pub labels: LabelReport,
     pub counters: CounterReport,
     pub raids: raids::RaidReport,
@@ -581,6 +583,11 @@ impl DumpOverlay<'_> {
         &self.prepared
     }
 
+    /// How the last presented frame's free camera showed each icon; `None` as laid out.
+    pub fn looks(&self) -> Option<&free_icons::Looks> {
+        self.looks.as_ref()
+    }
+
     pub(crate) fn naval_dominance_sources(
         &self,
     ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
@@ -612,6 +619,7 @@ impl DumpOverlay<'_> {
                     &mut self.sprites,
                 );
                 if self.camera.free().is_none() {
+                    self.looks = None;
                     return Ok(&self.sprites);
                 }
                 // A free camera shows the icons standing in the world.
@@ -619,14 +627,14 @@ impl DumpOverlay<'_> {
                     field: self.hour.heights(),
                     sight: self.hour.assets.terrain_sight(),
                 };
-                free_icons::present(
+                self.looks = Some(free_icons::present(
                     &self.camera,
                     self.viewport,
                     self.ui_scale,
                     Some(&ground),
                     &self.sprites,
                     &mut self.presented,
-                );
+                ));
                 return Ok(&self.presented);
             }
             self.prepared = self.hour.prepare_overlay_cached(
@@ -997,9 +1005,18 @@ impl PreparedOverlay {
         &self.intel_report
     }
 
-    /// The topmost intel entry the last draw submitted under `point`, if any.
-    pub fn intel_at(&self, point: [f32; 2]) -> Option<&intel_icons::IntelHit> {
-        intel_icons::hit_at(&self.intel_hits, point)
+    /// With `looks`, hit-test in each visible container's own layout.
+    pub fn intel_at(
+        &self,
+        point: [f32; 2],
+        looks: Option<&free_icons::Looks>,
+    ) -> Option<&intel_icons::IntelHit> {
+        match looks {
+            None => intel_icons::hit_at(&self.intel_hits, point),
+            Some(looks) => intel_icons::hit_seen(&self.intel_hits, |hit| {
+                looks.hit(free_icons::IconFamily::Intel, hit.layer, point)
+            }),
+        }
     }
 
     /// ToolTip draws after the map and combat window, with this hour's native flag atlases.
@@ -4871,6 +4888,7 @@ impl<'a> Hour<'a> {
             extra: Batch::default(),
             sprites: Batch::default(),
             presented: Batch::default(),
+            looks: None,
             labels: LabelReport::default(),
             counters: CounterReport::default(),
             raids: raids::RaidReport::default(),

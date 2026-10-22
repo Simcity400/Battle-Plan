@@ -1437,11 +1437,16 @@ impl Catalog {
             let [count, runs] =
                 [0, 8].map(|at| u64::from_le_bytes(record[at..at + 8].try_into().unwrap()));
             let mut covered = 0;
-            let mut own = Vec::with_capacity(to_usize(runs)?);
+            let runs = to_usize(runs)
+                .ok()
+                .filter(|runs| *runs <= all.len())
+                .ok_or_else(mismatch)?;
+            let mut own = Vec::with_capacity(runs);
             for _ in 0..runs {
                 let run = all.next().ok_or_else(mismatch)?;
                 if run.first != covered
                     || run.count == 0
+                    || run.first.checked_add(run.count).is_none()
                     || !listed.contains(&run.log)
                     || run
                         .count
@@ -1467,6 +1472,9 @@ impl Catalog {
             Vec::new()
         } else {
             let file = read_file(&directory.join(names_name(head.names)))?;
+            if head.names_bytes > file.metadata()?.len() {
+                return Err(invalid("truncated prepared names"));
+            }
             let mut bytes = vec![0; to_usize(head.names_bytes)?];
             if read_at(&file, &mut bytes, 0)? != bytes.len() {
                 return Err(invalid("truncated prepared names"));
@@ -1567,8 +1575,17 @@ impl Catalog {
 
     /// Every entry of one run, in range order.
     fn run_entries(&self, run: &Run) -> io::Result<Vec<u8>> {
+        let log = self.log(run.log)?;
+        let length = log.metadata()?.len();
+        if run
+            .offset
+            .checked_add(run.bytes())
+            .is_none_or(|end| end > length)
+        {
+            return Err(invalid("truncated prepared entry log"));
+        }
         let mut bytes = vec![0; to_usize(run.bytes())?];
-        if read_at(&*self.log(run.log)?, &mut bytes, run.offset)? != bytes.len() {
+        if read_at(&log, &mut bytes, run.offset)? != bytes.len() {
             return Err(invalid("truncated prepared entry log"));
         }
         Ok(bytes)

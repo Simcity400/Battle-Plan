@@ -219,6 +219,10 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
                 {
                     break;
                 }
+                // After two empty levels, zero extents cannot change the outcome; stop decoding.
+                if level_width == 0 && level_height == 0 && levels.len() == 2 {
+                    break;
+                }
                 level_width >>= 1;
                 level_height >>= 1;
             }

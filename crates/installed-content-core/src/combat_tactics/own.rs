@@ -35,8 +35,11 @@ impl Shaper<'_> {
                 Shape::One
             }
             0x140458170 => Shape::Body(Node::Class(token)),
-            // Unreached blocks: scalar paths copy a token or resolve one weather.
-            0x140458190 | 0x140478180 if !field.opens() => Shape::One,
+            // A trait leaf reads a scalar token or the class's block-key loop.
+            0x140458190 if field.opens() => Shape::Body(Node::Class(token)),
+            0x140458190 => Shape::One,
+            // The weather reader never reaches its block form; a scalar resolves one weather.
+            0x140478180 if !field.opens() => Shape::One,
             _ => Self::refuse_reader(address, field.key.c_str()),
         }
     }
@@ -102,6 +105,47 @@ mod tests {
         assert!(value.keyword_is("value"));
         assert_eq!(value.operator, crate::parser::Operator::Greater);
         assert_eq!(result.items[1].value.scalar(), Some(b"2".as_slice()));
+    }
+
+    /// The game skips unknown trait-leaf block keys unread.
+    #[test]
+    fn mio_trait_leaves_read_a_scalar_or_their_block_keys() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for (text, keys) in [
+            (
+                "has_mio_trait = { trait = a show_modifiers = yes }",
+                &["trait", "show_modifiers"][..],
+            ),
+            ("is_mio_trait_completed = { trait = a }", &["trait"]),
+            (
+                "is_mio_trait_available = { trait = a check_mio_parent_completed = no check_mio_mutually_exclusive = no }",
+                &["trait", "check_mio_parent_completed", "check_mio_mutually_exclusive"],
+            ),
+            (
+                "has_mio_trait = { check_mio_parent_completed = { trait = b } trait = a }",
+                &["check_mio_parent_completed", "trait"],
+            ),
+        ] {
+            let result = crate::triggers::read(
+                format!("{text} always = yes").as_bytes(),
+                &KeyNames::default(),
+            );
+            assert!(result.unsettled.is_none(), "{text}: {result:?}");
+            assert!(result.misreads.is_empty(), "{text}: {result:?}");
+            assert_eq!(result.items.len(), 2, "{text}: {result:?}");
+            let block = result.items[0].value.items().unwrap();
+            assert_eq!(block.len(), keys.len(), "{text}: {result:?}");
+            for (field, key) in block.iter().zip(keys) {
+                assert!(field.keyword_is(key), "{text}: {result:?}");
+                if let Some(skipped) = field.value.items() {
+                    assert!(skipped.is_empty(), "{text}: {result:?}");
+                }
+            }
+        }
+        let result = crate::triggers::read(b"has_mio_trait = a", &KeyNames::default());
+        assert!(result.unsettled.is_none(), "{result:?}");
+        assert_eq!(result.items[0].value.scalar(), Some(b"a".as_slice()));
     }
 
     fn read(text: &[u8]) -> native::Read {

@@ -204,7 +204,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     if (error && olderBridge(error) && count === 'ic') return <WidgetState kind="unavailable" message="Counting in IC needs the updated dashboard bridge." />;
     if (error && !(olderBridge(error) && measure === 'day')) return <WidgetState kind="error" detail={error} onRetry={retry} />;
     if (defaultError && !mostType) return <WidgetState kind="error" detail={defaultError} onRetry={preparedDefault ? prefixDefault.retry : defaults.retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon="layers" />;
@@ -250,7 +250,9 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     useParityRows(parityRoot!, () => preparedView ? preparedProductionParity(endpoint.fullPage, endpoint.parityComplete)
       : historyProductionParity(model, ranked, !!model && state === null), preparedView ? endpoint.parityPreparation : undefined);
   }
-  return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null;
+  // A pinned breakdown shows no main view, so the notice sits outside the drill.
+  return <>{groupNotice}<CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}
     validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag}
     title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings} state={state}
@@ -272,5 +274,5 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
         presentation={{ exact: false, held: false, raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
         pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: resolved.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING }}
         resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${count}:${shownTypes.join(' ')}`} onPick={onPick} />
-    </div>} />;
+    </div>} /></>;
 }

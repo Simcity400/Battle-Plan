@@ -23,6 +23,8 @@ import DefaultCountryChip from './CountryChip';
 import WidgetCountryControl from './WidgetCountryControl';
 import { HeaderActionsSlot } from '../charts/ZoomReset';
 import { WidgetBody } from './widgets';
+import { HeldFailures, HeldFailuresContext } from './heldFailures';
+import HeldFailureNotices from './HeldFailureNotices';
 
 interface Props {
   template: DashboardTemplate;
@@ -98,6 +100,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
   const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   const [actionsSlot, setActionsSlot] = useState<HTMLSpanElement | null>(null);
+  const [failures] = useState(() => new HeldFailures());
   // The header elements the body portals into are only noted until the body mounts, so
   // attaching them never renders the frame again; the body's first render has them all.
   const [slots] = useState(() => {
@@ -178,9 +181,12 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       </div>
     </header>
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
+    <HeldFailureNotices failures={failures} />
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       {active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+        <HeldFailuresContext.Provider value={failures}>
+          <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
+        </HeldFailuresContext.Provider>
       </HeaderActionsSlot.Provider>}
     </div></div>
   </article>;

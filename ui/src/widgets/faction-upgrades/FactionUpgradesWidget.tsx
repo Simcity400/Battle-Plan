@@ -68,16 +68,17 @@ export default function FactionUpgradesWidget({ widget, runtime, active, headerS
   const header = headerSlot && faction && createPortal(<span className="pill">{factionNameAt(faction, at)}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see faction rules." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!groups.data) return <WidgetState kind="loading" label="Loading faction rules…" />;
-  if (!faction) return <WidgetState kind="empty" icon="history" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} />;
-  if (reply.error) return <>{header}<WidgetState kind="error" detail={reply.error} onRetry={reply.retry} /></>;
-  if (!data) return <>{header}<WidgetState kind="loading" label="Loading faction rules…" /></>;
-  if (!lanes.length) return <>{header}<WidgetState kind="unavailable" message={data.pending.length ? 'This range is still being prepared.' : 'This faction’s rules were not recorded.'} /></>;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction rules…" /></>;
+  if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="history" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
+  if (reply.error) return <>{groupFailure}{header}<WidgetState kind="error" detail={reply.error} onRetry={reply.retry} /></>;
+  if (!data) return <>{groupFailure}{header}<WidgetState kind="loading" label="Loading faction rules…" /></>;
+  if (!lanes.length) return <>{groupFailure}{header}<WidgetState kind="unavailable" message={data.pending.length ? 'This range is still being prepared.' : 'This faction’s rules were not recorded.'} /></>;
   const first = widget.time.mode === 'range' ? window.firstHour : track.branch.firstHour;
   const last = widget.time.mode === 'range' ? window.lastHour : track.branch.lastHour;
   const extent: [number, number] = [first, Math.max(first + 1, options.grow === true && playhead != null ? playhead : last + 1)];
-  return <div className="timeline-scroll">{header}
+  return <div className="timeline-scroll">{header}{groupFailure}
     <Timeline key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, faction.id])} label={`${factionNameAt(faction, at)} rules and upgrades`}
       extent={extent} playhead={playhead} labelHour={at} lanes={lanes} showIcons={false} showNames emptyLabel="Not recorded"
       preserveZoomOnExtentChange={options.grow === true} unobserved={data.unobserved} pending={data.pending} hoursPerSecond={hoursPerSecond}

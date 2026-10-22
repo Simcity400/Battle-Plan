@@ -35,7 +35,7 @@ export function useActiveResearch(widget: WidgetSpec, runtime: WidgetRuntime, ac
     };
     void preparedSeriesQuery(client, track.source, 'series-state', { branchId: track.branch.id, family: { kind: 'research' }, reads: [{ tag, hour }] },
       controller.signal, attempt > 0, undefined, undefined, publish).then(publish).catch(error => {
-      if (!controller.signal.aborted) setState({ client, key, error: String(error) });
+      if (!controller.signal.aborted) setState(previous => ({ ...(previous?.client === client && previous.key === key ? previous : {}), client, key, error: String(error) }));
     });
     return () => controller.abort();
   }, [client, key, active, attempt]);

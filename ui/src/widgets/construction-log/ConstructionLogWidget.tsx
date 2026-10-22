@@ -100,13 +100,14 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
 
   if (!track) return <WidgetState kind="empty" icon="hammer" message="Load a campaign to see its construction." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!manifest || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!manifest.recorded && preparedPrefix(manifest)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!manifest.recorded) return <WidgetState kind="unavailable" message="Construction was not recorded." />;
-  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (!log || hour == null) return <WidgetState kind="loading" label="Loading the construction log…" />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!manifest || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the construction log…" /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!manifest.recorded && preparedPrefix(manifest)?.pending.length) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!manifest.recorded) return <>{groupFailure}<WidgetState kind="unavailable" message="Construction was not recorded." /></>;
+  if (!inBranch) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!log || hour == null) return <>{groupFailure}<WidgetState kind="loading" label="Loading the construction log…" /></>;
 
   const chosen = contentSet(types);
   const toggle = (token: string) => { const next = toggleContentSet(types, token, Number.MAX_SAFE_INTEGER); if (next != null) setOption?.('types', next); };
@@ -151,7 +152,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     : chosen.length || projects !== 'all' || queue || from != null
     ? 'No construction matches these settings yet.' : widget.countries.kind === 'all' ? 'No construction yet.'
       : oneCountry ? 'No construction by this country yet.' : 'No construction by these countries yet.';
-  return <div className={`log-widget construction-log${oneCountry ? ' is-one-country' : ''}`}>
+  return <div className={`log-widget construction-log${oneCountry ? ' is-one-country' : ''}`}>{groupFailure}
     {settings.chips && <div className="log-chips construction-filters">
       <ChipSet label="Projects" chips={PROJECT_CHOICES} selected={[projects]} max={1} full={false} onToggle={value => setOption?.('projects', value)} />
       <ChipSet label="Queue" chips={QUEUE_CHIP} selected={queue ? ['queue'] : []} max={1} full={false} onToggle={() => setOption?.('queue', !queue)} />

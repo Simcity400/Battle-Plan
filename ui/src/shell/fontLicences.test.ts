@@ -31,7 +31,14 @@ test('desktop build stages all bundled font notices beside the release executabl
     // Exercise the packaging script's real filesystem copies without building Rust or Tauri.
     const script = (await readFile(new URL('tools/desktop.mjs', root), 'utf8'))
       .replace('import { spawn } from "node:child_process";', `import { EventEmitter } from 'node:events';
-        const spawn = () => { const child = new EventEmitter(); queueMicrotask(() => child.emit('exit', 0)); return child; };`)
+        const artifact = JSON.stringify({ reason: 'compiler-artifact', target: { name: 'viewer', kind: ['bin'] },
+          executable: ${JSON.stringify(path.join(staging, '.cargo-target', 'release', 'viewer.exe'))} });
+        const spawn = (_executable, _args, options) => {
+          const child = new EventEmitter();
+          if (Array.isArray(options.stdio)) child.stdout = Object.assign(new EventEmitter(), { setEncoding() { return this; } });
+          queueMicrotask(() => { child.stdout?.emit('data', artifact + '\\n'); child.emit('exit', 0); child.emit('close', 0); });
+          return child;
+        };`)
       .replace(/const root = fileURLToPath\([^\n]+\);/, `const root = ${JSON.stringify(staging)};`)
       .replace('const mode = process.argv[2];', 'const mode = "build";');
     await import(`data:text/javascript;base64,${Buffer.from(script).toString('base64')}`);

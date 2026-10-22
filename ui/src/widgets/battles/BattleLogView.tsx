@@ -8,6 +8,7 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useTableHour } from '../../charts/table/useTableHour';
 import { jumpItem } from '../../charts/jump';
 import type { TooltipRow } from '../../charts/tooltip';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { MAX_NAME_HOURS } from '../../dashboard/countryFacts';
 import { selectedTags } from '../../dashboard/countrySelection';
@@ -150,17 +151,19 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
       complete, historyComplete, total: 0, rows: [], readOutcomes: reads }), preparation);
   }
   // Names already read stay while the next drawn rows load, so scrolling never blanks them.
-  const [placeNames, setPlaceNames] = useState<{ identity: string | null; names: ReadonlyMap<string, PlaceName> }>({ identity: null, names: new Map() });
+  const content = useContentRevision(runtime.client);
+  const namesOwner = identity === null ? null : JSON.stringify([identity, content]);
+  const [placeNames, setPlaceNames] = useState<{ client: WidgetRuntime['client'] | null; owner: string | null; names: ReadonlyMap<string, PlaceName> }>({ client: null, owner: null, names: new Map() });
   useEffect(() => {
     const places = placeData.data?.places;
     if (!places?.length) return;
     setPlaceNames(previous => {
-      const names = new Map(previous.identity === identity ? previous.names : []);
+      const names = new Map(previous.client === runtime.client && previous.owner === namesOwner ? previous.names : []);
       for (const place of places) names.set(placeKey(place.provinceId, place.hour), place);
-      return { identity, names };
+      return { client: runtime.client, owner: namesOwner, names };
     });
-  }, [placeData.data, identity]);
-  const knownNames = placeNames.identity === identity ? placeNames.names : null;
+  }, [placeData.data, runtime.client, namesOwner]);
+  const knownNames = placeNames.client === runtime.client && placeNames.owner === namesOwner ? placeNames.names : null;
   const named = useMemo(() => namedBattles(shown, knownNames ? { places: [...knownNames.values()], states: [], warnings: [] } : placeData.data),
     [shown, knownNames, placeData.data]);
   const answered = useMemo(() => new Set(placeData.data?.places.map(place => placeKey(place.provinceId, place.hour))), [placeData.data]);
@@ -190,19 +193,20 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
   if (!track) return <WidgetState kind="empty" icon={adapter.definition.icon} message={`Load a campaign to see its ${adapter.definition.title.toLowerCase()}.`} />;
   if (!window || !inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!manifest.data || !match.ready) return <WidgetState kind="loading" label={`Loading ${adapter.definition.title.toLowerCase()}…`} />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!manifest.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label={`Loading ${adapter.definition.title.toLowerCase()}…`} /></>;
   const prefix = preparedPrefix(manifest.data);
   const coverageNote = <PreparedLogCoverage coverage={prefix?.coverage} exact={(manifest.data as { exact?: number }).exact}
     approximate={!!prefix?.approximate?.length} />;
-  if (!manifest.data.available && prefix?.pending.length) return <><WidgetState kind="loading" label="This range is still being prepared." />{coverageNote}</>;
-  if (!manifest.data.available) return <WidgetState kind="unavailable" message="Battles were not recorded." />;
+  if (!manifest.data.available && prefix?.pending.length) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." />{coverageNote}</>;
+  if (!manifest.data.available) return <>{groupFailure}<WidgetState kind="unavailable" message="Battles were not recorded." /></>;
   const required = view === 'log' && browseIndex >= 0 ? [browseIndex] : [];
   const failed = view === 'biggest' ? ranking.error : required.map(index => history.errors.get(index)).find(Boolean);
-  if (failed) return <WidgetState kind="error" detail={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} />;
+  if (failed) return <>{groupFailure}<WidgetState kind="error" detail={failed} onRetry={view === 'biggest' ? ranking.retry : history.retry} /></>;
   const pending = view === 'biggest' ? !ranking.data : required.some(index => !history.data.has(index));
-  if (pending) return <>{coverageNote}<WidgetState kind="loading" label={prefix?.pending.length ? 'This range is still being prepared.' : 'Loading battles...'} /></>;
+  if (pending) return <>{groupFailure}{coverageNote}<WidgetState kind="loading" label={prefix?.pending.length ? 'This range is still being prepared.' : 'Loading battles...'} /></>;
   const censusHour = view === 'biggest' ? ranking.data?.censusHour ?? null : shownBattleCensusHour(history.data, shownHour!);
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? preceding.reduce((oldest, index) => Math.min(oldest, index)) : 0;
@@ -212,17 +216,17 @@ export default function BattleLogView<Row extends ViewRow, Window extends Window
     {shownHour !== hour && <button type="button" className="button small" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest battles</button>}
   </div>;
   // An adapter's own view draws its empty list, keeping its header controls.
-  if (!shown.length && !(adapter.view && censusHour !== null) && prefix?.pending.length && censusHour === null) return <>{coverageNote}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!shown.length && !(adapter.view && censusHour !== null) && prefix?.pending.length && censusHour === null) return <>{groupFailure}{coverageNote}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   // Battles are matched at their own hours: one whose countries' membership is still being prepared is not known to
   // be left out. An adapter's own view gets the same empty text.
   const membershipKnown = match.known(first, (view === 'log' ? shownHour : hour) ?? first);
-  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{coverageNote}{navigation}{censusHour !== null && !membershipKnown
+  if (!shown.length && !(adapter.view && censusHour !== null)) return <div ref={parityEmptyRoot} className="battle-widget">{groupFailure}{coverageNote}{navigation}{censusHour !== null && !membershipKnown
     ? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} /> : <WidgetState kind={censusHour === null ? 'unavailable' : 'empty'}
     message={censusHour === null ? 'Not in this recording' : `No recorded ${adapter.definition.title.toLowerCase()} match these settings.`} />}</div>;
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const summary = adapter.summary?.(shown, ranking.data, measure, view);
   const rankedMeasure = ranking.data?.effectiveMeasure ?? measure;
-  return <div className="battle-widget">
+  return <div className="battle-widget">{groupFailure}
     {coverageNote}
     {summary && <p className="battle-note">{summary}</p>}
     {/* A range cuts battles short; their peak and duration are still the whole battle's. */}

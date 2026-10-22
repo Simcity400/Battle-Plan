@@ -220,7 +220,7 @@ impl NameLists {
 pub fn read(layers: &ResolvedLayers) -> io::Result<NameLists> {
     let mut lists = NameLists::default();
     for path in script_files::paths(layers, "common/names/", Some(".txt")) {
-        lists.apply(&path, &layers.read(&path)?);
+        lists.apply(&path.text(), &path.read(layers)?);
     }
     Ok(lists)
 }

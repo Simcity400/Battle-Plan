@@ -395,10 +395,14 @@ fn ground_crews(
             Ok(at) => rows[at].enabled,
             Err(_) => Some(0),
         };
+        // Demanded flags are comparable: sparse absence is false, but unread is incomplete.
         let Some(actual) = actual else {
-            report.limitation(
-                "Ground Crews writer certification or enabled-byte acquisition was unavailable",
-                format!("AirGroundCrews {}:{} enabled", key.0, key.1),
+            report.incomplete(
+                "AirGroundCrews",
+                format!(
+                    "AirGroundCrews {}:{} enabled: writer certification or enabled-byte acquisition was unavailable",
+                    key.0, key.1
+                ),
             );
             continue;
         };
@@ -1936,7 +1940,7 @@ mod tests {
                 region: 9,
                 enabled: true,
             });
-        for (enabled, difference, limited) in
+        for (enabled, difference, incomplete) in
             [(Some(1), 0, false), (Some(0), 1, false), (None, 0, true)]
         {
             *frame.tables[TableId::AirGroundCrews.index()] =
@@ -1951,7 +1955,11 @@ mod tests {
             let mut report = Report::default();
             ground_crews(&frame, &saved, &context, &mut report).unwrap();
             assert_eq!(report.differences.len(), difference);
-            assert_eq!(!report.limitations.is_empty(), limited);
+            assert_eq!(
+                report.failed_comparisons.contains_key("AirGroundCrews"),
+                incomplete
+            );
+            assert_eq!(report.outcome().is_err(), difference != 0 || incomplete);
         }
         *frame.tables[TableId::AirGroundCrews.index()] =
             TableView::Complete(TableRows::AirGroundCrews(Vec::new()));

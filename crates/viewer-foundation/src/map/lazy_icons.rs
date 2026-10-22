@@ -785,8 +785,10 @@ pub fn flag_set(
     textures: &Arc<LazyTextures>,
 ) -> io::Result<Arc<LazyFlags>> {
     let directory = set.directory();
+    // The game builds flag paths from tag text, so non-UTF-8 filenames cannot name flags.
     let mut names: Vec<&str> = layers
         .paths()
+        .filter_map(|path| std::str::from_utf8(path).ok())
         .filter(|path| {
             path.len() > directory.len()
                 && path[..directory.len()].eq_ignore_ascii_case(directory)

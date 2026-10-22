@@ -870,6 +870,25 @@ fn fonts(names: &[&str]) -> Assets {
     }
 }
 
+/// Deny reads without making the file absent, so lookup cannot fall through to another layer.
+fn held_unreadable(path: &Path) -> std::fs::File {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::File::open(path.parent().unwrap()).unwrap()
+    }
+}
+
 const FALLBACK_DECLARATION: &str =
     "spriteType = { name = \"GFX_default_fallback_texture\" texturefile = \"gfx/b.tga\" }";
 
@@ -907,12 +926,11 @@ fn a_mod_read_that_fails_is_the_attempts_failure() {
             ("gfx/mod_x.tga", tga(6, 6)),
         ],
     );
-    // Listed when the mod was mounted; a folder when read, which no read of a file opens.
-    let texture = root.join("art/gfx/mod_x.tga");
-    std::fs::remove_file(&texture).unwrap();
-    std::fs::create_dir_all(&texture).unwrap();
+    // A folder in its place would be no file to the lookup, which passes it to the next layer.
+    let held = held_unreadable(&root.join("art/gfx/mod_x.tga"));
     let (loaded, resources, fallbacks) = with_recorded(&layers, &sprites(&["GFX_x"]));
     let (only_mod, _, _) = with_recorded(&layers, &sprites(&["GFX_mod"]));
+    drop(held);
     let _ = std::fs::remove_dir_all(&root);
     loaded.unwrap();
     let x = resources.sprite(b"GFX_x").unwrap();
@@ -986,9 +1004,10 @@ fn only_the_kept_attempts_notes_are_named() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let shader = |technique: &str| {
+        // A `}` after a member on its line does not close the struct for the effect reader.
         format!(
-            "VertexStruct I {{ float3 p : POSITION; }};\n\
-             VertexStruct O {{ float4 p : SV_POSITION; }};\n\
+            "VertexStruct I {{ float3 p : POSITION;\n}};\n\
+             VertexStruct O {{ float4 p : SV_POSITION;\n}};\n\
              VertexShader = {{ MainCode V [[ O main(I v) {{ O o; o.p=float4(v.p,1); return o; }} ]] }}\n\
              PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ return float4(0,1,0,1); }} ]] }}\n\
              Effect {technique} {{ VertexShader = V PixelShader = P }}\n"
@@ -1023,8 +1042,8 @@ fn only_the_kept_attempts_notes_are_named() {
                 .into_bytes(),
             ),
             ("gfx/mod_x.tga", b"broken".to_vec()),
-            // The mods' replacement lacks the technique the recording's compiles.
-            ("gfx/FX/shared.shader", shader("Down")),
+            // A replacement that does not read is refused without compiling, so no DXC is needed.
+            ("gfx/FX/shared.shader", b"Code [[ \x80 ]]".to_vec()),
         ],
     );
     let presentation = layers.presentation();

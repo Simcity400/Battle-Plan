@@ -11,7 +11,7 @@ import type { BreakdownLooks } from './breakdownData.ts';
 import type { TerritoryMeasure, TerritoryRule } from '../../generated/dashboard';
 import { groupTree, listed } from '../../charts/sunburst/layout.ts';
 import { worldFilter } from '../../dashboard/groups.ts';
-import { breakdownSelectedWhole } from './breakdownData.ts';
+import { breakdownSelectedWhole, mergeBreakdownReplies } from './breakdownData.ts';
 const breakdownItems = (data: TerritoryBreakdownReply, groups: CountryGroupReply, hour: number, end: number,
   measure: TerritoryMeasure, rule: TerritoryRule, looks: BreakdownLooks) => itemsAt(breakdownModel(data, measure, rule), groups, hour, end, looks);
 const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
@@ -275,4 +275,29 @@ test('country flag failures stay dated and anonymous holders, factions and regio
 
 test('occupied territory cannot silently read a controlled regional column', () => {
   assert.throws(() => breakdownModel(data, 'states', 'occupied'), /no regional breakdown/);
+});
+
+test('the end read merged in keeps the current read’s tail identity, presence and values without holding an hour twice', () => {
+  const run = (firstHour: number, lastHour: number, value: number) => ({ firstHour, lastHour, startsSegment: false,
+    values: [value, value, 7, null, value, value, 7, null, null, null, null, null] });
+  const span = (firstHour: number, lastHour: number) => ({ firstHour, lastHour });
+  const identity = (firstHour: number, lastHour: number) => ({ firstHour, lastHour, slot: 1, countryId: 10 });
+  const read = (prefix: number, tail: number, value: number): TerritoryBreakdownReply => ({ ...data, series: [],
+    observed: Array.from({ length: 8 }, () => [span(10, prefix), span(tail, tail + 1)]),
+    countries: [{ tag: 'X', runs: [run(10, prefix, 1), run(tail, tail + 1, value)], identities: [identity(10, prefix), identity(tail, tail + 1)],
+      segments: [span(10, prefix), span(tail, tail + 1)], membership: null }] });
+  const merged = mergeBreakdownReplies(read(20, 30, 2), read(22, 50, 3));
+  assert.doesNotThrow(() => validateBreakdownReply(merged));
+  const [line] = merged.countries;
+  assert.deepEqual(line.runs.map(item => [item.firstHour, item.lastHour, item.values[0]]), [[10, 22, 1], [30, 31, 2], [50, 51, 3]]);
+  assert.deepEqual(line.identities?.map(item => [item.firstHour, item.lastHour]), [[10, 22], [30, 31], [50, 51]]);
+  assert.deepEqual(line.segments, [span(10, 22), span(30, 31), span(50, 51)]);
+  assert.deepEqual(merged.observed[0], [span(10, 22), span(30, 31), span(50, 51)]);
+  const model = breakdownModel(merged, 'states', 'controlled');
+  assert.notEqual(model.identities.keyAt('X', 30), null, 'the current hour keeps its native holder');
+  const selected = (tag: string | null, hour: number) => tag !== null && model.identities.keyAt(tag, hour) !== null;
+  const whole = breakdownSelectedWhole(merged, 30, 50, 'states', 'controlled', selected, model.identities);
+  assert.equal(whole.unknownValue, false);
+  assert.equal(whole.exact, 2n);
+  assert.equal(whole.final, 3);
 });

@@ -32,7 +32,11 @@ fn cloned_locator_array_keeps_duplicates_origin_and_declaration_time_snapshot() 
     let mut registry = Entities::default();
     for item in &document.items {
         registry
-            .declare(&item.value, "gfx/entities/registered.asset", &mut roster)
+            .declare(
+                &item.value,
+                &crate::script_files::ScriptPath::from("gfx/entities/registered.asset"),
+                &mut roster,
+            )
             .unwrap();
     }
     let copy = &registry.0["copy"].0;
@@ -77,7 +81,11 @@ fn a_meshless_parent_clone_keeps_unparented_locator_signed_scale() {
     let mut registry = Entities::default();
     for item in &document.items {
         registry
-            .declare(&item.value, "gfx/entities/meshless.asset", &mut roster)
+            .declare(
+                &item.value,
+                &crate::script_files::ScriptPath::from("gfx/entities/meshless.asset"),
+                &mut roster,
+            )
             .unwrap();
     }
     let copy = &registry.0["copy"].0;

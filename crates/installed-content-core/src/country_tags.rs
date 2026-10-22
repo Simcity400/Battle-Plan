@@ -46,19 +46,20 @@ impl TagIndex {
 pub fn country_tag_index(layers: &ResolvedLayers) -> io::Result<TagIndex> {
     let mut index = TagIndex::default();
     for path in index_paths(layers) {
-        add_tag_index(&path, &layers.read(&path)?, &mut index)?;
+        add_tag_index(&path.text(), &path.read(layers)?, &mut index)?;
     }
     Ok(index)
 }
 
-fn index_paths(layers: &ResolvedLayers) -> Vec<String> {
+/// The index files, each by its bytes: an archive may name a file in bytes that are not UTF-8.
+fn index_paths(layers: &ResolvedLayers) -> Vec<script_files::ScriptPath> {
     layers
         .paths()
         .filter(|path| {
             let lower = path.to_ascii_lowercase();
-            lower.starts_with("common/country_tags/") && lower.ends_with(".txt")
+            lower.starts_with(b"common/country_tags/") && lower.ends_with(b".txt")
         })
-        .map(str::to_owned)
+        .map(|path| script_files::ScriptPath::new(path.to_vec()))
         .collect()
 }
 
@@ -69,7 +70,7 @@ pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, 
     let mut tags = BTreeMap::new();
     let mut dynamic = false;
     for path in script_files::paths(layers, "common/country_tags/", Some(".txt")) {
-        add_definitions(&path, &layers.read(&path)?, &mut tags, &mut dynamic)?;
+        add_definitions(&path.text(), &path.read(layers)?, &mut tags, &mut dynamic)?;
     }
     Ok(tags)
 }

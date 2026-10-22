@@ -1,6 +1,6 @@
 import { runAt } from '../../charts/series.ts';
 import type { ProductRequest } from '../../dashboard/client';
-import type { CountryParams, ResearchReply } from '../../generated/dashboard';
+import type { Artwork, CountryParams, ResearchReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
 
@@ -149,30 +149,86 @@ export function researchLatestProgress(slot: ResearchSlotHistory, state: Researc
  * among the folders shown, in content order. */
 export interface ResearchFolderLook { key: string; name: string; colour: string; order: number }
 
-/** The folder each of `tokens` is shown in. Colours go to the folders these
- * technologies show, in the content's folder order, so a country's colours hold
- * through playback when `tokens` is its whole history. Past the palette's end
- * colours repeat; the folder's name always tells them apart. */
-export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<string>,
-  palette: readonly string[]): Map<string, ResearchFolderLook> {
-  const byToken = new Map(reply.technologyFolders.map(item => [item.token, item.folder]));
+/** Keep token and index separate: quoted technology tokens can contain any character. */
+export type ResearchUse = string | readonly [token: string, databaseIndex: number];
+
+/** Separate token and definition lookups to avoid collisions. */
+export type ResearchFolderLooks = ReadonlyMap<string, ResearchFolderLook>
+  & { readonly definitions?: ReadonlyMap<string, ReadonlyMap<number, ResearchFolderLook>> };
+
+/** Use the whole history to keep folder colours stable through playback. */
+export function researchFolderLooks(reply: Pick<ResearchReply, 'folders' | 'technologyFolders'>, tokens: Iterable<ResearchUse>,
+  palette: readonly string[]): Map<string, ResearchFolderLook> & { definitions: Map<string, Map<number, ResearchFolderLook>> } {
+  const byToken = new Map<string, string | null>(), byDefinition = new Map<string, Map<number, string | null>>();
+  for (const item of reply.technologyFolders) {
+    if (item.databaseIndex == null) byToken.set(item.token, item.folder);
+    else byDefinition.set(item.token, (byDefinition.get(item.token) ?? new Map<number, string | null>()).set(item.databaseIndex, item.folder));
+  }
+  const folderOf = (use: ResearchUse) => {
+    if (typeof use === 'string') return byToken.get(use);
+    const [token, index] = use, own = byDefinition.get(token);
+    return own?.has(index) ? own.get(index) : byToken.get(token);
+  };
   const order = new Map(reply.folders.map((folder, index) => [folder.key, index]));
   const names = new Map(reply.folders.map(folder => [folder.key, folder.name]));
-  const wanted = [...new Set(tokens)];
-  const shown = [...new Set(wanted.flatMap(token => byToken.get(token) ?? []))]
+  const wanted = [...tokens];
+  const shown = [...new Set(wanted.flatMap(use => folderOf(use) ?? []))]
     .sort((a, b) => (order.get(a) ?? Infinity) - (order.get(b) ?? Infinity) || (a < b ? -1 : a > b ? 1 : 0));
   const looks = new Map(shown.map((key, index): [string, ResearchFolderLook] => [key, { key, order: index,
     name: contentTitle(names.get(key), key, 'Folder name unavailable'), colour: palette.length ? palette[index % palette.length] : 'currentColor' }]));
-  return new Map(wanted.flatMap((token): [string, ResearchFolderLook][] => {
-    const key = byToken.get(token), look = key ? looks.get(key) : undefined;
-    return look ? [[token, look]] : [];
-  }));
+  const byUse = new Map<string, ResearchFolderLook>(), definitions = new Map<string, Map<number, ResearchFolderLook>>();
+  for (const use of wanted) {
+    const key = folderOf(use), look = key ? looks.get(key) : undefined;
+    if (!look) continue;
+    if (typeof use === 'string') byUse.set(use, look);
+    else definitions.set(use[0], (definitions.get(use[0]) ?? new Map<number, ResearchFolderLook>()).set(use[1], look));
+  }
+  return Object.assign(byUse, { definitions });
 }
 
-/** The folders a set of looks reaches, in content order. */
-export function researchFolderList(looks: ReadonlyMap<string, ResearchFolderLook>): ResearchFolderLook[] {
+export function researchFolderAt(looks: ResearchFolderLooks, token: string,
+  databaseIndex?: number | null): ResearchFolderLook | undefined {
+  return databaseIndex == null ? looks.get(token) : looks.definitions?.get(token)?.get(databaseIndex);
+}
+
+/** Separate token and definition text lookups to avoid collisions. */
+export type ResearchArtwork = Map<string, Artwork> & { readonly definitions: ReadonlyMap<string, ReadonlyMap<number, Artwork>> };
+
+export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definitions'> | null | undefined,
+  images: ReadonlyMap<string, Artwork>): ResearchArtwork {
+  const artwork = new Map<string, Artwork>(), definitions = new Map<string, Map<number, Artwork>>();
+  for (const art of reply?.artwork ?? []) artwork.set(art.token, { ...art, icon: images.get(art.token)?.icon ?? art.icon });
+  for (const definition of reply?.definitions ?? []) {
+    const art = artwork.get(definition.token);
+    definitions.set(definition.token, (definitions.get(definition.token) ?? new Map<number, Artwork>()).set(definition.databaseIndex,
+      { token: definition.token, name: definition.name, description: definition.description, baseDurationDays: art?.baseDurationDays ?? null,
+        icon: art?.icon ?? images.get(definition.token)?.icon ?? null }));
+  }
+  return Object.assign(artwork, { definitions });
+}
+
+/** Null marks an unassigned use; tokens with no recorded definition are omitted. */
+export function researchRecordedTemplates(history: ResearchHistory | null | undefined): Map<string, (number | null)[]> {
+  const recorded = new Map<string, Set<number | null>>();
+  const hold = (token: string, index: number | null) => recorded.set(token, (recorded.get(token) ?? new Set<number | null>()).add(index));
+  for (const slot of history?.slots ?? []) {
+    for (const entry of slot.entries) hold(entry.token, entry.databaseIndex ?? null);
+    for (const state of slot.states ?? []) if (state.token != null && state.entryFirstObservedHour == null) hold(state.token, null);
+  }
+  return new Map([...recorded].flatMap(([token, uses]) => [...uses].some(index => index != null)
+    ? [[token, [...uses].sort((a, b) => (a ?? 0) - (b ?? 0))] as const] : []));
+}
+
+/** Without a recorded index, conflicting technology definitions must stay refused by name. */
+export function researchArt(artwork: ResearchArtwork, token: string, databaseIndex?: number | null): Artwork | undefined {
+  return (databaseIndex == null ? undefined : artwork.definitions.get(token)?.get(databaseIndex)) ?? artwork.get(token);
+}
+
+/** Includes recorded definitions and preserves content order. */
+export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {
   const seen = new Map<string, ResearchFolderLook>();
-  for (const look of looks.values()) if (!seen.has(look.key)) seen.set(look.key, look);
+  const all = [...looks.values(), ...[...looks.definitions?.values() ?? []].flatMap(byIndex => [...byIndex.values()])];
+  for (const look of all) if (!seen.has(look.key)) seen.set(look.key, look);
   return [...seen.values()].sort((a, b) => a.order - b.order);
 }
 
@@ -200,9 +256,10 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
 export function validateResearchReply(input: unknown): ResearchReply {
   const reply = input as ResearchReply;
   const hour = (n: number) => Number.isInteger(n) && n >= -2147483648 && n <= 2147483647;
+  // Any number of rows: a long modded campaign is bounded only by the reply's own budget.
   const intervals = (spans: ResearchHistory['coverage']) => {
     let last = -Infinity;
-    return Array.isArray(spans) && spans.length <= 100000 && spans.every(s => {
+    return Array.isArray(spans) && spans.every(s => {
       const valid = hour(s.firstHour) && hour(s.lastHour) && s.firstHour > last && s.lastHour >= s.firstHour;
       last = s.lastHour;
       return valid;
@@ -210,7 +267,9 @@ export function validateResearchReply(input: unknown): ResearchReply {
   };
   const fixed = (value: unknown): value is string => typeof value === 'string' && /^-?\d{1,19}$/.test(value)
     && BigInt(value) >= -9223372036854775808n && BigInt(value) <= 9223372036854775807n;
-  let index = -1, entries = 0, states = 0, progress = 0;
+  // A recorded template index: one past its place in the technology database, after the null template.
+  const templateIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 4294967295;
+  let index = -1;
   const valid = !!reply && typeof reply === 'object' && Array.isArray(reply.artwork) && Array.isArray(reply.history?.slots)
     // Any number of slots: content and effects set how many a country has.
     && intervals(reply.history.coverage) && reply.history.slots.every(s => {
@@ -219,6 +278,7 @@ export function validateResearchReply(input: unknown): ResearchReply {
         && s.entries.every(e => {
           const ok = typeof e.token === 'string' && e.token.length > 0 && e.token.length <= 512 && Number.isInteger(e.level)
             && Number.isInteger(e.technologyHandle) && e.technologyHandle >= 0 && e.technologyHandle <= 4294967295
+            && (e.databaseIndex == null || templateIndex(e.databaseIndex))
             && hour(e.continuityStartHour) && e.continuityStartHour <= e.firstObservedHour
             && hour(e.firstObservedHour) && e.firstObservedHour >= last && hour(e.lastObservedHour) && e.lastObservedHour >= e.firstObservedHour
             && (e.startedAfterHour === null || (hour(e.startedAfterHour) && e.startedAfterHour < e.firstObservedHour))
@@ -226,10 +286,8 @@ export function validateResearchReply(input: unknown): ResearchReply {
             && ['active', 'completed', 'switched', 'unknown'].includes(e.outcome)
             && (e.endedByHour === null ? e.outcome === 'active' : hour(e.endedByHour) && e.endedByHour >= e.lastObservedHour && e.outcome !== 'active');
           last = e.endedByHour ?? Infinity;
-          entries++;
           return ok;
         }) && intervals(s.progress) && s.progress.every(sample => {
-          progress++;
           // A sample without an assignment belongs to the technology the slot
           // held without its recorded occurrence; that hour's state names it.
           return (sample.entryFirstObservedHour === null
@@ -241,7 +299,6 @@ export function validateResearchReply(input: unknown): ResearchReply {
             && s.availability.some(span => span.firstHour <= sample.firstHour && sample.lastHour <= span.lastHour)
             && fixed(sample.progressRaw) && (sample.baseDaysRaw === null || (fixed(sample.baseDaysRaw) && BigInt(sample.baseDaysRaw) > 0n));
         }) && (s.states === undefined || (intervals(s.states) && s.states.every(state => {
-          states++;
           return (state.token === null || (typeof state.token === 'string' && state.token.length > 0 && state.token.length <= 512))
             && (state.entryFirstObservedHour === null || s.entries.some(e => e.firstObservedHour === state.entryFirstObservedHour && e.token === state.token))
             && s.availability.some(span => span.firstHour <= state.firstHour && state.lastHour <= span.lastHour)
@@ -254,10 +311,10 @@ export function validateResearchReply(input: unknown): ResearchReply {
                 && Array.isArray(state.details.modifiers.components) && state.details.modifiers.components.length === 8
                 && new Set(state.details.modifiers.components.map(c => c.kind)).size === 8
                 && state.details.modifiers.components.every(c => ['country', 'category', 'designTeam', 'experience', 'license', 'scientist', 'applied', 'sharing'].includes(c.kind)
-                  && fixed(c.raw) && Array.isArray(c.sources) && c.sources.length <= 4096 && c.sources.every(source => fixed(source.raw)
+                  && fixed(c.raw) && Array.isArray(c.sources) && c.sources.every(source => fixed(source.raw)
                     && (source.token === null || (typeof source.token === 'string' && source.token.length <= 512))
                     && (source.name === null || (typeof source.name === 'string' && source.name.length <= 4096))))))
-              && (state.details.bonuses === null || (Array.isArray(state.details.bonuses) && state.details.bonuses.length <= 4096
+              && (state.details.bonuses === null || (Array.isArray(state.details.bonuses)
                 && state.details.bonuses.every(b => Number.isInteger(b.id) && b.id >= -2147483648 && b.id <= 2147483647
                   && (b.token === null || (typeof b.token === 'string' && b.token.length <= 512))
                   && (b.name === null || (typeof b.name === 'string' && b.name.length <= 4096))
@@ -269,11 +326,15 @@ export function validateResearchReply(input: unknown): ResearchReply {
       return valid;
     // Text-only history titles cover every technology reached by the history.
     // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
-    }) && entries <= 100000 && states <= 100000 && progress <= 100000 && reply.artwork.every(artworkEntry)
+    }) && reply.artwork.every(artworkEntry)
     && Array.isArray(reply.folders) && reply.folders.every(folder => typeof folder?.key === 'string' && folder.key.length > 0
       && (folder.name === null || typeof folder.name === 'string'))
     && Array.isArray(reply.technologyFolders) && reply.technologyFolders.every(item => typeof item?.token === 'string' && item.token.length > 0
-      && (item.folder === null || (typeof item.folder === 'string' && item.folder.length > 0)));
+      && (item.databaseIndex == null || templateIndex(item.databaseIndex))
+      && (item.folder === null || (typeof item.folder === 'string' && item.folder.length > 0)))
+    && (reply.definitions === undefined || (Array.isArray(reply.definitions) && reply.definitions.every(item =>
+      typeof item?.token === 'string' && item.token.length > 0 && item.token.length <= 512 && templateIndex(item.databaseIndex)
+      && (item.name === null || typeof item.name === 'string') && (item.description === null || typeof item.description === 'string'))));
   if (!valid) throw new Error('Research history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
   return reply;

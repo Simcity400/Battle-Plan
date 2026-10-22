@@ -250,7 +250,8 @@ installed-content-abilities = { path = "crates/installed-content-abilities" }
 installed-content-core = { path = "crates/installed-content-core" }
 installed-content-image = { path = "crates/installed-content-image" }
 installed-content-save = { path = "crates/installed-content-save" }
-mimalloc = { version = "0.1", default-features = false }
+# Bundled v3 (3.3.2) dereferences a null thread heap when a thread's first allocation is an in-place realloc.
+mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
 png = "0.18"
 pollster = "0.4"
 job-priority = { path = "crates/job-priority" }

@@ -517,10 +517,10 @@ impl Assets {
                         {
                             for (actor, reference) in references.iter().enumerate() {
                                 let document =
-                                    parser::parse(&layers.read_uncovered(&reference.path)?)?;
+                                    parser::parse(&reference.path.read_uncovered(layers)?)?;
                                 let root = particle_root(
                                     &document,
-                                    &reference.path,
+                                    &reference.path.text(),
                                     &reference.name,
                                     Pick::Last,
                                 )?;
@@ -586,8 +586,10 @@ impl Assets {
         // Every declared pdxparticle object, grouped by its particle file so
         // each file parses once; files decode on scoped threads and merge in
         // path order.
-        let mut by_file: BTreeMap<String, Vec<(String, installed_content_core::particles::Particle)>> =
-            BTreeMap::new();
+        let mut by_file: BTreeMap<
+            installed_content_core::script_files::ScriptPath,
+            Vec<(String, installed_content_core::particles::Particle)>,
+        > = BTreeMap::new();
         for object in catalog.objects() {
             match catalog.resolve(object) {
                 Ok(particle) => by_file
@@ -603,7 +605,9 @@ impl Assets {
                 .iter()
                 .map(|(path, objects)| {
                     scope.spawn(move || {
-                        let document = parser::parse(&layers.read_uncovered(path)?)?;
+                        let document = parser::parse(&path.read_uncovered(layers)?)?;
+                        let text = path.text();
+                        let path: &str = &text;
                         objects
                             .iter()
                             .map(|(object, particle)| {

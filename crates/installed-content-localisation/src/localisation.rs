@@ -17,7 +17,7 @@
 
 use std::{collections::BTreeMap, io};
 
-use crate::{ResolvedLayers, content::normalize_relative};
+use crate::{ResolvedLayers, content::normalize_path};
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -1064,16 +1064,18 @@ pub fn parse_file(bytes: &[u8], language: &str) -> ParsedFile {
 
 /// True for a file the engine defers to its second pass: any path with a
 /// `replace` directory in it.
-fn is_replace(path: &str) -> bool {
-    path.split('/')
-        .any(|part| part.eq_ignore_ascii_case("replace"))
+fn is_replace(path: impl AsRef<[u8]>) -> bool {
+    path.as_ref()
+        .split(|byte| *byte == b'/')
+        .any(|part| part.eq_ignore_ascii_case(b"replace"))
 }
 
 /// The engine's load order for one file: every file outside a `replace/`
 /// directory before every file inside one, then the layer's load order, then
 /// the path in byte order.
-fn load_order(path: &str, layer: usize) -> (bool, usize, String) {
-    (is_replace(path), layer, path.to_owned())
+fn load_order(path: impl AsRef<[u8]>, layer: usize) -> (bool, usize, Vec<u8>) {
+    let path = path.as_ref();
+    (is_replace(path), layer, path.to_vec())
 }
 
 /// Merges one parsed file, following the rule for the pass it belongs to.
@@ -1127,13 +1129,14 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
     {
         return Err(invalid(format!("unsupported language name {language:?}")));
     }
+    // Every path by its bytes: an archive's name that is not UTF-8 still loads.
     let mut files = Vec::new();
-    for path in layers.paths() {
+    for (path, layer) in layers.effective_paths() {
         let lower = path.to_ascii_lowercase();
-        if !lower.starts_with("localisation/") || !lower.ends_with(".yml") {
+        if !lower.starts_with(b"localisation/") || !lower.ends_with(b".yml") {
             continue;
         }
-        files.push(load_order(path, layers.layer_index(path).unwrap_or(0)));
+        files.push(load_order(path, layer));
     }
     files.sort();
     let mut localisation = Localisation {
@@ -1154,7 +1157,7 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
                     chunk
                         .iter()
                         .map(|(replace, _, path)| {
-                            let bytes = layers.read(&normalize_relative(path)?)?;
+                            let bytes = layers.read_path(&normalize_path(path)?)?;
                             Ok((*replace, path, parse_file(&bytes, language)))
                         })
                         .collect()
@@ -1171,7 +1174,8 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
             .collect::<io::Result<Vec<_>>>()
     })?;
     for (replace, path, parsed) in chunks.into_iter().flatten() {
-        merge_file(&mut localisation, &mut sources, replace, path, parsed);
+        let path = String::from_utf8_lossy(path);
+        merge_file(&mut localisation, &mut sources, replace, &path, parsed);
     }
     Ok(localisation)
 }
@@ -2016,7 +2020,10 @@ mod tests {
         ];
         files.sort();
         assert_eq!(
-            files.iter().map(|file| file.2.as_str()).collect::<Vec<_>>(),
+            files
+                .iter()
+                .map(|file| std::str::from_utf8(&file.2).unwrap())
+                .collect::<Vec<_>>(),
             vec![
                 // Pass one: base files, layer order then path order.
                 "localisation/english/c.yml",
@@ -2047,7 +2054,7 @@ mod tests {
                 &mut localisation,
                 &mut sources,
                 replace,
-                &path,
+                &String::from_utf8_lossy(&path),
                 parse(&format!("\u{feff}{text}"), "english"),
             );
         }
@@ -2128,5 +2135,37 @@ mod tests {
             assert!(read(&layers, language).is_err(), "{language}");
         }
         assert!(read(&layers, "english").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_archive_file_whose_name_is_not_utf8_loads() {
+        use installed_content_core::test_support::{Record, zip_records};
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_localisation_raw_name_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("raw.zip");
+        let text = "\u{feff}l_english:\n RAW: \"raw\"\n";
+        std::fs::write(
+            &archive,
+            zip_records(
+                &[],
+                &[Record {
+                    name: b"localisation/\x80.yml",
+                    host: 0,
+                    flags: 0,
+                    deflate: false,
+                    data: text.as_bytes(),
+                }],
+            ),
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&archive, &[][..])]).unwrap();
+        let localisation = read(&layers, "english").unwrap();
+        assert_eq!(localisation.get("RAW"), Some("raw"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

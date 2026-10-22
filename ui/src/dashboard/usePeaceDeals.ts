@@ -29,7 +29,7 @@ export function usePeaceDeals(widget: WidgetSpec, runtime: WidgetRuntime, active
       () => { if (!controller.signal.aborted) setState(previous => previous?.owner === owner && previous.data ? previous : { owner, preparing: true }); },
       data => { if (!controller.signal.aborted) setState({ owner, data }); }).then(
       data => { if (!controller.signal.aborted) setState({ owner, data }); },
-      error => { if (!controller.signal.aborted) setState({ owner, error: String(error) }); },
+      error => { if (!controller.signal.aborted) setState(previous => ({ owner, data: previous?.owner === owner ? previous.data : undefined, error: String(error) })); },
     );
     return () => controller.abort();
   }, [owner, active, attempt]);

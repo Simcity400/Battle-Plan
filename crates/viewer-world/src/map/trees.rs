@@ -555,7 +555,7 @@ fn load_mesh(
         if file.is_empty() {
             return Err(invalid(format!("{path} names no texture")));
         }
-        let full = index.resolve(directory, file);
+        let full = index.resolve(directory, file)?;
         load_file(&full, &|path| layers.read_uncovered_path(path), decode)
     };
     let mut lods = Vec::new();

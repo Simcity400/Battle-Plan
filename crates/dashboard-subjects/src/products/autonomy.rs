@@ -123,27 +123,63 @@ impl Holders {
         }
     }
 }
-/// Only current relation operands are retained; holder changes rebind them.
+#[derive(Clone, Copy)]
+struct Relation {
+    overlord: u32,
+    subject: u32,
+    ratio: i64,
+    start_hour: i32,
+    end_hour: i32,
+    cancel: u8,
+}
 struct Relations {
-    raw: Vec<(u32, u32, i64)>,
+    raw: Vec<Relation>,
     overlords: HashMap<u32, (u32, i64)>,
     shared: HashSet<u32>,
     unidentified: bool,
+    /// A relation can expire without any recorded row changing.
+    expires: Option<i32>,
 }
 impl Relations {
     fn read(frame: &DecodedFrame, holders: &Holders) -> Option<Self> {
         let rows = frame.complete::<tables::Subjects>().ok()?;
         let raw = rows
             .iter()
-            .map(|row| (row.overlord, row.subject, row.autonomy_ratio))
+            .map(|row| Relation {
+                overlord: row.overlord,
+                subject: row.subject,
+                ratio: row.autonomy_ratio,
+                start_hour: row.start_hour,
+                end_hour: row.end_hour,
+                cancel: row.cancel,
+            })
             .collect();
-        Some(Self::bind(raw, holders))
+        Some(Self::bind(raw, holders, frame.hour))
     }
-    fn bind(raw: Vec<(u32, u32, i64)>, holders: &Holders) -> Self {
+    fn bind(raw: Vec<Relation>, holders: &Holders, hour: i32) -> Self {
         let mut overlords = HashMap::new();
         let mut shared = HashSet::new();
         let mut unidentified = false;
-        for &(overlord, subject, ratio) in &raw {
+        let mut expires: Option<i32> = None;
+        for relation in &raw {
+            if !super::subjects::holds(
+                relation.cancel,
+                relation.start_hour,
+                relation.end_hour,
+                hour,
+            ) {
+                continue;
+            }
+            if relation.end_hour > relation.start_hour {
+                expires =
+                    Some(expires.map_or(relation.end_hour, |end| end.min(relation.end_hour)));
+            }
+            let Relation {
+                overlord,
+                subject,
+                ratio,
+                ..
+            } = *relation;
             let (Some(overlord), Some(subject)) = (
                 holders.slots.get(&overlord).copied(),
                 holders.slots.get(&subject).copied(),
@@ -162,6 +198,7 @@ impl Relations {
             overlords,
             shared,
             unidentified,
+            expires,
         }
     }
 }
@@ -691,8 +728,15 @@ impl ScannedAutonomy {
                         .map_or(true, |rows| !keys.same(rows))
             });
         let follows = self.prepared_hour.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+        // A relation's end changes the relations holding with no row changing.
+        let expired = self
+            .cached_relations
+            .as_ref()
+            .and_then(|relations| relations.expires)
+            .is_some_and(|end| frame.hour >= end);
         if follows
             && !identity_changed
+            && !expired
             && ![TableId::Autonomy, TableId::Subjects]
                 .iter()
                 .any(|table| changes.rows_changed[table.index()])
@@ -762,13 +806,13 @@ impl ScannedAutonomy {
                     .complete::<tables::Subjects>()
                     .map_or(0, |rows| rows.len());
             }
-        } else if identity_changed {
+        } else if identity_changed || expired {
             self.cached_relations = self
                 .cached_holders
                 .as_ref()
                 .zip(self.cached_relations.as_ref())
                 .map(|(holders, relations)| {
-                    Arc::new(Relations::bind(relations.raw.clone(), holders))
+                    Arc::new(Relations::bind(relations.raw.clone(), holders, frame.hour))
                 });
         }
         let native_changed =
@@ -817,8 +861,12 @@ impl ScannedAutonomy {
                         .into_iter()
                         .flat_map(|rows| rows.raw.iter()),
                 )
-                .filter_map(|(_, subject, _)| {
-                    self.cached_holders.as_ref()?.slots.get(subject).copied()
+                .filter_map(|relation| {
+                    self.cached_holders
+                        .as_ref()?
+                        .slots
+                        .get(&relation.subject)
+                        .copied()
                 })
                 .collect();
             Some(

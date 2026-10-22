@@ -53,7 +53,8 @@ export function usePoliticsSpending(widget: WidgetSpec, runtime: WidgetRuntime, 
     finalData: ledger.data?.slice(hours.length > 1 ? tags.length : 0, hours.length > 1 ? tags.length * 2 : tags.length),
     prepared, selection, ready: match.ready, reason: resolved.reason ?? match.reason, known: match.known,
     groupWarnings: groups.data?.warnings ?? NO_WARNINGS,
-    error: ledger.error ?? groups.error,
+    error: ledger.error ?? (groups.data ? undefined : groups.error),
+    groupError: groups.data ? groups.error : undefined,
     retry: () => { ledger.retry(); groups.retry(); } };
 }
 

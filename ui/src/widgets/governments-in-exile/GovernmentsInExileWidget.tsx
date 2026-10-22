@@ -136,7 +136,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   if (!track) body = <WidgetState kind="empty" icon="flag" message="Load a campaign to see governments in exile." />;
   else if (!window || !inside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
   else if (error) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
-  else if (needsGroups && groups.error) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading governments in exile…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -149,6 +149,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
     tooltip={tooltip} onVisibleRows={onVisibleRows} hoursPerSecond={hoursPerSecond} />;
   return <div className="governments-in-exile">
     {headerSlot && view && createPortal(<span className="pill exile-header-count">{usNumber.format(rows.length)} in exile</span>, headerSlot)}
+    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
     {body}
   </div>;
 }

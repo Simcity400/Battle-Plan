@@ -309,7 +309,7 @@ const FOLDER: &str = "common/country_tag_aliases/";
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
     for path in script_files::paths(layers, FOLDER, Some(".txt")) {
-        let read = name_pass(&layers.read(&path)?, &|name| names.contains(name));
+        let read = name_pass(&path.read(layers)?, &|name| names.contains(name));
         names.extend(
             read.items
                 .iter()
@@ -324,7 +324,7 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<TagAliases> {
     let mut files = Vec::new();
     for path in script_files::paths(layers, FOLDER, Some(".txt")) {
-        files.push((path.clone(), layers.read(&path)?));
+        files.push((path.to_string(), path.read(layers)?));
     }
     Ok(parse(
         &files

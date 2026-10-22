@@ -332,6 +332,36 @@ fn autonomy_frame(hour: i32, statuses: &[Status]) -> DecodedFrame {
 }
 
 #[test]
+fn cancelled_and_ended_relations_name_no_overlord() {
+    use replay_data::rows::SubjectRow;
+    let relation = |overlord: u32, end_hour: i32, cancel: u8| SubjectRow {
+        overlord,
+        subject: 31,
+        start_hour: 0,
+        end_hour,
+        cancel,
+        autonomy_ratio: 20_000,
+        state: b"low".to_vec(),
+    };
+    let frame = |hour: i32| {
+        let mut frame = world_frame(hour, true);
+        *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
+            vec![relation(11, 0, 1), relation(21, 105, 0)],
+        ));
+        frame
+    };
+    let live = frame(100);
+    let holders = super::Holders::read(&live).unwrap();
+    let relations = super::Relations::read(&live, &holders).unwrap();
+    assert_eq!(relations.overlords.get(&9), Some(&(8, 20_000)));
+    assert!(relations.shared.is_empty());
+    assert_eq!(relations.expires, Some(105));
+    let relations = super::Relations::read(&frame(105), &holders).unwrap();
+    assert!(relations.overlords.is_empty());
+    assert_eq!(relations.expires, None);
+}
+
+#[test]
 fn prepared_autonomy_batches_resume_and_keep_exact_runs_metadata_gaps_and_navigation() {
     use crate::products::autonomy::{AutonomyParams, ScannedAutonomy};
     use dashboard_core::config::LoadContext;

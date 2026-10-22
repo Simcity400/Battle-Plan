@@ -26,6 +26,13 @@ use std::{
 
 /// The first hour of the engine-calendar month holding `hour`, and of the next.
 pub fn month_of(hour: i32) -> (i32, i32) {
+    let (start, next) = month_bounds(hour);
+    let clamp = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
+    (clamp(start), clamp(next))
+}
+
+/// [`month_of`], unclamped: a month can run past the last representable hour.
+fn month_bounds(hour: i32) -> (i64, i64) {
     use engine_native::cdate::{HOUR_EPOCH, MONTH_LENGTHS};
     const YEAR: i64 = 365 * 24;
     let elapsed = i64::from(hour) - i64::from(HOUR_EPOCH);
@@ -34,8 +41,7 @@ pub fn month_of(hour: i32) -> (i32, i32) {
     for days in MONTH_LENGTHS {
         let next = start + i64::from(days) * 24;
         if i64::from(hour) < next {
-            let clamp = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
-            return (clamp(start), clamp(next));
+            return (start, next);
         }
         start = next;
     }
@@ -47,10 +53,10 @@ pub fn months(first: i32, last: i32) -> Vec<(i32, i32)> {
     let mut result = Vec::new();
     let mut at = first;
     while at <= last {
-        let (_, next) = month_of(at);
-        let end = next.saturating_sub(1).min(last);
+        let (_, next) = month_bounds(at);
+        let end = i32::try_from(next - 1).map_or(last, |end| end.min(last));
         result.push((at, end));
-        if end == i32::MAX {
+        if end == last {
             break;
         }
         at = end + 1;

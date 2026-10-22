@@ -55,7 +55,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<AgreementRow | null>(null);
+  const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
+  const [pick, setPick] = useState<{ client: typeof runtime.client; owner: string | null; row: AgreementRow } | null>(null);
+  const picked = pick && pick.client === runtime.client && pick.owner === pickOwner ? pick.row : null;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
   const fallback = useMemo(() => selectedTags(widget.countries, track), [widget.countries, track]);
@@ -125,7 +127,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     .flatMap(at => at === null ? [] : [jumpItem(runtime, track.id, at)]) : [], [runtime, track]);
   const playing = runtime.clock.getSnapshot().playing;
   const open = (row: AgreementRow) => {
-    setPicked(row);
+    setPick({ client: runtime.client, owner: pickOwner, row });
     dispatch({ type: 'open', breakdown: AGREEMENT.id, hour: row.at, playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const at = drillHour(drill, hour) ?? hour;
@@ -134,15 +136,16 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading lend-lease…" />;
-  if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading lend-lease…" /></>;
+  if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   // A group whose membership at this hour is unrecorded or empty says so, never "none";
   // membership still being prepared at the hours the agreements are matched is neither.
-  if (!rows.length && !match.known(track.branch.firstHour, hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length && !match.known(track.branch.firstHour, hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <WidgetState kind={groupReason.kind} message={groupReason.message} />;
+  if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
   const subject = fallback.length === 1 ? name(fallback[0], hour) : 'These countries';
   const body = !knownAt(data, hour) ? <WidgetState kind="unavailable" message="Lend-lease terms were not recorded." />
     : !rows.length ? <WidgetState kind="empty" icon="link" message={`${subject} ${fallback.length === 1 ? 'has' : 'have'} no ${direction === 'sent' ? 'outgoing' : 'incoming'} lend-lease at this date.`} />
@@ -157,7 +160,7 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     </div>
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;
-  return <div ref={anchor} className="lend-lease-agreements-host">
+  return <div ref={anchor} className="lend-lease-agreements-host">{groupFailure}
     {headerSlot && createPortal(<span className="pill">{active_.toLocaleString()} active</span>, headerSlot)}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
       title={picked ? `${name(picked.from, picked.at)} → ${name(picked.partner, picked.at)}` : AGREEMENT.label} day={dayLabel(at)}

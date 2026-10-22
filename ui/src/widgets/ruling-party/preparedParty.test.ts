@@ -79,8 +79,9 @@ test('ruling-party renders bounded prepared views, masks departed owners and ref
       const path=id.replaceAll('\\','/'),replacement=Object.entries(replacements).find(([suffix])=>path.endsWith(suffix));
       if(replacement)return replacement[1];
       if(path.endsWith('/dashboard/contentRevision.ts'))return source.replace('return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);','return revision.snapshot();');
-      if(['/ruling-party/RulingPartyWidget.tsx','/ruling-party/preparedParty.ts','/ruling-party/preparedGovernments.ts','/dashboard/products.ts'].some(suffix=>path.endsWith(suffix)))
-        return source.replace(/\b(useMemo|useCallback|useState|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,(_match,name)=>`globalThis.__partyHook(${JSON.stringify(name)}, `);
+      // Held failures run on the same synthetic hooks, outside a widget frame.
+      if(['/ruling-party/RulingPartyWidget.tsx','/ruling-party/preparedParty.ts','/ruling-party/preparedGovernments.ts','/dashboard/products.ts','/dashboard/heldFailures.ts'].some(suffix=>path.endsWith(suffix)))
+        return source.replace('useContext(HeldFailuresContext)','null').replace(/\b(useMemo|useCallback|useState|useRef|useEffect)(?:<[\s\S]*?>)?\(/g,(_match,name)=>`globalThis.__partyHook(${JSON.stringify(name)}, `);
     }}]});
   const client={product:()=>{throw new Error('Party history must come from preparation.');},
     preparedQuery:async (_source:unknown,product:string,params:Record<string,unknown>,{signal}:{signal:AbortSignal})=> {

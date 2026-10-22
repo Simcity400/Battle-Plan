@@ -73,6 +73,7 @@ pub fn typescript_contract() -> String {
         ResearchHistory::decl(),
         ResearchFolder::decl(),
         ResearchTechnologyFolder::decl(),
+        ResearchDefinitionText::decl(),
         products::research::prepared::ResearchStateSlot::decl(),
         products::research::prepared::ResearchState::decl(),
         products::research::prepared::ResearchStateReply::decl(),

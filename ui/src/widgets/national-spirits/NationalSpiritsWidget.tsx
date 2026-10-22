@@ -91,19 +91,20 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   }, [data, onDiagnostics, owner]);
 
   if (!track || !tag) return <WidgetState kind="empty" icon="star" message="Load a campaign and choose a country to see its national spirits." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
-  if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (!held && pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  if (failure && !data) return failure;
+  if (!data) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;
+  if (widget.time.mode === 'pin' && !window) return <>{failure}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{failure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!held && pendingAt(preparedPrefix(data), hour)) return failure ?? <WidgetState kind="loading" label="This range is still being prepared." />;
   // Unrecorded is not the same as holding no spirits.
-  if (inSpans(data.unobserved, hour)) return <WidgetState kind="unavailable" message="National spirits were not recorded at this moment." />;
+  if (inSpans(data.unobserved, hour)) return <>{failure}<WidgetState kind="unavailable" message="National spirits were not recorded at this moment." /></>;
   // Held ideas content cannot classify might be spirits: then the set is unknown, not empty.
   const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
   const unclassified = data.spans.some(span => unplaced.has(span.token) && span.firstHour <= hour && hour <= span.lastHour);
-  if (!shown.length && !leaving.length) return unclassified
+  if (!shown.length && !leaving.length) return <>{failure}{unclassified
     ? <WidgetState kind="unavailable" message="National spirits unavailable at this time." />
-    : <WidgetState kind="empty" message="No national spirits at this moment." />;
+    : <WidgetState kind="empty" message="No national spirits at this moment." />}</>;
 
   const since = (spirit: Spirit) => { const state = spiritState(spirit, hour); return state.kind === 'held' ? state.since : null; };
   const describe = (spirit: Spirit) => {
@@ -138,7 +139,7 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   };
   const untip = () => { shownTip.current = null; hideTooltip(owner); };
   const tiles = [...shown.map(spirit => ({ spirit, leaving: false })), ...leaving.filter(spirit => !shown.some(item => item.token === spirit.token)).map(spirit => ({ spirit, leaving: true }))];
-  return <><ul key={context} className={`national-spirits${options.names === 'under' ? ' with-names' : ''}`} aria-label="National spirits">
+  return <>{failure}<ul key={context} className={`national-spirits${options.names === 'under' ? ' with-names' : ''}`} aria-label="National spirits">
     {tiles.map(({ spirit, leaving: out }) => <li key={spirit.token} className={`spirit${out ? ' is-leaving' : ''}`} aria-hidden={out || undefined}
       tabIndex={out ? undefined : 0} aria-label={[spirit.name, describe(spirit)].filter(Boolean).join(', ')} aria-describedby={out ? undefined : `${widgetOwner}-${spirit.token}`}
       onPointerMove={event => tip(spirit, event.clientX, event.clientY)} onPointerLeave={untip}

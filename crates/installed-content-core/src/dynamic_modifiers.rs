@@ -180,7 +180,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
     for path in layers.directory_files("common/dynamic_modifiers", ".txt")? {
-        match parse_with_notes(&layers.read(&path)?, &names) {
+        match parse_with_notes(&path.read(layers)?, &names) {
             Ok((definitions, notes)) => {
                 for definition in definitions {
                     database.refused.remove(&definition.name);

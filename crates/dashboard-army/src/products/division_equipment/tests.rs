@@ -275,10 +275,29 @@ fn unknown_pool_is_counted_without_zeroing_independent_manpower_and_hp() {
     let rows = r.division_rows.unwrap();
     assert_eq!(rows[0].held_raw.as_deref(), Some("10000000"));
     assert!(!rows[1].pool_known && rows[1].needed_raw.is_none() && rows[1].held_raw.is_none());
+    assert_eq!((rows[0].types_short.is_some(), rows[1].types_short), (true, None));
     assert_eq!(
         (rows[1].manpower.as_deref(), rows[1].hp_raw.as_deref()),
         (Some("300"), Some("1000000"))
     );
+    let mut p = params();
+    p.division = Some("2".into());
+    let pool = reply(&f, Some(&daily), None, &p).pool.unwrap();
+    assert!(!pool.pool_known);
+    assert_eq!(pool.types.len(), 1);
+    assert_eq!(pool.types[0].held_raw, None);
+    assert_eq!(pool.types[0].needed_raw.as_deref(), Some("10000000"));
+    assert_eq!(pool.types[0].missing_raw, None);
+    assert_eq!(pool.manpower.as_deref(), Some("300"));
+    let mut empty = f.clone();
+    *empty.tables[TableId::DivisionEquipment.index()] =
+        TableView::Complete(TableRows::DivisionEquipment(vec![]));
+    let pool = reply(&f, Some(&empty), None, &p).pool.unwrap();
+    assert!(pool.pool_known);
+    assert_eq!(pool.types[0].held_raw.as_deref(), Some("0"));
+    assert_eq!(pool.types[0].missing_raw.as_deref(), Some("10000000"));
+    p.division = Some("1".into());
+    assert!(reply(&f, Some(&daily), None, &p).pool.unwrap().pool_known);
 }
 
 #[test]
@@ -362,11 +381,11 @@ fn local_clones_change_need_but_models_keep_actual_holdings() {
     );
     assert_eq!(
         (
-            pool.types[0].held_raw.as_str(),
+            pool.types[0].held_raw.as_deref(),
             pool.types[0].needed_raw.as_deref(),
             pool.types[0].missing_raw.as_deref()
         ),
-        ("5000000", Some("8000000"), Some("3000000"))
+        (Some("5000000"), Some("8000000"), Some("3000000"))
     );
     assert_eq!(pool.types[0].variants[0].held_raw, "5000000");
 }
@@ -415,7 +434,7 @@ fn unknown_need_and_unreadable_status_never_become_zero() {
         r.division_rows
             .unwrap()
             .iter()
-            .all(|row| row.pool_known && row.needed_raw.is_none())
+            .all(|row| row.pool_known && row.needed_raw.is_none() && row.types_short.is_none())
     );
 }
 
@@ -647,7 +666,7 @@ fn conversion_uses_current_need_without_redating_the_sampled_pool() {
     assert_eq!(row.converting_from.as_deref(), Some("Previous formation"));
     assert_eq!(row.needed_raw.as_deref(), Some("20000000"));
     assert_eq!(row.held_raw.as_deref(), Some("15000000"));
-    assert_eq!(row.types_short, 1);
+    assert_eq!(row.types_short, Some(1));
 }
 
 #[test]

@@ -144,6 +144,12 @@ export function sessionLength(startedAt: number | null, now: number): string {
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
+/** Milliseconds until the Stop prompt's session length next changes. */
+export function untilNextMinute(startedAt: number | null, now: number): number {
+  const elapsed = startedAt == null ? 0 : Math.max(0, now - startedAt);
+  return 60_000 - elapsed % 60_000;
+}
+
 /** What Discard deletes: only this session when the file held an earlier recording. */
 export function discardTooltip(continued: boolean): string {
   return continued ? 'Deletes this session only. Earlier recording in this file is kept.' : 'Deletes this recording.';
@@ -152,6 +158,24 @@ export function discardTooltip(continued: boolean): string {
 /** The Stop prompt shows only while recording, until Save or Discard is carried out. */
 export function stopPromptVisible(asking: boolean, snapshot: Snapshot): boolean {
   return asking && snapshot.phase === 'recording' && !snapshot.stopping;
+}
+
+/** A save can be stored before it fails, so a read follows a failed save. */
+export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => void) {
+  let last: Promise<unknown> = Promise.resolve();
+  const run = (work: () => Promise<T | null>): Promise<void> => {
+    const reply = last.then(work);
+    last = reply.catch(() => {});
+    return reply.then(value => { if (value != null) show(value); });
+  };
+  const refresh = () => run(read);
+  return {
+    refresh,
+    save: (work: () => Promise<T | null>) => run(work).catch((error: unknown) => {
+      void refresh().catch(() => {});
+      throw error;
+    }),
+  };
 }
 
 export function recordsAutomatically(settings: RecorderSettings, campaign: string): boolean {

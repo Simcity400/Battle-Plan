@@ -298,7 +298,7 @@ impl Catalog {
             "common/special_projects/prototype_rewards/",
             Some(".txt"),
         ) {
-            match read_mode(&layers.read(&path)?, false, true, Some(&names), None) {
+            match read_mode(&path.read(layers)?, false, true, Some(&names), None) {
                 Ok(items) => {
                     for item in items {
                         let token = item.key_str().map_err(|error| invalid(error.to_string()))?;
@@ -328,7 +328,7 @@ impl Catalog {
             let mut registered = BTreeSet::new();
             for path in script_files::paths(layers, folder, Some(".txt")) {
                 let items = match read(
-                    &layers.read(&path)?,
+                    &path.read(layers)?,
                     specialization,
                     Some(&names),
                     Some(&registered),

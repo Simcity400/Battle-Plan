@@ -39,8 +39,8 @@ pub struct Ideologies {
     /// In load order.
     groups: Vec<Ideology>,
     /// Each group's frame ([`Ideologies::frame`]) and the file that first read
-    /// it, by the token's ASCII case fold (`A`-`Z` joined).
-    frames: BTreeMap<String, (u32, String)>,
+    /// it, by the token's ASCII case fold; byte-exact file paths must remain distinct.
+    frames: BTreeMap<String, (u32, script_files::ScriptPath)>,
     coverage: Coverage,
 }
 
@@ -161,11 +161,11 @@ fn group_field(field: &Field<'_>) -> Shape<Node> {
 /// Duplicates skip their bodies; later blocks in the owning file reread the group.
 fn read_file_in(
     input: &[u8],
-    path: &str,
-    frames: &BTreeMap<String, (u32, String)>,
+    path: &script_files::ScriptPath,
+    frames: &BTreeMap<String, (u32, script_files::ScriptPath)>,
 ) -> (native::Read, Vec<modifiers::Undecided>, Vec<String>) {
     let mut undecided = Vec::new();
-    let mut owners: BTreeMap<Vec<u8>, String> = frames
+    let mut owners: BTreeMap<Vec<u8>, script_files::ScriptPath> = frames
         .iter()
         .map(|(key, (_, file))| (key.as_bytes().to_vec(), file.clone()))
         .collect();
@@ -196,7 +196,7 @@ fn read_file_in(
                     ));
                     Shape::Discard
                 } else {
-                    owners.entry(key.clone()).or_insert_with(|| path.to_owned());
+                    owners.entry(key.clone()).or_insert_with(|| path.clone());
                     listed.push(key.clone());
                     Shape::ObjectAs(Node::Group, key)
                 }
@@ -314,7 +314,11 @@ fn groups(items: &[Item]) -> (Vec<Ideology>, Option<String>) {
 }
 
 /// Accepted groups are numbered from 1; omitted groups reset to -1.
-fn number_groups(path: &str, items: &[Item], frames: &mut BTreeMap<String, (u32, String)>) {
+fn number_groups(
+    path: &script_files::ScriptPath,
+    items: &[Item],
+    frames: &mut BTreeMap<String, (u32, script_files::ScriptPath)>,
+) {
     for block in items
         .iter()
         .filter(|item| item.keyword_is("ideologies"))
@@ -330,14 +334,15 @@ fn number_groups(path: &str, items: &[Item], frames: &mut BTreeMap<String, (u32,
             }
         }
         for (place, key) in (1_u32..).zip(listed) {
-            frames.insert(key.to_owned(), (place, path.to_owned()));
+            frames.insert(key.to_owned(), (place, path.clone()));
         }
     }
 }
 
 /// Parses one ideologies file.
 pub fn parse(input: &[u8]) -> Vec<Ideology> {
-    groups(&read_file_in(input, "", &BTreeMap::new()).0.items).0
+    let path = script_files::ScriptPath::new(Vec::new());
+    groups(&read_file_in(input, &path, &BTreeMap::new()).0.items).0
 }
 
 /// Every ideology group in file order: one reader per enumerated file.
@@ -345,9 +350,10 @@ pub fn parse(input: &[u8]) -> Vec<Ideology> {
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Ideologies::default();
-    for path in script_files::paths(layers, "common/ideologies/", None) {
+    for listed in script_files::paths(layers, "common/ideologies/", None) {
+        let path = listed.to_string();
         result.coverage.next_file();
-        let (read, undecided, refused) = read_file_in(&layers.read(&path)?, &path, &result.frames);
+        let (read, undecided, refused) = read_file_in(&listed.read(layers)?, &listed, &result.frames);
         warnings.extend(
             refused
                 .into_iter()
@@ -377,7 +383,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagn
             )));
             result.coverage.gap(&path, cause.clone());
         }
-        number_groups(&path, &read.items, &mut result.frames);
+        number_groups(&listed, &read.items, &mut result.frames);
         // Each later block resets this file's omitted groups.
         for root in read
             .items
@@ -389,7 +395,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagn
                 if result
                     .frames
                     .get(&existing.token)
-                    .is_some_and(|(_, file)| file == &path)
+                    .is_some_and(|(_, file)| file == &listed)
                     && !block.iter().any(|group| group.token == existing.token)
                 {
                     existing.color = Ok(WHITE);

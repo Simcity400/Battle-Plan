@@ -2527,7 +2527,7 @@ impl Directory {
         let crc = u32::from_le_bytes(prefix[4..8].try_into().unwrap());
         let frames = varint_usize(input)?;
         let span = i64::from(index.last_hour) - i64::from(index.first_hour) + 1;
-        if frames == 0 || frames as i64 > span {
+        if frames == 0 || !i64::try_from(frames).is_ok_and(|frames| frames <= span) {
             return Err(invalid_static(
                 "grouped frame count disagrees with its hour range",
             ));
@@ -3245,8 +3245,11 @@ pub(crate) fn read_selected_updates(
 fn check_header_size(frames: usize, present: &Present) -> io::Result<()> {
     // A plain block counts its frames, then frames each prefixed by their
     // length; each table's plain updates have their own budget.
-    Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES))
-        .spend(4 + frames * (4 + present.plain_header_bytes()))
+    let bytes = frames
+        .checked_mul(4 + present.plain_header_bytes())
+        .and_then(|bytes| bytes.checked_add(4))
+        .ok_or_else(|| invalid_static("block exceeds raw size limit"))?;
+    Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)).spend(bytes)
 }
 
 fn read_header(

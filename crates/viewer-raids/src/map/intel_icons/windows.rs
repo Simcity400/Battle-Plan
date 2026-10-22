@@ -10,6 +10,7 @@ use super::*;
 use installed_content_core::{gui::native::Element, gui::native::Kind};
 use viewer_foundation::map::{
     camera::Camera,
+    free_icons::{IconAnchor, IconFamily},
     gui_resources::{count_noted, count_refused},
     icon_windows,
     native_gui::{
@@ -34,11 +35,11 @@ pub struct IntelInputs<'a> {
     pub operatives: bool,
 }
 
-/// One state's container at its projected point.
 #[derive(Clone, Debug)]
 struct Placed {
     index: usize,
     screen: [f32; 2],
+    anchor: IconAnchor,
 }
 
 /// A frame's containers, far to near, and what laying them out noted.
@@ -49,8 +50,7 @@ pub struct PreparedIntel {
     pub report: IntelReport,
 }
 
-/// The containers of `icons` the frame shows: none outside the Operatives mode or at or above
-/// the cutoff, else each state's projected at its anchor and ordered far to near.
+/// Operatives icons use eye-height cutoff in the game camera, anchor-distance cutoff in free view.
 pub fn prepare(
     assets: &IntelAssets,
     inputs: &IntelInputs<'_>,
@@ -63,9 +63,11 @@ pub fn prepare(
     let Ok(defines) = &assets.defines else {
         return out;
     };
-    if !inputs.operatives || !values::visible(inputs.camera.height, defines) {
+    let free = inputs.camera.free().is_some();
+    if !inputs.operatives || !(free || values::visible(inputs.camera.height, defines)) {
         return out;
     }
+    let cutoff = defines.cutoff();
     out.report = icons.report.clone();
     let viewport =
         viewer_foundation::map::gui_resources::viewport(inputs.viewport, inputs.ui_scale);
@@ -95,6 +97,11 @@ pub fn prepare(
             Placed {
                 index,
                 screen: projection.position,
+                anchor: IconAnchor {
+                    world,
+                    cutoff,
+                    family: IconFamily::Intel,
+                },
             },
         ));
     }
@@ -170,13 +177,24 @@ impl IntelHit {
 
 /// The topmost entry under `point`: the latest drawn of the highest layer.
 pub fn hit_at(hits: &[IntelHit], point: [f32; 2]) -> Option<&IntelHit> {
-    let mut top: Option<&IntelHit> = None;
-    for hit in hits.iter().filter(|hit| hit.contains(point)) {
-        if top.is_none_or(|top| hit.layer >= top.layer) {
-            top = Some(hit);
+    hit_seen(hits, |_| Some((point, 0)))
+}
+
+/// `seen` returns entry-local pointer coordinates and draw rank, or None for hidden containers.
+pub fn hit_seen(
+    hits: &[IntelHit],
+    seen: impl Fn(&IntelHit) -> Option<([f32; 2], u32)>,
+) -> Option<&IntelHit> {
+    let mut top: Option<((u32, u64), &IntelHit)> = None;
+    for hit in hits {
+        let Some((point, rank)) = seen(hit) else {
+            continue;
+        };
+        if hit.contains(point) && top.is_none_or(|(key, _)| (rank, hit.layer) >= key) {
+            top = Some(((rank, hit.layer), hit));
         }
     }
-    top
+    top.map(|(_, hit)| hit)
 }
 
 /// The container template, its list and the entry templates, as the content declares them.
@@ -443,6 +461,7 @@ impl PreparedIntel {
             shown.insert(icon.state);
             let point = values::container_point(placed.screen, size, defines.offset);
             let layer = sprites::layer(priority, ordinal as u32, 0);
+            batch.at_anchor(Some(placed.anchor));
             match self.present(
                 &windows, context, view, icon, point, tick, layer, batch, hits, report,
             ) {
@@ -454,6 +473,7 @@ impl PreparedIntel {
                 }
             }
         }
+        batch.at_anchor(None);
         view.containers.retain(|state, _| shown.contains(state));
         drawn
     }
@@ -644,7 +664,15 @@ impl PreparedIntel {
             placed: screens
                 .iter()
                 .enumerate()
-                .map(|(index, &screen)| Placed { index, screen })
+                .map(|(index, &screen)| Placed {
+                    index,
+                    screen,
+                    anchor: IconAnchor {
+                        world: [0.0; 3],
+                        cutoff: f32::INFINITY,
+                        family: IconFamily::Intel,
+                    },
+                })
                 .collect(),
             report: icons.report.clone(),
             icons,

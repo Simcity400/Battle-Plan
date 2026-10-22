@@ -370,6 +370,34 @@ fn has_elections_reads_the_recorded_test_and_refuses_older_recordings_by_name() 
 }
 
 #[test]
+fn a_country_trigger_reading_no_map_is_answered_without_the_map() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    use replay_data::rows::PoliticsRow;
+    let mut frame = frame(&[(100, 1, "GER", 1, "", "")], &[]);
+    *frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+            country: 100,
+            has_elections: Recorded::Value(true),
+            ..Default::default()
+        }]));
+    for table in [TableId::Provinces, TableId::States] {
+        *frame.tables[table.index()] = TableView::Unavailable {
+            reason: "map refused".into(),
+        };
+    }
+    assert_eq!(check(&frame, "", 1, "has_elections = yes"), Eval::True);
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
+        reason: "links refused".into(),
+    };
+    assert!(
+        check(&frame, "", 1, "has_elections = yes")
+            .decided()
+            .is_err()
+    );
+}
+
+#[test]
 fn ruling_leader_traits_use_role_key_and_definition_identity() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

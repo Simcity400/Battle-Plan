@@ -19,7 +19,7 @@ export function useComparisonCountries(widget: WidgetSpec, runtime: WidgetRuntim
   const numbers = retained.update(key, groups.data, groupNumbers);
   const countries = useMemo(() => resolveCountries(widget.countries, grouped ? [] : selectedTags(widget.countries, track), numbers,
     track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER), [widget.countries, grouped ? undefined : track, numbers, track?.branch.lastHour]);
-  return { track, countries, error: groups.error, retry: groups.retry,
+  return { track, countries, error: numbers ? undefined : groups.error, refreshError: numbers ? groups.error : undefined, retry: groups.retry,
     contentPending: grouped && !!numbers && !groups.data && !groups.error,
     pending: !!track && grouped && !numbers && !groups.error };
 }

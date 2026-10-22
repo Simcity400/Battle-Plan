@@ -147,6 +147,7 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                     .ok_or_else(|| {
                         invalid("retained raiding grid fields were not bound to recorded save keys")
                     })?;
+                // Active raiders' saved fields are comparable; unread means incomplete.
                 if let Some(spotting) = row.raiding_spotting {
                     eq(
                         r,
@@ -155,9 +156,9 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                         fields.spotting.as_ref().map_or(0, |value| value.raw),
                     );
                 } else {
-                    r.limitation(
-                        "active retained spotting read unavailable",
-                        format!("{label}.raiding_spotting"),
+                    r.incomplete(
+                        "NavalMissionTaskForces",
+                        format!("{label}.raiding_spotting: active retained spotting read unavailable"),
                     );
                 }
                 if let Some(region) = row.raiding_region {
@@ -168,9 +169,9 @@ fn task_forces(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<
                         fields.region.unwrap_or(0),
                     );
                 } else {
-                    r.limitation(
-                        "active retained region read unavailable",
-                        format!("{label}.raiding_region"),
+                    r.incomplete(
+                        "NavalMissionTaskForces",
+                        format!("{label}.raiding_region: active retained region read unavailable"),
                     );
                 }
             }
@@ -670,6 +671,23 @@ mod tests {
                 .flatten()
                 .any(|line| line.contains("raiding_targets"))
         );
+        assert!(exact.failed_comparisons.is_empty());
+        for (region, spotting) in [(None, Some(-12500)), (Some(17), None)] {
+            let unread = run(
+                NavalMissionTaskForceRow {
+                    raiding_region: region,
+                    raiding_spotting: spotting,
+                    ..row.clone()
+                },
+                &save,
+            );
+            assert!(unread.differences.is_empty());
+            assert!(
+                unread
+                    .failed_comparisons
+                    .contains_key("NavalMissionTaskForces")
+            );
+        }
         row.raiding_spotting = row.raiding_spotting.map(|value| value + 1);
         assert_eq!(run(row.clone(), &save).differences.len(), 1);
         row.raiding_region = row.raiding_region.map(|value| value + 1);
@@ -684,6 +702,7 @@ mod tests {
             .unwrap()
             .is_in_regions = None;
         save.naval_missions.raiding_grid = None;
-        assert!(run(row, &save).differences.is_empty());
+        let inactive = run(row, &save);
+        assert!(inactive.differences.is_empty() && inactive.failed_comparisons.is_empty());
     }
 }

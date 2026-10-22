@@ -144,10 +144,11 @@ export function useResourceCountry(selection: ResourceCountrySelection | null, r
   // An identity at its original hour, or the group's members, still being prepared are not known yet: not unknown.
   const preparing = !!history && !spans && !!selection && !!track && (!groupsKnownAt(history, track.branch.firstHour + selection.originOffset)
     || !!members && !members.known(track.branch.firstHour, track.branch.lastHour));
-  const reason = catalogue.error ?? product.error ?? members?.reason ?? (!history ? 'Loading the selected country identity…'
+  const reason = (history ? undefined : catalogue.error) ?? product.error ?? members?.reason ?? (!history ? 'Loading the selected country identity…'
     : !spans ? preparing ? MEMBERSHIP_PREPARING : 'The selected country identity is unknown or conflicting at its original choice.'
       : !data ? 'Loading the selected resource history…' : null);
-  return { data, numbers, spans, reason, preparing, error: catalogue.error ?? product.error ?? points.error,
+  return { data, numbers, spans, reason, preparing, error: (history ? undefined : catalogue.error) ?? product.error ?? points.error,
+    identityError: history ? catalogue.error : undefined, identityRetry: catalogue.retry,
     retry: () => { catalogue.retry(); product.retry(); points.retry(); } };
 }
 

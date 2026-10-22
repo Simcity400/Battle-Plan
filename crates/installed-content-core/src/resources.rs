@@ -131,7 +131,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Vec<Resource>, Vec<crate::Di
     let mut warnings = Vec::new();
     let mut result: Vec<Resource> = Vec::new();
     for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
-        match parse_file(&layers.read(&path)?) {
+        match parse_file(&path.read(layers)?) {
             Ok((resources, notes)) => {
                 result.extend(resources);
                 warnings.extend(

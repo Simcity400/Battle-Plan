@@ -13,8 +13,8 @@ import { toLocal, watchCanvasSize } from '../surface';
 import { fitTooltip, hideTooltip, showTooltip, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
-import { MATRIX_HEADER, MATRIX_NAMES_WIDTH, matrixCell, matrixCellAt, matrixGutter, matrixKey, matrixWindow, revealItem } from './matrix';
-import type { MatrixAxisItem, MatrixCell } from './matrix';
+import { MATRIX_HEADER, MATRIX_NAMES_WIDTH, matrixCell, matrixCellAt, matrixGutter, matrixKey, matrixKeyed, matrixWindow, revealItem } from './matrix';
+import type { MatrixAxisItem, MatrixCell, MatrixKeyed } from './matrix';
 import '../charts.css';
 import './heat.css';
 
@@ -56,7 +56,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
   latest.current = { props, tokens, viewport };
   const geometry = useRef<Geometry>({ gutter: 0, header: MATRIX_HEADER, cell: 0, scrollLeft: 0, scrollTop: 0, width: 0, height: 0 });
   const pointer = useRef<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
-  const keyed = useRef<{ row: number; column: number } | null>(null);
+  const keyed = useRef<MatrixKeyed | null>(null);
   const [extent, setExtent] = useState({ width: 0, height: 0 });
   const [client, setClient] = useState({ width: 0, height: 0 });
   useLayoutEffect(() => {
@@ -122,6 +122,10 @@ export default function HeatMatrix(props: HeatMatrixProps) {
         const rect = { left: gutter + column * cell - scrollLeft + 1, top: MATRIX_HEADER + row * cell - scrollTop + 1, width: cell - 2, height: cell - 2 };
         if ('unknown' in look) drawUnknownHatch(ctx, t, rect);
         else { ctx.fillStyle = look.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
+      }
+      if (keyed.current) {
+        keyed.current = matrixKeyed(keyed.current, p.rows, p.columns);
+        if (!keyed.current) setSpoken('');
       }
       const focus = keyed.current ?? (pointer.current ? matrixCellAt(pointer.current.x, pointer.current.y, g, p.rows.length, p.columns.length) : null);
       if (focus) {
@@ -195,6 +199,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
     return matrixCellAt(point.x, point.y, geometry.current, props.rows.length, props.columns.length);
   };
   const leave = () => { pointer.current = null; keyed.current = null; setSpoken(''); hideTooltip(owner); wake(); };
+  const keyedCell = () => keyed.current && (keyed.current = matrixKeyed(keyed.current, props.rows, props.columns));
   const openMenu = (target: { row: number; column: number }, x: number, y: number) => {
     const items = props.menu?.(target.row, target.column);
     if (items?.length) { hideTooltip(owner); menu.open(x, y, items); return true; }
@@ -211,24 +216,25 @@ export default function HeatMatrix(props: HeatMatrixProps) {
           onContextMenu={event => {
             event.preventDefault();
             if (menuKey.current) { menuKey.current = false; return; }
-            const hit = keyed.current ?? cellAt(event.clientX, event.clientY);
+            const hit = keyedCell() ?? cellAt(event.clientX, event.clientY);
             if (hit) openMenu(hit, event.clientX, event.clientY);
           }}
           onKeyDown={event => {
             if (event.key === 'Escape') { event.preventDefault(); leave(); return; }
             const g = geometry.current, scroller = surface.current!;
-            if ((event.key === 'Enter' || event.key === ' ') && keyed.current) { event.preventDefault(); if (!event.repeat) props.onSelect?.(keyed.current.row, keyed.current.column); return; }
-            if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && keyed.current) {
+            const current = keyedCell();
+            if ((event.key === 'Enter' || event.key === ' ') && current) { event.preventDefault(); if (!event.repeat) props.onSelect?.(current.row, current.column); return; }
+            if ((event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) && current) {
               const rect = canvas.current!.getBoundingClientRect();
-              if (openMenu(keyed.current, rect.left + (g.gutter + (keyed.current.column + 0.5) * g.cell - g.scrollLeft) * rect.width / Math.max(1, g.width),
-                rect.top + (g.header + (keyed.current.row + 0.5) * g.cell - g.scrollTop) * rect.height / Math.max(1, g.height))) { event.preventDefault(); menuKey.current = true; }
+              if (openMenu(current, rect.left + (g.gutter + (current.column + 0.5) * g.cell - g.scrollLeft) * rect.width / Math.max(1, g.width),
+                rect.top + (g.header + (current.row + 0.5) * g.cell - g.scrollTop) * rect.height / Math.max(1, g.height))) { event.preventDefault(); menuKey.current = true; }
               return;
             }
             const page = Math.max(1, Math.floor((g.height - g.header) / Math.max(1, g.cell)));
-            const next = matrixKey(event.key, keyed.current ?? { row: 0, column: 0 }, props.rows.length, props.columns.length, keyed.current ? page : 0);
+            const next = matrixKey(event.key, current ?? { row: 0, column: 0 }, props.rows.length, props.columns.length, current ? page : 0);
             if (!next) return;
             event.preventDefault();
-            keyed.current = next; pointer.current = null;
+            keyed.current = { ...next, rowId: props.rows[next.row].id, columnId: props.columns[next.column].id }; pointer.current = null;
             scroller.scrollTop = revealItem(next.row, g.cell, scroller.scrollTop, g.height - g.header);
             scroller.scrollLeft = revealItem(next.column, g.cell, scroller.scrollLeft, g.width - g.gutter);
             wake();

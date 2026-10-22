@@ -242,7 +242,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Intelligence> {
     let mut earlier = BTreeSet::new();
     for path in script_files::paths(layers, "common/operations/", Some(".txt")) {
         let mut notes = Vec::new();
-        match parse_operations_with_notes(&layers.read(&path)?, &names, &earlier, &mut notes) {
+        match parse_operations_with_notes(&path.read(layers)?, &names, &earlier, &mut notes) {
             Ok((operations, warnings)) => {
                 result
                     .warnings
@@ -375,7 +375,7 @@ pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTok
     let mut result = OperationTokens::default();
     let mut earlier = BTreeSet::new();
     for path in script_files::paths(layers, "common/operation_tokens/", Some(".txt")) {
-        match parse_operation_tokens(&layers.read(&path)?, &names, &earlier) {
+        match parse_operation_tokens(&path.read(layers)?, &names, &earlier) {
             Ok((definitions, warnings)) => {
                 result
                     .warnings
@@ -508,7 +508,7 @@ pub fn read_operation_phases(layers: &ResolvedLayers) -> io::Result<OperationPha
     let mut result = OperationPhases::default();
     let mut earlier = BTreeSet::new();
     for path in script_files::paths(layers, "common/operation_phases/", Some(".txt")) {
-        match parse_operation_phases(&layers.read(&path)?, &names, &earlier) {
+        match parse_operation_phases(&path.read(layers)?, &names, &earlier) {
             Ok((definitions, warnings)) => {
                 result
                     .warnings
@@ -689,7 +689,7 @@ pub fn read_agency_upgrades(layers: &ResolvedLayers) -> io::Result<AgencyUpgrade
     let mut result = AgencyUpgrades::default();
     let mut owners = BTreeMap::new();
     for path in script_files::paths(layers, "common/intelligence_agency_upgrades/", Some(".txt")) {
-        match parse_agency_upgrades(&layers.read(&path)?, &names) {
+        match parse_agency_upgrades(&path.read(layers)?, &names) {
             Ok((branches, warnings)) => {
                 result
                     .warnings

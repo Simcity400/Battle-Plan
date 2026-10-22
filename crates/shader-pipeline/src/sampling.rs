@@ -314,6 +314,8 @@ pub fn lower(
         let (fact, dimension, manual) = resolve(&args[0], &args[1])?;
         let mirror_u = dimension != super::TextureKind::Cube && fact.u == Address::MirrorOnce;
         let mirror_v = dimension != super::TextureKind::Cube && fact.v == Address::MirrorOnce;
+        let mirror_w = dimension == super::TextureKind::D3 && fact.w == Address::MirrorOnce;
+        let mirrored = mirror_u || mirror_v || mirror_w;
         let uv = args[2].clone();
         let offset = match name {
             "textureSample" => 3,
@@ -331,14 +333,14 @@ pub fn lower(
         }
         // An anisotropic footprint mirrors tap by tap, folding where it crosses zero; with no
         // MIRROR_ONCE mode in wgpu, no single sample (nor per-level offset) reproduces that.
-        if (mirror_u || mirror_v) && [fact.mag, fact.min, fact.mip].contains(&Filter::Anisotropic) {
+        if mirrored && [fact.mag, fact.min, fact.mip].contains(&Filter::Anisotropic) {
             return Err(format!(
                 "anisotropic sample through MIRROR_ONCE sampler {:?}: wgpu has no MIRROR_ONCE \
                  address mode to mirror the footprint tap by tap",
                 fact.name
             ));
         }
-        if manual || (mirror_u || mirror_v) && args.get(offset).is_some_and(|o| nonzero(o)) {
+        if manual || mirrored && args.get(offset).is_some_and(|o| nonzero(o)) {
             let n = helpers.len();
             helpers.push_str(&sample(n, fact, dimension, name));
             mirror_helper |= [fact.u, fact.v, fact.w].contains(&Address::Mirror);
@@ -374,28 +376,26 @@ pub fn lower(
             ));
             continue;
         }
-        if mirror_u || mirror_v {
-            let x = if mirror_u {
-                format!("abs(({uv}).x)")
-            } else {
-                format!("({uv}).x")
+        if mirrored {
+            let fold = |mirror: bool, axis: char| {
+                if mirror {
+                    format!("abs(({uv}).{axis})")
+                } else {
+                    format!("({uv}).{axis}")
+                }
             };
-            let y = if mirror_v {
-                format!("abs(({uv}).y)")
-            } else {
-                format!("({uv}).y")
-            };
+            let (x, y) = (fold(mirror_u, 'x'), fold(mirror_v, 'y'));
             args[2] = if dimension == super::TextureKind::D3 {
-                format!("vec3<f32>({x}, {y}, ({uv}).z)")
+                format!("vec3<f32>({x}, {y}, {})", fold(mirror_w, 'z'))
             } else {
                 format!("vec2<f32>({x}, {y})")
             };
         }
         let mut function = name;
-        if name == "textureSample" && fact.lod_bias != 0.0 && !mirror_u && !mirror_v {
+        if name == "textureSample" && fact.lod_bias != 0.0 && !mirrored {
             function = "textureSampleBias";
             args.insert(3, format!("{:?}", fact.lod_bias));
-        } else if name == "textureSampleBias" && !mirror_u && !mirror_v {
+        } else if name == "textureSampleBias" && !mirrored {
             args[3] = format!("({}) + {:?}", args[3], fact.lod_bias);
         } else if name == "textureSampleLevel" && fact.lod_bias != 0.0 {
             // 7.18.11: MipLODBias applies to an LOD the shader specifies too.
@@ -405,7 +405,7 @@ pub fn lower(
             let scale = 2_f32.powf(fact.lod_bias);
             args[3] = format!("({}) * {scale:?}", args[3]);
             args[4] = format!("({}) * {scale:?}", args[4]);
-        } else if name != "textureSampleLevel" && (mirror_u || mirror_v) {
+        } else if name != "textureSampleLevel" && mirrored {
             // Preserve pre-addressing derivatives across the mirror seam. Taking derivatives
             // of abs(uv) would pick a different mip for quads crossing zero. D3D's LOD uses
             // coarse derivatives (7.18.11).
@@ -526,5 +526,41 @@ fn f(uv: vec2<f32>) -> vec4<f32> { return textureSample(t, s, uv); }
                 .unwrap_err()
                 .contains("Anisotropic")
         );
+    }
+
+    #[test]
+    fn mirror_once_folds_a_volumes_w_axis() {
+        let wgsl = "@group(1) @binding(3) var t: texture_3d<f32>;
+@group(2) @binding(3) var s: sampler;
+fn f(uvw: vec3<f32>) -> vec4<f32> { return textureSample(t, s, uvw); }
+";
+        let sampler = |w, mip| Sampler {
+            name: "Volume".into(),
+            index: 1,
+            cube: false,
+            mag: Filter::Linear,
+            min: Filter::Linear,
+            mip,
+            u: Address::Clamp,
+            v: Address::Clamp,
+            w,
+            lod_bias: 0.,
+            min_lod: 0,
+            max_lod: 1024,
+        };
+        let volume = [(3, super::super::TextureKind::D3)];
+        let mirrored = BTreeMap::from([(3, sampler(Address::MirrorOnce, Filter::Linear))]);
+        let lowered = lower(wgsl, &mirrored, &volume, 0).unwrap();
+        assert!(lowered.contains(
+            "textureSampleGrad(t, s, vec3<f32>((uvw).x, (uvw).y, abs((uvw).z)), dpdxCoarse(uvw)"
+        ));
+        let flat = wgsl
+            .replace("texture_3d", "texture_2d")
+            .replace("vec3<f32>", "vec2<f32>");
+        let plain = [(3, super::super::TextureKind::D2)];
+        assert_eq!(lower(&flat, &mirrored, &plain, 0).unwrap(), flat);
+        let anisotropic = BTreeMap::from([(3, sampler(Address::MirrorOnce, Filter::Anisotropic))]);
+        let reason = lower(wgsl, &anisotropic, &volume, 0).unwrap_err();
+        assert!(reason.contains("anisotropic") && reason.contains("Volume"));
     }
 }

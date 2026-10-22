@@ -31,11 +31,12 @@ function flagsRequest(context: { sourceId: string; revision: string; branchId: s
  * playback day; lists use the same styled flags at each country's observed hour.
  * The list renders only the rows in view and loads only their flags, so it costs
  * the same at any country count. */
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, inline = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads, disabled = false }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
   onReconnect?: () => void; field?: boolean;
+  disabled?: boolean;
   /** The search and list alone, shown in place (inside another popover). */
   inline?: boolean; flagAt?: { branchId: string; hour: number } | null;
   /** A multi-country field: the trigger reads this label and every `chosen` tag is ticked. */
@@ -93,10 +94,13 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     return read && choiceTrack && read.branchId === choiceTrack.branch.id && Number.isSafeInteger(read.hour)
       && read.hour >= choiceTrack.branch.firstHour && read.hour <= choiceTrack.branch.lastHour ? read : null;
   };
-  const wantedChoices = allowedTags || choiceReads !== undefined ? [...new Set([...visible.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
+  // Search needs offscreen dated names; flags still load only for visible rows.
+  const named = open && query.trim() ? choices : visible;
+  const wantedChoices = allowedTags || choiceReads !== undefined ? [...new Set([...named.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
     .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
   const wantedNames = wantedChoices.map(({ tag, hour }) => ({ tag, hour }));
-  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined) && (!!flagAt || choiceReads !== undefined));
+  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined) && (!!flagAt || choiceReads !== undefined),
+    new Set(wantedNames.map(read => read.hour)).size);
   // Keep names already seen at this held hour searchable after filtering or
   // scrolling releases their visible-row requests. Another context starts empty.
   useEffect(() => {
@@ -255,7 +259,7 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   if (inline) return <div className="country-picker country-picker-inline">{body}</div>;
   return <div className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
-    <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
+    <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source || disabled} popoverTarget={id}
       aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}>
       {addLabel ? <Icon name="plus" /> : <CountryFlag image={headerImage} />}
       {addLabel ? <span>{addLabel}</span> : field ? <span>{(selected ? countryName(selected) : selectedTag) ?? 'Choose country'}</span>

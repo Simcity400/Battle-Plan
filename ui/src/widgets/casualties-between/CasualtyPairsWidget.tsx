@@ -215,14 +215,15 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties between countries." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
   // No pair met yet while preparation runs: later blocks may hold some.
-  if (manifest.data?.available === false) return preparedPrefix(manifest.data)?.pending.length
+  if (manifest.data?.available === false) return <>{groupFailure}{preparedPrefix(manifest.data)?.pending.length
     ? <WidgetState kind="loading" label="This range is still being prepared." />
-    : <WidgetState kind="unavailable" message="Not in this recording" />;
-  if (selection.reason) return <WidgetState kind="empty" message={selection.reason} />;
-  if (!manifest.data || needsGroups && !groups.data) return <WidgetState kind="loading" label="Loading casualty pairs…" />;
-  if (pinned && options.pairSelection && !savedSelection) return <WidgetState kind="unavailable" message="Saved pairs unavailable. Select them again." />;
+    : <WidgetState kind="unavailable" message="Not in this recording" />}</>;
+  if (selection.reason) return <>{groupFailure}<WidgetState kind="empty" message={selection.reason} /></>;
+  if (!manifest.data || needsGroups && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading casualty pairs…" /></>;
+  if (pinned && options.pairSelection && !savedSelection) return <>{groupFailure}<WidgetState kind="unavailable" message="Saved pairs unavailable. Select them again." /></>;
   const body = <div className="casualty-pair-details">
     {detailThrough < detailHour && <p className="chart-line-key" role="status">Casualties through {dayLabel(detailThrough)}; the rest is still being prepared.</p>}
     {pinned && <p className="chart-line-key">{dayLabel(detailHour)} {!effectiveDrill.follow
@@ -282,7 +283,7 @@ export default function CasualtyPairsWidget({ widget, runtime, active, onDiagnos
     {snapshot.flows.some(flow => flow.value < 0n) && <button type="button" className="button small"
       onClick={() => openPairs(snapshot.flows.filter(flow => flow.value < 0n).map(flow => flow.id), through)}>Corrections</button>}
   </>;
-  return <div className="casualty-pairs" ref={anchor}>
+  return <div className="casualty-pairs" ref={anchor}>{groupFailure}
     {pinned ? body : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open} title="Casualty pairs"
       day={dayLabel(detailHour)} following={effectiveDrill.follow} canFollow onFollow={follow}
       onPin={selectedIds.length ? () => runtime.addWidgetBelow(widget.id, pinPairs(widget, track, selectedIds, detailHour, effectiveDrill.follow)) : undefined}

@@ -520,6 +520,61 @@ fn stability_breakdown_index_preserves_first_tag_match_and_link_validation() {
 }
 
 #[test]
+fn a_shared_tag_takes_its_first_rows_values_in_history_and_breakdown() {
+    use crate::products::country_stability::scan;
+    use replay_data::rows::{CountryLinkRow, CountryRow, SliceReadRow, tables};
+    let mut frame = stability_frame(100, stability_inputs(), 100, vec![]);
+    let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+    countries.push(CountryRow {
+        id: 9002,
+        canonical_slot: 12,
+        tag: b"GER".to_vec(),
+        ..Default::default()
+    });
+    let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+    links.push(CountryLinkRow {
+        id: 9002,
+        canonical_slot: 12,
+    });
+    let mut reads = frame.complete::<tables::SliceReads>().unwrap().to_vec();
+    reads.push(SliceReadRow {
+        table: TableId::CountryStabilityInputs.index() as u32,
+        owner: 9002,
+        sample_hour: 100,
+    });
+    let mut second = stability_inputs();
+    second.country = 9002;
+    second.stability_raw = 60_000;
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links));
+    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
+    *frame.tables[TableId::CountryStabilityInputs.index()] = TableView::Complete(
+        TableRows::CountryStabilityInputs(vec![stability_inputs(), second]),
+    );
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let (result, _) = scan(&replay, 1, &["GER"], Some(100), &AtomicBool::new(false)).unwrap();
+    let germany = &result["GER"];
+    let runs: Vec<_> = germany
+        .stability
+        .iter()
+        .map(|run| (run.first_hour, run.last_hour, run.value_raw.as_str()))
+        .collect();
+    assert_eq!(runs, [(100, 100, "79249")]);
+    assert_eq!(
+        germany
+            .breakdown
+            .as_ref()
+            .unwrap()
+            .stability
+            .value_raw
+            .as_deref(),
+        Some("79249")
+    );
+}
+
+#[test]
 fn stability_oversized_breakdown_refuses_the_complete_reply_by_name() {
     use super::{CountryStability, CountryStabilityParams};
     use dashboard_base::products::{MAX_PRODUCT_REPLY_BYTES, Product};

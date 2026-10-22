@@ -120,17 +120,18 @@ export default function OccupiedStatesWidget({ widget, runtime, active, onDiagno
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see occupied states." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (groupError) return <WidgetState kind="error" detail={groupError} onRetry={groupRetry} />;
-  if (windows.errors.has(target)) return <WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} />;
-  if (!manifest || (target >= 0 && !display) || (selection.kind !== 'all' && !groups)) return <WidgetState kind="loading" label="Loading occupied states…" />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (pendingReplyAt(display?.data, shown)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!view?.observation) return <WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." />;
+  const groupFailure = groupError ? <WidgetState kind="error" detail={groupError} onRetry={groupRetry} /> : null;
+  if (groupFailure && !groups) return groupFailure;
+  if (windows.errors.has(target)) return <>{groupFailure}<WidgetState kind="error" detail={windows.errors.get(target)!} onRetry={windows.retry} /></>;
+  if (!manifest || (target >= 0 && !display) || (selection.kind !== 'all' && !groups)) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupied states…" /></>;
+  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
+  if (pendingReplyAt(display?.data, shown)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!view?.observation) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupied states weren’t recorded at this time." /></>;
   // Countries at an hour still being prepared are not known yet, nor matched: no row is not proof of none.
-  if (!rows.length && !filter.known) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!rows.length && view.selectionUnknown) return <WidgetState kind="unavailable" message="Occupied states unavailable for these countries." />;
-  if (!rows.length) return <WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} />;
-  return <div className="occupied-states" ref={parityRoot}>
+  if (!rows.length && !filter.known) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length && view.selectionUnknown) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupied states unavailable for these countries." /></>;
+  if (!rows.length) return <>{groupFailure}<WidgetState kind={view.observation.complete ? 'empty' : 'unavailable'} message={view.observation.complete ? 'No occupied states match these countries at this moment.' : 'Some occupied states are missing.'} /></>;
+  return <div className="occupied-states" ref={parityRoot}>{groupFailure}
     {!current && <p className="occupation-note" role="status">Updating occupied states…</p>}
     {!view.observation.complete && <p className="occupation-note">Some occupied states are missing.</p>}
     {view.selectionUnknown && <p className="occupation-note">Some states couldn’t be matched to these countries.</p>}

@@ -385,7 +385,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
+  const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group's members at hours still being prepared are not known yet: none is not proof of none.
   const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
@@ -409,15 +410,16 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
         onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
       {body}
       {parts.error && <WidgetState kind="error" what="the breakdown" detail={parts.error} onRetry={parts.retry} />}
+      {groups.error && groupData ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
       {error && <WidgetState kind="error" what="values" detail={error} onRetry={retry} />}
       {menu.menu}
     </div>;
   }
-  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
-  if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
-  if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return branchKnown
-    ? <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." /> : preparing;
+  if (error && !data) return <>{groupNotice}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (!data || (widget.countries.kind === 'group' && !groupData)) return <>{groupNotice}<WidgetState kind="loading" label="Loading stability and war support…" /></>;
+  if (!shown.length) return <>{groupNotice}<WidgetState kind="empty" message="Both lines are switched off in the settings." /></>;
+  if (!prepared.enabled && series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <>{groupNotice}{branchKnown
+    ? <WidgetState kind="unavailable" message="Stability and war support are unavailable for these countries." /> : preparing}</>;
 
   const decimals = data.decimals;
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.
@@ -577,6 +579,8 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
   return <div className="stability" ref={drillAnchor} onFocus={() => setFocused(true)}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
+    {/* Outside the drill, so an open breakdown never hides a later failure. */}
+    {groupNotice}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`} day={drillAt == null ? '' : dayLabel(Math.floor(drillAt))}
       following={drill.follow} canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}

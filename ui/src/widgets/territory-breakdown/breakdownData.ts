@@ -1,11 +1,12 @@
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
-import type { CountryGroupReply, FactionGroup, TerritoryBreakdownReply, TerritoryMeasure, TerritoryRule } from '../../generated/dashboard';
+import type { CountryGroupReply, FactionGroup, HourSpan, TerritoryBreakdownReply, TerritoryMeasure, TerritoryRule } from '../../generated/dashboard';
 import type { SunburstItem, SunburstKey, SunburstTotal } from '../../charts/sunburst/Sunburst';
-import { isOrderedSpans, runAt, stretchAt, stretchStarts } from '../../charts/series.ts';
+import { isOrderedSpans, overlayRuns, runAt, stretchAt, stretchStarts } from '../../charts/series.ts';
+import type { Breakable } from '../../charts/series';
 import { fractionSum } from '../../charts/valueAxis.ts';
 import { intervalIndexOf } from '../../charts/intervalIndex.ts';
 import { object, opaqueTag, unsigned32, unsigned64, signed32, signed64 } from '../../dashboard/validation.ts';
-import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { countryIdentityIndex, overlayCountryIdentities } from '../../dashboard/countryIdentity.ts';
 import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { territoryColumn, validateTerritoryReply } from '../territory/territoryData.ts';
 
@@ -28,6 +29,43 @@ export function validateBreakdownReply(value: unknown): TerritoryBreakdownReply 
     throw new Error('The territory breakdown reply is malformed.');
   validateTerritoryReply({ ...value, series: value.countries });
   return value as unknown as TerritoryBreakdownReply;
+}
+
+/** Only overlapping spans join; adjacent spans remain distinct segments. */
+function unionSpans(a: readonly HourSpan[], b: readonly HourSpan[]): HourSpan[] {
+  const joined: HourSpan[] = [];
+  for (const span of [...a, ...b].sort((x, y) => x.firstHour - y.firstHour)) {
+    const previous = joined.at(-1);
+    if (previous && span.firstHour <= previous.lastHour) previous.lastHour = Math.max(previous.lastHour, span.lastHour);
+    else joined.push({ ...span });
+  }
+  return joined;
+}
+
+const sameValues = (a: { values: unknown; stateShares?: unknown }, b: { values: unknown; stateShares?: unknown }) =>
+  JSON.stringify([a.values, a.stateShares]) === JSON.stringify([b.values, b.stateShares]);
+
+/** Each reply has its own sampled tail; overlay the ending read without discarding either prefix. */
+export function mergeBreakdownReplies(current: TerritoryBreakdownReply, ending: TerritoryBreakdownReply): TerritoryBreakdownReply {
+  const runs = <T extends Breakable & { values: unknown; stateShares?: unknown }>(a: readonly T[], b: readonly T[]) => overlayRuns(a, b, sameValues);
+  const series = new Map(current.series.map(line => [JSON.stringify([line.tag, line.region, line.missing]), line]));
+  for (const line of ending.series) {
+    const key = JSON.stringify([line.tag, line.region, line.missing]), before = series.get(key);
+    series.set(key, before ? { ...line, runs: runs(before.runs, line.runs) } : line);
+  }
+  const histories = (reply: TerritoryBreakdownReply) => reply.countries.flatMap(line => line.identities ? [{ tag: line.tag, identities: line.identities }] : []);
+  const identities = new Map(overlayCountryIdentities(histories(current), histories(ending)).map(history => [history.tag, history.identities]));
+  const countries = new Map(current.countries.map(line => [line.tag, line]));
+  for (const line of ending.countries) {
+    const before = countries.get(line.tag);
+    countries.set(line.tag, before ? { ...line, runs: runs(before.runs, line.runs), segments: unionSpans(before.segments, line.segments),
+      membership: before.membership === null ? line.membership : line.membership === null ? before.membership : unionSpans(before.membership, line.membership) } : line);
+  }
+  return { ...current, series: [...series.values()],
+    countries: [...countries.values()].map(line => { const known = identities.get(line.tag); return known ? { ...line, identities: known } : line; }),
+    worldTotals: runs(current.worldTotals, ending.worldTotals),
+    observed: current.observed.map((spans, index) => unionSpans(spans, ending.observed[index] ?? [])),
+    warnings: [...new Set([...current.warnings, ...ending.warnings])] };
 }
 
 function affiliation(groups: CountryGroupReply, hour: number): (tag: string) => { faction?: FactionGroup; unknown: boolean } {

@@ -86,6 +86,7 @@ fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
             (300, "attached_policy"),
             (301, "candidate_policy"),
             (400, modifier),
+            (500, "synthetic_flag"),
         ]
         .into_iter()
         .map(|(token, literal)| rows::LexicalTokenRow {
@@ -145,6 +146,8 @@ fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
             .map(|(id, canonical_slot)| rows::CountryLinkRow { id, canonical_slot })
             .collect(),
     ));
+    *frame.tables[TableId::IndustrialOrganisations.index()] =
+        TableView::Complete(TableRows::IndustrialOrganisations(vec![organisation()]));
     frame
 }
 
@@ -320,7 +323,7 @@ fn a_false_organisation_condition_decides_whatever_the_other() {
 
 #[test]
 fn an_undecided_visible_condition_with_a_false_available_one_excludes_the_traits() {
-    // The visible body is a leaf the interpreter does not decide; available fails, so the
+    // The visible body reads unrecorded flags; when available fails, the
     // gate is decided. With available holding it stays undecided: a refusal, not zero.
     let content = Content::with_visible("has_mio_flag=synthetic_flag", "yes");
     assert!(quote(&content, &frame(0, Some(0)), 300, 20).is_err());

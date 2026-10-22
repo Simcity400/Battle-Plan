@@ -224,7 +224,7 @@ pub fn load(
     // in that order, so token agreement matches the serial load.
     type Parsed = (BTreeMap<String, Authored>, Option<String>);
     let parsed: Vec<io::Result<Parsed>> = map(&paths, |path| {
-        characters::portraits(&layers.read(path)?, &names, "army", "large")
+        characters::portraits(&path.read(layers)?, &names, "army", "large")
             .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
     });
     // A file whose reading stops short leaves every character it could
@@ -242,7 +242,7 @@ pub fn load(
                 .or_insert(portrait);
         }
         if let Some(cause) = stop {
-            coverage.gap(path, cause);
+            coverage.gap(&path.text(), cause);
         }
     }
     for (token, portrait) in &mut characters {

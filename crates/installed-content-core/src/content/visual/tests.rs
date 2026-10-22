@@ -982,6 +982,27 @@ fn case_variants_mount_as_the_game_mounts_them() {
     assert_eq!(text(presentation, "map/terrain/atlas0.dds"), "lower atlas");
     assert_eq!(text(presentation, "map/terrain/ATLAS0.dds"), "upper atlas");
     assert_eq!(text(presentation, "map/terrain/strait.dds"), "other strait");
+    // Byte-exact enumeration separates case variants; each opens through ordinary lookup.
+    let listed = presentation
+        .descriptor_paths("map/terrain", &[".dds"])
+        .unwrap();
+    assert!(
+        [
+            "map/terrain/atlas0.dds",
+            "map/terrain/ATLAS0.dds",
+            "map/terrain/colormap_water_0.dds",
+            "map/terrain/Colormap_water_0.dds"
+        ]
+        .iter()
+        .all(|path| listed.iter().any(|listed| listed == path)),
+        "{listed:?}"
+    );
+    let read = |name: &str| {
+        let path = listed.iter().find(|listed| **listed == name).unwrap();
+        path.read_uncovered(presentation).unwrap()
+    };
+    assert_eq!(read("map/terrain/colormap_water_0.dds"), b"recorded water");
+    assert_eq!(read("map/terrain/Colormap_water_0.dds"), b"mod water");
 }
 
 /// The game mounts one mod of a display name: a selected mod named as a recorded mod it is not

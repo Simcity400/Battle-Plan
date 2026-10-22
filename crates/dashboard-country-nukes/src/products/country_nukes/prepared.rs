@@ -652,8 +652,14 @@ pub fn query(
                 }
             }
         }
+        // Composition changes must remain navigable even when total and rank are unchanged.
+        let composition_keys = value_keys.clone();
         let prepared_hour = series::navigate(
-            &mut [(&mut values, value_keys), (&mut ranks, rank_keys)],
+            &mut [
+                (&mut values, value_keys),
+                (&mut mixes, composition_keys),
+                (&mut ranks, rank_keys),
+            ],
             &navigation,
         )?;
         let hour = if partial {
@@ -671,6 +677,14 @@ pub fn query(
             let requested: Vec<_> = membership
                 .keys()
                 .map(|tag| (tag.clone(), String::new()))
+                .chain(
+                    tail.0
+                        .keys()
+                        .filter(|(tag, _)| membership.contains_key(tag))
+                        .cloned(),
+                )
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect();
             let prepared = requested
                 .iter()
@@ -693,15 +707,44 @@ pub fn query(
                 .as_u64()
                 .and_then(|size| u32::try_from(size).ok()),
         )?;
-        let selected: Vec<_> = membership(&scanned, &selection, Some(&history), cancelled)?
-            .unwrap_or_default()
-            .into_keys()
-            .collect::<Vec<_>>()
-            .iter()
-            .filter_map(|tag| keys.get(&series::field_key(tag, "")))
-            .copied()
-            .collect();
-        let page = mixes.events(&selected, first, last, cursor, size)?;
+        let page = if let Some(top) = selection.top {
+            // No stockpile runs are prepared; Top N membership comes from prepared ranks.
+            let mut spans = BTreeMap::<u64, Vec<(i32, i32)>>::new();
+            for position in 0..(top as usize).min(inverse.len()) {
+                for run in ranks.runs(position as u64 * 2, first, last)? {
+                    let key = run.value as u64;
+                    if !inverse.contains_key(&key) {
+                        return Err(dashboard_core::invalid("Unknown nuclear rank key"));
+                    }
+                    spans
+                        .entry(key)
+                        .or_default()
+                        .push((run.first_hour, run.last_hour));
+                }
+            }
+            let mut within = Vec::new();
+            for (key, mut runs) in spans {
+                runs.sort_unstable();
+                let mut joined: Vec<(i32, i32)> = Vec::new();
+                for (from, to) in runs {
+                    match joined.last_mut() {
+                        Some(held) if i64::from(from) <= i64::from(held.1) + 1 => {
+                            held.1 = held.1.max(to);
+                        }
+                        _ => joined.push((from, to)),
+                    }
+                }
+                within.extend(joined.into_iter().map(|(from, to)| (key, from, to)));
+            }
+            mixes.events_within(&within, cursor, size)?
+        } else {
+            let selected: Vec<_> = membership(&scanned, &selection, Some(&history), cancelled)?
+                .unwrap_or_default()
+                .into_keys()
+                .filter_map(|tag| keys.get(&series::field_key(&tag, "")).copied())
+                .collect();
+            mixes.events(&selected, first, last, cursor, size)?
+        };
         return Ok(
             json!({"firstOrdinal":page.first.to_string(),"total":page.total.to_string(),"cursor":page.cursor.map(|cursor|cursor.to_string()),
             "rows":page.rows.into_iter().map(|row|json!({"tag":inverse.get(&row.key),"hour":row.hour,"ordinal":row.ordinal.to_string(),"row":row.row})).collect::<Vec<_>>(),"warnings":[]}),

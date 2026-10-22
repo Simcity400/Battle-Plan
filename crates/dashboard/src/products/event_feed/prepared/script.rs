@@ -272,11 +272,31 @@ fn newest(
             }
             end = begin;
         }
-        for &(_, _, key, ordinal) in late.between(first, native_to, live) {
+        // Once the page is full, older facts cannot change it and need not be read.
+        for &(native, read, key, ordinal) in late.between(first, native_to, live).rev() {
             if key != later {
                 continue;
             }
             check_cancel(cancelled)?;
+            let placed = Placed {
+                native,
+                read,
+                key,
+                ordinal,
+            };
+            if before.is_some_and(|before| placed >= before) {
+                continue;
+            }
+            if held.len() == limit
+                && let Some(oldest) = held.keys().next()
+            {
+                if native < oldest.native {
+                    break;
+                }
+                if placed <= *oldest {
+                    continue;
+                }
+            }
             let row = reader
                 .events(&[key], i32::MIN, i32::MAX, ordinal, 1)?
                 .rows

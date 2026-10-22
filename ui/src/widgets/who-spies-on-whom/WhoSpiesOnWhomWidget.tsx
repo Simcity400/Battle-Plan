@@ -96,13 +96,14 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
     return { at, exact };
   }, [data, track, widget, runtime.clock, runtime.tracks, groups.data, options.mostCountries, labelAt, plottedColor, colors, hour, tokens.muted, selectedTag, chordAt]);
 
+  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its operative placements." />;
-  if (error || groups.error) return <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
-  if (!data || !current) return <WidgetState kind="loading" label="Loading operative placements…" />;
-  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (current.period?.availability !== 'recorded') return <WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
-    ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} />;
-  if (picked?.reason) return <WidgetState kind="unavailable" message={picked.reason} />;
+  if (error || (groups.error && !groups.data)) return <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
+  if (!data || !current) return <>{groupNotice}<WidgetState kind="loading" label="Loading operative placements…" /></>;
+  if (pendingAt(preparedPrefix(data), hour)) return <>{groupNotice}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (current.period?.availability !== 'recorded') return <>{groupNotice}<WidgetState kind="unavailable" message={current.period?.availability === 'featureAbsent'
+    ? 'Intelligence agencies were disabled.' : 'Operatives were not recorded at this time.'} /></>;
+  if (picked?.reason) return <>{groupNotice}<WidgetState kind="unavailable" message={picked.reason} /></>;
   return <div ref={root} className={`who-spies-on-whom${chartError ? ' has-chart-error' : ''}`}>
     <ChordChart label="Who spies on whom" caption="Ribbon colour = the country spying" frame={{ data: null }} frameAt={frames.at} onError={setChartError}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
@@ -112,6 +113,7 @@ export default function WhoSpiesOnWhomWidget({ widget, runtime, active, onDiagno
         if (chord && (hit.kind === 'flow' ? chord.flows.has(hit.id) : chord.nodes.has(hit.id))) menu.open(x, y, [jumpItem(runtime, track.id, chord.read)]);
       }} />
     {menu.menu}
+    {groupNotice}
     {chartError && <WidgetState kind="error" detail={chartError} />}
     {!picked?.placements.some(n => n.count > 0) && <p className="placements-empty">{picked?.known === false ? MEMBERSHIP_PREPARING : 'No operatives placed yet.'}</p>}
     {wanted.some(w => !colors.has(nameKey(w.hour, w.tag))) && <p className="sr-only">Some country colours were not recorded; their arcs use the muted theme colour.</p>}

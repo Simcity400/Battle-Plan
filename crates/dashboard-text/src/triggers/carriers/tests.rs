@@ -358,32 +358,33 @@ fn tagged_variables_decode_recorded_carriers_without_reading_object_stores() {
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
         let caller = Scopes::of(Scope::Country(1));
-        for (name, scope, raw) in [
+        for (name, scope, raw, store) in [
             (
                 b"p".as_slice(),
                 Scope::Project { owner: 101, id: 9 },
                 0x1000_0009,
+                "variable store",
             ),
             (
                 b"m".as_slice(),
                 Scope::IndustrialOrganisation(MIO),
                 0x6000_0006,
+                "IndustrialOrganisationDetails",
             ),
             (
                 b"r".as_slice(),
                 Scope::Raid(RAID),
                 (0xffff_ffff_e000_0007_u64) as i64,
+                "variable store",
             ),
         ] {
             let name = [b"var:".as_slice(), name].concat();
             assert_eq!(evaluator.scoped_scope(&name, caller), Ok(Some(scope)));
             assert_eq!(evaluator.scoped_value(b"THIS", Scopes::of(scope)), Ok(raw));
-            assert!(
-                evaluator
-                    .scoped_value(b"THIS.progress", Scopes::of(scope))
-                    .unwrap_err()
-                    .contains("variable store")
-            );
+            let refused = evaluator
+                .scoped_value(b"THIS.progress", Scopes::of(scope))
+                .unwrap_err();
+            assert!(refused.contains(store), "{refused:?}");
         }
         assert_eq!(
             evaluator.scoped_scope(b"sp:synthetic_project", caller),
@@ -609,7 +610,7 @@ fn organisation_size_compares_as_an_integer_trigger() {
 /// Operands read as an integer trigger reads them: a number token as a whole number (the
 /// fraction dropped), a quoted number as a constant truncated to whole units, a negative number
 /// as itself, and a variable resolved in the trigger's evaluation truncated to whole units. A
-/// variable the organisation's scope cannot resolve leaves the trigger undecided.
+/// missing organisation-store key reads as zero; unsupported built-ins leave it undecided.
 #[test]
 fn organisation_size_operands_are_whole_units() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -650,9 +651,13 @@ fn organisation_size_operands_are_whole_units() {
                 "{trigger} with {raw}"
             );
         }
-        // On its own, an operand the organisation's scope cannot resolve is undecided.
-        assert!(matches!(
+        // The organisation's recorded store lacks the key, which the game reads as zero.
+        assert_eq!(
             in_organisation(world, MIO, "has_mio_size > unknown_size"),
+            Eval::True
+        );
+        assert!(matches!(
+            in_organisation(world, MIO, "has_mio_size > size"),
             Eval::Unknown(_)
         ));
     });

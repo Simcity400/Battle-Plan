@@ -33,6 +33,7 @@ const NO_WARNINGS: string[] = [];
 const days = (value: number) => `${enTwoDecimals.format(value)} ${value === 1 ? 'day' : 'days'}`;
 export type FocusListItem = { kind: 'completed'; entry: FocusEntry } | { kind: 'unfinished'; token: string };
 export const isCompletedFocus = (item: FocusListItem) => item.kind === 'completed';
+const disclosureKey = (entry: FocusEntry, readHour: number) => JSON.stringify([entry.ordinal, nameKey(readHour, entry.token)]);
 
 export function FocusArt({ art, size }: { art: Artwork | undefined; size: 'large' | 'small' }) {
   return <span className={`focus-art is-${size}`}>{art?.icon ? <img src={art.icon} alt="" /> : <ArtFallback icon="target" />}</span>;
@@ -131,8 +132,16 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
     }
     return rows.filter(row => Number.isInteger(row.hour));
   }, [order, readingHour, hour, currentHour, moment, live]);
-  const detailsWanted = useMemo(() => opened?.identity === detailsIdentity && opened.client === runtime.client
-    ? wanted.filter(item => opened.rows.has(nameKey(item.hour, item.tag))) : [], [opened, detailsIdentity, runtime.client, wanted]);
+  // Repeated completions may share dated text, but their disclosure state must stay separate.
+  const openRows = opened?.identity === detailsIdentity && opened.client === runtime.client ? opened.rows : null;
+  const detailsWanted = useMemo(() => {
+    const rows = openRows ? order?.completed.flatMap(entry => {
+      const hour = entry.completedByHour ?? readingHour!;
+      return Number.isInteger(hour) && openRows.has(disclosureKey(entry, hour)) ? [{ tag: entry.token, hour }] : [];
+    }) ?? [] : [];
+    // Follow schedules the newest end of the list first, as `wanted` does.
+    return live ? rows.reverse() : rows;
+  }, [openRows, order, readingHour, live]);
   const detailsKeys = useMemo(() => new Set(detailsWanted.map(item => nameKey(item.hour, item.tag))), [detailsWanted]);
   const dated = useFocusArtwork(runtime.client, track, tag, wanted, active && inRange === true, detailsWanted, data?.staticText);
   // Descriptions rows have shown, used while their read has no answer: closing releases the demand, yet the row
@@ -219,12 +228,12 @@ export function LegacyNationalFocusWidget({ widget, runtime, active, headerSlot,
             <span>{order.paused ? 'Paused' : 'In progress'}</span></span>
         </div>;
         const entry = item.entry;
-        const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token);
+        const readHour = entry.completedByHour ?? readingHour!, key = nameKey(readHour, entry.token), disclosure = disclosureKey(entry, readHour);
         const { art, reason, pending } = at(entry.token, readHour);
         if (art?.description) shownTexts.set(key, art.description);
         const description = art?.description ?? (dated.details?.get(key) === undefined ? shownTexts.get(key) : undefined);
         return <FocusCompletion entry={entry} art={art} reason={reason} pending={pending} description={description}
-          open={detailsKeys.has(key)} onToggle={open => toggleDetails(key, open)} />;
+          open={!!openRows?.has(disclosure)} onToggle={open => toggleDetails(disclosure, open)} />;
       }}</VirtualList> : <p className="focus-empty">No completed focuses recorded at this point.</p>}
     </div>
     {menu.menu}

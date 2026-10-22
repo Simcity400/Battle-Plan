@@ -61,7 +61,9 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
   const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null) => tag === null ? 'Country name unavailable' : labelAt(row.hour)(tag).name, [labelAt]);
   const anchor = useRef<HTMLDivElement>(null);
   const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
-  const [picked, setPicked] = useState<LedgerItem | null>(null);
+  const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
+  const [pick, setPick] = useState<{ client: typeof runtime.client; owner: string | null; item: LedgerItem } | null>(null);
+  const picked = pick && pick.client === runtime.client && pick.owner === pickOwner ? pick.item : null;
   const describe = (row: LogRow<LedgerItem>) => {
     const named = name(row);
     const figure = ledgerFigure(row.item);
@@ -69,7 +71,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
       row.item.equipment, figure?.text].filter(Boolean).join(' · ');
   };
   const open = (item: LedgerItem, at: number) => {
-    setPicked(item);
+    setPick({ client: runtime.client, owner: pickOwner, item });
     dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
   };
   const drillAt = drillHour(drill, hour) ?? hour ?? 0;
@@ -77,10 +79,11 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
   if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (chosen.reason) return <WidgetState kind="unavailable" message={chosen.reason} />;
-  if (ledger.error) return <WidgetState kind="error" detail={ledger.error} onRetry={ledger.retry} />;
-  if (kinds.length && (!chosen.countries || !ledger.data)) return <WidgetState kind="loading" label="Loading market activity…" />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (chosen.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={chosen.reason} /></>;
+  if (ledger.error) return <>{groupFailure}<WidgetState kind="error" detail={ledger.error} onRetry={ledger.retry} /></>;
+  if (kinds.length && (!chosen.countries || !ledger.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading market activity…" /></>;
   const main = <div className="log-widget market-ledger">
     {log.chips && <div className="log-chips"><ChipSet label="Market occurrences" chips={chips}
       selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
@@ -117,13 +120,14 @@ export default function MarketLedgerWidget({ widget, runtime, active, onDiagnost
       empty={!chosen.known(track.branch.firstHour ?? 0, hour) ? MEMBERSHIP_PREPARING : ledger.data ? LEDGER_EMPTY[ledgerEmpty(ledger.data, track.branch.firstHour ?? 0, hour)] : LEDGER_EMPTY.none} />
     {ledger.errors.size > 0 && <div className="event-feed-load">Some occurrences couldn’t load. <button type="button" onClick={ledger.retry}>Retry</button></div>}
   </div>;
-  return <div ref={anchor} className="market-ledger-host">
+  return <div ref={anchor} className="market-ledger-host">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
       title={picked ? ledgerTitle(picked, tag => tag ?? 'Country name unavailable') : DETAILS.label} day={dayLabel(drillAt)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
       main={main}>
+      {/* A posted request (kind 10) is the market's request with that id, not a contract. */}
       {picked && <MarketDrill runtime={runtime} track={track} hour={drill.follow ? hour : drillAt} active={active}
-        tags={[picked.seller, picked.buyer].filter((tag): tag is string => tag !== null)} selected={`contract:false:${picked.row.contract}`} />}
+        tags={[picked.seller, picked.buyer].filter((tag): tag is string => tag !== null)} selected={`contract:${picked.row.kind === 10}:${picked.row.contract}`} />}
     </DrillHost>
   </div>;
 }

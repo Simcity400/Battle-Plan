@@ -4,31 +4,105 @@
 //! tree read kept for main's readers that have not moved yet (a follow-up
 //! after the political layers, recorded in the plan).
 
-use crate::{DiagnosticKind, DiagnosticMessage, ResolvedLayers, parser::Document};
-use std::io;
+use crate::{
+    DiagnosticKind, DiagnosticMessage, ResolvedLayers, content::LayerPath, parser::Document,
+};
+use std::{borrow::Cow, fmt, io};
+
+/// Archive paths need not be UTF-8; use raw bytes for lookup and lossy text only for messages.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ScriptPath(LayerPath);
+
+impl ScriptPath {
+    pub fn new(path: LayerPath) -> Self {
+        Self(path)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Lossy text is for messages only, never lookup or keys.
+    pub fn text(&self) -> Cow<'_, str> {
+        String::from_utf8_lossy(&self.0)
+    }
+
+    pub fn to_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.0).ok()
+    }
+
+    /// Folder encoding is independent of the filename; only a non-UTF-8 folder returns `None`.
+    pub fn folder_text(&self) -> Option<&str> {
+        let end = self.0.iter().rposition(|&byte| byte == b'/').unwrap_or(0);
+        std::str::from_utf8(&self.0[..end]).ok()
+    }
+
+    pub fn read(&self, layers: &ResolvedLayers) -> io::Result<Vec<u8>> {
+        layers.read_path(&self.0)
+    }
+
+    /// The file's bytes, covered or not ([`ResolvedLayers::read_uncovered_path`]).
+    pub fn read_uncovered(&self, layers: &ResolvedLayers) -> io::Result<Vec<u8>> {
+        layers.read_uncovered_path(&self.0)
+    }
+}
+
+impl fmt::Display for ScriptPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text())
+    }
+}
+
+/// Keep UTF-8 debug output stable for digests; escape bytes only for non-UTF-8 paths.
+impl fmt::Debug for ScriptPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.to_str() {
+            Some(text) => fmt::Debug::fmt(text, f),
+            None => write!(f, "b\"{}\"", self.0.escape_ascii()),
+        }
+    }
+}
+
+impl PartialEq<&str> for ScriptPath {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == other.as_bytes()
+    }
+}
+
+impl From<&str> for ScriptPath {
+    fn from(path: &str) -> Self {
+        Self(path.as_bytes().to_vec())
+    }
+}
+
+impl AsRef<[u8]> for ScriptPath {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// List regular files directly in `folder` (lowercase and ending in `/`) without
 /// recursion. Merge every layer's filenames in byte order, listing repeated names once
 /// and reading them from the winning layer. Match `filter` by an exact suffix; `None`
 /// lists every file.
-pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec<String> {
-    let mut files: Vec<(String, String)> = layers
-        .listed_paths(folder)
+pub fn paths(layers: &ResolvedLayers, folder: &str, filter: Option<&str>) -> Vec<ScriptPath> {
+    let mut files: Vec<(LayerPath, LayerPath)> = layers
+        .listed_layer_paths(folder.as_bytes())
         .into_iter()
         .filter_map(|path| {
-            let name = path.get(folder.len()..)?.to_owned();
+            let name = path.get(folder.len()..)?.to_vec();
             (!name.is_empty()
-                && !name.contains('/')
-                && filter.is_none_or(|filter| name.ends_with(filter)))
+                && !name.contains(&b'/')
+                && filter.is_none_or(|filter| name.ends_with(filter.as_bytes())))
             .then_some((name, path))
         })
         .collect();
-    files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
-    files.into_iter().map(|(_, path)| path).collect()
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    files.into_iter().map(|(_, path)| ScriptPath(path)).collect()
 }
 
 /// Each parsed file under `folder` in load order, as trees, for the content
-/// readers not yet on the reader replay. `what` names the content in warnings.
+/// readers not yet on the reader replay.
 pub fn documents<D: DiagnosticMessage>(
     layers: &ResolvedLayers,
     folder: &str,
@@ -37,7 +111,7 @@ pub fn documents<D: DiagnosticMessage>(
 ) -> io::Result<Vec<(String, Document)>> {
     let mut result = Vec::new();
     for path in paths(layers, folder, Some(".txt")) {
-        match crate::parser::parse_unclosed(&layers.read(&path)?) {
+        match crate::parser::parse_unclosed(&path.read(layers)?) {
             Ok((document, repaired)) => {
                 if repaired {
                     warnings.push(D::from_diagnostic((
@@ -47,7 +121,7 @@ pub fn documents<D: DiagnosticMessage>(
                         ),
                     )));
                 }
-                result.push((path, document));
+                result.push((path.to_string(), document));
             }
             Err(error) => warnings.push(D::from_diagnostic((
                 DiagnosticKind::ParseFailure,
@@ -60,7 +134,6 @@ pub fn documents<D: DiagnosticMessage>(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "test-support")]
     use super::*;
 
     /// List regular files directly in the folder, merging all layer names in byte order
@@ -100,5 +173,50 @@ mod tests {
         );
         assert_eq!(paths(&layers, "common/ideas/", None).len(), 5);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_archive_file_whose_name_is_not_utf8_is_listed_and_read() {
+        use crate::test_support::{Record, zip_records};
+        let root = std::env::temp_dir().join(format!(
+            "installed-content-script-raw-name-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("raw.zip");
+        std::fs::write(
+            &archive,
+            zip_records(
+                &[],
+                &[Record {
+                    name: b"common/ideas/\x80.txt",
+                    host: 0,
+                    flags: 0,
+                    deflate: false,
+                    data: b"raw",
+                }],
+            ),
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(&archive, &[][..])]).unwrap();
+        let listed = paths(&layers, "common/ideas/", Some(".txt"));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].as_bytes(), b"common/ideas/\x80.txt");
+        assert_eq!(listed[0].read(&layers).unwrap(), b"raw");
+        assert_eq!(listed[0].to_string(), "common/ideas/\u{FFFD}.txt");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_folder_is_text_apart_from_its_file_name() {
+        let path = |bytes: &[u8]| ScriptPath::new(bytes.to_vec());
+        assert_eq!(path(b"sound/\x80.asset").folder_text(), Some("sound"));
+        assert_eq!(path(b"sound/x/a.asset").folder_text(), Some("sound/x"));
+        assert_eq!(path(b"a.asset").folder_text(), Some(""));
+        assert_eq!(path(b"sound/\x80/a.asset").folder_text(), None);
+        assert_eq!(format!("{:?}", path(b"sound/a.asset")), "\"sound/a.asset\"");
+        assert_eq!(format!("{:?}", path(b"sound/\x80.asset")), "b\"sound/\\x80.asset\"");
     }
 }

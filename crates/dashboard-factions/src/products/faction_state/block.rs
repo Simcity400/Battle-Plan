@@ -15,7 +15,23 @@ use replay_data::{
     rows::{CountryRow, TableId},
 };
 use replay_frame::frame::DecodedFrame;
-use std::{any::Any, io, ops::Range, sync::atomic::AtomicBool};
+use std::{
+    any::Any,
+    io,
+    ops::Range,
+    sync::{LazyLock, atomic::AtomicBool},
+};
+/// Include trigger-kit tables: dynamic names can read beyond this family's tables.
+pub fn whole_tables() -> &'static [TableId] {
+    static TABLES_WITH_KIT: LazyLock<Vec<TableId>> = LazyLock::new(|| {
+        let mut tables = TABLES.to_vec();
+        tables.extend_from_slice(dashboard_base::triggers::RECORDED_TABLES);
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    });
+    &TABLES_WITH_KIT
+}
 pub const TABLES: &[TableId] = &[
     TableId::Campaign,
     TableId::Countries,
@@ -35,6 +51,8 @@ pub const TABLES: &[TableId] = &[
     TableId::LexicalTokens,
     TableId::ProjectPrograms,
     TableId::Projects,
+    // A dynamic rule or doctrine name is expanded for the viewing country.
+    TableId::LocalPlayer,
 ];
 pub static FAMILY: Family = Family {
     name: "faction_state",
@@ -194,6 +212,21 @@ pub fn fold(
         check()?;
         match hour {
             Hour::Observed { frame, changes } => {
+                // Dynamic names need whole frames; kept frames may contain stale trigger inputs.
+                if state.needs_whole(source, context, &frame) {
+                    let reached = observe_block(
+                        state,
+                        source,
+                        context,
+                        replay,
+                        index,
+                        Some(frame.hour),
+                        observed,
+                        check,
+                        cancelled,
+                    )?;
+                    return Ok((Folded::Fallback, reached));
+                }
                 reached = Some(frame.hour);
                 if !observed(
                     frame.hour,
@@ -238,7 +271,7 @@ pub fn observe_block(
     dashboard_base::prepared::kept::observe_hours(
         replay,
         index,
-        TABLES,
+        whole_tables(),
         from,
         observed,
         check,

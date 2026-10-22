@@ -975,6 +975,28 @@ fn malformed_manifest_is_refused_without_cleanup() {
 }
 
 #[test]
+fn corrupt_inner_manifest_counts_are_refused_before_allocating() {
+    let fixture = Fixture::new();
+    fixture.save(b"prepared");
+    let path = fixture.store.directory.join(MANIFEST);
+    let valid = fs::read(&path).unwrap();
+    let body = 8 + u64::from_le_bytes(valid[..8].try_into().unwrap()) as usize;
+    let mut runs = valid.clone();
+    runs[body + 8..body + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+    let mut head: serde_json::Value = serde_json::from_slice(&valid[8..body]).unwrap();
+    head["names_bytes"] = u64::MAX.into();
+    let head = serde_json::to_vec(&head).unwrap();
+    let mut names = (head.len() as u64).to_le_bytes().to_vec();
+    names.extend_from_slice(&head);
+    names.extend_from_slice(&valid[body..]);
+    for manifest in [runs, names] {
+        fs::write(&path, &manifest).unwrap();
+        let error = fixture.store.catalog().err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+}
+
+#[test]
 fn recapture_checks_same_ordered_paths_and_current_stamps() {
     let fixture = Fixture::new();
     let initial = fixture.key();

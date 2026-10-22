@@ -9,12 +9,25 @@ fn designer_families_follow_recursive_archetypes_and_each_types_own_defaults() {
     assert!(database.lost.is_none(), "{:?}", database.lost);
     assert_eq!(
         database.designer_families(database.named("leaf").unwrap()),
-        [true, true, true]
+        Ok([true, true, true])
     );
     assert_eq!(
         database.designer_families(database.named("root").unwrap()),
-        [true, false, false]
+        Ok([true, false, false])
     );
+}
+
+#[test]
+fn designer_families_refuse_an_archetype_loop_the_parent_walk_misses() {
+    let database = read(&[(
+        "loop.txt",
+        "equipments={c={is_archetype=yes} a={is_archetype=yes} b={is_archetype=yes archetype=a} a={is_archetype=yes archetype=b parent=c}}",
+    )]);
+    assert!(database.lost.is_none(), "{:?}", database.lost);
+    let error = database
+        .designer_families(database.named("a").unwrap())
+        .unwrap_err();
+    assert!(error.contains("equipment a reaches archetype"), "{error}");
 }
 
 #[test]

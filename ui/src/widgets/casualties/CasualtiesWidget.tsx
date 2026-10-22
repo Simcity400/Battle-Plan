@@ -79,27 +79,28 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
   if (!track) return <WidgetState kind="empty" message="Load a campaign to see casualties." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (chosen?.resolved?.reason) return <WidgetState kind="unavailable" message={chosen.resolved.reason} />;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (chosen?.resolved?.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={chosen.resolved.reason} /></>;
   // A group with no member found yet asks for nothing, so no reply will come.
   const none = chosen?.resolved ? noMembersAt(widget.countries, chosen.resolved, groups.data, requestedHour, track.branch.lastHour) : null;
-  if (none) return <NoMembersState reason={none.reason} />;
+  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} /></>;
   // A group's members at hours still being prepared are not known yet: none is not proof of none.
   const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!request && !(widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data))
-    return chosen?.resolved?.known(track.branch.firstHour, track.branch.lastHour) === false ? preparing : <WidgetState kind="empty" message="No casualties yet." />;
-  if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <>
+    return chosen?.resolved?.known(track.branch.firstHour, track.branch.lastHour) === false ? groupFailure ?? preparing : <>{groupFailure}<WidgetState kind="empty" message="No casualties yet." /></>;
+  if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <>{groupFailure}
     <PreparedLogCoverage coverage={!data ? null : undefined} />
     <WidgetState kind="loading" label="Loading casualties…" />
   </>;
-  if (prefix && !data.observed.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  if (prefix && !data.observed.length) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   // Before preparation reaches the hour shown, the totals are the prepared
   // prefix's at its last hour; a reply held at its own hour waits for its next.
   const notes = <>{prefix ? <p className="chart-line-key" role="status">Casualties through {dayLabel(hour)}; the rest is still being prepared.</p>
     : <PreparedLogCoverage coverage={hour !== requestedHour ? null : undefined} />}
     {data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
     {selected.some(row => row.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}</>;
-  const withGap = (content: React.ReactNode) => <div ref={anchor} className="casualties">{content}{notes}</div>;
+  const withGap = (content: React.ReactNode) => <div ref={anchor} className="casualties">{groupFailure}{content}{notes}</div>;
   const groupAt = widget.countries.kind === 'group' && widget.countries.membership === 'end' ? track.branch.lastHour : hour;
   if (widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && widget.countries.membership !== 'ever' && groups.data
     && groupUnobserved(groups.data, widget.countries.group).some(span => span.firstHour <= groupAt && groupAt <= span.lastHour)) return withGap(<WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />);
@@ -107,7 +108,7 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
   if (race && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
   if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this time." />);
   if (!items.length) return withGap(chosen?.resolved?.known(hour) === false ? preparing : <WidgetState kind="empty" message="No casualties yet." />);
-  if (race) return <div ref={anchor} className="casualties">
+  if (race) return <div ref={anchor} className="casualties">{groupFailure}
     <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
       runtime={runtime} track={track} active={active} options={options} view="race"
       extent={[window.firstHour, window.lastHour]} playhead={widget.time.mode === 'follow' ? hour : null}
@@ -121,7 +122,7 @@ function OriginalCasualtiesWidget({ widget, runtime, active, onDiagnostics }: Wi
       .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}.</p>}
     {notes}
   </div>;
-  return <div ref={anchor} className="casualties">
+  return <div ref={anchor} className="casualties">{groupFailure}
     <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Casualties dealt and taken" items={items}
       slots={chosen?.params.top?.count ?? selected.length}
       leftLabel="◀ Taken" rightLabel="Dealt ▶" ratioLabel="Ratio" active={active} hoursPerSecond={hoursPerSecond}

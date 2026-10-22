@@ -147,7 +147,8 @@ impl Evaluator<'_, '_> {
             // to whole units, and a scope selector leaves the threshold zero. The reader has
             // no block form; how it recovers from one is not reproduced.
             "has_mio_size" => {
-                if item.value.items().is_some() {
+                // The game takes an opening brace as a scalar, then reads the block's fields.
+                if item.kind == installed_content_core::parser::Kind::Open {
                     return Err(refused(
                         "has_mio_size takes a block's opening brace as its operand, and how the reader recovers is not reproduced",
                     ));

@@ -8,12 +8,14 @@
 //! duplicate particle block names have unsettled precedence and are refused.
 //! Descriptors outside the coverage roots are read unverified.
 
+use sha2::Digest;
 use std::{collections::BTreeMap, io};
 
 use crate::{
     ResolvedLayers, crt,
     fields::{all, block, invalid, last, number, require, text},
     parser,
+    script_files::ScriptPath,
 };
 
 /// Startup interface files load first and are excluded from the ordinary
@@ -24,24 +26,23 @@ const STARTUP_GFX: [&str; 3] = [
     "interface/core_bare_minimum.gfx",
 ];
 
-pub(crate) fn object_file_order(interface: &[String], gfx: &[String]) -> Vec<String> {
+pub(crate) fn object_file_order(
+    interface: &[ScriptPath],
+    gfx: &[ScriptPath],
+) -> Vec<ScriptPath> {
     let mut files: Vec<_> = STARTUP_GFX
         .iter()
-        .filter(|path| interface.iter().any(|file| file == **path))
-        .map(|path| (*path).to_owned())
+        .filter(|path| interface.iter().any(|file| file == *path))
+        .map(|path| ScriptPath::from(*path))
         .collect();
     files.extend(
-        crate::defines::load_order("interface/", "gfx", interface.iter().map(String::as_str))
+        crate::defines::load_order("interface/", "gfx", interface)
             .into_iter()
-            .filter(|path| !STARTUP_GFX.contains(&path.as_str())),
+            .filter(|path| !STARTUP_GFX.iter().any(|startup| path == startup)),
     );
     // Load these after GUI initialization, preserving files before
     // subdirectories and bytewise traversal within each level.
-    files.extend(crate::defines::load_order(
-        "gfx/",
-        "gfx",
-        gfx.iter().map(String::as_str),
-    ));
+    files.extend(crate::defines::load_order("gfx/", "gfx", gfx));
     files
 }
 
@@ -129,8 +130,8 @@ impl RenderDescriptor {
 /// One `particle` block an entity event resolves to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
-    /// Effective `.asset` path holding the block.
-    pub path: String,
+    /// Effective `.asset` path holding the block, by its bytes.
+    pub path: ScriptPath,
     /// The block's `name`, which selects it inside that file.
     pub name: String,
     /// The `pdxparticle` object's `scale`.
@@ -148,8 +149,8 @@ pub struct Catalog {
     ordinals: BTreeMap<String, usize>,
     registrations: usize,
     /// Particle block name to its file.
-    files: BTreeMap<String, String>,
-    assets: Vec<String>,
+    files: BTreeMap<String, ScriptPath>,
+    assets: Vec<ScriptPath>,
     max_particles: usize,
 }
 
@@ -160,21 +161,28 @@ impl Catalog {
         let gfx = layers.descriptor_paths("gfx", &[".gfx", ".asset"])?;
         out.assets = gfx
             .iter()
-            .filter(|path| path.to_ascii_lowercase().ends_with(".asset"))
+            .filter(|path| path.as_bytes().to_ascii_lowercase().ends_with(b".asset"))
             .cloned()
             .collect();
         let gfx = object_file_order(&interface, &gfx);
         for path in gfx {
-            let bytes = layers.read_uncovered(&path)?;
+            let bytes = path.read_uncovered(layers)?;
             // Sprite files never declare objects; skip parsing them.
             if bytes.windows(11).any(|word| word == b"pdxparticle") {
                 out.add_objects(&bytes)
                     .map_err(|error| invalid(format!("{path}: {error}")))?;
             }
         }
+        // Folder lookup ignores case, so distinct listed spellings can register identical blocks.
+        let mut opened = std::collections::BTreeSet::new();
         for path in &out.assets.clone() {
-            if path.to_ascii_lowercase().starts_with("gfx/particles/") {
-                let bytes = layers.read_uncovered(path)?;
+            let lower = path.as_bytes().to_ascii_lowercase();
+            if lower.starts_with(b"gfx/particles/") {
+                let bytes = path.read_uncovered(layers)?;
+                let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+                if !opened.insert((lower, digest)) {
+                    continue;
+                }
                 out.add_particles(&bytes, path)
                     .map_err(|error| invalid(format!("{path}: {error}")))?;
             }
@@ -183,7 +191,7 @@ impl Catalog {
     }
 
     /// Every effective `gfx/**/*.asset`, in (layer, path) order.
-    pub fn assets(&self) -> &[String] {
+    pub fn assets(&self) -> &[ScriptPath] {
         &self.assets
     }
 
@@ -213,7 +221,7 @@ impl Catalog {
         Ok(())
     }
 
-    fn add_particles(&mut self, bytes: &[u8], path: &str) -> io::Result<()> {
+    fn add_particles(&mut self, bytes: &[u8], path: &ScriptPath) -> io::Result<()> {
         let document = parser::parse(bytes)?;
         for value in all(&document.items, b"particle") {
             let fields = block(value, "particle")?;
@@ -223,7 +231,7 @@ impl Catalog {
             );
             if self
                 .files
-                .insert(name.to_owned(), path.to_owned())
+                .insert(name.to_owned(), path.clone())
                 .is_some()
             {
                 return Err(invalid(format!("particle {name} is declared twice")));
@@ -258,7 +266,7 @@ impl Catalog {
         self.registrations += 1;
         self.ordinals.insert(object.into(), ordinal);
         self.objects.insert(object.into(), (kind.into(), scale));
-        self.files.insert(kind.into(), path.into());
+        self.files.insert(kind.into(), ScriptPath::from(path));
     }
 
     /// Every object name, for loaders that resolve all of them.
@@ -357,11 +365,11 @@ mod tests {
             particle={name=large subsystem={max_amount=3 subsystem={max_amount=4 subsystem={max_amount=2}}} subsystem={max_amount=5}}
             particle={name=hidden subsystem={hide=yes max_amount=900}}
             particle={name=small subsystem={max_amount=6}}
-        "#, "fixture").unwrap();
+        "#, &"fixture".into()).unwrap();
         assert_eq!(catalog.max_particles(), 44);
         assert!(
             catalog
-                .add_particles(b"particle={name=bad subsystem={}}", "fixture")
+                .add_particles(b"particle={name=bad subsystem={}}", &"fixture".into())
                 .unwrap_err()
                 .to_string()
                 .contains("max_amount")
@@ -379,7 +387,7 @@ mod tests {
         catalog
             .add_particles(
                 br#"particle = { name = p subsystem = { max_amount = "4tail" } }"#,
-                "fixture",
+                &"fixture".into(),
             )
             .unwrap();
         assert_eq!(catalog.max_particles(), 4);
@@ -393,14 +401,14 @@ mod tests {
             "interface/core_bare_minimum.gfx",
             "interface/load_screen.gfx",
         ]
-        .map(String::from);
+        .map(ScriptPath::from);
         let gfx = [
             "gfx/a/nested.gfx",
             "gfx/z.gfx",
             "gfx/ignored.asset",
             "gfx/A.gfx",
         ]
-        .map(String::from);
+        .map(ScriptPath::from);
         assert_eq!(
             object_file_order(&interface, &gfx),
             [
@@ -420,7 +428,7 @@ mod tests {
             )
             .unwrap();
         catalog
-            .add_particles(b"particle={name=shared}", "gfx/particles/shared.asset")
+            .add_particles(b"particle={name=shared}", &"gfx/particles/shared.asset".into())
             .unwrap();
         assert_eq!(catalog.resolve("z").unwrap().registration, 0);
         assert_eq!(catalog.resolve("a").unwrap().registration, 1);
@@ -461,7 +469,7 @@ mod tests {
         catalog
             .add_particles(
                 b"particle = { name = \"unrelated_id\" subsystem = { max_amount=1 } }",
-                "gfx/particles/custom/any_file.asset",
+                &"gfx/particles/custom/any_file.asset".into(),
             )
             .unwrap();
         assert_eq!(
@@ -493,7 +501,7 @@ mod tests {
             catalog
                 .add_particles(
                     b"particle = { name = unrelated_id }",
-                    "gfx/particles/b.asset"
+                    &"gfx/particles/b.asset".into()
                 )
                 .is_err()
         );

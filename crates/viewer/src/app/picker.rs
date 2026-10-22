@@ -932,6 +932,7 @@ mod tests {
             }
         }
         std::fs::remove_file(root.join("HOI4Replay").join("map-settings.json")).unwrap();
+        std::fs::remove_file(root.join("HOI4Replay").join("map-settings.lock")).unwrap();
         std::fs::remove_dir(root.join("HOI4Replay")).unwrap();
         std::fs::remove_dir(root).unwrap();
     }

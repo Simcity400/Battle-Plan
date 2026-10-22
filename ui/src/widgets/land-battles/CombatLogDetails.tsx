@@ -46,12 +46,13 @@ export function CombatLogSnapshot({ widget, runtime, active, view }: WidgetProps
     product: 'combat-log-history', params: { branchId: track.branch.id, hour: hour!, countries } } : null;
   const state = useProduct<Reply>(runtime.client, request, active, validate);
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" what="country selection" detail={groups.error} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!match.ready) return <WidgetState kind="loading" label="Loading selected countries" />;
-  if (!state.data) return state.error ? <WidgetState kind="error" what="retained Combat Log" detail={state.error} /> : <WidgetState kind="loading" label="Loading retained Combat Log" />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" what="country selection" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading selected countries" /></>;
+  if (!state.data) return <>{groupFailure}{state.error ? <WidgetState kind="error" what="retained Combat Log" detail={state.error} /> : <WidgetState kind="loading" label="Loading retained Combat Log" />}</>;
   // Membership at an hour still being prepared is not known: entries left out there may yet belong.
-  return <>{!match.known(hour!) && <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p>}<CombatLogTables data={state.data} view={view} /></>;
+  return <>{groupFailure}{!match.known(hour!) && <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p>}<CombatLogTables data={state.data} view={view} /></>;
 }
 function Missing({ source }: { source: string | null }) {
   return source ? <p role="status">Unavailable - {source}</p> : null;

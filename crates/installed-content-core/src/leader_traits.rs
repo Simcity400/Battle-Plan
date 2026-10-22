@@ -345,7 +345,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(LeaderTraits, Vec<crate::Dia
     for path in script_files::paths(layers, "common/country_leader/", Some(".txt")) {
         result.coverage.next_file();
         result.tokens.next_file();
-        let file = parse(&layers.read(&path)?, &names);
+        let file = parse(&path.read(layers)?, &names);
         warnings.extend(file.notes.iter().map(|note| {
             (
                 crate::DiagnosticKind::Misread,
@@ -365,8 +365,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(LeaderTraits, Vec<crate::Dia
             result.files.push(result.coverage.file());
         }
         if let Some(reason) = file.refused {
-            result.coverage.gap(&path, reason.clone());
-            result.tokens.gap(&path, reason.clone());
+            result.coverage.gap(&path.text(), reason.clone());
+            result.tokens.gap(&path.text(), reason.clone());
             warnings.push((crate::DiagnosticKind::Unsettled, format!(
                 "Leader traits unavailable in {path}: {reason}, so the rest of the file cannot be determined; refused traits: {}",
                 if file.refused_tokens.is_empty() {

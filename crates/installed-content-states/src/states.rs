@@ -668,7 +668,7 @@ const DIRECTORY: &str = "history/states/";
 fn resources(layers: &ResolvedLayers) -> io::Result<Resources> {
     let mut resources = Resources::default();
     for path in script_files::paths(layers, "common/resources/", Some(".txt")) {
-        read_resources(&layers.read(&path)?, &path, &mut resources);
+        read_resources(&path.read(layers)?, &path.text(), &mut resources);
     }
     Ok(resources)
 }
@@ -734,7 +734,7 @@ fn read_resources(bytes: &[u8], path: &str, resources: &mut Resources) {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct States {
     definitions: BTreeMap<u32, StateDefinition>,
-    sources: BTreeMap<u32, String>,
+    sources: BTreeMap<u32, script_files::ScriptPath>,
     diagnostics: BTreeMap<u32, Vec<String>>,
 }
 
@@ -749,9 +749,8 @@ impl States {
         &self.definitions
     }
 
-    /// File defining the kept template of `id`.
-    pub fn source(&self, id: u32) -> Option<&str> {
-        self.sources.get(&id).map(String::as_str)
+    pub fn source(&self, id: u32) -> Option<&script_files::ScriptPath> {
+        self.sources.get(&id)
     }
 
     /// Reading diagnostics affecting the kept template. A note whose state
@@ -798,8 +797,9 @@ pub fn read_with_diagnostics(
     };
     let mut states = States::default();
     let mut conflicts = Vec::new();
-    for path in script_files::paths(layers, DIRECTORY, Some(".txt")) {
-        let file = parse_states_attributed(&layers.read(&path)?, &context)
+    for listed in script_files::paths(layers, DIRECTORY, Some(".txt")) {
+        let path = listed.to_string();
+        let file = parse_states_attributed(&listed.read(layers)?, &context)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
         let notes: Vec<_> = file
             .diagnostics
@@ -826,7 +826,7 @@ pub fn read_with_diagnostics(
                 )));
                 continue;
             }
-            states.sources.insert(id, path.clone());
+            states.sources.insert(id, listed.clone());
             states.diagnostics.insert(id, diagnostics);
             states.definitions.insert(id, state);
         }

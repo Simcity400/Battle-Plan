@@ -213,9 +213,9 @@ fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
             "gfx/models/y/shared.dds",
             "gfx/models/upper.DDS",
         ]
-        .map(String::from),
+        .map(crate::script_files::ScriptPath::from),
     );
-    let resolve = |authored| index.resolve("gfx/models/units", authored);
+    let resolve = |authored| index.resolve("gfx/models/units", authored).unwrap();
     assert_eq!(resolve("nospec.dds"), "gfx/models/nospec.dds");
     assert_eq!(
         resolve("a_diffuse.tga"),
@@ -225,19 +225,57 @@ fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
     assert_eq!(resolve("upper.DDS"), "gfx/models/units/upper.DDS");
     assert_eq!(resolve("shared.dds"), "gfx/models/x/shared.dds");
     // Enumeration order: a directory's files before its subdirectories.
-    let order = crate::defines::load_order(
-        "gfx/models/",
-        "",
-        [
-            "gfx/models/a/deep/t.dds",
-            "gfx/models/a/t.dds",
-            "gfx/models/b.dds",
-        ]
-        .into_iter(),
-    );
+    let listed = [
+        "gfx/models/a/deep/t.dds",
+        "gfx/models/a/t.dds",
+        "gfx/models/b.dds",
+    ]
+    .map(crate::script_files::ScriptPath::from);
+    let order = crate::defines::load_order("gfx/models/", "", &listed);
     assert_eq!(
-        TextureIndex::new(order).resolve("", "t.dds"),
+        TextureIndex::new(order).resolve("", "t.dds").unwrap(),
         "gfx/models/a/t.dds"
+    );
+    let index = TextureIndex::new([
+        crate::script_files::ScriptPath::new(b"gfx/models/\x80/odd.dds".to_vec()),
+        crate::script_files::ScriptPath::from("gfx/models/z/odd.dds"),
+    ]);
+    let refused = index.resolve("", "odd.dds").unwrap_err().to_string();
+    assert!(refused.contains("texture odd.dds"), "{refused}");
+}
+
+/// Animation paths depend on the descriptor folder, not the descriptor filename's encoding.
+#[test]
+fn an_animation_in_a_descriptor_with_a_raw_file_name_registers() {
+    use crate::test_support::{Record, zip_records};
+    let root = std::env::temp_dir().join(format!(
+        "installed-content-roster-raw-name-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let archive = root.join("raw.zip");
+    std::fs::write(
+        &archive,
+        zip_records(
+            &[],
+            &[Record {
+                name: b"gfx/models/\x80.asset",
+                host: 0,
+                flags: 0,
+                deflate: false,
+                data: br#"animation = { name = "raw_anim" file = "raw.anim" }"#,
+            }],
+        ),
+    )
+    .unwrap();
+    let layers = crate::ResolvedLayers::from_folders(&[(&archive, &[][..])]).unwrap();
+    let roster = Roster::read(&layers).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        roster.descriptors.animations["raw_anim"].file,
+        "gfx/models/raw.anim"
     );
 }
 

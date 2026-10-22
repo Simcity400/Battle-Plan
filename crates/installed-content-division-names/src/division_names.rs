@@ -638,7 +638,7 @@ pub fn read_directories<N: crate::DiagnosticMessage>(
     let mut warnings = Vec::new();
     let names = layers.key_names()?;
     for path in paths {
-        let (notes, refusal) = database.apply(&layers.read(&path)?, &names);
+        let (notes, refusal) = database.apply(&path.read(layers)?, &names);
         warnings.extend(
             notes
                 .into_iter()

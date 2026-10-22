@@ -16,6 +16,7 @@ import ThemeEditor from './appearance/ThemeEditor';
 import type { ThemeDraft } from './appearance/ThemeEditor';
 import { BUILT_IN_THEMES } from './appearance/themes';
 import { uniqueThemeName } from './appearance/themeFile';
+import { MAX_CUSTOM_THEMES } from './appearance/settings';
 import type { Appearance } from './appearance/useAppearance';
 import { StyledIcon } from './appearance/StyledIcon';
 import { isSidebarIconId } from './appearance/sidebarIcons';
@@ -147,6 +148,9 @@ export default function Settings({ section, target, onTargetShown, appearance, l
 }) {
   const page = useRef<HTMLDivElement>(null);
   const [editor, setEditor] = useState<ThemeDraft | null>(null);
+  // Unsaved new themes have no id, so each one counts as its own editing session.
+  const [newSession, setNewSession] = useState(0);
+  const editTheme = (draft: ThemeDraft) => { setEditor(draft); if (draft.id === null) setNewSession(session => session + 1); };
   const details = settingsSections.find(item => item.id === section)!;
   useLayoutEffect(() => { page.current?.scrollTo(0, 0); }, [section]);
   useEffect(() => { if (section !== 'appearance') setEditor(null); }, [section]);
@@ -170,8 +174,11 @@ export default function Settings({ section, target, onTargetShown, appearance, l
     timer = setTimeout(reveal, 0);
     return () => clearTimeout(timer);
   }, [target, section, onTargetShown, appearance.resolved.reducedMotion]);
-  const saveTheme = (draft: ThemeDraft) => {
+  const saveTheme = (draft: ThemeDraft): string | null => {
     const id = draft.id ?? newThemeId();
+    // A new theme past the limit is refused here, rather than dropped when next loaded.
+    if (!appearance.settings.custom.some(item => item.id === id) && appearance.settings.custom.length >= MAX_CUSTOM_THEMES)
+      return `You can keep up to ${MAX_CUSTOM_THEMES} custom themes. Delete one first.`;
     const others = [...BUILT_IN_THEMES, ...appearance.settings.custom].filter(theme => theme.id !== id).map(theme => theme.name);
     const theme = { id, name: uniqueThemeName(draft.name, others), variants: draft.variants };
     appearance.update(previous => {
@@ -181,6 +188,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
       return { ...previous, custom, scheme, themes: { dark: pick('dark'), light: pick('light') } };
     });
     setEditor(null);
+    return null;
   };
   return <div className={`settings-layout${editor ? ' is-editing-theme' : ''}`}>
     <div className="settings-page" ref={page}>
@@ -199,7 +207,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
             <HistoryCacheSetting client={client} contentReady={!!folders?.contentReady} />
           </SettingsBlock>}
         </>}
-        {section === 'appearance' && <><AppearanceSettings appearance={appearance} searchTarget={target?.id} onEdit={setEditor} /><ResetPages onReset={onResetPages} /></>}
+        {section === 'appearance' && <><AppearanceSettings appearance={appearance} searchTarget={target?.id} onEdit={editTheme} /><ResetPages onReset={onResetPages} /></>}
         {section === 'graphics' && <SettingsBlock id="graphics-defaults" title="Defaults">
           <div className="global-map-settings">
             <MapAppearance key={`${folders?.game ?? ''}:${folders?.user ?? ''}`} global source={null} client={client} userFolder={folders?.user} />
@@ -209,7 +217,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
         {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} branch={branch} />}
       </div>
     </div>
-    {editor && <ThemeEditor key={editor.id ?? 'new'} draft={editor} onSave={saveTheme} onClose={() => setEditor(null)} onPreview={appearance.setPreview} />}
+    {editor && <ThemeEditor key={editor.id ?? `new-${newSession}`} draft={editor} onSave={saveTheme} onClose={() => setEditor(null)} onPreview={appearance.setPreview} />}
   </div>;
 }
 

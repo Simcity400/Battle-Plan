@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { dayLabel, tracePath } from '../../charts/draw';
 import { drawApproximateSpans, drawLineSummary } from '../../charts/chartSummary';
 import type { ChartSummary } from '../../charts/chartSummary';
@@ -9,6 +10,7 @@ import { jumpItem } from '../../charts/jump';
 import { categoricalPalette, SECONDARY_DASH } from '../../charts/palette';
 import { curveSegments, runAt, spansCovered } from '../../charts/series';
 import Timeline from '../../charts/timeline/Timeline';
+import { laneRequests } from '../../charts/timeline/laneRequests';
 import type { LaneGeometry, TimelineLane } from '../../charts/timeline/Timeline';
 import type { ChartTokens } from '../../charts/tokens';
 import type { TooltipRow } from '../../charts/tooltip';
@@ -120,7 +122,8 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const prepared = usePreparedWindow(runtime.client, track?.source, 'autonomy', { branchId: track?.branch.id, overlords: [], subjects: [] },
     extent, [head, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedAutonomy,mergePreparedAutonomy,overlayReachedAutonomy);
-  const { data, error, retry } = prepared;
+  const { data, retry } = prepared;
+  const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const approximate = useMemo(() => data?.approximate ?? Object.values(data?.summaries ?? {}).flatMap(summary => summary.approximate ?? []), [data]);
   const pending = data?.pending ?? NO_SPANS;
   const identityRows = data?.identities ?? groups.data?.countryIdentities;
@@ -182,7 +185,11 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // (`useHoverLabels`), each part (name, flag) on its own.
   const laneTags = useMemo(() => lanesData.map(lane => identities?.aliasesAt(new Set([lane.id]), head)[0] ?? null), [lanesData, identities, head]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
-  const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), head, active, segmentAt);
+  // Names for every lane (the label and order use them); flags only for the lanes in view.
+  const [inView, setInView] = useState<[number, number]>([0, 24]);
+  const onLanesInView = useCallback((first: number, last: number) => setInView([first, last]), []);
+  const flagTags = useMemo(() => laneRequests(laneTags, inView).looks.filter((tag): tag is string => tag !== null), [laneTags, inView]);
+  const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), head, active, segmentAt, undefined, false, flagTags);
   const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
   const metadataName = (tag: string) => metadataNames.get(tag) ?? 'Country name unavailable';
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,11 +225,13 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     };
   }), [data, prepared.geometryReady, approximate, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const groupFailure = groups.error && (widget.countries.kind === 'group' || !identityRows)
+    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
   const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error && (widget.countries.kind === 'group' || !identityRows)) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (groupFailure && !groups.data) return groupFailure;
   const reason = hourlyGroup ? selection.reason : filter.reason;
   if (widget.countries.kind === 'group' && !groups.data) return <WidgetState kind="loading" label="Loading country membership…" />;
   if (reason) return <WidgetState kind="empty" message={reason} />;
@@ -254,7 +263,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`} approximate={approximate} pending={pending}
-      onHover={setHoverHour}
+      onHover={setHoverHour} onLanesInView={onLanesInView}
       onSummaryView={(view, visible) => prepared.onSummaryView(view,visible.map(lane => binding(lane.id)))}
       onNavigateHour={(lane, from, forward) => prepared.navigate(lane.id,from,forward,binding(lane.id))}
       tooltip={(lane, _span, hour) => {
@@ -290,5 +299,5 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     {menu.menu}
   </div>;
   })();
-  return <div ref={root} style={{ display: 'contents' }}>{content}</div>;
+  return <div ref={root} style={{ display: 'contents' }}>{groups.data && groupFailure}{content}</div>;
 }

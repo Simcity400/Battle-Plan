@@ -269,8 +269,8 @@ pub fn read_blocks(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Blocks
 fn layer_files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
     let mut files = Vec::new();
     for path in layers.directory_files(DIRECTORY, ".txt")? {
-        let bytes = layers.read_uncovered(&path)?;
-        files.push((path, bytes));
+        let bytes = path.read_uncovered(layers)?;
+        files.push((path.to_string(), bytes));
     }
     Ok(files)
 }

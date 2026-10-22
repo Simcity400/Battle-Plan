@@ -157,14 +157,15 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const windowError = history.errors.values().next().value;
   if (windowError) return <WidgetState kind="error" detail={windowError} onRetry={history.retry} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
-  if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (preparedPrefix(data)?.pending.length && !data.available.length && !data.completionsAvailable.length) return <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} />;
-  if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Operations unavailable." />;
-  if (!inBranch || hour == null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (!data.available.length && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
-  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading espionage window..." />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || (needsGroups && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading espionage operations…" /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (preparedPrefix(data)?.pending.length && !data.available.length && !data.completionsAvailable.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} /></>;
+  if (data.unavailable && !data.completionsAvailable.length) return <>{groupFailure}<WidgetState kind="unavailable" message="Operations unavailable." /></>;
+  if (!inBranch || hour == null) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!data.available.length && !data.completionsAvailable.length) return <>{groupFailure}<WidgetState kind="unavailable" message="Espionage operations are not in this recording." /></>;
+  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading espionage window..." /></>;
 
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
@@ -198,7 +199,7 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
       </span>}
     </>;
   };
-  return <div ref={root} className="espionage-log">
+  return <div ref={root} className="espionage-log">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
     {navigation}
     {shownHour !== hour && <p className="espionage-muted">Showing operations through {formatDateTime(shownHour!)}</p>}

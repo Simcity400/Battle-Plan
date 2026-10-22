@@ -100,11 +100,12 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
       render: row => <Ratio ratio={share(row.hpRaw, row.hpMaxRaw)} label="Strength" bars={bars} /> },
     { key: 'fill', header: 'Equipment fill', label: 'Equipment fill', numeric: true, width: 'minmax(calc(var(--space-6) * 3), 1fr)', value: row => row.poolKnown ? fill(row.heldRaw, row.neededRaw) : null, renderMissing: true,
       render: row => <Ratio ratio={row.poolKnown ? fill(row.heldRaw, row.neededRaw) : null} label="Equipment fill" bars={bars} /> },
-    { key: 'short', header: 'Types short', label: 'Types short', numeric: true, width: 'max-content', priority: 1, value: row => row.poolKnown ? row.typesShort : null },
+    { key: 'short', header: 'Types short', label: 'Types short', numeric: true, width: 'max-content', priority: 1, value: row => row.typesShort },
   ], [bars]);
   const poolColumns = useMemo<readonly TableColumn<DivisionPoolType>[]>(() => [
     { key: 'type', header: 'Equipment', label: 'Equipment', width: 'minmax(var(--table-name-min), 2fr)', value: typeName, render: row => <span data-tooltip={row.archetype ?? undefined}>{typeName(row)}</span> },
-    { key: 'held', header: 'In division', label: 'In division', numeric: true, width: 'max-content', priority: 2, value: row => BigInt(row.heldRaw), render: row => items(row.heldRaw) },
+    { key: 'held', header: 'In division', label: 'In division', numeric: true, width: 'max-content', priority: 2, value: row => big(row.heldRaw), renderMissing: true,
+      render: row => items(row.heldRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'needed', header: 'Needed', label: 'Needed', numeric: true, width: 'max-content', priority: 1, value: row => big(row.neededRaw), renderMissing: true,
       render: row => items(row.neededRaw) ?? <span className="division-equipment-missing" data-tooltip="Not recorded">—</span> },
     { key: 'missing', header: 'Missing', label: 'Missing', numeric: true, width: 'max-content', value: row => big(row.missingRaw), renderMissing: true, render: row => <Missing raw={row.missingRaw} /> },
@@ -122,7 +123,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see division equipment." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its division equipment." />;
-  else if (country.error) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
   else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
@@ -157,17 +158,21 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
       cellBars={bars} narrow={narrowTableOf(options)} onRowClick={row => setDrill({ kind: 'division', division: row.division, template: drill.template })}
       tooltip={row => ({ title: divisionName(row), rows: [
         { label: 'Equipment', value: row.poolKnown ? `${items(row.heldRaw) ?? '—'} of ${items(row.neededRaw) ?? '—'}` : 'Not recorded' },
-        { label: 'Types short', value: row.poolKnown ? usNumber.format(row.typesShort) : 'Not recorded' },
+        { label: 'Types short', value: row.typesShort === null ? 'Not recorded' : usNumber.format(row.typesShort) },
         ...(row.convertingFrom ? [{ label: 'Converting from', value: row.convertingFrom }] : []),
       ] })} menu={menu} /></div>;
   else if (drill?.kind === 'division' && drillData) body = drillData.pool ? <div className="division-equipment-drill">
     <p><b>{divisionName(drillData.pool)}</b> · {drillData.pool.templateName ?? 'Template name unavailable'}</p>
-    <Table label="Equipment in this division" rows={drillData.pool.types} columns={poolColumns} rowKey={poolKey} sort={MISSING_SORT}
-      cellBars={bars} narrow={narrowTableOf(options)} menu={menu}
-      tooltip={row => ({ title: typeName(row), rows: row.variants.map(variant => ({ label: variant.name ?? 'Design name unavailable', value: items(variant.heldRaw) ?? '—' })) })} /></div>
+    {!drillData.pool.poolKnown && <WidgetState kind="unavailable" message="This division's equipment was not recorded at this date." />}
+    {(drillData.pool.poolKnown || drillData.pool.types.length > 0)
+      && <Table label={drillData.pool.poolKnown ? 'Equipment in this division' : 'Equipment this division needs'} rows={drillData.pool.types} columns={poolColumns}
+        rowKey={poolKey} sort={MISSING_SORT} cellBars={bars} narrow={narrowTableOf(options)} menu={menu}
+        tooltip={row => ({ title: typeName(row), rows: row.variants.map(variant => ({ label: variant.name ?? 'Design name unavailable', value: items(variant.heldRaw) ?? '—' })) })} />}</div>
     : <WidgetState kind="unavailable" message="This division is not in service at this date." />;
   const back = drill?.kind === 'division' && drill.template ? { kind: 'template' as const, template: drill.template } : null;
   return <div ref={anchor} className="division-equipment">{header}
+    {/* Outside the drill, so an open breakdown never hides a later failure. */}
+    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill !== null}
       title={drill?.kind === 'type' ? type ? typeName(type) : 'Equipment' : drill?.kind === 'template'
         ? templateName(data?.templates.find(row => row.template === drill.template) ?? { name: null }) : 'Division'}

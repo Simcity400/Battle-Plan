@@ -133,17 +133,20 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
   ], [label]);
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see volunteers." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (!all && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (match.reason) return <WidgetState kind="empty" message={match.reason} />;
+  const groupFailure = !all && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="empty" message={match.reason} /></>;
   if (!all && groups.data && !tags?.length) {
     const state = withoutRequest({ known: match.known(at), hourly: widget.countries.kind === 'group' && widget.countries.membership === 'hour',
       membershipUnobserved: chosen.unobserved.some(span => span.firstHour <= at && at <= span.lastHour) });
-    return state.kind === 'loading' ? <WidgetState kind="loading" label={state.message} /> : <WidgetState kind={state.kind} message={state.message} />;
+    // Failed preparation cannot finish pending membership, so show the failure instead of loading.
+    return state.kind === 'loading' ? groupFailure ?? <WidgetState kind="loading" label={state.message} />
+      : <>{groupFailure}<WidgetState kind={state.kind} message={state.message} /></>;
   }
-  if (!all && !match.ready) return <WidgetState kind="loading" label="Loading volunteers…" />;
-  if (reply.error) return <WidgetState kind="error" detail={reply.error} onRetry={reply.retry} />;
-  if (!reply.data) return <WidgetState kind="loading" label="Loading volunteers…" />;
-  if (!current.links.length && pendingAt(preparedPrefix(reply.data), at)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  if (!all && !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
+  if (reply.error) return <>{groupFailure}<WidgetState kind="error" detail={reply.error} onRetry={reply.retry} /></>;
+  if (!reply.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading volunteers…" /></>;
+  if (!current.links.length && pendingAt(preparedPrefix(reply.data), at)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   const covers = (span: { firstHour: number; lastHour: number }) => span.firstHour <= at && at <= span.lastHour;
   const message = current.links.length ? null : emptyMessage(kind, { aidUnobserved: reply.data.unobserved.some(covers),
     membershipUnobserved: chosen.unobserved.some(covers), membershipPending: !match.known(at), unknown: current.unknown });
@@ -156,7 +159,7 @@ export default function VolunteersWidget({ widget, runtime, active, setOption, o
       const since = link ? Math.min(...link.parts.map(part => part.since)) : null;
       if (since != null) menu.open(x, y, [{ ...jumpItem(runtime, track.id, since), label: `Jump to the start ${dayLabel(since)}` }]); }}
     description={`${current.links.length} links at ${dayLabel(at)}.`} active={active && (!picked || options.drill === 'popout')} />;
-  return <div ref={anchor} className="volunteers">
+  return <div ref={anchor} className="volunteers">{groupFailure}
     {setOption && <div className="volunteers-caption"><Segmented value={kind} options={KINDS} label="Kind" onChange={value => setOption('kind', value)} /></div>}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title={pickedName} day={dayLabel(at)}
       following={false} canFollow={false} anchor={anchor} onClose={() => { dispatch({ type: 'close' }); setDrillRows([]); }} onFollow={() => {}} main={main}>

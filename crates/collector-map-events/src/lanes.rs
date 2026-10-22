@@ -558,7 +558,8 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
             (lanes.saturating_mul(4).max(16), lane_bytes / 8),
         ),
     };
-    let fresh = Box::new(Log::new(lanes, lane_bytes, shared)?);
+    let fresh = engine_allocation::boxed(Log::new(lanes, lane_bytes, shared)?)
+        .map_err(|_| "map event lane allocation failed")?;
     let pointer = &*fresh as *const Log as *mut Log;
     let mut retained = LOGS
         .lock()

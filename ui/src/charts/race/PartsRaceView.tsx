@@ -22,6 +22,7 @@ import { resolveOptions } from '../../dashboard/options';
 import type { OptionField, OptionValue } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { dayLabel } from '../draw';
 import DrillHost from '../drill/DrillHost';
@@ -231,7 +232,7 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable"
       message="Choose another time in widget settings." />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon={config.icon} message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon={config.icon} />;
@@ -365,9 +366,10 @@ export default function PartsRaceView({ widget, runtime, active, countrySlot = n
     </div>}
     onPick={originTag ? hour => { if (currentDetail()) dispatchDrill({ type: 'open', breakdown: originTag, hour, playing: false,
       playhead: null, selection: selection ?? undefined, owner: contextOwner }); } : undefined} />;
-  if (pinned) return <div className="parts-race-drill">{header}{breakdown}</div>;
+  const groupNotice = grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" what="country groups" detail={groupReply.error} onRetry={groupReply.retry} /> : null;
+  if (pinned) return <div className="parts-race-drill">{header}{groupNotice}{breakdown}</div>;
   const drillOpen = choices != null || drill.breakdown != null;
-  return <div className="parts-race" ref={drillAnchor}>
+  return <div className="parts-race" ref={drillAnchor}>{groupNotice}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
       title={partsLabel} day={dayLabel(drillAt)} following={drillFollowing} canFollow={choices == null && liveHour != null}
       returnFocus=".country-race-chart canvas" onClose={() => { if (currentDetail()) dispatchDrill({ type: 'close' }); }}
@@ -519,8 +521,10 @@ export function usePreparedRace<T extends { series: { tag: string; runs: { first
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); })
       .finally(() => pending.current.delete(controller));
   }, [owner, active, enabled]);
+  const navigationFailure = useHeldFailure(navigationError?.owner === owner ? navigationError.error : undefined,
+    display.data != null, () => setNavigationError(undefined));
   return { data, dense, summaries, approximate, geometry: useMemo(() => dense ? geometry(display.data) : display.data,
-    [dense, display.data]), error: display.error ?? reached.error ?? pointed.error ?? endpoints.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
+    [dense, display.data]), error: display.error ?? reached.error ?? pointed.error ?? endpoints.error ?? navigationFailure,
     retry: () => { setNavigationError(undefined); display.retry(); reached.retry(); pointed.retry(); endpoints.retry(); full.retry(); },
     onSummaryView: enabled ? onSummaryView : undefined, onReachHour: enabled ? onReachHour : undefined,
     exactLineTags: enabled ? exactLineTags : undefined,

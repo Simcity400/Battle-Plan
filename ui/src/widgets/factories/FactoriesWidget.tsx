@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { dayLabel } from '../../charts/draw';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import CountryPartsDrill from '../../charts/race/CountryPartsDrill';
@@ -56,7 +57,8 @@ export default function FactoriesWidget(props: WidgetProps) {
   const request = track && params && (params.top || params.tags.length)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-factories', params: runtime.client.preparedQuery ? { ...params, mode, groups: chosen.filter(key => ['military', 'naval', 'civilian'].includes(key)) } : params } : null;
   const prepared = usePreparedRace(runtime.client, track, request, moment, active, validateFactoriesReply, mergeFactories, factoriesGeometry, view !== 'race', resolved.membership ?? undefined);
-  const { data, error, retry } = prepared;
+  const { data, retry } = prepared;
+  const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const numeric = useMemo(() => new NumericReply<CountryFactoriesReply>(), [runtime.client]);
   const pickScope = JSON.stringify([track?.source.id, track?.branch.id, view, widget.countries, params]);
   const pickNumbers = numeric.update(pickScope, data, factoryDrillNumbers);
@@ -112,7 +114,7 @@ export default function FactoriesWidget(props: WidgetProps) {
     if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see its factories." />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
+    if (grouped && groupReply.error && !groupReply.data) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="factory" message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon="factory" />;
@@ -133,7 +135,7 @@ export default function FactoriesWidget(props: WidgetProps) {
   }, { prepare: prepared.parity?.prepare, ready: () => !!prepared.parity?.complete, error: () => prepared.error ?? null });
   const modeLabel = OPTIONS.find(field => field.key === 'count')!;
   const countName = modeLabel.kind === 'choice' ? modeLabel.choices.find(choice => choice.value === mode)?.label ?? mode : mode;
-  return <div ref={parityAnchor} className="parts-race"><CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
+  return <div ref={parityAnchor} className="parts-race">{grouped && groupReply.error && groupReply.data ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} /> : null}<CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
     options={options} extent={extent} playhead={playhead} moment={moment} product="country-factories" params={drillParams}
     validate={validateFactoriesReply} decode={decodeDrill} numbers={factoryDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag} title="Factory types" measure={countName}
     warnings={warnings} state={state} resetKey={JSON.stringify([track?.source.id, track?.branch.id, mode, chosen, widget.countries])}

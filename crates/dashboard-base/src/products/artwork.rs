@@ -64,9 +64,86 @@ fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<S
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, ICON_EDGE).map(Some)
 }
 
+/// Repeated technology IDs remain separate templates, selected by recorded index.
 struct TechnologyName {
+    database_index: Option<u32>,
     presentation: Result<installed_content_core::technology::PresentationName, String>,
+    /// The research folders it is placed in, in authored order.
+    folders: Vec<String>,
     children: std::sync::OnceLock<Result<Vec<String>, String>>,
+}
+
+/// The game compares names with ASCII folding but keeps repeated templates in load order.
+#[derive(Default)]
+struct TechnologyNames {
+    names: BTreeMap<String, Vec<TechnologyName>>,
+    unread: BTreeMap<String, String>,
+    /// The first file whose read stopped short, and why: it may define any name.
+    stopped: Option<String>,
+    /// An unread file or unplaced definition leaves all later template indices unknown.
+    unplaced: Option<String>,
+}
+
+impl TechnologyNames {
+    fn read(
+        definitions: Vec<installed_content_core::technology::Template>,
+        unread: Vec<installed_content_core::technology::UnreadFile>,
+    ) -> Self {
+        let mut out = Self::default();
+        let mut unknown_place = None;
+        for definition in definitions {
+            if definition.database_index.is_none() && unknown_place.is_none() {
+                unknown_place = Some(format!(
+                    "technology {} and every later definition have no known place in load order",
+                    definition.token
+                ));
+            }
+            out.names
+                .entry(definition.token.to_ascii_lowercase())
+                .or_default()
+                .push(TechnologyName {
+                    database_index: definition.database_index,
+                    presentation: definition.presentation,
+                    folders: definition.folders,
+                    children: std::sync::OnceLock::new(),
+                });
+        }
+        for file in unread {
+            out.unplaced.get_or_insert_with(|| {
+                format!(
+                    "{} is not read whole, so no later template has a known place",
+                    file.why
+                )
+            });
+            match file.tokens {
+                Some(tokens) => {
+                    for token in tokens {
+                        out.unread.entry(token).or_insert_with(|| file.why.clone());
+                    }
+                }
+                None => {
+                    out.stopped.get_or_insert(file.why);
+                }
+            }
+        }
+        out.unplaced = out.unplaced.or(unknown_place);
+        out
+    }
+
+    fn get(&self, token: &str) -> Option<&Vec<TechnologyName>> {
+        self.names.get(&token.to_ascii_lowercase())
+    }
+
+    fn unread(&self, token: &str) -> Option<&str> {
+        self.unread
+            .get(&token.to_ascii_lowercase())
+            .or(self.stopped.as_ref())
+            .map(String::as_str)
+    }
+
+    fn may_define(&self, token: &str) -> bool {
+        self.get(token).is_some() || self.unread(token).is_some()
+    }
 }
 
 #[cfg(test)]
@@ -132,12 +209,10 @@ struct PreparedContent {
 struct Preparation {
     definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
     point_days: Option<f64>,
-    technology_names: Arc<BTreeMap<String, TechnologyName>>,
+    technology_names: Arc<TechnologyNames>,
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content_core::Diagnostic>,
     warnings: Vec<String>,
-    /// Each technology's research folders in authored order.
-    technology_folders: Arc<BTreeMap<String, Vec<String>>>,
     /// The research folders `common/technology_tags` defines, in content order.
     folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     /// Notes from reading research folders; only research replies carry them.
@@ -147,7 +222,6 @@ struct Preparation {
 impl Preparation {
     fn read(layers: &installed_content_core::ResolvedLayers, kind: Kind) -> io::Result<Self> {
         let mut warnings = Vec::new();
-        let mut technology_folders = BTreeMap::new();
         let mut folder_definitions = Vec::new();
         let mut folder_warnings = Vec::new();
         let (definitions, point_days, technology_names, inventory, preparation_warnings) =
@@ -163,14 +237,13 @@ impl Preparation {
                     (
                         definitions,
                         installed_content_focus::focus::point_days(layers)?,
-                        BTreeMap::new(),
+                        TechnologyNames::default(),
                         inventory,
                         definition_warnings,
                     )
                 }
                 Kind::Technology => {
                     let read = installed_content_core::technology::Database::read(layers)?;
-                    technology_folders = read.folders;
                     // Folders only colour and group research; a failure to read
                     // them never withholds technology text or artwork.
                     match installed_content_core::technology::read_folders(layers) {
@@ -196,30 +269,16 @@ impl Preparation {
                                 .map(|note| format!("Equipment database: {note}")),
                         );
                     }
-                    let names = read
-                        .names
-                        .into_iter()
-                        .map(|(token, presentation)| {
-                            (
-                                token,
-                                TechnologyName {
-                                    presentation,
-                                    children: std::sync::OnceLock::new(),
-                                },
-                            )
-                        })
-                        .collect();
                     (
                         BTreeMap::new(),
                         None,
-                        names,
+                        TechnologyNames::read(read.definitions, read.unread),
                         read.tokens,
                         read.inventory_warnings,
                     )
                 }
             };
         Ok(Self {
-            technology_folders: Arc::new(technology_folders),
             folder_definitions: Arc::new(folder_definitions),
             folder_warnings,
             definitions: Arc::new(definitions),
@@ -238,7 +297,7 @@ type IconKey = (bool, installed_content_core::content::ArtworkMode, String);
 
 pub struct Context {
     kind: Kind,
-    technology_names: Arc<BTreeMap<String, TechnologyName>>,
+    technology_names: Arc<TechnologyNames>,
     /// The source's shared localisation and sprites for these folders.
     catalogue: Arc<Catalogue>,
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
@@ -253,7 +312,6 @@ pub struct Context {
     warnings: Vec<String>,
     inventory: Vec<String>,
     preparation_warnings: Vec<installed_content_core::Diagnostic>,
-    technology_folders: Arc<BTreeMap<String, Vec<String>>>,
     folder_definitions: Arc<Vec<installed_content_core::technology::FolderDefinition>>,
     folder_warnings: Vec<String>,
     /// Each folder's tab availability, decided once from content.
@@ -438,7 +496,6 @@ impl Context {
         let point_days = prepared.point_days;
         let inventory = prepared.inventory.clone();
         let preparation_warnings = prepared.preparation_warnings.clone();
-        let technology_folders = Arc::clone(&prepared.technology_folders);
         let folder_definitions = Arc::clone(&prepared.folder_definitions);
         let folder_warnings = prepared.folder_warnings.clone();
         warnings.extend(prepared.warnings.iter().cloned());
@@ -457,7 +514,6 @@ impl Context {
             warnings,
             inventory,
             preparation_warnings,
-            technology_folders,
             folder_definitions,
             folder_warnings,
             folder_availability: OnceLock::new(),
@@ -474,10 +530,11 @@ impl Context {
     /// folder each token is shown in ([`super::research::shown_folders`]) and
     /// named notes for what could not be resolved. A folder without an
     /// `available` trigger is always available; a trigger is decided from the
-    /// recorded content and DLC alone, else its availability stays unknown.
+    /// recorded content and DLC alone; otherwise its availability stays unknown.
     pub fn research_folders(
         &self,
-        tokens: &BTreeSet<&str>,
+        tokens: &BTreeMap<&str, Option<u32>>,
+        definitions: &BTreeSet<(&str, u32)>,
     ) -> (
         Vec<crate::ResearchFolder>,
         Vec<crate::ResearchTechnologyFolder>,
@@ -501,16 +558,41 @@ impl Context {
                 })
                 .collect()
         });
-        let definitions: Vec<(&str, Option<bool>)> = self
+        let available: Vec<(&str, Option<bool>)> = self
             .folder_definitions
             .iter()
             .zip(availability)
             .map(|(folder, available)| (folder.key.as_str(), *available))
             .collect();
+        let uses: Vec<(&str, Option<u32>, Option<u32>)> = tokens
+            .iter()
+            .map(|(&token, &at)| (token, None, at))
+            .chain(
+                definitions
+                    .iter()
+                    .map(|&(token, index)| (token, Some(index), Some(index))),
+            )
+            .collect();
+        let mut placed = BTreeMap::new();
+        let mut unplaced = Vec::new();
+        for &(token, shown, at) in &uses {
+            match self.technology(token, at) {
+                Ok(technology) => {
+                    placed.insert((token.to_owned(), shown), technology.folders.clone());
+                }
+                Err(_) if !self.technology_names.may_define(token) => {}
+                Err(reason) => unplaced.push(reason),
+            }
+        }
         let (shown, notes) = super::research::shown_folders(
-            &definitions,
-            &self.technology_folders,
-            tokens.iter().copied(),
+            &available,
+            &placed,
+            uses.iter()
+                .map(|&(token, shown, _)| (token, shown))
+                .filter(|&(token, shown)| {
+                    placed.contains_key(&(token.to_owned(), shown))
+                        || !self.technology_names.may_define(token)
+                }),
         );
         let folders = self
             .folder_definitions
@@ -522,6 +604,11 @@ impl Context {
             .collect();
         let mut warnings = self.folder_warnings.clone();
         warnings.extend(notes);
+        warnings.extend(
+            unplaced
+                .into_iter()
+                .map(|reason| format!("{reason}, so its research folder is unknown.")),
+        );
         (folders, shown, warnings)
     }
 
@@ -587,6 +674,15 @@ impl Context {
     /// child, then its archetype if neither child key exists; otherwise the
     /// template's nonempty parent/id supplies the key.
     fn description_key(&self, token: &str, tag: Option<&str>) -> Result<String, String> {
+        self.description_key_at(token, tag, None)
+    }
+
+    fn description_key_at(
+        &self,
+        token: &str,
+        tag: Option<&str>,
+        at: Option<u32>,
+    ) -> Result<String, String> {
         if self.kind == Kind::Focus {
             return Ok(self
                 .definitions
@@ -594,8 +690,9 @@ impl Context {
                 .map(|d| d.description.clone())
                 .unwrap_or_else(|| format!("{token}_desc")));
         }
-        let children = self.technology_children(token)?;
-        let presentation = self.technology_names[token]
+        let technology = self.technology(token, at)?;
+        let children = self.technology_children_of(technology)?;
+        let presentation = technology
             .presentation
             .as_ref()
             .map_err(Clone::clone)?;
@@ -643,7 +740,11 @@ impl Context {
     }
 
     fn description(&self, token: &str) -> Option<String> {
-        self.localise(&self.description_key(token, None).ok()?)
+        self.description_at(token, None)
+    }
+
+    fn description_at(&self, token: &str, at: Option<u32>) -> Option<String> {
+        self.localise(&self.description_key_at(token, None, at).ok()?)
     }
 
     pub fn description_is_defined(&self, token: &str) -> bool {
@@ -656,10 +757,55 @@ impl Context {
         days.is_finite().then_some(days)
     }
 
-    fn technology_children(&self, token: &str) -> Result<&[String], String> {
-        let presentation = self.technology_names.get(token).ok_or_else(|| {
-            format!("technology {token}: definition unavailable in recorded content")
-        })?;
+    /// Without a recorded index, differing definitions are refused rather than guessed.
+    fn technology(&self, token: &str, at: Option<u32>) -> Result<&TechnologyName, String> {
+        let names = &self.technology_names;
+        let definitions = names.get(token).map_or(&[][..], Vec::as_slice);
+        if let Some(at) = at {
+            if let Some(definition) = definitions
+                .iter()
+                .find(|definition| definition.database_index == Some(at))
+            {
+                return Ok(definition);
+            }
+            return Err(match &names.unplaced {
+                Some(why) => format!(
+                    "technology {token}: recorded template {at} is no definition of known place, and {why}, so which definition it is is unknown"
+                ),
+                None if definitions.is_empty() => {
+                    format!("technology {token}: definition unavailable in recorded content")
+                }
+                None => format!(
+                    "technology {token}: recorded template {at} is none of its {} definitions",
+                    definitions.len()
+                ),
+            });
+        }
+        if let Some(why) = names.unread(token) {
+            return Err(format!(
+                "technology {token} may be defined in a file not read whole ({why}), and which definition it is was not recorded"
+            ));
+        }
+        let Some(first) = definitions.first() else {
+            return Err(format!(
+                "technology {token}: definition unavailable in recorded content"
+            ));
+        };
+        if definitions[1..].iter().all(|other| {
+            other.presentation == first.presentation && other.folders == first.folders
+        }) {
+            return Ok(first);
+        }
+        Err(format!(
+            "technology {token} is defined {} times with different names or folders, and which definition it is was not recorded",
+            definitions.len()
+        ))
+    }
+
+    fn technology_children_of<'a>(
+        &'a self,
+        presentation: &'a TechnologyName,
+    ) -> Result<&'a [String], String> {
         presentation
             .children
             .get_or_init(|| {
@@ -685,12 +831,18 @@ impl Context {
             .map_err(Clone::clone)
     }
 
+    #[cfg(test)]
     fn technology_root(&self, token: &str) -> Result<String, String> {
-        let children = self.technology_children(token)?;
+        self.technology_root_at(token, None)
+    }
+
+    fn technology_root_at(&self, token: &str, at: Option<u32>) -> Result<String, String> {
+        let technology = self.technology(token, at)?;
+        let children = self.technology_children_of(technology)?;
         Ok(if children.len() == 1 {
             children[0].clone()
         } else {
-            self.technology_names[token]
+            technology
                 .presentation
                 .as_ref()
                 .map_err(Clone::clone)?
@@ -700,10 +852,14 @@ impl Context {
     }
 
     fn name(&self, token: &str) -> Option<String> {
+        self.name_at(token, None)
+    }
+
+    fn name_at(&self, token: &str, at: Option<u32>) -> Option<String> {
         if self.kind == Kind::Technology {
             // Topic artwork has no country/hour parameter. It uses the same
             // native full-name root as the feed, without a country prefix.
-            let key = self.technology_root(token).ok()?;
+            let key = self.technology_root_at(token, at).ok()?;
             return self.localise(&key);
         }
         let definition = self.definitions.get(token);
@@ -820,8 +976,14 @@ impl Context {
         (&self.inventory, &self.preparation_warnings)
     }
 
-    /// The same per-token preparation for the reply and the offline check.
+    /// Reply generation and offline checks must use the same icon and text findings.
     pub fn prepare(&self, token: &str) -> (Artwork, Vec<dashboard_core::findings::Finding>) {
+        let (art, mut findings) = self.prepare_icon(token);
+        findings.extend(self.text_findings(token, None));
+        (art, findings)
+    }
+
+    fn prepare_icon(&self, token: &str) -> (Artwork, Vec<dashboard_core::findings::Finding>) {
         use dashboard_core::findings::{Finding, Kind};
         let mut findings = Vec::new();
         let art = match self.artwork(token) {
@@ -847,9 +1009,18 @@ impl Context {
                 }
             }
         };
+        (art, findings)
+    }
+
+    fn text_findings(&self, token: &str, at: Option<u32>) -> Vec<dashboard_core::findings::Finding> {
+        use dashboard_core::findings::{Finding, Kind};
+        let mut findings = Vec::new();
         if let Some(Err(reason)) = self
             .technology_names
             .get(token)
+            .is_some()
+            .then(|| self.technology(token, at).ok())
+            .flatten()
             .and_then(|name| name.children.get())
         {
             findings.push(Finding::grouped(
@@ -859,7 +1030,7 @@ impl Context {
                 reason.clone(),
             ));
         }
-        if let Err(reason) = self.description_key(token, None) {
+        if let Err(reason) = self.description_key_at(token, None, at) {
             findings.push(Finding::grouped(
                 Kind::Refused,
                 token,
@@ -867,7 +1038,35 @@ impl Context {
                 reason,
             ));
         }
-        (art, findings)
+        findings
+    }
+
+    /// Multiple recorded definitions share text only when their text agrees.
+    fn recorded_text(
+        &self,
+        token: &str,
+        recorded: &[Option<u32>],
+    ) -> (Option<String>, Option<String>, Vec<dashboard_core::findings::Finding>) {
+        match recorded {
+            [] => (
+                self.name(token),
+                self.description(token),
+                self.text_findings(token, None),
+            ),
+            [at] => (
+                self.name_at(token, *at),
+                self.description_at(token, *at),
+                self.text_findings(token, *at),
+            ),
+            several => (
+                self.name(token),
+                self.description(token),
+                several
+                    .iter()
+                    .flat_map(|at| self.text_findings(token, *at))
+                    .collect(),
+            ),
+        }
     }
 
     pub fn requested_focus_needs_frame(&self, tokens: &[String]) -> bool {
@@ -1386,8 +1585,27 @@ impl Context {
         tokens: BTreeSet<&str>,
         cancelled: &AtomicBool,
     ) -> io::Result<(Vec<Artwork>, Vec<String>)> {
+        self.recorded_text_catalogue(tokens.into_iter().map(|token| (token, None)).collect(), cancelled)
+    }
+
+    pub fn definition_text(
+        &self,
+        token: &str,
+        database_index: u32,
+    ) -> (Option<String>, Option<String>) {
+        (
+            self.name_at(token, Some(database_index)),
+            self.description_at(token, Some(database_index)),
+        )
+    }
+
+    pub fn recorded_text_catalogue(
+        &self,
+        tokens: BTreeMap<&str, Option<u32>>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(Vec<Artwork>, Vec<String>)> {
         let mut items = Vec::with_capacity(tokens.len());
-        for token in tokens {
+        for (token, at) in tokens {
             crate::metadata::check_cancel(cancelled)?;
             let (name, description) = if self.kind == Kind::Focus {
                 let definition = self.definitions.get(token);
@@ -1400,7 +1618,7 @@ impl Context {
                         .and_then(|key| self.static_focus_text(key)),
                 )
             } else {
-                (self.name(token), self.description(token))
+                (self.name_at(token, at), self.description_at(token, at))
             };
             items.push(Artwork {
                 token: token.into(),
@@ -1419,9 +1637,21 @@ impl Context {
         tokens: BTreeSet<&str>,
         cancelled: &AtomicBool,
     ) -> io::Result<(Vec<Artwork>, Vec<String>)> {
+        self.recorded_catalogue(
+            tokens.into_iter().map(|token| (token, &[][..])).collect(),
+            cancelled,
+        )
+    }
+
+    /// Sprites use the technology token; text and findings use recorded definitions.
+    pub fn recorded_catalogue(
+        &mut self,
+        tokens: BTreeMap<&str, &[Option<u32>]>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(Vec<Artwork>, Vec<String>)> {
         if tokens.len() <= 8 {
             let sprites = tokens
-                .iter()
+                .keys()
                 .filter(|token| !self.artwork_cache.contains_key(**token))
                 .filter_map(|token| self.declared_icon(token))
                 .collect();
@@ -1430,13 +1660,13 @@ impl Context {
         let mut warnings = self.warnings.clone();
         let mut artwork = Vec::new();
         let mut bytes = 0;
-        for token in tokens {
+        for (token, recorded) in tokens {
             if cancelled.load(Ordering::Acquire) {
                 return Err(invalid("Widget request cancelled"));
             }
             if !self.artwork_cache.contains_key(token) {
                 let drawn = catalogue::Drawn::new(|| {
-                    let (art, findings) = self.prepare(token);
+                    let (art, findings) = self.prepare_icon(token);
                     let messages: Vec<String> = findings
                         .into_iter()
                         .map(|finding| format!("{token}: {}", finding.message))
@@ -1458,12 +1688,23 @@ impl Context {
                 self.artwork_cache.insert(token.into(), drawn);
             }
             let (art, messages) = self.artwork_cache[token].get();
-            bytes += artwork_bytes(art);
+            let (name, description, findings) = self.recorded_text(token, recorded);
+            let art = Artwork {
+                name,
+                description,
+                ..art.clone()
+            };
+            bytes += artwork_bytes(&art);
             if bytes > 8 * 1024 * 1024 {
                 return Err(invalid("Widget artwork exceeds output budget"));
             }
             warnings.extend(messages.iter().cloned());
-            artwork.push(art.clone());
+            warnings.extend(
+                findings
+                    .into_iter()
+                    .map(|finding| format!("{token}: {}", finding.message)),
+            );
+            artwork.push(art);
         }
         Ok((artwork, warnings))
     }
@@ -2163,13 +2404,17 @@ mod tests {
         let aliases = Arc::new(installed_content_core::tag_aliases::TagAliases::default());
         let empty = BTreeSet::new();
         let world = crate::triggers::World::unrecorded(&empty, &triggers, &aliases);
-        let select = |key: &str| {
-            technology_name(
-                presentation.names[key].as_ref().unwrap(),
-                Ok(&world),
-                registry.equipment_database(),
-            )
+        let named = |key: &str| {
+            presentation
+                .definitions
+                .iter()
+                .find(|definition| definition.token == key)
+                .unwrap()
+                .presentation
+                .as_ref()
+                .unwrap()
         };
+        let select = |key: &str| technology_name(named(key), Ok(&world), registry.equipment_database());
         assert_eq!(select("dlc").unwrap(), "dlc");
         // A country predicate is false in the native empty content-load scope.
         assert_eq!(select("empty").unwrap(), "empty");
@@ -2183,12 +2428,7 @@ mod tests {
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
         let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
-            technology_name(
-                presentation.names["dlc"].as_ref().unwrap(),
-                Ok(&world),
-                registry.equipment_database()
-            )
-            .unwrap(),
+            technology_name(named("dlc"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_child"
         );
         // The name comes from the feature-mask mapping rather than content
@@ -2196,17 +2436,12 @@ mod tests {
         let enabled = BTreeSet::from([feature_dlc.to_owned()]);
         let world = crate::triggers::World::unrecorded(&enabled, &triggers, &aliases);
         assert_eq!(
-            technology_name(
-                presentation.names["harbor"].as_ref().unwrap(),
-                Ok(&world),
-                registry.equipment_database()
-            )
-            .unwrap(),
+            technology_name(named("harbor"), Ok(&world), registry.equipment_database()).unwrap(),
             "mod_harbor"
         );
         assert!(
             technology_name(
-                presentation.names["harbor"].as_ref().unwrap(),
+                named("harbor"),
                 Err("DLC load state unavailable".into()),
                 registry.equipment_database()
             )
@@ -2240,7 +2475,9 @@ mod tests {
         assert!(
             context
                 .technology_names
+                .names
                 .values()
+                .flatten()
                 .all(|name| name.children.get().is_none())
         );
         let (topic, _) = context
@@ -2249,11 +2486,116 @@ mod tests {
         assert_eq!(topic[0].name.as_deref(), Some("Parent"));
         assert_eq!(topic[0].description.as_deref(), Some("Parent description"));
         assert!(
-            context.technology_names["mod_unrequested"]
+            context.technology_names.names["mod_unrequested"][0]
                 .children
                 .get()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_repeated_technology_is_named_by_its_recorded_template() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "common/technologies/mod.txt",
+                    "technologies={repeat={parent=first_name} REPEAT={parent=second_name} same={} same={}}",
+                ),
+                (
+                    "common/terrain/mod.txt",
+                    "categories = { mod_ground = { movement_cost = 1 } }",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n first_name:0 \"First\"\n second_name:0 \"Second\"\n same:0 \"Same\"\n",
+                ),
+            ],
+            &[],
+        );
+        let context = Context::load(Arc::new(catalogue), Kind::Technology).unwrap();
+        let named = |token: &str, at: Option<u32>| {
+            context
+                .recorded_text_catalogue(BTreeMap::from([(token, at)]), &AtomicBool::new(false))
+                .unwrap()
+                .0
+                .remove(0)
+                .name
+        };
+        assert_eq!(named("repeat", Some(1)).as_deref(), Some("First"));
+        assert_eq!(named("repeat", Some(2)).as_deref(), Some("Second"));
+        assert_eq!(named("REPEAT", Some(1)).as_deref(), Some("First"));
+        assert_eq!(named("repeat", None), None);
+        assert!(
+            context
+                .technology("repeat", None)
+                .err()
+                .is_some_and(|reason| reason.contains("defined 2 times")),
+        );
+        assert_eq!(named("same", None).as_deref(), Some("Same"));
+        let mut context = context;
+        let mut requested = |uses: &[Option<u32>]| {
+            context
+                .recorded_catalogue(BTreeMap::from([("repeat", uses)]), &AtomicBool::new(false))
+                .unwrap()
+        };
+        let unrecorded = |warnings: &[String]| {
+            warnings
+                .iter()
+                .any(|warning| warning.starts_with("repeat: ") && warning.contains("defined 2 times"))
+        };
+        let (items, warnings) = requested(&[Some(2)]);
+        assert_eq!(items[0].name.as_deref(), Some("Second"));
+        assert!(!unrecorded(&warnings), "{warnings:?}");
+        let (items, warnings) = requested(&[None, Some(2)]);
+        assert_eq!(items[0].name, None);
+        assert!(unrecorded(&warnings), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_template_past_a_file_not_read_whole_is_refused() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folders) = texture_catalogue(
+            &[
+                (
+                    "common/technologies/00_broken.txt",
+                    "technologies={repeat={parent=lost_name folder={name=a position={1}}}}",
+                ),
+                (
+                    "common/technologies/mod.txt",
+                    "technologies={repeat={parent=second_name} same={}}",
+                ),
+                (
+                    "common/terrain/mod.txt",
+                    "categories = { mod_ground = { movement_cost = 1 } }",
+                ),
+                (
+                    "localisation/mod_l_english.yml",
+                    "\u{feff}l_english:\n second_name:0 \"Second\"\n same:0 \"Same\"\n",
+                ),
+            ],
+            &[],
+        );
+        let context = Context::load(Arc::new(catalogue), Kind::Technology).unwrap();
+        let named = |token: &str, at: Option<u32>| {
+            context
+                .recorded_text_catalogue(BTreeMap::from([(token, at)]), &AtomicBool::new(false))
+                .unwrap()
+                .0
+                .remove(0)
+                .name
+        };
+        assert_eq!(named("repeat", Some(1)), None);
+        assert!(
+            context
+                .technology("repeat", Some(1))
+                .err()
+                .is_some_and(|reason| reason.contains("00_broken.txt")),
+        );
+        assert_eq!(named("repeat", None), None);
+        assert_eq!(named("same", None).as_deref(), Some("Same"));
     }
 
     #[test]

@@ -25,9 +25,12 @@ function open(): Promise<IDBDatabase> {
 async function run<T>(mode: IDBTransactionMode, action: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   const db = await open();
   return new Promise((resolve, reject) => {
-    const request = action(db.transaction(STORE, mode).objectStore(STORE));
-    request.onsuccess = () => resolve(request.result);
+    const transaction = db.transaction(STORE, mode);
+    const request = action(transaction.objectStore(STORE));
+    // A write is stored only once its transaction commits, which comes after the request succeeds.
+    transaction.oncomplete = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Background storage failed.'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('Background storage failed.'));
   });
 }
 

@@ -2,7 +2,7 @@
 use super::{LoadContext, Product, artwork};
 use crate::{Artwork, Source, metadata::check_cancel};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
 
 pub struct TechnologyArtwork;
@@ -11,6 +11,10 @@ pub struct TechnologyArtwork;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TechnologyArtworkParams {
     pub tokens: Vec<String>,
+    /// Repeated definitions have separate recorded indices; null means an unindexed use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded: Option<BTreeMap<String, Vec<Option<u32>>>>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -48,6 +52,14 @@ impl Product for TechnologyArtwork {
         {
             return Err("Invalid technology artwork tokens");
         }
+        // The null template is index 0, so a recorded index is at least 1.
+        if params.recorded.as_ref().is_some_and(|recorded| {
+            recorded.iter().any(|(token, indices)| {
+                !params.tokens.contains(token) || indices.is_empty() || indices.contains(&Some(0))
+            })
+        }) {
+            return Err("Invalid technology artwork templates");
+        }
         Ok(())
     }
 
@@ -66,12 +78,19 @@ impl Product for TechnologyArtwork {
             context.content()?,
             artwork::Kind::Technology,
         )?;
-        let (items, warnings) = art.catalogue(
+        let recorded = |token: &str| {
+            params
+                .recorded
+                .as_ref()
+                .and_then(|recorded| recorded.get(token))
+                .map_or(&[][..], Vec::as_slice)
+        };
+        let (items, warnings) = art.recorded_catalogue(
             params
                 .tokens
                 .iter()
-                .map(String::as_str)
-                .collect::<BTreeSet<_>>(),
+                .map(|token| (token.as_str(), recorded(token)))
+                .collect::<BTreeMap<_, _>>(),
             cancelled,
         )?;
         Ok(TechnologyArtworkReply { items, warnings })

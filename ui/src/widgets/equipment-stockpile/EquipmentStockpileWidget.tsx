@@ -168,6 +168,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
         runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open} />}
   </div> : null;
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
@@ -182,7 +183,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
     {saved ? <div className="drill-body">
       {pinnedHeader}
       {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
-        onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{detail}
+        onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{identityNotice}{detail}
     </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={shownDrill.breakdown !== null}
       title={picked ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={dayLabel(at)} following={shownDrill.follow}
       returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : '.stockpile-table-rows tr'}
@@ -191,7 +192,7 @@ function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, set
         if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
         const pinned = pinStockpileDrill(widget, track, selectedCountry.tag, picked, grouping, mode, at, shownDrill.follow, selectedCountry);
         if (pinned) runtime.addWidgetBelow(widget.id, pinned);
-      } : undefined}>{detail}</DrillHost>}
+      } : undefined}>{identityNotice}{detail}</DrillHost>}
     {menu.menu}
   </div>;
 }

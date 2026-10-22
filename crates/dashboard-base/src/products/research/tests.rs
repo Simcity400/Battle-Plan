@@ -1106,7 +1106,7 @@ fn a_technology_is_shown_in_its_first_available_folder_and_unknowns_are_named() 
         ("mod_folder", None),
         ("infantry_folder", Some(true)),
     ];
-    let placed: BTreeMap<String, Vec<String>> = [
+    let placed: BTreeMap<(String, Option<u32>), Vec<String>> = [
         ("both_armour", vec!["armour_folder", "nsb_armour_folder"]),
         ("old_armour", vec!["armour_folder"]),
         ("modded", vec!["mod_folder"]),
@@ -1118,7 +1118,7 @@ fn a_technology_is_shown_in_its_first_available_folder_and_unknowns_are_named() 
     .into_iter()
     .map(|(token, folders)| {
         (
-            token.to_owned(),
+            (token.to_owned(), None),
             folders.into_iter().map(str::to_owned).collect(),
         )
     })
@@ -1135,7 +1135,8 @@ fn a_technology_is_shown_in_its_first_available_folder_and_unknowns_are_named() 
             "stray",
             "hidden",
             "unknown_token",
-        ],
+        ]
+        .map(|token| (token, None)),
     );
     let folders: Vec<_> = shown
         .iter()

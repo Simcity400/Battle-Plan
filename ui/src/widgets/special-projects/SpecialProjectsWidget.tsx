@@ -180,7 +180,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
   else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (at < track.branch.firstHour || at > track.branch.lastHour) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  else if (error || groups.error) body = <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
+  else if (error || (groups.error && !groups.data)) body = <WidgetState kind="error" detail={error ?? groups.error!} onRetry={error ? retry : groups.retry} />;
   else if (!groups.data) body = <WidgetState kind="loading" label="Loading countries…" />;
   else if (resolved.reason) body = <WidgetState kind="unavailable" message={resolved.reason} />;
   else if (view === 'live' && membershipUnknown) body = <WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />;
@@ -226,7 +226,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: WidgetProps) {
       const card = id === null ? null : historyCard(reply, id, at, resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} /><PreparedKey pending={pending} /></>;
-  return <div ref={parityRoot} className="special-projects">{body}{menu.menu}</div>;
+  return <div ref={parityRoot} className="special-projects">{groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;
 }
 
 /** A country's projects can be missing for several reasons; the card only says they are. */
@@ -253,7 +253,7 @@ export default function SpecialProjectsWidget(props: WidgetProps) {
   const slot = actions ?? props.headerSlot;
   const header = slot && createPortal(<Segmented value={view} options={VIEWS}
     onChange={value => props.setOption?.('view', value)} label="Special projects view" />, slot);
-  const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !groups.error;
+  const compare = view === 'live' && selected.ready && !unknown && tags.length > 1 && !(groups.error && !groups.data);
   return <>{header}{compare
     ? <CountryComparisons {...props} widget={comparisonWidget} headerSlot={null} component={ProjectPanel} />
     // Each view gets its own panel, so a switch starts at the top instead of keeping the other view's scroll.

@@ -3333,6 +3333,107 @@ impl<'a> Reader<'a> {
             pending,
         })
     }
+    /// Disjoint spans share one cursor in merged hour/key/duplicate order.
+    pub fn events_within(
+        &mut self,
+        spans: &[(u64, i32, i32)],
+        cursor: u64,
+        page_size: u32,
+    ) -> io::Result<EventsPage> {
+        if page_size == 0 {
+            return Err(invalid("invalid event page"));
+        }
+        check_cancel(self.cancelled)?;
+        let mut segments = Vec::new();
+        for &(key, from, to) in spans {
+            if from > to {
+                continue;
+            }
+            let base = match from.checked_sub(1) {
+                Some(before) => self.event_count_through(key, before)?,
+                None => 0,
+            };
+            let end = self.event_count_through(key, to)?;
+            if base < end {
+                segments.push((key, from, to, base, end));
+            }
+        }
+        segments.sort_unstable();
+        let total = segments.iter().try_fold(0_u64, |total, &(_, _, _, base, end)| {
+            total
+                .checked_add(end - base)
+                .ok_or_else(|| invalid("event count overflow"))
+        })?;
+        let first = cursor.min(total);
+        let end = first.saturating_add(u64::from(page_size)).min(total);
+        fn through(
+            reader: &mut Reader<'_>,
+            segments: &[(u64, i32, i32, u64, u64)],
+            hour: i32,
+        ) -> io::Result<u64> {
+            let mut count = 0_u64;
+            for &(key, from, to, base, _) in segments {
+                if hour >= from {
+                    count += reader.event_count_through(key, hour.min(to))? - base;
+                }
+            }
+            Ok(count)
+        }
+        let mut pending = BTreeMap::new();
+        if first < end {
+            let low = segments.iter().map(|segment| segment.1).min().unwrap_or(0);
+            let high = segments.iter().map(|segment| segment.2).max().unwrap_or(0);
+            let count = (i64::from(high) - i64::from(low) + 1) as u64;
+            let offset = lower(count, |offset| {
+                Ok(through(self, &segments, (i64::from(low) + offset as i64) as i32)? <= first)
+            })?;
+            let hour = (i64::from(low) + offset as i64) as i32;
+            let mut skipped = first
+                - match hour.checked_sub(1) {
+                    Some(before) => through(self, &segments, before)?,
+                    None => 0,
+                };
+            for (index, &(key, from, to, base, last)) in segments.iter().enumerate() {
+                check_cancel(self.cancelled)?;
+                let ordinal = if hour < from {
+                    base
+                } else if hour > to {
+                    continue;
+                } else {
+                    let begin = match hour.checked_sub(1) {
+                        Some(before) => self.event_count_through(key, before)?.max(base),
+                        None => base,
+                    };
+                    let count = self.event_count_through(key, hour)? - begin;
+                    let skip = skipped.min(count);
+                    skipped -= skip;
+                    begin + skip
+                };
+                if ordinal < last {
+                    let row = self.event_at(key, ordinal)?;
+                    pending.insert((row.hour, key, ordinal), (index, row));
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        while (rows.len() as u64) < end - first {
+            check_cancel(self.cancelled)?;
+            let Some(((_, key, ordinal), (index, row))) = pending.pop_first() else {
+                return Err(invalid("event page rows do not match its ordinal interval"));
+            };
+            rows.push(row);
+            if ordinal + 1 < segments[index].4 {
+                let row = self.event_at(key, ordinal + 1)?;
+                pending.insert((row.hour, key, ordinal + 1), (index, row));
+            }
+        }
+        Ok(EventsPage {
+            first,
+            total,
+            rows,
+            cursor: (end < total).then_some(end),
+        })
+    }
     pub fn event_clusters(
         &mut self,
         key: u64,

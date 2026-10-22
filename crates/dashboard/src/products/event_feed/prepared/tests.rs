@@ -1672,6 +1672,102 @@ fn event_choice_and_decision_pages_join_their_own_occurrences_and_prove_charges(
 }
 
 #[test]
+fn a_decision_edge_after_an_unobserved_interval_does_not_join_the_earlier_selection() {
+    let tokens = b"mod_decision";
+    let decision =
+        |sequence, kind, hour| scripted(sequence, kind, hour, (0, 0), None, None, (0, 12));
+    let mut lost = script_frame(101, Vec::new(), b"", Vec::new());
+    if let TableView::Complete(TableRows::EventFeedHistory(rows)) =
+        &mut *lost.tables[TableId::EventFeedHistory.index()]
+    {
+        rows[0].coverage = EventFeedCoverage::Partial;
+    }
+    let frames = vec![
+        script_frame(
+            100,
+            vec![decision(1, EventFeedSource::DecisionSelected, 100)],
+            tokens,
+            Vec::new(),
+        ),
+        lost,
+        script_frame(
+            102,
+            vec![decision(2, EventFeedSource::DecisionCompleted, 102)],
+            tokens,
+            Vec::new(),
+        ),
+    ];
+    let source = super::super::tests::opened(frames.clone());
+    let flag = AtomicBool::new(false);
+    let mut fixture = Fixture::new();
+    let mut state = Sources::new(&source);
+    for frame in &frames {
+        state.observe(frame, &source, &flag).unwrap();
+    }
+    state.publish(&mut fixture, &source, false, &flag);
+    let page = script_page(script::Adapter::Decisions, &source, &fixture, 102, BTreeSet::new());
+    let selected = page
+        .reply
+        .occurrences
+        .iter()
+        .find(|card| card.edges[0].row.id == "native:9:1")
+        .unwrap();
+    assert_eq!(kinds_of(selected), [EventFeedKind::DecisionSelected]);
+}
+
+#[test]
+fn decision_edges_of_one_incomplete_read_do_not_join_each_other() {
+    let tokens = b"mod_decision";
+    let decision =
+        |sequence, kind, hour| scripted(sequence, kind, hour, (0, 0), None, None, (0, 12));
+    for (coverage, joined) in [
+        (EventFeedCoverage::Complete, true),
+        (EventFeedCoverage::Partial, false),
+    ] {
+        let mut both = script_frame(
+            102,
+            vec![
+                decision(1, EventFeedSource::DecisionSelected, 102),
+                decision(2, EventFeedSource::DecisionCompleted, 102),
+            ],
+            tokens,
+            Vec::new(),
+        );
+        if let TableView::Complete(TableRows::EventFeedHistory(rows)) =
+            &mut *both.tables[TableId::EventFeedHistory.index()]
+        {
+            rows[0].coverage = coverage;
+        }
+        let frames = vec![
+            script_frame(100, Vec::new(), b"", Vec::new()),
+            script_frame(101, Vec::new(), b"", Vec::new()),
+            both,
+        ];
+        let source = super::super::tests::opened(frames.clone());
+        let flag = AtomicBool::new(false);
+        let mut fixture = Fixture::new();
+        let mut state = Sources::new(&source);
+        for frame in &frames {
+            state.observe(frame, &source, &flag).unwrap();
+        }
+        state.publish(&mut fixture, &source, false, &flag);
+        let page = script_page(script::Adapter::Decisions, &source, &fixture, 102, BTreeSet::new());
+        let selected = page
+            .reply
+            .occurrences
+            .iter()
+            .find(|card| card.edges[0].row.id == "native:9:1")
+            .unwrap();
+        let expected: &[EventFeedKind] = if joined {
+            &[EventFeedKind::DecisionSelected, EventFeedKind::DecisionCompleted]
+        } else {
+            &[EventFeedKind::DecisionSelected]
+        };
+        assert_eq!(kinds_of(selected), expected, "{coverage:?}");
+    }
+}
+
+#[test]
 fn immediate_effects_join_their_dispatch_without_taking_its_choice() {
     let tokens = b"mod.evt";
     let event = (Some((1, 9)), (0, 7));

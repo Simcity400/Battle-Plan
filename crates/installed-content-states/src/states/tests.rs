@@ -53,7 +53,7 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
         .unwrap();
     let (states, notes) = read(&layers, &defines, &BTreeMap::new()).unwrap();
     assert_eq!(states.definitions().len(), 1);
-    assert_eq!(states.source(1), Some("history/states/1-kept.txt"));
+    assert_eq!(states.source(1), Some(&script_files::ScriptPath::from("history/states/1-kept.txt")));
     let warnings: Vec<_> = notes
         .iter()
         .filter(|(kind, _)| *kind == DiagnosticKind::Warning)
@@ -981,7 +981,7 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
     let map = crate::map::load(&layers).unwrap();
     let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
     let state = states.get(1).unwrap();
-    assert_eq!(states.source(1), Some("history/states/1-a.txt"));
+    assert_eq!(states.source(1), Some(&script_files::ScriptPath::from("history/states/1-a.txt")));
     assert_eq!(states.diagnostics(1).len(), 2);
     assert!(
         states
@@ -1015,7 +1015,7 @@ fn the_loader_reads_resources_and_the_building_cap_from_content() {
     let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let (states, notes) = read(&layers, &defines, &map.definitions).unwrap();
     assert_eq!(states.get(2).unwrap().provinces, [1]);
-    assert_eq!(states.source(2), Some("history/states/2-kept.txt"));
+    assert_eq!(states.source(2), Some(&script_files::ScriptPath::from("history/states/2-kept.txt")));
     assert!(states.diagnostics(2).is_empty());
     assert!(states.diagnostics(3).is_empty());
     assert!(

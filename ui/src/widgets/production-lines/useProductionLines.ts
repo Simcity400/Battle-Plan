@@ -52,6 +52,7 @@ export function useProductionCountry(selection: DatedCountrySelection | null, ru
     && selection.campaign === track.source.metadata.campaignKey && selection.branch === track.branch.id
     ? datedCountrySpans(history.countryIdentities, selection, track.branch.firstHour, track.branch.lastHour) : null,
   [selection, history, track?.source.metadata.campaignKey, track?.branch.id, track?.branch.firstHour, track?.branch.lastHour]);
-  return { spans, error: catalogue.error, retry: catalogue.retry, reason: catalogue.error ?? (!history ? 'Loading country…'
+  return { spans, error: history ? undefined : catalogue.error, identityError: history ? catalogue.error : undefined, retry: catalogue.retry,
+    reason: (history ? undefined : catalogue.error) ?? (!history ? 'Loading country…'
     : !spans ? 'Saved country selection unavailable. Open the breakdown again.' : null) };
 }

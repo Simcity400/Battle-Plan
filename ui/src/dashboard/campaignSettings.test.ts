@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_FACTIONS, parseCampaignSettings, saveCampaignSettings, saveColourSet,
+import { applyColourSet, chosenColour, factionIdentity, loadCampaignSettings, MAX_CAMPAIGN_SETTINGS_STORAGE, MAX_FACTIONS, parseCampaignSettings, saveCampaignSettings, saveColourSet,
   setCampaignFlag, setFactionColour, setFactionStyle } from './campaignSettings.ts';
 import { FACTION_APART, factionColours } from '../charts/factionColours.ts';
 import { parseColor, rgbToOklch } from '../shell/appearance/color.ts';
@@ -144,6 +144,25 @@ test('a colour set for all campaigns applies wherever the faction is found; a ca
   const storage = memory();
   saveCampaignSettings(setFactionColour(settings, 'all', 'aa', '12', axis, '#abcdef'), storage);
   assert.deepEqual(loadCampaignSettings(storage).shared, { [axis!]: { colour: '#abcdef' } });
+});
+
+test('settings past the storage budget are refused on save, keeping what was saved before', () => {
+  const storage = memory();
+  assert.equal(saveCampaignSettings(setCampaignFlag(parseCampaignSettings(undefined), 'aa', 'GER'), storage), null);
+  const large = setCampaignFlag(parseCampaignSettings(undefined), 'bb', 'x'.repeat(MAX_CAMPAIGN_SETTINGS_STORAGE));
+  assert.notEqual(saveCampaignSettings(large, storage), null);
+  assert.deepEqual(loadCampaignSettings(storage).campaigns, { aa: { factions: {}, flag: 'GER' } });
+});
+
+test('every campaign keeps its faction settings through save and reload, however many there are', () => {
+  let settings = parseCampaignSettings(undefined);
+  for (let id = 0; id < 300; id++) settings = setFactionStyle(settings, id.toString(16), '1', { colour: '#112233' });
+  settings = setFactionStyle(settings, 'ffff', '1', { name: 'Late' });
+  const storage = memory();
+  assert.equal(saveCampaignSettings(settings, storage), null);
+  const loaded = loadCampaignSettings(storage);
+  assert.equal(Object.keys(loaded.campaigns).length, 301);
+  assert.deepEqual(loaded.campaigns.ffff.factions, { 1: { name: 'Late' } });
 });
 
 test('a new faction style past the limit is refused, not dropped on save', () => {

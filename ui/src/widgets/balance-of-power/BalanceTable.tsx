@@ -150,7 +150,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   if (!track) body = <WidgetState kind="empty" icon="sliders" message="Load a campaign to see the balance of power." />;
   else if (!window || !inside) body = <WidgetState kind="unavailable" message="This time is outside the recording." />;
   else if (error && !data) body = <WidgetState kind="error" detail={error} onRetry={retry} />;
-  else if (needsGroups && groups.error) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  else if (needsGroups && groups.error && !groups.data) body = <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   else if (match.reason) body = <WidgetState kind="unavailable" message={match.reason} />;
   else if (!data || !match.ready) body = <WidgetState kind="loading" label="Loading the balance of power…" />;
   else if (!prepared) body = <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -167,6 +167,7 @@ export default function BalanceTable({ widget, runtime, active, headerSlot, setO
   const openName = choice?.balance ? choice.balance.name ?? data?.names[choice.balance.token] ?? BALANCE_UNAVAILABLE : '';
   return <div className="balance-of-power" ref={anchor}>
     {headerSlot && view && createPortal(<span className="pill balance-count">{usNumber.format(rows.length)} active</span>, headerSlot)}
+    {needsGroups && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
     <DrillHost mode="inline" open={!!choice?.balance} anchor={anchor} title={`${countryName}: ${openName}`} day={dayLabel(hour)} following={false} canFollow={false}
       onClose={() => setOpened(null)} onFollow={() => {}} main={body}>
       {track && data && openHolder && choice?.balance && <BalanceCountryView runtime={runtime} track={track} active={active} subject={openHolder} names={data.names}

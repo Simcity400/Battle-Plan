@@ -492,10 +492,9 @@ impl<'a> ScriptedText<'a> {
                 self.entry(object, name, scopes, active, event_active)
             });
         }
-        if !self.content.names.unknown.is_empty() {
+        if let Some(unknown) = self.content.names.uncertain(name.as_bytes()) {
             return Err(format!(
-                "{name}: scripted localisation definitions are uncertain: {}",
-                self.content.names.unknown.join("; ")
+                "{name}: scripted localisation definitions are uncertain: {unknown}"
             ));
         }
         let Some(entry) = self.content.names.entries.get(name.as_bytes()) else {

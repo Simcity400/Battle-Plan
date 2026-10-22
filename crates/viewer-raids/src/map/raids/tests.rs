@@ -5064,7 +5064,7 @@ fn leader_visibility_evaluates_the_recorded_template_role() {
     let mut assets = assets();
     assets.trigger_content.leader_roles = Ok(Arc::new(LeaderRoles::new(
         installed_content_core::characters::parse_leader_templates(
-            path,
+            &path.into(),
             br#"characters = {
     GER_rommel = { field_marshal = { visible = { tag = GER } } }
     GER_split = {

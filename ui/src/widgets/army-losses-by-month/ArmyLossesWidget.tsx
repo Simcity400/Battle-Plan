@@ -82,7 +82,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   if (!track) main = <WidgetState kind="empty" message="Load a campaign to see army losses." />;
   else if (!window) main = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) main = <WidgetState kind="empty" message="Choose a country to see its army losses." />;
-  else if (country.error) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) main = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
   else if (country.holders) main = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
   else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
@@ -110,6 +110,8 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
       <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />
       {measure === 'equipment' && <Segmented value={ledger} options={LEDGER_CHOICES} label="Ledger" onChange={value => setOption('ledger', value)} />}
     </div>}
+    {/* Outside the drill, so an open breakdown never hides a later failure. */}
+    {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={month !== null} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} following={false} canFollow={false} anchor={anchor}
       onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={<div className="army-losses-body">{main}{legend.length > 0 && <Legend label={caption} items={legend} />}</div>}>

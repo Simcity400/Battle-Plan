@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use crate::{ResolvedLayers, crt, parser};
+use crate::{ResolvedLayers, crt, parser, script_files::ScriptPath};
 
 use super::{Material, SubMesh, Transform, invalid, parse};
 
@@ -151,7 +151,7 @@ pub struct EntityDefinition {
     /// The descriptor files it was declared from, its own first and then each clone parent's
     /// copied into it, so its origin (the recording or a visual mod) is known; empty for a
     /// definition parsed from bytes alone.
-    pub sources: Vec<String>,
+    pub sources: Vec<ScriptPath>,
 }
 
 /// Allocated on the first entity-level `game_data` field.
@@ -532,7 +532,7 @@ pub struct InheritedEntity<'a> {
     pub game_data: Option<&'a Result<EntityGameData, String>>,
     /// The descriptor files of every link of the chain, nearest first
     /// ([`EntityDefinition::sources`]).
-    pub sources: Vec<&'a str>,
+    pub sources: Vec<&'a ScriptPath>,
 }
 
 impl Descriptors {
@@ -559,8 +559,7 @@ impl Descriptors {
         let mut chain = Vec::new();
         for _ in 0..=self.entities.len() {
             chain.push(current);
-            out.sources
-                .extend(current.sources.iter().map(String::as_str));
+            out.sources.extend(&current.sources);
             out.mesh = out.mesh.or(current.mesh.as_deref());
             out.unbound_mesh = out.unbound_mesh.or(current.unbound_mesh.as_deref());
             out.scale = out.scale.or(current.scale);
@@ -880,17 +879,27 @@ impl Roster {
             .collect();
         let mut animations = BTreeMap::<String, Vec<AnimationDefinition>>::new();
         let mut entities = Entities::default();
-        for path in crate::defines::load_order("gfx/", ".asset", gfx.iter().map(String::as_str)) {
-            let Some(document) = roster.parse(layers, &path, &["entity", "animation", "light"])?
+        for file in crate::defines::load_order("gfx/", ".asset", &gfx) {
+            let Some(document) = roster.parse(layers, &file, &["entity", "animation", "light"])?
             else {
                 continue;
             };
-            let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+            let path = file.text();
+            // Animation paths need a UTF-8 folder, but the descriptor filename need not be UTF-8.
+            let directory = file.folder_text();
             for item in &document.items {
                 if item.keyword_is("animation") {
-                    let Some(animation) = animation_definition(&item.value, directory) else {
+                    let Some(animation) =
+                        animation_definition(&item.value, directory.unwrap_or_default())
+                    else {
                         continue;
                     };
+                    if directory.is_none() {
+                        return Err(invalid(format!(
+                            "{path}: animation {} names its file from this file's folder, whose name isn't UTF-8",
+                            animation.name
+                        )));
+                    }
                     if animation.name.len() > ANIMATION_NAME {
                         return Err(invalid(format!(
                             "{path}: animation {} is longer than the {ANIMATION_NAME} bytes the engine keeps",
@@ -902,7 +911,7 @@ impl Roster {
                         .or_default()
                         .push(animation);
                 } else if item.keyword_is("entity") {
-                    entities.declare(&item.value, &path, &mut roster)?;
+                    entities.declare(&item.value, &file, &mut roster)?;
                 } else if item.keyword_is("light")
                     && let Some(fields) = item.value.items()
                 {
@@ -934,10 +943,12 @@ impl Roster {
     fn parse(
         &mut self,
         layers: &ResolvedLayers,
-        path: &str,
+        file: &ScriptPath,
         words: &[&str],
     ) -> io::Result<Option<parser::Document>> {
-        let bytes = layers.read_uncovered(path)?;
+        let bytes = file.read_uncovered(layers)?;
+        let text = file.text();
+        let path: &str = &text;
         if !words.iter().any(|word| {
             bytes
                 .windows(word.len())
@@ -958,9 +969,9 @@ impl Roster {
             Err(error) => {
                 // A visual mod's file that does not parse is read as the recording's own file
                 // of that path, named; the names only the mod's file holds stay undecided.
-                if layers.supplied_by_visual_mod(path)
+                if layers.supplied_by_visual_mod(file)
                     && let Some(recorded) = layers.without_overlays()
-                    && let Ok(recorded_bytes) = recorded.read_uncovered(path)
+                    && let Ok(recorded_bytes) = file.read_uncovered(&recorded)
                     && let Ok(document) = read(&recorded_bytes)
                 {
                     layers.note_overlay_refusal(format!("descriptor {path} ({error})"));
@@ -1127,7 +1138,7 @@ impl Entities {
     fn declare(
         &mut self,
         value: &parser::Value,
-        path: &str,
+        path: &ScriptPath,
         roster: &mut Roster,
     ) -> io::Result<()> {
         let Some(fields) = value.items() else {
@@ -1191,7 +1202,7 @@ impl Entities {
                 })
             }));
         definition.name = name.clone();
-        definition.sources.insert(0, path.to_owned());
+        definition.sources.insert(0, path.clone());
         definition.clone = None;
         // A named object binds only when it is a `pdxmesh`; otherwise the
         // failed lookup is logged and the held binding stays. That binding
@@ -1308,10 +1319,10 @@ pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {
 }
 
 /// Indexes every `.dds` and
-/// `.tga` below `gfx/models` by its stored basename.
+/// `.tga` below `gfx/models` by its stored basename's bytes.
 #[derive(Clone, Debug, Default)]
 pub struct TextureIndex {
-    paths: BTreeMap<String, String>,
+    paths: BTreeMap<Vec<u8>, ScriptPath>,
 }
 
 impl TextureIndex {
@@ -1319,24 +1330,25 @@ impl TextureIndex {
     /// [`crate::defines::load_order`].
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let paths = layers.descriptor_paths("gfx/models", &[".dds", ".tga"])?;
-        Ok(Self::new(crate::defines::load_order(
-            "gfx/models/",
-            "",
-            paths.iter().map(String::as_str),
-        )))
+        Ok(Self::new(crate::defines::load_order("gfx/models/", "", &paths)))
     }
 
     /// Indexes `paths` in enumeration order: each basename keeps the first
     /// file by exact byte spelling. A later file of that basename does not
     /// replace the held path.
-    pub fn new(paths: impl IntoIterator<Item = String>) -> Self {
+    pub fn new(paths: impl IntoIterator<Item = ScriptPath>) -> Self {
         let mut index = Self::default();
         for path in paths {
+            let bytes = path.as_bytes();
             // The suffix test is byte-exact.
-            if !(path.ends_with(".dds") || path.ends_with(".tga")) {
+            if !(bytes.ends_with(b".dds") || bytes.ends_with(b".tga")) {
                 continue;
             }
-            let basename = path.rsplit('/').next().unwrap_or(&path).to_owned();
+            let basename = bytes
+                .rsplit(|byte| *byte == b'/')
+                .next()
+                .unwrap_or(bytes)
+                .to_vec();
             index.paths.entry(basename).or_insert(path);
         }
         index
@@ -1345,13 +1357,17 @@ impl TextureIndex {
     /// The one path requested for a material texture.
     /// Looks the authored string up byte-exactly after spelling
     /// its first `.tga` as `.dds`; a miss keeps the mesh directory plus the
-    /// authored name.
-    pub fn resolve(&self, directory: &str, authored: &str) -> String {
+    /// authored name. Non-UTF-8 matches are refused because texture loading requires text paths.
+    pub fn resolve(&self, directory: &str, authored: &str) -> io::Result<String> {
         let key = authored.replacen(".tga", ".dds", 1);
-        match self.paths.get(&key) {
-            Some(path) => path.clone(),
-            None if directory.is_empty() => authored.to_owned(),
-            None => format!("{directory}/{authored}"),
+        match self.paths.get(key.as_bytes()) {
+            Some(path) => path.to_str().map(str::to_owned).ok_or_else(|| {
+                invalid(format!(
+                    "texture {authored} resolves to {path}, whose path isn't UTF-8 text"
+                ))
+            }),
+            None if directory.is_empty() => Ok(authored.to_owned()),
+            None => Ok(format!("{directory}/{authored}")),
         }
     }
 }

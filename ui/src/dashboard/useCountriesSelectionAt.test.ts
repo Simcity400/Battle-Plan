@@ -120,7 +120,8 @@ test('actual spending hook fetches dated alias ledgers without broadening rows o
     view.state.groups = catalogue();
     view.state.error = 'Native catalogue could not be read';
     const failed = view.politics(widget, view.runtime, true);
-    assert.equal(failed.error, view.state.error); failed.retry();
+    assert.equal(failed.error, undefined, 'published membership stays in use');
+    assert.equal(failed.groupError, view.state.error); failed.retry();
     assert.equal(view.state.groupRetries, 1); assert.equal(view.state.ledgerRetries, 1);
     const missing = view.politics(view.widget({ kind: 'tags', tags: ['unknown'] }), view.runtime, true);
     assert.deepEqual(missing.tags, []); assert.deepEqual(view.state.requests, []);

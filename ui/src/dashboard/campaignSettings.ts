@@ -40,7 +40,8 @@ export function factionIdentity(recordedName: string | null, founder: string | n
 }
 
 const KEY = 'hoi4-replay.campaign-settings.v1';
-export const MAX_CAMPAIGNS = 256;
+// Use the same byte budget for reads and writes so saved campaigns cannot vanish on reload.
+export const MAX_CAMPAIGN_SETTINGS_STORAGE = 2_000_000;
 export const MAX_FACTIONS = 256;
 export const MAX_SETS = 64;
 const MAX_TEXT = 160;
@@ -68,7 +69,7 @@ function style(value: unknown): FactionStyle | null {
 export function parseCampaignSettings(input: unknown): CampaignSettings {
   if (!object(input) || input.version !== 1) return structuredClone(EMPTY);
   const campaigns: CampaignSettings['campaigns'] = {};
-  for (const [key, value] of Object.entries(object(input.campaigns) ? input.campaigns : {}).slice(0, MAX_CAMPAIGNS)) {
+  for (const [key, value] of Object.entries(object(input.campaigns) ? input.campaigns : {})) {
     if (!safeKey(key, /^[0-9a-f]{1,128}$/) || !object(value) || !object(value.factions)) continue;
     const factions: Record<string, FactionStyle> = {};
     for (const [id, entry] of Object.entries(value.factions).slice(0, MAX_FACTIONS)) {
@@ -140,7 +141,6 @@ export function setFactionStyle(settings: CampaignSettings, campaign: string, fa
 /** A recorded tag overrides the sidebar flag; null follows the shown country. */
 export function setCampaignFlag(settings: CampaignSettings, campaign: string, tag: string | null): CampaignSettings {
   if (!safeKey(campaign, /^[0-9a-f]{1,128}$/) || tag !== null && !opaqueTag(tag)) return settings;
-  if (!(campaign in settings.campaigns) && Object.keys(settings.campaigns).length >= MAX_CAMPAIGNS) return settings;
   const entry = { ...(settings.campaigns[campaign] ?? { factions: {} }) };
   if (tag === null) delete entry.flag; else entry.flag = tag;
   return { ...settings, campaigns: { ...settings.campaigns, [campaign]: entry } };
@@ -180,7 +180,7 @@ const listeners = new Set<() => void>();
 export function loadCampaignSettings(storage?: Storage): CampaignSettings {
   try {
     const raw = (storage ?? localStorage).getItem(KEY);
-    return raw && raw.length <= 2_000_000 ? parseCampaignSettings(JSON.parse(raw)) : structuredClone(EMPTY);
+    return raw && raw.length <= MAX_CAMPAIGN_SETTINGS_STORAGE ? parseCampaignSettings(JSON.parse(raw)) : structuredClone(EMPTY);
   } catch {
     return structuredClone(EMPTY);
   }
@@ -192,7 +192,9 @@ export function saveCampaignSettings(settings: CampaignSettings, storage?: Stora
   current = safe;
   for (const listener of listeners) listener();
   try {
-    (storage ?? localStorage).setItem(KEY, JSON.stringify(safe));
+    const raw = JSON.stringify(safe);
+    if (raw.length > MAX_CAMPAIGN_SETTINGS_STORAGE) throw new Error('Campaign settings exceed the settings storage budget.');
+    (storage ?? localStorage).setItem(KEY, raw);
     return null;
   } catch {
     return 'Campaign settings could not be saved on this device; they apply until the app closes.';

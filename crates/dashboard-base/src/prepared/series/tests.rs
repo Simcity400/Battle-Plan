@@ -1502,6 +1502,51 @@ fn multi_key_events_resume_in_hour_key_and_duplicate_order() {
 }
 
 #[test]
+fn events_within_page_only_each_keys_own_hours_in_merged_order() {
+    let fixture = Fixture::new();
+    let mut states = BTreeMap::from([(2, KeyState::default()), (9, KeyState::default())]);
+    let mut batch = Batch::default();
+    batch.through(0);
+    batch.through(19);
+    for hour in 0..20 {
+        for key in [2, 9] {
+            for duplicate in 0..3 {
+                batch
+                    .event(
+                        key,
+                        states.get_mut(&key).unwrap(),
+                        hour,
+                        &json!([hour, key, duplicate]),
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    fixture.publish(batch, &mut states);
+    let flag = AtomicBool::new(false);
+    let mut reader = Reader::new(&fixture.store, &fixture.key, "test".into(), &flag).unwrap();
+    let spans = [(2, 3, 4), (9, 4, 5), (2, 10, 10)];
+    let mut cursor = 0;
+    let mut rows = Vec::new();
+    loop {
+        let page = reader.events_within(&spans, cursor, 4).unwrap();
+        assert_eq!(page.total, 15);
+        rows.extend(page.rows.into_iter().map(|row| (row.hour, row.key, row.ordinal)));
+        match page.cursor {
+            Some(next) => cursor = next,
+            None => break,
+        }
+    }
+    let expected: Vec<(i32, u64, u64)> = [(3, 2), (4, 2), (4, 9), (5, 9), (10, 2)]
+        .into_iter()
+        .flat_map(|(hour, key): (i32, u64)| {
+            (0..3_u64).map(move |duplicate| (hour, key, hour as u64 * 3 + duplicate))
+        })
+        .collect();
+    assert_eq!(rows, expected);
+}
+
+#[test]
 fn hourly_dense_runs_use_compact_key_blobs_and_keep_wide_values_exact() {
     let fixture = Fixture::new();
     let mut states: BTreeMap<_, _> = (0..1500).map(|key| (key, KeyState::default())).collect();

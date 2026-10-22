@@ -11,7 +11,7 @@ use std::{
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
@@ -119,17 +119,30 @@ pub struct SettingsPatch {
     politics: Option<bool>,
 }
 
+/// Held while Start with Windows and its saved setting change together.
+static START_WITH_WINDOWS: Mutex<()> = Mutex::new(());
+
 #[tauri::command]
 pub async fn update_recorder_settings(
     app: AppHandle,
     patch: SettingsPatch,
 ) -> Result<SettingsView, String> {
     let view = blocking(move || {
-        // The Run entry changes first, so a saved setting always matches it.
-        if let Some(enabled) = patch.start_with_windows {
-            startup::set_start_with_windows(enabled)?;
-        }
-        update(move |settings| {
+        // The Run entry must change before its setting is saved.
+        let _serial = START_WITH_WINDOWS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let previous = match patch.start_with_windows {
+            Some(enabled) => {
+                let previous = RecorderSettings::load()
+                    .map_err(|error| format!("Recorder settings could not be read: {error}"))?
+                    .start_with_windows;
+                startup::set_start_with_windows(enabled)?;
+                Some(previous)
+            }
+            None => None,
+        };
+        let view = update(move |settings| {
             let set = |field: &mut bool, value: Option<bool>| {
                 if let Some(value) = value {
                     *field = value;
@@ -144,7 +157,18 @@ pub async fn update_recorder_settings(
             set(&mut settings.game_score, patch.game_score);
             set(&mut settings.operation_outcomes, patch.operation_outcomes);
             set(&mut settings.politics, patch.politics);
-        })
+        });
+        if view.is_err()
+            && let Some(previous) = previous
+        {
+            // A save can fail after replacement; restore the Run entry from what is now saved.
+            let saved = RecorderSettings::load()
+                .map_or(previous, |settings| settings.start_with_windows);
+            if let Err(error) = startup::set_start_with_windows(saved) {
+                eprintln!("{error}");
+            }
+        }
+        view
     })
     .await?;
     app.state::<Arc<Recorder>>().settings_changed();

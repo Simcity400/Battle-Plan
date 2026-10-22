@@ -68,6 +68,27 @@ fn a_cube_map_holds_six_chains_in_face_order() {
     assert!(matches!(load(&file), Err(Failure::Undefined(why)) if why.contains("face 5")));
 }
 
+/// Additional empty mip levels cannot change the decode outcome, even with a huge declared count.
+#[test]
+fn a_zero_extent_cube_keeps_two_empty_levels_a_face() {
+    let mut file = header(0, 0, u32::MAX, 4, b"DXT1", 0, [0; 4]);
+    file[112..116].copy_from_slice(&0xFE00_u32.to_le_bytes());
+    let texture = load(&file).unwrap().unwrap().0;
+    assert_eq!((texture.faces, texture.width, texture.height), (6, 0, 0));
+    assert!(texture.mips.iter().all(|levels| levels.len() == 2));
+    let decoded = |force_pow2_textures| {
+        super::super::decode_texture_image(
+            b"cube.dds",
+            &file,
+            super::super::Decode {
+                force_pow2_textures,
+            },
+        )
+    };
+    assert!(matches!(decoded(false), Err(Failure::Undecodable(why)) if why.contains("0x0")));
+    assert!(matches!(decoded(true), Err(Failure::Undefined(why)) if why.contains("level 1")));
+}
+
 pub fn dx10(width: u32, height: u32, mips: u32, dxgi: u32) -> Vec<u8> {
     let mut file = header(width, height, mips, 4, b"DX10", 0, [0; 4]);
     file[8..12].copy_from_slice(&0x2_0000_u32.to_le_bytes());

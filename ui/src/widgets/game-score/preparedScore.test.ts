@@ -59,12 +59,30 @@ test('prepared score table and race reuse exact rows and prepared holder continu
     renderToStaticMarkup(createElement(Widget, { ...props, widget: { ...props.widget, countries: { kind: 'group', group: { type: 'top', count: 1 }, membership: 'hour', aggregate: false } } }));
     assert.equal(host.__scoreRows?.length, 1, 'Top score selection does not depend on unrelated group history.');
     host.__scorePrepared = { ...host.__scorePrepared, data: { reply, stretches: {}, approximate: true }, error: 'Background preparation is off.' };
-    renderToStaticMarkup(createElement(Widget, props));
+    assert.match(renderToStaticMarkup(createElement(Widget, props)), /data-detail="Background preparation is off\."/, 'the stop is said beside the rows');
     assert.deepEqual(host.__scoreRows, expected, 'unprepared rows remain visible when background preparation stops');
     assert.equal(host.__scoreParity?.().complete, false, 'tail values have no prepared parity witness');
     renderToStaticMarkup(createElement(Widget, { ...props, widget: { ...props.widget, options: { view: 'race' } } }));
     assert.equal(host.__scoreRace?.[0].stretch, expected[0].stretch, 'tail race uses only its own hour continuity');
     assert.notEqual(host.__scoreRace?.[0].stretch, stretch);
+    host.__scoreRows = undefined;
+    host.__scorePrepared = { ...host.__scorePrepared, hour: 100, pending: true, error: 'Cannot read hour 104' };
+    assert.match(renderToStaticMarkup(createElement(Widget, props)), /data-detail="Cannot read hour 104"/);
+    assert.equal(host.__scoreRows, undefined, 'no table shows another hour in place of the one asked');
+    const seekFailed = renderToStaticMarkup(createElement(Widget, { ...props, widget: { ...props.widget, options: { view: 'race' } } }));
+    assert.doesNotMatch(seekFailed, /Cannot read hour 104/, 'a failed seek is left to the race state alone, with no notice beside an older hour');
+    for (const options of [{}, { view: 'race' }]) {
+      host.__scoreRows = undefined;
+      host.__scorePrepared = { data: { reply: { ...reply, countries: [] }, stretches: {}, approximate: true }, hour: 104, pending: false,
+        error: 'Preparation stopped', retry() {} };
+      const html = renderToStaticMarkup(createElement(Widget, { ...props, widget: { ...props.widget, options } }));
+      assert.equal(html.match(/data-detail="Preparation stopped"/g)?.length, 1, 'the refresh failure is said with its Retry');
+      assert.match(html, />Retry</);
+      if (!('view' in options)) {
+        assert.ok((html.match(/class="widget-state/g)?.length ?? 0) >= 2, 'the empty state stays beside the failure');
+        assert.equal(host.__scoreRows, undefined);
+      }
+    }
   } finally {
     delete host.__scoreRows; delete host.__scoreRace; delete host.__scoreParity; delete host.__scorePrepared;
     await vite.close();

@@ -93,12 +93,13 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
   if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see lend-lease." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !rows) return <WidgetState kind="loading" label="Loading lend-lease…" />;
-  if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !rows) return <>{groupFailure}<WidgetState kind="loading" label="Loading lend-lease…" /></>;
+  if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   // A group whose membership at this hour is unrecorded or empty says so, never "none".
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <WidgetState kind={groupReason.kind} message={groupReason.message} />;
+  if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
   const main = <div className="lend-lease-balance">
     <div className="stockpile-caption-line">
       <span>{dayLabel(hour)}</span>
@@ -121,7 +122,7 @@ export default function LendLeaseBalanceWidget({ widget, runtime, active, onDiag
         contextItems={item => { const history = histories.get(item.row.holder); const first = history && firstRecorded(history);
           return [{ label: 'Show partners', run: () => open(item) }, ...first != null ? [jumpItem(runtime, track.id, first)] : []]; }} />}
   </div>;
-  return <div ref={anchor} className="lend-lease-balance-host">
+  return <div ref={anchor} className="lend-lease-balance-host">{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
       title={picked ? `${looks.name(picked.tag, at)}: ${PARTNERS.label.toLowerCase()}` : PARTNERS.label} day={dayLabel(at)}
       following={drill.follow} canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}

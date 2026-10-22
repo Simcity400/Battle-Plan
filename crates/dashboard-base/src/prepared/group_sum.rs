@@ -47,51 +47,14 @@ pub fn summary(
         let mut tracks = Vec::new();
         for member in members {
             check_cancel(cancelled)?;
-            fn read(
-                reader: &mut Reader<'_>,
-                keys: &[(u64, i32, i32, Option<bool>)],
-                bounds: (i32, i32),
-                tail: &[Run],
-            ) -> io::Result<Vec<Run>> {
-                let mut rows = Vec::new();
-                for &(key, first, last, boundary) in keys {
-                    let from = first.max(bounds.0);
-                    let to = last.min(bounds.1).min(
-                        tail.first()
-                            .map_or(i32::MAX, |run| run.first_hour.saturating_sub(1)),
-                    );
-                    if from > to {
-                        continue;
-                    }
-                    for mut row in reader.runs(key, from, to)? {
-                        if row.first_hour == first
-                            && let Some(boundary) = boundary
-                        {
-                            row.break_before = boundary;
-                        }
-                        rows.push(row);
-                    }
-                }
-                rows.extend(tail.iter().filter_map(|run| {
-                    let first_hour = run.first_hour.max(bounds.0);
-                    let last_hour = run.last_hour.min(bounds.1);
-                    (first_hour <= last_hour).then_some(Run {
-                        first_hour,
-                        last_hour,
-                        ..*run
-                    })
-                }));
-                rows.sort_by_key(|run| run.first_hour);
-                Ok(rows)
-            }
             let (value_tail, presence_tail, rank_tail) = member.tail.unwrap_or((&[], &[], &[]));
-            let rows = read(values, member.keys, bounds, value_tail)?;
-            let presence = read(present, member.present_keys, bounds, presence_tail)?;
+            let rows = member_runs(values, member.keys, bounds, value_tail)?;
+            let presence = member_runs(present, member.present_keys, bounds, presence_tail)?;
             let ranked = if let Some((reader, _)) = &mut ranks {
                 member
                     .rank_key
                     .map(|actor| {
-                        read(
+                        member_runs(
                             reader,
                             &[(actor, i32::MIN, i32::MAX, None)],
                             bounds,
@@ -335,27 +298,53 @@ pub fn summary(
                     absolute_total: 0,
                     first_value: 0.0,
                     last_value: 0.0,
+                    last_value_hour: recorded.first_hour,
                     min_value: 0.0,
                     max_value: 0.0,
                     ..recorded
                 });
+                continue;
             }
-        }
-        for (index, bucket) in line.buckets.iter_mut().enumerate() {
-            let Some(recorded) = roster.buckets[index] else {
+            let Some(recorded) = recorded else {
                 continue;
             };
-            if !expected[index] {
-                continue;
-            }
-            let recorded_span = [HourSpan {
-                first_hour: recorded.first_hour,
-                last_hour: recorded.last_hour,
-            }];
+            // Shared column endpoints ensure the members' parts add up.
+            let span = (recorded.first_hour, recorded.last_hour);
+            let (ranked, ranked_hours) = match (ranks.as_mut(), member.rank_key) {
+                (Some((reader, top)), Some(actor)) => {
+                    let top = *top;
+                    let rank = membership
+                        .as_ref()
+                        .and_then(|summary| summary.buckets[index]);
+                    let throughout = rank.is_some_and(|rank| {
+                        rank.max_value <= top as f64
+                            && !rank.has_break
+                            && rank.first_hour <= span.0
+                            && rank.last_hour >= span.1
+                    });
+                    let outside = rank
+                        .filter(|rank| rank.max_value > top as f64)
+                        .map(|rank| rank.max_hour);
+                    if throughout {
+                        (Some(((true, true, span.0), outside)), None)
+                    } else {
+                        let tail = member.tail.map_or(&[][..], |(_, _, tail)| tail);
+                        let runs = rank_runs(&mut **reader, actor, tail, span)?;
+                        let within: Vec<(i32, i32)> = runs
+                            .iter()
+                            .filter(|run| run.value <= i128::from(top))
+                            .map(|run| (run.first_hour, run.last_hour))
+                            .collect();
+                        let ends = ranked_ends(&runs, span, i128::from(top));
+                        (Some((ends, outside)), Some(within))
+                    }
+                }
+                _ => (None, None),
+            };
             let mut zeros = Vec::new();
-            for span in member.zeros {
-                let first_hour = span.first_hour.max(recorded.first_hour);
-                let last_hour = span.last_hour.min(recorded.last_hour);
+            for zero in member.zeros {
+                let first_hour = zero.first_hour.max(span.0);
+                let last_hour = zero.last_hour.min(span.1);
                 if first_hour <= last_hour {
                     zeros.push(HourSpan {
                         first_hour,
@@ -364,7 +353,10 @@ pub fn summary(
                 }
             }
             crate::products::faction_totals::for_each_absent(
-                &recorded_span,
+                &[HourSpan {
+                    first_hour: span.0,
+                    last_hour: span.1,
+                }],
                 &allowed,
                 cancelled,
                 |first_hour, last_hour| {
@@ -375,67 +367,56 @@ pub fn summary(
                     Ok(())
                 },
             )?;
-            zeros.sort_by_key(|span| span.first_hour);
-            if let (Some(first), Some(last)) = (zeros.first(), zeros.last()) {
-                if let Some(value) = bucket {
-                    if first.first_hour < value.first_hour {
-                        value.first_hour = first.first_hour;
-                        value.first_value = 0.0;
-                        value.first_break = recorded.first_break;
-                    }
-                    if last.last_hour > value.last_hour {
-                        value.last_hour = last.last_hour;
-                        if value.last_value != 0.0 {
-                            value.last_value_hour = last.first_hour;
-                        }
-                        value.last_value = 0.0;
-                    }
-                    if value.min_value > 0.0 {
-                        value.min_value = 0.0;
-                        value.min_hour = first.first_hour;
-                    }
-                    if value.max_value < 0.0 {
-                        value.max_value = 0.0;
-                        value.max_hour = first.first_hour;
-                    }
-                } else {
-                    let mut zero = None;
-                    let mut merged = Vec::new();
-                    for span in zeros {
-                        crate::products::country_groups::mark_unobserved(
-                            &mut merged,
-                            span.first_hour,
-                            span.last_hour,
-                        );
-                    }
-                    for span in merged {
-                        let next = ChartBucket {
-                            absolute_total: 0,
-                            first_hour: span.first_hour,
-                            last_hour: span.last_hour,
-                            first_value: 0.0,
-                            last_value: 0.0,
-                            last_value_hour: span.first_hour,
-                            min_hour: span.first_hour,
-                            min_value: 0.0,
-                            max_hour: span.first_hour,
-                            max_value: 0.0,
-                            first_break: recorded.first_break,
-                            has_break: recorded.has_break,
-                        };
-                        zero = if zero.is_some() {
-                            crate::prepared_chart::merge(zero, Some(next))
-                        } else {
-                            Some(next)
-                        };
-                    }
-                    if let Some(value) = &mut zero {
-                        value.has_break |= value.first_hour > recorded.first_hour
-                            || value.last_hour < recorded.last_hour;
-                    }
-                    *bucket = zero;
+            zeros.sort_by_key(|zero| zero.first_hour);
+            // Present but unvalued members make the whole column unknown, never zero.
+            let unread = match (*bucket, presence.buckets[index]) {
+                (_, None) => false,
+                (Some(value), Some(held))
+                    if !value.has_break
+                        && value.first_hour <= held.first_hour
+                        && held.last_hour <= value.last_hour =>
+                {
+                    false
                 }
+                _ => {
+                    let (value_tail, presence_tail, _) =
+                        member.tail.unwrap_or((&[], &[], &[]));
+                    let hours = |runs: Vec<Run>| {
+                        runs.into_iter()
+                            .map(|run| (run.first_hour, run.last_hour))
+                            .collect::<Vec<_>>()
+                    };
+                    let mut known = hours(member_runs(values, member.keys, span, value_tail)?);
+                    known.extend(zeros.iter().map(|zero| (zero.first_hour, zero.last_hour)));
+                    known.sort_unstable();
+                    let held = hours(member_runs(
+                        present,
+                        member.present_keys,
+                        span,
+                        presence_tail,
+                    )?);
+                    let unread = without(&held, &known);
+                    match &ranked_hours {
+                        Some(within) => unread.iter().any(|&(first, last)| {
+                            within
+                                .iter()
+                                .any(|&(from, to)| from <= last && first <= to)
+                        }),
+                        None => !unread.is_empty(),
+                    }
+                }
+            };
+            if unread {
+                *bucket = None;
+                continue;
             }
+            *bucket = column_part(
+                *bucket,
+                presence.buckets[index],
+                recorded,
+                ranked,
+                &zeros,
+            );
         }
         match &mut result {
             None => result = Some(line),
@@ -444,8 +425,11 @@ pub fn summary(
                     *sum = match (*sum, member) {
                         (Some(a), Some(b)) => Some(ChartBucket {
                             absolute_total: a.absolute_total.saturating_add(b.absolute_total),
+                            first_hour: a.first_hour.min(b.first_hour),
+                            last_hour: a.last_hour.max(b.last_hour),
                             first_value: a.first_value + b.first_value,
                             last_value: a.last_value + b.last_value,
+                            last_value_hour: a.last_value_hour.max(b.last_value_hour),
                             min_value: a.min_value + b.min_value,
                             max_value: a.max_value + b.max_value,
                             first_break: a.first_break || b.first_break,
@@ -481,6 +465,230 @@ pub fn summary(
         }
     }
     Ok(result)
+}
+
+fn member_runs(
+    reader: &mut Reader<'_>,
+    keys: &[(u64, i32, i32, Option<bool>)],
+    bounds: (i32, i32),
+    tail: &[Run],
+) -> io::Result<Vec<Run>> {
+    let mut rows = Vec::new();
+    for &(key, first, last, boundary) in keys {
+        let from = first.max(bounds.0);
+        let to = last.min(bounds.1).min(
+            tail.first()
+                .map_or(i32::MAX, |run| run.first_hour.saturating_sub(1)),
+        );
+        if from > to {
+            continue;
+        }
+        for mut row in reader.runs(key, from, to)? {
+            if row.first_hour == first
+                && let Some(boundary) = boundary
+            {
+                row.break_before = boundary;
+            }
+            rows.push(row);
+        }
+    }
+    rows.extend(tail.iter().filter_map(|run| {
+        let first_hour = run.first_hour.max(bounds.0);
+        let last_hour = run.last_hour.min(bounds.1);
+        (first_hour <= last_hour).then_some(Run {
+            first_hour,
+            last_hour,
+            ..*run
+        })
+    }));
+    rows.sort_by_key(|run| run.first_hour);
+    Ok(rows)
+}
+
+/// Both inputs must be in hour order; `minus` may overlap.
+fn without(spans: &[(i32, i32)], minus: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut out = Vec::new();
+    for &(first, last) in spans {
+        let mut next = i64::from(first);
+        for &(from, to) in minus {
+            if i64::from(to) < next {
+                continue;
+            }
+            if i64::from(from) > i64::from(last) {
+                break;
+            }
+            if i64::from(from) > next {
+                out.push((next as i32, from - 1));
+            }
+            next = next.max(i64::from(to) + 1);
+            if next > i64::from(last) {
+                break;
+            }
+        }
+        if next <= i64::from(last) {
+            out.push((next as i32, last));
+        }
+    }
+    out
+}
+
+/// Present but unvalued members make the column unknown, not zero.
+fn column_part(
+    value: Option<crate::prepared_chart::ChartBucket>,
+    present: Option<crate::prepared_chart::ChartBucket>,
+    recorded: crate::prepared_chart::ChartBucket,
+    ranked: Option<((bool, bool, i32), Option<i32>)>,
+    zeros: &[HourSpan],
+) -> Option<crate::prepared_chart::ChartBucket> {
+    let (first, last) = (recorded.first_hour, recorded.last_hour);
+    let (ranked_first, ranked_last, ranked_since) =
+        ranked.map_or((true, true, first), |(ends, _)| ends);
+    let zero_at = |hour: i32| {
+        zeros
+            .iter()
+            .any(|zero| zero.first_hour <= hour && hour <= zero.last_hour)
+    };
+    // Some(None) is proven zero; None is unknown.
+    let part = |hour: i32, ranked: bool, valued: Option<f64>| -> Option<Option<f64>> {
+        if !ranked {
+            return Some(None);
+        }
+        if let Some(valued) = valued {
+            return Some(Some(valued));
+        }
+        let present = present
+            .is_some_and(|present| present.first_hour <= hour && hour <= present.last_hour);
+        (zero_at(hour) || !present).then_some(None)
+    };
+    let starts = value.filter(|value| value.first_hour <= first);
+    let ends = value.filter(|value| value.last_hour >= last);
+    let start = part(first, ranked_first, starts.map(|value| value.first_value))?;
+    let end = part(last, ranked_last, ends.map(|value| value.last_value))?;
+    let since = match end {
+        Some(_) => value
+            .map_or(first, |value| value.last_value_hour)
+            .max(ranked_since),
+        None => match value {
+            Some(value) => {
+                let counted = if ranked_last {
+                    value.last_hour
+                } else {
+                    value.last_hour.min(ranked_since.saturating_sub(1))
+                };
+                if counted == value.last_hour && value.last_value == 0.0 {
+                    value.last_value_hour
+                } else {
+                    counted.saturating_add(1)
+                }
+            }
+            None => first,
+        },
+    }
+    .clamp(first, last);
+    let (mut min_hour, mut min_value, mut max_hour, mut max_value) =
+        value.map_or((first, 0.0, first, 0.0), |value| {
+            (
+                value.min_hour,
+                value.min_value,
+                value.max_hour,
+                value.max_value,
+            )
+        });
+    let whole = starts.is_some()
+        && ends.is_some()
+        && ranked_first
+        && ranked_last
+        && ranked_since == first
+        && zeros.is_empty();
+    if !whole {
+        let zero = if start.is_none() {
+            Some(first)
+        } else if end.is_none() {
+            Some(since)
+        } else {
+            ranked
+                .and_then(|(_, outside)| outside)
+                .or_else(|| zeros.first().map(|zero| zero.first_hour))
+        };
+        if let Some(zero) = zero.map(|zero| zero.clamp(first, last)) {
+            if min_value > 0.0 {
+                min_value = 0.0;
+                min_hour = zero;
+            }
+            if max_value < 0.0 {
+                max_value = 0.0;
+                max_hour = zero;
+            }
+        }
+    }
+    Some(crate::prepared_chart::ChartBucket {
+        absolute_total: value.map_or(0, |value| value.absolute_total),
+        first_hour: first,
+        last_hour: last,
+        first_value: start.unwrap_or(0.0),
+        last_value: end.unwrap_or(0.0),
+        last_value_hour: since,
+        min_hour: min_hour.clamp(first, last),
+        min_value,
+        max_hour: max_hour.clamp(first, last),
+        max_value,
+        first_break: starts.map_or(recorded.first_break, |value| value.first_break),
+        has_break: recorded.has_break || value.is_some_and(|value| value.has_break),
+    })
+}
+
+fn rank_runs(
+    reader: &mut Reader<'_>,
+    actor: u64,
+    tail: &[Run],
+    (first, last): (i32, i32),
+) -> io::Result<Vec<Run>> {
+    let to = last.min(
+        tail.first()
+            .map_or(i32::MAX, |run| run.first_hour.saturating_sub(1)),
+    );
+    let mut runs = if first <= to {
+        reader.runs(actor, first, to)?
+    } else {
+        Vec::new()
+    };
+    runs.extend(tail.iter().filter_map(|run| {
+        let first_hour = run.first_hour.max(first);
+        let last_hour = run.last_hour.min(last);
+        (first_hour <= last_hour).then_some(Run {
+            first_hour,
+            last_hour,
+            ..*run
+        })
+    }));
+    runs.sort_by_key(|run| run.first_hour);
+    Ok(runs)
+}
+
+/// An hour without a rank is outside the Top N, matching the exact sum.
+fn ranked_ends(runs: &[Run], (first, last): (i32, i32), top: i128) -> (bool, bool, i32) {
+    let mut stretches: Vec<(i32, bool)> = Vec::new();
+    let mut next = i64::from(first);
+    for run in runs {
+        if i64::from(run.first_hour) > next {
+            stretches.push((next as i32, false));
+        }
+        stretches.push((run.first_hour, run.value <= top));
+        next = i64::from(run.last_hour) + 1;
+    }
+    if next <= i64::from(last) {
+        stretches.push((next as i32, false));
+    }
+    let start = stretches.first().is_some_and(|stretch| stretch.1);
+    let end = stretches.last().is_some_and(|stretch| stretch.1);
+    let mut since = first;
+    for &(from, status) in stretches.iter().rev() {
+        if status != end {
+            break;
+        }
+        since = from;
+    }
+    (start, end, since)
 }
 
 #[cfg(test)]
@@ -608,5 +816,300 @@ mod tests {
             (0.0, 0.0, -10.0, 10.0)
         );
         assert_eq!(dense.buckets[1].unwrap().last_value, -2.0);
+    }
+
+    fn top_one(series: [(i128, i128); 4], width: u32) -> crate::prepared_chart::ChartSummary {
+        group(series.map(|(a, b)| (Some(a), Some(b))), Some(1), width)
+    }
+
+    fn group(
+        series: [(Option<i128>, Option<i128>); 4],
+        top: Option<u64>,
+        width: u32,
+    ) -> crate::prepared_chart::ChartSummary {
+        let rank = |own: Option<i128>, other: Option<i128>| {
+            own.map(|own| if other.is_none_or(|other| own > other) { 1 } else { 2 })
+        };
+        sums(
+            series.map(|(a, b)| {
+                [
+                    (a, a.is_some(), rank(a, b)),
+                    (b, b.is_some(), rank(b, a)),
+                ]
+            }),
+            top,
+            width,
+        )
+    }
+
+    fn sums(
+        hours: [[(Option<i128>, bool, Option<i128>); 2]; 4],
+        top: Option<u64>,
+        width: u32,
+    ) -> crate::prepared_chart::ChartSummary {
+        let fixture = Fixture::new();
+        let cancelled = AtomicBool::new(false);
+        let mut values = Accumulator::default();
+        let mut present = Accumulator::default();
+        let mut rosters = Accumulator::default();
+        let mut ranks = Accumulator::default();
+        for (hour, members) in (0..).zip(hours) {
+            for (index, (value, held, rank)) in (0_u64..).zip(members) {
+                values.observe(101 + index, hour, value, false);
+                present.observe(11 + index, hour, held.then_some(1), false);
+                ranks.observe(201 + index, hour, rank, false);
+            }
+            rosters.observe(0, hour, Some(1), false);
+        }
+        let mut writer = fixture.writer();
+        for (accumulator, section) in [
+            (&mut values, "native-values"),
+            (&mut present, "native-presence"),
+            (&mut rosters, "native-rosters"),
+            (&mut ranks, "native-ranks"),
+        ] {
+            accumulator
+                .flush(&mut writer, section, 0, &cancelled)
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        let reader = |section: &str| {
+            Reader::new(&fixture.store, &fixture.key, section.into(), &cancelled).unwrap()
+        };
+        let (mut values, mut present, mut rosters, mut ranks) = (
+            reader("native-values"),
+            reader("native-presence"),
+            reader("native-rosters"),
+            reader("native-ranks"),
+        );
+        let members = [
+            Member {
+                keys: &[(101, i32::MIN, i32::MAX, None)],
+                present_keys: &[(11, i32::MIN, i32::MAX, None)],
+                rank_key: Some(201),
+                within: None,
+                excluded: &[],
+                zeros: &[],
+                tail: None,
+            },
+            Member {
+                keys: &[(102, i32::MIN, i32::MAX, None)],
+                present_keys: &[(12, i32::MIN, i32::MAX, None)],
+                rank_key: Some(202),
+                within: None,
+                excluded: &[],
+                zeros: &[],
+                tail: None,
+            },
+        ];
+        summary(
+            &mut values,
+            &mut present,
+            &mut rosters,
+            None,
+            top.map(|top| (&mut ranks, top)),
+            &members,
+            &[],
+            (0.0, 3.0, width),
+            &cancelled,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dense_top_sums_take_each_endpoint_from_the_members_ranked_there() {
+        let series = [(10, 1), (10, 1), (1, 10), (1, 10)];
+        assert!(
+            top_one(series, 4)
+                .buckets
+                .iter()
+                .all(|bucket| bucket.unwrap().first_value == 10.0)
+        );
+        let column = top_one(series, 1).buckets[0].unwrap();
+        assert_eq!((column.first_value, column.last_value), (10.0, 10.0));
+    }
+
+    #[test]
+    fn dense_top_sums_date_their_last_value_from_the_crossover() {
+        let series = [(10, 1), (10, 1), (10, 20), (10, 20)];
+        let exact: Vec<_> = top_one(series, 4)
+            .buckets
+            .iter()
+            .map(|bucket| bucket.unwrap().first_value)
+            .collect();
+        assert_eq!(exact, [10.0, 10.0, 20.0, 20.0]);
+        let column = top_one(series, 1).buckets[0].unwrap();
+        assert_eq!(
+            (column.first_hour, column.first_value),
+            (0, 10.0),
+            "{column:?}"
+        );
+        assert_eq!(
+            (column.last_value_hour, column.last_value),
+            (2, 20.0),
+            "{column:?}"
+        );
+    }
+
+    fn hourly_and_column(
+        series: [(Option<i128>, Option<i128>); 4],
+        top: Option<u64>,
+    ) -> (Vec<f64>, crate::prepared_chart::ChartBucket) {
+        let hourly = group(series, top, 4)
+            .buckets
+            .iter()
+            .map(|bucket| bucket.unwrap().first_value)
+            .collect();
+        (hourly, group(series, top, 1).buckets[0].unwrap())
+    }
+
+    #[test]
+    fn dense_sums_take_a_member_appearing_mid_column_at_the_shared_endpoints() {
+        let series = [
+            (None, Some(10)),
+            (None, Some(10)),
+            (Some(20), Some(10)),
+            (Some(20), Some(10)),
+        ];
+        for (top, hours, last) in [
+            (Some(1), [10.0, 10.0, 20.0, 20.0], 20.0),
+            (None, [10.0, 10.0, 30.0, 30.0], 30.0),
+        ] {
+            let (hourly, column) = hourly_and_column(series, top);
+            assert_eq!(hourly, hours, "{top:?}");
+            assert_eq!(
+                (column.first_hour, column.first_value),
+                (0, 10.0),
+                "{top:?} {column:?}"
+            );
+            assert_eq!(
+                (column.last_hour, column.last_value_hour, column.last_value),
+                (3, 2, last),
+                "{top:?} {column:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dense_sums_take_a_member_leaving_mid_column_at_the_shared_endpoints() {
+        let series = [
+            (Some(10), Some(5)),
+            (Some(10), Some(5)),
+            (None, Some(5)),
+            (None, Some(5)),
+        ];
+        for (top, hours, first) in [
+            (Some(1), [10.0, 10.0, 5.0, 5.0], 10.0),
+            (None, [15.0, 15.0, 5.0, 5.0], 15.0),
+        ] {
+            let (hourly, column) = hourly_and_column(series, top);
+            assert_eq!(hourly, hours, "{top:?}");
+            assert_eq!(
+                (column.first_hour, column.first_value),
+                (0, first),
+                "{top:?} {column:?}"
+            );
+            assert_eq!(
+                (column.last_hour, column.last_value_hour, column.last_value),
+                (3, 2, 5.0),
+                "{top:?} {column:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_present_without_a_value_at_an_endpoint_leaves_the_column_unknown() {
+        let fixture = Fixture::new();
+        let cancelled = AtomicBool::new(false);
+        let mut values = Accumulator::default();
+        let mut present = Accumulator::default();
+        let mut rosters = Accumulator::default();
+        for hour in 0..4 {
+            values.observe(101, hour, Some(10), false);
+            values.observe(102, hour, (hour >= 2).then_some(5), false);
+            present.observe(11, hour, Some(1), false);
+            present.observe(12, hour, Some(1), false);
+            rosters.observe(0, hour, Some(1), false);
+        }
+        let mut writer = fixture.writer();
+        for (accumulator, section) in [
+            (&mut values, "native-values"),
+            (&mut present, "native-presence"),
+            (&mut rosters, "native-rosters"),
+        ] {
+            accumulator
+                .flush(&mut writer, section, 0, &cancelled)
+                .unwrap();
+        }
+        writer.commit().unwrap();
+        let reader = |section: &str| {
+            Reader::new(&fixture.store, &fixture.key, section.into(), &cancelled).unwrap()
+        };
+        let (mut values, mut present, mut rosters) = (
+            reader("native-values"),
+            reader("native-presence"),
+            reader("native-rosters"),
+        );
+        let members = [
+            Member {
+                keys: &[(101, i32::MIN, i32::MAX, None)],
+                present_keys: &[(11, i32::MIN, i32::MAX, None)],
+                rank_key: None,
+                within: None,
+                excluded: &[],
+                zeros: &[],
+                tail: None,
+            },
+            Member {
+                keys: &[(102, i32::MIN, i32::MAX, None)],
+                present_keys: &[(12, i32::MIN, i32::MAX, None)],
+                rank_key: None,
+                within: None,
+                excluded: &[],
+                zeros: &[],
+                tail: None,
+            },
+        ];
+        let dense = summary(
+            &mut values,
+            &mut present,
+            &mut rosters,
+            None,
+            None,
+            &members,
+            &[],
+            (0.0, 3.0, 1),
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(dense.buckets, [None]);
+    }
+
+    #[test]
+    fn a_member_present_without_values_inside_a_column_leaves_it_unknown() {
+        let inside = |hour: i32| (1..=2).contains(&hour);
+        for (top, b_rank) in [(None, 1), (Some(1), 1)] {
+            let hours = [0, 1, 2, 3].map(|hour| {
+                [
+                    (Some(10), true, Some(if inside(hour) { 2 } else { 1 })),
+                    (None, inside(hour), inside(hour).then_some(b_rank)),
+                ]
+            });
+            let exact: Vec<_> = sums(hours, top, 4)
+                .buckets
+                .iter()
+                .map(|bucket| bucket.map(|bucket| bucket.first_value))
+                .collect();
+            assert_eq!(exact, [Some(10.0), None, None, Some(10.0)], "{top:?}");
+            assert_eq!(sums(hours, top, 1).buckets, [None], "{top:?}");
+        }
+        let hours = [0, 1, 2, 3].map(|hour| {
+            [
+                (Some(10), true, Some(1)),
+                (None, inside(hour), inside(hour).then_some(2)),
+            ]
+        });
+        let column = sums(hours, Some(1), 1).buckets[0].unwrap();
+        assert_eq!((column.first_value, column.last_value), (10.0, 10.0));
     }
 }

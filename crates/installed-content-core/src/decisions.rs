@@ -577,7 +577,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let mut database = Database::default();
     for path in layers.directory_files("common/decisions/categories", ".txt")? {
         let read = native::read(
-            &layers.read(&path)?,
+            &path.read(layers)?,
             native::Mode::KeepMark,
             native::Top::File(false),
             Some(&names),
@@ -634,7 +634,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let mut balances = BTreeMap::new();
     for path in layers.directory_files("common/bop", ".txt")? {
         let read = native::read(
-            &layers.read_uncovered(&path)?,
+            &path.read_uncovered(layers)?,
             native::Mode::KeepMark,
             native::Top::File(false),
             Some(&names),
@@ -677,8 +677,8 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     for path in layers.directory_files("common/decisions", ".txt")? {
         append(
             &mut database,
-            &layers.read(&path)?,
-            &path,
+            &path.read(layers)?,
+            &path.text(),
             &categories,
             &names,
         );

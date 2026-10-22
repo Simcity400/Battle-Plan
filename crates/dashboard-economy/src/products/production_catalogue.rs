@@ -20,7 +20,9 @@
 //! keeps its own refusals: a failed organisation read never refuses
 //! licences or designs.
 
-use super::keyed::{EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of};
+use super::keyed::{
+    EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of, clip_text, selected_spans,
+};
 use dashboard_base::{
     prepared::frame_changes::FrameChanges,
     products::{
@@ -574,14 +576,8 @@ pub fn query(
         reply.warnings = warnings;
         return Ok(reply);
     };
-    let chosen: Option<BTreeSet<u32>> = (!params.tags.is_empty())
-        .then(|| published.holder_spans(&params.tags).into_keys().collect());
-    let holds = |chosen: &Option<BTreeSet<u32>>, runs: &[EconomyRun]| {
-        chosen.as_ref().is_none_or(|chosen| {
-            runs.iter()
-                .any(|run| run.2.parse::<u32>().is_ok_and(|slot| chosen.contains(&slot)))
-        })
-    };
+    let chosen: Option<BTreeMap<u32, Vec<(i32, i32)>>> =
+        (!params.tags.is_empty()).then(|| published.holder_spans(&params.tags));
     let all = [(i32::MIN, i32::MAX)];
     let mut holders = BTreeSet::new();
     let mut grouped = BTreeMap::<(u64, u32), Vec<(u64, Field)>>::new();
@@ -652,15 +648,14 @@ pub fn query(
             CatalogueView::Licences => {
                 let licensee = owner as u32;
                 let licensor = party(&mut published, &fields, |field| matches!(field, Field::LicenceGiver(..)))?;
+                let spans = selected_spans(chosen.as_ref(), &[licensee], &licensor);
+                if spans.is_empty() {
+                    continue;
+                }
+                let licensor = clip_text(&licensor, &spans);
                 let parties = std::iter::once(licensee)
                     .chain(licensor.iter().filter_map(|run| run.2.parse().ok()))
                     .collect::<Vec<u32>>();
-                if chosen
-                    .as_ref()
-                    .is_some_and(|chosen| !parties.iter().any(|slot| chosen.contains(slot)))
-                {
-                    continue;
-                }
                 let mut licence = LicenceHistory {
                     licensee: licensee.to_string(),
                     ordinal: at,
@@ -675,7 +670,7 @@ pub fn query(
                     if matches!(field, Field::LicenceGiver(..)) {
                         continue;
                     }
-                    let runs = published.text(id, &all)?;
+                    let runs = published.text(id, &spans)?;
                     match field {
                         Field::LicenceLent(..) => licence.lent = runs,
                         Field::LicenceRequired(..) => licence.required = runs,
@@ -703,9 +698,11 @@ pub fn query(
             }
             CatalogueView::Organisations => {
                 let holder = party(&mut published, &fields, |field| matches!(field, Field::MioHolder(_)))?;
-                if !holds(&chosen, &holder) {
+                let spans = selected_spans(chosen.as_ref(), &[], &holder);
+                if spans.is_empty() {
                     continue;
                 }
+                let holder = clip_text(&holder, &spans);
                 let mut mio = OrganisationHistory {
                     id: owner.to_string(),
                     holder,
@@ -723,7 +720,7 @@ pub fn query(
                     if matches!(field, Field::MioHolder(_)) {
                         continue;
                     }
-                    let runs = published.text(id, &all)?;
+                    let runs = published.text(id, &spans)?;
                     match field {
                         Field::MioSize(_) => mio.size = runs,
                         Field::MioFunds(_) => mio.funds = runs,
@@ -769,9 +766,11 @@ pub fn query(
             }
             CatalogueView::Designs => {
                 let creator = party(&mut published, &fields, |field| matches!(field, Field::DesignCreator(_)))?;
-                if creator.is_empty() || !holds(&chosen, &creator) {
+                let spans = selected_spans(chosen.as_ref(), &[], &creator);
+                if creator.is_empty() || spans.is_empty() {
                     continue;
                 }
+                let creator = clip_text(&creator, &spans);
                 let mut design = DesignHistory {
                     id: format!("{owner:x}"),
                     creator,
@@ -783,7 +782,7 @@ pub fn query(
                 };
                 for (id, field) in fields {
                     if let Field::DesignObsolete(_) = field {
-                        design.obsolete = published.text(id, &all)?;
+                        design.obsolete = published.text(id, &spans)?;
                     }
                 }
                 holders.extend(design.creator.iter().filter_map(|run| run.2.parse::<u32>().ok()));

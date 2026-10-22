@@ -2187,7 +2187,8 @@ mod tests {
         )
         .unwrap();
         assert!(dense.runs.is_none());
-        assert!(dense.buckets[0].unwrap().has_break);
+        assert_eq!(dense.buckets[0], None);
+        assert_eq!(dense.buckets[1].map(|bucket| bucket.first_value), Some(2.0));
     }
 
     #[test]

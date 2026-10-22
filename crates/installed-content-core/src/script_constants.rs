@@ -179,7 +179,7 @@ impl Constants {
 pub fn read(layers: &ResolvedLayers) -> io::Result<Constants> {
     let mut files = Vec::new();
     for path in script_files::paths(layers, "common/script_constants/", Some(".txt")) {
-        files.push((path.clone(), layers.read(&path)?));
+        files.push((path.to_string(), path.read(layers)?));
     }
     Ok(parse(
         &files

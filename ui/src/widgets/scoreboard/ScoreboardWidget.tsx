@@ -2,6 +2,7 @@ import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -62,7 +63,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       descending: ranking.direction === 'descending', index: true, bars: options.cellBars === true } : null;
   const result = usePreparedScoreboard(runtime.client, track?.source, request, visible, active);
   const data = result.index?.data;
-  const { error, retry } = result;
+  const { retry } = result;
+  // A failed seek must never display another hour's held reply.
+  const error = useHeldFailure(result.error, !!result.index && result.index.hour === request?.hour, retry);
   const rows = useMemo(() => result.index ? preparedScoreboardRows(result.index, result.page, ranking.column, ranking.direction === 'descending') : NO_ROWS,
     [result.index, result.page, ranking.column, ranking.direction]);
   const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
@@ -109,20 +112,21 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (registryResult.error) return <WidgetState kind="error" detail={registryResult.error} onRetry={registryResult.retry} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
-  if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-  if (registryResult.data && !shown.length) return <WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (resolved.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
+  if (registryResult.data && !shown.length) return <>{groupFailure}<WidgetState kind="unavailable" message="The selected columns are not in this recording. Choose columns in settings." /></>;
   // A group with no member found yet asks for nothing: what the hour was, once it is read.
   const none = noMembersAt(widget.countries, resolved, groups.data, hour, track.branch.lastHour);
-  if (registryResult.data && none) return <NoMembersState reason={none.reason} />;
+  if (registryResult.data && none) return <>{groupFailure}<NoMembersState reason={none.reason} /></>;
   // A group with no member at the hour asks for nothing: no countries once its members there are
   // known, and still being prepared until then, never loading for a reply that never comes.
   if (registryResult.data && (!grouped || groups.data) && selection && resolved.top == null && !selection.tags.length) return resolved.known(hour)
-    ? <WidgetState kind="unavailable" message="No countries available for this selection." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!registryResult.data || !data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading scoreboard…" />;
-  if (!rows.length && preparedPrefix(result.index)?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!rows.length) return <WidgetState kind="unavailable" message="No countries available for this selection." />;
-  return <div className="scoreboard">
+    ? <>{groupFailure}<WidgetState kind="unavailable" message="No countries available for this selection." /></> : groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!registryResult.data || !data || (grouped && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading scoreboard…" /></>;
+  if (!rows.length && preparedPrefix(result.index)?.pending.length) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!rows.length) return <>{groupFailure}<WidgetState kind="unavailable" message="No countries available for this selection." /></>;
+  return <div className="scoreboard">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(result.page ?? result.index)?.pending.length ? preparedPrefix(result.page ?? result.index)?.coverage : undefined} />
     <Table key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Scoreboard" rows={rows} columns={columns}
       rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption ? setTableOption : undefined} sortOptionValue={tableSortToken}

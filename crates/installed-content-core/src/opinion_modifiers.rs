@@ -176,7 +176,7 @@ pub fn read(layers: &ResolvedLayers, defines: &crate::defines::Defines) -> io::R
     ];
     let mut database = Database::default();
     for path in paths {
-        match parse_with_notes(&layers.read(&path)?, bounds) {
+        match parse_with_notes(&path.read(layers)?, bounds) {
             Ok((definitions, notes)) => {
                 database.definitions.extend(definitions);
                 database

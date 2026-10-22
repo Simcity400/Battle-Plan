@@ -129,7 +129,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<TechnologySharing> {
     let names = layers.key_names()?;
     let mut result = TechnologySharing::default();
     for path in script_files::paths(layers, "common/technology_sharing/", Some(".txt")) {
-        match parse(&layers.read(&path)?, &names) {
+        match parse(&path.read(layers)?, &names) {
             Ok((groups, warnings)) => {
                 result
                     .warnings

@@ -178,12 +178,14 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
     if (previous.scheme !== 'system' && !theme.variants[previous.scheme]) next.scheme = theme.variants.dark ? 'dark' : 'light';
     return next;
   });
-  const edit = (theme: ThemeDefinition, copy: boolean) => onEdit({
+  const full = settings.custom.length >= MAX_CUSTOM_THEMES;
+  const limit = `You can keep up to ${MAX_CUSTOM_THEMES} custom themes. Delete one first.`;
+  const edit = (theme: ThemeDefinition, copy: boolean) => copy && full ? say(limit, 'warning') : onEdit({
     id: copy ? null : theme.id, name: copy ? uniqueThemeName(`${theme.name} copy`, themes.map(item => item.name)) : theme.name,
     variants: structuredClone(theme.variants), mode: theme.variants[resolved.mode] ? resolved.mode : theme.variants.dark ? 'dark' : 'light',
   });
   const importTheme = (text: string): string | null => {
-    if (settings.custom.length >= MAX_CUSTOM_THEMES) return `You can keep up to ${MAX_CUSTOM_THEMES} custom themes. Delete one first.`;
+    if (full) return limit;
     try {
       const imported = parseThemeText(text);
       const theme: ThemeDefinition = { id: newThemeId(), name: uniqueThemeName(imported.name, themes.map(item => item.name)), variants: imported.variants };
@@ -222,8 +224,8 @@ export default function AppearanceSettings({ appearance, onEdit, searchTarget }:
     </SettingsBlock>
 
     <SettingsBlock id="appearance-themes" title="Themes" plain
-      actions={<><ImportTheme disabled={settings.custom.length >= MAX_CUSTOM_THEMES} onImport={importTheme} />
-        <button type="button" className="button small" disabled={settings.custom.length >= MAX_CUSTOM_THEMES} onClick={() => edit(current, true)}><Icon name="plus" />Create theme</button></>}>
+      actions={<><ImportTheme disabled={full} onImport={importTheme} />
+        <button type="button" className="button small" disabled={full} onClick={() => edit(current, true)}><Icon name="plus" />Create theme</button></>}>
       <div className="settings-group-body">
         <p className="field-hint">Choose a theme, or set light and dark modes separately with the swatches.</p>
         <div className="theme-grid">{themes.map(theme => <ThemeCard key={theme.id} theme={theme} settings={settings}

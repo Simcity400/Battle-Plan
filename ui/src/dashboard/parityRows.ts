@@ -1,5 +1,6 @@
-import { useId, useLayoutEffect } from 'react';
+import { useContext, useId, useLayoutEffect } from 'react';
 import type { RefObject } from 'react';
+import { HeldFailuresContext } from './heldFailures.ts';
 
 /** Full row models belong to the parity build; ordinary builds expose no row data. */
 export interface ParityList {
@@ -31,16 +32,19 @@ declare global {
 export function useParityRows(root: RefObject<Element | null> | Element | null, read: () => ParityList, preparation?: Partial<ParityPreparation>): void {
   if (import.meta.env.MODE === 'parity') {
     const generatedId = useId();
+    // A failure its frame says beside rows already shown still stops their preparation.
+    const held = useContext(HeldFailuresContext);
     const id = preparation?.id ?? generatedId;
     useLayoutEffect(() => {
       const element = root && 'current' in root ? root.current : root;
       if (!element) return;
       const registry = window.__hoi4ParityLists ??= new Map();
-      const provider: ParityProvider = Object.assign(() => ({ ...read(), id }), { id }, preparation);
+      const provider: ParityProvider = Object.assign(() => ({ ...read(), id }), { id }, preparation,
+        preparation && held ? { error: () => preparation.error?.() ?? held.read()[0] ?? null } : {});
       registry.set(element, provider);
       return () => {
         if (registry.get(element) === provider) registry.delete(element);
       };
-    }, [root, read, id, preparation]);
+    }, [root, read, id, preparation, held]);
   }
 }

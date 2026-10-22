@@ -24,7 +24,7 @@ pub fn read_authored(
             if error.kind() == io::ErrorKind::NotFound
                 && !layers
                     .paths()
-                    .any(|known| known.eq_ignore_ascii_case(&path)) =>
+                    .any(|known| known.eq_ignore_ascii_case(path.as_bytes())) =>
         {
             Ok(None)
         }

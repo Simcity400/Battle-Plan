@@ -116,8 +116,17 @@ pub fn grid(map: &MapData, perm_snow: &[bool], frame: &DecodedFrame) -> io::Resu
         height: map.height,
         ids: &map.province_ids,
     };
-    let largest = map.province_ids.iter().copied().max().unwrap_or(0);
-    grid_with(largest, frame, |bytes| rasterise(&image, perm_snow, bytes))
+    grid_with(largest_province(map), frame, |bytes| {
+        rasterise(&image, perm_snow, bytes)
+    })
+}
+
+/// Includes defined provinces absent from the province image.
+fn largest_province(map: &MapData) -> u32 {
+    let drawn = map.province_ids.iter().copied().max().unwrap_or(0);
+    map.definitions
+        .last_key_value()
+        .map_or(drawn, |(&defined, _)| drawn.max(defined))
 }
 
 /// The hour's grid from its recorded display bytes, through the map's
@@ -129,7 +138,7 @@ pub fn grid_from_cells(cells: &SnowCells, frame: &DecodedFrame) -> io::Result<Sn
 }
 
 /// Reads the hour's bytes and turns `average`'s cells into the texture.
-/// `largest` is the largest province id of the image.
+/// `largest` includes undrawn definitions; a recorded ID beyond it refuses the hour.
 fn grid_with(
     largest: u32,
     frame: &DecodedFrame,
@@ -137,7 +146,14 @@ fn grid_with(
 ) -> io::Result<SnowMud> {
     let view = rows::<tables::WeatherProvinces>(frame)?;
     let recorded = view.rows();
-    let largest = recorded.iter().map(|row| row.id).fold(largest, u32::max) as usize;
+    if let Some(row) = recorded.iter().find(|row| row.id > largest) {
+        return Err(invalid(format!(
+            "Snow/mud presentation: 1 refused weather province {} beyond the map's largest \
+             province {largest}",
+            row.id
+        )));
+    }
+    let largest = largest as usize;
     let mut bytes = vec![[0_u8; 2]; largest + 1];
     let mut province_snow = vec![None; largest + 1];
     let mut summary = Summary {
@@ -222,7 +238,7 @@ fn grid_with(
 /// `perm_snow` pixel counts 255 snow, every other pixel its province's snow
 /// byte, and every pixel its province's mud byte.
 pub struct SnowCells {
-    /// The image's largest province id.
+    /// The map's largest province id ([`largest_province`]).
     largest: u32,
     width: u32,
     height: u32,
@@ -285,7 +301,7 @@ impl SnowCells {
             }
         }
         Ok(Self {
-            largest: image.ids.iter().copied().max().unwrap_or(0),
+            largest: largest_province(map),
             width,
             height,
             offsets,
@@ -521,7 +537,7 @@ mod tests {
         };
         let cells = SnowCells::new(&map, &perm).unwrap();
         for seed in 0..20u32 {
-            let rows = (1..=6u32)
+            let rows = (1..=5u32)
                 .map(|id| {
                     let byte = |salt: u32| ((id * 97 + seed * 31 + salt) % 256) as u8;
                     row(id, i64::from(id), byte(1), byte(2))
@@ -558,6 +574,21 @@ mod tests {
         let composed = grid_from_cells(&cells, &frame).unwrap();
         assert_eq!([composed.width, composed.height], [4, 2]);
         assert_eq!(pixels.texels, composed.texels);
+    }
+
+    #[test]
+    fn a_weather_row_beyond_the_maps_provinces_refuses_the_hour() {
+        let map = map(image());
+        let cells = SnowCells::new(&map, &[false; 144]).unwrap();
+        let rows = vec![row(10, 5, 200, 0), row(u32::MAX, 0, 0, 0)];
+        let frame = frame(TableView::Complete(TableRows::WeatherProvinces(rows)));
+        let Err(refusal) = grid_from_cells(&cells, &frame) else {
+            panic!("a foreign province draws");
+        };
+        assert!(
+            refusal.to_string().contains("weather province 4294967295"),
+            "{refusal}"
+        );
     }
 
     #[test]

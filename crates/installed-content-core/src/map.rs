@@ -359,11 +359,12 @@ fn apply_autonomy_colors(
 pub fn read_country_colors(layers: &ResolvedLayers) -> io::Result<CountryColors> {
     let mut colors = CountryColors::default();
     let names = layers.key_names()?;
+    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
     for path in layers
         .paths()
-        .filter(|path| path.starts_with("common/autonomous_states/") && path.ends_with(".txt"))
+        .filter(|path| path.starts_with(b"common/autonomous_states/") && path.ends_with(b".txt"))
     {
-        apply_autonomy_colors(&mut colors, &layers.read(path)?, &names)?;
+        apply_autonomy_colors(&mut colors, &layers.read_path(path)?, &names)?;
     }
     Ok(colors)
 }

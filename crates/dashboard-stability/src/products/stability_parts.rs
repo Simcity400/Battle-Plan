@@ -58,7 +58,7 @@ const LINES_OF: [(&str, &str); 2] = [
 #[serde(rename_all = "camelCase")]
 pub struct StabilityPart {
     /// Stable within a reply: `term:<term>`, `line:<kind>:<identity>:<id>:<secondary>`,
-    /// `unpaired:<text>`, `remainder` or `clamp`.
+    /// `unpaired:<text>`, `unpaired-refused:<escaped label>`, `remainder` or `clamp`.
     pub id: String,
     /// The formula term (`base`, `war`, …) of a term part.
     pub term: Option<String>,
@@ -109,12 +109,14 @@ struct Value {
 /// A measure's parts at one read, or None when they are not all known. A
 /// character line's character is read from the frame the read is first seen
 /// at, and a renamed character is its own part, named as it was.
+/// Refused labels identify separate parts by recorded bytes, not their display text.
 fn parts_of(
     formula: &FormulaBreakdown,
     breakdown: &StabilityBreakdown,
     lines_key: &str,
     lines_term: &str,
     character: &dyn Fn(&BreakdownLine) -> Option<Character>,
+    refused_label: &dyn Fn(&BreakdownLine, Option<u32>) -> Option<String>,
 ) -> Option<Vec<Value>> {
     let mut values: Vec<Value> = Vec::new();
     let mut add = |id: String,
@@ -149,9 +151,13 @@ fn parts_of(
             for line in &modifier.lines {
                 let recorded = character(line);
                 let id = match (&*line.kind, &recorded) {
-                    ("unpaired", _) => {
-                        format!("unpaired:{}", line.text.as_deref().unwrap_or_default())
-                    }
+                    ("unpaired", _) => match &line.text {
+                        Some(text) => format!("unpaired:{text}"),
+                        None => format!(
+                            "unpaired-refused:{}",
+                            refused_label(line, modifier.index)?
+                        ),
+                    },
                     (_, Some((script, saved, _))) => format!(
                         "line:{}:{}:{}:{}:{}:{saved}",
                         line.kind,
@@ -365,6 +371,7 @@ struct Track {
     lined: BTreeSet<i32>,
     available: bool,
     naming: Option<NamingCountry>,
+    refused: dashboard_text::catalogue::Refusals,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Scan {
@@ -773,8 +780,9 @@ impl Scan {
                 {
                     self.calculated_reads += 1;
                 }
+                // Refused labels belong in country warnings; `unlined` counts unrecorded lines.
                 let mut notes = Vec::new();
-                let breakdown = country_stability::breakdown_of(
+                let breakdown = country_stability::breakdown_noting(
                     country_stability::BreakdownInput {
                         decoded,
                         hour,
@@ -785,6 +793,7 @@ impl Scan {
                         tag,
                     },
                     &mut notes,
+                    &mut track.refused,
                 );
                 let at_read = self.recent_names.iter().find(|(at, _, _)| *at == read);
                 let characters = at_read.and_then(|(_, view, _)| match &**view {
@@ -806,11 +815,24 @@ impl Scan {
                         found.template.map(|v| (v.tag, v.file, v.line, v.generated)),
                     ))
                 };
+                // Escape recorded bytes so distinct refused labels remain distinct sources.
+                let recorded_lines = decoded.complete::<tables::CountryStabilityLines>().ok();
+                let refused_label = |line: &BreakdownLine, key: Option<u32>| {
+                    let lines = recorded_lines?;
+                    let at = lines
+                        .binary_search_by_key(&(row.country, line.line, key?), |recorded| {
+                            (recorded.country, recorded.line, recorded.key)
+                        })
+                        .ok()?;
+                    Some(lines[at].text.escape_ascii().to_string())
+                };
                 let values = [
                     (&breakdown.stability, LINES_OF[0]),
                     (&breakdown.war_support, LINES_OF[1]),
                 ]
-                .map(|(formula, (term, key))| parts_of(formula, &breakdown, key, term, &character));
+                .map(|(formula, (term, key))| {
+                    parts_of(formula, &breakdown, key, term, &character, &refused_label)
+                });
                 track.lined.insert(read);
                 track.current = Some((identity, read, values));
             }
@@ -859,17 +881,18 @@ impl Scan {
         Ok(())
     }
     fn warnings(&self, tag: &str) -> Vec<String> {
-        let missing = self
-            .tracks
-            .get(tag)
-            .map_or(0, |track| track.unlined.difference(&track.lined).count());
-        if missing == 0 {
-            Vec::new()
-        } else {
-            vec![format!(
+        let track = self.tracks.get(tag);
+        let missing = track.map_or(0, |track| track.unlined.difference(&track.lined).count());
+        let mut warnings = Vec::new();
+        if missing != 0 {
+            warnings.push(format!(
                 "{tag}: {missing} reads recorded no modifier lines with their inputs; their parts are not known."
-            )]
+            ));
         }
+        if let Some(track) = track {
+            warnings.extend(track.refused.lines("stability tree labels are"));
+        }
+        warnings
     }
 }
 

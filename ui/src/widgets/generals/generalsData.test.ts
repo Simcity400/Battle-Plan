@@ -285,6 +285,15 @@ test('a continuing command never displays a later name before its first recorded
   assert.equal(early[0].id, later[0].id);
   assert.equal(early[0].label, 'Formation 70');
   assert.equal(later[0].label, 'Recorded army name');
+  leader.commands = [{ ...leader.commands[0], name: '' }];
+  assert.equal(careerLanes(data, leader, 101, 104)[2].spans[0].label, '');
+});
+
+test('a rank the content defines as empty stays empty; only an unnamed rank falls back', () => {
+  const data = fixture(); const row = leaderAt(data, data.leaders[0], 101)!;
+  const subtitle = (rank: string | null) => leaderTooltip({ ...row, value: { ...row.value, rank } }, { name: 'Country' }).subtitle;
+  assert.match(subtitle('')!, /^Country ·  · /);
+  assert.match(subtitle(null)!, new RegExp(`^Country · Rank ${row.value.category} · `));
 });
 
 test('career identity reads include exact header and hover hours within one owner run', () => {

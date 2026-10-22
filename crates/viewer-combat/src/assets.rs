@@ -674,12 +674,13 @@ impl Assets {
         // Each file as the characters reader reads it (the reader replay).
         let mut direct_portraits = BTreeSet::new();
         let names = layers.key_names()?;
+        // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
         for file in layers
             .paths()
-            .filter(|p| p.starts_with("common/characters/") && p.ends_with(".txt"))
+            .filter(|p| p.starts_with(b"common/characters/") && p.ends_with(b".txt"))
         {
             portrait_paths(
-                &installed_content_core::characters::read_file(&layers.read(file)?, &names)
+                &installed_content_core::characters::read_file(&layers.read_path(file)?, &names)
                     .0
                     .items,
                 &mut direct_portraits,

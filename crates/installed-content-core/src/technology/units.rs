@@ -292,7 +292,7 @@ impl Registry {
         ] {
             for path in layers.directory_files(folder, ".txt")? {
                 registry
-                    .apply(&layers.read(&path)?)
+                    .apply(&path.read(layers)?)
                     .map_err(|e| invalid(format!("{path}: {e}")))?;
             }
         }

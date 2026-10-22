@@ -52,7 +52,7 @@ fn read_states(
                     .states
                     .push(super::report::StateHistoryState {
                         id,
-                        file: states.source(id).map(str::to_owned),
+                        file: states.source(id).map(ToString::to_string),
                         reasons: reasons.to_vec(),
                     });
             }
@@ -464,14 +464,14 @@ fn interface(
                             writer.write("particles.emitters", &(object, &particle));
                         }
                         let document =
-                            installed_content_core::parser::parse(&layers.read_uncovered(&particle.path)?)
+                            installed_content_core::parser::parse(&particle.path.read_uncovered(layers)?)
                                 .inspect_err(|_| kind = Kind::ParseFailure)?;
                         if let Some(writer) = &values {
                             writer.write("particles.emitters", &(object, &document));
                         }
                         let root = viewer_world::map::weather_effects::particle_root(
                             &document,
-                            &particle.path,
+                            &particle.path.text(),
                             &particle.name,
                             viewer_world::map::weather_effects::Pick::First,
                         )?;
@@ -821,13 +821,13 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
             .map(|path| {
                 let (_, stop) = {
                     let read = installed_content_core::characters::portraits(
-                        &layers.read(&path)?,
+                        &path.read(layers)?,
                         &names,
                         "army",
                         "large",
                     )?;
                     if let Some(writer) = &values {
-                        writer.write("characters.portraits", &(&path, &read));
+                        writer.write("characters.portraits", &(&path.to_string(), &read));
                     }
                     read
                 };
@@ -849,7 +849,7 @@ fn politics(log: &mut Log, layers: &ResolvedLayers, defines: Option<&Defines>) {
                 log.diagnostics.push(Diagnostic::at(
                     "characters.leader_templates",
                     Kind::Refused,
-                    &template.path,
+                    &template.path.text(),
                     template.line,
                     why,
                 ));
@@ -1589,7 +1589,10 @@ mod tests {
             [1, 3, 4]
         );
         for state in &log.state_history.states {
-            assert_eq!(state.file.as_deref(), states.source(state.id));
+            assert_eq!(
+                state.file,
+                states.source(state.id).map(ToString::to_string)
+            );
             assert_eq!(state.reasons, states.diagnostics(state.id));
         }
         assert!(states.diagnostics(2).is_empty());

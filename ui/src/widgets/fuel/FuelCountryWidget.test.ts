@@ -87,6 +87,11 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
         if (!Object.is(value, saved.value)) globalThis.__fuelCountryMount.changed = true; saved.value = value; }]; };`;
   const replacements: Record<string, string> = {
     '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    // The body is called outside React, so outside a widget frame: its errors stay its own.
+    '/dashboard/heldFailures.ts': `import { createContext } from 'react'; const none = [];
+      export class HeldFailures { subscribe = () => () => {}; read = () => none; retry() {} }
+      export const HeldFailuresContext = createContext(null); export const useHeldFailure = error => error;
+      export const useHeldFailures = () => false;`,
     '/dashboard/parityPreparation.ts': 'export const useParityPreparation = () => ({ requested: false, prepare() {} });',
     '/dashboard/products.ts': `const fuels = ${JSON.stringify(fuels)}, consumptions = ${JSON.stringify(consumptions)};
       export function useProducts(_client, requests, active, validate) {
@@ -351,7 +356,15 @@ test('the mounted Fuel country chooser pins its original actor and restores Foll
     assert.match(render(), /Choose a country again/);
     assert.doesNotMatch(header(), /DEFAULT_COUNTRY_CHIP/); assert.deepEqual(state.headerReads, []);
     state.groups = catalogue; state.groupError = 'Synthetic native catalogue refusal'; unmount();
-    assert.match(render(), /Synthetic native catalogue refusal/);
+    const refreshFailed = render();
+    assert.match(refreshFailed, /Synthetic native catalogue refusal/);
+    assert.match(refreshFailed, />Retry</);
+    assert.match(refreshFailed, /Synthetic source: 11/, 'the pinned breakdown keeps its data beside the failure');
+    state.groups = undefined; unmount();
+    const unloaded = render();
+    assert.match(unloaded, /Synthetic native catalogue refusal/, 'without published identities the failure stands alone');
+    assert.doesNotMatch(unloaded, /Synthetic source: 11/);
+    state.groups = catalogue; unmount();
     state.groupError = undefined; unmount(); state.hour = 105; render();
     const firstOwner = state.charts[0].pickOwner;
     state.pending = true; assert.match(render(), /Fuel gained \(own production\)/);

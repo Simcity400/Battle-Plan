@@ -7,11 +7,19 @@ import { setToken } from '../../dashboard/options';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { ResearchHistory } from '../../generated/dashboard';
 import { researchFolderList, researchFolderLooks } from './researchData';
+import type { ResearchUse } from './researchData';
 
-/** Every technology a history names, assignments and slot states alike. */
-export function historyTokens(history: ResearchHistory): string[] {
-  return [...new Set(history.slots.flatMap(slot => [...slot.entries.map(entry => entry.token),
-    ...(slot.states ?? []).flatMap(state => state.token ? [state.token] : [])]))];
+/** Includes both slot-state tokens and assignment definitions, deduplicated separately. */
+export function historyTokens(history: ResearchHistory): ResearchUse[] {
+  const tokens = new Set<string>(), definitions = new Map<string, Set<number>>();
+  for (const slot of history.slots) {
+    for (const entry of slot.entries) {
+      if (entry.databaseIndex == null) tokens.add(entry.token);
+      else definitions.set(entry.token, (definitions.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
+    }
+    for (const state of slot.states ?? []) if (state.token) tokens.add(state.token);
+  }
+  return [...tokens, ...[...definitions].flatMap(([token, indices]) => [...indices].map(index => [token, index] as const))];
 }
 
 /** The research reply for a widget's campaign and country, shared by every

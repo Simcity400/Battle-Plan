@@ -264,6 +264,16 @@ fn the_block_walk_matches_a_dense_walk_over_smooth_hills() {
     }
 }
 
+/// Assert individual steps so a precision regression fails instead of hanging.
+#[test]
+fn a_westward_line_far_along_its_parameter_still_moves_on() {
+    // At x = 3000 the west-edge nudge rounds away, but the line still enters the west cell.
+    assert_eq!(next_break([3000.0, 0.0], [-1.0, 0.0]), 1.0);
+    // At 2048 the least step rounds away too: the walk takes the next value instead.
+    assert!(past(2048.0, 2048.0 + BREAK_EPSILON) > 2048.0);
+    assert_eq!(past(1.0, 2.0), 2.0);
+}
+
 #[test]
 fn a_crest_between_samples_still_hides_the_anchor() {
     // One column of height 20 between sea-level neighbours: its crest is a single vertex line, at

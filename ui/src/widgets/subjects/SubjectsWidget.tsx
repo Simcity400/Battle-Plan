@@ -115,15 +115,16 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !identities) return <WidgetState kind="loading" label="Loading subjects…" />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data.runs.length && prefix?.pending.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!data.runs.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.'} />;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !identities) return <>{groupFailure}<WidgetState kind="loading" label="Loading subjects…" /></>;
+  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
+  if (!data.runs.length && prefix?.pending.length) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!data.runs.length) return <>{groupFailure}<WidgetState kind="empty" message={data.warnings.length ? 'Subject relations are unavailable.' : 'No subjects recorded.'} /></>;
   // Countries and group members at hours still being prepared are not known yet: no lane is not proof of none.
-  if (!lanes.length && (!filter.known || !groupsKnownAt(groups.data, at))) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <WidgetState kind="unavailable" message="Countries in these relations could not be identified." />;
-  if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} />;
+  if (!lanes.length && (!filter.known || !groupsKnownAt(groups.data, at))) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!views.length || !lanes.length && views[0].identityGaps.some(span => span.firstHour <= at)) return <>{groupFailure}<WidgetState kind="unavailable" message="Countries in these relations could not be identified." /></>;
+  if (!lanes.length) return <>{groupFailure}<WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been an overlord or a subject yet.' : 'No subjects yet.'} /></>;
 
   // The levels shown, in the content's order, each named once; past the palette they share "Other".
   const shownLevels = new Set(lanes.flatMap(lane => lane.depth ? info.get(lane.id)?.subject?.runs.flatMap(run => run.steps.map(step => step.level)) ?? [] : []));
@@ -193,7 +194,7 @@ export default function SubjectsWidget({ widget, runtime, active, onDiagnostics 
     else groupsSaid.at(-1)?.subjects.push(said);
   }
   const description = `${dayLabel(at)}: ${groupsSaid.map(group => group.subjects.length ? `${group.overlord}: ${group.subjects.join('; ')}` : group.overlord).join('. ')}.`;
-  return <div className="subjects-widget">
+  return <div className="subjects-widget">{groupFailure}
     {/* Shown for one level too: its colour is what the bars mean. */}
     {options.legend === true && <Legend label="Subject levels" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Overlords and subjects" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={options.names === true}

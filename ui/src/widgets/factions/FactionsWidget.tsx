@@ -27,7 +27,7 @@ import { useCountriesAt } from '../../dashboard/useCountriesAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { OPTIONS } from './definition';
-import { LEADER_GLYPH, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData';
+import { LEADER_GLYPH, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData';
 import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
 import FactionDetails from './FactionDetails';
@@ -77,9 +77,10 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const hover = useHoverLabels(runtime.client, track, active, country);
   const branchFirstHour = track?.branch.firstHour ?? 0;
   const unobserved = data?.unobserved.factions;
+  const gaps = useMemo(() => data ? factionGaps(data) : [], [data]);
   const { lanes, info } = useMemo(() => factionLanes(views, at, {
     order: options.order as FactionOrder, members: options.members as MemberOrder, ended: options.ended === 'shown', countries: filter.tags, countryIds: filter.countryIds,
-  }, { country, day: dayLabel }, unobserved ?? [], branchFirstHour), [views, at, options.order, options.members, options.ended, filter.tags, filter.countryIds, country, unobserved, branchFirstHour]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, { country, day: dayLabel }, gaps, branchFirstHour), [views, at, options.order, options.members, options.ended, filter.tags, filter.countryIds, country, gaps, branchFirstHour]); // eslint-disable-line react-hooks/exhaustive-deps
   const requests = laneRequests(lanes, inView);
   const wantedKey = JSON.stringify(laneCountries(requests.looks, info, at));
   const sortNamesKey = JSON.stringify(laneCountries(requests.names, info, at));
@@ -98,15 +99,16 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading factions…" />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
+  const failure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (failure && !data) return failure;
+  if (!data) return <>{failure}<WidgetState kind="loading" label="Loading factions…" /></>;
+  if (filter.reason) return <>{failure}<WidgetState kind="unavailable" message={filter.reason} /></>;
   // Factions, and the countries chosen, at hours still being prepared are not known yet: none is not proof of none.
-  const preparing = <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  const preparing = failure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   if (!data.factions.length && !groupsSettled(data)) return preparing;
-  if (!data.factions.length) return <WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} />;
+  if (!data.factions.length) return <>{failure}<WidgetState kind="empty" message={data.warnings.length ? 'Faction data unavailable.' : 'No factions recorded.'} /></>;
   if (!lanes.length && (!filter.known || !groupsKnownAt(data, at))) return preparing;
-  if (!lanes.length) return <WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} />;
+  if (!lanes.length) return <>{failure}<WidgetState kind="empty" message={filter.tags ? 'None of the chosen countries has been in a faction yet.' : 'No factions yet.'} /></>;
 
   // The legend names each visible faction; leader details belong to the timeline.
   const shownFactions = new Set(lanes.filter(lane => !lane.depth).map(lane => info.get(lane.id)!.faction.id));
@@ -134,11 +136,11 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       // Founded and dissolved as the faction's lifetime says: joined across unrecorded hours.
       const life = stretchAt(view.lifetime, hour);
       const start = life?.firstHour;
-      const state = runState(life ? [life] : [], at, unobserved);
+      const state = runState(life ? [life] : [], at, gaps);
       const rows: TooltipRow[] = [
         { label: 'Leader', value: leader ? named(leader).name : 'Not recorded', countryFlag: leader ? named(leader) : undefined, tone: leader ? undefined : 'muted' },
         { label: 'Members', value: count == null ? 'Not recorded' : String(count), swatch: view.color },
-        ...(start != null ? [{ label: 'Founded', value: startUnseen(start, branchFirstHour, unobserved) ? `before ${day(start)}` : day(start) }] : []),
+        ...(start != null ? [{ label: 'Founded', value: startUnseen(start, branchFirstHour, gaps) ? `before ${day(start)}` : day(start) }] : []),
         ...(state.kind === 'ended' ? [{ label: 'Dissolved', value: state.lastSeen == null ? day(state.at) : `by ${day(state.at)}` }]
           : state.kind === 'unknown' ? [{ label: 'Last recorded', value: day(state.lastSeen) }] : []),
       ];
@@ -180,6 +182,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
     return `${factionLabel(about.faction, at)}, ${lane.label}`;
   }).join('. ')}.`;
   return <div className="factions-widget">
+    {failure}
     {/* Shown for one faction too: its swatch is where its colour is changed. */}
     {options.legend === true && <Legend label="Factions" items={legend} always />}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}

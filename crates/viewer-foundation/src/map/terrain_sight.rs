@@ -153,7 +153,7 @@ impl TerrainSight {
         'walk: while u < end {
             for (index, level) in self.levels.iter().enumerate().rev() {
                 let size = (2u32 << index) as f32;
-                let next = (u + size).min(end);
+                let next = past(u, (u + size).min(end));
                 let low = height(u).min(height(next));
                 if low - self.block_high(index, level, point(u), point(next)) >= band {
                     u = next;
@@ -164,7 +164,7 @@ impl TerrainSight {
             // plane. Between the points where the line enters and leaves a triangle the clearance
             // is linear (or the least of two linear terms over water), so those points hold its
             // lowest values and no crest falls between them.
-            let stop = (u + 1.0).min(end);
+            let stop = past(u, (u + 1.0).min(end));
             let mut at = u;
             loop {
                 let [x, z] = point(at);
@@ -175,7 +175,7 @@ impl TerrainSight {
                 if at >= stop {
                     break;
                 }
-                at = (at + next_break(point(at), direction)).min(stop);
+                at = past(at, (at + next_break(point(at), direction)).min(stop));
             }
             u = stop;
         }
@@ -218,9 +218,15 @@ impl TerrainSight {
 /// plane: the next edge of the cell the line runs through, or the diagonal the terrain's index
 /// pattern splits that cell along ([`HeightField::surface_height`]).
 fn next_break(from: [f32; 2], direction: [f32; 2]) -> f32 {
-    // The cell the line runs through just past `from`.
-    let ahead = [0, 1].map(|axis| from[axis] + direction[axis] * BREAK_EPSILON);
-    let (column, bottom) = (ahead[0].floor(), ahead[1].floor());
+    // A negative-axis cell-edge nudge can round away; the line still enters the lower cell.
+    let [column, bottom] = [0, 1].map(|axis| {
+        let ahead = from[axis] + direction[axis] * BREAK_EPSILON;
+        if direction[axis] < 0.0 {
+            ahead.ceil() - 1.0
+        } else {
+            ahead.floor()
+        }
+    });
     let mut step = f32::INFINITY;
     for (axis, start) in [(0, column), (1, bottom)] {
         let rate = direction[axis];
@@ -247,6 +253,11 @@ fn next_break(from: [f32; 2], direction: [f32; 2]) -> f32 {
 
 /// The least step the surface walk takes, past a break it stands on.
 const BREAK_EPSILON: f32 = 1.0e-4;
+
+/// Far along the line, steps can round away; advance by at least one representable value.
+fn past(from: f32, to: f32) -> f32 {
+    if to > from { to } else { from.next_up() }
+}
 
 /// The drawn surface over a height byte: the byte's height or the water above it.
 fn surface(byte: u8) -> f32 {

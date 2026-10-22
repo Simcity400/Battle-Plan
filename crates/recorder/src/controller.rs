@@ -194,10 +194,15 @@ pub fn resolve_user_directory() -> Result<PathBuf, String> {
     crate::directories::resolve_user_directory()
 }
 
+/// A build refusal lasts for the lifetime of that game process.
+pub fn unsupported_build(error: &str) -> bool {
+    error.starts_with(UNSUPPORTED_BUILD)
+}
+
 /// A capture error in plain words; the original text stays the detail.
 /// `started` says whether the collector had begun recording.
 pub fn problem_text(error: &str, started: bool) -> &'static str {
-    if error.starts_with(UNSUPPORTED_BUILD) {
+    if unsupported_build(error) {
         "This the game version is not supported. Nothing recorded."
     } else if error == TWO_GAMES {
         "More than one game is running. Close the extra game to record."

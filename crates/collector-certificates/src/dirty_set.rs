@@ -52,7 +52,7 @@ impl Bits {
     fn new(words: usize) -> Option<Box<Self>> {
         let mut bits = engine_allocation::vec(words).ok()?;
         bits.resize_with(words, AtomicU64::default);
-        Some(Box::new(Self { words: bits }))
+        engine_allocation::boxed(Self { words: bits }).ok()
     }
 
     fn ids(&self) -> usize {

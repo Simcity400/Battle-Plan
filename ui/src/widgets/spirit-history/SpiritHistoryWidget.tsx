@@ -57,9 +57,10 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   if (!track || !tag) return <WidgetState kind="empty" icon="history" message="Load a campaign and choose a country to see its national spirits." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  if (failure && !data) return failure;
   if (!data) return <WidgetState kind="loading" label="Loading national spirits…" />;
-  if (!lanes.length) return <><WidgetState kind="empty" message="No national spirits recorded yet." /><PreparedKey pending={prefix?.pending} approximate={data.approximate} /></>;
+  if (!lanes.length) return <>{failure}<WidgetState kind="empty" message="No national spirits recorded yet." /><PreparedKey pending={prefix?.pending} approximate={data.approximate} /></>;
 
   const byToken = new Map(list.map(spirit => [spirit.token, spirit]));
   // The spirits held at the moment shown, with their effects, for keyboard and screen-reader users.
@@ -77,6 +78,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
     : !heldNow.length && unclassified ? 'national spirits not known (some held ideas could not be classified)'
     : heldNow.length ? heldNow.join('. ') : 'no national spirits held'}.`;
   return <div className="spirit-history">
+    {failure}
     <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`National spirits of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data} pending={prefix?.pending} approximate={data.approximate} unobserved={gaps}
       tooltip={(lane, span, hour, full) => {

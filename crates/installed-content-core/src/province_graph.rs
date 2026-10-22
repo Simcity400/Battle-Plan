@@ -69,7 +69,7 @@ impl ProvinceGraph {
         )
         .map_err(|error| invalid(format!("{path}: {error}")))?;
         let geometry = ProvinceGeometry::from_map(&map);
-        let terrain = TerrainCosts::read(layers)?;
+        let terrain = TerrainCosts::read(layers, &files)?;
         let rules = crate::adjacency_rules::read_map(layers, &files)?;
         let mut graph = derive(&map, &geometry, &rows, &terrain)?;
         graph.crossings = authored_crossings(&rows, &rules);
@@ -695,7 +695,7 @@ fn edge_distance(
     let mut sum = 0_i64;
     for [x, y] in route_points(a, b, crossing, map.width, map.height)? {
         let index = terrain.index(x.wrapping_add(width) % width, y)?;
-        sum = sum.wrapping_add(terrain.cost(index)?);
+        sum = sum.wrapping_add(terrain.cost(index));
     }
     Ok(scale(sum))
 }

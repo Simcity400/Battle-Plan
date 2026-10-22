@@ -107,8 +107,8 @@ impl Default for Layer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapMode {
     pub name: String,
-    /// The file that declared the definition in use.
-    pub file: String,
+    /// The file that declared the definition in use, by its path's bytes.
+    pub file: script_files::ScriptPath,
     pub top: Layer,
     pub bottom: Layer,
     /// The names the mode writes far out and close in; `None` when it declares none.
@@ -122,8 +122,8 @@ pub struct MapMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MapModes {
     pub modes: Vec<MapMode>,
-    /// `(file, field)` for each unread or invalid entry.
-    pub refused: Vec<(String, String)>,
+    /// `(file, field)` for each unread or invalid entry, the file by its path's bytes.
+    pub refused: Vec<(script_files::ScriptPath, String)>,
 }
 
 impl MapModes {
@@ -149,11 +149,11 @@ fn scalar(item: &Item) -> Option<String> {
 }
 
 fn read_layer(
-    file: &str,
+    file: &script_files::ScriptPath,
     mode: &str,
     side: &str,
     items: &[Item],
-    refused: &mut Vec<(String, String)>,
+    refused: &mut Vec<(script_files::ScriptPath, String)>,
 ) -> Layer {
     let mut layer = Layer::default();
     for item in items {
@@ -162,7 +162,7 @@ fn read_layer(
             Some("type") => match scalar(item).as_deref().and_then(LayerType::parse) {
                 Some(kind) => layer.kind = kind,
                 None => refused.push((
-                    file.to_owned(),
+                    file.clone(),
                     format!("{mode}.{side}.type = {}", scalar(item).unwrap_or_default()),
                 )),
             },
@@ -178,7 +178,7 @@ fn read_layer(
                     .unwrap_or(false)
             }
             other => refused.push((
-                file.to_owned(),
+                file.clone(),
                 format!("{mode}.{side}.{}", other.unwrap_or("<anonymous>")),
             )),
         }
@@ -187,12 +187,16 @@ fn read_layer(
 }
 
 /// Parses one file's declarations onto `modes`.
-pub fn parse_into(file: &str, input: &[u8], modes: &mut MapModes) -> io::Result<()> {
+pub fn parse_into(
+    file: &script_files::ScriptPath,
+    input: &[u8],
+    modes: &mut MapModes,
+) -> io::Result<()> {
     let document = parser::parse(input)?;
     for root in &document.items {
         if !root.keyword_is("scripted_map_modes") {
             modes.refused.push((
-                file.to_owned(),
+                file.clone(),
                 String::from_utf8_lossy(root.key.as_deref().unwrap_or_default()).into_owned(),
             ));
             continue;
@@ -201,13 +205,13 @@ pub fn parse_into(file: &str, input: &[u8], modes: &mut MapModes) -> io::Result<
             let Some(name) = entry.key.as_deref() else {
                 modes
                     .refused
-                    .push((file.to_owned(), "<anonymous map mode>".to_owned()));
+                    .push((file.clone(), "<anonymous map mode>".to_owned()));
                 continue;
             };
             let name = String::from_utf8_lossy(name).into_owned();
             let mut mode = MapMode {
                 name: name.clone(),
-                file: file.to_owned(),
+                file: file.clone(),
                 top: Layer::default(),
                 bottom: Layer::default(),
                 far_text: None,
@@ -229,7 +233,7 @@ pub fn parse_into(file: &str, input: &[u8], modes: &mut MapModes) -> io::Result<
                             Some(value) if text == "far_text" => mode.far_text = Some(value),
                             Some(value) => mode.near_text = Some(value),
                             None => modes.refused.push((
-                                file.to_owned(),
+                                file.clone(),
                                 format!("{name}.{text} = {}", scalar(item).unwrap_or_default()),
                             )),
                         }
@@ -242,7 +246,7 @@ pub fn parse_into(file: &str, input: &[u8], modes: &mut MapModes) -> io::Result<
                             .unwrap_or(false)
                     }
                     other => modes.refused.push((
-                        file.to_owned(),
+                        file.clone(),
                         format!("{name}.{}", other.unwrap_or("<anonymous>")),
                     )),
                 }
@@ -259,12 +263,12 @@ pub fn parse_into(file: &str, input: &[u8], modes: &mut MapModes) -> io::Result<
 /// Reads every scripted map mode the stack declares.
 pub fn read(layers: &ResolvedLayers) -> io::Result<MapModes> {
     let mut modes = MapModes::default();
-    for path in script_files::paths(layers, "common/map_modes/", Some(".txt")) {
-        let bytes = layers.read(&path)?;
-        if let Err(error) = parse_into(&path, &bytes, &mut modes) {
+    for listed in script_files::paths(layers, "common/map_modes/", Some(".txt")) {
+        let bytes = listed.read(layers)?;
+        if let Err(error) = parse_into(&listed, &bytes, &mut modes) {
             modes
                 .refused
-                .push((path.clone(), format!("unreadable file: {error}")));
+                .push((listed, format!("unreadable file: {error}")));
         }
     }
     Ok(modes)
@@ -278,7 +282,7 @@ mod tests {
     fn declarations_layers_and_refusals() {
         let mut modes = MapModes::default();
         parse_into(
-            "common/map_modes/a.txt",
+            &"common/map_modes/a.txt".into(),
             br#"scripted_map_modes = {
                 first = {
                     top = { type = country }
@@ -291,7 +295,7 @@ mod tests {
         )
         .unwrap();
         parse_into(
-            "common/map_modes/b.txt",
+            &"common/map_modes/b.txt".into(),
             b"scripted_map_modes = { first = { top = { type = state } } }",
             &mut modes,
         )
@@ -320,7 +324,7 @@ mod tests {
         );
         let mut layered = MapModes::default();
         parse_into(
-            "x.txt",
+            &"x.txt".into(),
             br#"scripted_map_modes = { m = {
                 top = { type = country color = { set_temp_variable = { red = 1 } } thickness = yes targets = { target_array = x } }
                 bottom = { type = game_map_mode_factions }

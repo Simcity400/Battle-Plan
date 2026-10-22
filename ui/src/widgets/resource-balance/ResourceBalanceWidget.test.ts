@@ -56,6 +56,7 @@ test('the mounted resource pin dates its header and body to local picks and actu
         if (replacement) return replacement[1];
         if (path.endsWith('/widgets/resource-balance/ResourceBalanceWidget.tsx')) return source
           .replace(/\buseContext\(/g, '(() => null)(')
+          .replace(/\buseHeldFailure\(/g, '((error) => error)(')
           .replace(/\buseMemo(?:<[^;\n]*>)?\(/g, '((factory) => factory())(')
           .replace(/\buseCallback(?:<[^;\n]*>)?\(/g, '((callback) => callback)(')
           .replace(/\buseEffect\(/g, '(() => {})(')

@@ -91,7 +91,7 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   if (!track) body = <WidgetState kind="empty" message="Load a campaign to see the training queue." />;
   else if (!window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   else if (!country.chosen) body = <WidgetState kind="empty" message="Choose a country to see its training queue." />;
-  else if (country.error) body = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
+  else if (country.error && !country.historyHeld) body = <WidgetState kind="error" detail={country.error} onRetry={country.retry} />;
   else if (country.holders) body = <ReachedCountryChoice tag={country.chosen} holders={country.holders} onPick={country.pick} />;
   else if (country.reason) body = <WidgetState kind="unavailable" message={country.reason} />;
   else if (country.absent) body = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
@@ -104,5 +104,5 @@ export default function TrainingQueueWidget({ widget, runtime, active, setOption
   else body = <Table label="Training queue" rows={rows} columns={columns} rowKey={rowKey} tree={tree} unsorted sort={NO_SORT}
     cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
     tooltip={tooltip} menu={() => data.readHour === null ? [] : [jumpItem(runtime, track.id, data.readHour)]} />;
-  return <div className="training-queue">{pill}{body}</div>;
+  return <div className="training-queue">{pill}{country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" detail={country.error} onRetry={country.retry} /> : null}{body}</div>;
 }

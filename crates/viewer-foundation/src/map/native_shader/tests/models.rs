@@ -302,7 +302,8 @@ fn compare_installed_native_models() {
     let mut failures = 0;
     let mut compared = 0;
     for file in layers.directory_files("gfx/FX", ".shader").unwrap() {
-        let name = file.rsplit('/').next().unwrap();
+        let text = file.text();
+        let name = text.rsplit('/').next().unwrap();
         if !is_gui_effect(name) {
             continue;
         }

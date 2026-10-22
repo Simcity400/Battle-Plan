@@ -58,3 +58,32 @@ test('a roster of a group with no member found yet says what the hour was once r
     assert.doesNotMatch(later, /unavailable|no members/);
   } finally { delete host.__operativesGap; await close(); }
 });
+
+test('a roster published before its preparation failed stays in its widget frame, which says the failure', async () => {
+  const state = { groups: pendingGroups({ final: true }) };
+  const host = globalThis as typeof globalThis & { __operativesHeld?: typeof state; __heldFailures?: typeof import('../../dashboard/heldFailures.ts') };
+  host.__operativesHeld = state;
+  const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/operatives-roster/OperativesRosterWidget.tsx', {
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__operativesHeld.groups, retry() {} });',
+    '/dashboard/products.ts': `import * as held from './heldFailures.ts'; globalThis.__heldFailures = held;
+      const data = { countries: [{ tag: "GER", observed: [{ firstHour: 0, lastHour: 200 }], operatives: [] }], agencyAbsent: [], warnings: [] };
+      const retry = () => {};
+      export const useProduct = () => ({ data, error: held.useHeldFailure('Preparation stopped', data !== undefined, retry), retry });`,
+    '/charts/table/useTableHour.ts': 'export const useTableHour = () => 200;',
+    '/dashboard/playback.ts': 'export const usePlaybackSpeed = () => 0;',
+    '/charts/useChartTokens.ts': 'export const useChartTokens = () => ({ fontSize: { title: 12, small: 10 } }); export const useViewportHeight = () => 1000;',
+    '/dashboard/countryFlagsAt.ts': 'export const useCountryLabelsAt = () => ({ labelAt: () => tag => ({ name: tag }) });',
+    '/dashboard/countryNamesAt.ts': 'export const nameKey = (hour, tag) => JSON.stringify([hour, tag]); export const useCountryNamesAt = () => new Map();',
+  });
+  try {
+    const { HeldFailures, HeldFailuresContext } = host.__heldFailures!;
+    const widget = createElement(module.default, { widget: { id: 'operatives-roster', kind: 'operatives-roster', trackIds: ['main'], countries: humansBy('hour'),
+      time: { mode: 'campaign' }, options: {} },
+      runtime: { tracks: [{ id: 'main', axisOffset: 0, source: { id: 'source', revision: '1', metadata: { countries: [], campaignKey: 'campaign' } }, branch: { ...BRANCH, gaps: [] } }],
+        client: {}, clock: { getHour: () => BRANCH.lastHour, getSnapshot: () => ({ hoursPerSecond: 0, playing: false }) } }, active: true, onDiagnostics() {} } as unknown as WidgetProps);
+    const framed = renderToStaticMarkup(createElement(HeldFailuresContext.Provider, { value: new HeldFailures() }, widget));
+    assert.match(framed, /No operatives in the selected roster\./, 'the published roster stays');
+    assert.doesNotMatch(framed, /Preparation stopped/, 'its frame, not the body, says the failure');
+    assert.match(renderToStaticMarkup(widget), /data-detail="Preparation stopped"/, 'outside a frame the failure is never dropped');
+  } finally { delete host.__operativesHeld; delete host.__heldFailures; await close(); }
+});

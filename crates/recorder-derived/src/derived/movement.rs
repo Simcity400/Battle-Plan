@@ -189,7 +189,7 @@ impl NativeSamples {
 #[derive(Default)]
 pub struct Checker {
     content: Option<Result<Content, String>>,
-    previous: Option<(i32, BTreeMap<u64, Edge>)>,
+    previous: Option<(replay_data::BranchId, i32, BTreeMap<u64, Edge>)>,
     /// Pairs whose step equals the derived speed, and those that differ.
     pub matched: u64,
     /// Pairs whose step differs from the earlier hour's derived speed but equals the
@@ -222,8 +222,9 @@ impl Checker {
         };
         let current = edges(frame, content);
         self.observe_native(frame, &current);
-        if let Some((hour, previous)) = self.previous.take()
-            && hour + 1 == frame.hour
+        if let Some((branch, hour, previous)) = self.previous.take()
+            && branch == frame.branch
+            && hour.checked_add(1) == Some(frame.hour)
         {
             for (division, before) in &previous {
                 let Some(after) = current.get(division) else {
@@ -281,7 +282,7 @@ impl Checker {
                 }
             }
         }
-        self.previous = Some((frame.hour, current));
+        self.previous = Some((frame.branch, frame.hour, current));
     }
 
     pub fn observe_samples_only(&mut self, frame: &DecodedFrame) {
@@ -544,6 +545,45 @@ mod tests {
             regions: BTreeMap::new(),
             sub_units: Err("unused".into()),
         }))
+    }
+    fn moving(branch: u64, hour: i32) -> DecodedFrame {
+        use replay_data::rows::{DivisionMovementRow, TableId, TableRows};
+        use replay_frame::frame::{Metrics, TableView};
+        let mut frame = DecodedFrame {
+            branch,
+            hour,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::Divisions.index()] =
+            TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+                id: 7,
+                province: 1,
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {
+                division: 7,
+                path: vec![2],
+                path_total: 1,
+                numerator: 10,
+                ..Default::default()
+            }]));
+        frame
+    }
+    #[test]
+    fn a_step_pairs_only_consecutive_hours_of_one_branch() {
+        let mut checker = checker();
+        checker.observe(&moving(1, 10));
+        checker.observe(&moving(2, 11));
+        assert_eq!(checker.refused.values().sum::<u64>(), 0);
+        checker.observe(&moving(2, 12));
+        assert_eq!(checker.refused.values().sum::<u64>(), 1);
+        checker.observe(&moving(2, i32::MAX));
+        checker.observe(&moving(2, i32::MIN));
+        assert_eq!(checker.refused.values().sum::<u64>(), 1);
     }
     #[test]
     fn cross_hour_progress_reports_without_failing_or_requiring_observations() {

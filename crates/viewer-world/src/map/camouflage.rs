@@ -53,10 +53,10 @@ impl Content {
     pub fn load(layers: &ResolvedLayers, defines: &Defines) -> io::Result<Self> {
         let path = layers
             .paths()
-            .find(|path| path.eq_ignore_ascii_case("common/acclimatation.txt"))
+            .find(|path| path.eq_ignore_ascii_case(b"common/acclimatation.txt"))
             .ok_or_else(|| invalid("missing matching common/acclimatation.txt"))?;
         Self::parse(
-            &layers.read(path)?,
+            &layers.read_path(path)?,
             defines.fixed5("NGraphics", "ACCLIMATIZATION_CAMO_SHOW_AT")?,
             defines.fixed5("NGraphics", "ACCLIMATIZATION_CAMO_SHOW_WHEN_IN_STATE")?,
         )

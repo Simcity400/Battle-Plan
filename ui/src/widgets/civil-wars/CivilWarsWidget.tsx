@@ -165,7 +165,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
-    if (narrowing && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (narrowing && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (!data || !view || narrowing && !identities) return <WidgetState kind="loading" label="Loading civil wars…" />;
     if (narrowing && filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
     if (!lanes.length) {
@@ -217,6 +217,7 @@ export default function CivilWarsWidget({ widget, runtime, active, headerSlot, o
   })();
   return <div className="civil-wars-widget">
     {header}
+    {narrowing && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}
     {body}
     {menu.menu}
   </div>;

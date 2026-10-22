@@ -78,13 +78,13 @@ pub fn read(
             .map(|name| (name.clone(), Ok(Vec::new())))
             .collect(),
     };
-    let paths = layers.listed_paths("common/scripted_effects/");
-    for path in crate::defines::load_order(
-        "common/scripted_effects/",
-        ".txt",
-        paths.iter().map(String::as_str),
+    let paths = layers.listed_layer_paths(b"common/scripted_effects/");
+    for path in crate::defines::load_order_paths(
+        b"common/scripted_effects/",
+        b".txt",
+        paths.iter().map(Vec::as_slice),
     ) {
-        result.read_file(&layers.read(&path)?, names);
+        result.read_file(&layers.read_path(&path)?, names);
     }
     Ok(result)
 }
@@ -95,7 +95,7 @@ pub fn read(
 pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
     let mut names = BTreeSet::new();
     for path in crate::script_files::paths(layers, "common/scripted_effects/", Some(".txt")) {
-        names.extend(file_names(&layers.read(&path)?));
+        names.extend(file_names(&path.read(layers)?));
     }
     Ok(names)
 }

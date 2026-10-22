@@ -21,7 +21,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { ResearchWithDoctrines } from '../research/DoctrinePanel';
 import { researchNumber } from '../research/researchBreakdown';
-import { researchAt, researchFolderLooks } from '../research/researchData';
+import { researchArt, researchArtwork, researchAt, researchFolderAt, researchFolderLooks, researchRecordedTemplates } from '../research/researchData';
 import { researchJourney } from '../research/researchJourney';
 import { coverageAt, currentTooltip, researchDate } from '../research/researchLayout';
 import type { ResearchText } from '../research/researchLayout';
@@ -60,14 +60,15 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
     rows: cards.map((card, index) => ({ index, key: `slot:${card.slot.index}`, item: card.kind === 'idle' ? { ...card, savedRaw: card.savedRaw.toString() } : card })) }));
   const looks = useMemo(() => data ? researchFolderLooks(data, historyTokens(data.history), categories) : new Map(), [data, categories]);
   const tokens = useMemo(() => [...new Set(cards.flatMap(card => card.kind === 'researching' ? [card.token] : []))], [cards]);
-  const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data);
+  const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
+  const images = useTechnologyArtwork(runtime.client, track, tokens, active && !!data, recorded);
   const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
-  const artwork = useMemo(() => new Map(data?.artwork.map(art => [art.token, { ...art, icon: images.artwork.get(art.token)?.icon ?? art.icon }])), [data, images.artwork]);
+  const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const text = useMemo<ResearchText>(() => ({
-    name: token => contentTitle(artwork.get(token)?.name, token, 'Technology name unavailable'),
+    name: (token, databaseIndex) => contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'),
     icon: token => artwork.get(token)?.icon ?? undefined,
-    folder: token => looks.get(token),
+    folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
   }), [artwork, looks]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
@@ -78,7 +79,7 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   const header = headerSlot && cards.length > 0 && createPortal(<span className="pill">{researching} of {cards.length} researching</span>, headerSlot);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data || !slots) return <ListSkeleton label="Loading research..." />;
   const shownSlot = shown ? historySlots?.find(slot => slot.index === shown.slotIndex) : undefined;
   const shownEntry = shownSlot?.entries.find(entry => entry.outcome === 'active' && entry.token === shown!.token);
@@ -93,10 +94,11 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
       <span className="active-card-body">{meta}<b className="active-card-name is-idle">Idle</b>
         {item.savedRaw > 0n && <small>{researchNumber(item.savedRaw)} days saved for the next research</small>}</span></div>;
     const { entry, token, progress, left, aheadOf, slot } = item;
-    const name = text.name(token), look = looks.get(token), icon = text.icon(token);
+    const databaseIndex = entry?.databaseIndex ?? null;
+    const name = text.name(token, databaseIndex), look = researchFolderAt(looks, token, databaseIndex), icon = text.icon(token);
     const content = () => {
       const pending = historyPreparing || data === currentData;
-      const tip = currentTooltip(token, slot.index, progress, left, !!entry || pending, text, aheadOf);
+      const tip = currentTooltip(token, slot.index, progress, left, !!entry || pending, text, aheadOf, databaseIndex);
       return pending ? { ...tip, note: [tip.note, 'Assignment dates and time breakdown are still being prepared.', countdownPreparing ? 'The carried days-left estimate is still being prepared.' : null].filter(Boolean).join(' ') } : tip;
     };
     const tips = {
@@ -124,15 +126,18 @@ function ActiveResearchBody({ widget, runtime, active, onDiagnostics, headerSlot
   };
   return <section key={JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag])} className="active-research" aria-label="Active research" ref={parity}>
     {header}
+    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
     <div className="active-cards">{cards.map(card)}</div>
     {!cards.length && <p>No research slots recorded at {researchDate(hour)}.</p>}
     <ResearchGrants inventory={grants} />
     {historyPreparing && <p className="chart-line-key" role="status">Assignment dates and time breakdown are still being prepared.{countdownPreparing && ' The carried days-left estimate is still being prepared.'}</p>}
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && <>
-        {history.error ? <WidgetState kind="error" detail={history.error} onRetry={history.retry} /> : historyPreparing || !history.data ? <PreparedLogCoverage coverage={null} /> : shownSlot && shownEntry ? <>
-        <PopoverHeading title={text.name(shownEntry.token)} menu={breakdown} />
-        <ResearchExplanation history={history.data.history} slots={historySlots!} slot={shownSlot} entry={shownEntry} description={artwork.get(shownEntry.token)?.description} />
+        {history.error && history.data ? <WidgetState kind="error" detail={history.error} onRetry={history.retry} /> : null}
+        {history.error && !history.data ? <WidgetState kind="error" detail={history.error} onRetry={history.retry} /> : historyPreparing || !history.data ? <PreparedLogCoverage coverage={null} /> : shownSlot && shownEntry ? <>
+        <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
+        <ResearchExplanation history={history.data.history} slots={historySlots!} slot={shownSlot} entry={shownEntry}
+          description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />
         </> : <p role="status">Assignment history was not recorded.</p>}
       </>}
     </Popover>

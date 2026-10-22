@@ -267,7 +267,7 @@ pub fn read(layers: &ResolvedLayers, registry: modifiers::Registry<'_>) -> io::R
     let mut database = Database::default();
     let names = layers.key_names()?;
     for path in layers.directory_files("common/bop", ".txt")? {
-        let read = read_file(&layers.read_uncovered(&path)?, registry, &names).map_err(|e| {
+        let read = read_file(&path.read_uncovered(layers)?, registry, &names).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{path}: 1 unread balance file: {e}"),

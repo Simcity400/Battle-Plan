@@ -5,6 +5,7 @@ import { ChipSet } from '../../components/ChipSet';
 import ArtFallback from '../../components/ArtFallback';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -80,12 +81,14 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     [feed.warnings, feed.data, feed.replies]);
   useDiagnostics(onDiagnostics, warnings);
 
+  const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see decisions." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (feed.error) return <WidgetState kind="error" detail={feed.error} onRetry={feed.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!feed.data || !match.ready) return <WidgetState kind="loading" label="Loading decisions…" />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decisions…" /></>;
 
   const renderRow = (row: LogRow<DecisionAt>) => {
     const decision = row.item;
@@ -114,7 +117,7 @@ export default function DecisionsWidget({ widget, runtime, active, onDiagnostics
     </>;
   };
   const header = headerSlot && feed.total !== null && statuses.has('active') && createPortal(<span className="pill">{feed.total.toLocaleString()} active</span>, headerSlot);
-  return <div className={`log-widget construction-log decisions-log${oneCountry ? ' is-one-country' : ''}${artwork ? '' : ' is-no-art'}`}>
+  return <div className={`log-widget construction-log decisions-log${oneCountry ? ' is-one-country' : ''}${artwork ? '' : ' is-no-art'}`}>{groupFailure}
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Decision status" chips={STATUS_CHOICES} selected={[...statuses]} max={STATUS_CHOICES.length}
       onToggle={key => setOption?.(key, !statuses.has(key))} /></div>}

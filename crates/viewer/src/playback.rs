@@ -229,14 +229,18 @@ impl Playback {
 
     /// The hour a seek to `hour` of `branch` would walk from: the last hour the
     /// decoder applied in that hour's block when it is still before `hour`,
-    /// else the hour before the block's keyframe. `None` when no block holds it,
+    /// else keyframe - 1 (i64 permits Hour::MIN - 1). None when no block holds it,
     /// or when the block failed at or before `hour`: that seek is a gap with no
     /// walk at all.
-    pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<Hour> {
+    pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
         if let Some(checkpoints) = &self.checkpoints
             && checkpoints.covers(branch, hour)
         {
-            return checkpoints.walk_start(branch, hour).ok().flatten();
+            return checkpoints
+                .walk_start(branch, hour)
+                .ok()
+                .flatten()
+                .map(i64::from);
         }
         let index = self.replay.index.iter().position(|index| {
             index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
@@ -257,7 +261,10 @@ impl Playback {
             .filter(|cache| cache.index == index && cache.failure.is_none())
             .and_then(|cache| cache.applied_hour)
             .filter(|applied| *applied < hour);
-        Some(continued.unwrap_or(self.replay.index[index].first_hour - 1))
+        Some(continued.map_or_else(
+            || i64::from(self.replay.index[index].first_hour) - 1,
+            i64::from,
+        ))
     }
 
     /// Seek to exactly this hour. A hole never borrows the last displayed rows.
@@ -1015,6 +1022,46 @@ pub(crate) mod tests {
         // failure after the hour), so the walk is from the keyframe.
         assert_eq!(playback.walk_start(1, 101), Some(99));
         assert_eq!(playback.walk_start(1, 102), Some(99));
+    }
+
+    #[test]
+    fn a_block_at_the_earliest_hour_walks_from_before_its_keyframe() {
+        let first = Hour::MIN;
+        let mut records = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(BranchStart {
+                id: 1,
+                session: 1,
+                loaded_hour: None,
+                first_hour: first,
+                parent: Parentage::Unknown,
+                reason: BranchReason::SessionStart,
+            }),
+        ];
+        let mut encoder = FrameEncoder::new();
+        for hour in [first, first + 1] {
+            let mut tables: [TableView; TableId::ALL.len()] =
+                std::array::from_fn(|_| TableView::Unavailable {
+                    reason: "outside the fixture".into(),
+                });
+            tables[TableId::Campaign.index()] =
+                TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                    id: b"campaign".to_vec(),
+                }]));
+            let frame = DecodedFrame {
+                branch: 1,
+                hour,
+                tables: tables.map(Into::into),
+                metrics: Metrics::default(),
+            };
+            records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
+        }
+        let replay = Replay::from_records(b"campaign".to_vec(), &[records]).unwrap();
+        let playback = Playback::unloaded(Arc::new(replay)).unwrap();
+        assert_eq!(
+            playback.walk_start(1, first + 1),
+            Some(i64::from(first) - 1)
+        );
     }
 
     #[test]

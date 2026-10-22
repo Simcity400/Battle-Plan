@@ -35,3 +35,5 @@ export const openReplay = (path: string | null) => invoke<void>('open_replay', {
 export const onStatus = (handler: (snapshot: Snapshot) => void): Promise<UnlistenFn> =>
   listen<Snapshot>('recorder-status', event => handler(event.payload));
 export const onAskStop = (handler: () => void): Promise<UnlistenFn> => listen('recorder-ask-stop', () => handler());
+/** The recorder may consume a one-shot setting without a panel save. */
+export const onSettings = (handler: () => void): Promise<UnlistenFn> => listen('recorder-settings', () => handler());

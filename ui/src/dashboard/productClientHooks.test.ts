@@ -66,6 +66,9 @@ test('actual product and window hooks scope ready, late and retried results to t
           'const { useEffect, useState } = globalThis.__productClientHooks;');
         if (path.endsWith('/dashboard/productWindows.ts')) return source.replace("import { useEffect, useMemo, useState } from 'react';",
           'const { useEffect, useMemo, useState } = globalThis.__productClientHooks;');
+        // Outside a widget frame.
+        if (path.endsWith('/dashboard/heldFailures.ts')) return source.replace("import { createContext, useContext, useEffect, useState } from 'react';",
+          "import { createContext } from 'react'; const { useEffect, useState } = globalThis.__productClientHooks; const useContext = () => null;");
         if (path.endsWith('/dashboard/contentRevision.ts')) return source.replace(
           'return useSyncExternalStore(revision.subscribe, revision.snapshot, revision.snapshot);', 'return revision.snapshot();');
       },

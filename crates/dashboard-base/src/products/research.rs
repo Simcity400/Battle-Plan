@@ -842,6 +842,7 @@ impl Country {
             slot.entries.push(ResearchEntry {
                 token: definitions[&occurrence].clone(),
                 technology_handle: row.technology_handle,
+                database_index: Some(occurrence),
                 continuity_start_hour: self.continuity_start_hour,
                 level: technology.level,
                 first_observed_hour: hour,
@@ -978,16 +979,20 @@ impl Country {
 /// undefined folders are named and counted.
 pub(crate) fn shown_folders<'a>(
     definitions: &[(&str, Option<bool>)],
-    placed: &BTreeMap<String, Vec<String>>,
-    tokens: impl IntoIterator<Item = &'a str>,
+    placed: &BTreeMap<(String, Option<u32>), Vec<String>>,
+    tokens: impl IntoIterator<Item = (&'a str, Option<u32>)>,
 ) -> (Vec<crate::ResearchTechnologyFolder>, Vec<String>) {
     let mut undecided: Vec<&str> = Vec::new();
     let mut undefined: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut shown = Vec::new();
-    for token in tokens {
+    for (token, database_index) in tokens {
         let mut folder = None;
         let mut unknown = false;
-        for key in placed.get(token).into_iter().flatten() {
+        for key in placed
+            .get(&(token.to_owned(), database_index))
+            .into_iter()
+            .flatten()
+        {
             match definitions
                 .iter()
                 .find(|(defined, _)| *defined == key.as_str())
@@ -1009,6 +1014,7 @@ pub(crate) fn shown_folders<'a>(
         }
         shown.push(crate::ResearchTechnologyFolder {
             token: token.to_owned(),
+            database_index,
             folder,
         });
     }
@@ -2184,6 +2190,10 @@ pub struct ResearchReply {
     pub folders: Vec<crate::ResearchFolder>,
     pub technology_folders: Vec<crate::ResearchTechnologyFolder>,
     pub warnings: Vec<String>,
+    // Separate recorded-definition text is needed when artwork has no single recorded definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub definitions: Option<Vec<crate::ResearchDefinitionText>>,
 }
 
 #[derive(Default)]
@@ -2246,21 +2256,69 @@ fn present(
                 folders: Vec::new(),
                 technology_folders: Vec::new(),
                 warnings: vec![format!("Research content unavailable: {error}")],
+                definitions: None,
             });
         }
     };
-    let tokens: BTreeSet<&str> = history
-        .slots
+    let mut indices: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+    let mut unrecorded: BTreeSet<&str> = BTreeSet::new();
+    for slot in &history.slots {
+        for entry in &slot.entries {
+            let recorded = indices.entry(entry.token.as_str()).or_default();
+            match entry.database_index {
+                Some(index) => {
+                    recorded.insert(index);
+                }
+                None => {
+                    unrecorded.insert(entry.token.as_str());
+                }
+            }
+        }
+        for state in &slot.states {
+            if let Some(token) = state.token.as_deref() {
+                indices.entry(token).or_default();
+                if state.entry_first_observed_hour.is_none() {
+                    unrecorded.insert(token);
+                }
+            }
+        }
+    }
+    let single = |token: &str, recorded: &BTreeSet<u32>| {
+        (recorded.len() == 1 && !unrecorded.contains(token))
+            .then(|| recorded.first().copied())
+            .flatten()
+    };
+    let mut definitions = Vec::new();
+    let mut placed_definitions = BTreeSet::new();
+    for (token, recorded) in &indices {
+        if single(*token, recorded).is_none() {
+            for &index in recorded {
+                crate::metadata::check_cancel(cancelled)?;
+                let (name, description) = art.definition_text(token, index);
+                definitions.push(crate::ResearchDefinitionText {
+                    token: (*token).to_owned(),
+                    database_index: index,
+                    name,
+                    description,
+                });
+                placed_definitions.insert((*token, index));
+            }
+        }
+    }
+    let tokens: BTreeMap<&str, Option<u32>> = indices
         .iter()
-        .flat_map(|s| {
-            s.entries
-                .iter()
-                .map(|e| e.token.as_str())
-                .chain(s.states.iter().filter_map(|state| state.token.as_deref()))
+        .map(|(token, recorded)| (*token, single(*token, recorded)))
+        .collect();
+    let folder_tokens: BTreeMap<&str, Option<u32>> = tokens
+        .iter()
+        .map(|(&token, &at)| (token, at))
+        .filter(|&(token, at)| {
+            at.is_some() || unrecorded.contains(token) || indices[token].is_empty()
         })
         .collect();
-    let (folders, technology_folders, folder_warnings) = art.research_folders(&tokens);
-    let (artwork, mut warnings) = art.text_catalogue(tokens, cancelled)?;
+    let (folders, technology_folders, folder_warnings) =
+        art.research_folders(&folder_tokens, &placed_definitions);
+    let (artwork, mut warnings) = art.recorded_text_catalogue(tokens, cancelled)?;
     warnings.extend(folder_warnings);
     for slot in &mut history.slots {
         for state in &mut slot.states {
@@ -2296,5 +2354,6 @@ fn present(
         folders,
         technology_folders,
         warnings,
+        definitions: (!definitions.is_empty()).then_some(definitions),
     })
 }

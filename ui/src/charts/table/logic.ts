@@ -132,6 +132,8 @@ export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end
 export function scrollToShow(offsets: readonly number[], index: number, top: number, height: number, stickyTop = 0): number {
   const start = offsets[index];
   const end = offsets[index + 1];
+  // Keep oversized rows at their start so repeated keys don't oscillate.
+  if (end - start > height - stickyTop) return Math.max(0, start - stickyTop);
   if (start - stickyTop < top) return Math.max(0, start - stickyTop);
   if (end > top + height) return end - height;
   return top;

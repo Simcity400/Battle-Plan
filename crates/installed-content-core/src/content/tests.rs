@@ -265,10 +265,10 @@ fn a_database_directory_lists_its_own_files_by_byte_name_without_recursion() {
         "gfx/train_gfx_database/upper.TXT",
         "gfx/train_gfx_database_other/a.txt",
     ]
-    .map(str::to_owned)
+    .map(ScriptPath::from)
     .to_vec();
     assert_eq!(
-        directory_order("gfx/train_gfx_database", ".txt", listed),
+        directory_order(b"gfx/train_gfx_database", ".txt", listed),
         [
             "gfx/train_gfx_database/B.txt",
             "gfx/train_gfx_database/a.txt",
@@ -1324,13 +1324,14 @@ fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
         ],
         ..Default::default()
     };
-    // The base file keeps its layer until the override takes the name.
+    // The game lists both case variants, but the override folder answers both names.
     assert_eq!(
         layers
             .descriptor_paths("gfx/particles", &[".asset"])
             .unwrap(),
         [
             "gfx/Particles/deep/b.ASSET",
+            "gfx/Particles/a.asset",
             "gfx/particles/A.asset",
             "gfx/particles/z.asset"
         ]
@@ -1384,7 +1385,10 @@ fn folder_fixtures_replace_directories_as_descriptors_do() {
             ResolvedLayers::from_folders(&[(&base, &[][..]), (&over, &[replace][..])]).unwrap();
         assert_eq!(
             layers.paths().collect::<BTreeSet<_>>(),
-            BTreeSet::from(["common/other.txt", "common/units/c.txt"]),
+            BTreeSet::from([
+                b"common/other.txt".as_slice(),
+                b"common/units/c.txt".as_slice()
+            ]),
             "{replace}"
         );
         assert_eq!(
@@ -1504,13 +1508,16 @@ fn archive_members_keep_their_raw_name_bytes() {
     assert_eq!(layers.read_uncovered("gfx/world/a.fnt").unwrap(), b"fat");
     let error = layers.read_uncovered("gfx/world/b.fnt").unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    // A covered non-UTF-8 path is indexed and verified, and absent from the text listings.
     assert!(
         layers
             .effective
             .contains_key(b"gfx/interface/\x81.dds".as_slice())
     );
-    assert!(!layers.paths().any(|path| path.contains('\u{FFFD}')));
+    assert!(
+        layers
+            .paths()
+            .any(|path| path == b"gfx/interface/\x81.dds".as_slice())
+    );
     // A later layer wins by the same bytes; its `replace_path`, bytes too, hides the base's
     // covered directory from the covered read.
     layers
@@ -2617,6 +2624,75 @@ fn a_new_recording_takes_the_engine_mod_order_and_a_replay_keeps_it() {
     assert!(
         error.contains("Mod b_base.mod: content hash mismatch"),
         "{error}"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn nested_dlc_resolves_where_it_was_gathered_and_nested_mods_are_left_out() {
+    let root = std::env::temp_dir().join(format!("hoi4_nested_layers_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    };
+    write("game/hoi4.exe", "synthetic executable");
+    write("game/common/file.txt", "vanilla");
+    write(
+        "game/dlc/outer/inner/content.dlc",
+        r#"name="Nested DLC" path="dlc/outer/inner""#,
+    );
+    write("game/dlc/outer/inner/common/file.txt", "DLC");
+    write("user/settings.txt", "language=l_english");
+    write(
+        "user/dlc_load.json",
+        r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+    );
+    let (game_dir, user_dir, cache_dir) =
+        (root.join("game"), root.join("user"), root.join("cache"));
+    let gather_options = GatherOptions {
+        game_dir: game_dir.clone(),
+        user_dir: user_dir.clone(),
+        cache_dir: cache_dir.clone(),
+        dlc_order: None,
+    };
+    let identity = gather(&gather_options)
+        .unwrap()
+        .identity(
+            "build".into(),
+            Sha256::digest(b"synthetic executable").into(),
+            20,
+            "test".into(),
+            [0; 32],
+        )
+        .unwrap();
+    let ids = identity.dlc.iter().map(|dlc| dlc.id.as_str());
+    assert_eq!(ids.collect::<Vec<_>>(), ["inner"]);
+    let resolved = resolve(
+        &identity,
+        &ResolveOptions {
+            game_dir,
+            user_dir,
+            cache_dir,
+        },
+    )
+    .unwrap();
+    assert_eq!(resolved.layers.read("common/file.txt").unwrap(), b"DLC");
+    write("user/mod/nested/a.mod", r#"name="Nested" path="layers/a""#);
+    write("user/layers/a/common/file.txt", "mod");
+    write(
+        "user/dlc_load.json",
+        r#"{"enabled_mods":["mod/nested/a.mod"],"disabled_dlcs":[]}"#,
+    );
+    let gathered = gather(&gather_options).unwrap();
+    assert!(gathered.mods.is_empty());
+    assert!(gathered.mod_descriptors.is_empty());
+    assert_eq!(gathered.layers.read("common/file.txt").unwrap(), b"DLC");
+    let note = gathered.order_note.unwrap_or_default();
+    assert!(
+        note.contains("enabled mod descriptor mod/nested/a.mod is not directly in mod/"),
+        "{note}"
     );
     fs::remove_dir_all(&root).unwrap();
 }

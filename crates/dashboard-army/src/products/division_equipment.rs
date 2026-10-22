@@ -119,7 +119,8 @@ pub struct EquipmentDivision {
     pub hp_max_raw: Option<String>,
     pub needed_raw: Option<String>,
     pub held_raw: Option<String>,
-    pub types_short: u32,
+    /// Null when the comparison with the need is not known.
+    pub types_short: Option<u32>,
     pub pool_known: bool,
     /// The previous template's name during conversion.
     pub converting_from: Option<String>,
@@ -130,7 +131,8 @@ pub struct EquipmentDivision {
 pub struct DivisionPoolType {
     pub archetype: Option<String>,
     pub name: Option<String>,
-    pub held_raw: String,
+    /// Null when the division's pool was not read.
+    pub held_raw: Option<String>,
     pub needed_raw: Option<String>,
     pub missing_raw: Option<String>,
     pub variants: Vec<EquipmentVariant>,
@@ -148,6 +150,8 @@ pub struct DivisionPool {
     pub hp_raw: Option<String>,
     pub hp_max_raw: Option<String>,
     pub types: Vec<DivisionPoolType>,
+    /// An unread pool lists template needs with unknown holdings, not an empty pool.
+    pub pool_known: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -908,7 +912,11 @@ fn division_row(
         hp_max_raw: division.hp_max.map(|amount| amount.to_string()),
         needed_raw: division.compared.as_ref().map(|compared| compared.needed.to_string()),
         held_raw: division.compared.as_ref().map(|compared| compared.filled.to_string()),
-        types_short: count(division.compared.as_ref().map_or(0, |compared| compared.short.len()))?,
+        types_short: division
+            .compared
+            .as_ref()
+            .map(|compared| count(compared.short.len()))
+            .transpose()?,
         pool_known: division.pool_known,
         converting_from,
     })
@@ -916,7 +924,7 @@ fn division_row(
 
 /// One division's pool: each needed or held type, with the type's own need and
 /// shortfall when the comparison is known. A pool keeps its readable holdings
-/// even when its need is unknown.
+/// even when its need is unknown; unread pools still list known needs without holdings.
 fn pool(
     frame: &DecodedFrame,
     division: &Division<'_>,
@@ -924,32 +932,32 @@ fn pool(
     refusals: &mut Refusals,
 ) -> io::Result<DivisionPool> {
     let mut types = Vec::new();
-    if division.pool_known {
-        let mut keys: Vec<Option<String>> = division
-            .need
+    let mut keys: Vec<Option<String>> = division
+        .need
+        .as_ref()
+        .map(|need| need.iter().map(|(key, _)| Some(key.clone())).collect())
+        .unwrap_or_default();
+    keys.extend(division.held.keys().filter(|key| !keys.contains(key)).cloned().collect::<Vec<_>>());
+    for key in keys {
+        let compared = division
+            .compared
             .as_ref()
-            .map(|need| need.iter().map(|(key, _)| Some(key.clone())).collect())
-            .unwrap_or_default();
-        keys.extend(division.held.keys().filter(|key| !keys.contains(key)).cloned().collect::<Vec<_>>());
-        for key in keys {
-            let compared = division
-                .compared
-                .as_ref()
-                .and_then(|compared| compared.types.iter().find(|kind| kind.key == key));
-            let needed = division.need.as_ref().ok().and_then(|need| {
-                let key = key.as_ref()?;
-                Some(need.iter().find(|(archetype, _)| archetype == key).map_or(0, |(_, amount)| i128::from(*amount)))
-            });
-            let held = division.held.get(&key);
-            types.push(DivisionPoolType {
-                name: key.as_ref().and_then(|key| refusals.keep(army_content::localised(context.cat, key)).0),
-                archetype: key,
-                held_raw: held.map_or(0, |pool| pool.held).to_string(),
-                needed_raw: needed.map(|amount| amount.to_string()),
-                missing_raw: compared.map(|kind| kind.shortfall.to_string()),
-                variants: held.map_or_else(Vec::new, HeldType::variants),
-            });
-        }
+            .and_then(|compared| compared.types.iter().find(|kind| kind.key == key));
+        let needed = division.need.as_ref().ok().and_then(|need| {
+            let key = key.as_ref()?;
+            Some(need.iter().find(|(archetype, _)| archetype == key).map_or(0, |(_, amount)| i128::from(*amount)))
+        });
+        let held = division.held.get(&key);
+        types.push(DivisionPoolType {
+            name: key.as_ref().and_then(|key| refusals.keep(army_content::localised(context.cat, key)).0),
+            archetype: key,
+            held_raw: division
+                .pool_known
+                .then(|| held.map_or(0, |pool| pool.held).to_string()),
+            needed_raw: needed.map(|amount| amount.to_string()),
+            missing_raw: compared.map(|kind| kind.shortfall.to_string()),
+            variants: held.map_or_else(Vec::new, HeldType::variants),
+        });
     }
     let (name, _) = refusals.keep(division_name(division.status, context));
     Ok(DivisionPool {
@@ -962,6 +970,7 @@ fn pool(
         hp_raw: Some(division.row.hit_points.to_string()),
         hp_max_raw: division.hp_max.map(|amount| amount.to_string()),
         types,
+        pool_known: division.pool_known,
     })
 }
 

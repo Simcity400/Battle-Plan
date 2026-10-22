@@ -21,6 +21,7 @@
 //! [`ResolvedLayers::read_uncovered`] and are reported as uncovered.
 
 use crate::{ResolvedLayers, crt, defines, parser};
+use installed_content_core::script_files::ScriptPath;
 use std::{collections::BTreeMap, io};
 
 /// One `sound` block: a named sample file and its volume.
@@ -282,7 +283,7 @@ pub struct Catalog {
     pub master_compressor: Option<Compressor>,
     pub music_compressor: Option<Compressor>,
     /// Asset files read, in load order.
-    pub files: Vec<String>,
+    pub files: Vec<ScriptPath>,
     pub notes: Notes,
     sound_names: BTreeMap<String, usize>,
     effect_names: BTreeMap<String, usize>,
@@ -302,12 +303,13 @@ type Assignment = (usize, Vec<String>, String);
 impl Catalog {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let listed = layers.descriptor_paths("sound", &[".asset"])?;
-        let paths = defines::load_order("sound/", ".asset", listed.iter().map(String::as_str));
+        let paths = defines::load_order("sound/", ".asset", &listed);
         let mut catalog = Self::default();
         let mut pending = Vec::new();
         let mut assignments = Vec::new();
-        for path in paths {
-            let bytes = layers.read_uncovered(&path)?;
+        for file in paths {
+            let bytes = file.read_uncovered(layers)?;
+            let path = file.text();
             let document = match parser::parse(&bytes) {
                 Ok(document) => document,
                 Err(error) => {
@@ -317,8 +319,9 @@ impl Catalog {
                     continue;
                 }
             };
-            catalog.files.push(path.clone());
-            let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+            // Sample paths need a UTF-8 folder, but the descriptor filename need not be UTF-8.
+            let directory = file.folder_text();
+            catalog.files.push(file.clone());
             for item in &document.items {
                 let Some(fields) = item.value.items() else {
                     catalog.notes.note(format!(
@@ -371,7 +374,7 @@ impl Catalog {
         self.category_names.get(name).copied()
     }
 
-    fn declare_sound(&mut self, fields: &[parser::Item], path: &str, directory: &str) {
+    fn declare_sound(&mut self, fields: &[parser::Item], path: &str, directory: Option<&str>) {
         let Some(name) = text(fields, "name") else {
             self.notes
                 .note(format!("{path}: refused sound without a name"));
@@ -387,6 +390,12 @@ impl Catalog {
                 .note(format!("{path}: refused repeated sound {name}"));
             return;
         }
+        let Some(directory) = directory else {
+            self.notes.note(format!(
+                "{path}: refused sound {name}: the file's folder name isn't UTF-8, so its sample path can't be named"
+            ));
+            return;
+        };
         let mut sound = Sound {
             path: join(directory, &file),
             name: name.clone(),
@@ -664,6 +673,14 @@ fn read_sounds(
                 ));
                 continue;
             };
+            for field in fields {
+                if !(field.keyword_is("sound") || field.keyword_is("weight")) {
+                    notes.note(format!(
+                        "{path}: soundeffect {effect} weighted_sound refused field {}",
+                        key_text(field)
+                    ));
+                }
+            }
             let Some(name) = text(fields, "sound") else {
                 notes.note(format!(
                     "{path}: soundeffect {effect} refused weighted_sound without a sound"

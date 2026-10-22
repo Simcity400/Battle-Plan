@@ -1056,8 +1056,7 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
                 ));
             *frame.tables[TableId::WarRelations.index()] =
                 TableView::Complete(TableRows::WarRelations(Vec::new()));
-            // Country triggers require complete core tables; tag existence
-            // reads the owned-state counts above, not province rows.
+            // Tag existence reads the owned-state counts above, not province rows.
             *frame.tables[TableId::Provinces.index()] =
                 TableView::Complete(TableRows::Provinces(Vec::new()));
             if let TableView::Complete(TableRows::UnitLeaders(rows)) =
@@ -1135,16 +1134,12 @@ fn leaders_fold_shared_variable_and_tag_visibility_without_decoding_on_the_famil
     let row = &missing_provinces
         .complete::<replay_data::rows::tables::UnitLeaders>()
         .unwrap()[0];
-    let unknown = Evaluator::new(&world, None).decide_leader_visibility(
+    let decided = Evaluator::new(&world, None).decide_leader_visibility(
         row,
         world.decoded_leader_visibility(row),
         true,
     );
-    assert!(
-        matches!(&unknown, Eval::Unknown(reasons) if reasons.iter().any(|why|
-            why.contains("Provinces is unavailable: missing test provinces"))),
-        "{unknown:?}"
-    );
+    assert_eq!(decided, Eval::True);
 
     let replay = source.replay_ref();
     let bound = unit_leaders::block::bound(true);

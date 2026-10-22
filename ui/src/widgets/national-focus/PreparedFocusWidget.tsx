@@ -24,6 +24,8 @@ import { usePreparedFocusParity } from './usePreparedFocusParity';
 
 const NO_WANTED: readonly { tag: string; hour: number }[] = [];
 type Snapshot = PreparedFocusSnapshot;
+/** Repeated completions may share artwork, but never disclosure state. */
+const disclosureKey = (ordinal: number, artKey: string) => JSON.stringify([ordinal, artKey]);
 export default function PreparedFocusWidget({ widget, runtime, active, headerSlot, onDiagnostics }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -78,7 +80,9 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
       setOpened(previous => previous && (previous.identity !== identity || previous.client !== runtime.client || previous.slot !== row.slot || previous.countryId !== row.countryId) ? null : previous);
       setAnswer({ identity, client: runtime.client, snapshot, pending: false, error: null, warnings: [] });
     };
-    const failed = (error: unknown, own = generation) => { if (current && own === generation) setAnswer(previous => ({ identity, client: runtime.client, snapshot: previous?.snapshot ?? null, pending: false, error: error instanceof Error ? error.message : String(error), warnings: [] })); };
+    // A failed seek must not reuse another hour's page and progress.
+    const failed = (error: unknown, own = generation) => { if (current && own === generation) setAnswer(previous => ({ identity, client: runtime.client,
+      snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: error instanceof Error ? error.message : String(error), warnings: [] })); };
     const present = (value: unknown) => {
       const result = publish(value), own = generation;
       return result.catch(error => failed(error, own));
@@ -90,7 +94,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const shown = answer?.identity === identity && answer.client === runtime.client ? answer : null;
   const snapshot = shown?.snapshot;
   const detailEntries = useMemo(() => opened?.identity === identity && opened.client === runtime.client && opened.slot === snapshot?.hour.slot && opened.countryId === snapshot?.hour.countryId
-    ? snapshot.order.filter(item => opened.rows.has(preparedArtKey(item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token))) : [], [opened, identity, runtime.client, snapshot]);
+    ? snapshot.order.filter(item => opened.rows.has(disclosureKey(item.ordinal, preparedArtKey(item.completedByHour ?? snapshot.hour.orderFirstHour ?? snapshot.hour.at, item.token)))) : [], [opened, identity, runtime.client, snapshot]);
   const detailOwner = JSON.stringify([identity, snapshot?.hour.slot, snapshot?.hour.countryId, snapshot?.page.toString()]);
   const detailKeys = JSON.stringify(detailEntries.map(item => preparedArtKey(item.completedByHour ?? snapshot!.hour.orderFirstHour ?? snapshot!.hour.at, item.token)));
   type DetailResult = { data: PreparedFocusArt | null; pending: boolean; error: string | null };
@@ -137,6 +141,15 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   }, [snapshot, moment]);
   const list = useRef<HTMLDivElement>(null);
   const listIdentity = useMemo(() => ({}), [detailOwner, runtime.client]);
+  // Following playback must reveal new completions even when they start a new page.
+  const newest = live && snapshot && snapshot.page === lastPage(snapshot.hour.completed) ? snapshot.hour.completed.rows : null;
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    const before = seen.current, element = list.current;
+    seen.current = newest;
+    if (newest === null || !element || BigInt(newest) <= BigInt(before ?? '0')) return;
+    element.scrollTo({ top: element.scrollHeight, behavior: document.documentElement.dataset.motion === 'reduced' ? 'auto' : 'smooth' });
+  }, [newest]);
   const openedOrdinals = useMemo(() => detailEntries.map(entry => entry.ordinal), [detailEntries]);
   const paritySnapshot = import.meta.env.MODE === 'parity' ? useMemo(() => snapshot && !shown?.pending ? { ...snapshot,
     details: new Map(detailEntries.flatMap(entry => {
@@ -148,7 +161,8 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const parityRoot = import.meta.env.MODE === 'parity' ? usePreparedFocusParity(runtime.client as FocusPreparedClient, track?.source, track?.branch.id, tag, hour, moment, identity, active && inRange && parityReady, openedOrdinals, paritySnapshot) : undefined;
   if (!track || !tag) return <div className="dash-empty" role="status">Load a campaign and choose a country to see its national focuses.</div>;
   if (!inRange) return <div className="dash-empty" role="status">This time is outside the recording.</div>;
-  if (shown?.error) return <div ref={parityRoot}><WidgetState kind="error" detail={shown.error} onRetry={() => setRetry(value => value + 1)} /></div>;
+  const failure = shown?.error ? <WidgetState kind="error" detail={shown.error} onRetry={() => setRetry(value => value + 1)} /> : null;
+  if (failure && !snapshot) return <div ref={parityRoot}>{failure}</div>;
   if (!shown || shown.pending && !snapshot) return <div ref={parityRoot}><ListSkeleton label="Loading national focuses…" /></div>;
   if (!snapshot) return <div ref={parityRoot} className="dash-empty" role="status">No complete focus data recorded at this date.</div>;
   const row = snapshot.hour;
@@ -158,6 +172,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const changePage = (page: bigint) => { setSelection({ identity, page }); setOpened(null); };
   return <section ref={parityRoot} className="national-focus prepared-focus" aria-label="National focus" aria-busy={shown.pending}>
     {headerSlot && createPortal(<span className="pill focus-header-count">{row.completed.rows} completed</span>, headerSlot)}
+    {failure}
     {moment && <CurrentFocus order={{ completed: [], current: row.current, continuous: row.continuous, paused: row.paused }} art={currentArt?.artwork}
       state={{ progress: BigInt(row.progressRaw), dailyGain: row.dailyGainRaw === null ? null : BigInt(row.dailyGainRaw) }} live={live} reason={currentArt?.reason ?? undefined} pending={shown.pending} />}
     {finalPage > 0n && <nav className="focus-page-controls" aria-label="Completion pages">
@@ -178,7 +193,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
           <span className="focus-label"><strong data-tooltip={contentTitleHint(item.token, currentArt?.reason ?? undefined)}>{contentTitle(currentArt?.artwork.name, item.token, 'Focus name unavailable', shown.pending)}</strong>
             <span>{row.paused ? 'Paused' : 'In progress'}</span></span>
         </div>;
-        const entry = item.entry, key = preparedArtKey(entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token);
+        const entry = item.entry, key = preparedArtKey(entry.completedByHour ?? row.orderFirstHour ?? row.at, entry.token), disclosure = disclosureKey(entry.ordinal, key);
         const art = snapshot.art.get(key), read = detailRead(key);
         const description = read && read !== FAILED_FACT ? read.artwork.description ?? art?.artwork.description : art?.artwork.description;
         if (description) descriptions.current!.texts.set(key, description);
@@ -186,8 +201,8 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
           description={description ?? (detailPending(key) ? descriptions.current!.texts.get(key) : null)} open={detailEntries.some(item => item.ordinal === entry.ordinal)}
           onToggle={open => setOpened(previous => {
             const wanted = previous?.identity === identity && previous.client === runtime.client && previous.slot === row.slot && previous.countryId === row.countryId ? previous.rows : new Set<string>();
-            if (wanted.has(key) === open) return previous;
-            const rows = new Set(wanted); if (open) rows.add(key); else rows.delete(key);
+            if (wanted.has(disclosure) === open) return previous;
+            const rows = new Set(wanted); if (open) rows.add(disclosure); else rows.delete(disclosure);
             return { identity, client: runtime.client, slot: row.slot, countryId: row.countryId, rows };
           })} />;
       }}</VirtualList> : <p className="focus-empty">No completed focuses recorded at this point.</p>}

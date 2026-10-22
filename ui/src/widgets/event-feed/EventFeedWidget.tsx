@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import LogList from '../../charts/log/LogList';
 import type { LogListProps } from '../../charts/log/LogList';
 import { logCountryRequests } from '../../charts/log/logData';
@@ -96,14 +97,16 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
     return () => onDiagnostics(NO_WARNINGS);
   }, [feed.warnings, unavailable, onDiagnostics]);
 
+  const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its key moments." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (feed.error) return <WidgetState kind="error" detail={feed.error} onRetry={feed.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!feed.data || !match.ready) return <WidgetState kind="loading" label="Loading the event feed…" />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!feed.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the event feed…" /></>;
 
-  return <div className="log-widget event-feed-widget">
+  return <div className="log-widget event-feed-widget">{groupFailure}
     {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
       selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
     <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}

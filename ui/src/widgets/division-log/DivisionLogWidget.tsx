@@ -148,16 +148,17 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its divisions." />;
   if (manifest.error) return <WidgetState kind="error" detail={manifest.error} onRetry={manifest.retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!manifest.data || !match.ready) return <WidgetState kind="loading" label="Loading division log…" />;
-  if (!manifest.data.available && preparedPrefix(manifest.data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} />;
-  if (!manifest.data.lossesAvailable && events === 'lost' && preparedPrefix(manifest.data)?.pending.length) return <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} />;
-  if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <WidgetState kind="unavailable" message="Not in this recording" />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!manifest.data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading division log…" /></>;
+  if (!manifest.data.available && preparedPrefix(manifest.data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} /></>;
+  if (!manifest.data.lossesAvailable && events === 'lost' && preparedPrefix(manifest.data)?.pending.length) return <>{groupFailure}<PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} /></>;
+  if (!manifest.data.available || events === 'lost' && !manifest.data.lossesAvailable) return <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></>;
   const error = history.errors.get(browseIndex);
-  if (error) return <WidgetState kind="error" detail={error} onRetry={history.retry} />;
-  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading division log…" />;
+  if (error) return <>{groupFailure}<WidgetState kind="error" detail={error} onRetry={history.retry} /></>;
+  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading division log…" /></>;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
   const earlier = oldest > 0 && manifest.data.windows[oldest - 1].lastHour >= first;
@@ -169,7 +170,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
         {row.killerTag !== null && <>{' · by '}<CountryFlagUrl className="log-flag" url={killer.flag} reason={killer.flagReason} pending={killer.flagPending} />{killer.name}</>}
       </span><span className="log-tag">{divisionStatus(row)}</span></>;
   };
-  return <div className="log-widget division-log">
+  return <div className="log-widget division-log">{groupFailure}
     <PreparedLogCoverage coverage={preparedPrefix(manifest.data)?.coverage} exact={(history.data.get(browseIndex) as { exact?: number } | undefined)?.exact} />
     {options.totals === true && <div ref={parityTotalsRoot} className="division-log-summary" aria-live="polite">
       {totals.error ? <WidgetState kind="error" what="division totals" detail={totals.error} onRetry={totals.retry} /> : !totals.data ? 'Loading totals…' : fieldPreparing(totals.data, 'created') ? 'Totals are still being prepared.' : <>

@@ -44,7 +44,8 @@ export function LeaderPortrait({ art }: { art?: UnitLeaderPortrait }) {
 }
 
 export function LeaderIdentity({ art, row, country, showCountry = false }: { art?: UnitLeaderPortrait; row: LeaderRow; country: ReturnType<CountryLabel>; showCountry?: boolean }) {
-  const rank = row.value.rank || `Rank ${row.value.category}`;
+  // Only a rank the content does not name falls back; a defined empty one stays empty.
+  const rank = row.value.rank ?? `Rank ${row.value.category}`;
   const countryText = showCountry ? `${country.name} · ${rank}` : rank;
   return <span className="leader-identity"><LeaderPortrait art={art} /><span className="leader-text">
     <strong>{leaderName(row)}</strong><small>{row.value.owner ? <CountryCell {...country} name={countryText} /> : countryText}

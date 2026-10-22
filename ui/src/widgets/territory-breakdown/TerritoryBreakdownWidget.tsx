@@ -19,7 +19,7 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { TerritoryBreakdownReply } from '../../generated/dashboard';
 import { measureOf, ruleOf, territoryColumn, territoryNote } from '../territory/territoryData';
-import { breakdownItems, breakdownModel, breakdownSelectedWhole, breakdownWhole, validateBreakdownReply } from './breakdownData';
+import { breakdownItems, breakdownModel, breakdownSelectedWhole, breakdownWhole, mergeBreakdownReplies, validateBreakdownReply } from './breakdownData';
 import { LEVELS, OPTIONS } from './definition';
 import { useParityRows } from '../../dashboard/parityRows';
 
@@ -36,16 +36,7 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
     family:{kind:'territory',measure,rule,breakdown:true},tags:[],reads:[{hour:Math.floor(at)}]}} : null;
   const current = useProduct<TerritoryBreakdownReply>(runtime.client,request(hour),active,validateBreakdownReply,track?.source);
   const ending = useProduct<TerritoryBreakdownReply>(runtime.client,request(end),active,validateBreakdownReply,track?.source);
-  const data = useMemo(()=>{
-    if(!current.data || !ending.data) return undefined;
-    const mergeRuns=<T,>(a:T[],b:T[])=>[...new Map([...a,...b].map(run=>[JSON.stringify(run),run])).values()];
-    const series=new Map(current.data.series.map(line=>[JSON.stringify([line.tag,line.region,line.missing]),line]));
-    for(const line of ending.data.series){const key=JSON.stringify([line.tag,line.region,line.missing]);const before=series.get(key);series.set(key,{...line,runs:mergeRuns(before?.runs ?? [],line.runs).sort((a,b)=>a.firstHour-b.firstHour)});}
-    const countries=new Map(current.data.countries.map(line=>[line.tag,line]));
-    for(const line of ending.data.countries){const before=countries.get(line.tag);countries.set(line.tag,{...line,runs:mergeRuns(before?.runs ?? [],line.runs).sort((a,b)=>a.firstHour-b.firstHour)});}
-    return {...current.data,series:[...series.values()],countries:[...countries.values()],worldTotals:mergeRuns(current.data.worldTotals,ending.data.worldTotals).sort((a,b)=>a.firstHour-b.firstHour),
-      observed:current.data.observed.map((spans,index)=>mergeRuns(spans,ending.data!.observed[index]).sort((a,b)=>a.firstHour-b.firstHour)),warnings:[...new Set([...current.data.warnings,...ending.data.warnings])]};
-  },[current.data,ending.data]);
+  const data = useMemo(()=>current.data && ending.data ? mergeBreakdownReplies(current.data,ending.data) : undefined,[current.data,ending.data]);
   const product={data,error:current.error ?? ending.error,retry:()=>{current.retry();ending.retry();}};
   const parityRoot=useRef<HTMLDivElement>(null);
   useParityRows(parityRoot,()=>({kind:'chart',label:'Territory regional values',complete:!!data,total:data?.series.length ?? 0,hour,
@@ -97,14 +88,15 @@ export default function TerritoryBreakdownWidget({ widget, runtime, active, onDi
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign to see its territory breakdown." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (product.error) return <WidgetState kind="error" detail={product.error} onRetry={product.retry} />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!product.data || !groups.data || colours.loading) return <WidgetState kind="loading" label="Loading territory breakdown..." />;
-  if (colours.error) return <WidgetState kind="error" what="faction colours" detail={colours.error} />;
-  if (options.growth === 'fill' && endFilter.reason) return <WidgetState kind="unavailable" message={endFilter.reason} />;
-  if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (measure === 'area' && product.data.areaReason) return <WidgetState kind="unavailable" message="Map area is unavailable." />;
-  if (!filter.known && !shape.items.some(item => item.present)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  return <div ref={parityRoot}><Sunburst key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Territory breakdown" items={shape.items}
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!product.data || !groups.data || colours.loading) return <>{groupFailure}<WidgetState kind="loading" label="Loading territory breakdown..." /></>;
+  if (colours.error) return <>{groupFailure}<WidgetState kind="error" what="faction colours" detail={colours.error} /></>;
+  if (options.growth === 'fill' && endFilter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={endFilter.reason} /></>;
+  if (filter.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={filter.reason} /></>;
+  if (measure === 'area' && product.data.areaReason) return <>{groupFailure}<WidgetState kind="unavailable" message="Map area is unavailable." /></>;
+  if (!filter.known && !shape.items.some(item => item.present)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  return <div ref={parityRoot}>{groupFailure}<Sunburst key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Territory breakdown" items={shape.items}
     root={{ id: 'territory', label: widget.countries.kind === 'all' ? 'World territory' : 'Selected territory' }} authoritativeTotal={whole}
     stretch={stretch} unavailableReason={whole?.unknownValue ? 'Territory not recorded at this hour.' : undefined}
     levels={levelsShown(options, LEVELS)} text={text} settings={sunburstSettings(options)} active={active}

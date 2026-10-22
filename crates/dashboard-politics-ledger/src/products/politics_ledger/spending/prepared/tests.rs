@@ -1408,6 +1408,13 @@ fn prepared_government_pages_and_navigation_keep_duplicate_native_dates_and_visi
         json!({"branchId":"1", "tag":"C1", "view":"governments", "hour":29, "page":{"from":24,"to":25,"cursor":"1","pageSize":1}}),
     );
     assert_eq!(second["rows"][0]["row"]["sequence"], "2");
+    assert_eq!(second["total"], "3");
+    let reached = call(
+        json!({"branchId":"1", "tag":"C1", "view":"governments", "hour":28, "page":{"from":24,"to":25,"cursor":"1","pageSize":1}}),
+    );
+    assert_eq!(reached["rows"][0]["row"]["sequence"], "2");
+    assert_eq!(reached["cursor"], serde_json::Value::Null);
+    assert_eq!(reached["total"], "2");
     for (key, from, through, expected) in [
         ("Home", None, 24, 24),
         ("End", None, 28, 24),

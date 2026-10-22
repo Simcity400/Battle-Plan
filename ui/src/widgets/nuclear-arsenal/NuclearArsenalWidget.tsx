@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import CountryPicker from '../../components/CountryPicker';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { usePreparedRace } from '../../charts/race/PartsRaceView';
@@ -66,7 +67,8 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const request = track && (resolved.top != null || resolved.tags.length) ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-nukes', params: nukesRequest(track.branch.id, resolved) } : null;
   const product = usePreparedRace(runtime.client, track, request, moment, active, validateNukesReply, mergeNukes, nukesGeometry, view !== 'race', counted.membership ?? undefined);
-  const { error, retry } = product;
+  const { retry } = product;
+  const error = useHeldFailure(product.error, product.data !== undefined, retry);
   const retained = useMemo(() => new NumericReply<CountryNukesReply>(), [runtime.client]);
   const numbers = retained.update(JSON.stringify(request), product.data, nuclearNumbers);
   const pickOwner = useMemo(() => ({ client: runtime.client, source: [track?.source.id, track?.source.revision, track?.branch.id],
@@ -99,6 +101,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const drillRequest = track && drillTag ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'country-nukes', params: nukesRequest(track.branch.id, { tags: [drillTag] }, originHour) } : null;
   const drillReply = usePreparedRace(runtime.client, track, drillRequest, drillAt, active, validateNuclearDrillReply, mergeNukes, nukesGeometry);
+  const drillError = useHeldFailure(drillReply.error, drillReply.data !== undefined, drillReply.retry);
   const retainedDrill = useMemo(() => new NumericReply<CountryNukesReply>(), [runtime.client]);
   const drillNumbers = retainedDrill.update(JSON.stringify(drillRequest), drillReply.data, nuclearNumbers);
   const drillPickOwner = useMemo(() => ({ client: runtime.client, source: [track?.source.id, track?.source.revision, track?.branch.id],
@@ -110,14 +113,14 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
   const aliasAt = useCallback((hour: number) => nuclearDrillAliasAt(drillData ?? null, hour), [drillData]);
   const currentAlias = aliasAt(drillAt);
   const headerSelection = nuclearCountrySelection(widget, track);
-  const headerAlias = window && headerSelection?.tag === drillTag && headerSelection?.hour === originHour && !drillReply.error
+  const headerAlias = window && headerSelection?.tag === drillTag && headerSelection?.hour === originHour && !drillError
     ? nuclearDrillAliasAt(drillReply.data ?? null, drillAt) : null;
   const headerWanted = useMemo(() => pinned && countrySlot && headerAlias ? [{ tag: headerAlias, hour: drillAt }] : [],
     [pinned, countrySlot, headerAlias, drillAt]);
   const headerLabels = useCountryLabelsAt(runtime.client, track, headerWanted, active && !!countrySlot && pinned);
   const header = pinned && countrySlot && createPortal(<DatedCountryChip
     label={headerAlias ? headerLabels.labelAt(drillAt)(headerAlias) : null} hour={window ? drillAt : null}
-    reason={drillReply.error ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country selection unavailable. Choose it again.'
+    reason={drillError ? 'Couldn’t load the breakdown.' : (!headerSelection ? 'Saved country selection unavailable. Choose it again.'
       : !headerAlias ? 'Country unavailable at this time.' : null)} />, countrySlot);
   const looks = useCountryLooks(runtime.client, track, currentAlias ? [currentAlias] : [], drillAt, active,
     (tag, hour) => drillData?.series.find(series => series.tag === tag)?.segments.find(span => span.firstHour <= hour && hour <= span.lastHour)?.firstHour ?? null);
@@ -172,7 +175,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     onSummaryView={drillReply.onSummaryView} onReachHour={drillReply.onReachHour} navigation={drillReply.navigation}
     pickOwner={drillPickOwner}
     segmentAt={(tag, hour) => nuclearSegmentAt(drillModel, tag, hour)}
-    state={drillReply.error ? <WidgetState kind="error" detail={drillReply.error} onRetry={drillReply.retry} />
+    state={drillError ? <WidgetState kind="error" detail={drillError} onRetry={drillReply.retry} />
       : drillTag && !drillModel ? <WidgetState kind="loading" label="Loading nuke types…" /> : undefined}
     tooltip={() => null}
     timeTooltip={hour => {
@@ -200,10 +203,11 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
     </div>}
     onPick={drillTag ? hour => dispatchDrill(pinned ? { type: 'open', breakdown: drillTag, hour, playing: false, playhead: null }
       : { type: 'pick', hour }) : undefined} />;
-  if (pinned) return <>{header}<div className="parts-race-drill">{breakdown}</div></>;
+  const groupNotice = groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (pinned) return <>{header}{groupNotice}<div className="parts-race-drill">{breakdown}</div></>;
   const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
   const overviewState = error ? <WidgetState kind="error" detail={error} onRetry={retry} />
-    : groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+    : groups.error && !groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
       : resolved.reason ? <WidgetState kind="empty" icon="target" message={resolved.reason} />
         // A group with no member found yet asks for nothing, so no reply will come.
         : none ? <NoMembersState reason={none.reason} icon="target" />
@@ -235,7 +239,7 @@ export default function NuclearArsenalWidget({ widget, runtime, active, countryS
         }} />
       <button type="button" className="button small quiet" onClick={() => setChoice(null)}>Cancel</button>
     </div>} />;
-  return <div className="parts-race" ref={anchor}><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'}
+  return <div className="parts-race" ref={anchor}>{groupNotice}<DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'}
     open={drill.breakdown != null} anchor={anchor} title="Weapon types" day={formatDateTime(drillAt)} following={drill.follow}
     canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
     onPin={drillTag ? () => runtime.addWidgetBelow(widget.id, pinNuclearDrill(widget, track, drillTag, drillAt, originHour, drill.follow)) : undefined}

@@ -1474,7 +1474,7 @@ impl ModelLibrary {
         if file.is_empty() {
             return Ok(self.blank(space));
         }
-        let path = layers.texture_index()?.resolve(directory, file);
+        let path = layers.texture_index()?.resolve(directory, file)?;
         self.composing_visual |= layers.supplied_by_visual_mod(&path);
         let key = (path, space);
         if let Some(slot) = self.paths.get(&key) {

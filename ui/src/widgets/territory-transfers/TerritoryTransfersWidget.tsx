@@ -159,11 +159,13 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
 
   if (!track) return <WidgetState kind="empty" icon="flows" message="Load a campaign to see territory transfers." />;
   if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  // A prepared prefix may still omit transfers; pending hours are not missing data.
+  const failure = error ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  if (failure && !data) return failure;
   if (!data || !transfers) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading territory transfers…" />;
-  if (pinned && selectionMissing) return <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
-  if (scope === 'conference' && !conference) return <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
-  if (filtered && !match.ready) return <WidgetState kind="loading" label="Loading territory transfers…" />;
+  if (pinned && selectionMissing) return failure ?? <WidgetState kind="unavailable" message={`${usNumber.format(selectionMissing)} selected transfer links are not recorded in this scope.`} />;
+  if (scope === 'conference' && !conference) return failure ?? <WidgetState kind="empty" message={selectedToken ? 'This conference is outside the selected recorded interval.' : 'No peace conferences yet.'} />;
+  if (filtered && !match.ready) return <>{failure}<WidgetState kind="loading" label="Loading territory transfers…" /></>;
 
   const [gapFrom, until] = transferGapWindow(conference, scoped, track.branch.firstHour, moment);
   const gapHint = transferGapHint(transferGaps(data, Math.max(rangeFrom, gapFrom), until));
@@ -184,20 +186,20 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     {...tables} sort={pinned ? transferSort : TRANSFER_SORT} setOption={pinned ? transferSetOption : undefined}
     tooltip={transferTip} menu={transferMenu} onVisibleRows={setVisibleTransfers} />;
 
-  if (pinned) return <div className="territory-transfers">
+  if (pinned) return <>{failure}<div className="territory-transfers">
     {header}
     {storedSelection == null ? <WidgetState kind="unavailable" message="This transfer selection is unavailable. Select transfers again." /> : <>
       <div className="drill-header"><span className="drill-day">{formatDateTime(drillAt)}</span>
         {drill.breakdown && drill.follow ? <span className="pill drill-following">Following playback</span>
           : <button type="button" className="button small" onClick={() => dispatchDrill({ type: 'open', breakdown: 'parts', hour: drillAt, playing: true, playhead })}>Follow playback</button>}
       </div>{notes}{drillBody}</>}
-  </div>;
+  </div></>;
 
-  if (view === 'transfers') return <div className="territory-transfers">
+  if (view === 'transfers') return <>{failure}<div className="territory-transfers">
     {header}{notes}
     {shown.length ? <TransferTable {...tables} rows={shown} sort={transferSort} setOption={transferSetOption} tooltip={transferTip} menu={transferMenu}
       onVisibleRows={setVisibleTransfers} label="Territory transfers" /> : empty}
-  </div>;
+  </div></>;
 
   const drillLabel = drillCountry == null ? null : balances.find(row => row.key === drillCountry)?.side ?? drillRows.find(row => row.to.key === drillCountry)?.to
     ?? drillRows.find(row => row.from?.key === drillCountry)?.from ?? null;
@@ -213,11 +215,11 @@ export default function TerritoryTransfersWidget({ widget, runtime, active, onDi
     {balances.length ? <CountryTable {...tables} rows={balances} sort={tableSortOf(options.tableSort, COUNTRY_SORT)} setOption={setOption}
       onPick={openDrill} tooltip={countryTip} menu={countryMenu} onVisibleRows={setVisibleCountries} /> : empty}
   </div>;
-  return <div className="territory-transfer-host" ref={drillAnchor}>
+  return <>{failure}<div className="territory-transfer-host" ref={drillAnchor}>
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
       title={drillLabel ? labels.country(drillLabel).name : 'Country transfers'} day={formatDateTime(drillAt)} following={drill.follow} canFollow={playhead != null}
       returnFocus={drillCountry == null || typeof CSS === 'undefined' ? undefined : `tr[data-table-row="${CSS.escape(drillCountry)}"]`}
       onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })} onPin={pin} main={main}>{drillBody}</DrillHost>
-  </div>;
+  </div></>;
 }

@@ -246,27 +246,27 @@ pub(super) fn read(
         ("common/doctrines/grand_doctrines", 0),
     ] {
         for path in layers.directory_files(directory, ".txt")? {
-            append(database, &layers.read(&path)?, &path, kind, names);
+            append(database, &path.read(layers)?, &path.text(), kind, names);
         }
     }
     let root = "common/doctrines/subdoctrines";
-    let children: BTreeSet<_> = layers
+    // Archive subdirectory names need not be UTF-8.
+    let children: BTreeSet<Vec<u8>> = layers
         .descriptor_paths(root, &[".txt"])?
         .into_iter()
         .filter_map(|path| {
-            path.strip_prefix(&format!("{root}/")).and_then(|tail| {
-                tail.split_once('/')
-                    .map(|(directory, _)| directory.to_owned())
-            })
+            let tail = path.as_bytes().strip_prefix(format!("{root}/").as_bytes())?;
+            let end = tail.iter().position(|byte| *byte == b'/')?;
+            Some(tail[..end].to_vec())
         })
         .collect();
     for directory in children
         .into_iter()
-        .map(|child| format!("{root}/{child}"))
-        .chain(std::iter::once(root.to_owned()))
+        .map(|child| [format!("{root}/").into_bytes(), child].concat())
+        .chain(std::iter::once(root.as_bytes().to_vec()))
     {
         for path in layers.directory_files(&directory, ".txt")? {
-            append(database, &layers.read(&path)?, &path, 1, names);
+            append(database, &path.read(layers)?, &path.text(), 1, names);
         }
     }
     Ok(())

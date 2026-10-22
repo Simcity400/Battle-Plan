@@ -372,6 +372,17 @@ pub(super) fn breakdown_of(
     input: BreakdownInput<'_>,
     warnings: &mut Vec<String>,
 ) -> StabilityBreakdown {
+    let mut refused = dashboard_text::catalogue::Refusals::default();
+    let breakdown = breakdown_noting(input, warnings, &mut refused);
+    warnings.extend(refused.lines("stability tree labels are"));
+    breakdown
+}
+
+pub(super) fn breakdown_noting(
+    input: BreakdownInput<'_>,
+    warnings: &mut Vec<String>,
+    refused: &mut dashboard_text::catalogue::Refusals,
+) -> StabilityBreakdown {
     let BreakdownInput {
         decoded,
         hour,
@@ -418,19 +429,14 @@ pub(super) fn breakdown_of(
             formula::command_power(decoded, slot),
         )),
         lines_available: lines.is_some(),
-        modifiers: {
-            let mut refused = dashboard_text::catalogue::Refusals::default();
-            let modifiers = modifiers(
-                row,
-                formula::command_power(decoded, slot),
-                lines,
-                good,
-                tag,
-                &mut refused,
-            );
-            warnings.extend(refused.lines("stability tree labels are"));
-            modifiers
-        },
+        modifiers: modifiers(
+            row,
+            formula::command_power(decoded, slot),
+            lines,
+            good,
+            tag,
+            refused,
+        ),
     }
 }
 
@@ -1173,7 +1179,12 @@ impl Native {
             self.roster.clear();
             self.slots.clear();
             if let Some((countries, links)) = self.countries.as_ref().zip(self.links.as_ref()) {
+                // A tag's first row wins even if unresolved; later duplicates cannot supply values.
+                let mut tags = BTreeSet::new();
                 for country in countries {
+                    if !tags.insert(country.tag.as_slice()) {
+                        continue;
+                    }
                     let (Ok(tag), Ok(slot)) = (
                         std::str::from_utf8(&country.tag),
                         mapped_slot(country, links),

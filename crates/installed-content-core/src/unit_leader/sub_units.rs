@@ -25,7 +25,7 @@ pub fn sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
     let mut indices = SubUnits::default();
     for directory in SUB_UNIT_DIRECTORIES {
         for path in script_files::paths(layers, directory, Some(".txt")) {
-            indices.read(&layers.read(&path)?, &path);
+            indices.read(&path.read(layers)?, &path.text());
         }
     }
     Ok(indices)

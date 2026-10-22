@@ -86,14 +86,15 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its decryption races." />;
   if (!window || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (widget.countries.kind !== 'all' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !selection.ready) return <WidgetState kind="loading" label="Loading decryption…" />;
-  if (pendingAt(preparedPrefix(data), hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !selection.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading decryption…" /></>;
+  if (pendingAt(preparedPrefix(data), hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   const coverage = runAt(data.coverage, hour);
-  if (!coverage || (!coverage.complete && !rows.length)) return <WidgetState kind="unavailable"
-    message="Decryption data is unavailable at this time." />;
-  if (selection.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
-  return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>
+  if (!coverage || (!coverage.complete && !rows.length)) return <>{groupFailure}<WidgetState kind="unavailable"
+    message="Decryption data is unavailable at this time." /></>;
+  if (selection.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={selection.reason} /></>;
+  return <div ref={root} className="decryption" key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}>{groupFailure}
     {rows.some(row => fieldPreparing(row.run, 'started')) && <p className="chart-line-key">Attempt histories, starts and breaks are still being prepared.</p>}
     <WindowedRows items={items} rowHeight={52} padding={8} label="Decryption races" className="decryption-race"
       onVisibleRows={setVisibleRows} empty={selection.known(hour) ? <WidgetState kind="empty" message={widget.countries.kind === 'all' ? 'No ciphers being decrypted yet.' : 'No matching decryption pairs at this time.'} />

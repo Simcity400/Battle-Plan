@@ -425,7 +425,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       }
     }
     if (!mounted.current || !campaignsRef.current.includes(retiring)) return;
-    setDefaultRoleId(current => defaultAfterUnload(current, id, campaigns.filter(campaign => roles.bindings[campaign.id]?.source).map(campaign => campaign.id)));
+    // Other campaigns may unload while this unload is in flight; use the current roster.
+    setDefaultRoleId(current => defaultAfterUnload(current, id, campaignsRef.current.filter(campaign => !campaign.loading).map(campaign => campaign.id)));
     roles.remove(id);
     campaignsRef.current = campaignsRef.current.filter(campaign => campaign.id !== id);
     setCampaigns(campaignsRef.current);

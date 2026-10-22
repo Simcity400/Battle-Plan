@@ -183,7 +183,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     // Template definitions merge in file and layer order.
     for path in script_files::paths(layers, "common/factions/templates/", Some(".txt")) {
         result.coverage.next_file();
-        let file = parse(&layers.read(&path)?, &names);
+        let file = parse(&path.read(layers)?, &names);
         apply(&mut result, &file.items);
         result.warnings.extend(
             file.misreads
@@ -191,7 +191,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
                 .map(|why| format!("Faction templates in {path}: {why}")),
         );
         if let Some(why) = file.unsettled {
-            result.coverage.gap(&path, why.to_string());
+            result.coverage.gap(&path.text(), why.to_string());
         }
     }
     Ok(result)

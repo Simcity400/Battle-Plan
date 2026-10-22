@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import type { EventBadge } from '../../charts/badges';
 import { drawLine, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
@@ -70,11 +71,14 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   const [preparedHover, setPreparedHover] = useState<number | null>(null);
   const preparedReads = usePreparedExperience(runtime.client, track?.source, track?.branch.id, resolved.tags, groups.data,
     widget.countries.kind === 'group', resolved.membership, measure, head, preparedHover, active);
-  const prepared = { ...preparedReads, enabled: preparedReads.enabled && !groups.error };
+  // Only missing group history forces the independent product; refresh errors keep prepared reads.
+  const prepared = { ...preparedReads, enabled: preparedReads.enabled && !(groups.error && !groups.data) };
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-experience',
     params: { branchId: track.branch.id, tags: resolved.tags } } : null;
   const legacy = useProduct<ExperienceReply>(runtime.client, request, active && !prepared.enabled, validateExperienceReply);
-  const { data, error, retry } = prepared.enabled ? prepared : legacy;
+  const reader = prepared.enabled ? prepared : legacy;
+  const { data, retry } = reader;
+  const error = useHeldFailure(reader.error, data !== undefined, retry);
   const selectedSeries = useMemo(() => experienceSelection(data, resolved.tags, widget.countries.kind === 'group'), [data, resolved.tags, widget.countries.kind]);
   const tags = useMemo(() => data ? selectedSeries.map(series => series.tag) : resolved.tags, [data, selectedSeries, resolved.tags]);
   const segmentAt = useCallback((tag: string, hour: number) => {
@@ -207,18 +211,21 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
 
   if (!track) return <WidgetState kind="empty" icon="sparkle" message="Load a campaign to see experience." />;
   if ((widget.time.mode === 'pin' || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading experience…" />;
+  // All selections read held group history, so every selection must show its refresh failure.
+  const groupFailure = groups.error && (widget.countries.kind === 'group' || groups.data)
+    ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (resolved.reason) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
+  if (error) return <>{groupFailure}<WidgetState kind="error" detail={error} onRetry={retry} /></>;
+  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading experience…" /></>;
   // A group's members at hours still being prepared are not known yet: none recorded is not proof of none.
   if (!countries.some(country => country.recorded)) return resolved.known(track.branch.firstHour, track.branch.lastHour)
-    ? <WidgetState kind="unavailable" message="Not in this recording" /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
+    ? <>{groupFailure}<WidgetState kind="unavailable" message="Not in this recording" /></> : groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!branches.length) return <>{groupFailure}<WidgetState kind="empty" message="Turn on an experience branch in the widget settings." /></>;
   if (measure === 'gain' && (prepared.enabled ? !prepared.gainKnown : !countries.some(country => country.reads.some(read => read.gain !== null))))
-    return <WidgetState kind="unavailable" message="Daily gain needs a full day of data." />;
+    return <>{groupFailure}<WidgetState kind="unavailable" message="Daily gain needs a full day of data." /></>;
 
-  return <div className="experience" ref={parity}>
+  return <div className="experience" ref={parity}>{groupFailure}
     <Legend label={single ? 'Branches' : 'Countries'} items={single ? branches.map(branch => {
       const country = headCountries.find(country => runAt(country.reads, head) !== null);
       const read = country ? runAt(country.reads, head) : null;

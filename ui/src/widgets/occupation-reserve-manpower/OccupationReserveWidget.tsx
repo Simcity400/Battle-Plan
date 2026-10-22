@@ -88,13 +88,14 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   if (!window && widget.time.mode !== 'campaign') return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
-  if (resolved.reason && widget.countries.kind !== 'all') return <WidgetState kind="empty" message={resolved.reason} />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (resolved.reason && widget.countries.kind !== 'all') return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
   // A group with no member found at the moment says why once that moment is read, and loads until then.
-  if (none) return <NoMembersState reason={none.reason} icon="flag" />;
-  if (!data || grouped && !groups.data) return <WidgetState kind="loading" label="Loading occupation manpower…" />;
-  if (pendingReplyAt(data, moment)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!at) return <WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." />;
+  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
+  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
+  if (pendingReplyAt(data, moment)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!at) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." /></>;
   const tooltip = (tag: string, _hour: number, name: string): TooltipContent[] | null => {
     const reserve = byTag.get(tag);
     return reserve ? [holderTooltip(reserve, name, sourceName, sourceColour, dayLabel(readHour))] : null;
@@ -108,7 +109,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
     presentation={{ exact: true, windowedLegend: true }} tooltip={tooltip}
     onPick={(hour, tag) => { if (!tag) return; setHolder(shown.find(item => item.tag === tag)?.holder ?? null); dispatch({ type: 'open', breakdown: BREAKDOWN.id, hour, playing: widget.time.mode === 'follow', playhead: moment }); }} />;
   const prefix = preparedPrefix(data);
-  return <div ref={anchor} className="parts-race occupation-reserve">
+  return <div ref={anchor} className="parts-race occupation-reserve">{groupFailure}
     <PreparedKey pending={prefix?.pending} approximate={prefix?.approximate} />
     <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drilled !== null}
       title={drilled ? looks.name(countryPart(drilled)?.tag ?? drilled, readHour) : BREAKDOWN.label} day={drillAt === null ? '' : dayLabel(drillAt)}

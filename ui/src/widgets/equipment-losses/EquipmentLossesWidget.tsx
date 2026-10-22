@@ -8,6 +8,7 @@ import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { chooseDrillCountry, drillCountryCoverage, drillCountrySpans, readDrillCountry } from '../country-measure/drillCountry';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContextMenu } from '../../components/ContextMenu';
 import { dayLabel, drawBands } from '../../charts/draw';
 import { drawApproximateSpans } from '../../charts/chartSummary';
@@ -92,6 +93,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
   const identity = JSON.stringify([track?.source.id, track?.source.revision, nativeSelection]);
   const numbers = retained.update(identity, product.data, reply => ({ ...reply, ...lossNumbers(reply) }));
   const data = product.data ?? numbers, contentPending = !!numbers && !product.data && !product.error;
+  const productError = useHeldFailure(product.error, product.data !== undefined, product.retry);
   // The window the reply answers: before preparation reaches the requested
   // one, through its prepared prefix's last hour.
   const view = requestedView && data ? preparedLossWindow(data, requestedView) : requestedView;
@@ -157,8 +159,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
       : selection === undefined ? <WidgetState kind="unavailable" message="Choose losses again." />
         : (hasSavedCountry && !savedCountry) || (catalogue.data && (!selectedCountry || !actorSpans))
           ? <WidgetState kind="unavailable" message={actorReason!} />
-          : catalogue.error ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
-            : product.error ? <WidgetState kind="error" detail={product.error} onRetry={product.retry} />
+          : catalogue.error && !catalogue.data ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} />
+            : productError ? <WidgetState kind="error" detail={productError} onRetry={product.retry} />
               : !data ? <><PreparedLogCoverage coverage={request ? null : undefined} />
                 <WidgetState kind="loading" label="Loading equipment losses..." /></> : null;
   if (import.meta.env.MODE === 'parity') {
@@ -168,7 +170,8 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
       complete: unavailable === null && !!track && !!tag && !!view && !!data,
     }));
   }
-  if (unavailable || !track || !tag || !view || !data) return <>{countryHeader}{unavailable}</>;
+  const catalogueNotice = catalogue.error && catalogue.data ? <WidgetState kind="error" detail={catalogue.error} onRetry={catalogue.retry} /> : null;
+  if (unavailable || !track || !tag || !view || !data) return <>{countryHeader}{catalogueNotice}{unavailable}</>;
   const openRows = (keys: readonly string[] | null) => { setPicked(keys); setDrill(state => reduceDrill(state, { type: 'open', breakdown: DETAIL.id,
     hour, playing: widget.time.mode === 'follow' && runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null })); };
   const coverage = coverageLegend(data, view, tokens);
@@ -230,7 +233,7 @@ function OriginalEquipmentLossesWidget({ widget, runtime, active, countrySlot, o
         return fitTooltip([{ title: 'Equipment losses', subtitle: formatDateTime(at), rows: lossRows(data, { ...view, hour: at }, selected)
           .map(row => ({ label: `${row.cause} / ${row.design}`, value: rowText(row) })) }], height); }} /></div>
   </>;
-  return <div ref={anchor} className="equipment-losses">{countryHeader}
+  return <div ref={anchor} className="equipment-losses">{countryHeader}{catalogueNotice}
     <PreparedLogCoverage coverage={request && !product.data && !product.error ? null : undefined} />
     {saved ? detail : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={open}
     title="Equipment losses" day={formatDateTime(detailHour)} following={following} canFollow={view.from == null}

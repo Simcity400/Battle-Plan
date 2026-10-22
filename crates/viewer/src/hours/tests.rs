@@ -436,14 +436,14 @@ fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
     };
     // Nothing wants 290: the walk stops after its first step.
     assert!(!DecodeLane::walk(&shared, &mut playback, (1, 290)));
-    assert_eq!(playback.walk_start(1, 290), Some(9 + DECODE_STEP));
+    assert_eq!(playback.walk_start(1, 290), Some(i64::from(9 + DECODE_STEP)));
     // Wanted, the walk goes all the way to the last step before it.
     Mutex::lock(&shared.state).unwrap().urgent = Some((1, 290));
     assert!(DecodeLane::walk(&shared, &mut playback, (1, 290)));
     assert!(
         playback
             .walk_start(1, 290)
-            .is_some_and(|at| 290 - at <= DECODE_STEP)
+            .is_some_and(|at| 290 - at <= i64::from(DECODE_STEP))
     );
 }
 

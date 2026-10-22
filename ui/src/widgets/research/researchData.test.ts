@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isUnjoinedResearch, researchAt, researchEntryAt, researchArtworkTokens, researchProgressAt, researchRateAt, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
+import { isUnjoinedResearch, researchArt, researchArtwork, researchAt, researchEntryAt, researchArtworkTokens, researchFolderAt, researchFolderLooks, researchProgressAt, researchRateAt, researchRecordedTemplates, researchRequest, researchStateAt, validateResearchReply } from './researchData.ts';
 import { coverageAt, researchLanes, researchLanesAt } from './researchLayout.ts';
 import { loadProduct } from '../../dashboard/products.ts';
 import type { ResearchEntry, ResearchHistory, ResearchReply } from '../../generated/dashboard';
@@ -35,6 +35,60 @@ test('research image selection follows displayed assignments and all completed r
   const many = Array.from({ length: 5000 }, (_, i) => entry(`tech${i}`, 100 + i * 2, 102 + i * 2));
   const slot = { ...samples.slots[0], availability: [{ firstHour: 100, lastHour: 11000 }], states: [], entries: many };
   assert.deepEqual(researchArtworkTokens([slot], 11000, false), many.map(item => item.token));
+});
+
+test('a repeated technology is named by the definition each assignment recorded, and a run without one by the token', () => {
+  const recorded = (token: string, start: number, end: number, databaseIndex: number): ResearchEntry => ({ ...entry(token, start, end), databaseIndex });
+  const repeated: ResearchHistory = { coverage: [{ firstHour: 100, lastHour: 400 }], slots: [
+    { index: 0, availability: [{ firstHour: 100, lastHour: 400 }], progress: [],
+      entries: [recorded('repeat', 100, 150, 2), recorded('repeat', 150, 200, 5), recorded('single', 200, 250, 7)],
+      states: [{ firstHour: 300, lastHour: 320, token: 'single', entryFirstObservedHour: null,
+        speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0' }] },
+  ] };
+  assert.deepEqual([...researchRecordedTemplates(repeated)], [['repeat', [2, 5]], ['single', [null, 7]]]);
+  const art = researchArtwork({ artwork: [{ token: 'repeat', name: null, description: null, baseDurationDays: 10, icon: null }],
+    definitions: [{ token: 'repeat', databaseIndex: 2, name: 'Second', description: null },
+      { token: 'repeat', databaseIndex: 5, name: 'Fifth', description: null }] }, new Map());
+  assert.equal(researchArt(art, 'repeat', 2)?.name, 'Second');
+  assert.equal(researchArt(art, 'repeat', 5)?.name, 'Fifth');
+  assert.equal(researchArt(art, 'repeat', 2)?.baseDurationDays, 10);
+  assert.equal(researchArt(art, 'repeat', null)?.name, null, 'without a recorded index the token stays unnamed');
+});
+
+test('each recorded definition of a technology shows its own folder, and one held as a single definition its token\'s', () => {
+  const looks = researchFolderLooks({ folders: [{ key: 'land', name: 'Land' }, { key: 'sea', name: 'Sea' }],
+    technologyFolders: [{ token: 'repeat', databaseIndex: 2, folder: 'land' }, { token: 'repeat', databaseIndex: 5, folder: 'sea' },
+      { token: 'single', folder: 'land' }] }, [['repeat', 2] as const, ['repeat', 5] as const, 'repeat', ['single', 7] as const, 'single'], ['red', 'blue']);
+  assert.equal(researchFolderAt(looks, 'repeat', 2)?.key, 'land');
+  assert.equal(researchFolderAt(looks, 'repeat', 5)?.key, 'sea');
+  assert.equal(researchFolderAt(looks, 'single', 7)?.key, 'land');
+  assert.equal(researchFolderAt(looks, 'single', null)?.key, 'land');
+  assert.equal(researchFolderAt(looks, 'repeat', null), undefined, 'without a recorded index the token places neither');
+});
+
+test('a quoted token holding `#` is its own technology, never one of another token\'s definitions', () => {
+  const art = researchArtwork({ artwork: [{ token: 'foo', name: 'Foo', description: null, baseDurationDays: null, icon: null },
+    { token: 'foo#2', name: 'Hash', description: null, baseDurationDays: null, icon: null }],
+    definitions: [{ token: 'foo', databaseIndex: 2, name: 'Second foo', description: null }] }, new Map());
+  assert.equal(researchArt(art, 'foo#2')?.name, 'Hash');
+  assert.equal(researchArt(art, 'foo', 2)?.name, 'Second foo');
+  assert.equal(researchArt(art, 'foo')?.name, 'Foo');
+  const looks = researchFolderLooks({ folders: [{ key: 'land', name: 'Land' }, { key: 'sea', name: 'Sea' }],
+    technologyFolders: [{ token: 'foo#2', folder: 'land' }, { token: 'foo', databaseIndex: 2, folder: 'sea' }] },
+    ['foo#2', ['foo', 2] as const], ['red', 'blue']);
+  assert.equal(researchFolderAt(looks, 'foo#2')?.key, 'land');
+  assert.equal(researchFolderAt(looks, 'foo', 2)?.key, 'sea');
+  assert.equal(researchFolderAt(looks, 'foo'), undefined);
+});
+
+test('a long modded campaign is accepted however many rows its research history has', () => {
+  const days = 3226, first = 100, last = first + days * 24;
+  const slots = Array.from({ length: 31 }, (_, index) => ({ index, availability: [{ firstHour: first, lastHour: last }], states: [],
+    entries: [{ ...entry(`tech${index}`, first, null, 'active'), lastObservedHour: last }],
+    progress: Array.from({ length: days }, (_, day) => ({ firstHour: first + day * 24, lastHour: first + day * 24 + 23,
+      entryFirstObservedHour: first, baseDaysRaw: '10000000', progressRaw: String(day) })) }));
+  const long: ResearchReply = { ...reply, history: { coverage: [{ firstHour: first, lastHour: last }], slots } };
+  assert.equal(validateResearchReply(long), long);
 });
 
 test('research progress is the recorded sample over its base cost, and absent outside samples', () => {

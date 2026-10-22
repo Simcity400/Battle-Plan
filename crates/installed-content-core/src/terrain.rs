@@ -654,7 +654,9 @@ const DEFINITIONS_DIRECTORY: &str = "common/terrain";
 /// The terrain definition files in native load order
 /// ([`ResolvedLayers::directory_files`]). The movement costs
 /// (`province_graph`) read the same list.
-pub fn definition_paths(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
+pub fn definition_paths(
+    layers: &ResolvedLayers,
+) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     layers.directory_files(DEFINITIONS_DIRECTORY, ".txt")
 }
 
@@ -669,7 +671,7 @@ pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<TerrainDefinition
     for path in files {
         let skipped = definitions.skipped.len();
         definitions
-            .append(&layers.read(&path)?)
+            .append(&path.read(layers)?)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
         for reason in &mut definitions.skipped[skipped..] {
             *reason = format!("{path}: {reason}");

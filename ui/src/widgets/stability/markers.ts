@@ -4,6 +4,7 @@ import type { Artwork, CountryGroupReply, FactionGroup, FocusReply, HourSpan, Id
 import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts';
 import type { FactionName } from '../../dashboard/factionNames';
 import { provisionalGroupEvent } from '../../dashboard/countryCapitulations.ts';
+import { preparedPending } from '../../dashboard/preparedPrefix.ts';
 import { partyBadges } from '../ruling-party/partyData.ts';
 import type { IdeaHistoryFirstView } from '../../dashboard/ideaHistoryReply.ts';
 
@@ -79,6 +80,8 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
     }
   }
   if (groups && kinds.has('factions')) {
+    // Hours no faction was read, or still being prepared: beside them a run's edge is a gap.
+    const gaps = [...groups.unobserved.factions, ...preparedPending(groups)];
     // A run by tag that starts or ends where the country's id changed tag, with
     // the other tag's run in the same faction meeting it there, is the same
     // country under another tag: not a join or a leave.
@@ -95,8 +98,7 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
       // founder, so several members seen at once all merely joined, and a first
       // roster that was not complete names no founder.
       const founders = faction.members.filter(member => member.firstHour === faction.firstHour);
-      // Hours no faction was read, and hours this faction's roster was incomplete.
-      const unknown = [...groups.unobserved.factions, ...faction.incomplete];
+      const unknown = [...gaps, ...faction.incomplete];
       const sole = founders.length === 1 && !inSpans(unknown, faction.firstHour);
       for (const run of faction.members.filter(member => member.tag === tag)) {
         const seenJoining = run.firstHour > branch[0] && !inSpans(unknown, run.firstHour - 1) && !renamedTo.has(`${run.firstHour}#${tag}`);

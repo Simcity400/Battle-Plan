@@ -93,7 +93,8 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         }
     }
     let path = path.ok_or_else(|| USAGE.to_owned())?;
-    let replay = Replay::open(fs::read(Path::new(&path)).map_err(|error| error.to_string())?)
+    let source = Path::new(&path);
+    let replay = Replay::open(fs::read(source).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
     let (sizes, encoded) = measure(&replay).map_err(|error| error.to_string())?;
     if verify {
@@ -101,31 +102,23 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         eprintln!("verified {hours} hours decode identically");
     }
     if let Some(destination) = write {
+        let destination = Path::new(&destination);
+        // Hold the recorder's publish lock so an in-place rewrite targets the measured recording.
+        let _lock = finalization_lock(destination)?;
+        if fs::read(source).map_err(|error| error.to_string())? != replay.bytes() {
+            return Err(format!(
+                "{} changed while it was measured; nothing was written",
+                source.display()
+            ));
+        }
         encoded
-            .write_atomic(Path::new(&destination))
+            .write_atomic(destination)
             .map_err(|error| error.to_string())?;
     }
-    if blocks {
-        for block in &encoded.index {
-            for section in encoded
-                .block_sections(block)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .flatten()
-            {
-                println!(
-                    "block branch={} hours={}..={} section={:?} raw={} compressed={}",
-                    block.branch,
-                    block.first_hour,
-                    block.last_hour,
-                    section.section,
-                    section.raw,
-                    section.compressed
-                );
-            }
-        }
-    }
     let mut report = report(&sizes);
+    if blocks {
+        report["block_sections"] = block_report(&encoded).map_err(|error| error.to_string())?;
+    }
     if columns {
         report["columns"] = column_report(&encoded, &sizes).map_err(|error| error.to_string())?;
     }
@@ -139,6 +132,55 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
         print_text(&report);
     }
     Ok(())
+}
+
+fn finalization_lock(destination: &Path) -> Result<fs::File, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, Instant};
+    let directory = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let path = directory.join("finalize.lock");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(&path)
+        {
+            Ok(file) => return Ok(file),
+            Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Err(error) => {
+                return Err(format!(
+                    "output is busy recording/finalizing or unavailable: {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+/// Every rewritten block's sections, in block order.
+pub(crate) fn block_report(encoded: &Replay) -> io::Result<Value> {
+    let mut sections = Vec::new();
+    for block in &encoded.index {
+        for section in encoded.block_sections(block)?.into_iter().flatten() {
+            sections.push(json!({
+                "branch": block.branch,
+                "first_hour": block.first_hour,
+                "last_hour": block.last_hour,
+                "section": format!("{:?}", section.section),
+                "raw": section.raw,
+                "compressed": section.compressed,
+            }));
+        }
+    }
+    Ok(Value::Array(sections))
 }
 
 pub(crate) fn measure(replay: &Replay) -> io::Result<(Sizes, Replay)> {
@@ -530,6 +572,17 @@ pub(crate) fn level_report(encoded: &Replay, sizes: &Sizes, levels: &[i32]) -> i
 }
 
 fn print_text(report: &Value) {
+    for section in report["block_sections"].as_array().into_iter().flatten() {
+        println!(
+            "block branch={} hours={}..={} section={} raw={} compressed={}",
+            section["branch"],
+            section["first_hour"],
+            section["last_hour"],
+            section["section"].as_str().unwrap_or_default(),
+            section["raw"],
+            section["compressed"]
+        );
+    }
     for refusal in report["refusals"].as_array().into_iter().flatten() {
         println!(
             "refused {} branch={} hours={}..={} count={}: {}",
@@ -744,6 +797,28 @@ mod tests {
             .map(|table| table["compressed_share"].as_f64().unwrap())
             .sum();
         assert!(shares > 0.0 && shares <= 1.0);
+    }
+
+    #[test]
+    fn block_sections_travel_inside_the_json_report() {
+        let replay = replay();
+        let (sizes, encoded) = measure(&replay).unwrap();
+        let mut report = report(&sizes);
+        report["block_sections"] = block_report(&encoded).unwrap();
+        let parsed: Value = serde_json::from_str(&report.to_string()).unwrap();
+        let sections = parsed["block_sections"].as_array().unwrap();
+        assert!(sections.iter().all(|section| section["section"].is_string()));
+        let compressed: u64 = sections
+            .iter()
+            .map(|section| section["compressed"].as_u64().unwrap())
+            .sum();
+        assert_eq!(
+            compressed,
+            sizes.header
+                + sizes.diagnostics
+                + sizes.table_keyframe.iter().sum::<u64>()
+                + sizes.table_later.iter().sum::<u64>()
+        );
     }
 
     #[test]

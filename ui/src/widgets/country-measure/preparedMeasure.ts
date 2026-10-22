@@ -6,6 +6,7 @@ import type { TimeChartProps } from '../../charts/TimeChart';
 import { reachedMeasureReply, validateMeasureStates, validateMeasureSummaries } from './preparedMeasureData';
 import type { MeasureStates, MeasureSummaries } from './preparedMeasureData';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 
 /** One viewport reply and one set of reached exact hours; no campaign history
  * cache. Request ownership masks source changes before passive cleanup runs. */
@@ -92,13 +93,16 @@ export function usePreparedMeasure<M extends string>(client: DashboardClient, so
   const currentStates = states?.owner === owner ? states.data : undefined;
   const data = useMemo(() => enabled && currentStates ? reachedMeasureReply(branchId!, measure, tags, currentStates) : undefined,
     [owner, enabled, currentStates]);
+  const retry = () => { setAttempt(previous => previous + 1); };
+  const error = useHeldFailure((states?.owner === owner ? states.error : undefined) ?? (summaries?.owner === owner ? summaries.error : undefined),
+    data !== undefined || currentSummaries !== undefined, retry);
   return { enabled, owner, data, states: currentStates, summaries: currentSummaries, summaryByTag, onSummaryView, onNavigateHour, exactAt,
     pending: currentSummaries?.pending,
     preparing: active && (pendingSummary?.owner === owner && pendingSummary.pending || pendingStates?.owner === owner && pendingStates.pending),
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     hourLoaded: (tag: string, hour: number) => currentStates?.states.some(state => state.tag === tag && state.hour === hour && !state.approximate) ?? false,
-    error: (states?.owner === owner ? states.error : undefined) ?? (summaries?.owner === owner ? summaries.error : undefined),
-    retry: () => { setAttempt(previous => previous + 1); },
+    error,
+    retry,
   };
 }

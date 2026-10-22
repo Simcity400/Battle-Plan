@@ -9,6 +9,7 @@ import { dayLabel } from '../../charts/draw';
 import { runAt } from '../../charts/series';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import DatedCountryChip, { ChooseCountryChip } from '../../dashboard/DatedCountryChip';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import { partColours } from '../../charts/race/countryRace';
@@ -62,7 +63,8 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const wantedMoment = Math.floor(playhead ?? extent[1]);
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const prepared = usePreparedNaval(runtime.client,track,params,wantedMoment,extent,view,active && (!grouped || !!groups.data),parity?.requested);
-  const {data,error,retry} = prepared;
+  const {data,retry} = prepared;
+  const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const moment = prepared.hour;
   const model = useMemo(() => data ? navalModel(data) : null, [data]);
   const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities) : model?.identities ?? null,
@@ -87,7 +89,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its naval losses." />;
     if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
     if (moment < track.branch.firstHour || moment > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
@@ -130,8 +132,9 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
   const drillRequest = track && drillOpen && drillTag ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'naval-losses', params: navalRequest(track.branch.id, { tags: [drillTag] }, kind, attribution, period) } : null;
   const drillReply = usePreparedNaval(runtime.client,track,drillRequest?.params??null,selectedHour,detailExtent,'mix',active && drillOpen,parity?.requested);
+  const drillError = useHeldFailure(drillReply.error, drillReply.data !== undefined, drillReply.retry);
   const drillNumbers = stores.drill.update(JSON.stringify([scopeKey, drillRequest]), drillReply.data, navalNumbers);
-  const detailAvailable = active && !!drillReply.data?.available && !drillReply.error && !!track
+  const detailAvailable = active && !!drillReply.data?.available && !drillError && !!track
     && selectedHour >= track.branch.firstHour && selectedHour <= track.branch.lastHour;
   const detailGeometry = JSON.stringify([geometryKey, detailExtent]);
   const detailOwner = useMemo(() => ({ scope, drillNumbers, drillTag, detailGeometry, detailAvailable }), [scope, drillNumbers, drillTag, detailGeometry, detailAvailable]);
@@ -262,7 +265,7 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
     if (!drillTag) return state;
     if (((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window)
       || selectedHour < track.branch.firstHour || selectedHour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    if (drillReply.error) return <WidgetState kind="error" detail={drillReply.error} onRetry={drillReply.retry} />;
+    if (drillError) return <WidgetState kind="error" detail={drillError} onRetry={drillReply.retry} />;
     if (drillTag && (!drillReply.data || !drillModel)) return <WidgetState kind="loading" label="This range is still being prepared." />;
     if (drillReply.data && !drillReply.data.available) return <WidgetState kind="unavailable" message={`Naval losses not recorded for ${drillName}.`} />;
     if (drillTag && drillModel && shownDrillTag === null) return <WidgetState kind="unavailable" message="Country unavailable at this time." />;
@@ -326,8 +329,9 @@ export default function NavalLossesWidget({ widget, runtime, active, countrySlot
       const tag = countryDrillTagAt(holderSpans, hour);
       return drillModel && tag ? [navalTooltip(drillModel, tag, hour, labelAt(hour)(tag).name, 'both', attribution)] : null;
     }} />;
-  if (pinned && kind === 'both') return <>{header}{chooser ?? breakdown}</>;
-  return <div ref={anchor} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+  const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (pinned && kind === 'both') return <>{header}{groupNotice}{chooser ?? breakdown}</>;
+  return <div ref={anchor} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>{groupNotice}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={anchor}
       title={`${label}: ${drillName}`} day={dayLabel(selectedHour)} following={drill.follow} canFollow={!drill.choices && !!drillTag && liveHour !== null}
       onClose={() => { if (mounted.current && active && pickRef.current.main === pickOwner) dispatch({ type: 'close' }); }} onFollow={follow}

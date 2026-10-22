@@ -1,9 +1,6 @@
 //! Map icons standing in a free eye's world.
 //!
-//! The map's icons (counters, combat and raid icons, ports, bases, theatre pins and city labels)
-//! are laid out in interface pixels around their anchors projected through the camera, as for the
-//! game's camera. Each owner tags its quads with the icon's world anchor and the distance its kind
-//! is removed at ([`IconAnchor`]); a free eye then shows every icon as standing at its anchor:
+//! Owners tag quads with world anchors and distance cutoffs for free-camera placement:
 //!
 //! - an anchor behind the eye, or as far as its kind's cutoff, is not drawn;
 //! - the icon keeps its screen size near the eye and shrinks gently with distance
@@ -48,6 +45,8 @@ pub enum IconFamily {
     Missions,
     /// Resistance and compliance state markers.
     Occupation,
+    /// The Operatives mode's intel containers.
+    Intel,
 }
 
 /// Where a map icon stands, as its owner tags its quads.

@@ -25,6 +25,10 @@ pub enum ResearchOutcome {
 pub struct ResearchEntry {
     pub token: String,
     pub technology_handle: u32,
+    /// Repeated technology IDs have separate template indices; older histories omit this.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub database_index: Option<u32>,
     /// Breaks attribution across missing hours or a changed country identity.
     pub continuity_start_hour: i32,
     /// Completed level when this assignment was first observed.
@@ -155,7 +159,20 @@ pub struct ResearchFolder {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchTechnologyFolder {
     pub token: String,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub database_index: Option<u32>,
     pub folder: Option<String>,
+}
+
+// Recorded definitions have separate text, but artwork is keyed by the technology token.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchDefinitionText {
+    pub token: String,
+    pub database_index: u32,
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]

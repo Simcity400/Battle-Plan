@@ -117,9 +117,23 @@ pub(crate) struct Links {
     /// Each opener's continuing facts, in stream order.
     pub edges: Edges,
     generation: Option<u64>,
+    read: Option<i32>,
+    /// False if the interval may hide a cancellation and reselection of the same decision.
+    #[serde(skip)]
+    covered: bool,
 }
 
 impl Links {
+    /// Decisions lack execution identity, so incomplete intervals cannot safely join them.
+    fn observe_read(&mut self, hour: i32, complete: bool) {
+        if !complete || self.read.and_then(|read| read.checked_add(1)) != Some(hour) {
+            self.open
+                .retain(|opening, _| !matches!(opening, Opening::Decision { .. }));
+        }
+        self.read = Some(hour);
+        self.covered = complete;
+    }
+
     /// Joins `occurrence`, about to be published at `at`, to the occurrence it
     /// continues, and opens it for later edges. A new world closes every
     /// opening of the old one.
@@ -171,7 +185,7 @@ impl Links {
                 }
             }
             DecisionSelected => {
-                if let Some(opening) = decision {
+                if let Some(opening) = decision.filter(|_| self.covered) {
                     self.open.insert(opening, at);
                 }
             }
@@ -185,7 +199,7 @@ impl Links {
             | DecisionCancelled
             | DecisionTimedOut
             | DecisionRemoved => {
-                let Some(opening) = decision else {
+                let Some(opening) = decision.filter(|_| self.covered) else {
                     return;
                 };
                 match self.open.get(&opening).copied() {
@@ -422,8 +436,12 @@ impl Observer {
         self.events.through(frame.hour);
         let tag_at = |hour, country| identities.native_tag(hour, country);
         let pack = frame.complete::<tables::EventFeedHistory>();
+        let mut complete = false;
         let read = match pack {
             Ok([pack]) if pack.read_hour == frame.hour => {
+                complete = pack.coverage
+                    == replay_data::event_feed_rows::EventFeedCoverage::Complete
+                    && pack.script_refusals == 0;
                 self.native
                     .append_named(&mut self.diagnostics, pack, tag_at, cancelled)
             }
@@ -432,6 +450,7 @@ impl Observer {
             )),
             Err(reason) => Err(reason),
         };
+        let complete = complete && read.is_ok();
         if let Err(reason) = read {
             check_cancel(cancelled)?;
             self.diagnostics.sampled_unavailable(
@@ -484,6 +503,7 @@ impl Observer {
                 .as_ref()
                 .map(|occurrence| (occurrence.generation, occurrence.sequence))
         });
+        self.links.observe_read(frame.hour, complete);
         for index in native {
             let row = &rows[index];
             let Some(occurrence) = occurrences[index].as_mut() else {

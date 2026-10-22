@@ -121,16 +121,17 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see licences." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading licences…" />;
-  if (!preparedAt(data, hour)) return <WidgetState kind="loading" label="This range is still being prepared." />;
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></>;
+  if (!preparedAt(data, hour)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
   // A group whose membership at this hour is unrecorded or empty says so, never "none";
   // membership still being prepared is neither.
-  if (!rows.length && !match.known(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length && !match.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
   const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <WidgetState kind={groupReason.kind} message={groupReason.message} />;
-  if (!rosterKnown(data, hour)) return <WidgetState kind="unavailable" message="Licences were not recorded at this date." />;
+  if (groupReason) return <>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></>;
+  if (!rosterKnown(data, hour)) return <>{groupFailure}<WidgetState kind="unavailable" message="Licences were not recorded at this date." /></>;
   const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} licences</span>, headerSlot);
   const main = <div className="production-licences">
     <FlowDiagram label="Production licences: licensors to licensees" nodes={nodes} links={links} stretch={width} slots={capacity + 1} hour={hour}
@@ -140,7 +141,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
       onContextMenu={(hit, x, y) => { if (hit?.kind === 'node') menu.open(x, y, [{ label: 'Show licences', run: () => openCountry(hit.node) }]); }} />
     {menu.menu}
   </div>;
-  return <div ref={anchor} className="production-licences-host">
+  return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
       title={picked ? `${looks.name(picked, at)}: licences` : COUNTRY.label} day={dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}

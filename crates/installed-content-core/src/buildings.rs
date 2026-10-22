@@ -932,10 +932,11 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Buildings> {
 /// [`read`], the triggers read against `names`, which
 /// [`KeyNames::read`] gives before any building is known.
 pub(crate) fn read_with(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Buildings> {
+    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
     let mut paths = layers
         .paths()
         .filter(|path| is_building_file(path))
-        .map(str::to_owned)
+        .map(|path| crate::script_files::ScriptPath::new(path.to_vec()))
         .collect::<Vec<_>>();
     paths.sort();
     let (resources, warnings) = crate::resources::read(layers)?;
@@ -955,7 +956,7 @@ pub(crate) fn read_with(layers: &ResolvedLayers, names: &KeyNames) -> io::Result
     // Every declaration of each type across the files, in database order.
     let mut declarations = BTreeMap::<String, Vec<BuildingType>>::new();
     for path in paths {
-        let parsed = parse_declarations(&layers.read(&path)?, Some(&resources), names)
+        let parsed = parse_declarations(&path.read(layers)?, Some(&resources), names)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
         buildings.ambiguous_slots.extend(parsed.ambiguous_slots);
         buildings
@@ -1001,10 +1002,10 @@ pub(crate) fn read_with(layers: &ResolvedLayers, names: &KeyNames) -> io::Result
     Ok(buildings)
 }
 
-pub(crate) fn is_building_file(path: &str) -> bool {
+pub(crate) fn is_building_file(path: &[u8]) -> bool {
     path.to_ascii_lowercase()
-        .strip_prefix("common/buildings/")
-        .is_some_and(|name| !name.contains('/') && name.ends_with(".txt"))
+        .strip_prefix(b"common/buildings/")
+        .is_some_and(|name| !name.contains(&b'/') && name.ends_with(b".txt"))
 }
 
 #[cfg(test)]

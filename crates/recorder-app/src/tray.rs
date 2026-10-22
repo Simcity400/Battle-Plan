@@ -1,7 +1,10 @@
 //! The tray icon, drawn at run time as a ring with a coloured dot, its tooltip
 //! and its right-click menu.
 use crate::{panel, snapshot::Light, worker::Recorder};
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU8, Ordering},
+};
 use tauri::{
     AppHandle, Manager, Wry,
     image::Image,
@@ -16,7 +19,12 @@ const QUIT: &str = "quit";
 /// Windows scales this to the notification area's size.
 const ICON_SIZE: u32 = 32;
 
-static LIGHT_TASKBAR: OnceLock<bool> = OnceLock::new();
+/// Last drawn taskbar theme: 0 before drawing, 1 dark, 2 light.
+static DRAWN_THEME: AtomicU8 = AtomicU8::new(0);
+
+fn theme(light_taskbar: bool) -> u8 {
+    1 + u8::from(light_taskbar)
+}
 
 /// The menu's Stop item, enabled only while recording.
 pub struct TrayMenu(MenuItem<Wry>);
@@ -80,12 +88,26 @@ pub fn icon_pixels(light: Light, size: u32, light_taskbar: bool) -> Vec<u8> {
 }
 
 fn icon(light: Light) -> Image<'static> {
-    let light_taskbar = *LIGHT_TASKBAR.get_or_init(crate::startup::light_taskbar);
+    let light_taskbar = crate::startup::light_taskbar();
+    DRAWN_THEME.store(theme(light_taskbar), Ordering::Relaxed);
     Image::new_owned(
         icon_pixels(light, ICON_SIZE, light_taskbar),
         ICON_SIZE,
         ICON_SIZE,
     )
+}
+
+/// Called on unchanged status polls too, since the taskbar theme can change independently.
+pub fn follow_theme(app: &AppHandle, light: Light) {
+    let drawn = DRAWN_THEME.load(Ordering::Relaxed);
+    if drawn == 0 || drawn == theme(crate::startup::light_taskbar()) {
+        return;
+    }
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Err(error) = tray.set_icon(Some(icon(light)))
+    {
+        eprintln!("Tray icon could not change: {error}");
+    }
 }
 
 pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {

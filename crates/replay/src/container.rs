@@ -455,6 +455,17 @@ impl Replay {
         Ok(())
     }
 
+    /// File-backed replays lack resident bytes; reject copying before creating any output.
+    fn require_resident(&self) -> io::Result<()> {
+        if self.is_file_backed() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a held recording can't be added to or written; open it whole",
+            ));
+        }
+        Ok(())
+    }
+
     /// Recording-list metadata reads the checksummed trailer without inflating blocks.
     /// Opening the replay still performs the full header and metadata validation.
     pub fn read_partial(path: &Path) -> io::Result<Option<ControlRecord>> {
@@ -652,6 +663,7 @@ impl Replay {
         frames: Frames<'_>,
         ahead: Option<Ahead>,
     ) -> io::Result<Self> {
+        self.require_resident()?;
         self.require_undamaged()?;
         // Existing blocks keep their original contract. Never mix current
         // writer rows under an older header or rewrite that header as migration.
@@ -1762,6 +1774,7 @@ impl Replay {
         publisher: &mut impl AtomicPublisher,
         mut checkpoint: impl FnMut(PublishStage) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.require_resident()?;
         self.require_undamaged()?;
         let mut file = publisher.create()?;
         checkpoint(PublishStage::TempCreated)?;

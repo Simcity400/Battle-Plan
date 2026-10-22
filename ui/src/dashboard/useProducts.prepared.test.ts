@@ -5,13 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 
 test('the real batch hook routes resource alias requests through their bound prepared source', async () => {
-  const state = { pending: undefined as Promise<void> | undefined };
+  const state = { pending: [] as Promise<unknown>[], track<T>(load: Promise<T>) { this.pending.push(load); return load; } };
   const globals = globalThis as typeof globalThis & { __resourceAliasBatch?: typeof state }; globals.__resourceAliasBatch = state;
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
     plugins: [{ name: 'resource-alias-batch-effect', enforce: 'pre', transform(source, id) {
       if (id.replaceAll('\\', '/').endsWith('/dashboard/products.ts')) return source
         .replace('useEffect(() => {', '((effect) => effect())(() => {')
-        .replace('void Promise.all(requests.map', 'globalThis.__resourceAliasBatch.pending = Promise.all(requests.map');
+        .replace('void loadProduct<T>(', 'globalThis.__resourceAliasBatch.track(loadProduct<T>(')
+        .replace(', attempt > 0, publish).then(publish,', ', attempt > 0, publish)).then(publish,');
     } }] });
   try {
     const { useProducts } = await vite.ssrLoadModule('/ui/src/dashboard/products.ts');
@@ -25,7 +26,7 @@ test('the real batch hook routes resource alias requests through their bound pre
     function Probe() { useProducts(client, ['Old', 'New'].map(tag => ({ sourceId: source.id, revision: source.revision,
       product: 'resource-balance', params: { branchId: '1', tag } })), true, undefined, source); return null; }
     renderToStaticMarkup(createElement(Probe));
-    assert.ok(state.pending); await state.pending;
+    assert.equal(state.pending.length, 2); await Promise.all(state.pending);
     assert.deepEqual(calls, ['Old', 'New']);
   } finally { await vite.close(); delete globals.__resourceAliasBatch; }
 });

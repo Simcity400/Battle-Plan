@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import GameWindowPopover from '../../components/GameWindowPopover';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import DrillHost, { FollowControl } from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill, pinnedBreakdown } from '../../charts/drill/drillState';
 import { dayLabel } from '../../charts/draw';
@@ -56,7 +57,9 @@ const stopRowEvent = <E,>(handler: (event: E) => void) => (event: E & { stopProp
 export default function ProductionLinesWidget({ widget, runtime, active, onDiagnostics, setOption, countrySlot }: WidgetProps) {
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, error, retry } = useProductionLines(widget, runtime, active);
+  const lines = useProductionLines(widget, runtime, active);
+  const { track, tag, data, retry } = lines;
+  const error = useHeldFailure(lines.error, data !== undefined, retry);
   const currentData = useRef(data);
   currentData.current = data;
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -168,6 +171,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
       windows={{ client: runtime.client, source: { sourceId: track.source.id, revision: track.source.revision }, branchId: track.branch.id, onDiagnostics: setWindowNotes }}
       active={active} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={jump} onBreakdown={openBreakdown} />;
   };
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.retry} /> : null;
   const drillView = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
       : actor.reason ? <WidgetState kind="unavailable" message="Country unavailable at this time." />
@@ -186,7 +190,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   return <div ref={anchor} className="production-lines">
     {pinned ? <>{pinnedHeader}<div className="drill-header">
       <span className="drill-day">{breakdownHour == null ? '' : dayLabel(breakdownHour)}</span>
-      <FollowControl following={shownPinnedFollow} onFollow={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(null); setPinnedFollow(true); }} onPause={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(breakdownHour); setPinnedFollow(false); }} /></div>{drillView}</>
+      <FollowControl following={shownPinnedFollow} onFollow={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(null); setPinnedFollow(true); }} onPause={() => { if (!ownerRef.current.active || ownerRef.current.owner !== owner) return; setBodyOwner(owner); setPickedHour(breakdownHour); setPinnedFollow(false); }} /></div>{identityNotice}{drillView}</>
       : <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null}
       title={`${selected === 'output' ? 'Output' : 'Efficiency'} · ${lineLabel}`} day={breakdownHour == null ? '' : dayLabel(breakdownHour)}
       following={drill.follow} canFollow={true} anchor={anchor} main={main}
@@ -197,7 +201,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
         runtime.addWidgetBelow(widget.id, { ...copy, time: drill.follow ? { mode: 'follow' }
           : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } }, options: { ...copy.options,
             productionCountry: datedCountryToken(selectedCountry), line: key == null ? '' : productionLineToken(track.source.metadata.campaignKey, track.branch.id, tag, key), factor: shownFactor } }); } : undefined}>
-      {drillView}</DrillHost>}
+      {identityNotice}{drillView}</DrillHost>}
     {menu.menu}
     <EquipmentDesignDetail key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} runtime={runtime} track={track}
       hour={breakdownHour ?? playhead ?? extent[1]} active={active} />

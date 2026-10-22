@@ -62,19 +62,20 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
     total: shownSeries.length, moment, metric, rows: shownSeries }));
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its raid tally." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading the raid tally…" />;
-  if (pendingAt(preparedPrefix(data), moment)) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (data.available !== true) return <WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raid totals unavailable.'} />;
-  if (resolved.reason) return <WidgetState kind="unavailable" message={resolved.reason} />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  const groupFailure = grouped && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || (grouped && !groups.data)) return <>{groupFailure}<WidgetState kind="loading" label="Loading the raid tally…" /></>;
+  if (pendingAt(preparedPrefix(data), moment)) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (data.available !== true) return <>{groupFailure}<WidgetState kind="unavailable" message={data.available === false ? 'No raid types available.' : 'Raid totals unavailable.'} /></>;
+  if (resolved.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={resolved.reason} /></>;
+  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
   // A group with no member found yet has no count to show: the moment says why once it is read.
   const none = noMembersAt(widget.countries, resolved, groups.data, moment, track.branch.lastHour);
-  if (none) return <NoMembersState reason={none.reason} icon="target" />;
+  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="target" /></>;
   // A group's members at hours still being prepared are not known yet: no count is not proof of none.
   if (resolved.top == null && !data.series.some(item => item.runs.length)) return resolved.known(track.branch.firstHour, track.branch.lastHour)
-    ? <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  return <div ref={root} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
+    ? <>{groupFailure}<WidgetState kind="unavailable" message="No raid counts were recorded for these countries." /></> : groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  return <div ref={root} style={{ display: 'contents' }}>{groupFailure}<CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
     slots={resolved.top ?? Math.max(1, counted.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
     presentation={{ exact: false, held: false }}
     beforeChart={metric === 'both' ? view === 'lines'

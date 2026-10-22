@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::parser::{self, Document};
+pub use crate::script_files::ScriptPath;
 
 mod physfs_zip;
 pub mod visual;
@@ -739,18 +740,23 @@ fn record_digest(
 /// The files of `listed` directly in `directory` whose name ends in `suffix`
 /// (case-sensitive), in the byte order of their
 /// names. See [`ResolvedLayers::directory_files`].
-fn directory_order(directory: &str, suffix: &str, listed: Vec<String>) -> Vec<String> {
-    let directory = directory.trim_end_matches('/').to_ascii_lowercase();
-    let mut files: Vec<(String, String)> = listed
+fn directory_order(directory: &[u8], suffix: &str, listed: Vec<ScriptPath>) -> Vec<ScriptPath> {
+    let mut end = directory.len();
+    while end > 0 && directory[end - 1] == b'/' {
+        end -= 1;
+    }
+    let directory = &directory[..end];
+    let mut files: Vec<(LayerPath, ScriptPath)> = listed
         .into_iter()
         .filter_map(|path| {
-            let (parent, name) = path.rsplit_once('/')?;
-            let name = name.to_owned();
-            (parent.eq_ignore_ascii_case(&directory) && name.ends_with(suffix))
+            let bytes = path.as_bytes();
+            let split = bytes.iter().rposition(|byte| *byte == b'/')?;
+            let (parent, name) = (&bytes[..split], bytes[split + 1..].to_vec());
+            (parent.eq_ignore_ascii_case(directory) && name.ends_with(suffix.as_bytes()))
                 .then_some((name, path))
         })
         .collect();
-    files.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     files.into_iter().map(|(_, path)| path).collect()
 }
 
@@ -966,8 +972,7 @@ impl ResolvedLayer {
                     .filter(|directory| !below(directory.as_bytes(), DESCRIPTOR_ROOT.as_bytes()))
                     .chain(std::iter::once(DESCRIPTOR_ROOT));
                 for directory in walked {
-                    let path = root.join(directory);
-                    if path.try_exists()? {
+                    if let Some(path) = folded_path(root, directory)? {
                         collect_folder(
                             root,
                             &path,
@@ -1515,13 +1520,16 @@ impl ResolvedLayers {
         Ok(layers)
     }
 
-    /// Every effective covered path that is text. A listing is text for the text databases
-    /// that consume it; a path whose bytes are not UTF-8 is read by its bytes
-    /// ([`Self::read_path`]) and is not listed here.
-    pub fn paths(&self) -> impl Iterator<Item = &str> {
+    /// The game loads non-UTF-8 archive paths too; read these with [`Self::read_path`].
+    pub fn paths(&self) -> impl Iterator<Item = &[u8]> {
+        self.effective.values().map(|file| file.path.as_slice())
+    }
+
+    /// Paths retain non-UTF-8 bytes; read them with [`Self::read_path`].
+    pub fn effective_paths(&self) -> impl Iterator<Item = (&[u8], usize)> {
         self.effective
             .values()
-            .filter_map(|file| std::str::from_utf8(&file.path).ok())
+            .map(|file| (file.path.as_slice(), file.layer))
     }
 
     /// The `name` of every recorded DLC layer, which `has_dlc` tests: its
@@ -1590,24 +1598,21 @@ impl ResolvedLayers {
         listed
     }
 
-    /// [`Self::listed_layer_paths`] for the text databases: only the paths
-    /// that are text. The GUI and GFX readers enumerate by bytes.
-    pub fn listed_paths(&self, prefix: &str) -> BTreeSet<String> {
+    #[cfg(test)]
+    pub(crate) fn listed_paths(&self, prefix: &str) -> BTreeSet<String> {
         self.listed_layer_paths(prefix.as_bytes())
             .into_iter()
             .filter_map(|path| String::from_utf8(path).ok())
             .collect()
     }
 
-    /// Every effective file under `prefix` ending in one of `extensions`,
-    /// covered or not, in (layer, path) order. Each layer's folder or archive is listed
-    /// directly, so this works whatever the coverage policy includes, and
-    /// `replace_path` and case precedence follow the covered overlay. Read the
-    /// results with [`Self::read_uncovered`], which verifies covered paths;
-    /// the listing seeds its lookup so each read opens one file.
-    /// Text listing only: see [`Self::paths`].
-    pub fn descriptor_paths(&self, prefix: &str, extensions: &[&str]) -> io::Result<Vec<String>> {
-        let prefix = normalize_path(prefix.as_bytes())?.to_ascii_lowercase();
+    /// Listing is byte-exact; lookup ignores folder case but requires exact archive names.
+    pub fn descriptor_paths(
+        &self,
+        prefix: impl AsRef<[u8]>,
+        extensions: &[&str],
+    ) -> io::Result<Vec<ScriptPath>> {
+        let prefix = normalize_path(prefix.as_ref())?.to_ascii_lowercase();
         let extensions: Vec<String> = extensions.iter().map(|e| e.to_ascii_lowercase()).collect();
         if extensions
             .iter()
@@ -1615,37 +1620,88 @@ impl ResolvedLayers {
         {
             return Err(invalid("descriptor extension must be a dot and a suffix"));
         }
-        let mut effective = BTreeMap::new();
         let mut listings = Vec::with_capacity(self.layers.len());
         for (index, layer) in self.layers.iter().enumerate() {
-            let listing = listed_files(index, layer, &prefix, &extensions)?;
-            let sees = |lower: &[u8]| self.overlay_sees(lower);
-            apply_overlay(
-                &mut effective,
-                index,
-                matches!(layer.source, LayerSource::Archive(_)),
-                listing.keys(),
-                &layer.replace_paths,
-                layer.overlay.is_some().then_some(&sees as Sees<'_>),
-            )?;
-            listings.push(listing);
+            listings.push(listed_files(index, layer, &prefix, &extensions)?);
         }
-        let mut files: Vec<_> = effective.into_values().collect();
-        files.sort_by(|a, b| a.layer.cmp(&b.layer).then_with(|| a.path.cmp(&b.path)));
+        // Folder lookup ignores case and retains the inventory's first spelling.
+        let folded: Vec<BTreeMap<LayerPath, &UncoveredHit>> = self
+            .layers
+            .iter()
+            .zip(&listings)
+            .map(|(layer, listing)| {
+                let mut folded = BTreeMap::new();
+                if matches!(layer.source, LayerSource::Folder(_)) {
+                    for (path, hit) in listing {
+                        folded.entry(path.to_ascii_lowercase()).or_insert(hit);
+                    }
+                }
+                folded
+            })
+            .collect();
+        let answer = |name: &LayerPath| -> Option<(usize, &UncoveredHit)> {
+            let lower = name.to_ascii_lowercase();
+            for (index, layer) in self.layers.iter().enumerate().rev() {
+                if self.hides(layer, &lower) {
+                    continue;
+                }
+                let hit = match layer.source {
+                    LayerSource::Folder(_) => folded[index].get(&lower).copied(),
+                    LayerSource::Archive(_) => listings[index].get(name),
+                };
+                if let Some(hit) = hit {
+                    return Some((index, hit));
+                }
+                if layer
+                    .replace_paths
+                    .iter()
+                    .any(|path| below(&lower, &path.to_ascii_lowercase()))
+                {
+                    return None;
+                }
+            }
+            None
+        };
+        let mut seen = BTreeSet::new();
+        let mut hidden: Vec<(LayerPath, bool)> = Vec::new();
+        let mut files: Vec<(usize, LayerPath, UncoveredHit)> = Vec::new();
+        for (index, layer) in self.layers.iter().enumerate().rev() {
+            for path in listings[index].keys() {
+                let lower = path.to_ascii_lowercase();
+                if self.hides(layer, &lower)
+                    || hidden.iter().any(|(root, overlay)| {
+                        below(&lower, root) && (!overlay || self.overlay_sees(&lower))
+                    })
+                    || !seen.insert(path.clone())
+                {
+                    continue;
+                }
+                let (answering, hit) = answer(path).ok_or_else(|| {
+                    invalid(format!("listed file {} answers no lookup", display(path)))
+                })?;
+                files.push((answering, path.clone(), hit.clone()));
+            }
+            hidden.extend(
+                layer
+                    .replace_paths
+                    .iter()
+                    .map(|path| (path.to_ascii_lowercase(), layer.overlay.is_some())),
+            );
+        }
+        files.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
         let mut memo = self
             .uncovered_memo
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for file in &files {
-            if !self.covered_path(&file.path) {
-                let hit = listings[file.layer].get(&file.path).cloned();
-                memo.insert(roster.clone(), file.path.clone(), hit);
+        for (_, path, hit) in &files {
+            if !self.covered_path(path) {
+                memo.insert(roster.clone(), path.clone(), Some(hit.clone()));
             }
         }
         Ok(files
             .into_iter()
-            .filter_map(|file| String::from_utf8(file.path).ok())
+            .map(|(_, path, _)| ScriptPath::new(path))
             .collect())
     }
 
@@ -1655,9 +1711,13 @@ impl ResolvedLayers {
     /// `suffix` must start with
     /// a dot (see [`Self::descriptor_paths`]); the engine's filter has none, so
     /// a name such as `footxt` is not listed here. Covered or not: read each
-    /// with [`Self::read_uncovered`].
-    pub fn directory_files(&self, directory: &str, suffix: &str) -> io::Result<Vec<String>> {
-        let directory = normalize_relative(directory)?;
+    /// with [`ScriptPath::read_uncovered`]. Names are their bytes.
+    pub fn directory_files(
+        &self,
+        directory: impl AsRef<[u8]>,
+        suffix: &str,
+    ) -> io::Result<Vec<ScriptPath>> {
+        let directory = normalize_path(directory.as_ref())?;
         let listed = self.descriptor_paths(&directory, &[suffix])?;
         Ok(directory_order(&directory, suffix, listed))
     }
@@ -2046,11 +2106,11 @@ impl ResolvedLayers {
     /// Whether the file at `relative` comes from a visual mod: the layer a read answers it
     /// from is one of the mods mounted above the recording. Consumers tag what they draw with
     /// it, so only failures of a visual mod's own content count against the mods.
-    pub fn supplied_by_visual_mod(&self, relative: &str) -> bool {
+    pub fn supplied_by_visual_mod(&self, relative: impl AsRef<[u8]>) -> bool {
         if !self.shows_visual_mods() {
             return false;
         }
-        let Some(relative) = sanitize(relative.as_bytes()) else {
+        let Some(relative) = sanitize(relative.as_ref()) else {
             return false;
         };
         let layer = if self.covered_path(&relative) {
@@ -3042,23 +3102,18 @@ fn select_recorded_paths<'a>(
 }
 
 fn recorded_dlc_paths(game_dir: &Path, recorded: &[Dlc]) -> io::Result<Vec<PathBuf>> {
-    let mut candidates = Vec::new();
-    for dlc in recorded {
-        let directory = game_dir.join("dlc").join(&dlc.id);
-        if !directory.try_exists()? {
-            continue;
-        }
-        for entry in
-            directory_entries(&directory).map_err(|error| named_error("DLC", &dlc.id, error))?
-        {
-            let path = entry.path();
-            if entry.file_type()?.is_file()
-                && path.extension().is_some_and(|extension| extension == "dlc")
-            {
-                candidates.push((dlc.id.clone(), path));
-            }
-        }
+    let directory = game_dir.join("dlc");
+    let mut descriptors = Vec::new();
+    if !recorded.is_empty() && directory.try_exists()? {
+        find_descriptors(&directory, &mut descriptors)?;
     }
+    let candidates: Vec<(String, PathBuf)> = descriptors
+        .into_iter()
+        .filter_map(|path| {
+            let id = path.parent()?.file_name()?.to_str()?.to_owned();
+            Some((id, path))
+        })
+        .collect();
     select_recorded_paths(
         "DLC",
         recorded.iter().map(|dlc| dlc.id.as_str()),
@@ -3426,6 +3481,15 @@ fn gather_selected(
         let mut selected = Vec::new();
         for (index, descriptor) in launcher.enabled_mods.into_iter().enumerate() {
             let descriptor = normalize_relative(&descriptor)?;
+            // The game mounts only descriptors directly in `mod/`, never nested ones.
+            if !descriptor.split_once('/').is_some_and(|(folder, file)| {
+                folder.eq_ignore_ascii_case("mod") && !file.contains('/')
+            }) {
+                order_notes.push(format!(
+                    "enabled mod descriptor {descriptor} is not directly in mod/, where the game lists mods, so the game does not mount it"
+                ));
+                continue;
+            }
             let path = user_dir.join(&descriptor);
             let requested_id = recorded
                 .map(|identity| identity.mods[index].id.as_str())

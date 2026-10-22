@@ -85,7 +85,8 @@ export function useStockpileCountry(selection: DatedCountrySelection | null, run
   const numbers = store.update(JSON.stringify(requests), product.data, replies => replies.map(stockpileNumbers));
   const data = useMemo(() => spans && selection && (product.data ?? numbers)
     ? stockpileCountryData((product.data ?? numbers)!, spans, selection.tag) : undefined, [product.data, numbers, spans, selection]);
-  const reason = (catalogue.error || product.error ? 'Couldn’t load country.' : null) ?? (!history ? 'Loading country…'
+  const reason = ((catalogue.error && !history) || product.error ? 'Couldn’t load country.' : null) ?? (!history ? 'Loading country…'
     : !spans ? 'Choose a country again.' : !data ? 'Loading the selected stockpile history…' : null);
-  return { data, numbers, spans, reason, error: catalogue.error ?? product.error, retry: catalogue.error ? catalogue.retry : product.retry };
+  return { data, numbers, spans, reason, error: (history ? undefined : catalogue.error) ?? product.error,
+    retry: catalogue.error && !history ? catalogue.retry : product.retry, identityError: history ? catalogue.error : undefined, identityRetry: catalogue.retry };
 }

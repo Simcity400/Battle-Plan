@@ -203,6 +203,7 @@ pub struct Entry {
     /// Spent on repairing the building, not on new levels.
     pub repair: bool,
     /// Under the instant-construction cheat: the amount is not factory output.
+    /// A repair under it is not instant; it draws no bank.
     pub instant: bool,
     /// A building line linked to another country's: its speed includes the
     /// partner's factories.
@@ -242,11 +243,14 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     let amount = if railway { amount } else { operands.speed };
     // Railway instant progress is player-only; the amount identifies the path
     // without reading the player global.
-    let instant = if railway {
+    let cheat = if railway {
         amount == engine_production::construction_ic_sites::RAILWAY_INSTANT_AMOUNT
     } else {
         operands.instant
     };
+    // The cheat leaves repairs at ordinary speed but skips their reserved bank withdrawal.
+    let unwithdrawn = cheat && !railway && operands.repair;
+    let instant = cheat && !unwithdrawn;
     // Building speed is stored unclamped after an optional assertion and
     // added signed to progress. Industrial modifiers alone clamp; the final
     // infrastructure product and speed+bank sum can still be signed. Bank
@@ -260,16 +264,22 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         return;
     }
     // Instant construction raises new-building progress to max(cost, speed).
-    // Repair uses the speed again, even with the cheat on.
-    let amount = if instant && !railway && !operands.repair {
+    // Undo the game's wrapping speed-plus-bank sum to remove the unspent draw.
+    let amount = if instant && !railway {
         amount.max(operands.cost)
+    } else if unwithdrawn {
+        amount.wrapping_sub(operands.bank)
     } else {
         amount
     };
     append(Entry {
         line: operands.line,
         amount,
-        bank: if carry || instant { 0 } else { operands.bank },
+        bank: if carry || instant || unwithdrawn {
+            0
+        } else {
+            operands.bank
+        },
         railway,
         repair: operands.repair,
         instant,
@@ -1004,6 +1014,31 @@ mod tests {
         assert_eq!(entries[0].amount, 2_000_000);
         observe_speed(&mut building, 3_000_000, spend_site(&image));
         assert_eq!(drained(1).1[0].amount, 3_000_000);
+        observe_for_test(false, 0);
+    }
+
+    #[test]
+    fn a_repair_under_instant_construction_is_factory_output_without_a_bank_draw() {
+        let _lock = test_lock();
+        let mut image = Image::new();
+        image.set_instant(true);
+        observe_for_test(true, image.base());
+        let mut repairing = Line::new(&image, false, 0x36_0000_003b, 20_000, 2, false);
+        observe_speed(&mut repairing, 100_000, spend_site(&image));
+        let (result, entries) = drained(2);
+        assert!(result.unwrap().complete());
+        assert_eq!(
+            entries,
+            [Entry {
+                line: 0x36_0000_003b,
+                amount: 80_000,
+                repair: true,
+                ..Entry::default()
+            }]
+        );
+        // A draw above the speed is not a speed and bank sum, cheat or not.
+        observe_speed(&mut repairing, 10_000, spend_site(&image));
+        assert!(drained(2).0.is_err());
         observe_for_test(false, 0);
     }
 

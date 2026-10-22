@@ -201,9 +201,11 @@ export function researchItemDate(item: Exclude<ResearchItem, { kind: 'gap' }> | 
 }
 
 export interface ResearchText {
-  name: (token: string) => string;
+  /** Repeated technology definitions have distinct template indices. */
+  name: (token: string, databaseIndex?: number | null) => string;
   icon: (token: string) => string | undefined;
-  folder: (token: string) => ResearchFolderLook | undefined;
+  /** Each recorded definition can belong to different folders. */
+  folder: (token: string, databaseIndex?: number | null) => ResearchFolderLook | undefined;
 }
 
 /** A completion's tooltip: the plain date's "by" bound, its start, the time it
@@ -217,7 +219,7 @@ export function completedTooltip(row: Extract<ResearchRow, { kind: 'completed' }
     ...row.tookHours !== null ? [{ label: 'Took', value: researchDays(row.tookHours) }] : [],
     { label: 'Slot', value: `${row.slot.index + 1}${row.startSlot !== null ? ` · started in slot ${row.startSlot + 1}` : ''}` },
   ];
-  return { title: text.name(row.token), icon: text.icon(row.token), subtitle: text.folder(row.token)?.name, rows };
+  return { title: text.name(row.token, entry.databaseIndex), icon: text.icon(row.token), subtitle: text.folder(row.token, entry.databaseIndex)?.name, rows };
 }
 
 /** What a slot held without its recorded occurrence: when it was first and last
@@ -245,7 +247,7 @@ export function gapTooltip(gap: { hour: number; lastHour: number }): TooltipCont
  * that read, the game's days-left estimate, the year it is ahead of, and
  * whether its history can be opened. */
 export function currentTooltip(token: string, slotIndex: number, progress: { fraction: number; hour: number } | null, left: number | null,
-  joined: boolean, text: ResearchText, aheadOf: number | null = null): TooltipContent {
+  joined: boolean, text: ResearchText, aheadOf: number | null = null, databaseIndex: number | null = null): TooltipContent {
   const rows: TooltipRow[] = [
     { label: 'Progress', value: progress ? `${Math.round(progress.fraction * 100)}% on ${formatDateTime(progress.hour)}` : 'Not recorded' },
     ...left !== null ? [{ label: 'Days left', value: `${left}` }] : [],
@@ -255,5 +257,5 @@ export function currentTooltip(token: string, slotIndex: number, progress: { fra
   const notes = [left !== null ? 'Days left is the game’s estimate at this hour’s research speed.' : null,
     aheadOf !== null ? 'Research ahead of its year is slower until then.' : null,
     joined ? null : 'This recording does not identify the assignment, so its history is unknown.'];
-  return { title: text.name(token), icon: text.icon(token), subtitle: text.folder(token)?.name, rows, note: notes.filter(Boolean).join(' ') || undefined };
+  return { title: text.name(token, databaseIndex), icon: text.icon(token), subtitle: text.folder(token, databaseIndex)?.name, rows, note: notes.filter(Boolean).join(' ') || undefined };
 }

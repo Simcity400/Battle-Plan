@@ -71,9 +71,9 @@ pub(crate) fn apply<R: RowCodec>(
     if !fits(old, &fresh, ranges) {
         return Err(invalid("invalid certified key ranges"));
     }
-    let removed: usize = ranges.iter().map(|range| span(old, range).len()).sum();
+    let (removed, peak) = growth(old, &fresh, ranges);
     let mut retired = allocation::vec(removed)?;
-    allocation::reserve(old, fresh.len().saturating_sub(removed))?;
+    allocation::reserve(old, peak)?;
     // Reverse ranges leave the indices before each replacement unchanged. Moving
     // suffixes happens only on the spool thread; unchanged rows keep ownership.
     for range in ranges.iter().rev() {
@@ -82,4 +82,43 @@ pub(crate) fn apply<R: RowCodec>(
         retired.extend(old.splice(old_span, fresh.drain(new_span)));
     }
     Ok(retired)
+}
+
+/// Returns removed rows and peak growth while reverse splices precede earlier deletions.
+fn growth<R: RowCodec>(old: &[R], fresh: &[R], ranges: &[Range<u128>]) -> (usize, usize) {
+    let (mut removed, mut inserted, mut peak) = (0, 0, 0);
+    for range in ranges.iter().rev() {
+        removed += span(old, range).len();
+        inserted += span(fresh, range).len();
+        peak = usize::max(peak, inserted - removed.min(inserted));
+    }
+    (removed, peak)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rows::ConstructionLineOutputRow;
+
+    fn rows(lines: &[u64]) -> Vec<ConstructionLineOutputRow> {
+        lines
+            .iter()
+            .map(|&line| ConstructionLineOutputRow {
+                line,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// Reverse splicing inserts a later range before an earlier range frees space.
+    #[test]
+    fn replacement_reserves_the_largest_intermediate_length() {
+        let ranges = [1..3, 10..12];
+        assert_eq!(growth(&rows(&[1, 2]), &rows(&[10, 11]), &ranges), (2, 2));
+        assert_eq!(growth(&rows(&[1, 2]), &rows(&[2, 10]), &ranges), (2, 1));
+        assert_eq!(growth(&rows(&[10, 11]), &rows(&[1, 2]), &ranges), (2, 0));
+        let mut old = rows(&[1, 2]);
+        let retired = apply(&mut old, rows(&[10, 11]), &ranges).unwrap();
+        assert_eq!((old, retired), (rows(&[10, 11]), rows(&[1, 2])));
+    }
 }

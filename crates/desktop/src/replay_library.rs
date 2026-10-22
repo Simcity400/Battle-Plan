@@ -44,7 +44,10 @@ pub(super) fn scan_with(
                 );
             }
             let kind = entry.file_type().map_err(|e| e.to_string())?;
-            if kind.is_symlink() || entry.file_name().to_string_lossy().starts_with('.') {
+            if kind.is_symlink()
+                || entry.file_name().to_string_lossy().starts_with('.')
+                || hidden(&entry)?
+            {
                 continue;
             }
             let path = entry.path();
@@ -81,6 +84,14 @@ pub(super) fn scan_with(
         folder: Some(root.to_string_lossy().into_owned()),
         files,
     })
+}
+
+const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+
+fn hidden(entry: &std::fs::DirEntry) -> Result<bool, String> {
+    use std::os::windows::fs::MetadataExt;
+    let metadata = entry.metadata().map_err(|e| e.to_string())?;
+    Ok(metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
 }
 
 /// The recorder's save folder, shared through its settings.
@@ -237,6 +248,39 @@ mod tests {
         );
         assert!(scan(&root.join("missing")).is_err());
         assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn library_leaves_out_what_windows_marks_hidden() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-library-hidden-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(root.join("Archived")).unwrap();
+        std::fs::write(root.join("Archived/old.battleplan"), b"").unwrap();
+        let marked = std::process::Command::new("attrib")
+            .arg("+h")
+            .arg(root.join("Archived"))
+            .status()
+            .unwrap();
+        assert!(marked.success());
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .attributes(FILE_ATTRIBUTE_HIDDEN)
+            .open(root.join("hidden.battleplan"))
+            .unwrap();
+        std::fs::write(root.join("shown.battleplan"), b"").unwrap();
+        let result = scan(&root).unwrap();
+        let names: Vec<_> = result.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, ["shown"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

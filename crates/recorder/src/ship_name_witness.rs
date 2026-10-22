@@ -386,9 +386,6 @@ fn capture(options: Options) -> Result<(), String> {
         Some(user) => user,
         None => directories::resolve_user_directory()?,
     };
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is unset")?;
     let content = gather(&GatherOptions {
         game_dir: process
             .path
@@ -396,7 +393,8 @@ fn capture(options: Options) -> Result<(), String> {
             .ok_or("game executable has no folder")?
             .to_owned(),
         user_dir: user,
-        cache_dir: local.join("HOI4Replay").join("recorder"),
+        // The recording path's cache, with the same LOCALAPPDATA fallback.
+        cache_dir: replay::recorder_settings::directory(),
         dlc_order: None,
     })
     .map_err(|e| e.to_string())?;

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import { jumpItem } from '../../charts/jump';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import DrillParts from '../../charts/drill/DrillParts';
 import StackedShareChart from '../../charts/StackedShareChart';
 import { drawPlayhead } from '../../charts/draw';
@@ -44,7 +45,8 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const sourceScope = JSON.stringify([track?.source.id, track?.branch.id, tag, originHour]);
   const data = stores.numbers.update(sourceScope, incoming.data, supplyDrillNumbers);
   const warnings = stores.warnings.update(sourceScope, incoming.data?.warnings, reply => reply);
-  const { error, retry } = incoming;
+  const { retry } = incoming;
+  const error = useHeldFailure(incoming.error, incoming.data !== undefined, retry);
   useEffect(() => { onWarnings(warnings ?? []); return () => onWarnings([]); }, [warnings, onWarnings]);
   const histories = useMemo(() => data ? supplyDrillHistories(data) : [], [data]);
   const identitySpans = useMemo(() => countryDrillSpans(histories, tag ?? '', originHour), [histories, tag, originHour]);

@@ -249,7 +249,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
     for path in script_files::paths(layers, "common/state_category/", Some(".txt")) {
-        match parse_file(&layers.read(&path)?, &names) {
+        match parse_file(&path.read(layers)?, &names) {
             Ok(parsed) => database.merge(parsed),
             Err(why) => {
                 let why = format!("State categories unavailable in {path}: {why}");

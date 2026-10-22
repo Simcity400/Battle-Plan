@@ -40,15 +40,10 @@ export function useReachedProduct<T>(client: DashboardClient, source: DashboardS
     retry: () => { setState(undefined); setAttempt(value => value + 1); } };
 }
 
-/** A single-country reached-hour widget's country at an hour. The choice is bound to the
- * hour it was made at, kept in the widget's `country` option ([`REACHED_COUNTRY_OPTION`])
- * as a dated choice, and followed through only the dated aliases of the identity holding
- * its tag then ([`resolveChoice`]). A new choice binds at the hour shown. Its rebinding,
- * or the `holders` to `pick` from, waits for the complete identity history. `error`
- * and `retry` are the identity history's. */
+/** Rebinding waits for complete identity history; held history remains usable alongside errors. */
 export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, hour: number, active: boolean, stored: unknown,
   setOption?: (key: string, value: string) => void)
-  : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: string; retry: () => void } {
+  : ReachedCountry & { holders: CountryHolder[] | null; pick: (holder: CountryHolder) => void; error?: string; retry: () => void; historyHeld: boolean } {
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const groups = useCountryGroups(runtime, track, active);
   const histories = groups.data?.countryIdentities;
@@ -84,7 +79,7 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   return { ...country, holders: resolved?.holders ?? null,
     pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)
       keep({ campaign, branch, tag: chosen, originOffset: holder.origin - track.branch.firstHour }); },
-    error: groups.error, retry: groups.retry };
+    error: groups.error, retry: groups.retry, historyHeld: !!histories };
 }
 
 /** One country's name at an hour for a widget's own messages; its tag while the name loads. */

@@ -3,13 +3,14 @@ import { useEffect, useMemo, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
 import { loadProduct } from './products.ts';
 import { preparationCoverage } from './preparedPrefix.ts';
+import { useHeldFailures } from './heldFailures.ts';
 
 /** A product asked for one fixed window of hours at a time (such as a month of a
  * country's daily reads), so no reply grows with the campaign. */
 export interface ProductWindows<T> {
   /** The windows wanted and loaded, by index. */
   data: ReadonlyMap<number, T>;
-  /** The windows wanted whose load failed, with why. */
+  /** Framed windows with published prefixes report failures through the frame, not this map. */
   errors: ReadonlyMap<number, string>;
   /** Asks again for every failed window wanted. */
   retry: () => void;
@@ -107,12 +108,15 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
   }, [owner, key, active, attempt]);
   const data = current?.data;
   const errors = current?.errors;
+  // A failed load already left the shared cache; retrying only asks again.
+  const retry = useMemo(() => () => {
+    setHeld(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 });
+  }, [owner]);
+  const heldErrors = data && errors ? [...errors].flatMap(([window, error]) => data.has(window) ? [error] : []) : [];
+  const framed = useHeldFailures(heldErrors, retry) && heldErrors.length > 0;
   return useMemo(() => ({
     data: data ?? new Map<number, T>(),
-    errors: errors ?? new Map<number, string>(),
-    // A failed load already left the shared cache; retrying only asks again.
-    retry: () => {
-      setHeld(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 });
-    },
-  }), [data, errors, owner]);
+    errors: errors && framed ? new Map([...errors].filter(([window]) => !data?.has(window))) : errors ?? new Map<number, string>(),
+    retry,
+  }), [data, errors, framed, retry]);
 }

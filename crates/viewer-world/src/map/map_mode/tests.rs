@@ -693,7 +693,7 @@ fn a_war_goal_marks_its_recipient_and_the_recipients_overlord() {
 fn each_mode_chooses_whose_names_the_map_writes_far_and_near() {
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
             spheres = { top = { type = game_map_mode_factions } far_text = faction near_text = state }
             plain = { top = { type = game_map_mode_states } far_text = none }
@@ -806,7 +806,7 @@ fn each_mode_takes_the_games_channel_pair_and_names_what_it_lacks() {
 fn a_scripted_mode_shows_two_game_layers_or_one_in_both_channels() {
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
             both = { bottom = { type = game_map_mode_states } top = { type = game_map_mode_diplomacy } }
             twice = { bottom = { type = game_map_mode_states } top = { type = game_map_mode_states } }
@@ -855,7 +855,7 @@ fn a_scripted_mode_shows_two_game_layers_or_one_in_both_channels() {
 fn scripted_modes_delegate_game_layers_and_refuse_colour_scripts() {
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
             delegated = { top = { type = game_map_mode_factions } }
             scripted = { top = { type = country color = { set_temp_variable = { red = 1 } } } bottom = { type = state } }
@@ -900,7 +900,7 @@ fn colour_scripts_paint_each_target_their_callback_colours() {
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
             painted = {
                 top = {
@@ -1003,7 +1003,7 @@ fn scripted_politics_refuses_uncertified_sharing_rosters_by_name_and_target_coun
     }
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
         politics = { update_daily = no top = { type = country color = {
             FROM = {
@@ -1719,7 +1719,7 @@ fn scripted_split_states_use_the_cached_single_branch_and_positive_province_grou
     use colour_script::{TargetId, borders};
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
-    scripted_map_modes::parse_into("test.txt", br#"scripted_map_modes = {
+    scripted_map_modes::parse_into(&"test.txt".into(), br#"scripted_map_modes = {
         split = { top = { type = state_controller targets = { targets = { 1 } }
             color = { set_temp_variable = { alpha = 1 } FROM = { FROM = { tag = SOV } } set_temp_variable = { red = 1 } }
         } }
@@ -1809,7 +1809,7 @@ fn scripted_forced_refresh_matches_the_recorded_declaration_between_daily_update
     };
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         b"scripted_map_modes = { first = {} second = { update_daily = no } }",
         &mut modes,
     )
@@ -1885,7 +1885,7 @@ fn scripted_forced_refresh_refuses_inherited_temps_without_guessing_zero() {
     };
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let mut modes = MapModes::default();
-    scripted_map_modes::parse_into("test.txt", br#"scripted_map_modes = {
+    scripted_map_modes::parse_into(&"test.txt".into(), br#"scripted_map_modes = {
         partial = { update_daily = no top = { type = country color = {
             set_temp_variable = { alpha = 1 }
             FROM = { if = { limit = { tag = SOV } set_temp_variable = { blue = 1 } }
@@ -2026,7 +2026,7 @@ fn scripted_scheduled_refresh_preserves_unknown_event_context() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = {
         partial = { update_daily = yes top = { type = country color = {
             set_temp_variable = { alpha = 1 } set_temp_variable = { green = 1 }
@@ -2191,7 +2191,7 @@ fn colour_borders_keep_their_colour_until_their_provinces_change() {
     use dashboard_text::triggers::{ContentFacts, World};
     let mut modes = MapModes::default();
     scripted_map_modes::parse_into(
-        "test.txt",
+        &"test.txt".into(),
         br#"scripted_map_modes = { held = { top = { type = country color = { always = no } } } }"#,
         &mut modes,
     )

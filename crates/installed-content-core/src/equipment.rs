@@ -48,7 +48,7 @@ pub const DIRECTORY: &str = "common/units/equipment/";
 
 /// Direct `.txt` files in `upgrades`, then `modules`, then root, each in
 /// filename byte order ([`crate::script_files::paths`]).
-pub fn files(layers: &ResolvedLayers) -> Vec<String> {
+pub fn files(layers: &ResolvedLayers) -> Vec<crate::script_files::ScriptPath> {
     let mut files = Vec::new();
     for directory in [
         format!("{DIRECTORY}upgrades/"),
@@ -868,7 +868,7 @@ impl Database {
     pub(crate) fn load_with_names(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Self> {
         let mut database = Self::default();
         for path in files(layers) {
-            database.read_file(&layers.read(&path)?, &path, names);
+            database.read_file(&path.read(layers)?, &path.text(), names);
             if database.lost.is_some() {
                 return Ok(database);
             }
@@ -1708,9 +1708,10 @@ impl Database {
 
     /// Designer family predicates include every archetype in the chain. Each
     /// step uses that type's categories and its own default modules, rather
-    /// than the selected design's installed modules.
-    pub fn designer_families(&self, equipment: &Equipment) -> [bool; 3] {
+    /// than installed modules; parent-first cycle checks can miss loops in archetype-only chains.
+    pub fn designer_families(&self, equipment: &Equipment) -> Result<[bool; 3], String> {
         let mut families = [false; 3];
+        let mut seen: Vec<usize> = Vec::new();
         let mut current = equipment;
         loop {
             let mask = self.category(current);
@@ -1721,15 +1722,24 @@ impl Database {
             {
                 *family |= mask & bits != 0;
             }
-            let Some(next) = current.archetype.map(|at| &self.equipment[at]) else {
+            let Some(at) = current.archetype else {
                 break;
             };
+            let next = &self.equipment[at];
             if std::ptr::eq(current, next) {
                 break;
             }
+            if seen.contains(&at) {
+                return Err(format!(
+                    "equipment {} reaches archetype {} again through its archetypes, so its designer families never finish",
+                    String::from_utf8_lossy(&equipment.name),
+                    String::from_utf8_lossy(&next.name)
+                ));
+            }
+            seen.push(at);
             current = next;
         }
-        families
+        Ok(families)
     }
 
     /// Use own categories, otherwise one archetype step. Parent categories

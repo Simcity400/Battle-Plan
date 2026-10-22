@@ -37,9 +37,9 @@ pub const CAUSES: usize = 11;
 /// Why a container country's derived state is refused.
 pub const UNPRUNED_CONTAINER: &str = "the daily pass does not prune a country without an owned state, so its retained air-combat records are unknown";
 
-/// The sample hour of the latest daily pass at or before `hour`.
-pub fn last_pass(hour: Hour) -> Hour {
-    hour - hour.rem_euclid(DAY)
+/// Latest daily pass; None when its midnight precedes the earliest representable hour.
+pub fn last_pass(hour: Hour) -> Option<Hour> {
+    hour.checked_sub(hour.rem_euclid(DAY))
 }
 
 /// Pruning cutoff for a pass at `pass`: subtract the timeout from the clock with signed
@@ -69,11 +69,7 @@ pub struct Retained<'a> {
 }
 
 pub fn retained(row: &AirRegionCombatRow, hour: Hour, timeout: i32) -> Retained<'_> {
-    let cutoff = cutoff(last_pass(hour), timeout);
-    Retained {
-        own: pruned(&row.own, cutoff),
-        foreign: pruned(&row.foreign, cutoff),
-    }
+    retained_through(row, last_pass(hour), timeout)
 }
 
 /// The latest daily pass at or before `hour` that visited a container country, searching
@@ -87,11 +83,11 @@ pub fn visiting_pass(
     mut visited: impl FnMut(Hour) -> Result<bool, String>,
 ) -> Result<Option<Hour>, String> {
     let mut pass = last_pass(hour);
-    while pass > first {
-        if visited(pass)? {
-            return Ok(Some(pass));
+    while let Some(at) = pass.filter(|&at| at > first) {
+        if visited(at)? {
+            return Ok(Some(at));
         }
-        pass -= DAY;
+        pass = at.checked_sub(DAY);
     }
     Ok(None)
 }
@@ -352,10 +348,10 @@ mod tests {
 
     #[test]
     fn the_latest_daily_pass_prunes_only_the_leading_run() {
-        let pass = last_pass(HOUR);
+        let pass = last_pass(HOUR).unwrap();
         assert_eq!(pass, 43_800_000 + 24 * 30);
-        assert_eq!(last_pass(pass), pass);
-        assert_eq!(last_pass(pass - 1), pass - 24);
+        assert_eq!(last_pass(pass), Some(pass));
+        assert_eq!(last_pass(pass - 1), Some(pass - 24));
         let kept = cutoff(pass, 24);
         // An out-of-order record after the first kept one stays, as the
         // native forward scan stops at the first record it keeps.
@@ -383,7 +379,7 @@ mod tests {
 
     #[test]
     fn the_latest_visiting_pass_alone_prunes_and_no_visit_keeps_the_row() {
-        let pass = last_pass(HOUR);
+        let pass = last_pass(HOUR).unwrap();
         let first = pass - 24 * 5;
         let mut asked = Vec::new();
         // Only the pass two days back visited the country.
@@ -432,6 +428,29 @@ mod tests {
         assert!(retained(&row, HOUR, 24).own.is_empty());
         let whole = retained_through(&row, None, 24);
         assert_eq!((whole.own.len(), whole.foreign.len()), (2, 1));
+    }
+
+    #[test]
+    fn passes_end_at_the_earliest_signed_hour() {
+        let midnight = Hour::MIN + 8;
+        assert_eq!(midnight.rem_euclid(DAY), 0);
+        assert_eq!(last_pass(Hour::MIN), None);
+        assert_eq!(last_pass(midnight - 1), None);
+        assert_eq!(last_pass(midnight), Some(midnight));
+        assert_eq!(last_pass(Hour::MAX), Some(Hour::MAX - 7));
+        let row = AirRegionCombatRow {
+            own: vec![record(Hour::MIN, 1, 0, 1)],
+            ..Default::default()
+        };
+        assert_eq!(retained(&row, Hour::MIN, 24).own.len(), 1);
+        let mut asked = Vec::new();
+        let found = visiting_pass(midnight + 5, Hour::MIN, |at| {
+            asked.push(at);
+            Ok(false)
+        });
+        assert_eq!(found, Ok(None));
+        assert_eq!(asked, [midnight]);
+        assert_eq!(visiting_pass(Hour::MIN + 3, Hour::MIN, |_| Ok(true)), Ok(None));
     }
 
     #[test]

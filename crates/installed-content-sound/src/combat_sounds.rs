@@ -50,14 +50,11 @@ pub struct Layers {
 impl Layers {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let listed = layers.descriptor_paths(FOLDER, &[".txt"])?;
-        let paths = defines::load_order(
-            &format!("{FOLDER}/"),
-            ".txt",
-            listed.iter().map(String::as_str),
-        );
+        let paths = defines::load_order(&format!("{FOLDER}/"), ".txt", &listed);
         let mut out = Self::default();
-        for path in paths {
-            let bytes = layers.read_uncovered(&path)?;
+        for file in paths {
+            let bytes = file.read_uncovered(layers)?;
+            let path = file.text();
             match parser::parse(&bytes) {
                 Ok(document) => out.read_file(&document.items, &path),
                 Err(error) => out

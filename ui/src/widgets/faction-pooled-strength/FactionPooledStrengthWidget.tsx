@@ -117,12 +117,13 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
           : `${data.doctrineFolders?.length ?? 0} doctrines`}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="layers" message="Load a campaign to see faction pools." />;
   if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!groups.data) return <WidgetState kind="loading" label="Loading faction pools…" />;
-  if (!faction) return <WidgetState kind="empty" icon="layers" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} />;
-  if (details.error) return <WidgetState kind="error" detail={details.error} onRetry={details.retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading faction pools…" />;
-  if (!pool) return <WidgetState kind="unavailable" message="This faction’s pools were not recorded at this time." />;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction pools…" /></>;
+  if (!faction) return <>{groupFailure}<WidgetState kind="empty" icon="layers" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
+  if (details.error) return <>{groupFailure}<WidgetState kind="error" detail={details.error} onRetry={details.retry} /></>;
+  if (!data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction pools…" /></>;
+  if (!pool) return <>{groupFailure}<WidgetState kind="unavailable" message="This faction’s pools were not recorded at this time." /></>;
   const row = (key: string, name: ReactNode, track: ReactNode, value: ReactNode, pick?: () => void) => <li key={key} {...tips.rowProps(key)}
     {...(pick ? { role: 'button', onClick: pick, onKeyDown: (event: React.KeyboardEvent<HTMLLIElement>) => {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); } else tips.rowProps(key).onKeyDown(event); } } : {})}>
@@ -152,7 +153,7 @@ export default function FactionPooledStrengthWidget({ widget, runtime, active, h
     body = <ol className="resource-bars" aria-label={`Shared doctrines on ${dayLabel(hour)}`}>{(data.doctrineFolders ?? []).map(folder => row(String(folder.ordinal),
       <span className="resource-name"><span title={folder.name ?? 'Doctrine name unavailable'}>{folder.name ?? 'Doctrine name unavailable'}</span></span>, <span />, <span />))}</ol>;
   }
-  return <div ref={anchor} className="faction-pooled">
+  return <div ref={anchor} className="faction-pooled">{groupFailure}
     {header}
     {setOption && offered.length > 1 && <div className="faction-pooled-caption">
       <Segmented value={pool} options={POOL_CHOICES.filter(choice => offered.includes(choice.value))} label="Pool" onChange={value => setOption('pool', value)} />

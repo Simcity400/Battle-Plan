@@ -1542,7 +1542,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<String>()
             };
             let [x, y] = point;
-            match dump_overlay.prepared().intel_at(point) {
+            match dump_overlay.prepared().intel_at(point, dump_overlay.looks()) {
                 None => println!("Intel hover at {x},{y}: no intel entry takes the point"),
                 Some(hit) => {
                     println!("Intel hover at {x},{y}:\n{}", escaped(&hit.tooltip.title));

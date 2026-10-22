@@ -122,16 +122,17 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its ships sunk log." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading ships sunk…" />;
-  if (!data.available) return manifest.data?.pending?.length ? <PreparedLogCoverage coverage={manifest.data.coverage} /> : <WidgetState kind="unavailable" message="Not in this recording" />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk…" /></>;
+  if (!data.available) return <>{groupFailure}{manifest.data?.pending?.length ? <PreparedLogCoverage coverage={manifest.data.coverage} /> : <WidgetState kind="unavailable" message="Not in this recording" />}</>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour)
-    return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const pageError = history.errors.get(browseIndex);
-  if (pageError) return <WidgetState kind="error" detail={pageError} onRetry={history.retry} />;
-  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading ships sunk?" />;
+  if (pageError) return <>{groupFailure}<WidgetState kind="error" detail={pageError} onRetry={history.retry} /></>;
+  if (browseIndex >= 0 && !history.data.has(browseIndex)) return <>{groupFailure}<WidgetState kind="loading" label="Loading ships sunk?" /></>;
   const preceding = wantedWindows.filter(index => index <= browseIndex);
   const oldest = preceding.length ? Math.min(...preceding) : 0;
   const earlier = oldest > 0 && manifest.data!.windows[oldest - 1].lastHour >= (from ?? Number.MIN_SAFE_INTEGER);
@@ -156,7 +157,7 @@ export default function ShipsSunkWidget({ widget, runtime, active, onDiagnostics
       </span>
     </>;
   };
-  return <div className="log-widget">
+  return <div className="log-widget">{groupFailure}
     <PreparedLogCoverage coverage={manifest.data?.coverage} />
     {manifest.data?.pending?.length ? <p className="chart-line-key">Class choices cover prepared history.</p> : null}
     {log.chips && chips.length > 1 && <div className="log-chips"><ChipSet label="Ship classes" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}

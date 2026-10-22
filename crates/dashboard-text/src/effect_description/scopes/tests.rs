@@ -559,7 +559,7 @@ fn industrial_organisation_iterator_uses_recorded_order_native_scopes_and_visibi
     assert!(
         out.refusals
             .keys()
-            .any(|why| why.contains("variable store")),
+            .any(|why| why.contains("IndustrialOrganisationDetails")),
         "{:?}",
         out.refusals
     );

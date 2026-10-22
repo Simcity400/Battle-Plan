@@ -1322,12 +1322,12 @@ impl DecodeLane {
         if read.is_some_and(|read| read.cancelled()) { return false }
         let (branch, hour) = target;
         let mut from = playback.walk_start(branch, hour);
-        while let Some(at) = from.filter(|at| hour - at > DECODE_STEP) {
-            let step = at + DECODE_STEP;
+        while let Some(at) = from.filter(|at| i64::from(hour) - at > i64::from(DECODE_STEP)) {
+            let Ok(step) = Hour::try_from(at + i64::from(DECODE_STEP)) else { break };
             if playback.advance_without_output(branch, step).is_err() {
                 break;
             }
-            from = Some(step);
+            from = Some(i64::from(step));
             if read.is_some_and(|read| read.cancelled()) || !Self::lock(shared).still_wanted(target) {
                 return false;
             }

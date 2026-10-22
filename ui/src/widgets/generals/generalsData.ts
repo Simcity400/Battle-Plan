@@ -241,7 +241,7 @@ export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, l
 export function leaderTooltip(row: LeaderRow, country: { name: string; flag?: string }): TooltipContent {
   const dates = new Map(row.career.traitGains.filter(g => g.hour <= row.hour).map(g => [g.token, g]));
   const names = attributeNames(row.value);
-  return { title: leaderName(row), subtitle: `${country.name} · ${row.value.rank || `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
+  return { title: leaderName(row), subtitle: `${country.name} · ${row.value.rank ?? `Rank ${row.value.category}`} · ${formatDateTime(row.hour)}`,
     rows: [{ label: 'Skill', value: row.value.skill == null ? 'Not recorded' : `${row.value.skill}${row.value.maximumSkill == null ? '' : ` / ${row.value.maximumSkill}`}` },
       { label: `${names[0]} · ${names[1]}`, value: `${row.value.components[0]} · ${row.value.components[1]}` },
       { label: `${names[2]} · ${names[3]}`, value: `${row.value.components[2]} · ${row.value.components[3]}` },
@@ -278,7 +278,7 @@ export function careerLanes(reply: UnitLeadersData, leader: LeaderCareer, firstH
       label: previous ? `${previous.label}; ${label}` : label, icons: [...(previous?.icons ?? []), traits.get(g.token)?.icon ?? undefined] });
   }
   const gains = [...dates.values()];
-  const commands = stackedSpans(leader.commands.filter(c => c.firstHour <= lastHour && c.lastHour >= firstHour).map(c => ({ id: `command:${c.formation}:${c.firstHour}`, firstHour: Math.max(firstHour, c.firstHour), lastHour: Math.min(lastHour, c.lastHour), label: c.nameReadHour != null && c.nameReadHour <= lastHour && c.name || `${c.kind === 'fleet' ? 'Fleet' : 'Formation'} ${c.formation}` })));
+  const commands = stackedSpans(leader.commands.filter(c => c.firstHour <= lastHour && c.lastHour >= firstHour).map(c => ({ id: `command:${c.formation}:${c.firstHour}`, firstHour: Math.max(firstHour, c.firstHour), lastHour: Math.min(lastHour, c.lastHour), label: c.nameReadHour != null && c.nameReadHour <= lastHour && c.name !== null ? c.name : `${c.kind === 'fleet' ? 'Fleet' : 'Formation'} ${c.formation}` })));
   // Separate neutral fought counts from the result series, so joined outcomes can
   // replace them with won above and lost below the shared monthly axis.
   const months = new Map<number, { first: number; last: number; count: number; unknown: number; won: number; lost: number }>();

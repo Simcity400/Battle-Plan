@@ -258,7 +258,7 @@ pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
         Some(".txt"),
     ) {
         let before = database.notes.len();
-        if let Err(why) = database.read_file(&layers.read(&path)?, names) {
+        if let Err(why) = database.read_file(&path.read(layers)?, names) {
             database.notes.push(why);
         }
         for note in &mut database.notes[before..] {
@@ -284,7 +284,7 @@ pub fn read_policies(
         Some(".txt"),
     ) {
         let before = catalog.notes.len();
-        if let Err(why) = catalog.read_file(&layers.read(&path)?, names) {
+        if let Err(why) = catalog.read_file(&path.read(layers)?, names) {
             notes.push(format!("{path}: {why}"));
         }
         notes.extend(

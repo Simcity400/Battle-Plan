@@ -18,7 +18,7 @@
 //! - **Anchor**: the state's first province with the greatest positive victory points, at its
 //!   label anchor; with none, the state's bounding centre at height zero.
 //! - **Shown** in the Operatives mode while the camera's eye height is strictly below
-//!   `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`.
+//!   `NGraphics.UNITS_ICONS_DISTANCE_CUTOFF`; free cameras use each anchor's distance.
 //!
 //! What the hour lacks for a part is counted by name; the part is hidden, never guessed.
 
@@ -41,7 +41,7 @@ mod tooltips;
 pub mod values;
 pub mod windows;
 
-pub use windows::{IntelHit, IntelInputs, IntelView, PreparedIntel, hit_at, prepare};
+pub use windows::{IntelHit, IntelInputs, IntelView, PreparedIntel, hit_at, hit_seen, prepare};
 
 use viewer_foundation::map::native_windows;
 

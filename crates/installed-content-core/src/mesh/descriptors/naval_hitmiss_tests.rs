@@ -271,7 +271,7 @@ fn naval_hitmiss_final_state_text_encoding_refusal_is_local_and_logged() {
     registry
         .declare(
             &document.items[0].value,
-            "gfx/entities/encoding.asset",
+            &crate::script_files::ScriptPath::from("gfx/entities/encoding.asset"),
             &mut roster,
         )
         .unwrap();

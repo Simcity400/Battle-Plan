@@ -3,6 +3,7 @@ import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { loadProduct, useProduct } from '../../dashboard/products';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import type { ArmySizeParams, ArmySizeReply, ChartSummary, CountryIdentityRun } from '../../generated/dashboard';
 import type { TimeChartProps } from '../../charts/TimeChart';
 import { validateArmySizeReply } from './armySizeData';
@@ -56,9 +57,11 @@ export function usePreparedArmy(client: DashboardClient, track: BoundTrack | und
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(previous => ({ owner, hour: (value as { hour: number | null }).hour, revision: (previous?.revision ?? 0) + 1 }));
     }).catch(error => { if (!controller.signal.aborted && alive.current === owner) setNavigationError({ owner, error: String(error) }); }).finally(() => pending.current.delete(controller));
   }, [owner, active]);
+  const retry = () => { setNavigationError(undefined); incoming.retry(); };
+  const navigationFailure = useHeldFailure(navigationError?.owner === owner ? navigationError.error : undefined,
+    incoming.data !== undefined || manifest !== undefined, retry);
   return { dense, summaries, identities: useMemo(() => incoming.data?.series.map(line => ({ tag: line.tag, identities: line.identities ?? [] })), [incoming.data]), exactLineTags, onNavigateHour, keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined,
     keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,
     onSummaryView: client.preparedQuery ? onSummaryView : undefined, ...incoming,
-    error: incoming.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
-    retry: () => { setNavigationError(undefined); incoming.retry(); } };
+    error: incoming.error ?? navigationFailure, retry };
 }

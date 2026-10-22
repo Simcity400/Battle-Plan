@@ -58,7 +58,35 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
     const target = focus.backwards ? targets.at(-1) : targets[0];
     if (target) { target.focus(); setFocus(null); }
   }, [focus, range.start, range.end]);
+  // Native Tab enters mounted edge rows, not necessarily the list's logical first or last row.
+  const tabbing = useRef<boolean | null>(null);
+  useLayoutEffect(() => {
+    const document = root.current?.ownerDocument;
+    if (!document) return;
+    let timer = 0;
+    const keyboard = (event: KeyboardEvent) => {
+      clearTimeout(timer);
+      tabbing.current = event.key === 'Tab' ? event.shiftKey : null;
+      if (tabbing.current !== null) timer = window.setTimeout(() => { tabbing.current = null; }, 0);
+    };
+    document.addEventListener('keydown', keyboard, true);
+    return () => { clearTimeout(timer); document.removeEventListener('keydown', keyboard, true); };
+  }, []);
+  const seek = (at: number, backwards: boolean) => {
+    if (!root.current) return;
+    root.current.scrollTop = padding + revealRow(at, Math.max(0, root.current.scrollTop - padding), view.height, rowHeight);
+    setView(viewAt(root.current.scrollTop, root.current.clientHeight));
+    setFocus({ at, backwards });
+  };
   return <div ref={root} className={`windowed-rows ${className ?? ''}`} role="list" aria-label={label}
+    onFocus={event => {
+      const backwards = tabbing.current;
+      if (backwards === null || event.currentTarget.contains(event.relatedTarget) || !items.length) return;
+      const at = backwards ? items.length - 1 : 0;
+      const row = (event.target as HTMLElement).closest<HTMLElement>('[data-row-index]');
+      if (row && Number(row.dataset.rowIndex) === at) return;
+      seek(at, backwards);
+    }}
     onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocusedKey(null); }}
     onScroll={event => { setView(viewAt(event.currentTarget.scrollTop, event.currentTarget.clientHeight)); }}>
     {!moving.length && empty}
@@ -79,9 +107,7 @@ export default function WindowedRows<T>({ items, rowHeight: preferredHeight, fit
           if (next == null || !root.current) return;
           if (next < 0 || next >= items.length) return;
           event.preventDefault();
-          root.current.scrollTop = padding + revealRow(next, Math.max(0, root.current.scrollTop - padding), view.height, rowHeight);
-          setView(viewAt(root.current.scrollTop, root.current.clientHeight));
-          setFocus({ at: next, backwards: tab && event.shiftKey });
+          seek(next, tab && event.shiftKey);
         }}>{children(row)}</div>)}
     </div>
   </div>;

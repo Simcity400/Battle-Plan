@@ -1076,7 +1076,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
             .map(|path| {
                 let mut notes = Vec::new();
                 let document =
-                    reader::document(&layers.read(path)?, &equipment, &names, &mut notes)
+                    reader::document(&path.read(layers)?, &equipment, &names, &mut notes)
                         .map_err(|error| invalid(format!("{path}: {error}")))?;
                 misreads.extend(
                     notes

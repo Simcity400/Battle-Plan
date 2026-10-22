@@ -23,6 +23,14 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const STATUS_EVENT: &str = "recorder-status";
+/// The worker changed the saved settings itself: the panel reads them again.
+pub const SETTINGS_EVENT: &str = "recorder-settings";
+
+fn settings_used(app: &AppHandle) {
+    if let Err(error) = app.emit(SETTINGS_EVENT, ()) {
+        eprintln!("Recorder settings could not reach the panel: {error}");
+    }
+}
 
 #[derive(Default)]
 struct Inner {
@@ -44,8 +52,8 @@ struct Inner {
     hours: u64,
     /// Bytes of the earlier recording this session continues, by campaign.
     earlier: Option<(String, Option<u64>)>,
-    /// The flag keys whose flag was last asked for.
-    flag_keys: Option<Vec<String>>,
+    /// The campaign and flag keys whose flag was last asked for this session.
+    flag_keys: Option<(String, Vec<String>)>,
     /// This session's game and Paradox user folders, for its content stack.
     flag_folders: Option<(PathBuf, PathBuf)>,
     /// The last flag shown for each campaign, shown again while not recording it.
@@ -84,7 +92,11 @@ fn request_flag(
                     None
                 });
             recorder.update(&app, |inner| {
-                if inner.flag_keys.as_ref() != Some(&keys) {
+                if !inner
+                    .flag_keys
+                    .as_ref()
+                    .is_some_and(|(asked, asked_keys)| *asked == campaign && *asked_keys == keys)
+                {
                     return;
                 }
                 if let Some(flag) = &flag {
@@ -120,10 +132,21 @@ fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
         .map_err(|error| format!("Save folder {}: {error}", root.display()))
 }
 
-/// The probe of the running game process, opened once per process.
+/// Unsupported builds stay refused for the process; other probe failures retry at the next poll.
 struct GameProbe {
     start: u64,
-    probe: Option<Probe>,
+    probe: Result<Probe, String>,
+}
+
+impl GameProbe {
+    fn settled(&self, start: u64) -> bool {
+        self.start == start
+            && self
+                .probe
+                .as_ref()
+                .err()
+                .is_none_or(|error| controller::unsupported_build(error))
+    }
 }
 
 /// How a session ended, for the record loop.
@@ -176,6 +199,8 @@ struct SessionAdmission<'a> {
     /// before any probe named it.
     first_loaded: Box<dyn Fn() -> Option<String> + 'a>,
     handover: RefCell<Option<String>>,
+    /// Called once a load used up its campaign's pending New file.
+    used_up: Box<dyn Fn() + 'a>,
 }
 
 impl SessionAdmission<'_> {
@@ -198,8 +223,12 @@ impl SessionAdmission<'_> {
             return Err(Refusal::Off);
         }
         // Its folder (a pending New file starting one) must be this session's.
-        match targets::session_target_at(self.settings, self.root, campaign, recorded) {
-            Ok(folder) if folder == self.target => Ok(()),
+        let target = targets::session_target_at(self.settings, self.root, campaign, recorded);
+        if let Ok((_, true)) = target {
+            (self.used_up)();
+        }
+        match target {
+            Ok((folder, _)) if folder == self.target => Ok(()),
             Ok(_) => {
                 if pressed {
                     *self.handover.borrow_mut() = Some(campaign.to_owned());
@@ -266,27 +295,31 @@ impl Recorder {
         Ok(content)
     }
 
-    /// Apply a change, then publish the snapshot to the panel and tray if it changed.
+    /// Unchanged snapshots must still follow taskbar theme changes.
     fn update(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) {
-        let published = {
+        let (published, light) = {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
-            (inner.snapshot != before).then(|| {
+            let published = (inner.snapshot != before).then(|| {
                 let can_stop = inner.capturing
                     && inner.snapshot.phase == Phase::Recording
                     && !inner.snapshot.stopping;
                 (inner.snapshot.clone(), can_stop)
-            })
+            });
+            (published, inner.snapshot.light())
         };
-        if let Some((snapshot, can_stop)) = published {
-            if let Err(error) = app.emit(STATUS_EVENT, &snapshot) {
-                eprintln!("Recorder status could not reach the panel: {error}");
+        match published {
+            Some((snapshot, can_stop)) => {
+                if let Err(error) = app.emit(STATUS_EVENT, &snapshot) {
+                    eprintln!("Recorder status could not reach the panel: {error}");
+                }
+                tray::show(app, snapshot.light(), &snapshot.tooltip(), can_stop);
             }
-            tray::show(app, snapshot.light(), &snapshot.tooltip(), can_stop);
+            None => tray::follow_theme(app, light),
         }
     }
 
@@ -452,14 +485,19 @@ impl Recorder {
                         if manual || held.is_some_and(|held| held != start) {
                             held = None;
                         }
-                        if game.as_ref().is_none_or(|game| game.start != start) {
+                        if !game.as_ref().is_some_and(|game| game.settled(start)) {
                             // An unsupported build cannot be read; its capture refuses it.
-                            game = Some(GameProbe {
-                                start,
-                                probe: Probe::open(pid).ok(),
-                            });
+                            let probe = Probe::open(pid);
+                            if let Err(error) = &probe
+                                && game.as_ref().is_none_or(|game| {
+                                    game.start != start || game.probe.as_ref().err() != Some(error)
+                                })
+                            {
+                                eprintln!("The running game could not be read: {error}");
+                            }
+                            game = Some(GameProbe { start, probe });
                         }
-                        let probe = game.as_ref().and_then(|game| game.probe.as_ref());
+                        let probe = game.as_ref().and_then(|game| game.probe.as_ref().ok());
                         let loaded = probe.and_then(Probe::loaded);
                         // Record pressed for a campaign that turned out to belong in
                         // another folder carries over to its session there.
@@ -554,7 +592,13 @@ impl Recorder {
         let folders = (|| -> Result<(PathBuf, PathBuf, PathBuf), String> {
             let root = save_root(settings)?;
             let target = match &loaded {
-                Some(loaded) => targets::session_target(&root, &loaded.campaign)?,
+                Some(loaded) => {
+                    let (target, used_up) = targets::session_target(&root, &loaded.campaign)?;
+                    if used_up {
+                        settings_used(app);
+                    }
+                    target
+                }
                 None => root.clone(),
             };
             let user = match &settings.user_folder {
@@ -632,6 +676,7 @@ impl Recorder {
                     .and_then(controller::first_loaded_campaign)
             }),
             handover: RefCell::new(None),
+            used_up: Box::new(|| settings_used(app)),
         };
         let admit = |campaign: &str, recorded: bool| admission.admit(campaign, recorded);
         let current = || {
@@ -718,14 +763,18 @@ impl Recorder {
             _ => None,
         };
         // A new set of flag keys (another country, cosmetic tag or ruling group)
-        // asks for its flag once.
+        // or another campaign asks for its flag once.
         let flag_request = match (&live.campaign, live.flag_keys.take()) {
             (Some(campaign), Some(keys)) => {
                 let mut inner = self.lock();
-                if inner.flag_keys.as_ref() == Some(&keys) {
+                if inner
+                    .flag_keys
+                    .as_ref()
+                    .is_some_and(|(asked, asked_keys)| asked == campaign && *asked_keys == keys)
+                {
                     None
                 } else {
-                    inner.flag_keys = Some(keys.clone());
+                    inner.flag_keys = Some((campaign.clone(), keys.clone()));
                     inner
                         .flag_folders
                         .clone()
@@ -892,6 +941,7 @@ mod tests {
             manual_campaign: RefCell::new(None),
             first_loaded: Box::new(|| None),
             handover: RefCell::new(None),
+            used_up: Box::new(|| {}),
         }
     }
 
@@ -969,12 +1019,17 @@ mod tests {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
         .unwrap();
-        let session = admission(&settings, &root, &root, true);
+        let used = Cell::new(0);
+        let mut session = admission(&settings, &root, &root, true);
+        session.used_up = Box::new(|| used.set(used.get() + 1));
         assert!(
             session.admit(CAMPAIGN, false) == Err(Refusal::Elsewhere),
             "the earlier recording is not appended to"
         );
         assert_eq!(session.handover.borrow().as_deref(), Some(CAMPAIGN));
+        assert_eq!(used.get(), 1);
+        assert_eq!(session.admit(CAMPAIGN, false), Err(Refusal::Elsewhere));
+        assert_eq!(used.get(), 1);
         let saved = RecorderSettings::load_from(&settings).unwrap();
         assert_eq!(
             saved.campaigns[CAMPAIGN].folder.as_deref(),

@@ -625,6 +625,35 @@ fn title(hits: &[IntelHit], point: [f32; 2]) -> Option<String> {
 }
 
 #[test]
+fn a_free_eye_hits_the_nearest_shown_container_in_its_own_layout() {
+    let hit = |layer: u64, title: &str| IntelHit {
+        shapes: vec![
+            viewer_foundation::map::native_gui::HitGeometry::test_rectangle(
+                [0, 0],
+                [20, 20],
+                [2048, 1152],
+            ),
+        ],
+        layer,
+        tooltip: Arc::new(Tooltip {
+            title: title.into(),
+            ..Tooltip::default()
+        }),
+    };
+    let hits = [hit(2, "far"), hit(1, "near")];
+    assert_eq!(title(&hits, [5.0, 5.0]).as_deref(), Some("far"));
+    let seen = |hit: &IntelHit| match hit.tooltip.title.as_str() {
+        "near" => Some(([5.0, 5.0], 1)),
+        _ => Some(([50.0, 50.0], 0)),
+    };
+    assert_eq!(
+        hit_seen(&hits, seen).map(|hit| hit.tooltip.title.as_str()),
+        Some("near")
+    );
+    assert!(hit_seen(&hits, |_| None).is_none());
+}
+
+#[test]
 fn entries_take_the_list_places_and_hover_by_their_own_children() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

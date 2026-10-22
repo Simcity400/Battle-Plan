@@ -363,12 +363,18 @@ impl<'a> CountryNames<'a> {
             }
             let mut out = String::new();
             let mut rest = text;
+            // Localisation turns `$$` into `$` but copies an unmatched `$` and the remaining text.
             while let Some(start) = rest.find('$') {
+                let Some(end) = rest[start + 1..].find('$') else {
+                    break;
+                };
+                if end == 0 {
+                    budget.append(&mut out, &rest[..=start])?;
+                    rest = &rest[start + 2..];
+                    continue;
+                }
                 budget.append(&mut out, &rest[..start])?;
                 rest = &rest[start + 1..];
-                let end = rest
-                    .find('$')
-                    .ok_or_else(|| format!("localisation {key} has an unclosed $"))?;
                 let variable = &rest[..end];
                 let value = match (input.overlord, variable) {
                     (Some(overlord), "OVERLORDADJ") => {
@@ -903,6 +909,18 @@ mod tests {
         doubling.push(("A30".into(), String::new()));
         let doubling: Localisation = doubling.into_iter().collect();
         assert!(names(&doubling, vec![(1, input("A0"))]).name(1).is_err());
+    }
+
+    #[test]
+    fn escaped_and_lone_dollar_signs_are_text() {
+        let localisation =
+            localisation(&[("TAG", "Cash $$ republic of $ALIAS$ $"), ("ALIAS", "A")]);
+        assert_eq!(
+            names(&localisation, vec![(1, input("TAG"))])
+                .name(1)
+                .as_deref(),
+            Ok("Cash $ republic of A $")
+        );
     }
 
     fn frame() -> DecodedFrame {

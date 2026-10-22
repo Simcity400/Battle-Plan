@@ -855,13 +855,11 @@ pub(crate) fn capture(
         .parent()
         .ok_or("game executable has no folder")?
         .to_owned();
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is unset")?;
     let gather_options = GatherOptions {
         game_dir,
         user_dir: user.to_owned(),
-        cache_dir: local.join("HOI4Replay").join("recorder"),
+        // Match the recorder's fallback for absent or empty LOCALAPPDATA.
+        cache_dir: replay::recorder_settings::directory(),
         dlc_order: None,
     };
     println!("Verifying installed content hashes in the background...");

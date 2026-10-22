@@ -40,7 +40,7 @@ impl Medals {
         let names = layers.key_names()?;
         let mut medals = Self::default();
         for path in script_files::paths(layers, "common/unit_medals/", Some(".txt")) {
-            medals.read(&path, &layers.read(&path)?, &names, registry);
+            medals.read(&path.text(), &path.read(layers)?, &names, registry);
         }
         Ok(medals)
     }

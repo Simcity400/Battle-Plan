@@ -279,6 +279,19 @@ fn held_metadata_open_uses_only_header_and_trailer_bytes() {
 }
 
 #[test]
+fn held_recordings_refuse_append_and_publication_before_any_output() {
+    let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let appended = held.append(&[]).err().unwrap();
+    assert_eq!(appended.kind(), io::ErrorKind::Unsupported);
+    let copy = Fixture(fixture.0.with_extension("copy"));
+    let written = held.write_atomic(&copy.0).unwrap_err();
+    assert_eq!(written.kind(), io::ErrorKind::Unsupported);
+    assert!(!copy.0.exists() && !temporary_path(&copy.0).exists());
+}
+
+#[test]
 fn grouped_stream_resumes_at_accepted_blocks_and_rolls_back_cancellation() {
     let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
     let appended = memory.append(&[records(2, &[8, 9])]).unwrap();

@@ -208,7 +208,7 @@ fn read_fields(fields: &[Item], out: &mut Entry) {
 pub fn read(layers: &ResolvedLayers, names: &KeyNames) -> io::Result<Database> {
     let mut database = Database::default();
     for path in crate::script_files::paths(layers, "common/scorers/country/", Some(".txt")) {
-        database.read_file(&layers.read(&path)?, names);
+        database.read_file(&path.read(layers)?, names);
     }
     Ok(database)
 }

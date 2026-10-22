@@ -91,6 +91,14 @@ test('keyboard scrolling shows the whole row below the sticky header with minima
   assert.equal(scrollToShow(offsets, 0, 400, 240, 26), 0);
 });
 
+test('a wrapped row taller than the viewport is shown from its start without alternating ends', () => {
+  const offsets = [24, 324, 348];
+  assert.equal(scrollToShow(offsets, 0, 0, 100, 24), 0);
+  assert.equal(scrollToShow(offsets, 0, 224, 100, 24), 0, 'navigating to it again stays at its start');
+  assert.equal(scrollToShow(offsets, 0, 100, 100, 24), 0);
+  assert.equal(scrollToShow(offsets, 1, 0, 100, 24), 248, 'a row that fits still scrolls only far enough');
+});
+
 test('one atomic widget option stores column and direction, with shared defaults', () => {
   const initial = { column: 'state', direction: 'ascending' } as const;
   const fields = [...TABLE_OPTIONS, ...tableSortOptions([{ key: 'state', label: 'State' }, { key: 'value', label: 'Value' }, { key: 'portrait', label: 'Portrait', sortable: false }], initial)];

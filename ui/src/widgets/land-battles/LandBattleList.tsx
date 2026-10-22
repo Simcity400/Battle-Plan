@@ -96,7 +96,8 @@ export default function LandBattleList(props: Props) {
   const options = resolveOptions(definition.options, context.widget.options);
   // The ranking's own measure: an older recording without casualties ranks by peak size.
   const measure = context.rankedMeasure;
-  const [openId, setOpenId] = useState<{ id: string; row: LandBattleRow } | null>(null);
+  const owner = JSON.stringify([context.track.source.id, context.track.source.revision, context.track.branch.id]);
+  const [openId, setOpenId] = useState<{ client: typeof context.runtime.client; owner: string; id: string; row: LandBattleRow; hour: number } | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
   // Names already read stay while the next drawn rows load, so scrolling never blanks a terrain;
   // new content or another recording starts again and asks for every drawn province.
@@ -127,8 +128,10 @@ export default function LandBattleList(props: Props) {
     setAsked(previous => previous?.held === current && (wanted.length === 0
       || previous.provinces.length === wanted.length && previous.provinces.every((value, index) => value === wanted[index])) ? previous : { held: current, provinces: wanted });
   }, [onVisibleRows]);
-  const open = (row: LandBattleRow) => setOpenId({ id: row.id, row });
-  const current = openId ? rows.find(row => row.id === openId.id) ?? openId.row : null;
+  const open = (row: LandBattleRow) => setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour });
+  // Reusing an opened battle row before its opening hour would leak future results and totals.
+  const opened = openId && openId.client === context.runtime.client && openId.owner === owner ? openId : null;
+  const current = opened ? rows.find(row => row.id === opened.id) ?? (opened.hour <= context.shownHour ? opened.row : null) : null;
   const measureText = (row: LandBattleRow) => {
     const value = measure === 'Length' ? row.length : measure === 'Peak size' ? (row.peakUnknown ? null : row.peak.value) : row.casualties;
     if (value === null) return '—';

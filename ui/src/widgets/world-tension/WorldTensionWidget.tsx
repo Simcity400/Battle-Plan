@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import DrillHost from '../../charts/drill/DrillHost';
 import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import type { EventBadge } from '../../charts/badges';
@@ -84,7 +85,8 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const prepared = usePreparedWindow(runtime.client, track?.source, 'world-tension', { branchId: track?.branch.id, share }, extent,
     [head, drillAt, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedTension,mergePreparedTension);
-  const { data, error, retry } = prepared;
+  const { data, retry } = prepared;
+  const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const model = useMemo(() => data ? tensionModel(data, lineage, track?.source.metadata.countries,
     new Map(data.catalogue.map(country => [countryKey(country),country.firstHour]))) : null, [data, lineage, track?.source]);
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
@@ -215,7 +217,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (groups.error && widget.countries.kind !== 'all') return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+  if (groups.error && widget.countries.kind !== 'all' && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
   if (!model || (widget.countries.kind !== 'all' && !identities)) return <WidgetState kind="loading" label="Loading world tension…" />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
   if (!data?.available && data?.pending?.length) return <WidgetState kind="loading" label="This range is still being prepared." />;
@@ -306,7 +308,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
       }}>Follow playback</button>}</p>{breakdown}</div>;
   const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(head) ? 'Not recorded' : 'Loading…';
   const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);
-  const overviewState = widget.countries.kind === 'group' && groups.error
+  const overviewState = widget.countries.kind === 'group' && groups.error && !groups.data
     ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
     : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
       : widget.countries.kind === 'group' && !groups.data ? <WidgetState kind="loading" label="Loading country group…" /> : null;
@@ -361,5 +363,5 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
     onPin={() => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track, drillAt, drill.follow))} main={main}>{breakdown}</DrillHost></div>;
   })();
-  return <div ref={root} style={{ display: 'contents' }}>{content}</div>;
+  return <div ref={root} style={{ display: 'contents' }}>{widget.countries.kind !== 'all' && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}{content}</div>;
 }

@@ -436,3 +436,66 @@ test('a closing row keeps the description it showed while its demand is released
     hooks.unmount(); await vite.close(); delete host.__focusShown;
   }
 });
+
+test('repeated completions of one focus read at one hour open and close independently', async () => {
+  const base = focusHooks(), hooks = { ...base, useLayoutEffect: base.useEffect };
+  const fixture = { hooks, detailsWanted: [] as readonly NameAt[] };
+  const host = globalThis as typeof globalThis & { __focusRepeated?: typeof fixture };
+  host.__focusRepeated = fixture;
+  const replacements: Record<string, string> = {
+    '/components/VirtualList.tsx': 'export const VirtualList = ({ items, rowProps, children }) => items.map((item, index) => ({ type: "li", props: { ...rowProps?.(item, index), children: children(item, index) } }));',
+    // Completions the recording began with have no dates: both are read at the segment's first hour.
+    '/dashboard/products.ts': `export const useProduct = () => ({ data: {
+      history: { segments: [{ firstHour: 100, lastHour: 200, order: { current: null, continuous: null, paused: false,
+        completed: [{ ordinal: 0, token: 'repeatable', completedByHour: null }, { ordinal: 1, token: 'repeatable', completedByHour: null }] } }], progress: [] },
+      artwork: [{ token: 'repeatable', baseDurationDays: 10 }], staticText: [], warnings: [],
+    } });`,
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => {};',
+    '/dashboard/useDiagnostics.ts': 'export const useDiagnostics = () => {};',
+    '/dashboard/contentRevision.ts': 'export const useContentRevision = () => 0;',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ open() {}, menu: null });',
+    '/national-focus/useFocusArtwork.ts': `export const useFocusArtwork = (_client, _track, _country, wanted, _active, detailsWanted) => {
+      globalThis.__focusRepeated.detailsWanted = detailsWanted;
+      return { warnings: [], details: new Map(), read: new Map(wanted.map(({ tag, hour }) => [JSON.stringify([hour, tag]),
+        { artwork: { token: tag, name: 'Repeatable focus', description: null, baseDurationDays: 10, icon: null }, reason: null }])) }; };`,
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'focus-repeated-fixture', enforce: 'pre',
+      transform(source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/national-focus/NationalFocusWidget.tsx')) return source.replace(
+          /import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__focusRepeated.hooks;');
+        return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
+      },
+    }] });
+  type Element = { type: unknown; props: { children?: unknown; className?: string; open?: boolean; onToggle?: (event: { currentTarget: { open: boolean } }) => void } };
+  const elements = (root: unknown): Element[] => {
+    if (Array.isArray(root)) return root.flatMap(elements);
+    if (!root || typeof root !== 'object' || !('props' in root)) return [];
+    const element = root as Element;
+    if (typeof element.type === 'function' && ['VirtualList', 'FocusCompletion'].includes(element.type.name)) return elements((element.type as Function)(element.props));
+    return [element, ...elements(element.props.children)];
+  };
+  try {
+    const { LegacyNationalFocusWidget: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
+    const props = { widget: { id: 'repeated', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['M0'] }, time: { mode: 'campaign' } },
+      runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: '1', firstHour: 100, lastHour: 200 },
+        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 200 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+    const render = () => { hooks.begin(); const tree = elements(Widget(props)); hooks.commit(); return tree; };
+    const details = (tree: Element[]) => tree.filter(element => element.props.className === 'focus-details');
+    let tree = render();
+    assert.deepEqual(details(tree).map(element => element.props.open), [false, false]);
+    details(tree)[0].props.onToggle!({ currentTarget: { open: true } });
+    tree = render();
+    assert.deepEqual(details(tree).map(element => element.props.open), [true, false], 'opening one completion leaves the other closed');
+    assert.deepEqual(fixture.detailsWanted, [{ tag: 'repeatable', hour: 100 }]);
+    details(tree)[1].props.onToggle!({ currentTarget: { open: true } });
+    tree = render();
+    details(tree)[0].props.onToggle!({ currentTarget: { open: false } });
+    tree = render();
+    assert.deepEqual(details(tree).map(element => element.props.open), [false, true], 'closing one completion leaves the other open');
+    assert.deepEqual(fixture.detailsWanted, [{ tag: 'repeatable', hour: 100 }], 'the open completion still reads the shared dated text');
+  } finally {
+    hooks.unmount(); await vite.close(); delete host.__focusRepeated;
+  }
+});

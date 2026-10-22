@@ -415,9 +415,9 @@ fn factory_flags_merge_across_building_files() {
 
 #[test]
 fn only_direct_building_files_load() {
-    assert!(is_building_file("COMMON/BUILDINGS/UPPER.TXT"));
-    assert!(!is_building_file("common/buildings/nested/air.txt"));
-    assert!(!is_building_file("common/buildings/air.asset"));
+    assert!(is_building_file(b"COMMON/BUILDINGS/UPPER.TXT"));
+    assert!(!is_building_file(b"common/buildings/nested/air.txt"));
+    assert!(!is_building_file(b"common/buildings/air.asset"));
 }
 
 #[test]

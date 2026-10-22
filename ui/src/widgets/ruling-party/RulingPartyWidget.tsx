@@ -8,6 +8,7 @@ import { useParityRows } from '../../dashboard/parityRows';
 import { useContextMenu } from '../../components/ContextMenu';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import { badgeRows } from '../../charts/badges';
 import { dayLabel, drawBands } from '../../charts/draw';
 import { jumpItem, rowJumpProps } from '../../charts/jump';
@@ -64,7 +65,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const party = usePreparedParty(runtime.client, track?.source, track?.branch.id, tag, head, hover, active,
     [...(options.changes ? ['ruling', 'election'] : []), ...(options.leaders ? ['leader'] : [])]);
   const legacy = useProduct<PartyHistoryReply>(runtime.client, request, active && !party.enabled, validatePartyHistoryReply);
-  const { data, error, retry } = party.enabled ? party : legacy;
+  const reader = party.enabled ? party : legacy;
+  const { data, retry } = reader;
   const parity = import.meta.env.MODE === 'parity' ? usePartyParity(runtime.client, track?.source, track?.branch.id, tag, extent, 'Party history values', legacy.data) : undefined;
   const detailsThrough = shownUntil(playhead, (options.playback as PlaybackMode) ?? 'draw-in', options.afterPlayhead === true) ?? extent[1];
   const governments = usePreparedGovernments(runtime.client, track?.source, track?.branch.id, options.changes ? tag : undefined, extent, detailsThrough, active);
@@ -80,6 +82,8 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   useEffect(() => subscribeTokens(tokens => setSurface(tokens.surface)), []);
   // The party ruling at the moment shown goes first: the bottom band and the first legend entry.
   const presentationHour = party.enabled ? party.presentationHour : Math.floor(head);
+  // A failed seek must never display another hour's held reply.
+  const error = useHeldFailure(reader.error, data !== undefined && presentationHour === Math.floor(head), retry);
   const rulingShown = data ? rulingAt(data, presentationHour) : null;
   const list = useMemo(() => data ? rulingFirst(bands(data, categoricalPalette(surface)), rulingShown) : [], [data, surface, rulingShown]);
   // Built once per reply; each frame only slices and thins it.

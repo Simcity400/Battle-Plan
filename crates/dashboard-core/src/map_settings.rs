@@ -190,27 +190,62 @@ impl Store {
         Ok(settings)
     }
 
-    /// Flips `setting` in `key`'s stored choices ([`Self::flipped`]) and saves them.
     pub fn flip(&mut self, key: String, setting: crate::protocol::MapSetting) -> io::Result<()> {
-        let settings = self.flipped(&key, setting).map_err(crate::invalid)?;
-        self.save(key, settings)
+        self.update(key, |saved, key| {
+            saved.flipped(key, setting).map_err(crate::invalid)
+        })
     }
 
     pub fn save(&mut self, key: String, settings: CampaignMapSettings) -> io::Result<()> {
+        self.update(key, |_, _| Ok(settings))
+    }
+
+    fn update(
+        &mut self,
+        key: String,
+        choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
+    ) -> io::Result<()> {
         self.check().map_err(crate::invalid)?;
+        self.update_at(&path()?, key, choose)
+    }
+
+    /// Lock the read-modify-replace transaction across windows to preserve other scopes' saves.
+    fn update_at(
+        &mut self,
+        path: &std::path::Path,
+        key: String,
+        choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
+    ) -> io::Result<()> {
+        let folder = path
+            .parent()
+            .ok_or_else(|| crate::invalid("Map settings have no folder"))?;
+        fs::create_dir_all(folder)?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("lock"))?;
+        lock.lock()?;
+        let saved = Self {
+            entries: Self::load_from(path)?.entries,
+            game: self.game,
+            ..Self::default()
+        };
+        let settings = choose(&saved, &key)?;
         settings.validate().map_err(crate::invalid)?;
-        let mut entries = self.entries.clone();
+        let mut entries = saved.entries;
         entries.insert(key, settings);
         let bytes = serde_json::to_vec(&entries)?;
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(crate::invalid("Map settings exceed their size limit"));
         }
-        let path = path()?;
-        fs::create_dir_all(path.parent().expect("settings parent"))?;
-        // A failed write leaves the in-memory selection unchanged.
-        let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-        fs::write(&temp, bytes)?;
-        fs::rename(temp, path)?;
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4().simple()));
+        let written = fs::write(&temporary, bytes)
+            .and_then(|()| fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        written?;
         self.entries = entries;
         self.generation += 1;
         Ok(())
@@ -772,6 +807,46 @@ mod tests {
             store.preferences("ba").visual_mods.unwrap()[0],
             choice("workshop/b")
         );
+    }
+
+    #[test]
+    fn a_save_from_a_stale_store_keeps_another_windows_scopes() {
+        use crate::protocol::MapSetting;
+        let folder =
+            std::env::temp_dir().join(format!("hoi4-map-settings-{}", uuid::Uuid::new_v4()));
+        let path = folder.join("map-settings.json");
+        let (mut first, mut second) = (Store::default(), Store::default());
+        let night_off = scope(MapGraphicsOverrides {
+            day_night: Some(false),
+            ..Default::default()
+        });
+        let rivers_off = scope(MapGraphicsOverrides {
+            rivers: Some(false),
+            ..Default::default()
+        });
+        first
+            .update_at(&path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
+            .unwrap();
+        second
+            .update_at(&path, "campaign-b".into(), |_, _| Ok(rivers_off.clone()))
+            .unwrap();
+        let saved = Store::load_from(&path).unwrap();
+        assert_eq!(saved.preferences("campaign-a"), night_off);
+        assert_eq!(saved.preferences("campaign-b"), rivers_off);
+        assert_eq!(second.preferences("campaign-a"), night_off);
+        first
+            .update_at(&path, "campaign-b".into(), |saved, key| {
+                saved
+                    .flipped(key, MapSetting::DayNight)
+                    .map_err(crate::invalid)
+            })
+            .unwrap();
+        let saved = Store::load_from(&path).unwrap();
+        let flipped = saved.preferences("campaign-b").graphics;
+        assert_eq!(flipped.day_night, Some(false));
+        assert_eq!(flipped.rivers, Some(false));
+        assert_eq!(saved.preferences("campaign-a"), night_off);
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

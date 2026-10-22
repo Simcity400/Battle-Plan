@@ -765,16 +765,12 @@ fn top_map_hit(
             );
         }
     }
-    // Intel quads carry no world anchor, so a free eye leaves them as laid out,
-    // above every icon it re-presents. Each child's CPU alpha test already ran.
-    if let Some(hit) = intel.filter(|hit| hit.contains(point)) {
-        offer(
-            if looks.is_some() { u32::MAX } else { 0 },
-            hit.layer,
-            4,
-            1,
-            MapHit::Intel,
-        );
+    // Each intel child's CPU alpha test already ran.
+    if let Some(hit) = intel
+        && let Some((point, rank)) = seen(IconFamily::Intel, hit.layer)
+        && hit.contains(point)
+    {
+        offer(rank, hit.layer, 4, 1, MapHit::Intel);
     }
     for (index, hit) in report.unit_hits.iter().enumerate() {
         if let Some((point, rank)) = seen(unit_family(report, index, hit), hit.layer)
@@ -2614,7 +2610,7 @@ impl Viewer {
             self.looks.as_ref(),
             self.prepared_overlay
                 .as_ref()
-                .and_then(|map| map.intel_at(point)),
+                .and_then(|map| map.intel_at(point, self.looks.as_ref())),
         )
     }
 
@@ -2841,12 +2837,13 @@ impl Viewer {
             let hit = self
                 .prepared_overlay
                 .as_ref()
-                .and_then(|map| map.intel_at(point))?;
-            let [x, y, w, h] = hit.bounds();
+                .and_then(|map| map.intel_at(point, self.looks.as_ref()))?;
+            let layer = Some((free_icons::IconFamily::Intel, hit.layer));
+            let rect = self.shown_rect(layer, hit.bounds());
             let empty = hit.tooltip.title.is_empty()
                 && hit.tooltip.body.is_empty()
                 && hit.tooltip.refused.is_empty();
-            return (!empty).then(|| (Arc::clone(&hit.tooltip), [x, y, w, h], None));
+            return (!empty).then(|| (Arc::clone(&hit.tooltip), rect, None));
         }
         let layer = target.and_then(|target| self.hit_layer(target));
         // The pointer in the hit icon's own layout, as its hover shapes are laid out.

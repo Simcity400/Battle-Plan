@@ -360,6 +360,15 @@ pub fn key_reader(token: u32) -> KeyReader {
             OwnKey::Value("var"),
         ]),
         (Reader::Own(0x140458170), 0x140458240) => KeyReader::Native(0x140458240),
+        (Reader::Own(0x140458190), 0x140301200) => {
+            KeyReader::Only(&[OwnKey::Value("trait"), OwnKey::Value("show_modifiers")])
+        }
+        (Reader::Own(0x140458190), 0x140458260) => KeyReader::Only(&[
+            OwnKey::Value("check_mio_parent_completed"),
+            OwnKey::Value("check_mio_mutually_exclusive"),
+            OwnKey::Value("trait"),
+            OwnKey::Value("show_modifiers"),
+        ]),
         (Reader::Body, 0x1405148F0) => KeyReader::Only(&[
             OwnKey::Value("country"),
             OwnKey::Value("countries"),

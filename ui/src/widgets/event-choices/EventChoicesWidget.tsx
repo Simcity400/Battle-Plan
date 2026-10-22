@@ -5,6 +5,7 @@ import ArtFallback from '../../components/ArtFallback';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
@@ -81,12 +82,14 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     [feed.warnings, feed.data, feed.replies]);
   useDiagnostics(onDiagnostics, warnings);
 
+  const feedError = useHeldFailure(feed.error, feed.data !== undefined, feed.retry);
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see event choices." />;
   if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (filtered && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (feed.error) return <WidgetState kind="error" detail={feed.error} onRetry={feed.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (kinds.length > 0 && (!feed.data || !match.ready)) return <WidgetState kind="loading" label="Loading event choices…" />;
+  const groupFailure = filtered && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (feedError) return <>{groupFailure}<WidgetState kind="error" detail={feedError} onRetry={feed.retry} /></>;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (kinds.length > 0 && (!feed.data || !match.ready)) return <>{groupFailure}<WidgetState kind="loading" label="Loading event choices…" /></>;
 
   const chips = [...EVENT_KINDS.map(kind => ({ value: kind.value, label: kind.label })), { value: AWAITING.value, label: AWAITING.label, hint: AWAITING.hint }];
   const selected = chips.filter(chip => chip.value === AWAITING.value ? awaiting : options[chip.value] !== false).map(chip => chip.value);
@@ -116,7 +119,7 @@ export default function EventChoicesWidget({ widget, runtime, active, onDiagnost
     </article>;
   };
   const header = headerSlot && feed.total !== null && createPortal(<span className="pill">{feed.total.toLocaleString()} {feed.total === 1 ? 'event' : 'events'}</span>, headerSlot);
-  return <div className="log-widget peace-deals event-choices">
+  return <div className="log-widget peace-deals event-choices">{groupFailure}
     {header}
     {log.chips && <div className="log-chips"><ChipSet label="Event choices filters" chips={chips} selected={selected} max={chips.length}
       onToggle={key => setOption?.(key, !selected.includes(key))} /></div>}

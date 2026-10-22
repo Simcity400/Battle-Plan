@@ -215,9 +215,7 @@ impl Player {
         let song = crate::engine::weighted(&weights, word, None)?;
         self.draws += 1;
         self.history.push_front(song);
-        if self.history.len() > recent {
-            self.history.pop_back();
-        }
+        self.history.truncate(recent);
         let track = music.songs[song].track;
         self.playing = Some(Playing {
             track,
@@ -252,6 +250,11 @@ impl Player {
     pub fn stop(&mut self) {
         self.playing = None;
         self.wanted = None;
+    }
+
+    /// Song indices are list-local, so history cannot survive a song-list change.
+    pub fn forget_history(&mut self) {
+        self.history.clear();
     }
 
     pub fn draws(&self) -> u64 {

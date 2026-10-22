@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import CountryPicker from '../../components/CountryPicker';
 import CountryRaceView from '../../charts/race/CountryRaceView';
 import type { RaceView } from '../../charts/race/options';
@@ -49,7 +50,8 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const request = track && requested.ready && !requested.reason ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-trend',
     params: occupationRequest(track.branch.id, requested.tags, resolved.top, rank, collaboration) } : null;
   const prepared = usePreparedOccupation(runtime.client, track, request?.params ?? null, shown, moment, active, resolved.membership ?? undefined);
-  const { data, error, retry } = prepared;
+  const { data, retry } = prepared;
+  const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const parityRoot = useRef<HTMLDivElement>(null);
   useParityRows(parityRoot, () => ({ kind: 'chart', label: 'Occupation trend values', complete: !!data, total: data?.series.length ?? 0,
     hour: moment, rows: data?.series ?? [] }));
@@ -93,7 +95,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const state = !track ? <WidgetState kind="empty" icon="globe" message="Load a campaign to see occupation trends." />
     : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />
     : error ? <WidgetState kind="error" detail={error} onRetry={retry} />
-    : grouped && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
+    : grouped && groups.error && !groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />
     : requested.reason ? <WidgetState kind="empty" icon="globe" message={requested.reason} />
     // A group with no member found yet asks for nothing, so no reply will come.
     : none ? <NoMembersState reason={none.reason} icon="globe" />
@@ -108,7 +110,7 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
       if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, moment) === null) return;
       setChoice({ scope: mixScope, tag, hour: moment });
     }} /> : null;
-  return <div ref={parityRoot}><CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
+  return <div ref={parityRoot}>{grouped && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null}<CountryRaceView pending={data?.pending} lineSummaries={prepared.lineSummaries} onSummaryView={prepared.onSummaryView}
     onReachHour={prepared.onReachHour} navigation={prepared.navigation} runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}

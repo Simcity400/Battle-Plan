@@ -112,9 +112,10 @@ export default function FactionInfluenceWidget({ widget, runtime, active, header
   const header = headerSlot && <>{views && createPortal(views, headerSlot)}{faction && createPortal(<span className="pill">{factionNameAt(faction, hour)}</span>, headerSlot)}</>;
   if (!track) return <WidgetState kind="empty" icon="chart-bars" message="Load a campaign to see faction influence." />;
   if (!window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (!groups.data) return <WidgetState kind="loading" label="Loading faction influence…" />;
-  if (!faction) return <>{header}<WidgetState kind="empty" icon="chart-bars" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
+  const groupFailure = groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (!groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading faction influence…" /></>;
+  if (!faction) return <>{header}{groupFailure}<WidgetState kind="empty" icon="chart-bars" message={noFactionMessage(pick!.reason as 'none' | 'unobserved' | 'unknown', widget.time.mode === 'follow')} /></>;
   let main;
   if (view === 'ranking') {
     main = details.error ? <WidgetState kind="error" detail={details.error} onRetry={details.retry} />
@@ -142,7 +143,7 @@ export default function FactionInfluenceWidget({ widget, runtime, active, header
             onHover={at => setHovered(at === null ? null : Math.floor(at))}
             onContextMenu={undefined} />;
   }
-  return <div ref={anchor} className="faction-influence">{header}
+  return <div ref={anchor} className="faction-influence">{header}{groupFailure}
     <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={picked != null} title="Member influence" day={dayLabel(hour)}
       following={false} canFollow={false} anchor={anchor} onClose={() => dispatch({ type: 'close' })} onFollow={() => {}} main={main}>
       {picked && <StackedShareChart label={`${holders.name(picked.key)} share of influence`} runs={memberShareRuns(picked)}

@@ -47,10 +47,12 @@ impl Music {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut music = Self::default();
         let assets = layers.descriptor_paths("music", &[".asset"])?;
-        for path in defines::load_order("music/", ".asset", assets.iter().map(String::as_str)) {
-            let bytes = layers.read_uncovered(&path)?;
+        for file in defines::load_order("music/", ".asset", &assets) {
+            let bytes = file.read_uncovered(layers)?;
+            let path = file.text();
             match parser::parse(&bytes) {
-                Ok(document) => music.declare_tracks(&document, &path),
+                // Track paths need a UTF-8 folder, but the asset filename need not be UTF-8.
+                Ok(document) => music.declare_tracks(&document, &path, file.folder_text()),
                 Err(error) => music
                     .notes
                     .note(format!("{path}: unreadable music asset ({error})")),
@@ -58,9 +60,9 @@ impl Music {
         }
         let names = layers.key_names()?;
         let lists = layers.descriptor_paths("music", &[".txt"])?;
-        for path in defines::load_order("music/", ".txt", lists.iter().map(String::as_str)) {
-            let bytes = layers.read_uncovered(&path)?;
-            music.read_songs(&bytes, &path, &names);
+        for file in defines::load_order("music/", ".txt", &lists) {
+            let bytes = file.read_uncovered(layers)?;
+            music.read_songs(&bytes, &file.text(), &names);
         }
         Ok(music)
     }
@@ -69,8 +71,12 @@ impl Music {
         self.track_names.get(name).copied()
     }
 
-    fn declare_tracks(&mut self, document: &parser::Document, path: &str) {
-        let directory = path.rsplit_once('/').map_or("", |(head, _)| head);
+    fn declare_tracks(
+        &mut self,
+        document: &parser::Document,
+        path: &str,
+        directory: Option<&str>,
+    ) {
         for item in &document.items {
             if !item.keyword_is("music") {
                 self.notes.note(format!(
@@ -87,7 +93,9 @@ impl Music {
             // is not a scalar, is refused by name and counted.
             for field in fields {
                 let key = String::from_utf8_lossy(field.key.as_deref().unwrap_or_default());
-                let known = matches!(key.as_ref(), "name" | "file" | "volume");
+                let known = ["name", "file", "volume"]
+                    .iter()
+                    .any(|name| field.keyword_is(name));
                 if !known {
                     self.notes
                         .note(format!("{path}: music refused field {key}"));
@@ -114,6 +122,12 @@ impl Music {
                     .note(format!("{path}: refused repeated music {name}"));
                 continue;
             }
+            let Some(directory) = directory else {
+                self.notes.note(format!(
+                    "{path}: refused music {name}: the file's folder name isn't UTF-8, so its track path can't be named"
+                ));
+                continue;
+            };
             let volume = match text("volume") {
                 None => 1.0,
                 Some(value) => {
@@ -383,6 +397,26 @@ music = { name = quiet file = \"q.ogg\" volume = loud }",
                 "{expected}: {notes:?}"
             );
         }
+    }
+
+    #[test]
+    fn track_fields_in_any_case_load_without_a_refusal() {
+        engine_tables();
+        let stack = Stack::new("music_catalog_case");
+        let base = stack.base();
+        stack.write(
+            &base,
+            "music/music.asset",
+            r#"music = { NAME = t FILE = "t.ogg" VOLUME = 0.5 }"#,
+        );
+        let music = Music::read(&stack.layers(&[])).unwrap();
+        assert_eq!(music.tracks.len(), 1);
+        assert_eq!(music.tracks[0].volume, 0.5);
+        let notes = music.notes.lines();
+        assert!(
+            !notes.iter().any(|note| note.contains("refused")),
+            "{notes:?}"
+        );
     }
 
     #[test]

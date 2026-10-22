@@ -48,7 +48,11 @@ gaps: Array<RecordingGap>,
  * them. They are not gaps; a lost frame at either read is its own gap.
  * Absent when the branch has none.
  */
-eventLosses?: Array<RecordingEventLoss>, };
+eventLosses?: Array<RecordingEventLoss>,
+/**
+ * Without a complete country-table read, catalogue membership is unknown, not empty.
+ */
+catalogueHour?: number, };
 export type RecordingGap = { firstHour: number, lastHour: number, reason: string, };
 export type RecordingEventLoss = { afterHour: number, hour: number, reason: string, };
 export type CountryMetadata = {
@@ -88,6 +92,10 @@ progress: Array<FocusProgress>, };
 export type ResearchCoverage = { firstHour: number, lastHour: number, };
 export type ResearchOutcome = "active" | "completed" | "switched" | "unknown";
 export type ResearchEntry = { token: string, technologyHandle: number,
+/**
+ * Repeated technology IDs have separate template indices; older histories omit this.
+ */
+databaseIndex?: number | null,
 /**
  * Breaks attribution across missing hours or a changed country identity.
  */
@@ -144,7 +152,8 @@ export type ResearchProgress = { firstHour: number, lastHour: number, entryFirst
 baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type ResearchFolder = { key: string, name: string | null, };
-export type ResearchTechnologyFolder = { token: string, folder: string | null, };
+export type ResearchTechnologyFolder = { token: string, databaseIndex?: number | null, folder: string | null, };
+export type ResearchDefinitionText = { token: string, databaseIndex: number, name: string | null, description: string | null, };
 export type ResearchStateSlot = { index: number, available: boolean, state: ResearchSlotState | null, progress: ResearchProgress | null, readHour: number | null, };
 export type ResearchState = { tag: string, hour: number, slots: Array<ResearchStateSlot>, data: ResearchReply, preparing: Array<string>, grants: GrantInventory, };
 export type ResearchStateReply = { branchId: string, states: Array<ResearchState>, };
@@ -497,8 +506,12 @@ tokens: Array<string>, mode: FocusArtMode, };
 export type FocusArtMode = "display" | "text";
 export type FocusArtFailure = { reason: string, tokens: number, };
 export type FocusArtReply = { art: Array<PreparedFocusArt>, warnings: Array<string>, failures: Array<FocusArtFailure>, };
-export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, };
-export type TechnologyArtworkParams = { tokens: Array<string>, };
+export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>, folders: Array<ResearchFolder>, technologyFolders: Array<ResearchTechnologyFolder>, warnings: Array<string>, definitions?: Array<ResearchDefinitionText>, };
+export type TechnologyArtworkParams = { tokens: Array<string>,
+/**
+ * Repeated definitions have separate recorded indices; null means an unindexed use.
+ */
+recorded?: { [key in string]?: Array<number | null> }, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
 export type CountryFlagSize = "full" | "medium" | "small" | "shield" | "panel";
 export type CountryFlagImage = { tag: string,
@@ -1036,13 +1049,25 @@ neededRaw: string | null,
  * Only needed archetypes, capped separately at each division's need.
  */
 heldRaw: string | null, typesShort: number, unknownDivisions: number, };
-export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null, typesShort: number, poolKnown: boolean,
+export type EquipmentDivision = { division: string, name: string | null, nameMissing: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, neededRaw: string | null, heldRaw: string | null,
+/**
+ * Null when the comparison with the need is not known.
+ */
+typesShort: number | null, poolKnown: boolean,
 /**
  * The previous template's name during conversion.
  */
 convertingFrom: string | null, };
-export type DivisionPoolType = { archetype: string | null, name: string | null, heldRaw: string, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
-export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>, };
+export type DivisionPoolType = { archetype: string | null, name: string | null,
+/**
+ * Null when the division's pool was not read.
+ */
+heldRaw: string | null, neededRaw: string | null, missingRaw: string | null, variants: Array<EquipmentVariant>, };
+export type DivisionPool = { division: string, name: string | null, template: string, templateName: string | null, manpower: string | null, manpowerRequired: string | null, hpRaw: string | null, hpMaxRaw: string | null, types: Array<DivisionPoolType>,
+/**
+ * An unread pool lists template needs with unknown holdings, not an empty pool.
+ */
+poolKnown: boolean, };
 export type TrainingQueueParams = { branchId: string, hour: number, tag: string, };
 export type TrainingQueueReply = { branchId: string, hour: number, tag: string,
 /**
@@ -1436,7 +1461,7 @@ decimals: number, series: Array<CountryStabilitySeries>, warnings: Array<string>
 export type StabilityPart = {
 /**
  * Stable within a reply: `term:<term>`, `line:<kind>:<identity>:<id>:<secondary>`,
- * `unpaired:<text>`, `remainder` or `clamp`.
+ * `unpaired:<text>`, `unpaired-refused:<escaped label>`, `remainder` or `clamp`.
  */
 id: string,
 /**

@@ -42,8 +42,11 @@ pub fn read(text: &[u8], names: &KeyNames) -> native::Read {
 
 /// The `.txt` files directly in `folder`, in database load order:
 /// `common/scripted_triggers` and `common/raids` with its categories each
-/// list one directory through [`ResolvedLayers::directory_files`].
-pub fn folder_files(layers: &ResolvedLayers, folder: &str) -> io::Result<Vec<String>> {
+/// list one directory through [`ResolvedLayers::directory_files`], each path by its bytes.
+pub fn folder_files(
+    layers: &ResolvedLayers,
+    folder: &str,
+) -> io::Result<Vec<crate::script_files::ScriptPath>> {
     layers.directory_files(folder, ".txt")
 }
 

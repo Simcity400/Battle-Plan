@@ -286,10 +286,28 @@ pub struct Names {
     pub entries: BTreeMap<Vec<u8>, Entry>,
     /// Each file the port cannot read to its end, with where and why: a
     /// name `entries` lacks may be defined, or one it holds redefined, in the
-    /// rest of it.
+    /// rest of it ([`Self::uncertain`]).
     pub unknown: Vec<String>,
     /// Places the reading left the text, and the unknown files, by file.
     pub warnings: Vec<crate::Diagnostic>,
+    defined_in: BTreeMap<Vec<u8>, usize>,
+    /// Parallel to `unknown`, preserving load order.
+    unknown_in: Vec<usize>,
+}
+
+impl Names {
+    /// Later definitions settle earlier unread files; only unread files from this entry onward matter.
+    pub fn uncertain(&self, name: &[u8]) -> Option<String> {
+        let defined = self.defined_in.get(name).copied();
+        let unknown: Vec<&str> = self
+            .unknown
+            .iter()
+            .zip(&self.unknown_in)
+            .filter(|&(_, &file)| defined.is_none_or(|defined| file >= defined))
+            .map(|(unknown, _)| unknown.as_str())
+            .collect();
+        (!unknown.is_empty()).then(|| unknown.join("; "))
+    }
 }
 
 /// Every scripted localisation name in the content stack, as its files'
@@ -297,7 +315,7 @@ pub struct Names {
 pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
     let files = script_files::paths(layers, "common/scripted_localisation/", Some(".txt"))
         .into_iter()
-        .map(|path| Ok((layers.read(&path)?, path)))
+        .map(|path| Ok((path.read(layers)?, path.to_string())))
         .collect::<io::Result<Vec<_>>>()?;
     Ok(read_files(&files, &*layers.key_names()?))
 }
@@ -306,7 +324,7 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
 /// read against `key_names`.
 fn read_files(files: &[(Vec<u8>, String)], key_names: &KeyNames) -> Names {
     let mut names = Names::default();
-    for (bytes, path) in files {
+    for (index, (bytes, path)) in files.iter().enumerate() {
         let file = read_file(bytes, key_names);
         names.warnings.extend(file.misreads.iter().map(|misread| {
             (
@@ -320,8 +338,12 @@ fn read_files(files: &[(Vec<u8>, String)], key_names: &KeyNames) -> Names {
                 "Scripted localisation in {unknown}; a name defined in the rest of it is unknown."
             )));
             names.unknown.push(unknown);
+            names.unknown_in.push(index);
         }
-        names.entries.extend(file.entries);
+        for (name, entry) in file.entries {
+            names.defined_in.insert(name.clone(), index);
+            names.entries.insert(name, entry);
+        }
     }
     names
 }
@@ -511,6 +533,31 @@ mod tests {
                 && unknown.contains("bound localisation reader is unsupported"),
             "{unknown}"
         );
+    }
+
+    #[test]
+    fn a_later_file_settles_the_names_it_defines() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let names = read(&[
+            (
+                "common/scripted_localisation/a.txt",
+                "a = { name = Early } b = { name = Inside text = { random_list = { 1 = { localization_key = { key = K } } } } }",
+            ),
+            (
+                "common/scripted_localisation/b.txt",
+                "a = { name = Pick text = { localization_key = GOOD } }",
+            ),
+        ]);
+        assert_eq!(names.uncertain(b"Pick"), None);
+        for name in ["Early", "Inside", "Undefined"] {
+            assert!(
+                names
+                    .uncertain(name.as_bytes())
+                    .is_some_and(|why| why.contains("common/scripted_localisation/a.txt is unknown")),
+                "{name}"
+            );
+        }
     }
 
     /// The end of the text closes every loop.

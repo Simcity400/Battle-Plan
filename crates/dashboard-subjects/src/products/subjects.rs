@@ -238,7 +238,11 @@ impl HourRun for SubjectRun {
 /// reads it (`active_subject`): not cancelled, and before its end when the end
 /// is after its start (the engine writes an end only then).
 pub fn active(row: &SubjectRow, hour: i32) -> bool {
-    row.cancel == 0 && (row.end_hour <= row.start_hour || hour < row.end_hour)
+    holds(row.cancel, row.start_hour, row.end_hour, hour)
+}
+
+pub fn holds(cancel: u8, start_hour: i32, end_hour: i32, hour: i32) -> bool {
+    cancel == 0 && (end_hour <= start_hour || hour < end_hour)
 }
 
 /// `value` after `hours` additions of `rate`, each made as `+=` makes it: a
@@ -349,7 +353,7 @@ struct RelationOperands {
 }
 impl RelationOperands {
     fn active(&self, hour: i32) -> bool {
-        self.cancel == 0 && (self.end_hour <= self.start_hour || hour < self.end_hour)
+        holds(self.cancel, self.start_hour, self.end_hour, hour)
     }
 }
 

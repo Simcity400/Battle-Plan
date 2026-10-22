@@ -5,6 +5,7 @@ import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
+import { useHeldFailure } from '../../dashboard/heldFailures';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -117,7 +118,8 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
   const incoming = useResourceBalance(widget, runtime, active, within);
-  const { track, tag, data: reply, numbers, contentPending, error, retry } = incoming;
+  const { track, tag, data: reply, numbers, contentPending, retry } = incoming;
+  const error = useHeldFailure(incoming.error, reply !== undefined, retry);
   const data = useMemo(() => reply && within ? { ...reply, series: reply.series.map(series => ({ ...series, runs: clipToSpans(series.runs, within) })),
     trades: clipResourceTrades(reply.trades, within), dealHours: clipToSpans(reply.dealHours, within) } : reply, [reply, within]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
@@ -216,6 +218,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
         hideEmpty={options.hideEmpty === true} owner={`resource-balance:${widget.id}:${tag}`} breakdown={breakdown} onPartners={onPartners} active={active}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} onPick={open} />}
   </>;
+  const identityNotice = selectedCountry && actor.identityError ? <WidgetState kind="error" detail={actor.identityError} onRetry={actor.identityRetry} /> : null;
   const detail = saved && !savedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
     : selectedCountry && actor.error ? <WidgetState kind="error" detail={actor.error} onRetry={actor.retry} />
     : selectedCountry && actor.preparing ? <WidgetState kind="loading" label={actor.reason!} />
@@ -233,7 +236,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
     {saved ? <div className="drill-body">
       {pinnedHeader}
       {(drill.breakdown === null ? widget.time.mode !== 'follow' : !drill.follow) && <button type="button" className="button small quiet" onClick={() => dispatch({ type: 'open', breakdown: BREAKDOWN.id,
-        hour: actualHour, playing: true, playhead: actualHour })}>Follow playback</button>}{detail}
+        hour: actualHour, playing: true, playhead: actualHour })}>Follow playback</button>}{identityNotice}{detail}
     </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
       title={picked ? resourceName(picked) : 'Resource breakdown'} day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
       onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
@@ -246,7 +249,7 @@ function ResourceBalanceCountry({ widget, runtime, active, countrySlot, onDiagno
       } : undefined}>
       <div className="select-row">Resource <Select label="Resource" value={String(picked?.id ?? '')} onChange={value => setResourceId(Number(value))}
         options={data.resources.map(resource => ({ value: String(resource.id), label: resourceName(resource) }))} /></div>
-      {detail}
+      {identityNotice}{detail}
     </DrillHost>}
     {menu.menu}
   </div>;

@@ -7,7 +7,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import type { TimelineProps } from '../../charts/timeline/Timeline';
 import type { LegendItem } from '../../charts/Legend';
 import type { CountryGroupReply, FactionGroup } from '../../generated/dashboard';
-import { LEADER_GLYPH, UNNAMED, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
+import { LEADER_GLYPH, UNNAMED, factionGaps, factionLabel, factionLanes, factionViews, laneCountries, leaderAt, leadershipParts, membersAt, membersHeld, tagAt } from './factionsData.ts';
 import type { LaneOptions } from './factionsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { factionNameAt } from '../../dashboard/factionNames.ts';
@@ -267,6 +267,18 @@ test('a membership continued across unrecorded hours is not said to have ended',
   assert.deepEqual(lanes.slice(1), ['AAA: Joined day 100', 'CCC: Joined day 250']);
   // The faction's count has a gap at the unrecorded hours rather than a drop.
   assert.equal(membersAt(view, 205), null);
+});
+
+test('hours still being prepared after a prefix are not a dissolution, a departure or an empty roster', () => {
+  const prefix = { ...reply, identityChanges: [], unobserved: { humans: [], factions: [], wars: [] },
+    countryIdentities: [holder('AAA', 1, 0, 19)], coverage: { firstHour: 0, lastHour: 9, complete: false }, pending: [{ firstHour: 10, lastHour: 19 }],
+    factions: [{ id: '1', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 9, nameReason: null, names: [{ firstHour: 0, lastHour: 9, name: 'Pact', reason: null }],
+      incomplete: [], members: [run('AAA', 0, 9)], leaders: [] }] } as CountryGroupReply;
+  assert.deepEqual(factionGaps(prefix), [{ firstHour: 10, lastHour: 19 }]);
+  const [view] = factionViews(prefix, summaryName, id => id);
+  assert.equal(membersAt(view, 15), null, 'a pending roster is not known to be empty');
+  const lanes = factionLanes([view], 15, options, text, factionGaps(prefix), 0).lanes.map(lane => lane.label);
+  assert.deepEqual(lanes, ['Last recorded day 9', 'Last recorded day 9'], 'neither the faction dissolved nor its member left at 10');
 });
 
 test('a same-tag native replacement starts its own membership without a rename event', () => {

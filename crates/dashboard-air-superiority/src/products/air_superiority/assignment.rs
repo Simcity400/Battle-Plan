@@ -407,6 +407,8 @@ fn assign(
         }
     }
     let mut unassigned = BTreeSet::new();
+    // Lone countries already placed on a side: an enemy of one cannot join it.
+    let mut joined = BTreeMap::<&str, u64>::new();
     for tag in countries.iter().filter(|tag| !member_of.contains_key(*tag)) {
         let mut candidates = BTreeMap::<u64, usize>::new();
         let mut blocked = BTreeSet::new();
@@ -416,7 +418,10 @@ fn assign(
                 for &id in enemy_leaders.get(enemy.as_str()).into_iter().flatten() {
                     *direct.entry(id).or_default() += 1;
                 }
-                if let Some(&faction) = member_of.get(enemy) {
+                if let Some(&faction) = member_of
+                    .get(enemy)
+                    .or_else(|| joined.get(enemy.as_str()))
+                {
                     blocked.insert(faction);
                 }
                 if let Some(counts) = enemy_factions.get(enemy) {
@@ -446,6 +451,7 @@ fn assign(
             let side = sides.get_mut(&id).expect("recorded faction candidate");
             side.members.push(tag.clone());
             side.co_belligerents += 1;
+            joined.insert(tag.as_str(), id);
         } else {
             unassigned.insert(tag.clone());
         }
@@ -1080,6 +1086,21 @@ mod tests {
                 .all(|side| !(side.members.contains(&"A".to_owned())
                     && side.members.contains(&"B".to_owned())))
         );
+    }
+
+    #[test]
+    fn hostile_co_belligerents_never_join_the_same_side() {
+        let tags = countries(&["A", "B", "C", "X"]);
+        let sides = assign(
+            vec![faction(1, &["A"])],
+            &tags,
+            wars(&[("A", "X"), ("B", "X"), ("C", "X"), ("B", "C")]),
+        )
+        .unwrap();
+        let pact = side(&sides, "f:1");
+        assert_eq!(pact.members, ["A", "B"]);
+        assert_eq!(pact.co_belligerents, 1);
+        assert_eq!(side(&sides, "c:C").leader.as_deref(), Some("C"));
     }
 
     #[test]

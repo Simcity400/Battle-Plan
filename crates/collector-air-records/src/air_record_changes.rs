@@ -486,7 +486,8 @@ impl Store {
         let cutoff = base
             .checked_add(native::LOG_TIMEOUT_RVA)
             .and_then(|at| engine_native::read::<i32>(memory, at))
-            .map(|timeout| air_region_derive::cutoff(air_region_derive::last_pass(hour), timeout));
+            .zip(air_region_derive::last_pass(hour))
+            .map(|(timeout, pass)| air_region_derive::cutoff(pass, timeout));
         let check = crate::sampled_verify::current_burned_in(VERIFY);
         let (verified, mismatches) = self.sample(memory, base, check, cutoff)?;
         COUNTS[5].fetch_add(

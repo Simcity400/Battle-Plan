@@ -635,7 +635,7 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
     let content = IconContent::from_parts(
         installed_content_core::equipment::Database::load_complete(&layers).unwrap(),
-        technology::read_enablers(&layers).unwrap(),
+        technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
         equipment_graphics::Content::from_texts(
             &[],
             &equipment_graphics::Names {

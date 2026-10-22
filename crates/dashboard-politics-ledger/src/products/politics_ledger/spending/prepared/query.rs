@@ -384,31 +384,68 @@ pub fn query(
         let keys = key(&keys, &params.tag, "governments")
             .into_iter()
             .collect::<Vec<_>>();
-        let page = native.events(&keys, from, to.min(last), cursor, size)?;
-        let rows = page
-            .rows
-            .into_iter()
-            .filter_map(|event| match serde_json::from_value::<Event>(event.row) {
-                Ok(Event::Government { row }) if row.read_hour <= last => {
-                    Some(Ok(dashboard_base::prepared_measure::query::MeasureEvent {
-                        tag: params.tag.clone(),
-                        hour: row.hour,
-                        ordinal: event.ordinal.to_string(),
-                        row: serde_json::to_value(row).expect("government serializes"),
-                    }))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
+        let to = to.min(last);
+        // Future-supplied rows must affect neither the page, its cursor, nor its total.
+        let reached = |row: Value| -> io::Result<Option<_>> {
+            Ok(match serde_json::from_value::<Event>(row)? {
+                Event::Government { row } if row.read_hour <= last => Some(row),
+                _ => None,
             })
-            .collect::<Result<Vec<_>, _>>()?;
+        };
+        let mut rows = Vec::new();
+        let mut first_ordinal = None;
+        let mut next = Some(cursor);
+        let mut more = None;
+        'fill: while let Some(at) = next {
+            let page = native.events(&keys, from, to, at, size)?;
+            first_ordinal.get_or_insert(page.first);
+            next = page.cursor;
+            for event in page.rows {
+                let Some(row) = reached(event.row)? else {
+                    continue;
+                };
+                if rows.len() == size as usize {
+                    more = Some(event.ordinal);
+                    break 'fill;
+                }
+                rows.push(dashboard_base::prepared_measure::query::MeasureEvent {
+                    tag: params.tag.clone(),
+                    hour: row.hour,
+                    ordinal: event.ordinal.to_string(),
+                    row: serde_json::to_value(row)?,
+                });
+            }
+        }
+        // Rows through the lag edge are settled; only later rows need reached-hour filtering.
+        let edge = last.saturating_sub(catalogue.government_lag.max(0));
+        let mut total = 0_u64;
+        let settled = to.min(edge);
+        if from <= settled {
+            for &key in &keys {
+                let before = match from.checked_sub(1) {
+                    Some(hour) => native.event_count_through(key, hour)?,
+                    None => 0,
+                };
+                total += native.event_count_through(key, settled)? - before;
+            }
+        }
+        if let Some(lagging) = edge
+            .checked_add(1)
+            .map(|hour| hour.max(from))
+            .filter(|hour| *hour <= to)
+        {
+            for event in native.events(&keys, lagging, to, 0, u32::MAX)?.rows {
+                total += u64::from(reached(event.row)?.is_some());
+            }
+        }
         return Ok(serde_json::to_value(
             dashboard_base::prepared_measure::query::MeasureDropReply {
                 coverage: None,
-                first_ordinal: page.first.to_string(),
-                total: page.total.to_string(),
+                first_ordinal: first_ordinal.unwrap_or(cursor).to_string(),
+                total: total.to_string(),
                 rows,
                 warnings: Vec::new(),
-                cursor: page.cursor.map(|cursor| cursor.to_string()),
+                cursor: more.map(|cursor: u64| cursor.to_string()),
             },
         )?);
     }

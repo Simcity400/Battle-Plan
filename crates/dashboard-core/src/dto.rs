@@ -69,6 +69,10 @@ pub struct BranchMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub event_losses: Option<Vec<RecordingEventLoss>>,
+    /// Without a complete country-table read, catalogue membership is unknown, not empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub catalogue_hour: Option<i32>,
 }
 
 /// An interval between the reads of `after_hour` and `hour` whose recorded

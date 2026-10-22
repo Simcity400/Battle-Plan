@@ -239,7 +239,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     let names = layers.key_names()?;
     let mut database = Database::default();
     for path in layers.directory_files("common/doctrines/folders", ".txt")? {
-        append(&mut database, &layers.read(&path)?, &path, &names);
+        append(&mut database, &path.read(layers)?, &path.text(), &names);
     }
     names::read(layers, &names, &mut database)?;
     match crate::technology::Catalog::read(layers, &names) {

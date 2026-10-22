@@ -101,14 +101,15 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
   if (!window || !inside) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
   if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-  if (needsGroups && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
-  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
-  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading elections…" />;
-  if (!prepared) return <WidgetState kind="loading" label="This range is still being prepared." />;
-  if (!read) return <WidgetState kind="unavailable" message="Election schedules were not recorded at this date." />;
-  if (!rows.length && !match.known(hour)) return <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-  if (!rows.length) return <WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." />;
-  return <div className="next-elections">
+  const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (groupFailure && !groups.data) return groupFailure;
+  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
+  if (!data || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading elections…" /></>;
+  if (!prepared) return <>{groupFailure}<WidgetState kind="loading" label="This range is still being prepared." /></>;
+  if (!read) return <>{groupFailure}<WidgetState kind="unavailable" message="Election schedules were not recorded at this date." /></>;
+  if (!rows.length && !match.known(hour)) return groupFailure ?? <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
+  if (!rows.length) return <>{groupFailure}<WidgetState kind="empty" icon="ballot" message="No country holds elections at this date." /></>;
+  return <div className="next-elections">{groupFailure}
     <Table key={`${track.source.id}:${track.branch.id}`} label="Next elections" rows={rows} columns={columns} rowKey={rowKey} tieKey={tieKey}
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} rowHeight={2 * (tokens.fontSize.title + tokens.fontSize.small)}

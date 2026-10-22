@@ -179,6 +179,25 @@ fn designs_date_obsolescence_to_the_read_that_shows_it_and_mark_the_first_read()
 }
 
 #[test]
+fn a_renamed_holder_answers_its_old_tag_only_for_the_hours_it_held_it() {
+    let mut state = Prepared::default();
+    for (hour, tag, rows) in [
+        (5, "AAA", vec![design(1, 1, 0)]),
+        (6, "BBB", vec![design(1, 1, 0), design(2, 1, 0)]),
+    ] {
+        let mut at = frame(hour);
+        countries(&mut at, &[(1, 10, tag)]);
+        set(&mut at, TableRows::VariantDefinitions(rows));
+        state.step(&at);
+    }
+    let reply = ask(&mut state, CatalogueView::Designs, &["AAA"], 6);
+    let ids: Vec<_> = reply.designs.iter().map(|design| design.id.as_str()).collect();
+    assert_eq!(ids, vec!["1"]);
+    assert_eq!(reply.designs[0].creator, vec![EconomyRun(5, 5, "10".into())]);
+    assert_eq!(reply.designs[0].obsolete, vec![EconomyRun(5, 5, "0".into())]);
+}
+
+#[test]
 fn a_refused_roster_is_unknown_not_empty_in_every_domain() {
     let mut state = Prepared::default();
     let mut at = base(5);

@@ -211,6 +211,7 @@ fn assert_cases(world: &World, cases: &[(u64, &str, Option<bool>)]) {
 fn organisation_variables_read_its_own_store() {
     let mut f = organisations();
     details(&mut f, MIO).variables.entries = [
+        ("Mixed", 400_000),
         ("dup", 100_000),
         ("dup", 200_000),
         ("mio_points", 300_000),
@@ -227,7 +228,9 @@ fn organisation_variables_read_its_own_store() {
             world,
             &[
                 (MIO, "has_variable = mio_points", Some(true)),
-                (MIO, "has_variable = MIO_POINTS", Some(false)),
+                // The game lowercases the operand but compares the stored key exactly.
+                (MIO, "has_variable = MIO_POINTS", Some(true)),
+                (MIO, "has_variable = Mixed", Some(false)),
                 (MIO, "has_variable = missing", Some(false)),
                 (MIO, "check_variable = { mio_points > 2 }", Some(true)),
                 (MIO, "check_variable = { mio_points > 3 }", Some(false)),
@@ -344,10 +347,11 @@ fn completed_trait_count_is_an_integer_comparison() {
                 (MIO, "has_mio_number_of_completed_traits = { value = 1 value = 2 }", None),
                 // A scope selector leaves the threshold zero; it is no number. Size reads it
                 // the same way, and its reader has no block form.
-                (MIO, "has_mio_size > THIS", Some(true)),
+                // A bare token ending the text lexes as the end token, never a selector.
+                (MIO, "has_mio_size > THIS\n", Some(true)),
                 (MIO, "has_mio_size < event_target:anything", Some(false)),
                 (MIO, "has_mio_size = { value > 1 }", None),
-                (MIO, "has_mio_number_of_completed_traits > THIS", Some(true)),
+                (MIO, "has_mio_number_of_completed_traits > THIS\n", Some(true)),
                 (MIO, "has_mio_number_of_completed_traits = { value = THIS }", Some(false)),
                 (OTHER, "has_mio_number_of_completed_traits = { value = FROM }", Some(true)),
             ],

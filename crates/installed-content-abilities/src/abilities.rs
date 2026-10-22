@@ -310,14 +310,15 @@ fn apply_with_terrain(
 /// definition remains in the native roster, whose lookup keeps the first exact
 /// name. Later definitions are still parsed and retain their diagnostics.
 pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
-    let mut paths: Vec<String> = layers
+    // Each file by its bytes: an archive may name a file in bytes that are not UTF-8.
+    let mut paths: Vec<installed_content_core::script_files::ScriptPath> = layers
         .paths()
         .filter(|path| {
             path.to_ascii_lowercase()
-                .strip_prefix("common/abilities/")
-                .is_some_and(|name| !name.contains('/') && name.ends_with(".txt"))
+                .strip_prefix(b"common/abilities/")
+                .is_some_and(|name| !name.contains(&b'/') && name.ends_with(b".txt"))
         })
-        .map(str::to_owned)
+        .map(|path| installed_content_core::script_files::ScriptPath::new(path.to_vec()))
         .collect();
     paths.sort();
     let terrains = crate::terrain::read_definitions(layers)?
@@ -328,7 +329,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<AbilitySprites> {
     let mut sprites = AbilitySprites::default();
     let names = layers.key_names()?;
     for path in paths {
-        let notes = apply_with_terrain(&layers.read(&path)?, &mut sprites, &terrains, &names)
+        let notes = apply_with_terrain(&path.read(layers)?, &mut sprites, &terrains, &names)
             .map_err(|error| invalid(format!("{path}: {error}")))?;
         for (kind, note) in notes {
             sprites.warnings.push((kind, format!("{path}: {note}")));

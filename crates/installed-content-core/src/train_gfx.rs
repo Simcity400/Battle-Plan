@@ -121,8 +121,8 @@ impl Database {
         let mut database = Self::default();
         let mut names = BTreeMap::new();
         for path in layers.directory_files(DATABASE_DIRECTORY, ".txt")? {
-            let bytes = layers.read_uncovered(&path)?;
-            database.add(&bytes, &path, registries, &mut names)?;
+            let bytes = path.read_uncovered(layers)?;
+            database.add(&bytes, &path.text(), registries, &mut names)?;
         }
         Ok(database)
     }

@@ -538,8 +538,26 @@ pub const PRODUCTION_MODIFIERS: Family = Family {
     ],
 };
 
+/// The organisation owner's design-change factor, demanded beside the designs' content keys.
+pub const DESIGN_ORGANISATION_CHANGE: Family = Family {
+    name: "design organisation change cost",
+    keys: &[keys::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST],
+    tokens: &[],
+    tables: &[TableId::DesignCountryModifiers],
+};
+
+/// Each country's effective policy-cost modifier, recorded with its policy roster.
+pub const ORGANISATION_POLICY_COST: Family = Family {
+    name: "organisation policy cost",
+    keys: &[keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST],
+    tokens: &[],
+    tables: &[TableId::IndustrialOrganisationPolicies],
+};
+
 pub const FAMILIES: &[Family] = &[
     PRODUCTION_MODIFIERS,
+    DESIGN_ORGANISATION_CHANGE,
+    ORGANISATION_POLICY_COST,
     MOVEMENT,
     STRATEGIC_ACTION,
     NAVAL_TRANSFER,

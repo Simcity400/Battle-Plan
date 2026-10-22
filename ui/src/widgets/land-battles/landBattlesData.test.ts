@@ -215,10 +215,12 @@ test('place names require state/hour replies, retain renames and accept every re
   assert.deepEqual(validatePlaceNamesReply(data), data);
   const many = { places: [], states: Array.from({ length: 5000 }, (_, stateId) => ({ ...states[0], stateId })), warnings: [] };
   assert.deepEqual(validatePlaceNamesReply(many), many);
+  const empty = { ...data, states: [{ ...states[0], name: '' }] };
+  assert.deepEqual(validatePlaceNamesReply(empty), empty);
   for (const invalid of [undefined, null, {}, [states[0], states[0]],
     [{ ...states[0], stateId: -1 }], [{ ...states[0], stateId: 4294967296 }], [{ ...states[0], stateId: 1.5 }],
     [{ ...states[0], hour: 2147483648 }], [{ ...states[0], hour: 1.5 }],
-    [{ ...states[0], name: '' }], [{ ...states[0], name: 1 }], [{ ...states[0], missing: undefined }],
+    [{ ...states[0], name: 1 }], [{ ...states[0], missing: undefined }],
     [{ ...states[2], missing: null }], [{ ...states[2], missing: '' }]]) {
     assert.throws(() => validatePlaceNamesReply({ ...data, states: invalid }), /malformed/);
   }

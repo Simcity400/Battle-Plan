@@ -640,10 +640,13 @@ mod tests {
             assert_eq!(unsafe { call(41, 17, 9) }, 111.0);
             ORIGINAL[index].store(previous, Ordering::SeqCst);
         }
+        // A credit observed at entry reads its line there, so the receiver must be one.
+        let line = super::super::tests::Line::new(0x11_0000_0021, 0x5_0000_0046, 0x9_0000_004f);
         for enabled_at_entry in [false, true] {
             super::super::observe_for_test(enabled_at_entry);
+            let caller = BASE.load(Ordering::Relaxed) + CREDIT.callers[super::super::tests::MILITARY];
             let mut context = Context::default();
-            unsafe { before(&mut context, 41, 17, 9, 0, 0) };
+            unsafe { before(&mut context, line.address(), 17, 9, caller, 0) };
             super::super::observe_for_test(!enabled_at_entry);
             assert_eq!(unsafe { returned(&mut context) }, 1);
         }

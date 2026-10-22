@@ -285,6 +285,19 @@ impl Shared {
         true
     }
 
+    /// Failed spawns must stop the already-started service, or waiters would hang.
+    fn launched(&self, spawned: std::io::Result<()>) -> Result<(), String> {
+        spawned.map_err(|error| {
+            let reason = format!("the air roster worker failed to start: {error}");
+            *self
+                .stopped
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason.clone());
+            self.advance();
+            reason
+        })
+    }
+
     /// Count an answer, signal waiters and wake the hover.
     fn advance(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
@@ -415,7 +428,7 @@ impl PassRosters {
             return Ok(());
         }
         let shared = Arc::clone(&self.shared);
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("air roster history".into())
             .spawn(move || {
                 let _exit = Exit(Arc::clone(&shared));
@@ -437,8 +450,8 @@ impl PassRosters {
                     }
                 }
             })
-            .map(drop)
-            .map_err(|error| format!("the air roster worker failed to start: {error}"))
+            .map(drop);
+        self.shared.launched(spawned)
     }
 }
 
@@ -901,6 +914,22 @@ pub(super) mod tests {
         let refusal = Some(Err("the air roster worker panicked".to_owned()));
         assert_eq!(rosters.visiting_pass(1, 127, 5), refusal);
         assert_eq!(rosters.visiting_pass(1, 103, 5), refusal);
+    }
+
+    #[test]
+    fn a_worker_that_cannot_start_refuses_every_later_question() {
+        let rosters = PassRosters::with_worker(recording(80, &[]), || {}, false);
+        let reason = "the air roster worker failed to start: no threads".to_owned();
+        assert_eq!(
+            rosters
+                .shared
+                .launched(Err(std::io::Error::other("no threads"))),
+            Err(reason.clone())
+        );
+        rosters.wait_beyond(0);
+        assert_eq!(rosters.generation(), 1);
+        assert_eq!(rosters.visiting_pass(1, 127, 5), Some(Err(reason.clone())));
+        assert_eq!(rosters.visiting_pass(1, 103, 5), Some(Err(reason)));
     }
 
     /// Only the latest question is searched: an older one still pending is dropped, not

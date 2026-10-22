@@ -24,6 +24,14 @@ fn months_follow_the_engine_calendar_and_clip_to_the_window() {
 }
 
 #[test]
+fn months_through_the_last_representable_hour_end_there() {
+    assert_eq!(months(i32::MAX, i32::MAX), vec![(i32::MAX, i32::MAX)]);
+    let spans = months(i32::MAX - 400 * DAY, i32::MAX);
+    assert_eq!(spans.last().map(|span| span.1), Some(i32::MAX));
+    assert!(spans.windows(2).all(|pair| pair[1].0 == pair[0].1 + 1));
+}
+
+#[test]
 fn repairs_before_the_rate_origin_or_without_one_are_unknown_never_zero() {
     use ProductionSpendingUnknown::{NotRecorded, RecordingGap};
     let asked = std::cell::RefCell::new(Vec::new());

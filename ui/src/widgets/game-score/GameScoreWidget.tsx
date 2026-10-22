@@ -105,8 +105,9 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to see its game scores." />;
     if (!window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-    if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (grouped && groups.error) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
+    // Never show a failed seek with scores from another hour.
+    if (error && (!data || hour !== requestedHour)) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+    if (grouped && groups.error && !groups.data) return <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} />;
     if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading game scores…" />;
     if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
     // A group with no member found yet has no row: the hour says why once it is read.
@@ -115,15 +116,18 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     if (!rows.length) return known ? <WidgetState kind="unavailable" message="No country data at this time." /> : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
     return undefined;
   })();
-  if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}><CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
+  // A same-hour failure must stay visible even when its published reply renders an empty state.
+  const failure = error && data && hour === requestedHour ? <WidgetState kind="error" detail={error} onRetry={retry} /> : null;
+  const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" detail={groups.error} onRetry={groups.retry} /> : null;
+  if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
     ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}
     presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
     label="Game score" empty={known ? 'Total scores unavailable at this time.' : MEMBERSHIP_PREPARING}
     formatValue={formatAxisValue}
     tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} /></div>;
-  if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{state}</div>;
-  return <div ref={parityRoot} style={{ display: 'contents' }}><Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
+  if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}{state}</div>;
+  return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<Table key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}
     cellBars={options.cellBars === true} rank rankMarkers={options.rankMarkers === true}
     density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} tooltip={tooltip} onVisibleRows={onVisible} hoursPerSecond={hoursPerSecond}

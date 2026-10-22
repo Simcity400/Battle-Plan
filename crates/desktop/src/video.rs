@@ -4,7 +4,7 @@ use crate::native::NativeHost;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -83,7 +83,9 @@ fn path() -> Result<PathBuf, String> {
     )
 }
 fn load() -> Result<VideoSettings, String> {
-    let path = path()?;
+    load_from(&path()?)
+}
+fn load_from(path: &Path) -> Result<VideoSettings, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -98,16 +100,57 @@ fn load() -> Result<VideoSettings, String> {
     settings.validate()?;
     Ok(settings)
 }
-fn save(settings: &VideoSettings) -> Result<(), String> {
-    let path = path()?;
-    fs::create_dir_all(path.parent().expect("settings directory")).map_err(|e| e.to_string())?;
+/// Re-read under the lock so another window's saved choices are not overwritten.
+fn update(
+    path: &Path,
+    fallback: Option<&VideoSettings>,
+    change: impl FnOnce(&mut VideoSettings),
+) -> Result<VideoSettings, String> {
+    let folder = path.parent().ok_or("Video settings have no folder")?;
+    fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("lock"))
+        .map_err(|e| e.to_string())?;
+    lock.lock().map_err(|e| e.to_string())?;
+    let mut settings = match load_from(path) {
+        Ok(saved) => saved,
+        Err(error) => fallback.cloned().ok_or(error)?,
+    };
+    change(&mut settings);
+    // The lock makes this process the only writer, so its staging file is its own.
     let temp = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(
         &temp,
-        serde_json::to_vec(settings).map_err(|e| e.to_string())?,
+        serde_json::to_vec(&settings).map_err(|e| e.to_string())?,
     )
+    .and_then(|()| fs::rename(&temp, path))
     .map_err(|e| e.to_string())?;
-    fs::rename(temp, path).map_err(|e| e.to_string())
+    Ok(settings)
+}
+/// Keep this window's applied settings; recover unreadable local settings from the saved ones.
+fn commit(
+    path: &Path,
+    stored: &mut Result<VideoSettings, String>,
+    change: impl Fn(&mut VideoSettings),
+) -> Result<(), String> {
+    let saved = update(path, stored.as_ref().ok(), &change)?;
+    if let Ok(current) = stored {
+        change(current);
+    } else {
+        *stored = Ok(saved);
+    }
+    Ok(())
+}
+/// Diagnostics and mute are absent from the display form and must stay as saved.
+fn with_display(saved: &mut VideoSettings, form: &VideoSettings) {
+    *saved = VideoSettings {
+        map_diagnostics: saved.map_diagnostics,
+        map_muted: saved.map_muted,
+        ..form.clone()
+    };
 }
 
 #[derive(Serialize)]
@@ -302,7 +345,9 @@ pub fn set_video_settings(
             })?;
             host.map_action(settings.map_ui_scale_action())?;
         }
-        save(&settings)?;
+        update(&path()?, Some(&settings), |saved| {
+            with_display(saved, &settings)
+        })?;
         let popouts = window.state::<crate::popout::PopOuts>();
         popouts.mirror(&dashboard::protocol::MapAction::Vsync {
             enabled: settings.vsync,
@@ -350,22 +395,6 @@ pub fn current_map_diagnostics(state: &VideoState) -> bool {
         .is_ok_and(|stored| effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored))
 }
 
-/// The settings to save with the diagnostics choice `enabled`. Settings that
-/// could not be restored (an unreadable file or a failed zoom) start again
-/// from what `load` reads, so the other saved settings are kept.
-fn with_map_diagnostics(
-    stored: &Result<VideoSettings, String>,
-    enabled: bool,
-    load: impl FnOnce() -> Result<VideoSettings, String>,
-) -> Result<VideoSettings, String> {
-    let mut next = match stored {
-        Ok(settings) => settings.clone(),
-        Err(_) => load()?,
-    };
-    next.map_diagnostics = enabled;
-    Ok(next)
-}
-
 /// Saves the maps' diagnostics choice (`None` flips it), sends it to the
 /// native viewer and tells the frontend. Returns the new choice.
 pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<bool, String> {
@@ -373,9 +402,9 @@ pub fn change_map_diagnostics(app: &AppHandle, enabled: Option<bool>) -> Result<
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
     let enabled = enabled
         .unwrap_or_else(|| !effective_map_diagnostics(state.1.load(Ordering::Acquire), &stored));
-    let next = with_map_diagnostics(&stored, enabled, load)?;
-    save(&next)?;
-    *stored = Ok(next);
+    commit(&path()?, &mut stored, |settings| {
+        settings.map_diagnostics = enabled
+    })?;
     state.1.store(false, Ordering::Release);
     // Sent before the lock is released, so two changes reach the viewer in the
     // order they were saved.
@@ -400,13 +429,7 @@ pub fn current_map_muted(state: &VideoState) -> bool {
 pub fn change_map_muted(app: &AppHandle, muted: bool) -> Result<bool, String> {
     let state = app.state::<VideoState>();
     let mut stored = state.0.lock().map_err(|e| e.to_string())?;
-    let mut next = match &*stored {
-        Ok(settings) => settings.clone(),
-        Err(_) => load()?,
-    };
-    next.map_muted = muted;
-    save(&next)?;
-    *stored = Ok(next);
+    commit(&path()?, &mut stored, |settings| settings.map_muted = muted)?;
     // Sent before the lock is released, so changes arrive in saved order.
     app.state::<NativeHost>().set_muted(muted);
     app.state::<crate::popout::PopOuts>()
@@ -483,15 +506,46 @@ mod tests {
         };
         let inherited = inherit_game(&on, game);
         assert!(inherited.map_diagnostics && inherited.ui_scale == 125.0);
-        // Saving the choice keeps the other settings, and settings that could
-        // not be restored start again from the file rather than the defaults.
-        let saved = with_map_diagnostics(&Ok(game_like(110.0)), true, || unreachable!()).unwrap();
-        assert!(saved.map_diagnostics && saved.ui_scale == 110.0);
-        let repaired =
-            with_map_diagnostics(&Err("zoom failed".into()), false, || Ok(game_like(90.0)))
-                .unwrap();
-        assert!(!repaired.map_diagnostics && repaired.ui_scale == 90.0);
-        assert!(with_map_diagnostics(&Err("x".into()), true, || Err("bad file".into())).is_err());
+    }
+
+    #[test]
+    fn two_windows_changing_different_settings_keep_both() {
+        let folder =
+            std::env::temp_dir().join(format!("hoi4-video-settings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        let path = folder.join("video.json");
+        let mut first = Ok(VideoSettings::default());
+        let mut second = Ok(VideoSettings::default());
+        commit(&path, &mut first, |settings| settings.map_muted = true).unwrap();
+        commit(&path, &mut second, |settings| {
+            settings.map_diagnostics = true
+        })
+        .unwrap();
+        let saved = load_from(&path).unwrap();
+        assert!(saved.map_muted && saved.map_diagnostics);
+        let second = second.unwrap();
+        assert!(second.map_diagnostics && !second.map_muted);
+        let form = VideoSettings {
+            use_game_settings: false,
+            ui_scale: 110.0,
+            ..VideoSettings::default()
+        };
+        update(&path, Some(&form), |saved| with_display(saved, &form)).unwrap();
+        let saved = load_from(&path).unwrap();
+        assert!(saved.map_muted && saved.map_diagnostics && saved.ui_scale == 110.0);
+        let mut lost = Err("zoom failed".to_owned());
+        commit(&path, &mut lost, |settings| settings.map_muted = false).unwrap();
+        let lost = lost.unwrap();
+        assert!(lost.map_diagnostics && !lost.map_muted && lost.ui_scale == 110.0);
+        fs::write(&path, b"not json").unwrap();
+        assert!(commit(&path, &mut Err("unreadable".into()), |_| ()).is_err());
+        commit(&path, &mut Ok(game_like(90.0)), |settings| {
+            settings.map_muted = true
+        })
+        .unwrap();
+        let saved = load_from(&path).unwrap();
+        assert!(saved.map_muted && saved.ui_scale == 90.0);
+        fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

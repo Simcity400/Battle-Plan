@@ -71,9 +71,9 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
   }, [labelAt, chipLabel]);
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see its peace conferences." />;
-  if (error) return <WidgetState kind="error" detail={error} onRetry={retry} />;
+  if (error && !data) return <WidgetState kind="error" detail={error} onRetry={retry} />;
   if (!data) return preparing ? <PreparedLogCoverage coverage={null} /> : <WidgetState kind="loading" label="Loading peace conferences…" />;
-  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{error && <WidgetState kind="error" detail={error} onRetry={retry} />}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
 
   const country = (tag: string, at: number, name = true) => {
     const label = labelAt(at)(tag);
@@ -123,6 +123,7 @@ export default function PeaceDealsWidget({ widget, runtime, active, onDiagnostic
         if (value === '') setOption?.('actions', '');
         else { const next = toggleContentSet(actions, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('actions', next); }
       }} /></div>}
+    {error && <WidgetState kind="error" detail={error} onRetry={retry} />}
     {gapHint && <p className="peace-note" data-tooltip={gapHint}>Some conferences may be missing.</p>}
     <LogList key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} rows={rows} label="Peace conferences" layout="card" density={settings.density} months={settings.months}
     preparedCoverage={prefix?.coverage}

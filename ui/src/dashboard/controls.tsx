@@ -10,6 +10,7 @@ import type { DashboardClient } from './client';
 import { newId } from '../shell/ids';
 import { validatePreparationReply, preparationActive } from '../shell/preparation/contract';
 import type { PreparedCoverage } from '../shell/preparation/contract';
+import { PAUSED_POLL_MS } from '../shell/preparation/controller';
 import { timelineGaps, timelinePrepared } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { useMapMuted } from '../shell/muteSetting';
@@ -64,14 +65,20 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
   useEffect(() => {
     if (!reference || !client.preparationStatus) return;
     const controller = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+    // Preparation can change without notifications, so even terminal states need slow polling.
     const poll = async () => {
       const request = { sourceId: reference.source.id, revision: reference.source.revision, requestId: newId() };
+      let wait = PAUSED_POLL_MS;
       try {
         const status = validatePreparationReply(await client.preparationStatus!(request, controller.signal), request);
         if (controller.signal.aborted) return;
         setPrepared({ owner: referenceKey, coverage: status.coverage?.[reference.branch.id] ?? null });
-        if (preparationActive(status)) timer = setTimeout(() => { void poll(); }, 500);
-      } catch { /* Coverage is absent until a valid status arrives. */ }
+        if (preparationActive(status)) wait = 500;
+      } catch {
+        // Coverage keeps the last valid status until another arrives.
+        if (controller.signal.aborted) return;
+      }
+      timer = setTimeout(() => { void poll(); }, wait);
     };
     void poll(); return () => { controller.abort(); clearTimeout(timer); };
   }, [client, referenceKey]);

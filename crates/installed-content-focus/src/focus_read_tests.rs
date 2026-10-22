@@ -5,18 +5,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-fn paths(layers: &ResolvedLayers) -> Vec<(usize, String)> {
-    let mut paths = layers
-        .paths()
-        .filter(|path| {
-            (path.starts_with("common/national_focus/")
-                || path.starts_with("common/continuous_focus/"))
-                && path.ends_with(".txt")
-        })
-        .map(|path| (layers.layer_index(path).unwrap_or(0), path.to_owned()))
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths
+fn paths(layers: &ResolvedLayers) -> Vec<(usize, ScriptPath)> {
+    database_paths(layers, true)
 }
 
 fn serial(
@@ -26,12 +16,12 @@ fn serial(
     let mut definitions = Focuses::new();
     let mut warnings = Vec::new();
     for (_, path) in paths(layers) {
-        let database = if path.starts_with("common/national_focus/") {
+        let database = if path.as_bytes().starts_with(b"common/national_focus/") {
             Database::National
         } else {
             Database::Continuous
         };
-        match parse(&layers.read(&path)?, database, names) {
+        match parse(&path.read(layers)?, database, names) {
             Ok((content, notes)) => {
                 definitions.extend(content);
                 warnings.extend(
@@ -108,7 +98,7 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
                 &paths(&layers),
                 &names,
                 workers,
-                |path| layers.read(path),
+                |path| path.read(&layers),
                 parse
             )?,
             expected,
@@ -163,7 +153,7 @@ fn parallel_focus_files_isolate_variables_and_share_complete_mod_names() -> io::
             &paths(&layers),
             &names,
             workers,
-            |path| layers.read(path),
+            |path| path.read(&layers),
             |bytes, database, shared_names| {
                 assert!(std::ptr::eq(shared_names, names.as_ref()));
                 parse(bytes, database, shared_names)
@@ -249,7 +239,7 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
                 &paths(&layers),
                 &names,
                 workers,
-                |path| layers.read(path),
+                |path| path.read(&layers),
                 parse
             )?,
             expected
@@ -277,7 +267,7 @@ fn a_verified_focus_read_error_never_reaches_later_files() -> io::Result<()> {
         let paths = paths(&layers);
         stack.write(
             &stack.base(),
-            &paths[failed].1,
+            &paths[failed].1.to_string(),
             "shared_focus={id=CHANGED_AFTER_INVENTORY}",
         );
         for workers in [1, 2, 3] {
@@ -288,8 +278,8 @@ fn a_verified_focus_read_error_never_reaches_later_files() -> io::Result<()> {
                 &names,
                 workers,
                 |path| {
-                    reached.push(path.to_owned());
-                    layers.read(path)
+                    reached.push(path.clone());
+                    path.read(&layers)
                 },
                 |bytes, database, names| {
                     parsed.fetch_add(1, Ordering::SeqCst);
@@ -315,7 +305,12 @@ fn focus_wave_parsers_overlap_and_merge_after_reverse_completion() -> io::Result
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let paths = (0..4)
-        .map(|index| (0, format!("common/national_focus/{index}.txt")))
+        .map(|index| {
+            (
+                0,
+                ScriptPath::new(format!("common/national_focus/{index}.txt").into_bytes()),
+            )
+        })
         .collect::<Vec<_>>();
     let barrier = Barrier::new(2);
     let active = AtomicUsize::new(0);
@@ -361,5 +356,31 @@ fn focus_wave_parsers_overlap_and_merge_after_reverse_completion() -> io::Result
     let threads = threads.into_inner().unwrap();
     assert_ne!(threads[0], threads[1]);
     assert!(threads.iter().all(|id| *id != std::thread::current().id()));
+    Ok(())
+}
+
+#[test]
+fn focus_folders_load_whatever_case_their_layer_spells() -> io::Result<()> {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let stack = Stack::new("focus_folder_case");
+    stack.write(
+        &stack.addon(),
+        "Common/National_Focus/a.txt",
+        "shared_focus={id=NATIONAL text=NATIONAL_TITLE}",
+    );
+    stack.write(
+        &stack.addon(),
+        "common/Continuous_Focus/b.txt",
+        "continuous_focus_palette={focus={id=CONTINUOUS text=CONTINUOUS_TITLE}}",
+    );
+    let layers = stack.layers(&[]);
+    let (focuses, warnings) = read(&layers)?;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(focuses["NATIONAL"].localisation, "NATIONAL_TITLE");
+    assert_eq!(focuses["CONTINUOUS"].localisation, "CONTINUOUS_TITLE");
+    let (national, _) = read_national(&layers)?;
+    assert!(national.contains_key("NATIONAL"));
+    assert!(!national.contains_key("CONTINUOUS"));
     Ok(())
 }

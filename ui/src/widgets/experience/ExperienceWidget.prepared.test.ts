@@ -13,7 +13,7 @@ test('experience widget reads only viewport summaries and reached hours while pr
   type Slot = { value?: unknown; deps?: readonly unknown[]; cleanup?: () => void };
   const tag = 'opaque / country', raw = '9223372036854775807';
   const fixture = { cursor: 0, slots: [] as Slot[], effects: [] as (() => void)[], chart: undefined as TimeChartProps | undefined,
-    groupError: undefined as string | undefined,
+    groupError: undefined as string | undefined, groupsHeld: true,
     prefix: undefined as number | undefined,
     histories: [{tag,identities:[{slot:7,countryId:11,firstHour:0,lastHour:100}]}],
     products: [] as { product: string; active: boolean }[], queries: [] as { product: string; params: Record<string, unknown>; signal: AbortSignal }[],
@@ -45,7 +45,8 @@ test('experience widget reads only viewport summaries and reached hours while pr
     }; export const useProducts = (_client, requests, active) => {
       for (const request of requests) globalThis.__preparedExperienceFixture.products.push({product:request.product,active}); return {retry(){}};
     };`,
-    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({retry(){},error:globalThis.__preparedExperienceFixture.groupError,data:{warnings:[],capitulations:[],countryIdentities:globalThis.__preparedExperienceFixture.histories}});`,
+    '/dashboard/useCountryGroups.ts': `export const useCountryGroups = () => ({retry(){},error:globalThis.__preparedExperienceFixture.groupError,data:globalThis.__preparedExperienceFixture.groupsHeld
+      ? {warnings:[],capitulations:[],countryIdentities:globalThis.__preparedExperienceFixture.histories} : undefined});`,
     '/dashboard/playback.ts': 'export const usePlaybackHour = () => 100; export const usePlaybackSpeed = () => 24;',
     '/dashboard/useCountryLineStyles.ts': 'export const useCountryLineStyles = () => globalThis.__preparedExperienceFixture.styles;',
     '/dashboard/countryNamesAt.ts': `export const nameKey = (hour,tag) => JSON.stringify([hour,tag]);
@@ -158,7 +159,13 @@ test('experience widget reads only viewport summaries and reached hours while pr
     fixture.chart!.onSummaryView!({from:0,to:100,width:103}); render(); await settle();
     assert.doesNotMatch(render(), /Still being prepared/);
     assert.equal(fixture.chart!.layers.length,1,'the band disappears with exact history');
-    fixture.groupError='Identity catalogue unavailable'; render();
+    fixture.groupError='Identity catalogue unavailable'; fixture.products=[];
+    const held = render();
+    assert.ok(fixture.chart, 'the accepted chart stays drawn');
+    assert.ok(fixture.products.every(request=>request.product!=='country-experience'||!request.active),'retained group history keeps the prepared reader');
+    assert.match(held, /data-detail="Identity catalogue unavailable"/);
+    assert.match(held, />Retry</);
+    fixture.groupsHeld=false; fixture.products=[]; render();
     assert.ok(fixture.products.some(request=>request.product==='country-experience'&&request.active),'missing marker metadata does not hide independent experience');
   } finally {
     for (const slot of fixture.slots) slot.cleanup?.();

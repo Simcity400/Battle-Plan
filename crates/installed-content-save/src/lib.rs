@@ -1815,7 +1815,7 @@ fn partial_map_membership(
                     file: states
                         .source(id)
                         .expect("kept template has a source")
-                        .to_owned(),
+                        .to_string(),
                     reasons: reasons.to_vec(),
                 },
             );

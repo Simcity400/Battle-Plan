@@ -111,6 +111,7 @@ fn read_from(
                 .iter_mut()
                 .find(|branch| branch.id == old.id)
             {
+                current.catalogue_hour = old.catalogue_hour;
                 for gap in &old.gaps {
                     if !current.gaps.iter().any(|candidate| {
                         candidate.first_hour == gap.first_hour
@@ -137,12 +138,11 @@ fn read_from(
             metadata
                 .branches
                 .iter()
-                .any(|old| old.id == branch.id.to_string())
+                .any(|old| old.id == branch.id.to_string() && old.catalogue_hour.is_some())
         }) {
             continue;
         }
-        // A branch's first readable block supplies its catalogue; an unreadable
-        // block becomes a gap and the next is tried. Later blocks are read on demand.
+        // Skip gaps and incomplete country tables until a readable block establishes the catalogue.
         for block in replay
             .index
             .iter()
@@ -152,6 +152,7 @@ fn read_from(
             check_cancel(cancelled)?;
             let mut catalogue = Catalogue::default();
             let mut player_country_id = None;
+            let mut observed = None;
             // Only the tables the catalogue reads, up to its first complete country table.
             let mut decoder = FrameDecoder::for_tables(&CATALOGUE_TABLES);
             let read = replay.visit_block(block, Some(&CATALOGUE_TABLES), |frame| {
@@ -167,6 +168,7 @@ fn read_from(
                 };
                 catalogue.observe(rows, links, branch.id, frame.hour)?;
                 player_country_id = player_slot(decoded, links)?.map(|slot| slot.to_string());
+                observed = Some(frame.hour);
                 Ok(false)
             });
             if let Err(error) = read {
@@ -200,11 +202,21 @@ fn read_from(
                 );
                 continue;
             }
+            let Some(hour) = observed else {
+                continue;
+            };
             if metadata.player_country_id.is_none() {
                 metadata.player_country_id = player_country_id;
             }
             let countries = catalogue.finish(&mut metadata.warnings)?;
             merge_countries(&mut metadata.countries, &mut known, countries)?;
+            if let Some(entry) = metadata
+                .branches
+                .iter_mut()
+                .find(|entry| entry.id == branch.id.to_string())
+            {
+                entry.catalogue_hour = Some(hour);
+            }
             break;
         }
     }
@@ -944,6 +956,7 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
             sample_boundary: engine_allocation::string(session.sample_boundary.name())?,
             gaps,
             event_losses: (!event_losses.is_empty()).then_some(event_losses),
+            catalogue_hour: None,
         });
     }
     Ok(branches)

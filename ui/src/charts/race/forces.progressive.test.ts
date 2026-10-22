@@ -29,6 +29,8 @@ function mount<T>(read: () => T) {
       if (changed(slot, deps)) { slot.deps = [...deps]; effects.push(() => { slot.cleanup?.(); slot.cleanup = effect(); }); }
     },
     useSyncExternalStore(_subscribe: unknown, snapshot: () => unknown) { cursor++; return snapshot(); },
+    // Outside a widget frame.
+    useContext() { return null; },
   };
   return {
     render() {

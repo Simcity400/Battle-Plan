@@ -675,7 +675,7 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
         // A visual mod's file whose declarations are refused is read as the recording's own
         // file of that path when that reads whole, named.
         if let Some(refusal) = refusals_of(&file)
-            && layers.supplied_by_visual_mod(&path)
+            && layers.supplied_by_visual_mod(&bytes)
             && let Some(recorded) = &recorded
             && let Ok(recorded_bytes) = recorded.read_path(&bytes)
         {

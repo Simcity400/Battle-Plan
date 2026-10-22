@@ -803,15 +803,16 @@ fn shared_changes_only_block_fold_matches_hourly_observation_without_query_decod
                 if table != TableId::Campaign
                     && !matches!(*f.tables[table.index()], TableView::Complete(_))
                 {
-                    *f.tables[table.index()] =
-                        TableView::Complete(if table == TableId::ReservedCountryNaming {
+                    *f.tables[table.index()] = TableView::Complete(match table {
+                        TableId::ReservedCountryNaming => {
                             TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow {
                                 tag: b"mod_reserved".to_vec(),
                                 ..Default::default()
                             }])
-                        } else {
-                            TableRows::empty(table)
-                        });
+                        }
+                        TableId::LocalPlayer => TableRows::LocalPlayer(vec![Default::default()]),
+                        _ => TableRows::empty(table),
+                    });
                 }
             }
             if let TableView::Complete(TableRows::Countries(rows)) =

@@ -404,8 +404,8 @@ impl Content {
         // List direct files in filename byte order. Covered reads verify every
         // file's bytes against the recorded stack.
         for path in layers.directory_files("gfx/interface/equipmentdesigner/graphic_db", ".txt")? {
-            document(&layers.read_uncovered(&path)?, names, &key_names)
-                .and_then(|items| content.read_document(&items, names, &path))
+            document(&path.read_uncovered(layers)?, names, &key_names)
+                .and_then(|items| content.read_document(&items, names, &path.text()))
                 .map_err(|error| invalid(format!("{path}: {error}")))?;
         }
         Ok(content)

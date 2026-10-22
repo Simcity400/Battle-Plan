@@ -130,11 +130,12 @@ impl Content {
             ..Self::default()
         };
         for path in subunit_paths(layers.paths()) {
-            let document = parser::parse(&layers.read(path)?)
-                .map_err(|error| invalid(format!("{path}: {error}")))?;
+            let shown = String::from_utf8_lossy(path);
+            let document = parser::parse(&layers.read_path(path)?)
+                .map_err(|error| invalid(format!("{shown}: {error}")))?;
             content
                 .read_subunits(&document)
-                .map_err(|error| invalid(format!("{path}: {error}")))?;
+                .map_err(|error| invalid(format!("{shown}: {error}")))?;
         }
         content.canonicalize_requirements()?;
         Ok(content)

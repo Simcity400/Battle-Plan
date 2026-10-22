@@ -22,14 +22,35 @@ pub(crate) mod units;
 pub use descriptions::{Catalog, Definition};
 pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, stat_key};
 
-/// Each technology's single unconditional equipment link, when known.
+/// Name lookup finds only the first technology definition's equipment link.
 pub type EquipmentLinks = BTreeMap<String, Option<String>>;
-type ParsedPresentation = (
-    EquipmentLinks,
-    BTreeMap<String, Result<PresentationName, String>>,
-    Vec<crate::Diagnostic>,
-);
-type ParseError = (crate::DiagnosticKind, io::Error);
+type ParsedPresentation = (Vec<Template>, Vec<crate::Diagnostic>);
+/// A stopped reader may leave technology keys it never encountered.
+type ParseError = (crate::DiagnosticKind, io::Error, bool);
+
+/// The game keeps repeated names as separate templates, selected by recorded index.
+#[derive(Debug)]
+pub struct Template {
+    pub token: String,
+    /// One-based load-order index; unread preceding files make it unknown.
+    pub database_index: Option<u32>,
+    pub presentation: Result<PresentationName, String>,
+    pub equipment: Option<String>,
+    /// Folders retain authored order; a folder block's last `name` wins.
+    pub folders: Vec<String>,
+}
+
+/// The game finds the first ASCII-folded name, but the map retains its authored spelling.
+fn equipment_links(definitions: &[Template]) -> EquipmentLinks {
+    let mut links = EquipmentLinks::new();
+    let mut seen = BTreeSet::new();
+    for definition in definitions {
+        if seen.insert(definition.token.to_ascii_lowercase()) {
+            links.insert(definition.token.clone(), definition.equipment.clone());
+        }
+    }
+    links
+}
 
 #[derive(Clone, Copy)]
 enum Node {
@@ -53,8 +74,8 @@ pub fn parse_equipment(
     names: &KeyNames,
 ) -> io::Result<(EquipmentLinks, Vec<crate::Diagnostic>)> {
     parse_with_registry(input, &units::Registry::default(), names)
-        .map(|(equipment, _, notes)| (equipment, notes))
-        .map_err(|(_, error)| error)
+        .map(|(definitions, notes)| (equipment_links(&definitions), notes))
+        .map_err(|(_, error, _)| error)
 }
 
 fn parse_with_registry(
@@ -62,40 +83,31 @@ fn parse_with_registry(
     registry: &units::Registry,
     names: &KeyNames,
 ) -> Result<ParsedPresentation, ParseError> {
-    parse_with_tokens(
-        input,
-        registry,
-        names,
-        &mut Vec::new(),
-        &mut BTreeMap::new(),
-    )
+    parse_with_tokens(input, registry, names, &mut Vec::new())
 }
 
-/// `folders` receives every technology this file defines, with the research
-/// folders it is placed in, only when the whole file reads.
+/// Partial files yield no definitions, but `tokens` still receives encountered technology keys.
 fn parse_with_tokens(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
     tokens: &mut Vec<String>,
-    folders: &mut BTreeMap<String, Vec<String>>,
 ) -> Result<ParsedPresentation, ParseError> {
     let (read, undecided, refused) = read_templates_with_tokens(input, registry, names, tokens);
     if let Some(cause) = read.unsettled {
-        return Err((cause.kind, invalid(format!("technology: {cause}"))));
+        return Err((cause.kind, invalid(format!("technology: {cause}")), true));
     }
     if let Some(cause) = refused.first() {
-        return Err((crate::DiagnosticKind::Refused, invalid(cause)));
+        return Err((crate::DiagnosticKind::Refused, invalid(cause), false));
     }
     if let Some(cause) = undecided.first() {
         return Err((
             crate::DiagnosticKind::Unsettled,
             invalid(format!("technology: {cause}")),
+            false,
         ));
     }
-    let mut result = BTreeMap::new();
-    let mut display_keys = BTreeMap::new();
-    let mut placements = BTreeMap::new();
+    let mut definitions = Vec::new();
     let mut folder_notes = Vec::new();
     for root in read
         .items
@@ -110,6 +122,7 @@ fn parse_with_tokens(
                 (
                     crate::DiagnosticKind::Refused,
                     invalid("technology token is not UTF-8"),
+                    false,
                 )
             })?;
             // A technology template's parent overrides its display-name key.
@@ -178,6 +191,7 @@ fn parse_with_tokens(
                                 invalid(format!(
                                     "technology {token} folder position: unsupported vector form"
                                 )),
+                                false,
                             ));
                         }
                     }
@@ -202,13 +216,14 @@ fn parse_with_tokens(
                             invalid(format!(
                                 "technology {token} enable_equipments: unsupported conditional or nested unlock"
                             )),
+                            false,
                         ));
                     }
                     let name = equipment
                         .value
                         .read_str()
                         .map_err(|e| invalid(format!("technology {token} enable_equipments: {e}")))
-                        .map_err(|error| (crate::DiagnosticKind::Refused, error))?;
+                        .map_err(|error| (crate::DiagnosticKind::Refused, error, false))?;
                     if !unlocks.iter().any(|old| old.eq_ignore_ascii_case(name)) {
                         unlocks.push(name.into());
                     }
@@ -221,33 +236,31 @@ fn parse_with_tokens(
             let fields = technology.value.items().unwrap_or_default();
             // A failed boolean value keeps the preceding assignment.
             let force_small = parser::read_bool_field(fields, "force_use_small_tech_layout", false);
-            display_keys.insert(
-                token.to_owned(),
-                parent.map(|parent| {
-                    let template_key = parent.unwrap_or_else(|| token.into());
-                    let template_key = if template_key.is_empty() {
-                        token.to_owned()
-                    } else {
-                        template_key
-                    };
-                    PresentationName {
-                        template: template_key,
-                        equipment: candidates,
-                        force_small,
-                    }
-                }),
-            );
-            result.insert(
-                token.to_owned(),
-                (!conditional && unlocks.len() == 1).then(|| unlocks.remove(0)),
-            );
-            placements.insert(token.to_owned(), placed);
+            let presentation = parent.map(|parent| {
+                let template_key = parent.unwrap_or_else(|| token.into());
+                let template_key = if template_key.is_empty() {
+                    token.to_owned()
+                } else {
+                    template_key
+                };
+                PresentationName {
+                    template: template_key,
+                    equipment: candidates,
+                    force_small,
+                }
+            });
+            let equipment = (!conditional && unlocks.len() == 1).then(|| unlocks.remove(0));
+            definitions.push(Template {
+                token: token.to_owned(),
+                database_index: None,
+                presentation,
+                equipment,
+                folders: placed,
+            });
         }
     }
-    folders.extend(placements);
     Ok((
-        result,
-        display_keys,
+        definitions,
         read.misreads
             .iter()
             .map(|note| (note.kind, note.to_string()))
@@ -257,7 +270,7 @@ fn parse_with_tokens(
 }
 
 /// Native full-name roots for a recorded technology owner.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct PresentationName {
     pub template: String,
     pub equipment: Vec<EquipmentName>,
@@ -265,10 +278,30 @@ pub struct PresentationName {
 }
 
 /// One authored child, with its load-time admission condition when present.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EquipmentName {
     pub name: String,
     pub limits: Vec<Vec<Item>>,
+}
+
+impl EquipmentName {
+    /// The game checks limits in a fresh empty scope; false skips the rest of that field.
+    pub fn admitted(
+        &self,
+        evaluate: &mut impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        for limit in &self.limits {
+            if !evaluate(limit).map_err(|why| {
+                format!(
+                    "enable_equipments limit for {} at content load: {why}",
+                    self.name
+                )
+            })? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 impl PresentationName {
@@ -292,6 +325,7 @@ impl PresentationName {
 
     /// Admission is shared by names and descriptions. Descriptions count
     /// non-duplicate children separately, then select the first child.
+    /// The game dedupes folded authored names before resolving aliases.
     pub fn children(
         &self,
         mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
@@ -300,34 +334,187 @@ impl PresentationName {
         if self.force_small {
             return Ok(Vec::new());
         }
-        let mut children = Vec::new();
-        let mut accepted = BTreeSet::new();
-        for candidate in &self.equipment {
-            // A false limit exits this authored field's whole loop; later
-            // checks in that field cannot restore its admission.
-            let mut admitted = true;
+        // Equal limits share one decision because all are checked in the same empty scope.
+        let mut decided: Vec<(&[Item], Result<bool, usize>)> = Vec::new();
+        let mut undecided: Vec<String> = Vec::new();
+        let mut entries: Vec<(String, &str, BTreeSet<usize>)> = Vec::new();
+        'entries: for candidate in &self.equipment {
+            let mut waits = BTreeSet::new();
             for limit in &candidate.limits {
-                if !evaluate(limit).map_err(|why| {
-                    format!(
-                        "enable_equipments limit for {} at content load: {why}",
-                        candidate.name
-                    )
-                })? {
-                    admitted = false;
-                    break;
+                let outcome = match decided.iter().find(|(seen, _)| *seen == limit.as_slice()) {
+                    Some((_, outcome)) => *outcome,
+                    None => {
+                        let outcome = evaluate(limit).map_err(|why| {
+                            undecided.push(format!(
+                                "enable_equipments limit for {} at content load: {why}",
+                                candidate.name
+                            ));
+                            undecided.len() - 1
+                        });
+                        decided.push((limit.as_slice(), outcome));
+                        outcome
+                    }
+                };
+                match outcome {
+                    // A false limit exits the whole field; later checks cannot restore admission.
+                    Ok(false) => continue 'entries,
+                    Ok(true) => {}
+                    Err(variable) => {
+                        waits.insert(variable);
+                    }
                 }
             }
-            if !admitted {
-                continue;
+            entries.push((
+                candidate.name.to_ascii_lowercase(),
+                candidate.name.as_str(),
+                waits,
+            ));
+        }
+        let mut names: Vec<(&str, Vec<usize>)> = Vec::new();
+        for (at, (folded, _, _)) in entries.iter().enumerate() {
+            match names.iter_mut().find(|(name, _)| name == folded) {
+                Some((_, places)) => places.push(at),
+                None => names.push((folded.as_str(), vec![at])),
             }
-            // Template names deduplicate by folded authored token; distinct
-            // aliases may resolve to the same pointer and still occupy two
-            // runtime children.
-            if accepted.insert(candidate.name.to_ascii_lowercase())
-                && let Some(name) = resolve(&candidate.name)?
-            {
-                children.push(name);
+        }
+        let why = |places: &mut dyn Iterator<Item = usize>| {
+            places
+                .filter_map(|at| entries[at].2.first().copied())
+                .min()
+                .map_or_else(String::new, |variable| undecided[variable].clone())
+        };
+        // An entry can be first only if no earlier entry is guaranteed by its required limits.
+        let first: Vec<Vec<usize>> = names
+            .iter()
+            .map(|(_, places)| {
+                places
+                    .iter()
+                    .enumerate()
+                    .filter(|&(index, &at)| {
+                        !places[..index]
+                            .iter()
+                            .any(|&earlier| entries[earlier].2.is_subset(&entries[at].2))
+                    })
+                    .map(|(_, &at)| at)
+                    .collect()
+            })
+            .collect();
+        let absent: Vec<bool> = names
+            .iter()
+            .map(|(_, places)| places.iter().all(|&at| !entries[at].2.is_empty()))
+            .collect();
+        // `later` can precede `first` only if it can be admitted without an earlier `first` entry.
+        let can_precede = |later: &[usize], first: &[usize]| {
+            later.iter().any(|&at| {
+                first
+                    .iter()
+                    .filter(|&&earlier| earlier < at)
+                    .all(|&earlier| !entries[earlier].2.is_subset(&entries[at].2))
+            })
+        };
+        let mut swaps = Vec::new();
+        for a in 0..names.len() {
+            for b in a + 1..names.len() {
+                let (one, other) = (names[a].1.as_slice(), names[b].1.as_slice());
+                if can_precede(one, other) && can_precede(other, one) {
+                    swaps.push((a, b));
+                }
             }
+        }
+        let settled = swaps.is_empty()
+            && (0..names.len()).all(|name| {
+                !absent[name]
+                    && first[name]
+                        .iter()
+                        .all(|&at| entries[at].1 == entries[first[name][0]].1)
+            });
+        // The game keeps distinct authored aliases as two children even if they resolve alike.
+        let mut child: Vec<Option<String>> = Vec::with_capacity(names.len());
+        if !settled {
+            let mut resolved: BTreeMap<&str, Option<String>> = BTreeMap::new();
+            // Compare one limit's outcomes whole: alias swaps can preserve the children.
+            let variables: BTreeSet<usize> = entries
+                .iter()
+                .flat_map(|(_, _, waits)| waits.iter().copied())
+                .collect();
+            if let (1, Some(&variable)) = (variables.len(), variables.first()) {
+                let mut outcomes: Vec<Vec<String>> = Vec::with_capacity(2);
+                for holds in [false, true] {
+                    let mut seen: Vec<&str> = Vec::new();
+                    let mut shown = Vec::new();
+                    for (folded, spelling, waits) in &entries {
+                        if !(holds || waits.is_empty()) || seen.contains(&folded.as_str()) {
+                            continue;
+                        }
+                        seen.push(folded.as_str());
+                        let spelling: &str = *spelling;
+                        let value = match resolved.get(spelling) {
+                            Some(value) => value.clone(),
+                            None => {
+                                let value = resolve(spelling)?;
+                                resolved.insert(spelling, value.clone());
+                                value
+                            }
+                        };
+                        shown.extend(value);
+                    }
+                    outcomes.push(shown);
+                }
+                return if outcomes[0] == outcomes[1] {
+                    Ok(outcomes.swap_remove(1))
+                } else {
+                    Err(undecided[variable].clone())
+                };
+            }
+            for (name, (_, places)) in names.iter().enumerate() {
+                let mut shown: Vec<Option<String>> = Vec::new();
+                if absent[name] {
+                    shown.push(None);
+                }
+                for &at in &first[name] {
+                    let spelling = entries[at].1;
+                    let value = match resolved.get(spelling) {
+                        Some(value) => value.clone(),
+                        None => {
+                            let value = resolve(spelling)?;
+                            resolved.insert(spelling, value.clone());
+                            value
+                        }
+                    };
+                    if !shown.contains(&value) {
+                        shown.push(value);
+                    }
+                }
+                if shown.len() > 1 {
+                    return Err(why(&mut places.iter().copied()));
+                }
+                child.push(shown.pop().flatten());
+            }
+            for &(a, b) in &swaps {
+                if child[a].is_some() && child[b].is_some() && child[a] != child[b] {
+                    return Err(why(&mut names[a].1.iter().chain(&names[b].1).copied()));
+                }
+            }
+        }
+        let mut order: Vec<(usize, usize)> = (0..names.len())
+            .filter_map(|name| {
+                names[name]
+                    .1
+                    .iter()
+                    .copied()
+                    .find(|&entry| entries[entry].2.is_empty())
+                    .map(|entry| (entry, name))
+            })
+            .collect();
+        order.sort();
+        let mut children = Vec::with_capacity(order.len());
+        for (entry, name) in order {
+            let shown = if settled {
+                resolve(entries[entry].1)?
+            } else {
+                child[name].take()
+            };
+            children.extend(shown);
         }
         Ok(children)
     }
@@ -336,38 +523,46 @@ impl PresentationName {
 /// One preparation read supplies both native equipment links and the inventory.
 #[derive(Debug)]
 pub struct Database {
-    pub equipment: BTreeMap<String, String>,
+    /// Complete-file definitions in load order; repeated names remain separate templates.
+    pub definitions: Vec<Template>,
     pub tokens: Vec<String>,
-    /// Each technology's research folders in authored order; a technology
-    /// redefined by a later file keeps the later definition's folders.
-    pub folders: BTreeMap<String, Vec<String>>,
     pub equipment_warnings: Vec<crate::Diagnostic>,
     pub inventory_warnings: Vec<crate::Diagnostic>,
-    pub names: BTreeMap<String, Result<PresentationName, String>>,
+    /// An unread file contributes no definitions and makes all later template indices unknown.
+    pub unread: Vec<UnreadFile>,
+}
+
+#[derive(Debug)]
+pub struct UnreadFile {
+    /// Includes the file path as well as the read failure.
+    pub why: String,
+    /// ASCII-folded keys encountered; `None` means the reader stopped and may have missed any key.
+    pub tokens: Option<BTreeSet<String>>,
 }
 
 impl Database {
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let registry = units::Registry::read(layers)?;
         let names = layers.key_names()?;
-        let mut result = BTreeMap::new();
+        let mut definitions = Vec::new();
         let mut tokens = Vec::new();
-        let mut folders = BTreeMap::new();
-        let mut presentation_names = BTreeMap::new();
         let mut equipment_warnings = Vec::new();
         let mut inventory_warnings = Vec::new();
+        let mut unread = Vec::new();
+        // An unread file makes every later template's load-order index unknown.
+        let mut placed = true;
         // Enumerate this directory without recursion.
         for path in layers.directory_files("common/technologies", ".txt")? {
-            match parse_with_tokens(
-                &layers.read(&path)?,
-                &registry,
-                &names,
-                &mut tokens,
-                &mut folders,
-            ) {
-                Ok((definitions, display_names, notes)) => {
-                    result.extend(definitions);
-                    presentation_names.extend(display_names);
+            let before = tokens.len();
+            match parse_with_tokens(&path.read(layers)?, &registry, &names, &mut tokens) {
+                Ok((read, notes)) => {
+                    placed &= read.len() == tokens.len() - before;
+                    for mut definition in read {
+                        definition.database_index = placed
+                            .then(|| u32::try_from(definitions.len() + 1).ok())
+                            .flatten();
+                        definitions.push(definition);
+                    }
                     let notes: Vec<_> = notes
                         .into_iter()
                         .map(|(kind, note)| (kind, format!("{path}: {note}")))
@@ -375,7 +570,17 @@ impl Database {
                     equipment_warnings.extend(notes.iter().cloned());
                     inventory_warnings.extend(notes);
                 }
-                Err((kind, error)) => {
+                Err((kind, error, stopped)) => {
+                    placed = false;
+                    unread.push(UnreadFile {
+                        why: format!("{path}: {error}"),
+                        tokens: (!stopped).then(|| {
+                            tokens[before..]
+                                .iter()
+                                .map(|token| token.to_ascii_lowercase())
+                                .collect()
+                        }),
+                    });
                     equipment_warnings.push((
                         kind,
                         format!("Technology equipment links unavailable in {path}: {error}"),
@@ -390,16 +595,19 @@ impl Database {
         let mut seen = std::collections::BTreeSet::new();
         tokens.retain(|token| seen.insert(token.clone()));
         Ok(Self {
-            equipment: result
-                .into_iter()
-                .filter_map(|(token, equipment)| equipment.map(|equipment| (token, equipment)))
-                .collect(),
+            definitions,
             tokens,
-            folders,
             equipment_warnings,
             inventory_warnings,
-            names: presentation_names,
+            unread,
         })
+    }
+
+    pub fn equipment(&self) -> BTreeMap<String, String> {
+        equipment_links(&self.definitions)
+            .into_iter()
+            .filter_map(|(token, equipment)| equipment.map(|equipment| (token, equipment)))
+            .collect()
     }
 }
 
@@ -427,7 +635,7 @@ pub fn read_folders(layers: &ResolvedLayers) -> io::Result<Folders> {
     let names = layers.key_names()?;
     let mut read = Folders::default();
     for path in layers.directory_files("common/technology_tags", ".txt")? {
-        match parse_folders(&layers.read(&path)?, &names) {
+        match parse_folders(&path.read(layers)?, &names) {
             Ok((folders, notes)) => {
                 read.warnings.extend(
                     notes
@@ -538,7 +746,7 @@ pub fn read_equipment(
     layers: &ResolvedLayers,
 ) -> io::Result<(BTreeMap<String, String>, Vec<crate::Diagnostic>)> {
     let read = Database::read(layers)?;
-    Ok((read.equipment, read.equipment_warnings))
+    Ok((read.equipment(), read.equipment_warnings))
 }
 
 fn read_templates(
@@ -711,9 +919,25 @@ pub struct Enables {
     /// The types its plain entries name.
     pub equipment: Vec<String>,
     pub parent: Option<String>,
-    /// A scripted entry (a block, a keyed entry or an unresolved `@variable`): which
-    /// equipment it enables is not known.
+    /// Scripted or unresolved entries leave the equipment they may enable unknown.
     pub scripted: Option<Scripted>,
+    /// The game checks preceding limits at content load before admitting these entries.
+    pub limited: Vec<EquipmentName>,
+}
+
+impl Enables {
+    fn read_natively(&mut self, native: &PresentationName) {
+        self.equipment.clear();
+        self.scripted = None;
+        self.limited.clear();
+        for candidate in &native.equipment {
+            if candidate.limits.is_empty() {
+                self.equipment.push(candidate.name.clone());
+            } else {
+                self.limited.push(candidate.clone());
+            }
+        }
+    }
 }
 
 /// What a refused entry could enable: the names it mentions, or any type at all.
@@ -724,8 +948,8 @@ pub struct Scripted {
     pub any: bool,
 }
 
-/// Each technology's definition, by its id as the lexer identifies it (`ASCII token fold`).
-pub type EnabledBy = BTreeMap<String, Enables>;
+/// Authored order includes repeated IDs as separate templates.
+pub type EnabledBy = Vec<Enables>;
 
 /// Every name a scripted entry mentions (keys and scalars), and whether it holds an
 /// unresolved `@variable`.
@@ -750,14 +974,10 @@ fn mentioned(item: &parser::Item, scripted: &mut Scripted) {
     }
 }
 
-/// Every technology's `enable_equipments` list and `parent`, by technology id; a
-/// later definition of an id (in any ASCII case: one lexer token) replaces an
-/// earlier one. A keyed, scripted or `@variable` entry is not read as a type: the
-/// technology is marked [`Scripted`] with the names it mentions, so only the types
-/// it could enable are left unknown.
+/// Unsupported entries leave only the equipment they might enable unknown.
 pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
     let document = parser::parse(input)?;
-    let mut result = BTreeMap::new();
+    let mut result = Vec::new();
     // Keywords are lexer tokens, matched in any ASCII case (`parser::is_keyword`).
     for root in document.get_all_keyword("technologies") {
         for technology in root.items().unwrap_or_default() {
@@ -775,9 +995,14 @@ pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
                 let keyword = |name: &str| parser::is_keyword(field, name);
                 match () {
                     () if keyword("enable_equipments") => {
+                        let mut limited = false;
                         for item in field.value.items().unwrap_or_default() {
+                            if parser::is_keyword(item, "limit") {
+                                limited = true;
+                                continue;
+                            }
                             match (item.key.is_none(), item.value.scalar_str()) {
-                                (true, Some(name)) if !name.starts_with('@') => {
+                                (true, Some(name)) if !name.starts_with('@') && !limited => {
                                     enables.equipment.push(name.to_owned())
                                 }
                                 _ => mentioned(
@@ -793,7 +1018,7 @@ pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
                     () => {}
                 }
             }
-            result.insert(fold_token(token), enables);
+            result.push(enables);
         }
     }
     Ok(result)
@@ -802,13 +1027,12 @@ pub fn parse_enablers(input: &[u8]) -> io::Result<EnabledBy> {
 /// Which technologies enable each equipment type, as the icon fallback asks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Enablers {
-    /// Each type's technologies named by a plain entry, by its folded key, in
-    /// technology id order.
+    /// Folded equipment keys in load order, counting repeated technology IDs separately.
     pub plain: BTreeMap<String, Vec<Enabler>>,
     /// Types (folded) a scripted entry mentions, with those technologies' ids.
     pub uncertain: BTreeMap<String, BTreeSet<String>>,
-    /// Technologies with an entry that could name any type.
-    pub any: BTreeSet<String>,
+    /// Arbitrary-type entries cannot add equipment already enabled for certain by their definition.
+    pub any: Vec<(String, BTreeSet<String>)>,
     /// Every technology with a scripted entry, as `<path>: <id>`, for a warning.
     pub refused: Vec<String>,
 }
@@ -828,7 +1052,12 @@ impl Enablers {
             .get(&key)
             .into_iter()
             .flatten()
-            .chain(&self.any)
+            .chain(
+                self.any
+                    .iter()
+                    .filter(|(_, certain)| !certain.contains(&key))
+                    .map(|(id, _)| id),
+            )
             .map(String::as_str)
             .collect();
         if !uncertain.is_empty() {
@@ -839,54 +1068,100 @@ impl Enablers {
         }
         Ok(plain.first())
     }
-}
 
-/// For each equipment type, every technology whose `enable_equipments` names
-/// it, in technology id order. The game's icon fallback uses a technology
-/// only when exactly one enables the type. Files are read in layer and path
-/// order, a later technology of the same id replacing an earlier one.
-///
-/// Equipment and technology ids are lexer tokens, compared with ASCII A-Z
-/// folding. The map is keyed by the folded equipment key: an uppercase type
-/// entry matches its lowercase spelling, and a mixed-case technology id
-/// redefines its lowercase spelling. A technology keeps the spelling of its
-/// last definition. A scripted entry refuses only what that technology could
-/// enable ([`Enablers::single`]).
-pub fn read_enablers(layers: &ResolvedLayers) -> io::Result<Enablers> {
-    let paths = layers.directory_files("common/technologies", ".txt")?;
-    let mut technologies: BTreeMap<String, (String, Enables)> = BTreeMap::new();
-    for path in paths {
-        let parsed = parse_enablers(&layers.read(&path)?)
-            .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
-        for (id, enables) in parsed {
-            technologies.insert(id, (path.clone(), enables));
+    /// The game dedupes folded equipment names within a template, not across definitions.
+    fn add(
+        &mut self,
+        source: &str,
+        enables: Enables,
+        evaluate: &mut impl FnMut(&[Item]) -> Result<bool, String>,
+    ) {
+        let Enables {
+            id,
+            mut equipment,
+            parent,
+            mut scripted,
+            limited,
+        } = enables;
+        // An undecidable limit leaves guarded equipment unknown; false enables nothing.
+        for candidate in &limited {
+            match candidate.admitted(&mut *evaluate) {
+                Ok(true) => equipment.push(candidate.name.clone()),
+                Ok(false) => {}
+                Err(_) => scripted
+                    .get_or_insert_with(Scripted::default)
+                    .names
+                    .push(candidate.name.clone()),
+            }
         }
-    }
-    let mut result = Enablers::default();
-    for (path, enables) in technologies.into_values() {
-        let id = enables.id;
-        for name in enables.equipment {
-            let list = result.plain.entry(fold_token(&name)).or_default();
-            if !list.iter().any(|enabler| enabler.id == id) {
-                list.push(Enabler {
+        let mut certain = BTreeSet::new();
+        for name in equipment {
+            let key = fold_token(&name);
+            if certain.insert(key.clone()) {
+                self.plain.entry(key).or_default().push(Enabler {
                     id: id.clone(),
-                    parent: enables.parent.clone(),
+                    parent: parent.clone(),
                 });
             }
         }
-        if let Some(scripted) = enables.scripted {
-            for name in scripted.names {
-                result
-                    .uncertain
-                    .entry(fold_token(&name))
-                    .or_default()
-                    .insert(id.clone());
+        let Some(scripted) = scripted else {
+            return;
+        };
+        let mut unknown = false;
+        for name in scripted.names {
+            let key = fold_token(&name);
+            if !certain.contains(&key) {
+                self.uncertain.entry(key).or_default().insert(id.clone());
+                unknown = true;
             }
-            if scripted.any {
-                result.any.insert(id.clone());
-            }
-            result.refused.push(format!("{path}: {id}"));
         }
+        if scripted.any {
+            self.any.push((id.clone(), certain));
+            unknown = true;
+        }
+        if unknown {
+            self.refused.push(format!("{source}: {id}"));
+        }
+    }
+}
+
+/// The game uses technology icon fallback only when exactly one template enables the type.
+pub fn read_enablers(
+    layers: &ResolvedLayers,
+    mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+) -> io::Result<Enablers> {
+    let paths = layers.directory_files("common/technologies", ".txt")?;
+    // Without native rosters, retain conservative parse_enablers uncertainty.
+    let native = units::Registry::read(layers)
+        .ok()
+        .zip(layers.key_names().ok());
+    let mut technologies: Vec<(String, Enables)> = Vec::new();
+    for path in paths {
+        let bytes = path.read(layers)?;
+        let mut parsed = parse_enablers(&bytes)
+            .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
+        let read = native
+            .as_ref()
+            .and_then(|(registry, names)| parse_with_registry(&bytes, registry, names).ok())
+            .map(|(definitions, _)| definitions)
+            .unwrap_or_default();
+        if read.len() == parsed.len()
+            && read
+                .iter()
+                .zip(&parsed)
+                .all(|(native, enables)| native.token == enables.id)
+        {
+            for (native, enables) in read.iter().zip(&mut parsed) {
+                if let Ok(presentation) = &native.presentation {
+                    enables.read_natively(presentation);
+                }
+            }
+        }
+        technologies.extend(parsed.into_iter().map(|enables| (path.to_string(), enables)));
+    }
+    let mut result = Enablers::default();
+    for (path, enables) in technologies {
+        result.add(&path, enables, &mut evaluate);
     }
     Ok(result)
 }
@@ -900,33 +1175,93 @@ mod tests {
     #[cfg(feature = "test-support")]
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
+    /// Game name lookup returns the first definition, unlike recorded template-index lookup.
+    fn parse_with_registry(
+        input: &[u8],
+        registry: &units::Registry,
+        names: &KeyNames,
+    ) -> Result<
+        (
+            EquipmentLinks,
+            BTreeMap<String, Result<PresentationName, String>>,
+            Vec<crate::Diagnostic>,
+        ),
+        ParseError,
+    > {
+        super::parse_with_registry(input, registry, names).map(|(definitions, notes)| {
+            let links = equipment_links(&definitions);
+            let mut presentation = BTreeMap::new();
+            for definition in definitions {
+                presentation
+                    .entry(definition.token)
+                    .or_insert(definition.presentation);
+            }
+            (links, presentation, notes)
+        })
+    }
+
     #[test]
     fn technologies_keep_their_folders_in_authored_order_only_when_the_file_reads() {
-        let mut folders = BTreeMap::new();
-        parse_with_tokens(
+        let (definitions, _) = parse_with_tokens(
             b"technologies = { two = { folder = { name = infantry_folder position = { x = 0 y = 0 } } folder = { name = support_folder position = { x = 1 y = 2 } } folder = { name = infantry_folder } } none = { research_cost = 1 } renamed = { folder = { name = first name = second } } }",
             &units::Registry::default(),
             &KeyNames::default(),
             &mut Vec::new(),
-            &mut folders,
         )
         .unwrap();
-        assert_eq!(folders["two"], ["infantry_folder", "support_folder"]);
-        assert!(folders["none"].is_empty());
-        assert_eq!(folders["renamed"], ["second"]);
-        // A file that cannot be read whole contributes no placements.
-        let before = folders.clone();
+        let folders = |token: &str| {
+            definitions
+                .iter()
+                .find(|definition| definition.token == token)
+                .unwrap()
+                .folders
+                .clone()
+        };
+        assert_eq!(folders("two"), ["infantry_folder", "support_folder"]);
+        assert!(folders("none").is_empty());
+        assert_eq!(folders("renamed"), ["second"]);
         assert!(
             parse_with_tokens(
                 b"technologies = { added = { folder = { name = armour_folder } } broken = { folder = { position = { 1 } } } }",
                 &units::Registry::default(),
                 &KeyNames::default(),
                 &mut Vec::new(),
-                &mut folders,
             )
             .is_err()
         );
-        assert_eq!(folders, before);
+    }
+
+    #[test]
+    fn a_repeated_technology_is_its_own_template_and_a_name_finds_the_first() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (definitions, _) = super::parse_with_registry(
+            b"technologies = { repeat = { parent = first enable_equipments = { one } } repeat = { parent = second } }",
+            &units::Registry::default(),
+            &KeyNames::default(),
+        )
+        .unwrap();
+        let templates: Vec<_> = definitions
+            .iter()
+            .map(|definition| {
+                (
+                    definition.token.as_str(),
+                    definition.presentation.as_ref().unwrap().template.as_str(),
+                    definition.equipment.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            templates,
+            [
+                ("repeat", "first", Some("one")),
+                ("repeat", "second", None)
+            ]
+        );
+        assert_eq!(
+            equipment_links(&definitions)["repeat"].as_deref(),
+            Some("one")
+        );
     }
 
     #[test]
@@ -1063,16 +1398,24 @@ mod tests {
         }
         let layers = ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
         let read = Database::read(&layers).unwrap();
-        assert!(read.equipment.is_empty());
+        assert!(read.equipment().is_empty());
         assert_eq!(read.equipment_warnings.len(), 1);
         assert_eq!(
-            read.names.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["a_second", "middle", "repeated", "z_first"]
+            read.definitions
+                .iter()
+                .map(|definition| (definition.token.as_str(), definition.database_index))
+                .collect::<Vec<_>>(),
+            [
+                ("z_first", Some(1)),
+                ("a_second", Some(2)),
+                ("repeated", Some(3)),
+                ("middle", Some(4)),
+                ("repeated", Some(5))
+            ]
         );
-        assert_eq!(
-            read.names["repeated"].as_ref().unwrap().template,
-            "repeated"
-        );
+        assert!(read.definitions.iter().all(|definition| {
+            definition.presentation.as_ref().unwrap().template == definition.token
+        }));
         let (tokens, notes) = (read.tokens, read.inventory_warnings);
         assert_eq!(
             tokens,
@@ -1125,10 +1468,18 @@ mod tests {
                 .unwrap()
                 .name(
                     |_| Err("load-time global unavailable".into()),
-                    |_| unreachable!()
+                    |name| Ok(Some(name.into()))
                 )
                 .unwrap_err()
                 .contains("at content load")
+        );
+        assert_eq!(
+            display["conditional"]
+                .as_ref()
+                .unwrap()
+                .name(|_| Err("load-time global unavailable".into()), |_| Ok(None))
+                .unwrap(),
+            "conditional"
         );
         assert_eq!(links["equipment"].as_deref(), Some("mod_equipment"));
     }
@@ -1248,6 +1599,131 @@ mod tests {
                 .unwrap(),
             "aliases"
         );
+    }
+
+    #[test]
+    fn a_repeated_child_keeps_its_admission_whatever_its_limits() {
+        let p = PresentationName {
+            template: "template".into(),
+            force_small: false,
+            equipment: vec![
+                EquipmentName {
+                    name: "tank_1".into(),
+                    limits: Vec::new(),
+                },
+                EquipmentName {
+                    name: "TANK_1".into(),
+                    limits: vec![Vec::new()],
+                },
+            ],
+        };
+        assert_eq!(
+            p.children(
+                |_| Err("not decided".to_owned()),
+                |name| Ok(Some(name.to_owned()))
+            ),
+            Ok(vec!["tank_1".to_owned()])
+        );
+        let entry = |name: &str, limited: bool| EquipmentName {
+            name: name.into(),
+            limits: if limited { vec![Vec::new()] } else { Vec::new() },
+        };
+        let children = |equipment: Vec<EquipmentName>| {
+            PresentationName {
+                template: "template".into(),
+                force_small: false,
+                equipment,
+            }
+            .children(
+                |_| Err("not decided".to_owned()),
+                |name| Ok(Some(name.to_owned())),
+            )
+        };
+        assert_eq!(
+            children(vec![entry("tank_1", true), entry("tank_1", false)]),
+            Ok(vec!["tank_1".to_owned()])
+        );
+        assert_eq!(
+            children(vec![
+                entry("a", true),
+                entry("b", true),
+                entry("a", false),
+                entry("b", false)
+            ]),
+            Ok(vec!["a".to_owned(), "b".to_owned()])
+        );
+        let refused = children(vec![entry("b", true), entry("a", false), entry("b", false)]);
+        assert!(
+            refused
+                .as_ref()
+                .unwrap_err()
+                .contains("enable_equipments limit for b at content load: not decided"),
+            "{refused:?}"
+        );
+        assert!(children(vec![entry("a", false), entry("c", true)]).is_err());
+        // Distinct authored aliases remain two children even when they resolve to the same pointer.
+        let aliased = |equipment: Vec<EquipmentName>, alias: bool| {
+            PresentationName {
+                template: "template".into(),
+                force_small: false,
+                equipment,
+            }
+            .children(
+                |_| Err("not decided".to_owned()),
+                |name| Ok(Some(if alias && name == "alt" { "one" } else { name }.to_owned())),
+            )
+        };
+        let swapped = || vec![entry("alt", true), entry("one", false), entry("alt", false)];
+        assert_eq!(
+            aliased(swapped(), true),
+            Ok(vec!["one".to_owned(), "one".to_owned()])
+        );
+        assert!(aliased(swapped(), false).is_err());
+        assert_eq!(
+            PresentationName {
+                template: "template".into(),
+                force_small: false,
+                equipment: vec![entry("a", false), entry("c", true)],
+            }
+            .children(
+                |_| Err("not decided".to_owned()),
+                |name| Ok((name == "a").then(|| name.to_owned())),
+            ),
+            Ok(vec!["a".to_owned()])
+        );
+        // Correlated limits preserve [a, b, a]; independent limits can reorder it to [a, a, b].
+        let limit = |flag: &str| {
+            crate::parser::parse(format!("has_global_flag={flag}").as_bytes())
+                .unwrap()
+                .items
+        };
+        let behind = |name: &str, flag: &str| EquipmentName {
+            name: name.into(),
+            limits: vec![limit(flag)],
+        };
+        let reordered = |flags: [&str; 3]| {
+            PresentationName {
+                template: "template".into(),
+                force_small: false,
+                equipment: vec![
+                    behind("c", flags[0]),
+                    behind("b", flags[1]),
+                    behind("a", flags[2]),
+                    entry("a", false),
+                    entry("b", false),
+                    entry("c", false),
+                ],
+            }
+            .children(
+                |_| Err("not decided".to_owned()),
+                |name| Ok(Some(if name == "c" { "a" } else { name }.to_owned())),
+            )
+        };
+        assert_eq!(
+            reordered(["mod_flag"; 3]),
+            Ok(vec!["a".to_owned(), "b".to_owned(), "a".to_owned()])
+        );
+        assert!(reordered(["c_flag", "b_flag", "a_flag"]).is_err());
     }
 
     #[test]
@@ -1457,12 +1933,12 @@ mod tests {
         for token in ["multiple", "modifier_only"] {
             assert_eq!(links[token], None);
         }
-        let overrides = parse_equipment(
+        let repeated = parse_equipment(
             br#"technologies = { a = { enable_equipments = { one } } a = {} }"#,
             &KeyNames::default(),
         )
         .unwrap();
-        assert_eq!(overrides["a"], None);
+        assert_eq!(repeated["a"].as_deref(), Some("one"));
     }
     #[test]
     fn enablers_list_each_technology_once_with_its_parent_and_mark_scripts() {
@@ -1484,27 +1960,31 @@ mod tests {
             equipment: equipment.iter().map(|name| (*name).to_owned()).collect(),
             parent: parent.map(str::to_owned),
             scripted: None,
+            limited: Vec::new(),
         };
         assert_eq!(
-            parsed["infantry_weapons1"],
+            parsed[0],
             plain("infantry_weapons1", &["infantry_equipment_1"], None)
         );
         assert_eq!(
-            parsed["renamed"],
+            parsed[1],
             plain("renamed", &["tank_1", "tank_2"], Some("infantry_weapons"))
         );
-        // `Other` is the same lexer token as `other`: the later definition replaces it.
-        assert_eq!(parsed["other"], plain("Other", &["TANK_3"], None));
+        assert_eq!(parsed[2], plain("other", &[], None));
+        assert_eq!(parsed[3], plain("Other", &["TANK_3"], None));
         // A script keeps the plain entries and names what it mentions; a variable could be anything.
-        assert_eq!(parsed["scripted"].equipment, ["gun_1"]);
-        let scripted = parsed["scripted"].scripted.as_ref().unwrap();
+        assert_eq!(parsed[4].id, "scripted");
+        assert_eq!(parsed[4].equipment, ["gun_1"]);
+        let scripted = parsed[4].scripted.as_ref().unwrap();
         assert!(scripted.names.contains(&"gun_2".to_owned()) && !scripted.any);
-        assert!(parsed["variable"].scripted.as_ref().unwrap().any);
+        assert_eq!(parsed[5].id, "variable");
+        assert!(parsed[5].scripted.as_ref().unwrap().any);
+        assert_eq!(parsed.len(), 6);
         // Keywords are lexer tokens too: in any ASCII case they are read, not ignored.
         let shouted =
             parse_enablers(b"TECHNOLOGIES = { tank_tech = { ENABLE_EQUIPMENTS = { tank_1 } } }")
                 .unwrap();
-        assert_eq!(shouted["tank_tech"].equipment, ["tank_1"]);
+        assert_eq!(shouted[0].equipment, ["tank_1"]);
         assert_eq!(
             parse_equipment(
                 b"Technologies = { tank_tech = { Enable_Equipments = { tank_1 } } }",
@@ -1521,29 +2001,12 @@ mod tests {
     fn a_scripted_unlock_leaves_only_the_types_it_mentions_unknown() {
         let enablers = |text: &[u8]| {
             let mut result = Enablers::default();
-            for enables in parse_enablers(text).unwrap().into_values() {
-                for name in &enables.equipment {
-                    result
-                        .plain
-                        .entry(fold_token(name))
-                        .or_default()
-                        .push(Enabler {
-                            id: enables.id.clone(),
-                            parent: None,
-                        });
-                }
-                if let Some(scripted) = &enables.scripted {
-                    for name in &scripted.names {
-                        result
-                            .uncertain
-                            .entry(fold_token(name))
-                            .or_default()
-                            .insert(enables.id.clone());
-                    }
-                    if scripted.any {
-                        result.any.insert(enables.id.clone());
-                    }
-                }
+            for enables in parse_enablers(text).unwrap() {
+                result.add(
+                    "fixture",
+                    enables,
+                    &mut |_: &[Item]| -> Result<bool, String> { Err("not decided".to_owned()) },
+                );
             }
             result
         };
@@ -1558,10 +2021,62 @@ mod tests {
         assert_eq!(found.single("nothing"), Ok(None));
         let any = enablers(b"technologies = { rifles = { enable_equipments = { rifle_1 } } modded = { enable_equipments = { @unknown } } }");
         assert!(any.single("rifle_1").unwrap_err().contains("modded"));
+        let limited = enablers(
+            b"technologies = { guns = { enable_equipments = { gun_0 } enable_equipments = { limit = { always = no } gun_1 } } }",
+        );
+        assert_eq!(limited.single("gun_0").unwrap().unwrap().id, "guns");
+        assert!(limited.single("gun_1").unwrap_err().contains("guns"));
+        assert_eq!(limited.single("always"), Ok(None));
+        let repeated = enablers(
+            b"technologies = { t = { enable_equipments = { tank_1 } enable_equipments = { limit = { has_global_flag = mod_flag } TANK_1 } } }",
+        );
+        assert_eq!(repeated.single("tank_1").unwrap().unwrap().id, "t");
+        assert!(repeated.refused.is_empty(), "{:?}", repeated.refused);
+        let variable = enablers(
+            b"technologies = { v = { enable_equipments = { rifle_1 @unknown } } }",
+        );
+        assert_eq!(variable.single("rifle_1").unwrap().unwrap().id, "v");
+        assert!(variable.single("tank_1").unwrap_err().contains("technology v "));
+        assert_eq!(variable.refused, ["fixture: v"]);
+        let other = enablers(
+            b"technologies = { t = { enable_equipments = { tank_1 } } u = { enable_equipments = { limit = { has_global_flag = mod_flag } tank_1 } } }",
+        );
+        assert!(other.single("tank_1").unwrap_err().contains("technology u "));
     }
 
-    /// A mod redefining a vanilla technology in another ASCII case replaces it, and
-    /// its equipment is found in any case: both are one lexer token.
+    #[test]
+    fn enablers_resolve_file_variables_through_the_native_reader() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let stack = crate::test_support::Stack::new("technology_enablers_native");
+        stack.write(
+            &stack.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/a.txt",
+            "@equip = tank_1 technologies = { t = { enable_equipments = { @equip } } guns = { enable_equipments = { gun_0 } enable_equipments = { limit = { always = no } gun_1 } } open = { enable_equipments = { limit = { always = yes } gun_2 } } asks = { enable_equipments = { limit = { always = yes always = no } gun_3 } } held = { enable_equipments = { gun_4 } enable_equipments = { limit = { always = yes always = no } GUN_4 } } }",
+        );
+        let evaluate = |limit: &[Item]| match limit {
+            [always] if always.keyword_is("always") => {
+                Ok(always.value.scalar() == Some(&b"yes"[..]))
+            }
+            _ => Err("synthetic: not decided".to_owned()),
+        };
+        let enablers = read_enablers(&stack.layers(&[]), evaluate).unwrap();
+        assert!(enablers.any.is_empty(), "{:?}", enablers.any);
+        assert_eq!(enablers.single("tank_1").unwrap().unwrap().id, "t");
+        assert_eq!(enablers.single("gun_0").unwrap().unwrap().id, "guns");
+        assert_eq!(enablers.single("gun_1"), Ok(None));
+        assert_eq!(enablers.single("gun_2").unwrap().unwrap().id, "open");
+        assert!(enablers.single("gun_3").unwrap_err().contains("asks"));
+        assert_eq!(enablers.single("gun_4").unwrap().unwrap().id, "held");
+        assert_eq!(enablers.refused.len(), 1, "{:?}", enablers.refused);
+        assert_eq!(enablers.single("rifle_1"), Ok(None));
+    }
+
     #[cfg(feature = "test-support")]
     #[test]
     fn a_mod_technology_replaces_vanilla_under_the_lexer_fold() {
@@ -1590,11 +2105,12 @@ mod tests {
         }
         let enablers = read_enablers(
             &ResolvedLayers::from_folders(&[(&vanilla, &[][..]), (&modded, &[][..])]).unwrap(),
+            |_| Err("no limit in this fixture".to_owned()),
         )
         .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         // The mod's file replaces the vanilla file of the same path; a mod
-        // technology in another file would replace `tank_tech` by its folded id.
+        // technology in another file would be a separate template.
         assert!(!enablers.plain.contains_key("tank_1"));
         assert!(enablers.refused.is_empty());
         assert_eq!(
@@ -1606,11 +2122,9 @@ mod tests {
         );
     }
 
-    /// Technologies in two files of one id in different cases are one token: the
-    /// later file's definition is the only one.
     #[cfg(feature = "test-support")]
     #[test]
-    fn a_technology_redefined_in_another_case_is_one_technology() {
+    fn a_technology_redefined_in_another_file_is_another_template() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
@@ -1633,15 +2147,25 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        let enablers =
-            read_enablers(&ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap()).unwrap();
+        let enablers = read_enablers(
+            &ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap(),
+            |_| Err("no limit in this fixture".to_owned()),
+        )
+        .unwrap();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
             enablers.plain[&fold_token("Tank_1")],
-            [Enabler {
-                id: "TANK_TECH".to_owned(),
-                parent: None
-            }]
+            [
+                Enabler {
+                    id: "tank_tech".to_owned(),
+                    parent: None
+                },
+                Enabler {
+                    id: "TANK_TECH".to_owned(),
+                    parent: None
+                }
+            ]
         );
+        assert_eq!(enablers.single("tank_1"), Ok(None));
     }
 }

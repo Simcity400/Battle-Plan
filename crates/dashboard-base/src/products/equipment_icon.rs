@@ -239,6 +239,22 @@ impl IconContent {
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(layers, &default_map, &mut warnings)?;
         let files = Arc::clone(&catalogue);
+        // The game checks each equipment limit at content load in a fresh empty scope.
+        let enablers = {
+            let world = std::cell::OnceCell::new();
+            installed_content_core::technology::read_enablers(layers, |limit| {
+                world
+                    .get_or_init(|| {
+                        catalogue
+                            .scripted_content()
+                            .and_then(|content| content.unrecorded_trigger_world())
+                    })
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .evaluate(limit, crate::triggers::Scopes::empty())
+                    .decided()
+            })?
+        };
         Ok(Self {
             units: match units {
                 Some(units) => units,
@@ -249,7 +265,7 @@ impl IconContent {
                             // Reuse registration only after the ordinary verified reads,
                             // in the order followed by the complete database loader.
                             for path in installed_content_core::equipment::files(layers) {
-                                layers.read(&path)?;
+                                path.read(layers)?;
                             }
                             Arc::clone(database)
                         }
@@ -259,7 +275,7 @@ impl IconContent {
                     }
                 }
             },
-            enablers: installed_content_core::technology::read_enablers(layers)?,
+            enablers,
             pools: equipment_graphics::Content::load(layers, &names)?,
             geography: equipment_graphics::context::Content::load(
                 layers,
@@ -488,16 +504,24 @@ pub struct IconHour {
     prepared: Result<Prepared, String>,
 }
 
+/// A table's reason without the frame's hour, so the same gap read again is the same choice.
+fn undated(frame: &DecodedFrame, why: impl ToString) -> String {
+    why.to_string().replace(&format!("hour {} ", frame.hour), "")
+}
+
 impl IconHour {
     pub fn read(frame: &DecodedFrame, content: &IconContent) -> io::Result<Self> {
+        let failed = |error: io::Error| io::Error::new(error.kind(), undated(frame, &error));
         let links: BTreeMap<u32, u32> = frame
-            .complete::<tables::CountryLinks>()?
+            .complete::<tables::CountryLinks>()
+            .map_err(failed)?
             .iter()
             .map(|row: &CountryLinkRow| (row.id, row.canonical_slot))
             .collect();
-        let countries = equipment_graphics::countries::read(frame)?;
+        let countries = equipment_graphics::countries::read(frame).map_err(failed)?;
         let tags: BTreeMap<u32, String> = frame
-            .complete::<tables::Countries>()?
+            .complete::<tables::Countries>()
+            .map_err(failed)?
             .iter()
             .filter_map(|row| {
                 Some((
@@ -522,9 +546,14 @@ impl IconHour {
                     })
                     .collect()
             })
-            .map_err(|error| format!("the country appearance table is unavailable: {error}"));
+            .map_err(|error| {
+                format!(
+                    "the country appearance table is unavailable: {}",
+                    undated(frame, error)
+                )
+            });
         Ok(Self {
-            prepared: Prepared::read(frame, &content.geography),
+            prepared: Prepared::read(frame, &content.geography).map_err(|why| undated(frame, why)),
             links,
             countries,
             tags,
