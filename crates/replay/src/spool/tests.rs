@@ -94,7 +94,7 @@ fn record_reader_streams_large_segments_with_one_payload_buffer() {
         assert!(reader.payload.capacity() <= frame_bytes * 2);
     }
     assert_eq!(frames, count as i32);
-    assert_eq!(reader.valid_bytes, length);
+    assert_eq!(reader.accepted.valid_bytes, length);
 }
 
 #[test]
@@ -102,15 +102,20 @@ fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
     let good = valid_segment();
     for cut in [0, RECORD_HEADER_BYTES - 1, good.len() - 1, good.len()] {
         let old = recover_prefix(&good[..cut]);
-        let streamed = recover_reader(io::Cursor::new(&good[..cut]), cut, Ok).unwrap();
+        let streamed =
+            recover_reader(io::Cursor::new(&good[..cut]), cut, |record, _| record, |_| Ok(()))
+                .unwrap();
         assert_eq!(streamed.records, old.records);
         assert_eq!(streamed.valid_bytes, old.valid_bytes);
         assert_eq!(streamed.damage, old.damage);
     }
     for kind in [io::ErrorKind::OutOfMemory, io::ErrorKind::PermissionDenied] {
-        let error = recover_reader(io::Cursor::new(&good), good.len(), |_| {
-            Err(io::Error::from(kind))
-        })
+        let error = recover_reader(
+            io::Cursor::new(&good),
+            good.len(),
+            |record, _| record,
+            |_| Err(io::Error::from(kind)),
+        )
         .unwrap_err();
         assert_eq!(error.kind(), kind);
     }
@@ -134,7 +139,7 @@ fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
         }
     }
     assert_eq!(
-        recover_reader(FailedRead, RECORD_HEADER_BYTES, Ok)
+        recover_reader(FailedRead, RECORD_HEADER_BYTES, |record, _| record, |_| Ok(()))
             .unwrap_err()
             .kind(),
         io::ErrorKind::OutOfMemory
@@ -1480,3 +1485,126 @@ fn occupation_keyframe_then_delta_spool_preserves_nested_packets_and_carry() {
 }
 
 use replay_data::FORMAT_VERSION;
+
+#[test]
+fn records_decoded_on_several_threads_keep_the_sequential_prefix_and_first_damage() {
+    let mut records = vec![branch()];
+    records.extend((10..40).map(|hour| Record::Frame(frame(hour, hour == 10))));
+    let encoded: Vec<Vec<u8>> = records
+        .iter()
+        .map(|record| encode_record(record).unwrap())
+        .collect();
+    let whole: Vec<u8> = encoded.concat();
+    let recover = |bytes: &[u8], threads| {
+        recover_records(
+            io::Cursor::new(bytes),
+            bytes.len(),
+            |record, _| record,
+            |_| Ok(()),
+            false,
+            threads,
+        )
+        .unwrap()
+    };
+    let mut damaged = vec![whole.clone()];
+    // A checksum, a repeated hour and a truncated record, each partway through.
+    let mut start = 0;
+    for (at, record) in encoded.iter().enumerate() {
+        if at == 7 {
+            let mut bytes = whole.clone();
+            bytes[start + RECORD_HEADER_BYTES + 3] ^= 1;
+            damaged.push(bytes);
+        }
+        if at == 19 {
+            let mut bytes = whole[..start].to_vec();
+            bytes.extend_from_slice(&encoded[at - 1]);
+            bytes.extend_from_slice(&whole[start..]);
+            damaged.push(bytes);
+            damaged.push(whole[..start + record.len() / 2].to_vec());
+        }
+        start += record.len();
+    }
+    for bytes in &damaged {
+        let sequential = recover(bytes, 1);
+        assert_eq!(recover_prefix(bytes).records, sequential.records);
+        for threads in [2, 3, 8] {
+            let parallel = recover(bytes, threads);
+            assert_eq!(parallel.records, sequential.records);
+            assert_eq!(parallel.valid_bytes, sequential.valid_bytes);
+            assert_eq!(parallel.damage, sequential.damage);
+            assert_eq!(parallel.format, sequential.format);
+        }
+    }
+    assert_eq!(recover(&whole, 4).records, records);
+    assert!(recover(&damaged[1], 4).damage.unwrap().contains("CRC"));
+}
+
+#[test]
+fn recovered_frames_keep_their_offsets_and_are_read_again_whole() {
+    let bytes = valid_segment();
+    let kept = recover_reader(io::Cursor::new(&bytes), bytes.len(), Recovered::keep, |_| Ok(()))
+        .unwrap();
+    let whole = recover_prefix(&bytes);
+    assert_eq!(kept.valid_bytes, whole.valid_bytes);
+    let mut cursor = io::Cursor::new(&bytes);
+    for (kept, whole) in kept.records.iter().zip(&whole.records) {
+        match (kept, whole) {
+            (Recovered::Frame(metadata), Record::Frame(frame)) => {
+                assert_eq!(
+                    &read_frame_at(&mut cursor, metadata.placement, bytes.len()).unwrap(),
+                    frame
+                );
+                assert_eq!(metadata.campaign, frame.tables[TableId::Campaign.index()]);
+                let only = metadata.frame().unwrap();
+                assert_eq!(only.tables[TableId::Clock.index()], frame.tables[TableId::Clock.index()]);
+            }
+            (kept, whole) => assert_eq!(*kept, Recovered::keep(whole.clone(), Placement::default())),
+        }
+    }
+    // An offset that is not a frame's, or past the valid prefix, is refused.
+    let at = |offset| Placement {
+        offset,
+        ..Default::default()
+    };
+    assert!(read_frame_at(&mut cursor, at(0), bytes.len()).is_err());
+    assert!(read_frame_at(&mut cursor, at(bytes.len()), bytes.len()).is_err());
+}
+
+#[test]
+fn a_frame_record_changed_since_recovery_is_refused() {
+    let records = [
+        branch(),
+        Record::Frame(frame(10, true)),
+        Record::Frame(frame(11, false)),
+        Record::Frame(frame(12, false)),
+    ];
+    let bytes: Vec<u8> = records
+        .iter()
+        .flat_map(|record| encode_record(record).unwrap())
+        .collect();
+    let kept = recover_reader(io::Cursor::new(&bytes), bytes.len(), Recovered::keep, |_| Ok(()))
+        .unwrap();
+    let Recovered::Frame(metadata) = &kept.records[2] else {
+        unreachable!()
+    };
+    let read = |bytes: &[u8]| read_frame_at(&mut io::Cursor::new(bytes), metadata.placement, bytes.len());
+    assert_eq!(read(&bytes).unwrap().hour, 11);
+    // The same hour with other rows and its own valid checksum, then truncated and cut short.
+    let mut changed = frame(11, false);
+    changed.tables[1] = TableUpdate::Unavailable {
+        reason: "changed".into(),
+    };
+    let mut replacing = records.to_vec();
+    replacing[2] = Record::Frame(changed);
+    let replaced: Vec<u8> = replacing
+        .iter()
+        .flat_map(|record| encode_record(record).unwrap())
+        .collect();
+    let error = read(&replaced).unwrap_err().to_string();
+    assert!(error.contains("changed since it was recovered"), "{error}");
+    let mut mutated = bytes.clone();
+    mutated[metadata.placement.offset + RECORD_HEADER_BYTES + 5] ^= 1;
+    assert!(read(&mutated).is_err());
+    let truncated = &bytes[..metadata.placement.offset + RECORD_HEADER_BYTES + 3];
+    assert!(read(truncated).is_err());
+}

@@ -1707,6 +1707,18 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
+// Tests pick layouts per thread; writer threads take their caller's.
+#[cfg(test)]
+pub(crate) fn written_settings() -> (Layout, bool) {
+    (WRITTEN_LAYOUT.get(), FORCE_RESIDUAL.get())
+}
+
+#[cfg(test)]
+pub(crate) fn write_with((layout, residual): (Layout, bool)) {
+    WRITTEN_LAYOUT.set(layout);
+    FORCE_RESIDUAL.set(residual);
+}
+
 fn set(bits: &mut [u8], position: usize) {
     bits[position / 8] |= 1 << (position % 8);
 }
@@ -2083,7 +2095,9 @@ impl BlockWriter {
                 )
             })?;
         } else {
-            for (writer, plain) in self.tables.iter_mut().zip(plains) {
+            // Each table's entries read only its own writer and plain update.
+            let tables: Vec<_> = self.tables.iter_mut().zip(plains).collect();
+            pack::each(cores, tables, |(writer, plain)| -> io::Result<()> {
                 let table = writer.table;
                 let continuous = plain_baseline(plain) == Some(previous);
                 // An unchanged table with the previous frame as its baseline
@@ -2167,7 +2181,8 @@ impl BlockWriter {
                 if layout.keyed() {
                     writer.keys.advance(table, format, plain)?;
                 }
-            }
+                Ok(())
+            })?;
         }
         if keyframe {
             anchors.position += 1;

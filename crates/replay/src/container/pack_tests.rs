@@ -169,3 +169,73 @@ fn helpers_take_only_free_cores_and_workers_wait_for_one() {
     assert_eq!(Cores::new(0).take(1), 0);
 }
 
+#[test]
+fn ordered_work_is_taken_in_item_order_on_any_thread_count() {
+    for threads in COUNTS {
+        // With two helpers or more, each even item finishes only once the odd one after it has.
+        let finished = (Mutex::new(Vec::new()), Condvar::new());
+        let mut next = 0..40_u64;
+        let mut taken = Vec::new();
+        ordered(
+            threads,
+            || next.next(),
+            |value| {
+                let mut done = finished.0.lock().unwrap();
+                while threads > 2 && value % 2 == 0 && !done.contains(&(value + 1)) {
+                    done = finished.1.wait(done).unwrap();
+                }
+                done.push(value);
+                finished.1.notify_all();
+                value * 3
+            },
+            |value| {
+                taken.push(value);
+                true
+            },
+        );
+        assert_eq!(taken, (0..40).map(|value| value * 3).collect::<Vec<_>>());
+        let done = finished.0.into_inner().unwrap();
+        if threads > 2 {
+            assert!(
+                done.iter().position(|&value| value == 1)
+                    < done.iter().position(|&value| value == 0)
+            );
+        }
+        // Stopping takes nothing more, and reads at most twice the helpers ahead.
+        let mut read = 0;
+        let mut taken = Vec::new();
+        ordered(
+            threads,
+            || {
+                read += 1;
+                Some(read)
+            },
+            |value| value,
+            |value| {
+                taken.push(value);
+                value < 5
+            },
+        );
+        assert_eq!(taken, [1, 2, 3, 4, 5]);
+        assert!(read <= 5 + 2 * threads, "{threads}: {read}");
+    }
+}
+
+#[test]
+fn an_ordered_panic_reaches_the_caller() {
+    for threads in COUNTS {
+        let mut next = 0..10;
+        let panicked = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            ordered(
+                threads,
+                || next.next(),
+                |value| {
+                    assert_ne!(value, 6, "six");
+                    value
+                },
+                |_| true,
+            )
+        }));
+        assert!(panicked.is_err(), "{threads}");
+    }
+}

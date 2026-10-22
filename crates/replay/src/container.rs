@@ -18,7 +18,10 @@ use crate::{
     frame::{DecodedFrame, Frame, FrameDecoder, Metrics, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
     rows::{TableId, TableRows},
-    spool::{ControlRecord, Record, Recovery, SegmentState},
+    spool::{
+        ControlRecord, FrameMetadata, Record, RecordRef, Recovered, Recovery, SegmentState,
+        SpoolRecord,
+    },
 };
 
 const HEADER_MAGIC: &[u8; 4] = b"H4RP";
@@ -46,7 +49,114 @@ pub const MAX_BLOCK_RAW_BYTES: usize = replay_frame::envelope::MAX_RECORD_BYTES;
 
 type FrameObserver<'a> =
     dyn FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()> + 'a;
-type FrameReader<'a> = dyn FnMut(usize, &Frame) -> io::Result<Frame> + 'a;
+type HourObserver<'a> = dyn FnMut(&Observed) -> io::Result<()> + 'a;
+
+enum Observer<'a> {
+    Nothing,
+    Hours(&'a mut HourObserver<'a>),
+    /// Only the sequential writer has whole frames to show.
+    Frames(&'a mut FrameObserver<'a>),
+}
+type FrameReader<'a> = dyn FnMut(usize, &FrameMetadata) -> io::Result<Frame> + 'a;
+type SharedReader<'a> = dyn Fn(usize, &FrameMetadata) -> io::Result<Frame> + Sync + 'a;
+
+enum Frames<'a> {
+    Kept,
+    Shared(
+        &'a SharedReader<'a>,
+        &'a mut dyn FnMut() -> io::Result<()>,
+    ),
+    Ordered(&'a mut FrameReader<'a>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateKind {
+    Snapshot,
+    Delta,
+    Unchanged,
+    Truncated,
+    Unavailable,
+    Incompatible,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Incomplete {
+    Truncated { missing: u32 },
+    Unavailable { reason: String },
+}
+
+/// A written hour as finalization's summary reads it, so writers on any thread can report it.
+#[derive(Clone, Debug)]
+pub struct Observed {
+    pub branch: BranchId,
+    pub hour: Hour,
+    pub metrics: Metrics,
+    pub updates: [UpdateKind; TABLE_COUNT],
+    pub sizes: [usize; TABLE_COUNT],
+    pub incomplete: Vec<(TableId, Incomplete)>,
+    pub field_gaps: Vec<(TableId, &'static str, usize)>,
+}
+
+impl Observed {
+    pub fn new(
+        frame: &Frame,
+        decoded: &DecodedFrame,
+        sizes: [usize; TABLE_COUNT],
+    ) -> io::Result<Self> {
+        let mut incomplete = Vec::new();
+        let mut field_gaps = Vec::new();
+        for table in TableId::ALL {
+            if FormatVersion::CURRENT.table_refusal(table).is_some() {
+                continue;
+            }
+            let rows = match &*decoded.tables[table.index()] {
+                TableView::Complete(rows) => rows,
+                TableView::Truncated { rows, missing } => {
+                    engine_allocation::reserve(&mut incomplete, 1)?;
+                    incomplete.push((table, Incomplete::Truncated { missing: *missing }));
+                    rows
+                }
+                TableView::Unavailable { reason } => {
+                    engine_allocation::reserve(&mut incomplete, 1)?;
+                    incomplete.push((
+                        table,
+                        Incomplete::Unavailable {
+                            reason: engine_allocation::string(reason)?,
+                        },
+                    ));
+                    continue;
+                }
+            };
+            for (field, count) in rows.field_gaps() {
+                engine_allocation::reserve(&mut field_gaps, 1)?;
+                field_gaps.push((table, field, count));
+            }
+        }
+        Ok(Self {
+            branch: frame.branch,
+            hour: frame.hour,
+            metrics: frame.metrics.clone(),
+            updates: std::array::from_fn(|index| match &frame.tables[index] {
+                crate::frame::TableUpdate::Snapshot(_) => UpdateKind::Snapshot,
+                crate::frame::TableUpdate::Delta { .. } => UpdateKind::Delta,
+                crate::frame::TableUpdate::Unchanged { .. } => UpdateKind::Unchanged,
+                crate::frame::TableUpdate::Truncated { .. } => UpdateKind::Truncated,
+                crate::frame::TableUpdate::Unavailable { .. } => UpdateKind::Unavailable,
+                crate::frame::TableUpdate::Incompatible { .. } => UpdateKind::Incompatible,
+            }),
+            sizes,
+            incomplete,
+            field_gaps,
+        })
+    }
+
+    pub fn unavailable(&self, table: TableId) -> Option<&str> {
+        self.incomplete.iter().find_map(|(id, incomplete)| match incomplete {
+            Incomplete::Unavailable { reason } if *id == table => Some(reason.as_str()),
+            _ => None,
+        })
+    }
+}
 type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,17 +563,17 @@ impl Replay {
         Self::from_record_slices(
             campaign_id,
             &segments,
-            &mut |_, _, _| Ok(()),
-            None,
+            Observer::Nothing,
+            Frames::Kept,
             MAX_BLOCK_RAW_BYTES,
         )
     }
 
-    fn from_record_slices(
+    fn from_record_slices<R: SpoolRecord>(
         campaign_id: Vec<u8>,
-        segments: &[&[Record]],
-        observe: &mut FrameObserver<'_>,
-        read_frame: Option<&mut FrameReader<'_>>,
+        segments: &[&[R]],
+        observe: Observer<'_>,
+        frames: Frames<'_>,
         block_limit: usize,
     ) -> io::Result<Self> {
         if campaign_id.is_empty() {
@@ -472,8 +582,8 @@ impl Replay {
         let identity = segments
             .iter()
             .flat_map(|segment| segment.iter())
-            .find_map(|record| match record {
-                Record::SessionStart(session) => Some(session.identity.clone()),
+            .find_map(|record| match record.view() {
+                RecordRef::SessionStart(session) => Some(session.identity.clone()),
                 _ => None,
             })
             .ok_or_else(|| invalid("replay has no session identity"))?;
@@ -492,11 +602,11 @@ impl Replay {
             None,
             KEYFRAME_INTERVAL,
             observe,
-            read_frame,
+            frames,
             block_limit,
         )?;
         let mut index = Vec::new();
-        append_blocks(&mut bytes, &mut index, &pending.blocks)?;
+        append_owned_blocks(&mut bytes, &mut index, pending.blocks)?;
         finish_file(
             &mut bytes,
             &pending.sessions,
@@ -512,14 +622,14 @@ impl Replay {
     /// Existing compressed blocks and their original offsets are copied verbatim.
     pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
         let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
-        self.append_record_slices(&segments, &mut |_, _, _| Ok(()), None)
+        self.append_record_slices(&segments, Observer::Nothing, Frames::Kept)
     }
 
-    fn append_record_slices(
+    fn append_record_slices<R: SpoolRecord>(
         &self,
-        segments: &[&[Record]],
-        observe: &mut FrameObserver<'_>,
-        read_frame: Option<&mut FrameReader<'_>>,
+        segments: &[&[R]],
+        observe: Observer<'_>,
+        frames: Frames<'_>,
     ) -> io::Result<Self> {
         self.require_undamaged()?;
         // Existing blocks keep their original contract. Never mix current
@@ -537,12 +647,12 @@ impl Replay {
             Some(self),
             self.keyframe_interval,
             observe,
-            read_frame,
+            frames,
             MAX_BLOCK_RAW_BYTES,
         )?;
         let mut bytes = self.bytes[..self.trailer_start].to_vec();
         let mut index = self.index.clone();
-        append_blocks(&mut bytes, &mut index, &pending.blocks)?;
+        append_owned_blocks(&mut bytes, &mut index, pending.blocks)?;
         let mut sessions = self.sessions.clone();
         sessions.extend(pending.sessions);
         let mut branches = self.branches.clone();
@@ -563,66 +673,81 @@ impl Replay {
         Self::open(bytes)
     }
 
-    pub fn from_recovered(campaign_id: Vec<u8>, segments: &[(u32, Recovery)]) -> io::Result<Self> {
-        Self::from_recovered_with(campaign_id, segments, |_, _, _| Ok(()))
-    }
-
-    /// Report each frame using its validated decoded view and the sizes produced
-    /// by the block encoder. Observation does not publish the file; callers must
-    /// report success only after the returned replay has been written atomically.
-    pub fn from_recovered_with(
+    pub fn from_recovered<R: SpoolRecord>(
         campaign_id: Vec<u8>,
-        segments: &[(u32, Recovery)],
-        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+        segments: &[(u32, Recovery<R>)],
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
         Self::from_record_slices(
             campaign_id,
             &records,
-            &mut observe,
-            None,
+            Observer::Nothing,
+            Frames::Kept,
+            MAX_BLOCK_RAW_BYTES,
+        )?
+        .add_recovery_notes(segments)
+    }
+
+    /// Observation does not publish the file; report success only after writing it atomically.
+    pub fn from_recovered_with<R: SpoolRecord>(
+        campaign_id: Vec<u8>,
+        segments: &[(u32, Recovery<R>)],
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        require_current_spools(segments)?;
+        let records = ordered_records(segments)?;
+        Self::from_record_slices(
+            campaign_id,
+            &records,
+            Observer::Hours(&mut observe),
+            Frames::Kept,
             MAX_BLOCK_RAW_BYTES,
         )?
         .add_recovery_notes(segments)
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn append_recovered(&self, segments: &[(u32, Recovery)]) -> io::Result<Self> {
-        self.append_recovered_with(segments, |_, _, _| Ok(()))
+    pub fn append_recovered<R: SpoolRecord>(
+        &self,
+        segments: &[(u32, Recovery<R>)],
+    ) -> io::Result<Self> {
+        require_current_spools(segments)?;
+        let records = ordered_records(segments)?;
+        self.append_record_slices(&records, Observer::Nothing, Frames::Kept)?
+            .add_recovery_notes(segments)
     }
 
     /// Observe only the new frames; existing compressed blocks are copied intact.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn append_recovered_with(
+    pub fn append_recovered_with<R: SpoolRecord>(
         &self,
-        segments: &[(u32, Recovery)],
-        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+        segments: &[(u32, Recovery<R>)],
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
-        self.append_record_slices(&records, &mut observe, None)?
+        self.append_record_slices(&records, Observer::Hours(&mut observe), Frames::Kept)?
             .add_recovery_notes(segments)
     }
 
-    /// Recovered records may keep only frame metadata. Restore each frame on
-    /// demand from its validated segment prefix, without retaining its rows.
+    /// `read` restores recovered frames on any writer thread; `progress` runs here once per frame.
     pub fn from_recovered_with_reader(
         campaign_id: Vec<u8>,
-        segments: &[(u32, Recovery)],
-        mut read: impl FnMut(u32, &Frame) -> io::Result<Frame>,
-        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+        segments: &[(u32, Recovery<Recovered>)],
+        read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
+        mut progress: impl FnMut() -> io::Result<()>,
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
-        let mut numbers: Vec<_> = segments.iter().map(|(number, _)| *number).collect();
-        numbers.sort_unstable();
-        let mut read_frame = |position: usize, frame: &Frame| read(numbers[position], frame);
+        let numbers = segment_numbers(segments);
+        let read_frame = |position: usize, frame: &FrameMetadata| read(numbers[position], frame);
         Self::from_record_slices(
             campaign_id,
             &records,
-            &mut observe,
-            Some(&mut read_frame),
+            Observer::Hours(&mut observe),
+            Frames::Shared(&read_frame, &mut progress),
             MAX_BLOCK_RAW_BYTES,
         )?
         .add_recovery_notes(segments)
@@ -631,29 +756,39 @@ impl Replay {
     /// Append using the same bounded frame restoration as initial finalization.
     pub fn append_recovered_with_reader(
         &self,
-        segments: &[(u32, Recovery)],
-        mut read: impl FnMut(u32, &Frame) -> io::Result<Frame>,
-        mut observe: impl FnMut(&Frame, &DecodedFrame, [usize; TABLE_COUNT]) -> io::Result<()>,
+        segments: &[(u32, Recovery<Recovered>)],
+        read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
+        mut progress: impl FnMut() -> io::Result<()>,
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
-        let mut numbers: Vec<_> = segments.iter().map(|(number, _)| *number).collect();
-        numbers.sort_unstable();
-        let mut read_frame = |position: usize, frame: &Frame| read(numbers[position], frame);
-        self.append_record_slices(&records, &mut observe, Some(&mut read_frame))?
-            .add_recovery_notes(segments)
+        let numbers = segment_numbers(segments);
+        let read_frame = |position: usize, frame: &FrameMetadata| read(numbers[position], frame);
+        self.append_record_slices(
+            &records,
+            Observer::Hours(&mut observe),
+            Frames::Shared(&read_frame, &mut progress),
+        )?
+        .add_recovery_notes(segments)
     }
 
-    fn add_recovery_notes(mut self, segments: &[(u32, Recovery)]) -> io::Result<Self> {
+    fn add_recovery_notes<R: SpoolRecord>(
+        mut self,
+        segments: &[(u32, Recovery<R>)],
+    ) -> io::Result<Self> {
         self.require_undamaged()?;
         let mut sorted: Vec<_> = segments.iter().collect();
         sorted.sort_unstable_by_key(|(number, _)| *number);
         for (number, recovery) in sorted {
-            let session = recovery.records.first().and_then(|record| match record {
-                Record::SessionStart(session) => Some(session.id),
-                Record::BranchStart(branch) => Some(branch.session),
-                _ => None,
-            });
+            let session = recovery
+                .records
+                .first()
+                .and_then(|record| match record.view() {
+                    RecordRef::SessionStart(session) => Some(session.id),
+                    RecordRef::BranchStart(branch) => Some(branch.session),
+                    _ => None,
+                });
             if let Some(reason) = &recovery.damage {
                 self.recovery_notes.push(RecoveryNote {
                     session,
@@ -1475,7 +1610,7 @@ impl Replay {
         // start and frames in block order. The frames are metadata here and
         // are read back from this recording block by block; the trailer is
         // copied, so controls and gaps need no place among the frames.
-        let mut segments: Vec<Vec<Record>> = Vec::new();
+        let mut segments: Vec<Vec<Recovered>> = Vec::new();
         let mut session = None;
         let mut branch = None;
         for block in &self.index {
@@ -1490,24 +1625,26 @@ impl Replay {
                     .iter()
                     .find(|session| session.id == start.session)
                     .ok_or_else(|| invalid("branch refers to an unknown session"))?;
-                segments.push(vec![Record::SessionStart(started.clone())]);
+                segments.push(vec![Recovered::SessionStart(started.clone())]);
                 session = Some(start.session);
                 branch = None;
             }
             let records = segments.last_mut().unwrap();
             if branch != Some(block.branch) {
-                records.push(Record::BranchStart(start.clone()));
+                records.push(Recovered::BranchStart(start.clone()));
                 branch = Some(block.branch);
             }
             for frame in self.read_block_selected(block, &[])? {
-                records.push(Record::Frame(Frame {
+                let placeholder = crate::frame::TableUpdate::Unchanged {
+                    baseline: frame.hour,
+                };
+                records.push(Recovered::Frame(FrameMetadata {
                     branch: frame.branch,
                     hour: frame.hour,
                     keyframe: frame.keyframe,
-                    metrics: Metrics::default(),
-                    tables: std::array::from_fn(|_| crate::frame::TableUpdate::Unavailable {
-                        reason: "re-encoding metadata only".into(),
-                    }),
+                    placement: Default::default(),
+                    campaign: placeholder.clone(),
+                    clock: placeholder,
                 }));
             }
         }
@@ -1517,7 +1654,7 @@ impl Replay {
         // Frames in block order, one block in memory.
         let mut blocks = self.index.iter();
         let mut frames: std::vec::IntoIter<Frame> = Vec::new().into_iter();
-        let mut read = |_: usize, wanted: &Frame| -> io::Result<Frame> {
+        let mut read = |_: usize, wanted: &FrameMetadata| -> io::Result<Frame> {
             loop {
                 if let Some(frame) = frames.next() {
                     if (frame.branch, frame.hour) != (wanted.branch, wanted.hour) {
@@ -1531,12 +1668,12 @@ impl Replay {
                 frames = self.read_block(block)?.into_iter();
             }
         };
-        let slices: Vec<&[Record]> = segments.iter().map(Vec::as_slice).collect();
+        let slices: Vec<&[Recovered]> = segments.iter().map(Vec::as_slice).collect();
         let mut replay = Self::from_record_slices(
             self.campaign_id.clone(),
             &slices,
-            &mut observe,
-            Some(&mut read),
+            Observer::Frames(&mut observe),
+            Frames::Ordered(&mut read),
             MAX_BLOCK_RAW_BYTES,
         )?;
         replay.bytes.truncate(replay.trailer_start);
@@ -1792,6 +1929,19 @@ fn decode_list_recovering<T>(
     Ok(values)
 }
 
+/// Releases each block once copied, so the file is held twice one block at a time.
+fn append_owned_blocks(
+    bytes: &mut Vec<u8>,
+    index: &mut Vec<BlockIndex>,
+    blocks: Vec<CompressedBlock>,
+) -> io::Result<()> {
+    engine_allocation::reserve(bytes, blocks.iter().map(|block| block.bytes.len()).sum())?;
+    for block in blocks {
+        append_blocks(bytes, index, std::slice::from_ref(&block))?;
+    }
+    Ok(())
+}
+
 fn append_blocks(
     bytes: &mut Vec<u8>,
     index: &mut Vec<BlockIndex>,
@@ -1865,7 +2015,13 @@ fn validate_campaign_view(view: &TableView, campaign_id: &[u8]) -> io::Result<()
     Ok(())
 }
 
-fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<&[Record]>> {
+fn segment_numbers<R>(segments: &[(u32, Recovery<R>)]) -> Vec<u32> {
+    let mut numbers: Vec<_> = segments.iter().map(|(number, _)| *number).collect();
+    numbers.sort_unstable();
+    numbers
+}
+
+fn ordered_records<R>(segments: &[(u32, Recovery<R>)]) -> io::Result<Vec<&[R]>> {
     let mut sorted: Vec<_> = segments.iter().collect();
     sorted.sort_unstable_by_key(|(number, _)| *number);
     if sorted.windows(2).any(|pair| pair[0].0 == pair[1].0) {
@@ -1877,22 +2033,67 @@ fn ordered_records(segments: &[(u32, Recovery)]) -> io::Result<Vec<&[Record]>> {
         .collect())
 }
 
-/// The sessions, branches, gaps, controls and new blocks of `segments`. The
-/// blocks are written on this thread in recorded order and packed on
-/// [`pack::workers`] threads, this one included ([`pack::blocks`]).
+/// Where the parallel writer stops, the sequential one repeats it, reporting only unreported hours.
 #[allow(clippy::too_many_arguments)]
-fn collect(
-    segments: &[&[Record]],
+fn collect<R: SpoolRecord>(
+    segments: &[&[R]],
     identity: &Identity,
     campaign_id: &[u8],
     existing: Option<&Replay>,
     interval: u32,
-    observe: &mut FrameObserver<'_>,
-    read_frame: Option<&mut FrameReader<'_>>,
+    observe: Observer<'_>,
+    mut frames: Frames<'_>,
     block_limit: usize,
 ) -> io::Result<Pending> {
+    let threads = pack::workers();
+    let (mut hours, mut whole) = match observe {
+        Observer::Nothing => (None, None),
+        Observer::Hours(hours) => (Some(hours), None),
+        Observer::Frames(whole) => (None, Some(whole)),
+    };
+    let (mut reported, mut progressed) = (0, 0);
+    if threads > 1 && whole.is_none() {
+        let mut quiet = || Ok(());
+        let parallel = match &mut frames {
+            Frames::Kept => Some((None, &mut quiet as &mut dyn FnMut() -> io::Result<()>)),
+            Frames::Shared(read, progress) => Some((Some(*read), &mut **progress)),
+            Frames::Ordered(_) => None,
+        };
+        if let Some((read, progress)) = parallel {
+            match units::write(
+                segments,
+                identity,
+                campaign_id,
+                existing,
+                interval,
+                hours.as_deref_mut(),
+                progress,
+                read,
+                block_limit,
+                threads,
+            )? {
+                units::Written::Pending(pending) => return Ok(pending),
+                units::Written::Stopped { hours, progress } => {
+                    (reported, progressed) = (hours, progress)
+                }
+            }
+        }
+    }
+    let mut observe = |frame: &Frame, decoded: &DecodedFrame, sizes: [usize; TABLE_COUNT]| {
+        if let Some(whole) = whole.as_deref_mut() {
+            return whole(frame, decoded, sizes);
+        }
+        let Some(hours) = hours.as_deref_mut() else {
+            return Ok(());
+        };
+        if reported > 0 {
+            reported -= 1;
+            return Ok(());
+        }
+        hours(&Observed::new(frame, decoded, sizes)?)
+    };
     let (mut pending, blocks) = pack::blocks(
-        pack::workers(),
+        threads,
         |block: grouped::BlockWriter, cores: &pack::Cores| block.compress(cores),
         |packer| {
             write_blocks(
@@ -1902,8 +2103,9 @@ fn collect(
                 campaign_id,
                 existing,
                 interval,
-                observe,
-                read_frame,
+                &mut observe,
+                frames,
+                progressed,
                 block_limit,
             )
         },
@@ -1914,15 +2116,16 @@ fn collect(
 
 /// [`collect`]'s records in order, each finished block handed to `packer`.
 #[allow(clippy::too_many_arguments)]
-fn write_blocks(
+fn write_blocks<R: SpoolRecord>(
     packer: &mut pack::Packer<'_, grouped::BlockWriter, CompressedBlock>,
-    segments: &[&[Record]],
+    segments: &[&[R]],
     identity: &Identity,
     campaign_id: &[u8],
     existing: Option<&Replay>,
     interval: u32,
     observe: &mut FrameObserver<'_>,
-    mut read_frame: Option<&mut FrameReader<'_>>,
+    mut frames: Frames<'_>,
+    mut progressed: usize,
     block_limit: usize,
 ) -> io::Result<Pending> {
     identity.validate()?;
@@ -1948,7 +2151,7 @@ fn write_blocks(
         controls: Vec::new(),
         blocks: Vec::new(),
     };
-    let mut block: Option<grouped::BlockWriter> = None;
+    let mut block: Option<Writing> = None;
     // Appended blocks anchor to the file's earlier keyframes too.
     let mut anchors = match existing {
         Some(replay) => grouped::Anchors::seed(replay)?,
@@ -1958,7 +2161,10 @@ fn write_blocks(
         if segment.is_empty() {
             continue;
         }
-        if !matches!(segment[0], Record::SessionStart(_) | Record::BranchStart(_)) {
+        if !matches!(
+            segment[0].view(),
+            RecordRef::SessionStart(_) | RecordRef::BranchStart(_)
+        ) {
             return Err(invalid(
                 "segment does not begin with session or branch context",
             ));
@@ -1966,13 +2172,12 @@ fn write_blocks(
         let mut current_session = None;
         let mut current_branch = None;
         let mut needs_keyframe = true;
-        let mut frame_decoder = FrameDecoder::new();
-        let mut alias_encoder = aliases::Encoder::default();
         let mut segment_state = SegmentState::default();
         for record in *segment {
-            segment_state.accept(record)?;
+            let record = record.view();
+            segment_state.accept_view(&record)?;
             match record {
-                Record::SessionStart(session) => {
+                RecordRef::SessionStart(session) => {
                     if !session.identity.same_content(identity) {
                         return Err(invalid("session content differs from replay content"));
                     }
@@ -1986,13 +2191,13 @@ fn write_blocks(
                         pending.sessions.push(session.clone());
                     }
                     if let Some(previous) = block.take() {
-                        packer.submit(previous.written())?;
+                        packer.submit(previous.finish())?;
                     }
                     current_session = Some(session.id);
                     current_branch = None;
                     needs_keyframe = true;
                 }
-                Record::BranchStart(branch) => {
+                RecordRef::BranchStart(branch) => {
                     branch.validate()?;
                     if !sessions.contains_key(&branch.session) {
                         return Err(invalid("branch refers to an unknown session"));
@@ -2009,27 +2214,39 @@ fn write_blocks(
                         pending.branches.push(branch.clone());
                     }
                     if let Some(previous) = block.take() {
-                        packer.submit(previous.written())?;
+                        packer.submit(previous.finish())?;
                     }
                     current_session = Some(branch.session);
                     current_branch = Some(branch.id);
                     needs_keyframe = true;
-                    frame_decoder = FrameDecoder::new();
                 }
-                Record::Frame(frame) => {
+                RecordRef::Frame(_) | RecordRef::Metadata(_) => {
                     let restored;
-                    let frame = if let Some(read) = read_frame.as_mut() {
-                        restored = read(position, frame)?;
-                        if (restored.branch, restored.hour, restored.keyframe)
-                            != (frame.branch, frame.hour, frame.keyframe)
-                        {
-                            return Err(invalid(
-                                "restored spool frame differs from recovered metadata",
-                            ));
+                    let frame = match record {
+                        RecordRef::Frame(frame) => frame,
+                        RecordRef::Metadata(metadata) => {
+                            restored = match &mut frames {
+                                Frames::Kept => metadata.frame()?,
+                                Frames::Shared(read, progress) => {
+                                    // The parallel writer reported these before it stopped.
+                                    match progressed.checked_sub(1) {
+                                        Some(left) => progressed = left,
+                                        None => progress()?,
+                                    }
+                                    read(position, metadata)?
+                                }
+                                Frames::Ordered(read) => read(position, metadata)?,
+                            };
+                            if (restored.branch, restored.hour, restored.keyframe)
+                                != (metadata.branch, metadata.hour, metadata.keyframe)
+                            {
+                                return Err(invalid(
+                                    "restored spool frame differs from recovered metadata",
+                                ));
+                            }
+                            &restored
                         }
-                        &restored
-                    } else {
-                        frame
+                        _ => unreachable!("a frame record"),
                     };
                     if current_branch != Some(frame.branch) {
                         return Err(invalid("frame has no matching branch context"));
@@ -2048,76 +2265,40 @@ fn write_blocks(
                     }
                     if frame.keyframe {
                         if let Some(previous) = block.take() {
-                            packer.submit(previous.written())?;
+                            packer.submit(previous.finish())?;
                         }
-                        block = Some(grouped::BlockWriter::new(frame));
+                        block = Some(Writing::new(frame));
                     }
                     let current = block
                         .as_mut()
                         .ok_or_else(|| invalid("frame has no block keyframe"))?;
-                    if i64::from(frame.hour) - i64::from(current.first_hour) >= i64::from(interval)
+                    if i64::from(frame.hour) - i64::from(current.block.first_hour)
+                        >= i64::from(interval)
                     {
                         return Err(invalid("block exceeds its keyframe hour interval"));
                     }
-                    let decoded = frame_decoder.advance(frame)?;
-                    validate_campaign(decoded, campaign_id)?;
-                    let mut payload = Vec::new();
-                    let mut sizes = frame.encode_with_sizes(&mut payload)?;
-                    let mut aliased = alias_encoder.prepare(frame, decoded, &payload, &sizes)?;
-                    let promoted;
-                    let emitted = if !current.fits(payload.len(), &sizes, block_limit)
-                        || !current.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
-                    {
-                        if current.frames == 0 {
-                            return Err(invalid(
-                                "single replay frame exceeds raw block size limit",
-                            ));
-                        }
-                        // Block boundaries need an independent baseline. Snapshot
-                        // the already decoded hour, retaining sample origins and
-                        // native values; keep decoding later spool deltas normally.
-                        promoted = block_keyframe(decoded)?;
-                        payload.clear();
-                        sizes = promoted.encode_with_sizes(&mut payload)?;
-                        let next = grouped::BlockWriter::new(&promoted);
-                        aliased = alias_encoder.prepare(&promoted, decoded, &payload, &sizes)?;
-                        if !next.fits(payload.len(), &sizes, block_limit)
-                            || !next.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
-                        {
-                            return Err(invalid(
-                                "single replay keyframe exceeds raw block size limit",
-                            ));
-                        }
-                        packer.submit(block.replace(next).unwrap().written())?;
-                        &promoted
-                    } else {
-                        frame
-                    };
-                    let current = block.as_mut().unwrap();
-                    current.push_marked(
-                        emitted,
-                        &aliased.views,
-                        &aliased.payload,
-                        &aliased.sizes,
-                        &mut anchors,
+                    let cores = packer.cores();
+                    let written = current.frame(
+                        frame,
+                        campaign_id,
                         block_limit,
-                        packer.cores(),
-                        &aliased.private,
+                        &mut anchors,
+                        cores,
+                        observe,
+                        Some(&mut |full: grouped::BlockWriter| packer.submit(full.written())),
                     )?;
-                    current.charge_source(payload.len(), &sizes, &aliased.stored_sizes);
-                    observe(emitted, decoded, aliased.sizes)?;
-                    alias_encoder.commit(aliased);
+                    assert!(written, "a writer holding the anchors splits blocks");
                     last_hours.insert(frame.branch, frame.hour);
                     needs_keyframe = false;
                 }
-                Record::Gap(gap) => {
+                RecordRef::Gap(gap) => {
                     gap.validate()?;
                     if current_branch != Some(gap.branch) {
                         return Err(invalid("gap has no matching branch context"));
                     }
                     pending.gaps.push(gap.clone());
                 }
-                Record::Control(control) => {
+                RecordRef::Control(control) => {
                     if current_session != Some(control.session()) {
                         return Err(invalid("control has no matching session context"));
                     }
@@ -2132,12 +2313,100 @@ fn write_blocks(
             }
         }
         if let Some(previous) = block.take() {
-            packer.submit(previous.written())?;
+            packer.submit(previous.finish())?;
         }
     }
     // A complete CRC-valid record can survive a failed flush. Preserve its frame
     // and the reported write-loss diagnostic; seeking gives the recovered frame priority.
     Ok(pending)
+}
+
+/// Decoder and alias encoder keep nothing across a keyframe, so a block writes the same on any thread.
+struct Writing {
+    block: grouped::BlockWriter,
+    decoder: FrameDecoder,
+    alias: aliases::Encoder,
+}
+
+impl Writing {
+    fn new(keyframe: &Frame) -> Self {
+        Self {
+            block: grouped::BlockWriter::new(keyframe),
+            decoder: FrameDecoder::new(),
+            alias: aliases::Encoder::default(),
+        }
+    }
+
+    /// The written block, its decoded hour released before it is compressed.
+    fn finish(self) -> grouped::BlockWriter {
+        self.block.written()
+    }
+
+    /// False, writing nothing, where the block would split without a `split` (which needs the anchors).
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &mut self,
+        frame: &Frame,
+        campaign_id: &[u8],
+        block_limit: usize,
+        anchors: &mut grouped::Anchors,
+        cores: &pack::Cores,
+        observe: &mut FrameObserver<'_>,
+        split: Option<&mut dyn FnMut(grouped::BlockWriter) -> io::Result<()>>,
+    ) -> io::Result<bool> {
+        let decoded = self.decoder.advance(frame)?;
+        validate_campaign(decoded, campaign_id)?;
+        let mut payload = Vec::new();
+        let mut sizes = frame.encode_with_sizes(&mut payload)?;
+        let mut aliased = self.alias.prepare(frame, decoded, &payload, &sizes)?;
+        let promoted;
+        let emitted = if !self.block.fits(payload.len(), &sizes, block_limit)
+            || !self
+                .block
+                .fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
+        {
+            if self.block.frames == 0 {
+                return Err(invalid("single replay frame exceeds raw block size limit"));
+            }
+            let Some(split) = split else {
+                return Ok(false);
+            };
+            // Block boundaries need an independent baseline. Snapshot the
+            // already decoded hour, retaining sample origins and native
+            // values; keep decoding later spool deltas normally.
+            promoted = block_keyframe(decoded)?;
+            payload.clear();
+            sizes = promoted.encode_with_sizes(&mut payload)?;
+            let next = grouped::BlockWriter::new(&promoted);
+            aliased = self.alias.prepare(&promoted, decoded, &payload, &sizes)?;
+            if !next.fits(payload.len(), &sizes, block_limit)
+                || !next.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
+            {
+                return Err(invalid(
+                    "single replay keyframe exceeds raw block size limit",
+                ));
+            }
+            split(std::mem::replace(&mut self.block, next))?;
+            &promoted
+        } else {
+            frame
+        };
+        self.block.push_marked(
+            emitted,
+            &aliased.views,
+            &aliased.payload,
+            &aliased.sizes,
+            anchors,
+            block_limit,
+            cores,
+            &aliased.private,
+        )?;
+        self.block
+            .charge_source(payload.len(), &sizes, &aliased.stored_sizes);
+        observe(emitted, decoded, aliased.sizes)?;
+        self.alias.commit(aliased);
+        Ok(true)
+    }
 }
 
 fn block_keyframe(decoded: &DecodedFrame) -> io::Result<Frame> {
@@ -2323,7 +2592,7 @@ fn validate_metadata(
     Ok(())
 }
 
-fn require_current_spools(segments: &[(u32, Recovery)]) -> io::Result<()> {
+fn require_current_spools<R>(segments: &[(u32, Recovery<R>)]) -> io::Result<()> {
     for (segment, recovery) in segments {
         if recovery.format.is_none() && !recovery.records.is_empty() {
             return Err(invalid(format!(
@@ -2534,7 +2803,8 @@ fn parallel_map<T: Sync, R: Send>(
 }
 
 mod grouped;
-mod pack;
+pub(crate) mod pack;
+mod units;
 pub mod patch;
 pub use grouped::{ColumnSize, ColumnSizes, STORED_LEVEL, Section, SectionLevels, SectionSize};
 #[cfg(test)]

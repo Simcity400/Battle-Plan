@@ -506,13 +506,13 @@ fn size_driven_blocks_preserve_every_hour_value_origin_and_metric() {
     let replay = Replay::from_record_slices(
         CAMPAIGN.into(),
         &[&input],
-        &mut |frame, decoded, sizes| {
+        Observer::Frames(&mut |frame, decoded, sizes| {
             assert_eq!(sizes, frame.table_encoded_sizes()?);
             observed.push(decoded.clone());
             table_sizes.push((frame.hour, sizes));
             Ok(())
-        },
-        None,
+        }),
+        Frames::Kept,
         limit,
     )
     .unwrap();
@@ -604,13 +604,13 @@ fn blocks_keep_the_keyframe_cadence_while_each_table_stays_within_the_bound() {
     let replay = Replay::from_record_slices(
         CAMPAIGN.into(),
         &[&input],
-        &mut |_, _, sizes| {
+        Observer::Frames(&mut |_, _, sizes| {
             for (total, size) in plain.iter_mut().zip(sizes) {
                 *total += size;
             }
             Ok(())
-        },
-        None,
+        }),
+        Frames::Kept,
         limit,
     )
     .unwrap();
@@ -652,8 +652,8 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
         Replay::from_record_slices(
             CAMPAIGN.into(),
             &[&input],
-            &mut |_, _, _| Ok(()),
-            None,
+            Observer::Nothing,
+            Frames::Kept,
             exact - 1
         )
         .err()
@@ -673,8 +673,8 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
     let error = Replay::from_record_slices(
         CAMPAIGN.into(),
         &[&input],
-        &mut |_, _, _| Ok(()),
-        None,
+        Observer::Nothing,
+        Frames::Kept,
         exact,
     )
     .err()
@@ -682,6 +682,53 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
     .to_string();
     assert!(error.contains("Provinces"), "{error}");
     assert!(error.contains("7 missing rows"), "{error}");
+}
+
+/// Each frame kept as metadata with its position as offset.
+fn kept(segments: &[(u32, Recovery)]) -> Vec<(u32, Recovery<crate::spool::Recovered>)> {
+    segments
+        .iter()
+        .map(|(number, recovery)| {
+            (
+                *number,
+                Recovery {
+                    format: recovery.format,
+                    records: recovery
+                        .records
+                        .iter()
+                        .enumerate()
+                        .map(|(at, record)| {
+                            crate::spool::Recovered::keep(
+                                record.clone(),
+                                crate::spool::Placement {
+                                    offset: at,
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                    valid_bytes: recovery.valid_bytes,
+                    damage: recovery.damage.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The whole frame of `metadata` in `segments`.
+fn restore(
+    segments: &[(u32, Recovery)],
+    number: u32,
+    metadata: &crate::spool::FrameMetadata,
+) -> io::Result<Frame> {
+    let (_, recovery) = segments
+        .iter()
+        .find(|(segment, _)| *segment == number)
+        .unwrap();
+    match &recovery.records[metadata.placement.offset] {
+        Record::Frame(frame) => Ok(frame.clone()),
+        _ => unreachable!("a frame's position"),
+    }
 }
 
 #[test]
@@ -695,17 +742,20 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
             damage: None,
         },
     )];
-    let mut restored = Vec::new();
+    let restored = std::sync::Mutex::new(Vec::new());
     let replay = Replay::from_recovered_with_reader(
         CAMPAIGN.into(),
-        &segments,
+        &kept(&segments),
         |number, frame| {
-            restored.push((number, frame.hour));
-            Ok(frame.clone())
+            restored.lock().unwrap().push((number, frame.hour));
+            restore(&segments, number, frame)
         },
-        |_, _, _| Ok(()),
+        || Ok(()),
+        |_| Ok(()),
     )
     .unwrap();
+    let mut restored = restored.into_inner().unwrap();
+    restored.sort_unstable();
     assert_eq!(restored, [(3, 1), (3, 2), (3, 3)]);
     assert_eq!(
         replay.bytes(),
@@ -723,7 +773,12 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
         },
     )];
     let appended = replay
-        .append_recovered_with_reader(&next, |_, frame| Ok(frame.clone()), |_, _, _| Ok(()))
+        .append_recovered_with_reader(
+            &kept(&next),
+            |number, frame| restore(&next, number, frame),
+            || Ok(()),
+            |_| Ok(()),
+        )
         .unwrap();
     assert_eq!(
         appended.bytes(),
@@ -732,9 +787,10 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
     assert!(
         Replay::from_recovered_with_reader(
             CAMPAIGN.into(),
-            &segments,
+            &kept(&segments),
             |_, _| { Err(io::Error::from(io::ErrorKind::OutOfMemory)) },
-            |_, _, _| Ok(())
+            || Ok(()),
+            |_| Ok(())
         )
         .is_err()
     );
@@ -1576,35 +1632,60 @@ fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
         0,
         Recovery {
             format: Some(FormatVersion::CURRENT),
-            records: input,
+            records: input.clone(),
             valid_bytes: 0,
             damage: None,
         },
     )];
     let mut observed = Vec::new();
-    let replay =
-        Replay::from_recovered_with(CAMPAIGN.into(), &segments, |frame, decoded, sizes| {
-            assert_eq!(sizes, frame.table_encoded_sizes()?);
-            observed.push(decoded.clone());
-            Ok(())
+    let replay = Replay::from_recovered_with(CAMPAIGN.into(), &segments, |hour| {
+        observed.push(hour.clone());
+        Ok(())
+    })
+    .unwrap();
+    let frames: Vec<_> = input
+        .iter()
+        .filter_map(|record| match record {
+            Record::Frame(frame) => Some(frame),
+            _ => None,
         })
-        .unwrap();
-    assert_eq!(observed, expected);
+        .collect();
+    assert_eq!(observed.len(), frames.len());
+    for ((hour, frame), decoded) in observed.iter().zip(&frames).zip(&expected) {
+        assert_eq!(hour.sizes, frame.table_encoded_sizes().unwrap());
+        assert_eq!(hour.metrics, decoded.metrics);
+        for table in TableId::ALL {
+            if FormatVersion::CURRENT.table_refusal(table).is_none() {
+                assert_eq!(
+                    hour.unavailable(table),
+                    match &*decoded.tables[table.index()] {
+                        TableView::Unavailable { reason } => Some(reason.as_str()),
+                        _ => None,
+                    }
+                );
+            }
+        }
+    }
     assert_eq!(
-        observed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+        observed.iter().map(|hour| hour.hour).collect::<Vec<_>>(),
         [1, 2, 3, 4]
     );
     assert!(
-        matches!(&*observed[1].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("999"))
+        observed[1]
+            .unavailable(TableId::Provinces)
+            .is_some_and(|reason| reason.contains("999"))
     );
     assert!(
-        matches!(&*observed[2].tables[TableId::Provinces.index()], TableView::Unavailable { reason } if reason.contains("2"))
+        observed[2]
+            .unavailable(TableId::Provinces)
+            .is_some_and(|reason| reason.contains("2"))
     );
+    assert!(observed[3].unavailable(TableId::Provinces).is_none());
     assert_eq!(
-        observed[3].tables[TableId::Provinces.index()],
+        expected[3].tables[TableId::Provinces.index()],
         TableView::Complete(TableRows::Provinces(Vec::new()))
     );
-    for frame in &observed {
+    for frame in &expected {
         assert!(
             matches!(replay.seek(frame.branch, frame.hour).unwrap(), SeekResult::Frame(decoded) if *decoded == *frame)
         );
@@ -1627,8 +1708,8 @@ fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
     )];
     let mut appended_hours = Vec::new();
     let appended = replay
-        .append_recovered_with(&next, |frame, _, _| {
-            appended_hours.push((frame.branch, frame.hour));
+        .append_recovered_with(&next, |hour| {
+            appended_hours.push((hour.branch, hour.hour));
             Ok(())
         })
         .unwrap();
@@ -1639,7 +1720,7 @@ fn finalization_observer_sees_decoded_failures_and_identical_wire_sizes() {
     );
     assert!(
         replay
-            .append_recovered_with(&next, |_, _, _| Err(io::Error::other("report aborted")))
+            .append_recovered_with(&next, |_| Err(io::Error::other("report aborted")))
             .is_err()
     );
     // Failed table baselines affect table visibility, not the recorded hour
@@ -1843,7 +1924,7 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
         );
         assert_eq!(
             recovered
-                .append_recovered_with(&segments, |_, _, _| panic!("must not observe new frames"))
+                .append_recovered_with(&segments, |_| panic!("must not observe new frames"))
                 .err()
                 .unwrap()
                 .to_string(),
@@ -1853,9 +1934,10 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
         assert_eq!(
             recovered
                 .append_recovered_with_reader(
-                    &segments,
+                    &kept(&segments),
                     |_, _| panic!("must not read new frames"),
-                    |_, _, _| panic!("must not observe new frames")
+                    || Ok(()),
+                    |_| panic!("must not observe new frames")
                 )
                 .err()
                 .unwrap()
@@ -1889,7 +1971,7 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
         assert_eq!(
             Replay::open(bytes.clone())
                 .unwrap()
-                .add_recovery_notes(&[])
+                .add_recovery_notes::<Record>(&[])
                 .err()
                 .unwrap()
                 .to_string(),

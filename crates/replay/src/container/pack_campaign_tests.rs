@@ -88,11 +88,17 @@ fn scaled_records(countries: u32, blocks: usize, hours: usize) -> Vec<Record> {
 fn packed_on(
     workers: usize,
     records: &[Record],
-    observe: &mut FrameObserver<'_>,
+    observe: &mut HourObserver<'_>,
     limit: usize,
 ) -> io::Result<Replay> {
     pack::WORKERS.set(Some(workers));
-    let replay = Replay::from_record_slices(CAMPAIGN.into(), &[records], observe, None, limit);
+    let replay = Replay::from_record_slices(
+        CAMPAIGN.into(),
+        &[records],
+        Observer::Hours(observe),
+        Frames::Kept,
+        limit,
+    );
     pack::WORKERS.set(None);
     replay
 }
@@ -111,14 +117,14 @@ fn countries_pack_to_the_sequential_bytes_on_any_worker_count() {
         }
     }
     for limit in [MAX_BLOCK_RAW_BYTES, largest + largest / 2] {
-        let sequential = packed_on(1, &records, &mut |_, _, _| Ok(()), limit).unwrap();
+        let sequential = packed_on(1, &records, &mut |_| Ok(()), limit).unwrap();
         if limit == MAX_BLOCK_RAW_BYTES {
             assert_eq!(sequential.index.len(), 3);
         } else {
             assert!(sequential.index.len() > 3, "{}", sequential.index.len());
         }
         for workers in WORKERS {
-            let packed = packed_on(workers, &records, &mut |_, _, _| Ok(()), limit).unwrap();
+            let packed = packed_on(workers, &records, &mut |_| Ok(()), limit).unwrap();
             assert!(
                 packed.bytes() == sequential.bytes(),
                 "{workers} workers, limit {limit}"
@@ -146,7 +152,7 @@ fn a_writer_error_after_packed_blocks_is_the_sequential_one() {
         packed_on(
             workers,
             &records,
-            &mut |frame, _, _| match frame.hour {
+            &mut |hour| match hour.hour {
                 8 => Err(io::Error::other("observer refused hour 8")),
                 _ => Ok(()),
             },
@@ -163,15 +169,10 @@ fn a_writer_error_after_packed_blocks_is_the_sequential_one() {
     };
     frame.hour = 10;
     let structural = |workers| {
-        packed_on(
-            workers,
-            &repeated,
-            &mut |_, _, _| Ok(()),
-            MAX_BLOCK_RAW_BYTES,
-        )
-        .err()
-        .unwrap()
-        .to_string()
+        packed_on(workers, &repeated, &mut |_| Ok(()), MAX_BLOCK_RAW_BYTES)
+            .err()
+            .unwrap()
+            .to_string()
     };
     assert_eq!(observed(1), "observer refused hour 8");
     // The writer's segment check refuses the repeated hour as the record
@@ -232,13 +233,7 @@ fn pack_bench_one_against_default_workers() {
     let mut written = Vec::new();
     for workers in [1, workers] {
         let (started, cpu) = (Instant::now(), process_cpu());
-        let replay = packed_on(
-            workers,
-            &records,
-            &mut |_, _, _| Ok(()),
-            MAX_BLOCK_RAW_BYTES,
-        )
-        .unwrap();
+        let replay = packed_on(workers, &records, &mut |_| Ok(()), MAX_BLOCK_RAW_BYTES).unwrap();
         let (wall, cpu) = (started.elapsed(), process_cpu() - cpu);
         println!(
             "pack_bench workers={workers} countries={countries} blocks={} hours={} wall_s={:.3} cores_used={:.2} ms_per_hour={:.3} bytes={}",
@@ -256,4 +251,213 @@ fn pack_bench_one_against_default_workers() {
         written[0].0.as_secs_f64() / written[1].0.as_secs_f64()
     );
     assert!(written[0].1 == written[1].1);
+}
+
+#[test]
+fn recovered_frames_read_on_several_threads_write_the_sequential_bytes() {
+    let records = scaled_records(300, 5, 4);
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let kept = kept(&segments);
+    let written = |workers| {
+        pack::WORKERS.set(Some(workers));
+        let mut hours = Vec::new();
+        let mut progress = 0;
+        let replay = Replay::from_recovered_with_reader(
+            CAMPAIGN.into(),
+            &kept,
+            |number, frame| restore(&segments, number, frame),
+            || {
+                progress += 1;
+                Ok(())
+            },
+            |hour| {
+                hours.push((hour.hour, hour.sizes, hour.updates));
+                Ok(())
+            },
+        );
+        pack::WORKERS.set(None);
+        (replay.unwrap().bytes().to_vec(), hours, progress)
+    };
+    let sequential = written(1);
+    assert_eq!(sequential.1.len(), 20);
+    assert_eq!(sequential.2, 20);
+    assert!(
+        sequential.0
+            == Replay::from_records(CAMPAIGN.into(), &[records])
+                .unwrap()
+                .bytes()
+    );
+    for workers in WORKERS {
+        let parallel = written(workers);
+        assert!(parallel.0 == sequential.0, "{workers} workers");
+        assert_eq!(parallel.1, sequential.1, "{workers} workers");
+        assert_eq!(parallel.2, sequential.2, "{workers} workers");
+    }
+}
+
+#[test]
+fn a_fallback_after_partial_progress_reports_each_frame_once() {
+    use crate::rows::LexicalTokenRow;
+    let mut records = scaled_records(50, 4, 5);
+    // The last block's second and third hours re-send a large table, so only it splits by size.
+    for (back, byte) in [(4, 1_u8), (3, 2)] {
+        let at = records.len() - back;
+        let Record::Frame(frame) = &mut records[at] else {
+            unreachable!()
+        };
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableUpdate::Snapshot(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 0,
+                literal: vec![byte; 200 * 1024],
+            }]));
+    }
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let kept = kept(&segments);
+    let kept_records = [kept[0].1.records.as_slice()];
+    let frames = records
+        .iter()
+        .filter(|record| matches!(record, Record::Frame(_)))
+        .count();
+    // The splitting hour is read only once progress was reported, so the fallback follows some.
+    let splitting = records.len() - 3;
+    let reported = (std::sync::Mutex::new(false), std::sync::Condvar::new());
+    let read = |_: usize, frame: &crate::spool::FrameMetadata| {
+        if frame.placement.offset == splitting {
+            let mut any = reported.0.lock().unwrap();
+            while !*any {
+                any = reported.1.wait(any).unwrap();
+            }
+        }
+        restore(&segments, 0, frame)
+    };
+    let written = |workers| {
+        pack::WORKERS.set(Some(workers));
+        *reported.0.lock().unwrap() = false;
+        let mut progress = 0;
+        let mut counting = || {
+            progress += 1;
+            *reported.0.lock().unwrap() = true;
+            reported.1.notify_all();
+            if progress > frames {
+                return Err(io::Error::other("progress past the last frame"));
+            }
+            Ok(())
+        };
+        let mut hours = Vec::new();
+        let replay = Replay::from_record_slices(
+            CAMPAIGN.into(),
+            &kept_records,
+            Observer::Hours(&mut |hour| {
+                hours.push(hour.hour);
+                Ok(())
+            }),
+            Frames::Shared(&read, &mut counting),
+            300 * 1024,
+        );
+        pack::WORKERS.set(None);
+        (replay.unwrap().bytes().to_vec(), hours, progress)
+    };
+    let sequential = written(1);
+    assert_eq!(sequential.2, frames);
+    for workers in WORKERS {
+        let parallel = written(workers);
+        assert!(parallel.0 == sequential.0, "{workers} workers");
+        assert_eq!(parallel.1, sequential.1, "{workers} workers");
+        assert_eq!(parallel.2, frames, "{workers} workers");
+    }
+}
+
+#[test]
+fn parallel_blocks_held_from_admission_to_packing_stay_within_the_sequential_writers() {
+    use crate::container::units::{HELD, Step, WATCH};
+    use std::sync::{Arc, Condvar, Mutex};
+    let blocks = 8;
+    let records = scaled_records(50, blocks, 4);
+    let expected = packed_on(1, &records, &mut |_| Ok(()), MAX_BLOCK_RAW_BYTES).unwrap();
+    #[derive(Default)]
+    struct Held {
+        /// The writer's count at each admission.
+        admitted: Vec<usize>,
+        /// Admissions less packings, which each of the writer's counts must match.
+        counted: usize,
+        matched: bool,
+        drained: bool,
+        finished: bool,
+        over: bool,
+    }
+    // Two workers at least, so a begun block always finds a worker this test does not hold.
+    for workers in [3, 8] {
+        let held = Arc::new((
+            Mutex::new(Held {
+                matched: true,
+                ..Held::default()
+            }),
+            Condvar::new(),
+        ));
+        let watched = Arc::clone(&held);
+        WATCH.set(Some(Arc::new(move |step: Step| {
+            let (state, changed) = &*watched;
+            let mut state = state.lock().unwrap();
+            match step {
+                Step::Admitted(writer) => {
+                    state.counted += 1;
+                    state.matched &= writer == state.counted;
+                    state.admitted.push(writer);
+                    state.drained = false;
+                    // Past the bound nothing is held back, so the write ends and the test fails.
+                    state.over |= writer.max(state.counted) > HELD;
+                }
+                Step::Waiting { drained } => state.drained = drained,
+                Step::Finished => state.finished = true,
+                // Packed only once the keyframe thread cannot go on without it, or admits no more.
+                Step::Packing => {
+                    while !(state.drained || state.finished || state.over) {
+                        state = changed.wait(state).unwrap();
+                    }
+                }
+                Step::Packed(writer) => {
+                    state.counted -= 1;
+                    state.matched &= writer == state.counted;
+                }
+            }
+            changed.notify_all();
+        })));
+        pack::WORKERS.set(Some(workers));
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records.clone()]);
+        pack::WORKERS.set(None);
+        WATCH.set(None);
+        assert!(
+            replay.unwrap().bytes() == expected.bytes(),
+            "{workers} workers"
+        );
+        let state = held.0.lock().unwrap();
+        assert!(state.matched, "{workers} workers");
+        assert_eq!(state.admitted.len(), blocks, "{workers} workers");
+        assert_eq!(
+            state.admitted.iter().max(),
+            Some(&HELD),
+            "{workers} workers"
+        );
+        assert_eq!(
+            (state.counted, state.finished),
+            (0, true),
+            "{workers} workers"
+        );
+    }
 }

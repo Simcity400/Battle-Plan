@@ -36,7 +36,7 @@ pub(crate) fn workers() -> usize {
 
 /// Finished blocks wait for a worker at most this many at a time, so a pack
 /// holds at most its workers' blocks, these and the block being written.
-const WAITING: usize = 1;
+pub(crate) const WAITING: usize = 1;
 
 /// The threads a pack may keep busy, and how many are: the calling thread,
 /// the workers packing a block, and the helpers free ones are lent to.
@@ -54,6 +54,22 @@ impl Cores {
             busy: Mutex::new(1),
             freed: Condvar::new(),
         }
+    }
+
+    /// `limit` threads, none busy: the calling thread only waits.
+    pub(crate) fn idle(limit: usize) -> Self {
+        Self {
+            limit: limit.max(1),
+            busy: Mutex::new(0),
+            freed: Condvar::new(),
+        }
+    }
+
+    /// `work` on this thread, as one busy thread once one is free.
+    pub(crate) fn busy<T>(&self, work: impl FnOnce() -> T) -> T {
+        self.acquire();
+        let _lent = Lent(self, 1);
+        work()
     }
 
     /// Up to `wanted` more busy threads, as many as are free now.
@@ -152,6 +168,118 @@ pub(crate) fn each<T: Send, U: Send>(
         .collect()
 }
 
+struct Lane<T, U> {
+    waiting: VecDeque<(usize, T)>,
+    done: std::collections::BTreeMap<usize, thread::Result<U>>,
+    closed: bool,
+}
+
+/// Closes a lane however its reader stops, so its workers end.
+struct Closing<'a, T, U>(&'a Mutex<Lane<T, U>>, &'a Condvar);
+
+impl<T, U> Drop for Closing<'_, T, U> {
+    fn drop(&mut self) {
+        let mut lane = lock(self.0);
+        lane.closed = true;
+        lane.waiting.clear();
+        self.1.notify_all();
+    }
+}
+
+/// `take(work(next()))` in item order, as a loop would, with `work` on up to `threads` threads.
+pub(crate) fn ordered<T: Send, U: Send>(
+    threads: usize,
+    mut next: impl FnMut() -> Option<T>,
+    work: impl Fn(T) -> U + Sync,
+    mut take: impl FnMut(U) -> bool,
+) {
+    let helpers = threads.saturating_sub(1);
+    let inline = |next: &mut dyn FnMut() -> Option<T>, take: &mut dyn FnMut(U) -> bool| {
+        while let Some(item) = next() {
+            if !take(work(item)) {
+                return;
+            }
+        }
+    };
+    if helpers == 0 {
+        return inline(&mut next, &mut take);
+    }
+    let lane = Mutex::new(Lane {
+        waiting: VecDeque::new(),
+        done: std::collections::BTreeMap::new(),
+        closed: false,
+    });
+    let changed = Condvar::new();
+    let serve = || {
+        let mut state = lock(&lane);
+        loop {
+            if let Some((at, item)) = state.waiting.pop_front() {
+                drop(state);
+                let result = panic::catch_unwind(panic::AssertUnwindSafe(|| work(item)));
+                state = lock(&lane);
+                state.done.insert(at, result);
+                changed.notify_all();
+            } else if state.closed {
+                return;
+            } else {
+                state = changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    };
+    thread::scope(|scope| {
+        let _closing = Closing(&lane, &changed);
+        let started = (0..helpers)
+            .filter(|_| {
+                let priority = job_priority::JobPriority::current();
+                thread::Builder::new()
+                    .spawn_scoped(scope, || {
+                        priority.enter(job_priority::Level::Normal);
+                        serve()
+                    })
+                    .is_ok()
+            })
+            .count();
+        if started == 0 {
+            return inline(&mut next, &mut take);
+        }
+        let ahead = 2 * started;
+        let (mut read, mut taken, mut exhausted) = (0, 0, false);
+        loop {
+            while !exhausted && read - taken < ahead {
+                match next() {
+                    Some(item) => {
+                        lock(&lane).waiting.push_back((read, item));
+                        changed.notify_all();
+                        read += 1;
+                    }
+                    None => exhausted = true,
+                }
+            }
+            if taken == read {
+                return;
+            }
+            let result = {
+                let mut state = lock(&lane);
+                loop {
+                    if let Some(result) = state.done.remove(&taken) {
+                        break result;
+                    }
+                    state = changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                }
+            };
+            taken += 1;
+            match result {
+                Ok(result) => {
+                    if !take(result) {
+                        return;
+                    }
+                }
+                Err(panic) => panic::resume_unwind(panic),
+            }
+        }
+    })
+}
+
 type Packed<R> = thread::Result<io::Result<R>>;
 
 struct Queue<J, R> {
@@ -218,9 +346,9 @@ pub(crate) struct Packer<'a, J, R> {
     inline: bool,
 }
 
-impl<J, R> Packer<'_, J, R> {
+impl<'a, J, R> Packer<'a, J, R> {
     /// The threads the writer may lend its own work to.
-    pub(crate) fn cores(&self) -> &Cores {
+    pub(crate) fn cores(&self) -> &'a Cores {
         &self.pool.cores
     }
 

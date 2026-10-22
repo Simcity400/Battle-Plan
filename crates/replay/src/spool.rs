@@ -3,20 +3,20 @@
 use crate::identity::IdentityCodec;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
 use crate::{
-    BranchId,
+    BranchId, Hour,
     branches::{BranchStart, Gap},
     codec::{Decoder, invalid, invalid_static, put_string},
     format::FormatVersion,
-    frame::{EncodedFrame, Frame},
+    frame::{EncodedFrame, Frame, Metrics, TableUpdate},
     identity::SessionStart,
-    rows::compatibility::RecordKind,
+    rows::{TABLE_COUNT, TableId, compatibility::RecordKind},
 };
 use engine_allocation::allocation_error;
 
@@ -367,24 +367,32 @@ pub(crate) struct SegmentState {
 
 impl SegmentState {
     pub(crate) fn accept(&mut self, record: &Record) -> io::Result<()> {
+        self.accept_view(&record.view())
+    }
+
+    pub(crate) fn accept_view(&mut self, record: &RecordRef<'_>) -> io::Result<()> {
         if self.detached {
             return Err(invalid_static("record after detach"));
         }
-        if self.records == 0 && !matches!(record, Record::SessionStart(_) | Record::BranchStart(_))
+        if self.records == 0
+            && !matches!(
+                record,
+                RecordRef::SessionStart(_) | RecordRef::BranchStart(_)
+            )
         {
             return Err(invalid_static(
                 "segment does not begin with session or branch context",
             ));
         }
         match record {
-            Record::SessionStart(session) => {
+            RecordRef::SessionStart(session) => {
                 if self.records != 0 {
                     return Err(invalid_static("session start occurs inside a segment"));
                 }
                 self.session = Some(session.id);
                 self.needs_keyframe = true;
             }
-            Record::BranchStart(branch) => {
+            RecordRef::BranchStart(branch) => {
                 if self.branch.is_some() && self.needs_keyframe && !self.gap_before_keyframe {
                     return Err(invalid_static(
                         "branch has no initial keyframe or explicit gap",
@@ -403,10 +411,11 @@ impl SegmentState {
                 self.needs_keyframe = true;
                 self.gap_before_keyframe = false;
             }
-            Record::Frame(frame) => {
-                return self.accept_frame(frame.branch, frame.hour, frame.keyframe);
+            RecordRef::Frame(_) | RecordRef::Metadata(_) => {
+                let (branch, hour, keyframe) = record.frame().unwrap();
+                return self.accept_frame(branch, hour, keyframe);
             }
-            Record::Gap(gap) => {
+            RecordRef::Gap(gap) => {
                 if self.branch != Some(gap.branch) {
                     return Err(invalid_static("gap lacks matching branch context"));
                 }
@@ -420,11 +429,11 @@ impl SegmentState {
                 // Its first hour may already have a frame in an earlier segment.
                 self.gap_before_keyframe |= self.needs_keyframe;
             }
-            Record::Control(ControlRecord::ClockWitness { session, .. })
-            | Record::Control(ControlRecord::GapSummary { session, .. }) => {
+            RecordRef::Control(ControlRecord::ClockWitness { session, .. })
+            | RecordRef::Control(ControlRecord::GapSummary { session, .. }) => {
                 self.require_session(*session)?
             }
-            Record::Control(ControlRecord::Partial {
+            RecordRef::Control(ControlRecord::Partial {
                 session, reason, ..
             }) => {
                 self.require_session(*session)?;
@@ -433,7 +442,7 @@ impl SegmentState {
                 }
                 self.partial = true;
             }
-            Record::Control(ControlRecord::EventLoss {
+            RecordRef::Control(ControlRecord::EventLoss {
                 session,
                 branch,
                 after_hour,
@@ -447,7 +456,7 @@ impl SegmentState {
                     return Err(invalid_static("event loss must end after it begins"));
                 }
             }
-            Record::Control(ControlRecord::Detach { session, last_hour }) => {
+            RecordRef::Control(ControlRecord::Detach { session, last_hour }) => {
                 self.require_session(*session)?;
                 if self.needs_keyframe && !self.partial {
                     return Err(invalid_static("detach before initial keyframe"));
@@ -503,110 +512,356 @@ impl SegmentState {
 }
 
 #[derive(Debug)]
-pub struct Recovery {
+pub struct Recovery<T = Record> {
     /// Original envelope contract; never discarded by recovery/finalization.
     pub format: Option<FormatVersion>,
-    pub records: Vec<Record>,
+    pub records: Vec<T>,
     pub valid_bytes: usize,
     pub damage: Option<String>,
+}
+
+/// Where a record lies in its segment: its header's first byte, its payload's length and checksum.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Placement {
+    pub offset: usize,
+    pub length: usize,
+    pub crc: u32,
+}
+
+/// A recovered frame without the rows finalization's checks skip; it is read again by placement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FrameMetadata {
+    pub branch: BranchId,
+    pub hour: Hour,
+    pub keyframe: bool,
+    pub placement: Placement,
+    pub campaign: TableUpdate,
+    pub clock: TableUpdate,
+}
+
+impl FrameMetadata {
+    pub fn of(mut frame: Frame, placement: Placement) -> Self {
+        let hour = frame.hour;
+        let mut take = |table: TableId| {
+            std::mem::replace(
+                &mut frame.tables[table.index()],
+                TableUpdate::Unchanged { baseline: hour },
+            )
+        };
+        let (campaign, clock) = (take(TableId::Campaign), take(TableId::Clock));
+        Self {
+            branch: frame.branch,
+            hour,
+            keyframe: frame.keyframe,
+            placement,
+            campaign,
+            clock,
+        }
+    }
+
+    /// Every table but the kept ones unavailable.
+    pub fn frame(&self) -> io::Result<Frame> {
+        let mut tables = engine_allocation::vec(TABLE_COUNT)?;
+        for table in TableId::ALL {
+            tables.push(match table {
+                TableId::Campaign => self.campaign.clone(),
+                TableId::Clock => self.clock.clone(),
+                _ => TableUpdate::Unavailable {
+                    reason: engine_allocation::string("finalization metadata only")?,
+                },
+            });
+        }
+        Ok(Frame {
+            branch: self.branch,
+            hour: self.hour,
+            keyframe: self.keyframe,
+            metrics: Metrics::default(),
+            tables: tables.try_into().unwrap(),
+        })
+    }
+}
+
+/// A recovered record, its frame kept as metadata so a long spool fits in memory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recovered {
+    SessionStart(SessionStart),
+    BranchStart(BranchStart),
+    Frame(FrameMetadata),
+    Gap(Gap),
+    Control(ControlRecord),
+}
+
+impl Recovered {
+    pub fn keep(record: Record, placement: Placement) -> Self {
+        match record {
+            Record::SessionStart(session) => Self::SessionStart(session),
+            Record::BranchStart(branch) => Self::BranchStart(branch),
+            Record::Frame(frame) => Self::Frame(FrameMetadata::of(frame, placement)),
+            Record::Gap(gap) => Self::Gap(gap),
+            Record::Control(control) => Self::Control(control),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum RecordRef<'a> {
+    SessionStart(&'a SessionStart),
+    BranchStart(&'a BranchStart),
+    Frame(&'a Frame),
+    Metadata(&'a FrameMetadata),
+    Gap(&'a Gap),
+    Control(&'a ControlRecord),
+}
+
+impl RecordRef<'_> {
+    pub fn frame(&self) -> Option<(BranchId, Hour, bool)> {
+        match self {
+            Self::Frame(frame) => Some((frame.branch, frame.hour, frame.keyframe)),
+            Self::Metadata(frame) => Some((frame.branch, frame.hour, frame.keyframe)),
+            _ => None,
+        }
+    }
+}
+
+pub trait SpoolRecord: Sync {
+    fn view(&self) -> RecordRef<'_>;
+}
+
+impl SpoolRecord for Record {
+    fn view(&self) -> RecordRef<'_> {
+        match self {
+            Self::SessionStart(session) => RecordRef::SessionStart(session),
+            Self::BranchStart(branch) => RecordRef::BranchStart(branch),
+            Self::Frame(frame) => RecordRef::Frame(frame),
+            Self::Gap(gap) => RecordRef::Gap(gap),
+            Self::Control(control) => RecordRef::Control(control),
+        }
+    }
+}
+
+impl SpoolRecord for Recovered {
+    fn view(&self) -> RecordRef<'_> {
+        match self {
+            Self::SessionStart(session) => RecordRef::SessionStart(session),
+            Self::BranchStart(branch) => RecordRef::BranchStart(branch),
+            Self::Frame(metadata) => RecordRef::Metadata(metadata),
+            Self::Gap(gap) => RecordRef::Gap(gap),
+            Self::Control(control) => RecordRef::Control(control),
+        }
+    }
 }
 
 /// Recover only this segment's valid prefix. Never scan past damage for another magic.
 #[cfg(any(test, feature = "test-support"))]
 pub fn recover_prefix(bytes: &[u8]) -> Recovery {
-    recover_records(io::Cursor::new(bytes), bytes.len(), Ok, false).unwrap()
+    recover_records(
+        io::Cursor::new(bytes),
+        bytes.len(),
+        |record, _| record,
+        |_| Ok(()),
+        false,
+        1,
+    )
+    .unwrap()
 }
 
-/// Read a segment one bounded record at a time. The callback may retain only
-/// metadata; allocation and I/O failures abort instead of becoming spool damage.
-pub fn recover_reader(
+/// `keep` runs on the pack's threads; allocation and I/O failures abort rather than become damage.
+pub fn recover_reader<T: SpoolRecord + Send>(
     input: impl Read,
     length: usize,
-    retain: impl FnMut(Record) -> io::Result<Record>,
-) -> io::Result<Recovery> {
-    recover_records(input, length, retain, true)
+    keep: impl Fn(Record, Placement) -> T + Sync,
+    observe: impl FnMut(&T) -> io::Result<()>,
+) -> io::Result<Recovery<T>> {
+    recover_records(
+        input,
+        length,
+        keep,
+        observe,
+        true,
+        crate::container::pack::workers(),
+    )
 }
 
-fn recover_records(
+/// The frame recovered at `placement`, refused unless its record still has that length and checksum.
+pub fn read_frame_at(
+    input: &mut (impl Read + Seek),
+    placement: Placement,
+    length: usize,
+) -> io::Result<Frame> {
+    let missing = || invalid_static("recovered spool frame is missing");
+    if placement.offset >= length {
+        return Err(missing());
+    }
+    input.seek(SeekFrom::Start(placement.offset as u64))?;
+    let mut envelopes = Envelopes {
+        input,
+        length,
+        read_bytes: placement.offset,
+        format: None,
+    };
+    let envelope = envelopes.read(Vec::new())?.ok_or_else(missing)?;
+    if envelope.crc != placement.crc || envelope.payload.len() != placement.length {
+        return Err(invalid_static("spool record changed since it was recovered"));
+    }
+    match envelope.record()? {
+        Record::Frame(frame) => Ok(frame),
+        _ => Err(missing()),
+    }
+}
+
+struct Envelope {
+    offset: usize,
+    format: FormatVersion,
+    crc: u32,
+    payload: Vec<u8>,
+}
+
+impl Envelope {
+    fn record(&self) -> io::Result<Record> {
+        if crc32fast::hash(&self.payload) != self.crc {
+            return Err(invalid("record CRC mismatch"));
+        }
+        let mut input = Decoder::new(&self.payload);
+        let record = Record::decode_version(&mut input, self.format)?;
+        input.finish()?;
+        Ok(record)
+    }
+
+    fn placed(&self) -> Placed {
+        Placed {
+            placement: Placement {
+                offset: self.offset,
+                length: self.payload.len(),
+                crc: self.crc,
+            },
+            end: self.offset + RECORD_HEADER_BYTES + self.payload.len(),
+            format: self.format,
+        }
+    }
+
+    fn end(&self) -> usize {
+        self.placed().end
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Placed {
+    placement: Placement,
+    end: usize,
+    format: FormatVersion,
+}
+
+/// Decodes on `threads` threads but accepts in order, finding damage where a sequential read does.
+fn recover_records<T: SpoolRecord + Send>(
     input: impl Read,
     length: usize,
-    mut retain: impl FnMut(Record) -> io::Result<Record>,
+    keep: impl Fn(Record, Placement) -> T + Sync,
+    mut observe: impl FnMut(&T) -> io::Result<()>,
     fail_resources: bool,
-) -> io::Result<Recovery> {
+    threads: usize,
+) -> io::Result<Recovery<T>> {
     let mut result = Recovery {
         format: None,
         records: Vec::new(),
         valid_bytes: 0,
         damage: None,
     };
-    let mut reader = RecordReader::new(input, length);
-    loop {
-        let offset = reader.valid_bytes;
-        let decoded = (|| -> io::Result<Option<Record>> {
-            let Some(record) = reader.next_record()? else {
-                return Ok(None);
+    let mut envelopes = Envelopes::new(input, length);
+    let mut accepted = Accepted::default();
+    let mut failure = None;
+    let mut ended = false;
+    crate::container::pack::ordered(
+        threads,
+        || {
+            if ended {
+                return None;
+            }
+            let offset = envelopes.read_bytes;
+            let envelope = envelopes.read(Vec::new());
+            ended = !matches!(envelope, Ok(Some(_)));
+            envelope.map_err(|error| (offset, error)).transpose()
+        },
+        |envelope| {
+            envelope.map(|envelope| {
+                let placed = envelope.placed();
+                let record = envelope.record();
+                drop(envelope);
+                (record.map(|record| keep(record, placed.placement)), placed)
+            })
+        },
+        |read| {
+            let (offset, kept) = match read {
+                Err((offset, error)) => (offset, Err(error)),
+                Ok((record, placed)) => (
+                    placed.placement.offset,
+                    record.and_then(|kept| {
+                        accepted.accept(&kept.view(), placed)?;
+                        observe(&kept)?;
+                        engine_allocation::reserve(&mut result.records, 1)?;
+                        Ok(kept)
+                    }),
+                ),
             };
-            let record = retain(record)?;
-            engine_allocation::reserve(&mut result.records, 1)?;
-            Ok(Some(record))
-        })();
-        match decoded {
-            Ok(Some(record)) => {
-                result.records.push(record);
-                result.valid_bytes = reader.valid_bytes;
-                result.format = reader.format;
-            }
-            Ok(None) => return Ok(result),
-            Err(error) => {
-                if fail_resources
-                    && !matches!(
-                        error.kind(),
-                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
-                    )
-                {
-                    return Err(error);
+            match kept {
+                Ok(kept) => {
+                    result.records.push(kept);
+                    result.valid_bytes = accepted.valid_bytes;
+                    result.format = accepted.format;
+                    true
                 }
-                result.damage = Some(
-                    if offset == length && reader.state.needs_keyframe && !reader.state.partial {
-                        "segment ended before initial keyframe".into()
-                    } else {
-                        format!("segment byte {offset}: {error}")
-                    },
-                );
-                return Ok(result);
+                Err(error) => {
+                    failure = Some((offset, error));
+                    false
+                }
             }
-        }
+        },
+    );
+    let Some((offset, error)) = failure.or_else(|| {
+        accepted
+            .finished()
+            .err()
+            .map(|error| (accepted.valid_bytes, error))
+    }) else {
+        return Ok(result);
+    };
+    if fail_resources
+        && !matches!(
+            error.kind(),
+            io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+        )
+    {
+        return Err(error);
     }
+    result.damage = Some(
+        if offset == length && accepted.state.needs_keyframe && !accepted.state.partial {
+            "segment ended before initial keyframe".into()
+        } else {
+            format!("segment byte {offset}: {error}")
+        },
+    );
+    Ok(result)
 }
 
-/// A reusable payload buffer and one decoded record, independent of segment size.
-pub struct RecordReader<R> {
+struct Envelopes<R> {
     input: R,
     length: usize,
-    valid_bytes: usize,
+    read_bytes: usize,
     format: Option<FormatVersion>,
-    state: SegmentState,
-    payload: Vec<u8>,
 }
 
-impl<R: Read> RecordReader<R> {
-    pub fn new(input: R, length: usize) -> Self {
+impl<R: Read> Envelopes<R> {
+    fn new(input: R, length: usize) -> Self {
         Self {
             input,
             length,
-            valid_bytes: 0,
+            read_bytes: 0,
             format: None,
-            state: SegmentState::default(),
-            payload: Vec::new(),
         }
     }
 
-    pub fn next_record(&mut self) -> io::Result<Option<Record>> {
-        let remaining = self.length - self.valid_bytes;
+    fn read(&mut self, mut payload: Vec<u8>) -> io::Result<Option<Envelope>> {
+        let remaining = self.length - self.read_bytes;
         if remaining == 0 {
-            if self.state.needs_keyframe && !self.state.partial {
-                return Err(invalid("segment ended before initial keyframe"));
-            }
             return Ok(None);
         }
         if remaining < RECORD_HEADER_BYTES {
@@ -633,19 +888,71 @@ impl<R: Read> RecordReader<R> {
         if length > remaining - RECORD_HEADER_BYTES {
             return Err(invalid("truncated record payload"));
         }
-        engine_allocation::resize(&mut self.payload, length, 0)?;
-        self.input.read_exact(&mut self.payload)?;
-        let expected = u32::from_le_bytes(header[10..14].try_into().unwrap());
-        if crc32fast::hash(&self.payload) != expected {
-            return Err(invalid("record CRC mismatch"));
-        }
-        let mut input = Decoder::new(&self.payload);
-        let record = Record::decode_version(&mut input, format)?;
-        input.finish()?;
-        self.state.accept(&record)?;
+        engine_allocation::resize(&mut payload, length, 0)?;
+        self.input.read_exact(&mut payload)?;
+        let envelope = Envelope {
+            offset: self.read_bytes,
+            format,
+            crc: u32::from_le_bytes(header[10..14].try_into().unwrap()),
+            payload,
+        };
         self.format = Some(format);
-        self.valid_bytes += RECORD_HEADER_BYTES + length;
-        Ok(Some(record))
+        self.read_bytes = envelope.end();
+        Ok(Some(envelope))
+    }
+}
+
+#[derive(Default)]
+struct Accepted {
+    valid_bytes: usize,
+    format: Option<FormatVersion>,
+    state: SegmentState,
+}
+
+impl Accepted {
+    fn accept(&mut self, record: &RecordRef<'_>, placed: Placed) -> io::Result<()> {
+        self.state.accept_view(record)?;
+        self.format = Some(placed.format);
+        self.valid_bytes = placed.end;
+        Ok(())
+    }
+
+    fn finished(&self) -> io::Result<()> {
+        if self.state.needs_keyframe && !self.state.partial {
+            return Err(invalid("segment ended before initial keyframe"));
+        }
+        Ok(())
+    }
+}
+
+/// A reusable payload buffer and one decoded record, independent of segment size.
+pub struct RecordReader<R> {
+    envelopes: Envelopes<R>,
+    accepted: Accepted,
+    payload: Vec<u8>,
+}
+
+impl<R: Read> RecordReader<R> {
+    pub fn new(input: R, length: usize) -> Self {
+        Self {
+            envelopes: Envelopes::new(input, length),
+            accepted: Accepted::default(),
+            payload: Vec::new(),
+        }
+    }
+
+    pub fn next_record(&mut self) -> io::Result<Option<Record>> {
+        let Some(envelope) = self.envelopes.read(std::mem::take(&mut self.payload))? else {
+            self.accepted.finished()?;
+            return Ok(None);
+        };
+        let record = envelope.record().and_then(|record| {
+            self.accepted
+                .accept(&record.view(), envelope.placed())
+                .map(|()| record)
+        });
+        self.payload = envelope.payload;
+        record.map(Some)
     }
 }
 
