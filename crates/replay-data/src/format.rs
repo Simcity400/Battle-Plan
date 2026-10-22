@@ -420,7 +420,6 @@ mod tests {
             if version < crate::rows::compatibility::INDUSTRIAL_ORGANISATION_DETAILS_FORMAT {
                 expected.extend([
                     TableId::VariantStats,
-                    TableId::IndustrialOrganisationHistory,
                     TableId::IndustrialOrganisationDetails,
                     TableId::IndustrialOrganisationPolicies,
                 ]);

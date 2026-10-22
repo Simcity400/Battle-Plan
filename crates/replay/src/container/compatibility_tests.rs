@@ -1758,46 +1758,53 @@ fn compatibility_oracle_witnesses_keep_integrated_recordings_readable() {
 fn compatibility_every_appended_field_is_explicitly_not_recorded() {
     // Raw MIO suffixes keep their framing but do not claim an absent-value
     // representation, unlike the Recorded fields exercised below.
-    for (table, prefix) in [
-        (TableId::VariantStats, 10),
-        (TableId::IndustrialOrganisationHistory, 1),
-    ] {
-        let history = table.last_change();
-        assert_eq!(history.kind, rows::compatibility::ChangeKind::Layout);
-        assert_eq!(history.appended[0].index, prefix);
-        assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
+    let history = TableId::VariantStats.last_change();
+    assert_eq!(history.kind, rows::compatibility::ChangeKind::Layout);
+    assert_eq!(history.appended[0].index, 10);
+    assert!(FormatVersion::CURRENT.table_refusal(TableId::VariantStats).is_none());
+    // Every format just before an appended field, through real table admission.
+    let versions: BTreeSet<u16> = std::iter::once(PROVEN_FROM)
+        .chain(TableId::ALL.into_iter().flat_map(|table| {
+            table.last_change().appended.iter().map(|field| field.introduced - 1)
+        }))
+        .filter(|version| *version >= PROVEN_FROM)
+        .collect();
+    for version in versions {
+        let Ok(format) = FormatVersion::read(version) else {
+            continue;
+        };
+        let payload = legacy_frame(format, 1000, true);
+        let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
+        let decoded = FrameDecoder::new()
+            .apply(&frame)
+            .unwrap_or_else(|error| panic!("format {version}: {error}"));
+        for table in TableId::ALL {
+            let missing: Vec<_> = table
+                .last_change()
+                .appended
+                .iter()
+                .filter(|field| field.introduced > version)
+                .collect();
+            if missing.is_empty() || format.table_refusal(table).is_some() {
+                continue;
+            }
+            let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
+                panic!("{table:?} was withheld at format {version}");
+            };
+            assert!(!rows.is_empty(), "{table:?} at {version}");
+            let expected = missing
+                .iter()
+                .fold(0, |mask, field| mask | (1 << field.index));
+            for row in rows.iter() {
+                assert_eq!(row.not_recorded_fields(), expected, "{table:?} at {version}");
+            }
+            assert_eq!(rows.field_gaps().count(), missing.len(), "{table:?} at {version}");
+        }
+        assert!(frame.table_encoded_sizes().is_ok(), "format {version}");
     }
     let format = FormatVersion::read(91).unwrap();
     let payload = legacy_frame(format, 1000, true);
     let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
-    let decoded = FrameDecoder::new().apply(&frame).unwrap();
-    for table in TableId::ALL {
-        let appended = table.last_change().appended;
-        if appended.is_empty() || format.table_refusal(table).is_some() {
-            continue;
-        }
-        if !table.last_change().present(format.version()) {
-            assert_eq!(
-                *decoded.tables[table.index()],
-                TableView::Unavailable {
-                    reason: format.table_refusal(table).unwrap()
-                },
-                "{table:?} did not exist in the historical stream"
-            );
-            continue;
-        }
-        let TableView::Complete(rows) = &*decoded.tables[table.index()] else {
-            panic!("{table:?} was withheld");
-        };
-        assert!(!rows.is_empty(), "{table:?}");
-        let expected = appended
-            .iter()
-            .fold(0, |mask, field| mask | (1 << field.index));
-        for row in rows.iter() {
-            assert_eq!(row.not_recorded_fields(), expected, "{table:?}");
-        }
-        assert_eq!(rows.field_gaps().count(), appended.len());
-    }
     assert!(frame.table_encoded_sizes().is_ok());
     // Reader compatibility never lets a writer turn an absent field into a value.
     assert!(frame.encode(&mut Vec::new()).is_err());

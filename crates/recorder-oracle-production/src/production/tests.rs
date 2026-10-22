@@ -119,7 +119,7 @@ fn output_frame(
                         organisation,
                         variant,
                         units,
-                        design_hour: None,
+                        design_hour: None.into(),
                     },
                 )
                 .collect(),
@@ -400,7 +400,8 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
                     .unwrap()
                     .engine_hour()
                     .unwrap(),
-            ),
+            )
+            .into(),
         }]
     };
     *frame.tables[TableId::IndustrialOrganisations.index()] =
@@ -441,7 +442,7 @@ fn organisations_compare_order_key_texts_owner_and_history_units() {
         organisation: organisation(6),
         variant,
         units: 1,
-        design_hour: None,
+        design_hour: None.into(),
     });
     *frame.tables[TableId::IndustrialOrganisations.index()] =
         TableView::Complete(TableRows::IndustrialOrganisations(changed));
@@ -2474,7 +2475,7 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
                     days: 29,
                     ..Default::default()
                 }],
-                cost_modifier_raw: Some(0),
+                cost_modifier_raw: Some(0).into(),
             },
         ]));
     let country = CountryRow {
@@ -2495,7 +2496,7 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
     assert_eq!(report.compared_tables["IndustrialOrganisationDetails"], 1);
     // The save omits the policy-cost modifier: a failed read is a difference,
     // and a successful design-context read of the same key must agree.
-    let policies = |cost_modifier_raw| {
+    let policies = |cost_modifier_raw: Option<i64>| {
         TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
             IndustrialOrganisationPoliciesRow {
                 country: 11,
@@ -2505,7 +2506,7 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
                     days: 29,
                     ..Default::default()
                 }],
-                cost_modifier_raw,
+                cost_modifier_raw: cost_modifier_raw.into(),
             },
         ]))
     };

@@ -411,7 +411,8 @@ fn compare_organisations(
                             entry
                                 .design_date
                                 .map(|date| date.engine_hour())
-                                .transpose()?,
+                                .transpose()?
+                                .into(),
                         );
                     }
                     None => report.difference(label, "absent", "present"),

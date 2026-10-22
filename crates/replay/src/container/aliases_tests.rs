@@ -17,6 +17,7 @@ fn fixture(hour: i32) -> DecodedFrame {
         panel_stats: std::array::from_fn(|at| {
             Some(100_001 + hour as i64 * 20_000 + at as i64 * 10_001)
         }),
+        suppression: Some(100_001 + hour as i64 * 20_000 + 22 * 10_001).into(),
     };
     let strength = 90_000 + hour as i64;
     let air = 30_000 + hour as i64;

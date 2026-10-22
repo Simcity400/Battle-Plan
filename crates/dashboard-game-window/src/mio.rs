@@ -1174,7 +1174,7 @@ mod gate_tests {
             IndustrialOrganisationPoliciesRow {
                 country: 10,
                 policies: vec![policy(2), policy(3)],
-                cost_modifier_raw: Some(-20_000),
+                cost_modifier_raw: Some(-20_000).into(),
             },
         ]));
         set(TableRows::LexicalTokens(
@@ -1385,7 +1385,7 @@ mod gate_tests {
                         cached_score_raw: 0,
                     },
                 ],
-                cost_modifier_raw: None,
+                cost_modifier_raw: None.into(),
             }]),
         );
         let (_, (shown, _, organisation, cost)) = read(&frame);

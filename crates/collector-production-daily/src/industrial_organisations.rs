@@ -263,7 +263,7 @@ impl Captured {
                     organisation: row.organisation,
                     variant: row.variant,
                     units: row.units,
-                    design_hour: row.design_hour,
+                    design_hour: row.design_hour.into(),
                 },
             ),
             table::<tables::IndustrialOrganisationDetails, _>(
@@ -295,7 +295,7 @@ impl Captured {
                 |row| IndustrialOrganisationPoliciesRow {
                     country: row.country,
                     policies: owned_vec(replay_data::rows::NativeValue::try_clone(&row.policies)),
-                    cost_modifier_raw: row.cost_modifier_raw,
+                    cost_modifier_raw: row.cost_modifier_raw.into(),
                 },
             ),
         ]
@@ -596,7 +596,7 @@ mod tests {
             panic!("{history:?}")
         };
         assert_eq!(history[0].units, i32::MIN);
-        assert_eq!(history[0].design_hour, Some(i32::MIN));
+        assert_eq!(history[0].design_hour, Some(i32::MIN).into());
         // A span outside the captured arena withholds only the organisations.
         captured.organisations.rows[0].icon.start = 4;
         assert!(matches!(
@@ -706,7 +706,10 @@ mod country_scale_tests {
         );
         assert_eq!(policies[COUNTRIES - 1].policies[0].name, [0xff, 0]);
         // Each country keeps its own policy-cost verdict: a failed read stays unknown.
-        assert_eq!(policies[COUNTRIES - 1].cost_modifier_raw, Some(1 - COUNTRIES as i64));
-        assert_eq!(policies[COUNTRIES - 2].cost_modifier_raw, None);
+        assert_eq!(
+            policies[COUNTRIES - 1].cost_modifier_raw,
+            Some(1 - COUNTRIES as i64).into()
+        );
+        assert_eq!(policies[COUNTRIES - 2].cost_modifier_raw, None.into());
     }
 }

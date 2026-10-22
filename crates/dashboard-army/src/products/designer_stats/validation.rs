@@ -37,7 +37,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool};
 use dashboard_base::source::{Source, SourceKey};
 use dashboard_core::config::ContentOptions;
 use replay::container::SeekResult;
-use replay_data::rows::{DivisionPanelStatsRow, TableId, tables};
+use replay_data::rows::{DivisionPanelStatsRow, Recorded, TableId, tables};
 
 use super::{Calculator, Persistent, definitions, design_stats, kernel};
 
@@ -1017,8 +1017,12 @@ fn designer_stats_match_recorded_division_caches() {
                 };
                 let recorded = |stat: &str| {
                     let index = installed_content_core::equipment::stat_index(stat.as_bytes()).unwrap();
-                    let at = DivisionPanelStatsRow::stored(index)?;
-                    Some((index, panel.panel_stats[at]))
+                    let value = match panel.word(index)? {
+                        Recorded::Value(Some(value)) => Ok(value),
+                        Recorded::Value(None) => Err(format!("{stat} cache unavailable")),
+                        Recorded::NotRecorded => Err(format!("{stat} not recorded")),
+                    };
+                    Some((index, value))
                 };
                 let detail = |calculated: Option<i64>, deployed: Option<i64>, recorded: i64| {
                     format!(
@@ -1031,9 +1035,12 @@ fn designer_stats_match_recorded_division_caches() {
                         report.skip(format!("{stat}: the panel cache holds no such word"));
                         continue;
                     };
-                    let Some(value) = value else {
-                        report.skip(format!("{stat} cache unavailable"));
-                        continue;
+                    let value = match value {
+                        Ok(value) => value,
+                        Err(why) => {
+                            report.skip(why);
+                            continue;
+                        }
                     };
                     // The pass's common stage: the value times one.
                     let calculated = block.stats[index];
@@ -1048,9 +1055,16 @@ fn designer_stats_match_recorded_division_caches() {
                             *report.not_comparable.entry(pass.stat).or_default() += 1;
                             continue;
                         }
-                        let Some((index, Some(value))) = recorded(pass.stat) else {
-                            report.skip(format!("{} cache unavailable", pass.stat));
-                            continue;
+                        let (index, value) = match recorded(pass.stat) {
+                            Some((index, Ok(value))) => (index, value),
+                            Some((_, Err(why))) => {
+                                report.skip(why);
+                                continue;
+                            }
+                            None => {
+                                report.skip(format!("{} cache unavailable", pass.stat));
+                                continue;
+                            }
                         };
                         let calculated = block.stats[index];
                         let deployed = match calculated.map(|calculated| sources.apply(pass, calculated)) {
@@ -1211,9 +1225,10 @@ fn recorded_word(
     match stat {
         "air_attack" => movement().map(|movement| movement.air_defense),
         "fuel_capacity" => movement().map(|movement| movement.fuel_rate),
-        _ => installed_content_core::equipment::stat_index(stat.as_bytes())
-            .and_then(DivisionPanelStatsRow::stored)
-            .and_then(|at| panel.panel_stats[at]),
+        _ => match panel.word(installed_content_core::equipment::stat_index(stat.as_bytes())?)? {
+            Recorded::Value(value) => value,
+            Recorded::NotRecorded => None,
+        },
     }
 }
 

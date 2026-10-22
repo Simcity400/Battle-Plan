@@ -2753,9 +2753,13 @@ impl Captured {
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
-            |r| DivisionPanelStatsRow {
-                division: r.division,
-                panel_stats: self.attack.panel(r.division),
+            |r| {
+                let words = self.attack.panel(r.division);
+                DivisionPanelStatsRow {
+                    division: r.division,
+                    panel_stats: std::array::from_fn(|at| words[at]),
+                    suppression: words[22].into(),
+                }
             },
         );
         let history = self.history_input(projection.as_deref());

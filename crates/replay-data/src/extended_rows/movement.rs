@@ -1422,13 +1422,14 @@ impl DivisionStatusRow {
 }
 /// Deployed active-stat cache, held under one rebuild certificate independently of status.
 /// Each optional fixed5 operand has its own numeric delta; absence is a named read refusal.
-/// The first 22 words are the panel's own, in [`Self::PANEL_STAT_SELECTORS`] order; the last
-/// is the stat block's suppression word ([`Self::SUPPRESSION`]), the division designer's
-/// witness of its suppression row, which the panel does not show.
+/// The panel's own words, in [`Self::PANEL_STAT_SELECTORS`] order, then the stat block's
+/// suppression word: the division designer's witness of its suppression row, which the panel
+/// does not show.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DivisionPanelStatsRow {
     pub division: u64,
-    pub panel_stats: [Option<i64>; 23],
+    pub panel_stats: [Option<i64>; 22],
+    pub suppression: Recorded<Option<i64>>,
 }
 impl DivisionPanelStatsRow {
     /// Native panel stat selectors, resolved through executable stat metadata, in the panel's
@@ -1439,20 +1440,21 @@ impl DivisionPanelStatsRow {
     ];
     /// The suppression word's stat selector.
     pub const SUPPRESSION_SELECTOR: usize = 0xc;
-    /// The suppression word's position in `panel_stats`.
-    pub const SUPPRESSION: usize = 22;
 
-    /// The position in `panel_stats` of the word with stat selector `selector`, if stored.
-    pub fn stored(selector: usize) -> Option<usize> {
+    /// The stored word with stat selector `selector`, if the row holds one.
+    pub fn word(&self, selector: usize) -> Option<Recorded<Option<i64>>> {
+        if selector == Self::SUPPRESSION_SELECTOR {
+            return Some(self.suppression);
+        }
         Self::PANEL_STAT_SELECTORS
             .iter()
             .position(|&stored| stored == selector)
-            .or((selector == Self::SUPPRESSION_SELECTOR).then_some(Self::SUPPRESSION))
+            .map(|at| Recorded::Value(self.panel_stats[at]))
     }
 }
 typed_codec!(DivisionPanelStatsRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (panel_stats[0]): OptionalI64, 1 => (panel_stats[1]): OptionalI64, 2 => (panel_stats[2]): OptionalI64, 3 => (panel_stats[3]): OptionalI64, 4 => (panel_stats[4]): OptionalI64, 5 => (panel_stats[5]): OptionalI64, 6 => (panel_stats[6]): OptionalI64, 7 => (panel_stats[7]): OptionalI64, 8 => (panel_stats[8]): OptionalI64, 9 => (panel_stats[9]): OptionalI64, 10 => (panel_stats[10]): OptionalI64, 11 => (panel_stats[11]): OptionalI64, 12 => (panel_stats[12]): OptionalI64, 13 => (panel_stats[13]): OptionalI64, 14 => (panel_stats[14]): OptionalI64, 15 => (panel_stats[15]): OptionalI64, 16 => (panel_stats[16]): OptionalI64, 17 => (panel_stats[17]): OptionalI64, 18 => (panel_stats[18]): OptionalI64, 19 => (panel_stats[19]): OptionalI64, 20 => (panel_stats[20]): OptionalI64, 21 => (panel_stats[21]): OptionalI64, 22 => (panel_stats[22]): OptionalI64 }, |_row| Ok(()));
+ { 0 => (panel_stats[0]): OptionalI64, 1 => (panel_stats[1]): OptionalI64, 2 => (panel_stats[2]): OptionalI64, 3 => (panel_stats[3]): OptionalI64, 4 => (panel_stats[4]): OptionalI64, 5 => (panel_stats[5]): OptionalI64, 6 => (panel_stats[6]): OptionalI64, 7 => (panel_stats[7]): OptionalI64, 8 => (panel_stats[8]): OptionalI64, 9 => (panel_stats[9]): OptionalI64, 10 => (panel_stats[10]): OptionalI64, 11 => (panel_stats[11]): OptionalI64, 12 => (panel_stats[12]): OptionalI64, 13 => (panel_stats[13]): OptionalI64, 14 => (panel_stats[14]): OptionalI64, 15 => (panel_stats[15]): OptionalI64, 16 => (panel_stats[16]): OptionalI64, 17 => (panel_stats[17]): OptionalI64, 18 => (panel_stats[18]): OptionalI64, 19 => (panel_stats[19]): OptionalI64, 20 => (panel_stats[20]): OptionalI64, 21 => (panel_stats[21]): OptionalI64, 22 => (suppression): OptionalI64 }, |_row| Ok(()));
 
 typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },

@@ -114,18 +114,18 @@ fn frame(flags: u32, owner_modifier: Option<i64>) -> DecodedFrame {
             rows::IndustrialOrganisationPoliciesRow {
                 country: HOLDER,
                 policies: Vec::new(),
-                cost_modifier_raw: Some(-ONE),
+                cost_modifier_raw: Some(-ONE).into(),
             },
             rows::IndustrialOrganisationPoliciesRow {
                 country: OWNER,
                 policies: vec![policy(300, 50), policy(301, 25)],
-                cost_modifier_raw: owner_modifier,
+                cost_modifier_raw: owner_modifier.into(),
             },
             // A roster keyed by the raw alias itself is not the owner's.
             rows::IndustrialOrganisationPoliciesRow {
                 country: OWNER_ALIAS,
                 policies: Vec::new(),
-                cost_modifier_raw: Some(-ONE),
+                cost_modifier_raw: Some(-ONE).into(),
             },
         ]));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(

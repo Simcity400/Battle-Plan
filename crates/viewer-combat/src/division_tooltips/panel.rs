@@ -331,10 +331,6 @@ mod tests {
             !DivisionPanelStatsRow::PANEL_STAT_SELECTORS
                 .contains(&DivisionPanelStatsRow::SUPPRESSION_SELECTOR)
         );
-        assert_eq!(
-            DivisionPanelStatsRow::SUPPRESSION,
-            DivisionPanelStatsRow::PANEL_STAT_SELECTORS.len()
-        );
     }
 
     #[test]

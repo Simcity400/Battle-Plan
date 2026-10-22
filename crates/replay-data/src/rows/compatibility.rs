@@ -57,7 +57,7 @@ pub const MIO_POLICY_COST_FORMAT: u16 = 118;
 /// from the occurrence before it, and the writer keeps each distinct token
 /// once per pack.
 pub const EVENT_FEED_OCCURRENCE_DELTAS_FORMAT: u16 = 119;
-/// Owner-approved DivisionPanelStats.panel_stats[22]: the stat block's suppression word, the
+/// Owner-approved DivisionPanelStats.suppression: the stat block's suppression word, the
 /// division designer's witness of its suppression row, read in the panel cache's copy.
 pub const PANEL_SUPPRESSION_FORMAT: u16 = 120;
 /// Private format 95 was retired when #343 merged main's format 96; its
@@ -3199,7 +3199,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "feat/designer-rows",
             &[AppendedField {
                 index: 22,
-                name: "panel_stats[22]",
+                name: "suppression",
                 introduced: PANEL_SUPPRESSION_FORMAT,
             }],
         )
@@ -3813,7 +3813,6 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     // These raw suffixes cannot represent NotRecorded. Keep their wire prefix
     // framing in the catalogue without promising an absent-field row decoder.
-    history[TableId::IndustrialOrganisationHistory.index()].kind = ChangeKind::Layout;
     history[TableId::VariantStats.index()].kind = ChangeKind::Layout;
     history[TableId::IntelNetworkSummaries.index()] = LastChange {
         introduced: INTEL_CACHES_FORMAT,

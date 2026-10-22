@@ -731,6 +731,7 @@ fn alias_fixture(layout: Layout) -> (Replay, Vec<Frame>) {
         let panel = DivisionPanelStatsRow {
             division: 7,
             panel_stats: std::array::from_fn(|_| Some(value)),
+            suppression: Some(value).into(),
         };
         let mut status = DivisionStatusRow {
             division: 7,

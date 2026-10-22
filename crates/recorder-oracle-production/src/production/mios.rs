@@ -1,6 +1,7 @@
 //! Every stored organisation field the save writer emits, including empty stores.
 use super::*;
 use engine_executable::modifier_keys;
+use replay_data::rows::Recorded;
 
 /// Native constructor and save-writer sentinel for no selected policy.
 const UNSELECTED_POLICY: u32 = 0x4c17;
@@ -86,12 +87,17 @@ pub(super) fn compare(
         // The save omits accumulators. A failed read is a capture failure, and
         // a design-context read of the same key must agree with it.
         match policy.cost_modifier_raw {
-            None => report.difference(
+            Recorded::NotRecorded => report.difference(
+                format!("country {tag:?}.policy_cost_modifier"),
+                "not recorded",
+                "readable",
+            ),
+            Recorded::Value(None) => report.difference(
                 format!("country {tag:?}.policy_cost_modifier"),
                 "unread",
                 "readable",
             ),
-            Some(value) => {
+            Recorded::Value(Some(value)) => {
                 for (raw, design) in design_costs.get(tag.as_slice()).into_iter().flatten() {
                     equal(
                         report,

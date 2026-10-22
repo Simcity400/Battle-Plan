@@ -366,6 +366,18 @@ pub fn compare_division_panel_stats(
                 );
             }
         }
+        let suppression = match row.suppression {
+            Recorded::Value(Some(_)) => None,
+            Recorded::Value(None) => Some("unavailable"),
+            Recorded::NotRecorded => Some("not recorded"),
+        };
+        if let Some(actual) = suppression {
+            report.difference(
+                format!("DivisionPanelStats {}.suppression", row.division),
+                actual,
+                "complete deployed cache operand",
+            );
+        }
     }
     for id in save.divisions.keys().filter(|id| !seen.contains(id)) {
         report.difference(
@@ -375,7 +387,7 @@ pub fn compare_division_panel_stats(
         );
     }
     report.compared("DivisionPanelStats", rows.len());
-    report.limitation("The 22 deployed active-stat cache values and the stat block's suppression word are not serialized by the division writer. Save membership and available operands do not certify their numbers; compare every column with the matched-hour native division panel (the suppression word with the division designer's suppression row, which the panel does not show), and use sampled carried-versus-fresh verification across rebuilds.", "DivisionPanelStats.panel_stats[0..23]");
+    report.limitation("The 22 deployed active-stat cache values and the stat block's suppression word are not serialized by the division writer. Save membership and available operands do not certify their numbers; compare every column with the matched-hour native division panel (the suppression word with the division designer's suppression row, which the panel does not show), and use sampled carried-versus-fresh verification across rebuilds.", "DivisionPanelStats.panel_stats, suppression");
     Ok(())
 }
 

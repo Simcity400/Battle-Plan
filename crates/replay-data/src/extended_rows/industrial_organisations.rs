@@ -2,12 +2,12 @@
 //! daily funds do not rewrite trait trees, tasks, variables or policies.
 use super::*;
 pub use engine_native::cequipment_variant::OrganisationBonus as IndustrialOrganisationBonus;
-pub use engine_scripts::cscript_flag::Row as IndustrialOrganisationFlag;
 pub use engine_production::nindustrial_organisation_corganisation::details::{
     Policy as IndustrialOrganisationPolicy, State as IndustrialOrganisationState,
     Task as IndustrialOrganisationTask, Technology as IndustrialOrganisationTechnology,
     Variable as IndustrialOrganisationVariable, Variables as IndustrialOrganisationVariables,
 };
+pub use engine_scripts::cscript_flag::Row as IndustrialOrganisationFlag;
 
 value_struct!(IndustrialOrganisationState {
     research_bonus_raw: i64, task_capacity: i32, research_assign_cost_raw: i64,
@@ -93,12 +93,12 @@ typed_codec!(IndustrialOrganisationDetailsRow, 64, |row| row.organisation as u12
 /// the selected policy and absolute cooldown belong to each organisation.
 /// `cost_modifier_raw` is the country's effective policy-cost modifier in
 /// signed fixed5, read in the same visit: the owner's term of every attach
-/// quote. `None` means its read failed: unknown, never zero.
+/// quote. `None` means its read failed: unknown, never zero; older formats did not record it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IndustrialOrganisationPoliciesRow {
     pub country: u32,
     pub policies: Vec<IndustrialOrganisationPolicy>,
-    pub cost_modifier_raw: Option<i64>,
+    pub cost_modifier_raw: Recorded<Option<i64>>,
 }
 typed_codec!(IndustrialOrganisationPoliciesRow, 32, |row| row.country as u128,
     |key| Self { country: key as u32, ..Default::default() },

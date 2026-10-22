@@ -7,7 +7,7 @@ use crate::{
 };
 
 const MAGIC: &[u8; 4] = b"H4CP";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 impl DecodedFrame {
     /// Append a prepared snapshot, keeping decoded values and sample provenance

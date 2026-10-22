@@ -2022,7 +2022,7 @@ impl Fixture for LogisticsEquipmentRow {
     }
 }
 fixture!(IndustrialOrganisationRow, |key| {organisation: key as u64}, {country: u32, ordinal: u32, owner: u32, token: u32, name: Vec<u8>, icon: Vec<u8>});
-fixture!(IndustrialOrganisationHistoryRow, |key| {organisation: (key >> 64) as u64, variant: key as u64}, {units: i32, design_hour: Option<i32>});
+fixture!(IndustrialOrganisationHistoryRow, |key| {organisation: (key >> 64) as u64, variant: key as u64}, {units: i32, design_hour: Recorded<Option<i32>>});
 impl Fixture for IndustrialOrganisationPoliciesRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -2035,7 +2035,7 @@ impl Fixture for IndustrialOrganisationPoliciesRow {
                 name: Vec::<u8>::sample(tick + 2),
                 cached_score_raw: i64::sample(tick + 3),
             }],
-            cost_modifier_raw: Option::<i64>::sample(tick + 4),
+            cost_modifier_raw: Recorded::Value(Option::<i64>::sample(tick + 4)),
         }
     }
 }
@@ -3076,7 +3076,7 @@ sample_struct!(DivisionSupplyFooter { asked: i64, received: i64, from_state: i64
     air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
     airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
     origins: Option<Vec<UnitSupplyOrigin>> });
-fixture!(DivisionPanelStatsRow, |key| {division: key as u64}, {panel_stats: [Option<i64>; 23]});
+fixture!(DivisionPanelStatsRow, |key| {division: key as u64}, {panel_stats: [Option<i64>; 22], suppression: Recorded<Option<i64>>});
 fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: RetiredU8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<DivisionSupplyFooter>>, attrition_inputs: Recorded<Retired>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<Witnessed<DivisionAttackInputs>>, camouflage: Recorded<Option<DivisionCamouflage>>, attack_stats: Recorded<Option<DivisionAttackStats>>, weather_factor: Recorded<Option<i64>>, name_template: Recorded<Witnessed<u64>>, movement_stats: Recorded<Option<DivisionMovementStats>>, out_of_supply_days: Recorded<Option<i32>>, commander_modifiers: Recorded<Option<[Option<i64>; 5]>>, supply_ratio_exact: Recorded<Option<i64>>, supply_grace_exact: Recorded<Option<i64>>, experience: Recorded<Option<i64>>, pending_template: Recorded<Option<u64>>, officer_experience: Recorded<Option<i64>>, career_counter: Recorded<Option<i32>>, panel_source:Recorded<Option<[u64;3]>>, combat_movement: Recorded<Option<Option<i64>>>, organisation_exact: Recorded<Option<i64>>, maximum_organisation_exact: Recorded<Option<i64>>, commander_width_factor: Recorded<Option<i64>>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -5804,16 +5804,21 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     for (index, value) in row.panel_stats.iter_mut().enumerate() {
         *value = Some(i64::MIN + index as i64);
     }
+    row.suppression = Recorded::Value(Some(i64::MIN + 22));
     round_trip(&row);
     assert_eq!(TableId::DivisionPanelStats.field_count(), 23);
     // The panel's own words, then the suppression witness; anti-air lives in movement_stats.
-    assert_eq!(DivisionPanelStatsRow::stored(0x3d), Some(0));
-    assert_eq!(DivisionPanelStatsRow::stored(0x3e), Some(21));
-    assert_eq!(DivisionPanelStatsRow::stored(0xc), Some(22));
-    assert_eq!(DivisionPanelStatsRow::stored(0x30), None);
+    assert_eq!(row.word(0x3d), Some(Recorded::Value(Some(i64::MIN))));
+    assert_eq!(row.word(0x3e), Some(Recorded::Value(Some(i64::MIN + 21))));
+    assert_eq!(row.word(0xc), Some(Recorded::Value(Some(i64::MIN + 22))));
+    assert_eq!(row.word(0x30), None);
     for index in 0..23 {
         let mut changed = row.clone();
-        changed.panel_stats[index] = None;
+        if index < 22 {
+            changed.panel_stats[index] = None;
+        } else {
+            changed.suppression = Recorded::Value(None);
+        }
         let delta = changed.delta(Some(&row)).unwrap().unwrap();
         assert_eq!(delta.mask, 1 << index);
         assert_eq!(delta.apply(Some(row.clone())).unwrap(), changed);
@@ -7951,6 +7956,80 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
             ..Default::default()
         },
     );
+}
+
+/// A recording older than an appended operand reads it as not recorded, in snapshots and deltas.
+#[test]
+fn appended_operands_read_as_not_recorded_in_older_recordings() {
+    fn older<T: RowCodec + Fields + Debug + PartialEq>(table: TableId, row: T, version: u16) -> T {
+        use crate::{codec::Decoder, format::FormatVersion};
+        let fields = FormatVersion::read(version).unwrap().fields(table);
+        assert!(fields < T::SCHEMA.len(), "{table:?} at {version}");
+        let mut encoded = Vec::new();
+        row.encode_fields(&mut encoded).unwrap();
+        let mut scan = Decoder::new(&encoded);
+        for kind in &T::SCHEMA[..fields] {
+            kind.decode(&mut scan).unwrap();
+        }
+        let mut input = Decoder::new(&encoded[..encoded.len() - scan.remaining()]);
+        input.format = version;
+        input.recorded_fields = fields;
+        let decoded = T::decode_fields(row.key(), &mut input).unwrap();
+        input.finish().unwrap();
+        let mut delta = row.delta(None).unwrap().unwrap();
+        let mut scan = Decoder::new(&delta.values);
+        for kind in &T::SCHEMA[..fields] {
+            kind.decode_change(&mut scan).unwrap();
+        }
+        delta.values.truncate(delta.values.len() - scan.remaining());
+        delta.format = version;
+        delta.recorded_fields = fields;
+        delta.mask = (1 << fields) - 1;
+        assert_eq!(
+            delta.apply::<T>(None).unwrap(),
+            decoded,
+            "{table:?} at {version}"
+        );
+        decoded
+    }
+    let panel = older(
+        TableId::DivisionPanelStats,
+        DivisionPanelStatsRow {
+            division: 7,
+            panel_stats: [Some(-3); 22],
+            suppression: Some(5).into(),
+        },
+        crate::rows::compatibility::PANEL_SUPPRESSION_FORMAT - 1,
+    );
+    assert_eq!(panel.panel_stats, [Some(-3); 22]);
+    assert_eq!(panel.suppression, Recorded::NotRecorded);
+    assert_eq!(
+        panel.word(DivisionPanelStatsRow::SUPPRESSION_SELECTOR),
+        Some(Recorded::NotRecorded)
+    );
+    assert_eq!(panel.not_recorded_fields(), 1 << 22);
+    let policies = older(
+        TableId::IndustrialOrganisationPolicies,
+        IndustrialOrganisationPoliciesRow {
+            country: 4,
+            policies: Vec::new(),
+            cost_modifier_raw: Some(-20_000).into(),
+        },
+        crate::rows::compatibility::MIO_POLICY_COST_FORMAT - 1,
+    );
+    assert_eq!(policies.cost_modifier_raw, Recorded::NotRecorded);
+    let history = older(
+        TableId::IndustrialOrganisationHistory,
+        IndustrialOrganisationHistoryRow {
+            organisation: 3,
+            variant: 9,
+            units: 11,
+            design_hour: Some(-123).into(),
+        },
+        crate::rows::compatibility::INDUSTRIAL_ORGANISATION_DETAILS_FORMAT - 1,
+    );
+    assert_eq!(history.units, 11);
+    assert_eq!(history.design_hour, Recorded::NotRecorded);
 }
 
 #[test]

@@ -105,7 +105,7 @@ pub struct IndustrialOrganisationHistoryRow {
     pub organisation: u64,
     pub variant: u64,
     pub units: i32,
-    pub design_hour: Option<i32>,
+    pub design_hour: Recorded<Option<i32>>,
 }
 typed_codec!(IndustrialOrganisationHistoryRow, 128, |row| (row.organisation as u128) << 64 | row.variant as u128, |key| Self { organisation: (key >> 64) as u64, variant: key as u64, ..Default::default() },
  { 0 => (units): I32, 1 => (design_hour): OptionalI32 }, |_row| Ok(()));

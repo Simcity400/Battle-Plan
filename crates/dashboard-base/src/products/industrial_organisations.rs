@@ -255,14 +255,14 @@ pub fn policy_cost(
     policies: &installed_content_core::industrial_organisations::policies::Catalog,
     world: Result<&dashboard_text::triggers::World<'_>, String>,
 ) -> Result<PolicyCost, Undecided> {
-    let country = owner_roster(frame, organisation)?
-        .cost_modifier_raw
-        .ok_or_else(|| {
-            format!(
-                "organisation {} owner's policy cost modifier is not recorded",
-                organisation.organisation
-            )
-        })?;
+    let rows::Recorded::Value(Some(country)) = owner_roster(frame, organisation)?.cost_modifier_raw
+    else {
+        return Err(format!(
+            "organisation {} owner's policy cost modifier is not recorded",
+            organisation.organisation
+        )
+        .into());
+    };
     let local = local_modifier(
         frame,
         organisation,
