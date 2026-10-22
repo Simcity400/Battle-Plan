@@ -564,6 +564,8 @@ impl OwnRefusals {
 struct Active {
     own: OwnRefusals,
     reports: bool,
+    /// Keeps what is noted inside it from the scopes outside ([`capture_isolated`]).
+    isolated: bool,
 }
 
 thread_local! {
@@ -572,6 +574,15 @@ thread_local! {
 }
 
 fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T {
+    scope(own, reports, false, run)
+}
+
+fn scope<T>(
+    own: &mut OwnRefusals,
+    reports: bool,
+    isolated: bool,
+    run: impl FnOnce() -> T,
+) -> T {
     // Pops the scope back into `own` on return and when `run` unwinds.
     struct Exit<'a>(&'a mut OwnRefusals);
     impl Drop for Exit<'_> {
@@ -585,12 +596,17 @@ fn scoped<T>(own: &mut OwnRefusals, reports: bool, run: impl FnOnce() -> T) -> T
         scopes.borrow_mut().push(Active {
             own: std::mem::take(own),
             reports,
+            isolated,
         });
     });
     let _exit = Exit(own);
     // What the selected visual mods could not supply joins this scope, as its text refusals
-    // do; enclosing scopes observe it too.
-    let (value, fallbacks) = installed_content_core::content::observe_overlay_refusals(run);
+    // do; enclosing scopes observe it too, unless it is isolated.
+    let (value, fallbacks) = if isolated {
+        installed_content_core::content::observe_overlay_refusals_isolated(run)
+    } else {
+        installed_content_core::content::observe_overlay_refusals(run)
+    };
     SCOPES.with(|scopes| {
         if let Some(active) = scopes.borrow_mut().last_mut() {
             active.own.fallbacks.extend(fallbacks);
@@ -618,6 +634,28 @@ pub fn capture<T>(run: impl FnOnce() -> T) -> (T, OwnRefusals) {
     (value, own)
 }
 
+/// [`capture`] keeping what `run` noted from the enclosing scopes and observers: the caller
+/// publishes it ([`credit`]) when it keeps `run`'s result, or drops it.
+pub fn capture_isolated<T>(run: impl FnOnce() -> T) -> (T, OwnRefusals) {
+    let mut own = OwnRefusals::default();
+    let value = scope(&mut own, false, true, run);
+    (value, own)
+}
+
+/// Whether an isolated scope ([`capture_isolated`]) is active on this thread.
+fn isolated() -> bool {
+    SCOPES.with(|scopes| scopes.borrow().iter().any(|active| active.isolated))
+}
+
+/// The active scopes a note reaches: those from the innermost isolated one in.
+fn reached(scopes: &mut [Active]) -> &mut [Active] {
+    let from = scopes
+        .iter()
+        .rposition(|active| active.isolated)
+        .unwrap_or(0);
+    &mut scopes[from..]
+}
+
 /// Credits `noted` to every scope active on this thread, as if the calls
 /// that produced it ran here.
 pub fn credit(noted: &OwnRefusals) {
@@ -625,7 +663,7 @@ pub fn credit(noted: &OwnRefusals) {
         return;
     }
     SCOPES.with(|scopes| {
-        for active in scopes.borrow_mut().iter_mut() {
+        for active in reached(&mut scopes.borrow_mut()) {
             active.own.merge(noted);
         }
     });
@@ -636,7 +674,7 @@ pub fn credit(noted: &OwnRefusals) {
 /// Notes that the consumers active on this thread used `reader`.
 pub fn used(reader: Reader) {
     SCOPES.with(|scopes| {
-        for active in scopes.borrow_mut().iter_mut() {
+        for active in reached(&mut scopes.borrow_mut()) {
             active.own.readers.insert(reader);
         }
     });
@@ -644,7 +682,7 @@ pub fn used(reader: Reader) {
 
 fn note_own(reason: &str, identity: &str) {
     SCOPES.with(|scopes| {
-        for active in scopes.borrow_mut().iter_mut() {
+        for active in reached(&mut scopes.borrow_mut()) {
             active.own.texts.note(reason, identity);
         }
     });
@@ -771,13 +809,18 @@ pub struct Catalogue {
     pub sprites: SpriteSet,
     /// Shared native templates of the presentation, loaded only when a consumer needs GUI
     /// declarations, with what their load drew from the recording instead.
-    guis: OnceLock<(
-        Result<installed_content_core::gui::native::Guis, String>,
-        BTreeSet<String>,
-    )>,
+    /// Kept per artwork mode: a strict draw neither reads nor leaves the registry an ordinary
+    /// read falls back to build.
+    guis: installed_content_core::content::ByMode<
+        OnceLock<(
+            Result<installed_content_core::gui::native::Guis, String>,
+            BTreeSet<String>,
+        )>,
+    >,
     /// The presentation's localisation, which native windows show, read on first use, with
     /// what its load drew from the recording instead.
-    presentation_localisation: OnceLock<(Result<Arc<Localisation>, String>, BTreeSet<String>)>,
+    presentation_localisation:
+        installed_content_core::content::ByMode<OnceLock<(Result<Arc<Localisation>, String>, BTreeSet<String>)>>,
     /// The current client's texture decode settings, used by native GUI artwork.
     pub gui_decode: Result<installed_content_image::native::Decode, String>,
     /// Notes from verifying the recording, such as unverified content allowed by the user.
@@ -806,7 +849,7 @@ impl Catalogue {
     /// Load the presentation's complete native registry once, retaining its template order
     /// and post-load pass. A failure refuses GUI-dependent fields; text stays usable.
     pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
-        let (guis, fallbacks) = self.guis.get_or_init(|| {
+        let (guis, fallbacks) = self.guis.current().get_or_init(|| {
             #[cfg(any(test, feature = "test-support"))]
             self.content_loads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -831,7 +874,7 @@ impl Catalogue {
         if !layers.presentation().shows_visual_mods() {
             return Ok(Arc::clone(&self.localisation));
         }
-        let (localisation, fallbacks) = self.presentation_localisation.get_or_init(|| {
+        let (localisation, fallbacks) = self.presentation_localisation.current().get_or_init(|| {
             let (localisation, fallbacks) =
                 installed_content_core::content::observe_overlay_refusals(|| {
                     layers.artwork("localisation", |stack| {
@@ -856,7 +899,7 @@ impl Catalogue {
     /// read never reaches it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn guis_loaded(&self) -> bool {
-        self.guis.get().is_some()
+        self.guis.ordinary().get().is_some()
     }
 
     pub fn war_names(&self) -> Result<&installed_content_wargoals::wargoals::Names, String> {
@@ -910,8 +953,8 @@ impl Catalogue {
             presentation,
             localisation,
             sprites,
-            guis: OnceLock::new(),
-            presentation_localisation: OnceLock::new(),
+            guis: Default::default(),
+            presentation_localisation: Default::default(),
             gui_decode,
             verification,
             warnings,
@@ -1122,6 +1165,10 @@ impl Catalogue {
 
     pub fn refuse_finding(&self, finding: Finding) {
         note_own(&finding.message, &finding.subject);
+        // An isolated attempt's refusals stay with it until its caller keeps it ([`credit`]).
+        if isolated() {
+            return;
+        }
         self.refused
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -1449,9 +1496,13 @@ pub fn sprite_image_key(
     frame: u32,
     max_edge: u32,
 ) -> String {
+    // A strict draw's image is kept apart from a fallback-permitted one's.
     format!(
-        "{:?}/{:?}/{:?}/{frame}/{max_edge}",
-        sprite.name, sprite.facts, decode
+        "{:?}/{:?}/{:?}/{frame}/{max_edge}/{:?}",
+        sprite.name,
+        sprite.facts,
+        decode,
+        installed_content_core::content::artwork_mode()
     )
 }
 
@@ -2237,8 +2288,8 @@ pub mod tests {
             presentation: Presentation::default(),
             localisation: Arc::new(localisation),
             sprites,
-            guis: OnceLock::new(),
-            presentation_localisation: OnceLock::new(),
+            guis: Default::default(),
+            presentation_localisation: Default::default(),
             gui_decode: Ok(Default::default()),
             verification: Vec::new(),
             warnings: Vec::new(),

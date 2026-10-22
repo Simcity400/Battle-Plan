@@ -154,6 +154,170 @@ fn complete_empty_and_absent_history_are_different_and_coverage_is_preserved() {
     );
 }
 
+/// Class icons a prepared payload stored with the recording's art are drawn at query time as the
+/// request shows them. A selected mod's own drawing is shown. A mod that does not declare the
+/// class's icon leaves the recording's declaration, drawn normally with nothing named; one that
+/// declares it but cannot draw it is drawn as the recording draws it, named on every reply.
+#[test]
+fn stored_class_icons_follow_the_selection_at_query_time() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("stored_classes");
+    machine.write("common/units/ships.txt", b"sub_units = { destroyer = { type = naval } }");
+    let sprite = |texture: &str| {
+        format!(
+            "spriteTypes = {{ spriteType = {{ name = GFX_unit_destroyer_icon_medium              textureFile = {texture} }} }}"
+        )
+    };
+    machine.write("interface/units.gfx", sprite("gfx/destroyer.png").as_bytes());
+    machine.write("gfx/destroyer.png", &png(RED));
+    machine.write_mod("art", "gfx/destroyer.png", &png(BLUE));
+    machine.write_mod("other", "gfx/unrelated.png", &png(BLUE));
+    machine.write_mod("broken", "interface/units.gfx", sprite("gfx/broken.png").as_bytes());
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let stored = vec![
+        ShipClassInfo {
+            token: 3,
+            key: Some("destroyer".into()),
+            name: Some("Destroyer".into()),
+            icon: Some("stored".into()),
+        },
+        ShipClassInfo {
+            token: 4,
+            key: None,
+            name: None,
+            icon: None,
+        },
+    ];
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let mut classes = stored.clone();
+        let ((), line) =
+            fallback_line(|| present_stored(&source, Some(options), &mut classes).unwrap());
+        (classes, line)
+    };
+    let icons = |classes: &[ShipClassInfo]| -> Vec<Option<String>> {
+        classes.iter().map(|class| class.icon.clone()).collect()
+    };
+    select(&source, &mut options, &[]);
+    let (classes, line) = shown(&options);
+    assert_eq!((icons(&classes), line), (icons(&stored), None), "as stored");
+    select(&source, &mut options, &["art"]);
+    let (classes, line) = shown(&options);
+    assert_eq!((first_pixel(classes[0].icon.as_deref().unwrap()), line), (BLUE, None));
+    assert_eq!(classes[1].icon, None, "a class without a key keeps no icon");
+    select(&source, &mut options, &["other"]);
+    let (classes, line) = shown(&options);
+    assert_eq!((first_pixel(classes[0].icon.as_deref().unwrap()), line), (RED, None));
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (classes, line) = shown(&options);
+        assert_eq!(first_pixel(classes[0].icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref()
+                .is_some_and(|line| line.contains("GFX_unit_destroyer_icon_medium")),
+            "{line:?}"
+        );
+    }
+}
+
+/// A selected mod redeclares the class's icon with a declaration the sprite registry refuses: the
+/// lookup itself fails, so the recording's own is drawn and named, on a memoised reply too,
+/// never left without an icon.
+#[test]
+fn a_refused_class_sprite_redeclaration_falls_back_to_the_recording() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("refused_class_sprite");
+    machine.write("common/units/ships.txt", b"sub_units = { destroyer = { type = naval } }");
+    machine.write(
+        "interface/units.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_unit_destroyer_icon_medium \
+          textureFile = gfx/destroyer.png } }",
+    );
+    machine.write("gfx/destroyer.png", &png(RED));
+    machine.write_mod(
+        "refused",
+        "interface/units.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_unit_destroyer_icon_medium \
+          textureFile = gfx/destroyer.png noOfFrames = -1 } }",
+    );
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["refused"]);
+    for _ in 0..2 {
+        let mut classes = vec![ShipClassInfo {
+            token: 3,
+            key: Some("destroyer".into()),
+            name: None,
+            icon: None,
+        }];
+        let ((), line) =
+            fallback_line(|| present_stored(&source, Some(&options), &mut classes).unwrap());
+        assert_eq!(first_pixel(classes[0].icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref()
+                .is_some_and(|line| line.contains("class destroyer icon")),
+            "{line:?}"
+        );
+    }
+}
+
+/// The ordinary ships sunk product draws its class icons from the request's selection, as the
+/// prepared query does.
+#[test]
+fn the_ships_sunk_product_draws_class_icons_from_the_selection() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    use replay_data::rows::{LexicalTokenRow, SunkShipsRow, TableId, TableRows};
+    use replay_frame::frame::TableView;
+    let machine = Machine::new("ships_sunk_product");
+    machine.write("common/units/ships.txt", b"sub_units = { destroyer = { type = naval } }");
+    machine.write(
+        "interface/units.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_unit_destroyer_icon_medium \
+          textureFile = gfx/destroyer.png } }",
+    );
+    machine.write("gfx/destroyer.png", &png(RED));
+    machine.write_mod("art", "gfx/destroyer.png", &png(BLUE));
+    let mut frame = dashboard_base::test_fixtures::source(1, 100, Some(100_000));
+    *frame.tables[TableId::SunkShips.index()] =
+        TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
+            entries: vec![SunkShipEntry {
+                ship_name: b"Fixture".to_vec(),
+                class_token: 77,
+                sink_hour: 100,
+                ..Default::default()
+            }],
+        }]));
+    frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 77,
+            literal: b"destroyer".to_vec(),
+        }]));
+    let (source, mut options) = machine.open_frames(vec![frame]);
+    let icon = |options: &dashboard_core::config::ContentOptions| {
+        let reply = ShipsSunk::load(
+            &source,
+            &BranchParams {
+                branch_id: "1".into(),
+            },
+            &LoadContext {
+                content: Some(options.clone()),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let class = reply.classes.iter().find(|class| class.token == 77).unwrap();
+        first_pixel(class.icon.as_deref().unwrap())
+    };
+    select(&source, &mut options, &[]);
+    assert_eq!(icon(&options), RED);
+    select(&source, &mut options, &["art"]);
+    assert_eq!(icon(&options), BLUE);
+}
+
 #[test]
 fn modded_sub_unit_and_renamed_sea_zone_use_the_effective_content_stack() {
     engine_executable::executable_tables::initialize_for_tests()

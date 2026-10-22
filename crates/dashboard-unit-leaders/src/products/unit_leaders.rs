@@ -3707,6 +3707,74 @@ impl Cache {
     }
 }
 
+/// The recorded trait registry and each trait's icon drawn for one selection; one per kind of
+/// catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct TraitArt {
+    traits: Option<(Arc<Catalogue>, installed_content_core::unit_leader::Traits)>,
+    drawn: Option<catalogue::Redrawn<String, String>>,
+}
+
+/// Draws the trait icons a prepared payload stored (the recording's art, as preparation is) as
+/// the request admitted under `content` shows them, when it shows visual mods: each by its token,
+/// the whole choice (the registered sprite, or the GUI's fallback drawable when the presentation
+/// does not declare it) made against the selection, its recorded name kept. When the selection
+/// cannot draw it, the recording's own choice is drawn and named on every reply that shows it.
+pub fn present_traits(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    traits: &mut [LeaderTraitInfo],
+) -> io::Result<()> {
+    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
+        return Ok(());
+    };
+    let state = source.state::<catalogue::ByCatalogue<TraitArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let TraitArt {
+        traits: registry,
+        drawn,
+    } = state.of(&admitted);
+    if !registry
+        .as_ref()
+        .is_some_and(|(held, _)| Arc::ptr_eq(held, &recorded))
+    {
+        let leaders =
+            installed_content_core::unit_leader::Leaders::<String>::load(&recorded.content.layers, &|_| None)?;
+        *registry = Some((Arc::clone(&recorded), leaders.traits));
+    }
+    let (_, registry) = registry.as_ref().expect("trait registry read");
+    let drawn = catalogue::Redrawn::bind(drawn, &admitted, &recorded);
+    for info in traits {
+        let token = info.token.clone();
+        let shown = drawn.get(
+            token.clone(),
+            || format!("trait {token} icon"),
+            |catalogue| trait_icon(catalogue, registry, &token),
+        );
+        info.icon = shown.as_ref().ok().cloned();
+        info.missing = shown.as_ref().err().cloned();
+    }
+    Ok(())
+}
+
+/// A trait's icon drawn through `catalogue`: the sprite its registration names, or the GUI's
+/// fallback drawable when the catalogue does not declare that sprite.
+fn trait_icon(
+    catalogue: &Catalogue,
+    traits: &installed_content_core::unit_leader::Traits,
+    token: &str,
+) -> Result<String, String> {
+    let name = traits
+        .assignment_sprite(token)
+        .map_err(str::to_owned)?
+        .ok_or_else(|| format!("Trait {token} is not registered"))?;
+    let sprite =
+        catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|e| e.to_string())?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 32)
+        .map_err(|e| e.to_string())
+}
+
 fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
     let (name, icon, missing) = content
         .map(|content| {
@@ -3714,32 +3782,9 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
             let name = catalogue.localised(token, View::Plain);
             // The assignment tree admits every defined trait; icon construction
             // retries the stack's fallback drawable for an absent name.
-            let asset = content
-                .leaders
-                .traits
-                .assignment_sprite(token)
-                .map_err(dashboard_core::invalid)
-                .and_then(|name| {
-                    name.ok_or_else(|| {
-                        dashboard_core::invalid(format!("Trait {token} is not registered"))
-                    })
-                })
-                .and_then(|name| catalogue::created_gui_sprite(&catalogue.sprites, &name))
-                .and_then(|sprite| {
-                    catalogue::sprite_frame_png(
-                        &catalogue.content.layers,
-                        sprite,
-                        *catalogue
-                            .gui_decode
-                            .as_ref()
-                            .map_err(|why| dashboard_core::invalid(why.clone()))?,
-                        0,
-                        32,
-                    )
-                });
-            match asset {
+            match trait_icon(catalogue, &content.leaders.traits, token) {
                 Ok(icon) => (name, Some(icon), None),
-                Err(error) => (name, None, Some(error.to_string())),
+                Err(error) => (name, None, Some(error)),
             }
         })
         .unwrap_or((None, None, Some("Recorded content unavailable".into())));

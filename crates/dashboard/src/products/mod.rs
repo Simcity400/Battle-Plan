@@ -152,24 +152,17 @@ fn refuse<P: Product>(
 
 /// The artwork a product's replies draw from what the prepared store keeps by recorded content
 /// alone (`catalogue::recorded_catalogue` and its kin), named on every reply, fresh or kept,
-/// served while its request shows visual mods (`catalogue::credit_stored_artwork`).
+/// served while its request shows visual mods (`catalogue::credit_stored_artwork`). Families
+/// whose stored art is drawn again at query time from the request's selection are not here.
 pub(crate) fn stored_artwork(product: &str) -> Option<&'static str> {
     Some(match product {
-        "resource-balance" | "trade-flows" => "resource icons",
         "special-projects" | "event-feed" => "special project icons and portraits",
         "operatives-roster" => "operative portraits and icons",
-        "unit-leaders" => "unit leader trait icons",
-        "construction-log" | "construction-log-manifest" | "construction-spending" => {
-            "construction icons"
-        }
-        "ships-sunk" | "ships-sunk-manifest" | "naval-battle-details" => "ship class icons",
-        "occupied-states" | "occupied-states-manifest" => "occupation law icons",
         "raids" => "raid icons",
         "politics-ledger" => "politics ledger icons",
-        "production-catalogue"
-        | "production-lines"
-        | "production-line-detail"
-        | "production-line-breakdown" => "production line icon choices",
+        // The pictures follow the selection; which picture a design shows is still chosen
+        // when the scan is prepared.
+        "production-lines" => "production line icon choices",
         _ => return None,
     })
 }

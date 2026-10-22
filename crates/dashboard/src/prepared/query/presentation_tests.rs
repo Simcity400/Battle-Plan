@@ -22,7 +22,7 @@ fn admitted(presentation: crate::presentation::Presentation) -> ContentOptions {
 #[test]
 fn stored_artwork_is_named_once_visual_mods_are_selected() {
     let answered = std::collections::BTreeSet::new();
-    let product = "occupied-states-manifest";
+    let product = "raids";
     let plain = admitted(Default::default());
     assert!(served_fallbacks(Some(&plain), product, product, &answered).is_empty());
     assert!(served_fallbacks(None, product, product, &answered).is_empty());
@@ -37,7 +37,7 @@ fn stored_artwork_is_named_once_visual_mods_are_selected() {
     assert_eq!(
         fallbacks,
         std::collections::BTreeSet::from([
-            "occupation law icons (prepared data keeps the recording's artwork)".to_owned()
+            "raid icons (prepared data keeps the recording's artwork)".to_owned()
         ])
     );
     let mut data = serde_json::json!({ "warnings": ["prepared"], "states": [] });
@@ -53,4 +53,8 @@ fn stored_artwork_is_named_once_visual_mods_are_selected() {
         "{warnings:?}"
     );
     assert!(served_fallbacks(Some(&styled), "army-size", "army-size", &answered).is_empty());
+    // A family whose stored art is drawn again from the selection names none.
+    for redrawn in ["occupied-states-manifest", "trade-flows", "ships-sunk", "unit-leaders"] {
+        assert!(served_fallbacks(Some(&styled), redrawn, redrawn, &answered).is_empty());
+    }
 }

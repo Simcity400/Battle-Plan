@@ -755,7 +755,7 @@ pub fn query(
     ));
     let (store, source_key) = dashboard_base::prepared::files(source, content)?;
     let extent = dashboard_base::prepared::prefix::extent(source, branch, coverage)?;
-    read_pages(
+    let mut value = read_pages(
         &store,
         &source_key,
         branch,
@@ -765,13 +765,17 @@ pub fn query(
         complete,
         context,
         cancelled,
-    )
-    .map(|value| {
-        value.map(|mut value| {
-            value["coverage"] = json!(extent);
-            value
-        })
-    })
+    )?;
+    if let Some(value) = &mut value {
+        value["coverage"] = json!(extent);
+        dashboard_base::products::resources::present_stored_json(
+            source,
+            content,
+            &mut value["resources"],
+            cancelled,
+        )?;
+    }
+    Ok(value)
 }
 
 #[allow(clippy::too_many_arguments)]

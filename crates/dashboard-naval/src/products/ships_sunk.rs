@@ -238,6 +238,74 @@ pub fn named(
     let content = cat.map(NameContent::read);
     named_with(scan, &scan.ships, cat, content.as_ref(), None, flag)
 }
+/// The class icons drawn for one selection, by registered spelling; one per kind of catalogue
+/// ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct ClassArt(Option<catalogue::Redrawn<String, String>>);
+
+/// Draws the class icons a prepared payload stored (the recording's art, as preparation is) as
+/// the request admitted under `content` shows them, when it shows visual mods: each stored key is
+/// authenticated against the recorded unit database again, and its medium unit icon looked up and
+/// drawn against the selection, as [`named_with`] draws it. A sprite the selected mods do not
+/// declare is the recording's, drawn normally; one they declare but cannot look up or draw falls
+/// back to the recording's, named on every reply that shows it. A class without a key, or whose
+/// key the recorded units do not register, keeps no icon.
+pub fn present_stored(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    classes: &mut [ShipClassInfo],
+) -> io::Result<()> {
+    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
+        return Ok(());
+    };
+    let naming = recorded
+        .content
+        .layers
+        .derived::<catalogue::CachedResult<NameContent>>()
+        .get_or_init(|| Ok(NameContent::read(&recorded)))?;
+    let Ok(units) = &naming.units else {
+        return Ok(());
+    };
+    let state = source.state::<catalogue::ByCatalogue<ClassArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
+    for class in classes {
+        let Some(spelling) = class.key.as_deref().and_then(|key| {
+            units
+                .token_name(&installed_content_core::tokens::Token::c_str(key.as_bytes()))
+                .ok()
+                .filter(|spelling| !spelling.is_empty())
+                .map(str::to_owned)
+        }) else {
+            continue;
+        };
+        class.icon = drawn
+            .get(
+                spelling.clone(),
+                || format!("class {spelling} icon"),
+                |catalogue| class_icon(catalogue, &spelling),
+            )
+            .as_ref()
+            .ok()
+            .cloned();
+    }
+    Ok(())
+}
+
+/// The medium unit icon of the class registered as `spelling`, looked up and drawn through
+/// `catalogue`.
+fn class_icon(catalogue: &Catalogue, spelling: &str) -> Result<String, String> {
+    let name = format!("GFX_unit_{spelling}_icon_medium");
+    let sprite = catalogue
+        .sprites
+        .find(&name)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("{name} is not declared"))?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, ICON_EDGE)
+        .map_err(|error| error.to_string())
+}
+
 pub fn named_with(
     scan: &sinkings::Scanned,
     ships: &[sinkings::ShipEvent],
@@ -615,7 +683,10 @@ impl Product for ShipsSunk {
             .map_err(|_| dashboard_core::invalid("Invalid branch"))?;
         let scan = sinkings::cached(source, branch, flag)?;
         let names = cached_names(source, branch, &scan, context, flag)?;
-        reply(&params.branch_id, &scan, &names, flag)
+        let mut reply = reply(&params.branch_id, &scan, &names, flag)?;
+        // Names are the recording's; the class art follows the request's selection.
+        present_stored(source, context.content.as_ref(), &mut reply.classes)?;
+        Ok(reply)
     }
 }
 

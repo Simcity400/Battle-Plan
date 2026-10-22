@@ -471,8 +471,15 @@ pub fn look_back_window(
     window: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<OccupiedStatesReply>> {
-    Ok(observed_window(source, context, branch, window, cancelled)?
-        .map(|observation| observation.states.clone()))
+    let Some(mut reply) = observed_window(source, context, branch, window, cancelled)?
+        .map(|observation| observation.states.clone())
+    else {
+        return Ok(None);
+    };
+    if let Some(laws) = &mut reply.laws {
+        super::present_stored(source, context.content.as_ref(), laws)?;
+    }
+    Ok(Some(reply))
 }
 
 fn observed_window(
@@ -670,14 +677,16 @@ pub fn window_query(
             .ok_or_else(|| {
                 dashboard_core::invalid("Occupied states window not in this recording")
             })?;
-        return Ok(serde_json::to_value(series::read_reply::<
-            OccupiedStatesReply,
-        >(
+        let mut reply = series::read_reply::<OccupiedStatesReply>(
             &store,
             &key,
             &format!("occupied-states-{branch}"),
             params.window as u64,
-        )?)?);
+        )?;
+        if let Some(laws) = reply.as_mut().and_then(|reply| reply.laws.as_mut()) {
+            super::present_stored(source, context.content.as_ref(), laws)?;
+        }
+        return Ok(serde_json::to_value(reply)?);
     }
     let params: BranchParams = serde_json::from_value(value)?;
     params.validate().map_err(dashboard_core::invalid)?;
@@ -700,6 +709,7 @@ pub fn window_query(
         warnings: Vec::new(),
     });
     reply.windows = source.block_windows(branch).to_vec();
+    super::present_stored(source, context.content.as_ref(), &mut reply.laws)?;
     Ok(serde_json::to_value(reply)?)
 }
 

@@ -319,6 +319,7 @@ pub fn stack_texture_or_recorded(
         Err(error) => Some(error.to_string()),
     };
     if let Some(why) = why
+        && !crate::content::is_strict()
         && let Some(recorded) = recorded
         && let Ok(Ok(texture)) = stack_texture(recorded, name, decode)
     {

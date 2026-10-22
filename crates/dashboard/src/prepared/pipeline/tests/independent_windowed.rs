@@ -1019,6 +1019,7 @@ fn sinking_and_loss_queries_answer_prefixes_before_the_branch_is_prepared() {
                 window,
                 &store,
                 &key,
+                None,
                 &flag
             )
             .unwrap()

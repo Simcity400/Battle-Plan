@@ -788,6 +788,7 @@ fn query_data(
                     request.params.clone(),
                     &store,
                     &key,
+                    content,
                     cancelled,
                 )?
             } else {
@@ -1582,13 +1583,17 @@ fn query_data(
             let Some(prefix) = prefix else {
                 return Ok(Value::Null);
             };
-            let mut data = serde_json::to_value(crate::products::unit_leaders::prepared::query(
+            let mut reply = crate::products::unit_leaders::prepared::query(
                 &store,
                 &key,
                 &params,
                 history.as_deref(),
                 cancelled,
-            )?)?;
+            )?;
+            if let Some(reply) = &mut reply {
+                crate::products::unit_leaders::present_traits(source, content, &mut reply.traits)?;
+            }
+            let mut data = serde_json::to_value(reply)?;
             prefix.mark(&mut data)?;
             data
         }

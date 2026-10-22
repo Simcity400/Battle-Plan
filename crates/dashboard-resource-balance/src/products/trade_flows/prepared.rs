@@ -992,15 +992,19 @@ pub fn query(
         fallback,
     ));
     let extent = dashboard_base::prepared::prefix::extent(source, branch, coverage)?;
-    read_pages(
+    let mut value = read_pages(
         &store, &key, branch, input, params, &history, last_hour, complete, context, cancelled,
-    )
-    .map(|value| {
-        value.map(|mut value| {
-            value["coverage"] = json!(extent);
-            value
-        })
-    })
+    )?;
+    if let Some(value) = &mut value {
+        value["coverage"] = json!(extent);
+        dashboard_base::products::resources::present_stored_json(
+            source,
+            content,
+            &mut value["resources"],
+            cancelled,
+        )?;
+    }
+    Ok(value)
 }
 
 type Progressive<'a> = (AdapterTail<'a>, AdapterTail<'a>, TradeFlowsReply);

@@ -403,6 +403,116 @@ pub fn stored_resource_infos(
     ResourceNaming::stored(source, context).infos(resources, cancelled)
 }
 
+/// Draws the icons of resources a prepared payload stored (drawn with the recording's art, as
+/// preparation is) as the request admitted under `content` shows them, when it shows visual
+/// mods; without them the stored icons are already the ones it shows.
+pub fn present_stored(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    resources: &mut [ResourceInfo],
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
+        return Ok(());
+    };
+    let state = source.state::<catalogue::ByCatalogue<ResourceArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let ResourceArt { frames, drawn } = state.of(&admitted);
+    if !frames
+        .as_ref()
+        .is_some_and(|(held, _)| Arc::ptr_eq(held, &recorded))
+    {
+        *frames = Some((Arc::clone(&recorded), icon_frames(&recorded.content.layers)?));
+    }
+    let (_, frames) = frames.as_ref().expect("resource frames read");
+    let drawn = catalogue::Redrawn::bind(drawn, &admitted, &recorded);
+    for resource in resources {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Resource request cancelled",
+            ));
+        }
+        let key = (resource.token.clone(), resource.ordinal);
+        resource.icon = drawn
+            .get(
+                key,
+                || format!("resource {} icon", resource.token),
+                |catalogue| resource_icon(catalogue, frames, &resource.token, resource.ordinal),
+            )
+            .as_ref()
+            .ok()
+            .cloned();
+    }
+    Ok(())
+}
+
+/// The recorded frames of each resource declaration and the icons drawn for one selection; one
+/// per kind of catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct ResourceArt {
+    frames: Option<(Arc<Catalogue>, BTreeMap<String, Vec<Option<u32>>>)>,
+    drawn: Option<catalogue::Redrawn<(String, u32), String>>,
+}
+
+/// Each resource declaration's one-based frame in the trade view's icon, per token in load
+/// order: recorded facts.
+fn icon_frames(layers: &ResolvedLayers) -> io::Result<BTreeMap<String, Vec<Option<u32>>>> {
+    let mut frames: BTreeMap<String, Vec<Option<u32>>> = BTreeMap::new();
+    for resource in installed_content_core::resources::read(layers)?.0 {
+        frames
+            .entry(resource.token)
+            .or_default()
+            .push(resource.icon_frame);
+    }
+    Ok(frames)
+}
+
+/// A resource declaration's icon drawn through `catalogue`: the trade view's icon sprite, as its
+/// GUI selects it, at the declaration's recorded frame.
+fn resource_icon(
+    catalogue: &Catalogue,
+    frames: &BTreeMap<String, Vec<Option<u32>>>,
+    token: &str,
+    ordinal: u32,
+) -> Result<String, String> {
+    let guis = catalogue.guis().map_err(|error| error.to_string())?;
+    let name = installed_content_core::gui::native::window_button_sprite(
+        guis,
+        RESOURCE_ROW,
+        RESOURCE_ICON,
+        &mut Vec::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    let sprite =
+        catalogue::created_gui_sprite(&catalogue.sprites, &name).map_err(|e| e.to_string())?;
+    let frame = ordinal
+        .checked_sub(1)
+        .and_then(|index| frames.get(token)?.get(index as usize).copied().flatten())
+        .and_then(|frame| frame.checked_sub(1))
+        .ok_or_else(|| format!("{token}: the recorded content gives no usable icon frame."))?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, frame, ICON_EDGE)
+        .map_err(|error| error.to_string())
+}
+
+/// [`present_stored`] over a serialized reply's `resources` list, left as it is when the request
+/// shows no visual mods or the reply has none.
+pub fn present_stored_json(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    resources: &mut serde_json::Value,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    if resources.is_null() || !content.is_some_and(|content| content.presentation.shows_mods()) {
+        return Ok(());
+    }
+    let mut infos: Vec<ResourceInfo> = serde_json::from_value(resources.take())?;
+    present_stored(source, content, &mut infos, cancelled)?;
+    *resources = serde_json::to_value(infos)?;
+    Ok(())
+}
+
 /// What naming recorded resources reads of a source, held apart from it: the
 /// content catalogue of its content stack (or why it is unavailable) and the
 /// source's resource cache. A preparation that publishes names where it holds
@@ -659,6 +769,236 @@ mod tests {
             wanted.iter().map(|key| cached[key].get().clone()).collect(),
             warnings,
         )
+    }
+
+    /// Icons a prepared payload stored with the recording's art are drawn at query time as the
+    /// request shows them: a selected mod's artwork, the recording's (named) where the mod's
+    /// cannot be drawn, on every reply, and the stored ones untouched without a selection.
+    #[test]
+    fn stored_resource_icons_follow_the_selection_at_query_time() {
+        use crate::test_fixtures::visual_mods::{
+            BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+        };
+        let machine = Machine::new("stored_resources");
+        machine.write(
+            "interface/resources.gui",
+            b"guiTypes = { containerWindowType = { name = resources_info_entry               buttonType = { name = resources_icon spriteType = GFX_strip } } }",
+        );
+        machine.write(
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_strip textureFile = gfx/strip.png } }",
+        );
+        machine.write("gfx/strip.png", &png(RED));
+        machine.write("common/resources/00.txt", b"resources = { oil = { icon_frame = 1 } }");
+        machine.write_mod("art", "gfx/strip.png", &png(BLUE));
+        // The mod replaces the recording's declaration with one whose texture does not load.
+        machine.write_mod(
+            "broken",
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_strip textureFile = gfx/broken.png } }",
+        );
+        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &[]);
+        let cancelled = AtomicBool::new(false);
+        let preparation = LoadContext {
+            content: source.admit(crate::source::Work::Recorded),
+        };
+        let (stored, _) =
+            stored_resource_infos(&source, &preparation, &[(7, "oil".into())], &cancelled).unwrap();
+        assert_eq!(first_pixel(stored[0].icon.as_deref().unwrap()), RED);
+        let shown = |options: &crate::products::ContentOptions| {
+            let mut resources = stored.clone();
+            let ((), line) = fallback_line(|| {
+                present_stored(&source, Some(options), &mut resources, &cancelled).unwrap()
+            });
+            (first_pixel(resources[0].icon.as_deref().unwrap()), line)
+        };
+        assert_eq!(shown(&options), (RED, None), "without a selection, as stored");
+        select(&source, &mut options, &["art"]);
+        assert_eq!(shown(&options), (BLUE, None));
+        select(&source, &mut options, &["broken"]);
+        for _ in 0..2 {
+            let (colour, line) = shown(&options);
+            assert_eq!(colour, RED, "the recording's own");
+            assert!(line.as_ref().is_some_and(|line| line.contains("GFX_strip")), "{line:?}");
+        }
+        // The stored entry keeps its own number and ordinal.
+        let mut resources = stored.clone();
+        present_stored(&source, Some(&options), &mut resources, &cancelled).unwrap();
+        assert_eq!((resources[0].id, resources[0].ordinal), (7, 1));
+    }
+
+    /// The recording's trade view selects sprite A and a mod's selects B, which the mod cannot
+    /// draw though the recording's B could: the recording's own choice, A, is drawn, never the
+    /// mod's choice patched with the recording's B.
+    #[test]
+    fn a_failed_selection_makes_the_recordings_own_choice_again() {
+        use crate::test_fixtures::visual_mods::{
+            GREEN, Machine, RED, fallback_line, first_pixel, png, select,
+        };
+        let gui = |sprite: &str| {
+            format!(
+                "guiTypes = {{ containerWindowType = {{ name = resources_info_entry \
+                 buttonType = {{ name = resources_icon spriteType = {sprite} }} }} }}"
+            )
+        };
+        let machine = Machine::new("resource_selection");
+        machine.write("interface/resources.gui", gui("GFX_a").as_bytes());
+        machine.write(
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png } \
+              spriteType = { name = GFX_b textureFile = gfx/b.png } }",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        machine.write("gfx/b.png", &png(GREEN));
+        machine.write("common/resources/00.txt", b"resources = { oil = { icon_frame = 1 } }");
+        machine.write_mod("selector", "interface/resources.gui", gui("GFX_b").as_bytes());
+        // The mod's declarations replace the recording's file: its B does not load.
+        machine.write_mod(
+            "selector",
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/broken.png } }",
+        );
+        machine.write_mod("selector", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["selector"]);
+        let cancelled = AtomicBool::new(false);
+        for _ in 0..2 {
+            let mut resources = vec![ResourceInfo {
+                id: 1,
+                token: "oil".into(),
+                ordinal: 1,
+                name: None,
+                icon: Some("stored".into()),
+            }];
+            let ((), line) = fallback_line(|| {
+                present_stored(&source, Some(&options), &mut resources, &cancelled).unwrap()
+            });
+            assert_eq!(first_pixel(resources[0].icon.as_deref().unwrap()), RED);
+            assert!(line.is_some_and(|line| line.contains("resource oil icon")));
+        }
+    }
+
+    /// The A/B selection, with an ordinary draw of the mod's B (which falls back to the
+    /// recording's B) in either order around the strict redraw: neither reads the other's
+    /// image, so the redraw makes the recording's own choice, A, and the ordinary draw still
+    /// falls back to B.
+    #[test]
+    fn strict_and_ordinary_draws_keep_their_images_apart_in_either_order() {
+        use crate::test_fixtures::visual_mods::{
+            GREEN, Machine, RED, first_pixel, png, select,
+        };
+        let gui = |sprite: &str| {
+            format!(
+                "guiTypes = {{ containerWindowType = {{ name = resources_info_entry \
+                 buttonType = {{ name = resources_icon spriteType = {sprite} }} }} }}"
+            )
+        };
+        for ordinary_first in [true, false] {
+            let machine = Machine::new(if ordinary_first {
+                "strict_images_ordinary_first"
+            } else {
+                "strict_images_strict_first"
+            });
+            machine.write("interface/resources.gui", gui("GFX_a").as_bytes());
+            machine.write(
+                "interface/resources.gfx",
+                b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png } \
+                  spriteType = { name = GFX_b textureFile = gfx/b.png } }",
+            );
+            machine.write("gfx/a.png", &png(RED));
+            machine.write("gfx/b.png", &png(GREEN));
+            machine.write("common/resources/00.txt", b"resources = { oil = { icon_frame = 1 } }");
+            machine.write_mod("selector", "interface/resources.gui", gui("GFX_b").as_bytes());
+            machine.write_mod(
+                "selector",
+                "interface/resources.gfx",
+                b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png } \
+                  spriteType = { name = GFX_b textureFile = gfx/broken.png } }",
+            );
+            machine.write_mod("selector", "gfx/broken.png", b"not a png");
+            let (source, mut options) = machine.open();
+            select(&source, &mut options, &["selector"]);
+            let admitted = catalogue::catalogue(&source, &options).unwrap();
+            // What an ordinary query-time widget draws of the mod's B.
+            let ordinary = || {
+                let sprite = admitted.sprites.find("GFX_b").unwrap().unwrap();
+                catalogue::sprite_frame_png(
+                    &admitted.content.layers,
+                    sprite,
+                    *admitted.gui_decode.as_ref().unwrap(),
+                    0,
+                    ICON_EDGE,
+                )
+                .unwrap()
+            };
+            let strict = || {
+                let mut resources = vec![ResourceInfo {
+                    id: 1,
+                    token: "oil".into(),
+                    ordinal: 1,
+                    name: None,
+                    icon: None,
+                }];
+                present_stored(&source, Some(&options), &mut resources, &AtomicBool::new(false))
+                    .unwrap();
+                first_pixel(resources[0].icon.as_deref().unwrap())
+            };
+            if ordinary_first {
+                assert_eq!(first_pixel(&ordinary()), GREEN, "the recording's B");
+                assert_eq!(strict(), RED, "the recording's own choice");
+            } else {
+                assert_eq!(strict(), RED, "the recording's own choice");
+                assert_eq!(first_pixel(&ordinary()), GREEN, "the recording's B");
+            }
+        }
+    }
+
+    /// A selected mod's interface file that cannot be read (gone after the mods were mounted):
+    /// an ordinary read of the GUIs falls back to the recording's, and a strict read fails on
+    /// that file; in either order, neither leaves its result for the other.
+    #[test]
+    fn strict_and_ordinary_gui_registries_are_kept_apart_in_either_order() {
+        use crate::test_fixtures::visual_mods::{Machine, png, select, RED};
+        for ordinary_first in [true, false] {
+            let machine = Machine::new(if ordinary_first {
+                "strict_guis_ordinary_first"
+            } else {
+                "strict_guis_strict_first"
+            });
+            machine.write(
+                "interface/resources.gui",
+                b"guiTypes = { containerWindowType = { name = resources_info_entry } }",
+            );
+            machine.write_mod("unreadable", "gfx/unrelated.png", &png(RED));
+            machine.write_mod(
+                "unreadable",
+                "interface/broken.gui",
+                b"guiTypes = { containerWindowType = { name = broken } }",
+            );
+            let (source, mut options) = machine.open();
+            select(&source, &mut options, &["unreadable"]);
+            let admitted = catalogue::catalogue(&source, &options).unwrap();
+            // Listed when the mods were mounted, unreadable now.
+            std::fs::remove_file(machine.mods.join("unreadable/interface/broken.gui")).unwrap();
+            let ordinary = || admitted.guis().is_ok();
+            // The strict read fails on that file itself, not on anything else.
+            let strict = || {
+                let error = installed_content_core::content::strict(|| {
+                    admitted.guis().map(|_| ()).map_err(|error| error.to_string())
+                })
+                .expect_err("the mods' GUIs do not read");
+                assert!(error.contains("broken.gui"), "{error}");
+            };
+            if ordinary_first {
+                assert!(ordinary(), "the recording's GUIs");
+                strict();
+            } else {
+                strict();
+                assert!(ordinary(), "the recording's GUIs");
+            }
+        }
     }
 
     #[test]

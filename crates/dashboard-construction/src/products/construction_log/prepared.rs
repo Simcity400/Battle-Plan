@@ -895,6 +895,13 @@ pub fn query(
             }]);
             manifest.newest = Some(window.interval);
         }
+        super::present_stored(
+            source,
+            content,
+            &mut manifest.types,
+            Some(&mut manifest.repair_icon),
+            cancelled,
+        )?;
         let mut data = serde_json::to_value(manifest)?;
         prefix.mark_revisable(source, branch, &mut data)?;
         return Ok(Some(data));
@@ -909,9 +916,12 @@ pub fn query(
         }
         if !coverage.complete && manifest.windows[params.window].last_hour > coverage.last_hour {
             if params.window + 1 == manifest.windows.len()
-                && let Some((window, _)) =
+                && let Some((mut window, _)) =
                     super::newest::query(source, branch, &manifest.types, cancelled)?
             {
+                if let Some(types) = &mut window.types {
+                    super::present_stored(source, content, types, None, cancelled)?;
+                }
                 prefix.answered(&[HourSpan {
                     first_hour: window.interval.first_hour,
                     last_hour: window.interval.last_hour,
@@ -974,7 +984,10 @@ pub fn query(
             log.output_reads
                 .push((row.hour, serde_json::from_value(row.row)?));
         }
-        let reply = Cut::new(Arc::new(log), manifest.windows).reply(params.window);
+        let mut reply = Cut::new(Arc::new(log), manifest.windows).reply(params.window);
+        if let Some(types) = &mut reply.types {
+            super::present_stored(source, content, types, None, cancelled)?;
+        }
         dashboard_base::products::check_reply_budget(&reply)?;
         let mut data = serde_json::to_value(reply)?;
         prefix.mark_revisable(source, branch, &mut data)?;
@@ -1075,6 +1088,13 @@ pub fn query(
                 });
             }
         }
+        super::present_stored(
+            source,
+            content,
+            &mut reply.types,
+            Some(&mut reply.repair_icon),
+            cancelled,
+        )?;
         let mut data = serde_json::to_value(reply)?;
         // Inferred work intervals and previously unresolved building names
         // can be repaired by later reads; the prefix's presentation is provisional.

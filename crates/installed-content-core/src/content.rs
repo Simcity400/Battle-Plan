@@ -216,6 +216,74 @@ thread_local! {
     /// What each [`observe_overlay_refusals`] active on this thread has seen, innermost last.
     static OVERLAY_OBSERVERS: std::cell::RefCell<Vec<BTreeSet<String>>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The first observer refusals reach: the innermost [`observe_overlay_refusals_isolated`]
+    /// one, whose notes reach no observer outside it.
+    static OVERLAY_ISOLATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Whether artwork loaders on this thread draw without falling back ([`strict`]).
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `run` with every artwork loader drawing strictly: what the selected visual mods cannot
+/// supply fails rather than falling back to the recording ([`ResolvedLayers::artwork`],
+/// [`ResolvedLayers::graphics_define`], [`ResolvedLayers::artwork_item`] and the interface
+/// texture loader honour it). A caller that redraws a whole operation from the recording when
+/// it fails uses it, so the recording's own choice is made again rather than one stage of the
+/// mods' choice patched.
+pub fn strict<T>(run: impl FnOnce() -> T) -> T {
+    struct Exit(bool);
+    impl Drop for Exit {
+        fn drop(&mut self) {
+            STRICT.with(|strict| strict.set(self.0));
+        }
+    }
+    let _exit = Exit(STRICT.with(|strict| strict.replace(true)));
+    run()
+}
+
+/// Whether artwork loaders on this thread draw strictly ([`strict`]).
+pub fn is_strict() -> bool {
+    STRICT.with(std::cell::Cell::get)
+}
+
+/// Whether artwork loaders on this thread may fall back to the recording: what every artwork
+/// memo keeps results apart by, so a strict draw ([`strict`]) never reads or fills a result a
+/// fallback-permitted draw made, nor the other way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ArtworkMode {
+    #[default]
+    Ordinary,
+    Strict,
+}
+
+/// The mode artwork loaders on this thread draw in.
+pub fn artwork_mode() -> ArtworkMode {
+    if is_strict() {
+        ArtworkMode::Strict
+    } else {
+        ArtworkMode::Ordinary
+    }
+}
+
+/// A memo kept once per [`ArtworkMode`]: each use reads and fills the current mode's.
+#[derive(Default)]
+pub struct ByMode<T> {
+    ordinary: T,
+    strict: T,
+}
+
+impl<T> ByMode<T> {
+    /// The current mode's ([`artwork_mode`]).
+    pub fn current(&self) -> &T {
+        match artwork_mode() {
+            ArtworkMode::Ordinary => &self.ordinary,
+            ArtworkMode::Strict => &self.strict,
+        }
+    }
+
+    /// The fallback-permitted one, which every ordinary read uses.
+    pub fn ordinary(&self) -> &T {
+        &self.ordinary
+    }
 }
 
 /// Runs `run` and returns, with its value, every refusal [`ResolvedLayers::note_overlay_refusal`]
@@ -242,14 +310,31 @@ pub fn observe_overlay_refusals<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<Stri
     (value, seen)
 }
 
+/// [`observe_overlay_refusals`] keeping what is noted inside to itself: no observer outside it
+/// sees it, so a caller can publish it ([`credit_overlay_refusals`]) or drop it.
+pub fn observe_overlay_refusals_isolated<T>(run: impl FnOnce() -> T) -> (T, BTreeSet<String>) {
+    struct Exit(usize);
+    impl Drop for Exit {
+        fn drop(&mut self) {
+            OVERLAY_ISOLATED.with(|isolated| isolated.set(self.0));
+        }
+    }
+    let depth = OVERLAY_OBSERVERS.with(|observers| observers.borrow().len());
+    let _exit = Exit(OVERLAY_ISOLATED.with(|isolated| isolated.replace(depth)));
+    observe_overlay_refusals(run)
+}
+
 /// Adds `refusals` to every observer active on this thread, as if noted here: a memo of
-/// artwork loaded once replays what its load fell back on to each later user.
+/// artwork loaded once replays what its load fell back on to each later user. Inside an
+/// isolated observer ([`observe_overlay_refusals_isolated`]) it reaches that observer and those
+/// within it only.
 pub fn credit_overlay_refusals(refusals: &BTreeSet<String>) {
     if refusals.is_empty() {
         return;
     }
+    let from = OVERLAY_ISOLATED.with(std::cell::Cell::get);
     OVERLAY_OBSERVERS.with(|observers| {
-        for seen in observers.borrow_mut().iter_mut() {
+        for seen in observers.borrow_mut().iter_mut().skip(from) {
             seen.extend(refusals.iter().cloned());
         }
     });
@@ -1895,6 +1980,9 @@ impl ResolvedLayers {
             return load(self);
         }
         load(presentation).or_else(|error| {
+            if is_strict() {
+                return Err(error);
+            }
             let recorded = if std::ptr::eq(presentation, self) {
                 self.without_overlays()
                     .ok_or_else(|| invalid("visual mods without recorded layers"))?
@@ -1918,8 +2006,8 @@ impl ResolvedLayers {
         recorded: &crate::defines::Defines,
         read: impl Fn(&crate::defines::Defines) -> Result<T, E>,
     ) -> Result<T, E> {
-        if std::ptr::eq(graphics, recorded) {
-            return read(recorded);
+        if std::ptr::eq(graphics, recorded) || is_strict() {
+            return read(graphics);
         }
         read(graphics).or_else(|error| {
             let value = read(recorded)?;
@@ -1944,6 +2032,9 @@ impl ResolvedLayers {
             Ok(item) => return Ok(item),
             Err(error) => error,
         };
+        if is_strict() {
+            return Err(error);
+        }
         if below && let Ok(item) = load(true) {
             self.note_overlay_refusal(format!("{key} ({error})"));
             return Ok(item);

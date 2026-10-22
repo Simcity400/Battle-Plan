@@ -396,15 +396,55 @@ fn append(runs: &mut Vec<OccupiedRun>, hour: i32, value: OccupiedValues) {
     }
 }
 
-pub fn law_content(
+/// The law icons drawn for one selection, by token; one per kind of catalogue
+/// ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct LawArt(Option<catalogue::Redrawn<String, String>>);
+
+/// Draws the law icons a prepared payload stored (the recording's art, as preparation is) as the
+/// request admitted under `content` shows them, when it shows visual mods: each law's recorded
+/// declaration gives its sprite and frame, looked up and drawn against the selection as
+/// [`law_content`] draws them, its recorded name kept. When the selection cannot look the sprite
+/// up or draw it, the recording's own is drawn and named on every reply that shows it; an
+/// undeclared or refused law stays so.
+pub fn present_stored(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    laws: &mut [OccupationLawInfo],
+) -> std::io::Result<()> {
+    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
+        return Ok(());
+    };
+    let declared = recorded
+        .content
+        .layers
+        .derived::<catalogue::CachedResult<installed_content_core::occupation_laws::Laws>>()
+        .get_or_init(|| installed_content_core::occupation_laws::read(&recorded.content.layers))?;
+    let state = source.state::<catalogue::ByCatalogue<LawArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
+    for law in laws {
+        let token = law.token.clone();
+        let shown = drawn.get(
+            token.clone(),
+            || format!("law {token} icon"),
+            |cat| law_icon(cat, &declared, &token).map_err(|(_, reason)| reason),
+        );
+        law.icon = shown.as_ref().ok().cloned();
+        law.missing = shown.as_ref().err().cloned();
+    }
+    Ok(())
+}
+
+/// A law's icon drawn through `cat`: its recorded declaration's sprite at its authored frame. A
+/// failure comes with what it was drawing.
+fn law_icon(
     cat: &Catalogue,
     laws: &installed_content_core::occupation_laws::Laws,
     token: &str,
-) -> OccupationLawInfo {
-    // Occupation laws localise the token itself.
-    let name = cat.localised(token, View::Plain);
+) -> Result<String, (String, String)> {
     let mut identity = format!("law {token}");
-    let icon = (|| -> Result<String, String> {
+    (|| -> Result<String, String> {
         let law = laws
             .find(token)?
             .ok_or_else(|| "Occupation law has no content declaration".to_owned())?;
@@ -420,16 +460,26 @@ pub fn law_content(
         let decode = cat.gui_decode.clone()?;
         catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, frame, 32)
             .map_err(|e| e.to_string())
-    })();
-    let missing = icon.as_ref().err().cloned();
-    if let Some(reason) = &missing {
-        cat.refuse(reason, &identity);
+    })()
+    .map_err(|reason| (identity, reason))
+}
+
+pub fn law_content(
+    cat: &Catalogue,
+    laws: &installed_content_core::occupation_laws::Laws,
+    token: &str,
+) -> OccupationLawInfo {
+    // Occupation laws localise the token itself.
+    let name = cat.localised(token, View::Plain);
+    let icon = law_icon(cat, laws, token);
+    if let Err((identity, reason)) = &icon {
+        cat.refuse(reason, identity);
     }
     OccupationLawInfo {
         token: token.into(),
         name,
+        missing: icon.as_ref().err().map(|(_, reason)| reason.clone()),
         icon: icon.ok(),
-        missing,
     }
 }
 

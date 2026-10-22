@@ -536,9 +536,10 @@ pub fn at_hour(
     let branch = params.branch_id.parse().expect("validated branch");
     let replay = source.replay_ref();
     let mut scan = Scan::new(replay, branch)?;
-    let cat = context.content().and_then(|options| {
-        catalogue::recorded_catalogue(source, options)
-    });
+    // Read as preparation reads it; its traits are then drawn as the request shows them.
+    let cat = context
+        .content()
+        .and_then(|options| catalogue::recorded_catalogue(source, options));
     let content = Content::for_catalogue(source, context, cat.ok())?;
     let sampled = UnitLeadersParams {
         selection: match &params.selection {
@@ -571,6 +572,8 @@ pub fn at_hour(
     if matches!(params.selection, LeaderSelection::Countries { .. }) {
         reply = project(&reply, params, history);
     }
+    // Only the traits the projected reply returns are drawn, and named.
+    super::present_traits(source, context.content.as_ref(), &mut reply.traits)?;
     for leader in &mut reply.leaders {
         leader.trait_gains.clear();
         leader.commands.clear();

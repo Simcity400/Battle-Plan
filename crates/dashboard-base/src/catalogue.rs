@@ -239,6 +239,157 @@ pub fn credit_stored_artwork(options: &ContentOptions, what: &str) {
     }
 }
 
+/// Art a reply draws from the operands a prepared payload kept, as the request's selection shows
+/// it. `draw` is the whole operation, run against one catalogue: acquiring its GUI selector,
+/// choosing among candidates by what is declared, looking the sprite up and rendering it. It runs
+/// against the request's `admitted` catalogue first, as one transaction: strictly, with no
+/// loader falling back to the recording ([`installed_content_core::content::strict`]), and isolated, its
+/// notes kept from the reply ([`capture_isolated`]). When it draws, its notes are published;
+/// when any stage fails, they are dropped and the whole operation runs again against the
+/// recording's own catalogue, so the recording's own choice is made again, and the reply names
+/// the fallback once, as `what` with the stage that failed (decision 5). When the recording
+/// cannot draw it either, the recording's failure is the result: the art is unavailable, as it
+/// always was. Everything runs in one capture, so the memo names its notes on every reply that
+/// shows it.
+pub fn present<T>(
+    what: &str,
+    admitted: &Catalogue,
+    recorded: &Catalogue,
+    draw: impl Fn(&Catalogue) -> Result<T, String>,
+) -> Drawn<Result<T, String>> {
+    Drawn::new(|| {
+        if std::ptr::eq(admitted, recorded) {
+            return draw(recorded);
+        }
+        let (shown, noted) =
+            capture_isolated(|| installed_content_core::content::strict(|| draw(admitted)));
+        match shown {
+            Ok(value) => {
+                credit(&noted);
+                Ok(value)
+            }
+            Err(reason) => {
+                let drawn = draw(recorded);
+                if drawn.is_ok() {
+                    installed_content_core::content::credit_overlay_refusals(
+                        &std::collections::BTreeSet::from([format!("{what} ({reason})")]),
+                    );
+                }
+                drawn
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+mod present_tests {
+    use super::*;
+    use crate::test_fixtures::visual_mods::{Machine, fallback_line, png, select, RED};
+
+    /// The admitted attempt runs strictly and keeps its notes to itself: a failed one leaves no
+    /// note of its own on the reply or the memo, only the fallback named once; a drawn one
+    /// publishes its notes.
+    #[test]
+    fn present_is_one_transaction() {
+        let machine = Machine::new("present_transaction");
+        machine.write("gfx/icon.png", &png(RED));
+        machine.write_mod("art", "gfx/icon.png", &png(RED));
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["art"]);
+        let (admitted, recorded) = presenting(&source, Some(&options)).unwrap().unwrap();
+        let note = |text: &str| {
+            installed_content_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
+                text.to_owned(),
+            ]))
+        };
+        let (drawn, line) = fallback_line(|| {
+            present("the icon", &admitted, &recorded, |cat| {
+                if std::ptr::eq(cat, &*admitted) {
+                    assert!(installed_content_core::content::is_strict());
+                    note("discarded selector note");
+                    Err("the mod's sprite does not load".to_owned())
+                } else {
+                    assert!(!installed_content_core::content::is_strict());
+                    Ok(7)
+                }
+            })
+        });
+        assert_eq!(*drawn.get(), Ok(7));
+        for line in [line, fallback_line(|| drawn.get().clone()).1] {
+            let line = line.unwrap();
+            assert!(line.contains("the icon (the mod's sprite does not load)"), "{line}");
+            assert!(!line.contains("discarded"), "{line}");
+        }
+        let (drawn, line) = fallback_line(|| {
+            present("the icon", &admitted, &recorded, |_| {
+                note("kept selector note");
+                Ok(8)
+            })
+        });
+        assert_eq!(*drawn.get(), Ok(8));
+        assert!(line.is_some_and(|line| line.contains("kept selector note")));
+    }
+}
+
+/// What a family's redraw keeps for one selection: the request's admitted catalogue, the
+/// recording's own, and each key's art drawn by [`present`]; one per kind of catalogue
+/// ([`ByCatalogue`]), replaced when either catalogue is.
+pub struct Redrawn<K, T> {
+    pub admitted: Arc<Catalogue>,
+    pub recorded: Arc<Catalogue>,
+    pub drawn: std::collections::BTreeMap<K, Drawn<Result<T, String>>>,
+}
+
+impl<K: Ord, T> Redrawn<K, T> {
+    /// The memo `slot` keeps for these catalogues, bound anew for others.
+    pub fn bind<'a>(
+        slot: &'a mut Option<Self>,
+        admitted: &Arc<Catalogue>,
+        recorded: &Arc<Catalogue>,
+    ) -> &'a mut Self {
+        if !slot.as_ref().is_some_and(|held| {
+            Arc::ptr_eq(&held.admitted, admitted) && Arc::ptr_eq(&held.recorded, recorded)
+        }) {
+            *slot = Some(Self {
+                admitted: Arc::clone(admitted),
+                recorded: Arc::clone(recorded),
+                drawn: std::collections::BTreeMap::new(),
+            });
+        }
+        slot.as_mut().expect("presented art bound")
+    }
+
+    /// `key`'s art, drawn by [`present`] on first use; its notes are credited on every use.
+    pub fn get(
+        &mut self,
+        key: K,
+        what: impl FnOnce() -> String,
+        draw: impl Fn(&Catalogue) -> Result<T, String>,
+    ) -> &Result<T, String> {
+        let (admitted, recorded) = (&self.admitted, &self.recorded);
+        self.drawn
+            .entry(key)
+            .or_insert_with(|| present(&what(), admitted, recorded, draw))
+            .get()
+    }
+}
+
+/// The catalogues a redraw for `options` reads: the request's admitted one and the recording's
+/// own, or `None` when the request shows no visual mods (its stored art is already the one it
+/// shows).
+pub fn presenting(
+    source: &Source,
+    options: Option<&ContentOptions>,
+) -> io::Result<Option<(Arc<Catalogue>, Arc<Catalogue>)>> {
+    let Some(options) = options.filter(|options| options.presentation.shows_mods()) else {
+        return Ok(None);
+    };
+    Ok(Some((
+        catalogue(source, options)?,
+        recorded_catalogue(source, options)?,
+    )))
+}
+
 /// A source cache built from one catalogue at a time, kept once for the recording's own
 /// catalogue (what preparation reads, and requests while no visual mod is shown) and once for
 /// the catalogue showing the source's visual mods: preparation and requests showing visual

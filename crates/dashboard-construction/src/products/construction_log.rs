@@ -2218,6 +2218,138 @@ fn named_inventory(
     })
 }
 
+/// The recorded building declarations, and the building icons and repair marker drawn for one
+/// selection, memoised apart so a reply credits only the art it returns; one per kind of
+/// catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct ConstructionArt {
+    /// The recorded building declarations, or why they cannot be read: then every building
+    /// icon is unavailable with that reason, and the reply's values and marker stay.
+    buildings: Option<(
+        Arc<Catalogue>,
+        Result<installed_content_core::buildings::Buildings, String>,
+    )>,
+    types: Option<catalogue::Redrawn<String, String>>,
+    repair: Option<catalogue::Redrawn<(), String>>,
+}
+
+/// Draws the building icons, and the repair marker when the reply returns one, that a prepared
+/// payload stored (the recording's art, as preparation is) as the request admitted under
+/// `content` shows them, when it shows visual mods: each type by its own token, the queue GUI's
+/// selector acquired, the sprite looked up and drawn against the selection, its recorded name
+/// kept. When the selection cannot draw it, the recording's own is drawn and named on every reply
+/// that shows it; a type without a token keeps no icon.
+pub fn present_stored(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    types: &mut [BuildingInfo],
+    repair_icon: Option<&mut Option<String>>,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
+        return Ok(());
+    };
+    let state = source.state::<catalogue::ByCatalogue<ConstructionArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let ConstructionArt {
+        buildings,
+        types: drawn,
+        repair,
+    } = state.of(&admitted);
+    if !buildings
+        .as_ref()
+        .is_some_and(|(held, _)| Arc::ptr_eq(held, &recorded))
+    {
+        let read = installed_content_core::buildings::read(&recorded.content.layers).map_err(|error| {
+            format!("Building types are unavailable in the recorded content: {error}")
+        });
+        *buildings = Some((Arc::clone(&recorded), read));
+    }
+    let (_, buildings) = buildings.as_ref().expect("building declarations read");
+    let drawn = catalogue::Redrawn::bind(drawn, &admitted, &recorded);
+    for info in types {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Construction request cancelled",
+            ));
+        }
+        let Some(token) = info.token.clone() else {
+            info.icon = None;
+            continue;
+        };
+        info.icon = drawn
+            .get(
+                token.clone(),
+                || format!("building {token} icon"),
+                |catalogue| building_icon(catalogue, buildings.as_ref().map_err(Clone::clone)?, &token),
+            )
+            .as_ref()
+            .ok()
+            .cloned();
+    }
+    // A reply that returns a marker draws it as the selection shows it, one the recording
+    // lacked included.
+    if let Some(marker) = repair_icon {
+        let repair = catalogue::Redrawn::bind(repair, &admitted, &recorded);
+        *marker = repair
+            .get((), || "the repair marker".into(), repair_marker)
+            .as_ref()
+            .ok()
+            .cloned();
+    }
+    Ok(())
+}
+
+/// What the queue GUI's selectors read of `catalogue`; they name nothing.
+fn line_view(catalogue: &Catalogue) -> ContentView<'_> {
+    fn unnamed(_: &str) -> Option<String> {
+        None
+    }
+    ContentView {
+        layers: &catalogue.content.layers,
+        sprites: &catalogue.sprites,
+        guis: catalogue.guis().map_err(|error| error.to_string()),
+        gui_decode: &catalogue.gui_decode,
+        localise: &unnamed,
+    }
+}
+
+/// A building type's icon drawn through `catalogue`: the queue's picture strip at the frame its
+/// recorded declaration gives.
+fn building_icon(
+    catalogue: &Catalogue,
+    buildings: &installed_content_core::buildings::Buildings,
+    token: &str,
+) -> Result<String, String> {
+    let strip = line_sprite(&line_view(catalogue), LINE_PICTURE).map_err(|e| e.to_string())?;
+    let building = buildings
+        .by_token(token)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("{token} is not declared in the recorded buildings"))?;
+    let frame = u32::try_from(building.icon_frame)
+        .ok()
+        .and_then(|frame| frame.checked_sub(1))
+        .ok_or_else(|| format!("{token} has no positive icon_frame"))?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, &strip.sprite, decode, frame, ICON_EDGE)
+        .map_err(|e| e.to_string())
+}
+
+/// The queue's repair marker drawn through `catalogue`, at its authored frame.
+fn repair_marker(catalogue: &Catalogue) -> Result<String, String> {
+    let line = line_sprite(&line_view(catalogue), LINE_REPAIR).map_err(|e| e.to_string())?;
+    let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+    catalogue::sprite_frame_png(
+        &catalogue.content.layers,
+        &line.sprite,
+        decode,
+        catalogue::authored_frame(line.frame),
+        ICON_EDGE,
+    )
+    .map_err(|e| format!("{LINE_ENTRY}.{LINE_REPAIR}: {e}"))
+}
+
 #[derive(Default)]
 struct Cache {
     /// Names for the catalogue they were read from, per branch.

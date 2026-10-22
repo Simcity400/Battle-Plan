@@ -24,6 +24,73 @@ fn value() -> OccupiedValues {
     }
 }
 
+/// Law icons a prepared payload stored with the recording's art are drawn at query time as the
+/// request shows them: a selected mod's, the recording's (named) where the mod's cannot be
+/// drawn, on every reply, and the stored ones untouched without a selection.
+#[test]
+fn stored_law_icons_follow_the_selection_at_query_time() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("stored_laws");
+    machine.write(
+        "common/occupation_laws/laws.txt",
+        b"strict = { icon = \"GFX_law:1\" }",
+    );
+    let sprite = |texture: &str| {
+        format!("spriteTypes = {{ spriteType = {{ name = GFX_law textureFile = {texture} }} }}")
+    };
+    machine.write("interface/laws.gfx", sprite("gfx/law.png").as_bytes());
+    machine.write("gfx/law.png", &png(RED));
+    machine.write_mod("art", "gfx/law.png", &png(BLUE));
+    machine.write_mod("broken", "interface/laws.gfx", sprite("gfx/broken.png").as_bytes());
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    machine.write_mod(
+        "refused",
+        "interface/laws.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_law textureFile = gfx/law.png noOfFrames = -1 } }",
+    );
+    let (source, mut options) = machine.open();
+    let stored = vec![OccupationLawInfo {
+        token: "strict".into(),
+        name: Some("Strict".into()),
+        icon: Some("stored".into()),
+        missing: None,
+    }];
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let mut laws = stored.clone();
+        let ((), line) =
+            fallback_line(|| present_stored(&source, Some(options), &mut laws).unwrap());
+        (laws.remove(0), line)
+    };
+    select(&source, &mut options, &[]);
+    let (law, line) = shown(&options);
+    assert_eq!((law.icon.as_deref(), line), (Some("stored"), None), "as stored");
+    select(&source, &mut options, &["art"]);
+    let (law, line) = shown(&options);
+    assert_eq!((first_pixel(law.icon.as_deref().unwrap()), line), (BLUE, None));
+    assert_eq!(law.name.as_deref(), Some("Strict"), "the recorded name is kept");
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (law, line) = shown(&options);
+        assert_eq!(first_pixel(law.icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("GFX_law")),
+            "{line:?}"
+        );
+    }
+    // A declaration the registry refuses fails the lookup itself: the recording's is drawn.
+    select(&source, &mut options, &["refused"]);
+    for _ in 0..2 {
+        let (law, line) = shown(&options);
+        assert_eq!(first_pixel(law.icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("law strict icon")),
+            "{line:?}"
+        );
+    }
+}
+
 #[test]
 fn occupied_is_activation_not_legal_ownership() {
     let mut row = StateResistanceRow {

@@ -154,6 +154,111 @@ fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
     );
 }
 
+/// Trait icons a prepared payload stored with the recording's art are drawn at query time as the
+/// request shows them: a selected mod's, the recording's (named) where the mod's cannot be
+/// drawn, on every reply, and the stored ones untouched without a selection.
+#[test]
+fn stored_trait_icons_follow_the_selection_at_query_time() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("stored_traits");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 },           NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write("common/unit_leader/test.txt", b"leader_traits = { Brave = {} }");
+    machine.write(
+        "interface/traits.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_trait_Brave textureFile = gfx/brave.png } }",
+    );
+    machine.write("gfx/brave.png", &png(RED));
+    machine.write_mod("art", "gfx/brave.png", &png(BLUE));
+    machine.write_mod(
+        "broken",
+        "interface/traits.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_trait_Brave textureFile = gfx/broken.png } }",
+    );
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let stored = vec![LeaderTraitInfo {
+        token: "Brave".into(),
+        name: Some("Brave".into()),
+        icon: Some("stored".into()),
+        missing: None,
+    }];
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let mut traits = stored.clone();
+        let ((), line) =
+            fallback_line(|| present_traits(&source, Some(options), &mut traits).unwrap());
+        (traits.remove(0), line)
+    };
+    select(&source, &mut options, &[]);
+    assert_eq!(shown(&options), (stored[0].clone(), None), "as stored");
+    select(&source, &mut options, &["art"]);
+    let (info, line) = shown(&options);
+    assert_eq!((first_pixel(info.icon.as_deref().unwrap()), line), (BLUE, None));
+    assert_eq!(info.name.as_deref(), Some("Brave"), "the recorded name is kept");
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (info, line) = shown(&options);
+        assert_eq!(first_pixel(info.icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("GFX_trait_Brave")),
+            "{line:?}"
+        );
+    }
+}
+
+/// The recording draws a trait with the GUI's fallback drawable, because it declares no sprite of
+/// the trait's own; a selected mod declares one whose texture does not load. The selection's
+/// whole choice fails, so the recording's own choice (the fallback drawable) is drawn and named,
+/// on a memoised reply too.
+#[test]
+fn a_broken_trait_sprite_a_mod_adds_falls_back_to_the_recordings_choice() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let fallback =
+        std::str::from_utf8(installed_content_core::gui::native::resources::FALLBACK_SPRITE).unwrap();
+    let machine = Machine::new("trait_fallback_choice");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+          NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write("common/unit_leader/test.txt", b"leader_traits = { Brave = {} }");
+    machine.write(
+        "interface/fallback.gfx",
+        format!("spriteTypes = {{ spriteType = {{ name = \"{fallback}\" textureFile = gfx/fallback.png }} }}")
+            .as_bytes(),
+    );
+    machine.write("gfx/fallback.png", &png(RED));
+    machine.write_mod(
+        "broken",
+        "interface/traits.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_trait_Brave textureFile = gfx/broken.png } }",
+    );
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let mut traits = vec![LeaderTraitInfo {
+            token: "Brave".into(),
+            name: None,
+            icon: Some("stored".into()),
+            missing: None,
+        }];
+        let ((), line) =
+            fallback_line(|| present_traits(&source, Some(&options), &mut traits).unwrap());
+        assert_eq!(first_pixel(traits[0].icon.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("trait Brave icon")),
+            "{line:?}"
+        );
+    }
+}
+
 #[test]
 fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
     use replay_data::{

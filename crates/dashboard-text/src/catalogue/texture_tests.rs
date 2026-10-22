@@ -36,7 +36,7 @@ pub fn texture_catalogue(
     let layers =
         ResolvedLayers::from_folders(&[(&base.0, &[][..]), (&modification.0, &[][..])]).unwrap();
     catalogue.sprites = installed_content_gfx::gfx::read(&layers).unwrap();
-    catalogue.guis = OnceLock::new();
+    catalogue.guis = Default::default();
     catalogue.content = Arc::new(ResolvedContent {
         layers,
         stats: Default::default(),

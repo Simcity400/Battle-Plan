@@ -1135,6 +1135,243 @@ fn construction_icons_use_cached_guis_and_the_native_fallback_and_refuse_unknown
     ));
 }
 
+/// Building icons and the repair marker a prepared payload stored with the recording's art are
+/// drawn at query time as the request shows them: a selected mod's, the recording's (named)
+/// where the mod's cannot be drawn, on every reply, and the stored ones untouched without a
+/// selection.
+#[test]
+fn stored_building_icons_follow_the_selection_at_query_time() {
+    use crate::products::construction_log::{BuildingInfo, present_stored};
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("stored_buildings");
+    machine.write(
+        "common/buildings/fixture.txt",
+        b"buildings = { fixture_building = { icon_frame = 1 } }",
+    );
+    machine.write(
+        "interface/fixture.gui",
+        br#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "picture" spriteType = "GFX_line_picture" }
+            iconType = { name = "repair" spriteType = "GFX_line_repair" frame = 1 } } }"#,
+    );
+    let sprites = |picture: &str| {
+        format!(
+            "spriteTypes = {{ spriteType = {{ name = GFX_line_picture textureFile = {picture} }}              spriteType = {{ name = GFX_line_repair textureFile = gfx/repair.png }} }}"
+        )
+    };
+    machine.write("interface/fixture.gfx", sprites("gfx/picture.png").as_bytes());
+    machine.write("gfx/picture.png", &png(RED));
+    machine.write("gfx/repair.png", &png(RED));
+    machine.write_mod("art", "gfx/picture.png", &png(BLUE));
+    machine.write_mod("art", "gfx/repair.png", &png(BLUE));
+    machine.write_mod("broken", "interface/fixture.gfx", sprites("gfx/broken.png").as_bytes());
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let stored = vec![BuildingInfo {
+        id: 42,
+        token: Some("fixture_building".into()),
+        name: Some("Fixture".into()),
+        icon: Some("stored".into()),
+    }];
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let (mut types, mut repair) = (stored.clone(), Some("stored".to_owned()));
+        let ((), line) = fallback_line(|| {
+            present_stored(
+                &source,
+                Some(options),
+                &mut types,
+                Some(&mut repair),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        });
+        (types.remove(0), repair, line)
+    };
+    select(&source, &mut options, &[]);
+    assert_eq!(
+        shown(&options),
+        (stored[0].clone(), Some("stored".into()), None),
+        "as stored"
+    );
+    select(&source, &mut options, &["art"]);
+    let (info, repair, line) = shown(&options);
+    assert_eq!(first_pixel(info.icon.as_deref().unwrap()), BLUE);
+    assert_eq!(first_pixel(repair.as_deref().unwrap()), BLUE);
+    assert_eq!((info.name.as_deref(), line), (Some("Fixture"), None));
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (info, repair, line) = shown(&options);
+        assert_eq!(first_pixel(info.icon.as_deref().unwrap()), RED);
+        // The mod does not redeclare the marker: the recording's own, drawn normally.
+        assert_eq!(first_pixel(repair.as_deref().unwrap()), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("GFX_line_picture")),
+            "{line:?}"
+        );
+    }
+}
+
+/// A queue GUI and its sprites, as the recording declares them.
+fn construction_machine(name: &str) -> dashboard_base::test_fixtures::visual_mods::Machine {
+    use dashboard_base::test_fixtures::visual_mods::{Machine, RED, png};
+    let machine = Machine::new(name);
+    machine.write(
+        "common/buildings/fixture.txt",
+        b"buildings = { fixture_building = { icon_frame = 1 } }",
+    );
+    machine.write(
+        "interface/fixture.gui",
+        br#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "picture" spriteType = "GFX_line_picture" }
+            iconType = { name = "repair" spriteType = "GFX_line_repair" frame = 1 } } }"#,
+    );
+    machine.write(
+        "interface/fixture.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_line_picture textureFile = gfx/picture.png } \
+          spriteType = { name = GFX_line_repair textureFile = gfx/repair.png } }",
+    );
+    machine.write("gfx/picture.png", &png(RED));
+    machine.write("gfx/repair.png", &png(RED));
+    machine
+}
+
+fn fixture_types() -> Vec<crate::products::construction_log::BuildingInfo> {
+    vec![crate::products::construction_log::BuildingInfo {
+        id: 42,
+        token: Some("fixture_building".into()),
+        name: Some("Fixture".into()),
+        icon: Some("stored".into()),
+    }]
+}
+
+/// A selected mod's queue GUI declares no picture: the selector stage fails, so the recording's
+/// own choice is drawn and the fallback named with that stage, on the memoised reply too.
+#[test]
+fn a_building_icon_selector_failure_is_named_on_every_reply() {
+    use crate::products::construction_log::present_stored;
+    use dashboard_base::test_fixtures::visual_mods::{RED, fallback_line, first_pixel, select};
+    let machine = construction_machine("building_selector");
+    machine.write_mod(
+        "nogui",
+        "interface/fixture.gui",
+        br#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "repair" spriteType = "GFX_line_repair" frame = 1 } } }"#,
+    );
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["nogui"]);
+    for _ in 0..2 {
+        let mut types = fixture_types();
+        let ((), line) = fallback_line(|| {
+            present_stored(&source, Some(&options), &mut types, None, &AtomicBool::new(false))
+                .unwrap()
+        });
+        assert_eq!(first_pixel(types[0].icon.as_deref().unwrap()), RED);
+        let line = line.unwrap();
+        assert!(line.contains("building fixture_building icon"), "{line}");
+        assert!(line.contains("picture"), "{line}");
+    }
+}
+
+/// The repair marker is drawn, and its fallback named, only on a reply that returns a marker.
+#[test]
+fn only_a_reply_with_a_repair_marker_names_its_fallback() {
+    use crate::products::construction_log::present_stored;
+    use dashboard_base::test_fixtures::visual_mods::{RED, fallback_line, first_pixel, select};
+    let machine = construction_machine("repair_only");
+    machine.write_mod(
+        "broken",
+        "interface/fixture.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_line_picture textureFile = gfx/picture.png } \
+          spriteType = { name = GFX_line_repair textureFile = gfx/broken.png } }",
+    );
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["broken"]);
+    let mut types = fixture_types();
+    let ((), line) = fallback_line(|| {
+        present_stored(&source, Some(&options), &mut types, None, &AtomicBool::new(false)).unwrap()
+    });
+    assert_eq!(line, None, "a building-only reply names no repair fallback");
+    let mut repair = Some("stored".to_owned());
+    let ((), line) = fallback_line(|| {
+        present_stored(
+            &source,
+            Some(&options),
+            &mut fixture_types(),
+            Some(&mut repair),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    });
+    assert_eq!(first_pixel(repair.as_deref().unwrap()), RED);
+    assert!(
+        line.as_ref().is_some_and(|line| line.contains("GFX_line_repair")),
+        "{line:?}"
+    );
+}
+
+/// A recorded building database the reader refuses leaves every building icon unavailable with
+/// its reason, never the reply: the values stay, and the repair marker is still drawn.
+#[test]
+fn a_refused_building_database_keeps_the_reply_and_its_marker() {
+    use crate::products::construction_log::present_stored;
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, first_pixel, png, select};
+    let machine = construction_machine("refused_buildings");
+    // The building reader refuses a resource registry with diagnostics.
+    machine.write("common/resources/00.txt", b"resources = { ore = { modifier = { x = 1 } } }");
+    machine.write_mod("art", "gfx/repair.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["art"]);
+    let mut types = fixture_types();
+    let mut repair = Some("stored".to_owned());
+    present_stored(
+        &source,
+        Some(&options),
+        &mut types,
+        Some(&mut repair),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(types[0].icon, None);
+    assert_eq!(types[0].name.as_deref(), Some("Fixture"));
+    assert_eq!(first_pixel(repair.as_deref().unwrap()), BLUE);
+}
+
+/// A marker the recording could not draw is drawn when a selected mod supplies it.
+#[test]
+fn a_mod_supplies_a_repair_marker_the_recording_lacked() {
+    use crate::products::construction_log::present_stored;
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, first_pixel, png, select};
+    let machine = construction_machine("supplied_marker");
+    machine.write(
+        "interface/fixture.gui",
+        br#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "picture" spriteType = "GFX_line_picture" } } }"#,
+    );
+    machine.write_mod(
+        "marker",
+        "interface/fixture.gui",
+        br#"guiTypes = { containerWindowType = { name = "production_building_line_entry"
+            iconType = { name = "picture" spriteType = "GFX_line_picture" }
+            iconType = { name = "repair" spriteType = "GFX_line_repair" frame = 1 } } }"#,
+    );
+    machine.write_mod("marker", "gfx/repair.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["marker"]);
+    let mut repair = None;
+    present_stored(
+        &source,
+        Some(&options),
+        &mut fixture_types(),
+        Some(&mut repair),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(first_pixel(repair.as_deref().unwrap()), BLUE);
+}
+
 #[test]
 fn refused_state_read_keeps_live_wording() {
     use crate::products::construction_log::{ContentView, named};

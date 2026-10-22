@@ -478,6 +478,7 @@ pub fn query(
     params: Value,
     store: &store::Store,
     key: &store::SourceKey,
+    content: Option<&dashboard_core::config::ContentOptions>,
     flag: &AtomicBool,
 ) -> io::Result<Value> {
     check_cancel(flag)?;
@@ -502,11 +503,12 @@ pub fn query(
         "ships-sunk-manifest" => {
             let params: BranchParams = serde_json::from_value(params)?;
             ShipsSunk::validate(&params).map_err(dashboard_core::invalid)?;
-            let reply: ShipsSunkManifestReply =
+            let mut reply: ShipsSunkManifestReply =
                 series::read_reply(store, key, &format!("ships-sunk-manifest-{branch}"), 0)?
                     .ok_or_else(|| {
                         dashboard_core::invalid("Prepared ships sunk manifest is missing")
                     })?;
+            super::present_stored(source, content, &mut reply.classes.classes)?;
             serde_json::to_value(reply)?
         }
         "ships-sunk-battle-titles" => {
@@ -545,6 +547,7 @@ pub fn query(
                     *class = current.clone();
                 }
             }
+            super::present_stored(source, content, &mut reply.reply.classes)?;
             reply.reply.branch_id = params.branch_id;
             serde_json::to_value(reply)?
         }
