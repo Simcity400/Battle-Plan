@@ -215,6 +215,7 @@ impl Product for GameWindow {
             Err(refused) => (None, refused),
         };
         let mut warnings = bound.warnings;
+        warnings.extend(session.notes.iter().cloned());
         warnings.extend(session.gui.uncovered_note("Game window"));
         let reply = GameWindowReply {
             warnings,

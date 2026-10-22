@@ -23,9 +23,10 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
   the stack's presentation, the visual mods the source's widgets show, as the map reads its
   windows. The templates and registry are one choice: the mods', read strictly with what it
   notes kept to the attempt, or, when any of it cannot be read, the recording's whole, named.
-  Each texture or font file the mods' templates name that the mods break is the recording's
-  file of that path, as the map draws it, and every window the session draws names what it drew
-  that way. Texts show the
+  A sprite or font the mods' templates name that the mods cannot draw as they declare it is
+  the recording's own declaration of it, read from the recording (the session keeps the
+  recording's registry for it); a texture file named by path alone that the mods break is the
+  recording's file of that path. Every window the session draws names what it drew that way. Texts show the
   presentation's localisation (`Catalogue::presentation_localisation`). A source owns its
   sessions (one per interface viewport, language and texture decode of its current stack and
   presentation): a session holds its stack, so the stack must not hold it, and closing the source

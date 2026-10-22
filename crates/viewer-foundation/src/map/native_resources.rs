@@ -11,6 +11,12 @@
 //!   [`installed_content_core::gui::native::fonts::load_glyphs`]. Page names append `.tga` and use the
 //!   texture resolver.
 //!
+//! - Visual mods: a texture or font file the mods break or hide is retried by its path from the
+//!   recording, as the map draws; given the recording's own registry
+//!   ([`GuiResources::with_recorded_registry`], game windows), a sprite or font is instead drawn
+//!   as a whole from the recording's own declaration when the mods' cannot be drawn. Textures
+//!   are kept per stack read, so the two never share a load.
+//!
 //! Callers acquire template assets ([`super::native_gui::assets_in`]) and bound text's inline
 //! icons ([`super::native_gui::Assets::add_text`]) once, then lay out and draw through these
 //! resources. This supplies [`super::native_gui::Sheets`] and the resource half of
@@ -65,6 +71,38 @@ struct Loaded {
     refused: Option<(RefusalKind, String)>,
 }
 
+/// Which stack a texture is read from, which keeps its load apart from the same path's on
+/// another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stack {
+    /// The stack handed in, and, when it shows visual mods, a file they break or hide read from
+    /// the recording by its path: what the map reads.
+    Retried,
+    /// The stack handed in alone: the visual mods' attempt at a sprite or font drawn as a whole
+    /// from the recording's own declaration when it fails ([`GuiResources::with_recorded_registry`]).
+    Shown,
+    /// The recorded layers below the visual mods, read for the recording's own declaration.
+    Recorded,
+}
+
+/// What chose a loaded font: the registered font a name resolves to, as the map keeps it, or,
+/// with the recording's own registry, the asked name, whose fallback to the recording's own
+/// declaration of it depends on the name.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FontKey {
+    Registered(usize),
+    Named(Vec<u8>),
+}
+
+/// What loading one font noted, applied only for the attempt that is kept: files and pages no
+/// stack gives, and files read outside the content coverage.
+#[derive(Default)]
+struct FontNotes {
+    refused: Vec<String>,
+    missing: Vec<(String, String)>,
+    uncovered: Vec<Vec<u8>>,
+}
+
 /// One prepared sprite: what the layout needs, and the textures each slot draws.
 #[derive(Clone, Debug)]
 struct Prepared {
@@ -115,20 +153,23 @@ pub struct GuiResources {
     registry: Registry,
     /// The game's language as the font families name it (`l_english`).
     language: Vec<u8>,
-    textures: BTreeMap<Vec<u8>, Loaded>,
+    /// Each texture by the stack it was read from and its path.
+    textures: BTreeMap<(Stack, Vec<u8>), Loaded>,
     /// Every texture [`GuiResources::texture`] returned since the sprite or font being prepared
     /// began, loaded then or before, whose refusals that sprite or font takes.
-    touched: Vec<Vec<u8>>,
+    touched: Vec<(Stack, Vec<u8>)>,
     /// The client state every texture decodes under ([`Decode`]).
     decode: Decode,
     sprites: HashMap<Vec<u8>, Prepared>,
     /// Shared CPU masks, built only for textures used by transparency-checked sprites.
     alpha: BTreeMap<usize, AlphaMask>,
-    /// Each loaded font, by the index of the registered font it is.
-    fonts: BTreeMap<usize, native_text::Font>,
-    /// The registered font each asked name resolves to.
-    font_names: BTreeMap<Vec<u8>, usize>,
-    effects: [BTreeMap<Vec<u8>, Result<Effect, String>>; 2],
+    /// Each loaded font, by what chose it ([`FontKey`]).
+    fonts: BTreeMap<FontKey, native_text::Font>,
+    /// The loaded font each asked name resolves to.
+    font_names: BTreeMap<Vec<u8>, FontKey>,
+    /// Each effect as loaded, with what its load drew from the recording instead of the visual
+    /// mods, credited again on every use ([`GuiResources::effect_result`]).
+    effects: [BTreeMap<Vec<u8>, (Result<Effect, String>, BTreeSet<String>)>; 2],
     compiler: Option<super::native_shader::library::Library>,
     /// The renderer's global defines every effect compiles with (`library::globals`).
     globals: Vec<String>,
@@ -139,6 +180,10 @@ pub struct GuiResources {
     recorded: Option<ResolvedLayers>,
     /// Each `.fnt` a loaded font names that no stack gives, and why: its glyphs draw nothing.
     missing_fonts: BTreeMap<String, String>,
+    /// The recording's own registry, when a sprite or font the visual mods cannot draw is drawn
+    /// as a whole from the recording's own declaration of it
+    /// ([`GuiResources::with_recorded_registry`]); `None` retries each file by its path.
+    recorded_registry: Option<Registry>,
 }
 
 /// Resources and viewport for one presentation; None refreshes without advancing a frame.
@@ -170,7 +215,20 @@ impl GuiResources {
             uncovered: BTreeSet::new(),
             recorded: None,
             missing_fonts: BTreeMap::new(),
+            recorded_registry: None,
         }
+    }
+
+    /// These resources drawing a sprite or font the visual mods cannot draw (a texture, page or
+    /// font file of theirs that does not load, or one they hide) from `recorded`, the recording's
+    /// own registry: its declaration of that name, read from the recording, named, rather than
+    /// the mods' declaration with the recording's file of the same path. One the recording does
+    /// not declare, or cannot draw either, stays as the mods' draw it. Texture files named by
+    /// path alone ([`Assets::textures`]) are still read from the recording by their path. Without
+    /// it, as the map draws, every file is retried by its path.
+    pub fn with_recorded_registry(mut self, recorded: Registry) -> Self {
+        self.recorded_registry = Some(recorded);
+        self
     }
 
     pub fn registry(&self) -> &Registry {
@@ -255,12 +313,14 @@ impl GuiResources {
             self.load_font(layers, name, images)?;
         }
         for path in &assets.textures {
-            self.texture(layers, path, images)?;
+            self.texture(Stack::Retried, layers, path, images)?;
         }
         Ok(())
     }
 
-    /// The effect `file` resolves to (read once), or why it is refused.
+    /// The effect `file` resolves to (read once), or why it is refused. What its load drew from
+    /// the recording is credited to every use, so a sprite kept after another attempt loaded the
+    /// effect still names it.
     fn effect_result(
         &mut self,
         layers: &ResolvedLayers,
@@ -272,47 +332,50 @@ impl GuiResources {
             super::native_shader::library::Library::new(Arc::new(layers.clone()))
                 .with_globals(globals.clone())
         });
-        self.effects[usize::from(masked)]
+        let (effect, fallbacks) = self.effects[usize::from(masked)]
             .entry(file.to_vec())
             .or_insert_with(|| {
                 // The name to its C string's end, opened by its bytes.
                 let file = installed_content_core::parser::c_string(file);
-                Effect::load(
-                    library,
-                    file,
-                    &if masked {
-                        vec!["MASKING".into()]
-                    } else {
-                        Vec::new()
-                    },
-                )
-            })
-            .clone()
+                installed_content_core::content::observe_overlay_refusals(|| {
+                    Effect::load(
+                        library,
+                        file,
+                        &if masked {
+                            vec!["MASKING".into()]
+                        } else {
+                            Vec::new()
+                        },
+                    )
+                })
+            });
+        installed_content_core::content::credit_overlay_refusals(fallbacks);
+        effect.clone()
     }
 
-    /// The texture `name` loads, once. Every texture returned, loaded now or before, is noted in
-    /// `touched`: the one path a sprite or font takes its textures' refusals by.
+    /// The texture `name` loads from `stack`, once. Every texture returned, loaded now or before,
+    /// is noted in `touched`: the one path a sprite or font takes its textures' refusals by.
     fn texture(
         &mut self,
+        stack: Stack,
         layers: &ResolvedLayers,
         name: &[u8],
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<Loaded> {
-        self.touched.push(name.to_vec());
-        if let Some(loaded) = self.textures.get(name) {
+        let key = (stack, name.to_vec());
+        self.touched.push(key.clone());
+        if let Some(loaded) = self.textures.get(&key) {
             return Ok(loaded.clone());
         }
-        // A texture the visual mods break (or hide) is the recording's own, named; one the
-        // recording cannot give either fails as it would without them.
-        if self.recorded.is_none() && layers.shows_visual_mods() {
-            self.recorded = layers.without_overlays();
-        }
-        let recorded = self
-            .recorded
-            .as_ref()
-            .filter(|_| layers.shows_visual_mods());
+        // A texture the visual mods break (or hide) is the recording's own, named, when it is
+        // retried by its path; one the recording cannot give either fails as it would without
+        // them.
+        let recorded = match stack {
+            Stack::Retried => self.recorded_layers(layers),
+            Stack::Shown | Stack::Recorded => None,
+        };
         let loaded =
-            match resources::stack_texture_or_recorded(layers, recorded, name, self.decode)? {
+            match resources::stack_texture_or_recorded(layers, recorded.as_ref(), name, self.decode)? {
                 Ok(texture) => {
                     if !layers.covered_path(name) {
                         self.uncovered.insert(name.to_vec());
@@ -338,8 +401,29 @@ impl GuiResources {
                     },
                 },
             };
-        self.textures.insert(name.to_vec(), loaded.clone());
+        self.textures.insert(key, loaded.clone());
         Ok(loaded)
+    }
+
+    /// The recorded layers below the visual mods `layers` shows, taken once; `None` when it
+    /// shows none.
+    fn recorded_layers(&mut self, layers: &ResolvedLayers) -> Option<ResolvedLayers> {
+        if !layers.shows_visual_mods() {
+            return None;
+        }
+        if self.recorded.is_none() {
+            self.recorded = layers.without_overlays();
+        }
+        self.recorded.clone()
+    }
+
+    /// Why the sprite or font being prepared cannot be drawn as declared: the first texture it
+    /// asked for (by a path) that does not load.
+    fn touched_failure(&self) -> Option<String> {
+        self.touched.iter().find_map(|key| {
+            let why = self.textures[key].missing.as_ref()?;
+            (!key.1.is_empty()).then(|| format!("texture {} ({why})", lossy(&key.1)))
+        })
     }
 
     /// One note naming every font or texture read outside the content coverage policy, whose
@@ -372,18 +456,75 @@ impl GuiResources {
         refusals
     }
 
-    /// Prepares the sprite `name` shows ([`Registry::create`]: the name, else the fallback).
+    /// Prepares the sprite `name` shows ([`Registry::create`]: the name, else the fallback). With
+    /// the recording's own registry ([`Self::with_recorded_registry`]), a sprite the visual mods
+    /// cannot draw as they declare it is the recording's own declaration of it, drawn from the
+    /// recording and named, when that draws.
     fn prepare(
         &mut self,
         layers: &ResolvedLayers,
         name: &[u8],
         images: &mut Vec<dds::Texture>,
     ) -> io::Result<()> {
+        if self.recorded_registry.is_none() {
+            if let Some((prepared, _)) = self.prepare_from(Stack::Retried, layers, name, images)? {
+                self.sprites.insert(name.to_vec(), prepared);
+            }
+            return Ok(());
+        }
+        // Each attempt keeps what it notes to itself; only the kept one's is published. A read
+        // that fails is the attempt's failure too, which the recording's declaration may draw.
+        let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+            self.prepare_from(Stack::Shown, layers, name, images)
+        });
+        let why = match &shown {
+            Ok(Some((_, broken))) => broken.clone(),
+            Ok(None) => None,
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(why) = why
+            && let Some(recorded) = self.recorded_layers(layers)
+        {
+            let (own, own_noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+                self.prepare_from(Stack::Recorded, &recorded, name, images)
+            });
+            // A recording that cannot draw it either leaves the selection's outcome as it is.
+            if let Ok(Some((own, None))) = own {
+                installed_content_core::content::credit_overlay_refusals(&own_noted);
+                layers.note_overlay_refusal(format!("sprite {} ({why})", lossy(name)));
+                self.sprites.insert(name.to_vec(), own);
+                return Ok(());
+            }
+        }
+        installed_content_core::content::credit_overlay_refusals(&noted);
+        if let Some((prepared, _)) = shown? {
+            self.sprites.insert(name.to_vec(), prepared);
+        }
+        Ok(())
+    }
+
+    /// The sprite `name` as `stack`'s registry declares it (the recording's own for
+    /// [`Stack::Recorded`]), its textures read from `layers`, with why it cannot be drawn as
+    /// declared; `None` when the registry does not declare it.
+    fn prepare_from(
+        &mut self,
+        stack: Stack,
+        layers: &ResolvedLayers,
+        name: &[u8],
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<Option<(Prepared, Option<String>)>> {
         self.touched.clear();
-        let facts: SpriteFacts = match self.registry.create(name) {
+        let registry = match stack {
+            Stack::Recorded => self
+                .recorded_registry
+                .as_ref()
+                .expect("a recorded draw has the recording's registry"),
+            Stack::Retried | Stack::Shown => &self.registry,
+        };
+        let facts: SpriteFacts = match registry.create(name) {
             Lookup::Defined(facts) => facts.clone(),
             // The module retries the fallback itself (`FALLBACK_SPRITE` is prepared by `load`).
-            Lookup::Fallback(_) | Lookup::Nothing => return Ok(()),
+            Lookup::Fallback(_) | Lookup::Nothing => return Ok(None),
         };
         // The reader's refusals of the declaration, which the layout refuses a use by; the
         // refusals of the textures it loads join them below.
@@ -429,10 +570,10 @@ impl GuiResources {
             | Declared::MaskedShield { plain, .. } => {
                 let (main, second) = match &facts.kind {
                     Declared::MaskedShield { shield, .. } => (
-                        self.texture(layers, &shield.texture1, images)?,
-                        Some(self.texture(layers, &shield.texture2, images)?),
+                        self.texture(stack, layers, &shield.texture1, images)?,
+                        Some(self.texture(stack, layers, &shield.texture2, images)?),
                     ),
-                    _ => (self.texture(layers, &plain.texture, images)?, None),
+                    _ => (self.texture(stack, layers, &plain.texture, images)?, None),
                 };
                 if plain.transparence_check && main.missing.is_none() {
                     // The game creates a mask only for decoded BGRA8 surfaces. Other
@@ -454,7 +595,7 @@ impl GuiResources {
                 let masking = if plain.masking_texture.is_empty() {
                     None
                 } else {
-                    Some(self.texture(layers, &plain.masking_texture, images)?)
+                    Some(self.texture(stack, layers, &plain.masking_texture, images)?)
                         .filter(|loaded| loaded.missing.is_none())
                 };
                 let masked = masking.is_some();
@@ -488,8 +629,8 @@ impl GuiResources {
                 let mut animations = Vec::new();
                 if animates {
                     for record in &plain.animations {
-                        let mask = self.texture(layers, &record.mask_file, images)?;
-                        let texture = self.texture(layers, &record.texture_file, images)?;
+                        let mask = self.texture(stack, layers, &record.mask_file, images)?;
+                        let texture = self.texture(stack, layers, &record.texture_file, images)?;
                         animations.push(AnimationRecord {
                             data: record.clone(),
                             mask: mask.texture,
@@ -529,7 +670,7 @@ impl GuiResources {
                 }
             }
             Declared::CorneredTile(tile) => {
-                let main = self.texture(layers, &tile.texture, images)?;
+                let main = self.texture(stack, layers, &tile.texture, images)?;
                 let effect = self.effect_result(layers, tile.effect(), false);
                 Prepared {
                     info: SpriteInfo {
@@ -563,8 +704,8 @@ impl GuiResources {
                 }
             }
             Declared::Progress(progress) => {
-                let one = self.texture(layers, &progress.texture1, images)?;
-                let two = self.texture(layers, &progress.texture2, images)?;
+                let one = self.texture(stack, layers, &progress.texture1, images)?;
+                let two = self.texture(stack, layers, &progress.texture2, images)?;
                 let effect = self.effect_result(layers, &progress.effect_file, false);
                 Prepared {
                     info: SpriteInfo {
@@ -598,7 +739,7 @@ impl GuiResources {
                 }
             }
             Declared::Resizeable(resizeable) => {
-                let main = self.texture(layers, &resizeable.texture, images)?;
+                let main = self.texture(stack, layers, &resizeable.texture, images)?;
                 Prepared {
                     info: SpriteInfo {
                         texture: extent(&main),
@@ -625,8 +766,8 @@ impl GuiResources {
                 }
             }
             Declared::CircularProgress(circular) => {
-                let one = self.texture(layers, &circular.texture1, images)?;
-                let two = self.texture(layers, &circular.texture2, images)?;
+                let one = self.texture(stack, layers, &circular.texture1, images)?;
+                let two = self.texture(stack, layers, &circular.texture2, images)?;
                 let effect = self.effect_result(layers, CIRCULAR_EFFECT.as_bytes(), false);
                 Prepared {
                     info: SpriteInfo {
@@ -645,20 +786,20 @@ impl GuiResources {
             }
             Declared::PieChart(pie) => Prepared {
                 info: chart(SpriteKind::PieChart { size: pie.size }),
-                sheet: sheet(&self.texture(layers, b"", images)?, 1),
+                sheet: sheet(&self.texture(stack, layers, b"", images)?, 1),
                 second: None,
                 masking: None,
                 animations: Vec::new(),
             },
             Declared::LineChart(line) => Prepared {
                 info: chart(SpriteKind::LineChart { size: line.size }),
-                sheet: sheet(&self.texture(layers, b"", images)?, 1),
+                sheet: sheet(&self.texture(stack, layers, b"", images)?, 1),
                 second: None,
                 masking: None,
                 animations: Vec::new(),
             },
             Declared::Text(text) => {
-                let main = self.texture(layers, &text.texture, images)?;
+                let main = self.texture(stack, layers, &text.texture, images)?;
                 let file: &[u8] = if text.effect_file.is_empty() {
                     DEFAULT_SPRITE_EFFECT.as_bytes()
                 } else {
@@ -690,16 +831,19 @@ impl GuiResources {
             }
         };
         let mut prepared = prepared;
+        let broken = self.touched_failure();
         for refused in self.touched_refusals() {
             if !prepared.info.refusals.contains(&refused) {
                 prepared.info.refusals.push(refused);
             }
         }
-        self.sprites.insert(name.to_vec(), prepared);
-        Ok(())
+        Ok(Some((prepared, broken)))
     }
 
-    /// Loads the font resolved for `name`, including its fallback.
+    /// Loads the font resolved for `name`, including its fallback. With the recording's own
+    /// registry ([`Self::with_recorded_registry`]), a font the visual mods cannot draw as they
+    /// declare it (a font file or page of theirs that does not load) is the recording's own
+    /// declaration of it, read from the recording and named, when that draws.
     fn load_font(
         &mut self,
         layers: &ResolvedLayers,
@@ -716,28 +860,96 @@ impl GuiResources {
             .iter()
             .position(|font| std::ptr::eq(font, found))
             .expect("a registered font");
-        self.font_names.insert(name.to_vec(), index);
-        if self.fonts.contains_key(&index) {
+        let key = if self.recorded_registry.is_some() {
+            FontKey::Named(name.to_vec())
+        } else {
+            FontKey::Registered(index)
+        };
+        self.font_names.insert(name.to_vec(), key.clone());
+        if self.fonts.contains_key(&key) {
             return Ok(());
         }
-        let family = found.family(&self.language).clone();
-        let facts = found.facts.clone();
-        // A `.fnt` the visual mods break or hide is the recording's own, named. One no stack
-        // gives is named for the map's fallback and reported; one that fails to read, rather
-        // than being absent, also refuses the font's texts.
-        if self.recorded.is_none() && layers.shows_visual_mods() {
-            self.recorded = layers.without_overlays();
+        let declared = (found.family(&self.language).clone(), found.facts.clone());
+        if self.recorded_registry.is_none() {
+            let (font, notes, _) = self.font_from(Stack::Retried, layers, declared, images)?;
+            self.keep_font(layers, key, font, notes);
+            return Ok(());
         }
-        let recorded = self
-            .recorded
-            .as_ref()
-            .filter(|_| layers.shows_visual_mods());
+        // Each attempt keeps what it notes to itself; only the kept one's is published. A read
+        // that fails is the attempt's failure too.
+        let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+            self.font_from(Stack::Shown, layers, declared, images)
+        });
+        let why = match &shown {
+            Ok((_, _, broken)) => broken.clone(),
+            Err(error) => Some(error.to_string()),
+        };
+        // Only the recording's own declaration of the name stands in: a font the recording does
+        // not declare is not replaced by another.
+        if let Some(why) = why
+            && let Some(own) = self
+                .recorded_registry
+                .as_ref()
+                .and_then(|registry| registry.fonts.get(name))
+                .map(|own| (own.family(&self.language).clone(), own.facts.clone()))
+            && let Some(recorded) = self.recorded_layers(layers)
+        {
+            let (own, own_noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+                self.font_from(Stack::Recorded, &recorded, own, images)
+            });
+            // A recording that cannot draw it either leaves the selection's outcome as it is.
+            if let Ok((own, own_notes, None)) = own {
+                installed_content_core::content::credit_overlay_refusals(&own_noted);
+                layers.note_overlay_refusal(format!("font {} ({why})", lossy(name)));
+                self.keep_font(layers, key, own, own_notes);
+                return Ok(());
+            }
+        }
+        installed_content_core::content::credit_overlay_refusals(&noted);
+        let (font, notes, _) = shown?;
+        self.keep_font(layers, key, font, notes);
+        Ok(())
+    }
+
+    /// Keeps `font` under `key`, applying what its load noted.
+    fn keep_font(
+        &mut self,
+        layers: &ResolvedLayers,
+        key: FontKey,
+        font: native_text::Font,
+        notes: FontNotes,
+    ) {
+        for refused in notes.refused {
+            layers.note_refused(refused);
+        }
+        self.missing_fonts.extend(notes.missing);
+        self.uncovered.extend(notes.uncovered);
+        self.fonts.insert(key, font);
+    }
+
+    /// The font `declared` (its language's family and its facts) as read from `stack` (`layers`),
+    /// with what its load noted and why it cannot be drawn as declared.
+    fn font_from(
+        &mut self,
+        stack: Stack,
+        layers: &ResolvedLayers,
+        (family, facts): (fonts::FontFamily, fonts::FontFacts),
+        images: &mut Vec<dds::Texture>,
+    ) -> io::Result<(native_text::Font, FontNotes, Option<String>)> {
+        // A `.fnt` the visual mods break or hide is the recording's own, named, when it is
+        // retried by its path. One no stack gives is named for the map's fallback and reported;
+        // one that fails to read, rather than being absent, also refuses the font's texts.
+        let recorded = match stack {
+            Stack::Retried => self.recorded_layers(layers),
+            Stack::Shown | Stack::Recorded => None,
+        };
         let unreadable = std::cell::RefCell::new(Vec::new());
         let glyphs = fonts::load_glyphs(&family, &|path| match layers.read_uncovered_path(path) {
             Ok(bytes) => Some(bytes),
             Err(error) => {
-                if let Some(bytes) =
-                    recorded.and_then(|recorded| recorded.read_uncovered_path(path).ok())
+                if let Some(bytes) = recorded
+                    .as_ref()
+                    .and_then(|recorded| recorded.read_uncovered_path(path).ok())
                 {
                     layers.note_overlay_refusal(format!("font file {} ({error})", lossy(path)));
                     return Some(bytes);
@@ -751,14 +963,20 @@ impl GuiResources {
             }
         });
         let unreadable = unreadable.into_inner();
+        let mut notes = FontNotes::default();
+        let mut broken = glyphs
+            .missing
+            .first()
+            .map(|file| format!("font file {file} (no stack gives it)"))
+            .or_else(|| unreadable.first().map(|why| format!("font file {why}")));
         for file in &glyphs.missing {
-            layers.note_refused(format!("font file {file}"));
-            self.missing_fonts.insert(
+            notes.refused.push(format!("font file {file}"));
+            notes.missing.push((
                 file.clone(),
                 "no font file of that path reads; its glyphs draw nothing".into(),
-            );
+            ));
         }
-        self.uncovered.extend(
+        notes.uncovered.extend(
             family
                 .files
                 .iter()
@@ -784,32 +1002,34 @@ impl GuiResources {
         let mut pages = Vec::with_capacity(glyphs.pages.len());
         self.touched.clear();
         for page in &glyphs.pages {
-            // A page the visual mods break is the recording's ([`Self::texture`]); one no stack
-            // supplies leaves its glyphs blank, named for the map's fallback.
-            let loaded = self.texture(layers, page, images)?;
+            // A page the visual mods break is the recording's when retried by its path
+            // ([`Self::texture`]); one no stack supplies leaves its glyphs blank, named for the
+            // map's fallback.
+            let loaded = self.texture(stack, layers, page, images)?;
             if loaded.missing.is_some() {
-                layers.note_refused(format!("font page {}", lossy(page)));
+                notes.refused.push(format!("font page {}", lossy(page)));
             }
             pages.push(loaded.missing.is_none().then_some(Page {
                 texture: loaded.texture,
                 size: loaded.size.map(|value| value as i32),
             }));
         }
+        broken = broken.or_else(|| self.touched_failure());
         for refused in self.touched_refusals() {
             if !refusals.contains(&refused) {
                 refusals.push(refused);
             }
         }
-        self.fonts.insert(
-            index,
+        Ok((
             native_text::Font {
                 facts,
                 glyphs,
                 pages,
                 refusals,
             },
-        );
-        Ok(())
+            notes,
+            broken,
+        ))
     }
 
     /// The sprite the content defines under `name`, as loaded.
@@ -839,7 +1059,9 @@ impl GuiResources {
     /// A texture file [`GuiResources::load`] loaded ([`Assets::textures`], or a sprite's): its
     /// whole rectangle, or why it does not load; `None` when it was not asked for.
     pub fn texture_file(&self, path: &[u8]) -> Option<TextureFile> {
-        let loaded = self.textures.get(path)?;
+        let loaded = [Stack::Retried, Stack::Shown]
+            .into_iter()
+            .find_map(|stack| self.textures.get(&(stack, path.to_vec())))?;
         Some(match (&loaded.refused, &loaded.missing) {
             (Some((kind, why)), _) => TextureFile::Refused(*kind, why.clone()),
             (None, Some(why)) => TextureFile::Failed(why.clone()),
@@ -866,7 +1088,7 @@ impl GuiResources {
     pub fn effect(&self, file: &str) -> Result<Effect, String> {
         self.effects[0]
             .get(file.as_bytes())
-            .cloned()
+            .map(|(effect, _)| effect.clone())
             .unwrap_or_else(|| Err(format!("effect {file} was not loaded")))
     }
 
@@ -879,7 +1101,7 @@ impl GuiResources {
     pub fn missing_textures(&self) -> Vec<(String, String)> {
         self.textures
             .iter()
-            .filter_map(|(name, loaded)| Some((lossy(name), loaded.missing.clone()?)))
+            .filter_map(|((_, name), loaded)| Some((lossy(name), loaded.missing.clone()?)))
             .chain(
                 self.missing_fonts
                     .iter()

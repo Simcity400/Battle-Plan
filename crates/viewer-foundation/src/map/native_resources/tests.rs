@@ -2,6 +2,7 @@ use super::*;
 use crate::map::native_text::Glyphs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::collections::BTreeSet;
 
 /// A 32-bit uncompressed Targa of `width` by `height` transparent texels.
 fn tga(width: u16, height: u16) -> Vec<u8> {
@@ -682,6 +683,372 @@ fn a_font_page_the_mods_break_or_lack_is_named_and_the_recordings_drawn() {
     );
     let refusals = presentation.read_warnings().overlay_refusals().unwrap();
     assert!(refusals.contains("texture gfx/fonts/j.tga ("), "{refusals}");
+}
+
+/// With the recording's own registry, a sprite and a font the visual mods cannot draw as they
+/// declare them (a texture and a font page of theirs that does not load, at paths the recording
+/// lacks) are the recording's own declarations, drawn from the recording and named; without it,
+/// as the map draws, each file is retried by its path, so the sprite is missing and the font's
+/// page blank. What the mods draw stays theirs either way.
+#[test]
+fn what_the_mods_cannot_draw_is_the_recordings_own_declaration_with_its_registry() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_recorded_declarations_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    };
+    let fallback = "spriteType = { name = \"GFX_default_fallback_texture\" texturefile = \"gfx/b.tga\" }";
+    write(
+        "base/interface/a.gfx",
+        format!(
+            "spriteTypes = {{ {fallback} spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/x.tga\" }}              spriteType = {{ name = \"GFX_kept\" texturefile = \"gfx/b.tga\" }} }}              bitmapfonts = {{ bitmapfont = {{ name = \"g\" path = \"gfx/fonts/j\" }} }}"
+        )
+        .as_bytes(),
+    );
+    write("base/gfx/b.tga", &tga(4, 4));
+    write("base/gfx/x.tga", &tga(8, 2));
+    write("base/gfx/fonts/j.fnt", &fnt(10, &[('A', 5)]));
+    write("base/gfx/fonts/j.tga", &tga(4, 4));
+    // The mod's file replaces the recording's: its sprite and font point at files of its own
+    // that do not load; its kept sprite draws.
+    write(
+        "art/interface/a.gfx",
+        format!(
+            "spriteTypes = {{ {fallback} spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/mod_x.tga\" }}              spriteType = {{ name = \"GFX_kept\" texturefile = \"gfx/kept.tga\" }} }}              bitmapfonts = {{ bitmapfont = {{ name = \"g\" path = \"gfx/fonts/mod_j\" }} }}"
+        )
+        .as_bytes(),
+    );
+    write("art/gfx/mod_x.tga", b"broken");
+    write("art/gfx/kept.tga", &tga(6, 6));
+    write("art/gfx/fonts/mod_j.fnt", &fnt(10, &[('A', 5)]));
+    write("art/gfx/fonts/mod_j.tga", b"broken");
+    let art = root.join("art").display().to_string().replace('\\', "/");
+    write(
+        "user/mod/art.mod",
+        format!("name=\"Art\"
+path=\"{art}\"
+").as_bytes(),
+    );
+    std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+    let options = installed_content_core::ResolveOptions {
+        game_dir: root.join("steamapps/common/Game"),
+        user_dir: root.join("user"),
+        cache_dir: root.join("cache"),
+    };
+    let base = root.join("base");
+    let mut layers = ResolvedLayers::from_folders(&[(base.as_path(), &[][..])]).unwrap();
+    let selected = [installed_content_core::content::visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    }];
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    let presentation = layers.presentation();
+    let assets = Assets {
+        sprites: [b"GFX_x".to_vec(), b"GFX_kept".to_vec()].into(),
+        fonts: [b"g".to_vec()].into(),
+        textures: Default::default(),
+    };
+    let draw = |recorded: bool| {
+        let mut resources = GuiResources::new(
+            Registry::load(presentation).unwrap(),
+            b"l_english",
+            [5632, 2048],
+            Decode::default(),
+        );
+        if recorded {
+            resources = resources.with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
+        }
+        let mut images = Vec::new();
+        let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+            resources.load(presentation, &assets, &mut images)
+        });
+        loaded.unwrap();
+        (resources, fallbacks)
+    };
+    let (map, _) = draw(false);
+    assert!(map.sprite(b"GFX_x").unwrap().missing.is_some(), "the map's retry by path");
+    assert!(map.font(b"g").unwrap().pages[0].is_none());
+    let (window, fallbacks) = draw(true);
+    let _ = std::fs::remove_dir_all(&root);
+    let x = window.sprite(b"GFX_x").unwrap();
+    assert_eq!((x.missing.clone(), x.texture), (None, [8, 2]), "the recording's own GFX_x");
+    assert_eq!(window.sprite(b"GFX_kept").unwrap().texture, [6, 6], "the mod's own");
+    assert!(window.font(b"g").unwrap().pages[0].is_some(), "the recording's own font");
+    assert!(fallbacks.iter().any(|why| why.starts_with("sprite GFX_x (")), "{fallbacks:?}");
+    assert!(fallbacks.iter().any(|why| why.starts_with("font g (")), "{fallbacks:?}");
+    assert!(!fallbacks.iter().any(|why| why.contains("kept")), "{fallbacks:?}");
+}
+
+/// A game folder `base` with a folder mod `art` mounted over it as the presentation, each
+/// holding `files`; the folder's root, to remove, and the mounted layers.
+fn mounted(
+    name: &str,
+    base: &[(&str, Vec<u8>)],
+    art: &[(&str, Vec<u8>)],
+) -> (PathBuf, ResolvedLayers) {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_mounted_{name}_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    };
+    for (path, bytes) in base {
+        write(&format!("base/{path}"), bytes);
+    }
+    for (path, bytes) in art {
+        write(&format!("art/{path}"), bytes);
+    }
+    let folder = root.join("art").display().to_string().replace('\\', "/");
+    write(
+        "user/mod/art.mod",
+        format!("name=\"Art\"\npath=\"{folder}\"\n").as_bytes(),
+    );
+    std::fs::create_dir_all(root.join("steamapps/common/Game")).unwrap();
+    let options = installed_content_core::ResolveOptions {
+        game_dir: root.join("steamapps/common/Game"),
+        user_dir: root.join("user"),
+        cache_dir: root.join("cache"),
+    };
+    let mut layers = ResolvedLayers::from_folders(&[(root.join("base").as_path(), &[][..])]).unwrap();
+    let selected = [installed_content_core::content::visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    }];
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    installed_content_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel).unwrap();
+    (root, layers)
+}
+
+/// The resources of `layers`' presentation with the recording's own registry, loaded with
+/// `assets`, and what the load named as drawn from the recording.
+fn with_recorded(
+    layers: &ResolvedLayers,
+    assets: &Assets,
+) -> (io::Result<()>, GuiResources, BTreeSet<String>) {
+    let presentation = layers.presentation();
+    let mut resources = GuiResources::new(
+        Registry::load(presentation).unwrap(),
+        b"l_english",
+        [5632, 2048],
+        Decode::default(),
+    )
+    .with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
+    let mut images = Vec::new();
+    let (loaded, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+        resources.load(presentation, assets, &mut images)
+    });
+    (loaded, resources, fallbacks)
+}
+
+fn sprites(names: &[&str]) -> Assets {
+    Assets {
+        sprites: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
+        fonts: Default::default(),
+        textures: Default::default(),
+    }
+}
+
+fn fonts(names: &[&str]) -> Assets {
+    Assets {
+        sprites: Default::default(),
+        fonts: names.iter().map(|name| name.as_bytes().to_vec()).collect(),
+        textures: Default::default(),
+    }
+}
+
+const FALLBACK_DECLARATION: &str =
+    "spriteType = { name = \"GFX_default_fallback_texture\" texturefile = \"gfx/b.tga\" }";
+
+/// A mod texture whose read fails (not a missing file) fails the mods' attempt, not the load:
+/// the recording's own declaration draws, named. Where the recording does not declare the
+/// sprite, the failed read is the outcome, as without the recording's registry.
+#[test]
+fn a_mod_read_that_fails_is_the_attempts_failure() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (root, layers) = mounted(
+        "failed_read",
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} \
+                     spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/x.tga\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/b.tga", tga(4, 4)),
+            ("gfx/x.tga", tga(8, 2)),
+        ],
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} \
+                     spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/mod_x.tga\" }} \
+                     spriteType = {{ name = \"GFX_mod\" texturefile = \"gfx/mod_x.tga\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/mod_x.tga", tga(6, 6)),
+        ],
+    );
+    // Listed when the mod was mounted; a folder when read, which no read of a file opens.
+    let texture = root.join("art/gfx/mod_x.tga");
+    std::fs::remove_file(&texture).unwrap();
+    std::fs::create_dir_all(&texture).unwrap();
+    let (loaded, resources, fallbacks) = with_recorded(&layers, &sprites(&["GFX_x"]));
+    let (only_mod, _, _) = with_recorded(&layers, &sprites(&["GFX_mod"]));
+    let _ = std::fs::remove_dir_all(&root);
+    loaded.unwrap();
+    let x = resources.sprite(b"GFX_x").unwrap();
+    assert_eq!((x.missing.clone(), x.texture), (None, [8, 2]), "the recording's own GFX_x");
+    assert!(fallbacks.iter().any(|why| why.starts_with("sprite GFX_x (")), "{fallbacks:?}");
+    assert!(only_mod.is_err(), "a sprite only the mods declare keeps their outcome");
+}
+
+/// Two fonts the recording declares and the mods do not, which both resolve to the mods' broken
+/// fallback font, are each the recording's own of its name; a font only the mods declare, and
+/// cannot draw, is theirs, never another font of the recording's.
+#[test]
+fn fonts_fall_back_to_the_recordings_own_of_their_name_only() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let (root, layers) = mounted(
+        "font_names",
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} }} bitmapfonts = {{ \
+                     bitmapfont = {{ name = \"font_a\" path = \"gfx/fonts/a\" }} \
+                     bitmapfont = {{ name = \"font_b\" path = \"gfx/fonts/b\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/b.tga", tga(4, 4)),
+            ("gfx/fonts/a.fnt", fnt(10, &[('A', 5)])),
+            ("gfx/fonts/a.tga", tga(4, 4)),
+            ("gfx/fonts/b.fnt", fnt(12, &[('B', 7)])),
+            ("gfx/fonts/b.tga", tga(4, 4)),
+        ],
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} }} bitmapfonts = {{ \
+                     bitmapfont = {{ name = \"font_m\" path = \"gfx/fonts/m\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/fonts/m.fnt", fnt(10, &[('M', 5)])),
+            ("gfx/fonts/m.tga", b"broken".to_vec()),
+        ],
+    );
+    let (loaded, resources, fallbacks) =
+        with_recorded(&layers, &fonts(&["font_a", "font_b", "font_m"]));
+    let _ = std::fs::remove_dir_all(&root);
+    loaded.unwrap();
+    for name in ["font_a", "font_b"] {
+        let font = resources.font(name.as_bytes()).unwrap();
+        assert_eq!(font.facts.name, name.as_bytes(), "the recording's own {name}");
+        assert!(font.pages[0].is_some());
+        assert!(
+            fallbacks.iter().any(|why| why.starts_with(&format!("font {name} ("))),
+            "{fallbacks:?}"
+        );
+    }
+    let only_mod = resources.font(b"font_m").unwrap();
+    assert_eq!(only_mod.facts.name, b"font_m", "the mods' own");
+    assert!(only_mod.pages[0].is_none());
+    assert!(!fallbacks.iter().any(|why| why.starts_with("font font_m (")), "{fallbacks:?}");
+}
+
+/// What the mods' attempt at a sprite noted (their shader replacing the recording's, refused)
+/// is dropped when the recording's own declaration is drawn instead, and named again when a
+/// later sprite the mods draw uses that kept effect.
+#[test]
+fn only_the_kept_attempts_notes_are_named() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let shader = |technique: &str| {
+        format!(
+            "VertexStruct I {{ float3 p : POSITION; }};\n\
+             VertexStruct O {{ float4 p : SV_POSITION; }};\n\
+             VertexShader = {{ MainCode V [[ O main(I v) {{ O o; o.p=float4(v.p,1); return o; }} ]] }}\n\
+             PixelShader = {{ MainCode P [[ float4 main(O v) : SV_TARGET {{ return float4(0,1,0,1); }} ]] }}\n\
+             Effect {technique} {{ VertexShader = V PixelShader = P }}\n"
+        )
+        .into_bytes()
+    };
+    let (root, layers) = mounted(
+        "attempt_notes",
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} \
+                     spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/x.tga\" effectFile = \"gfx/FX/own.lua\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/b.tga", tga(4, 4)),
+            ("gfx/x.tga", tga(8, 2)),
+            ("gfx/FX/own.shader", shader("Up")),
+            ("gfx/FX/shared.shader", shader("Up")),
+            ("gfx/FX/defines_hlsl_dx11.fxh", Vec::new()),
+        ],
+        &[
+            (
+                "interface/a.gfx",
+                format!(
+                    "spriteTypes = {{ {FALLBACK_DECLARATION} \
+                     spriteType = {{ name = \"GFX_x\" texturefile = \"gfx/mod_x.tga\" effectFile = \"gfx/FX/shared.lua\" }} \
+                     spriteType = {{ name = \"GFX_kept\" texturefile = \"gfx/b.tga\" effectFile = \"gfx/FX/shared.lua\" }} }}"
+                )
+                .into_bytes(),
+            ),
+            ("gfx/mod_x.tga", b"broken".to_vec()),
+            // The mods' replacement lacks the technique the recording's compiles.
+            ("gfx/FX/shared.shader", shader("Down")),
+        ],
+    );
+    let presentation = layers.presentation();
+    let mut resources = GuiResources::new(
+        Registry::load(presentation).unwrap(),
+        b"l_english",
+        [5632, 2048],
+        Decode::default(),
+    )
+    .with_recorded_registry(Registry::load(&layers.recorded_only()).unwrap());
+    let mut images = Vec::new();
+    let mut load = |names: &[&str]| {
+        installed_content_core::content::observe_overlay_refusals(|| {
+            resources.load(presentation, &sprites(names), &mut images)
+        })
+    };
+    let (first, recorded) = load(&["GFX_x"]);
+    let (second, kept) = load(&["GFX_kept"]);
+    let _ = std::fs::remove_dir_all(&root);
+    first.unwrap();
+    second.unwrap();
+    assert!(recorded.iter().any(|why| why.starts_with("sprite GFX_x (")), "{recorded:?}");
+    assert!(!recorded.iter().any(|why| why.starts_with("shader ")), "{recorded:?}");
+    assert!(kept.iter().any(|why| why.starts_with("shader ")), "{kept:?}");
 }
 
 #[test]

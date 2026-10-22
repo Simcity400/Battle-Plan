@@ -37,6 +37,8 @@ pub struct Session {
     /// Everything the session drew from the recording because the visual mods could not
     /// supply it, which every window it draws reports ([`Self::load`]).
     fallbacks: std::collections::BTreeSet<String>,
+    /// Named diagnostics of the session itself, which every window it draws reports.
+    pub notes: Vec<String>,
     /// The session's pages on the device and the sprite pass painting its windows, built on
     /// the first paint ([`crate::paint`]).
     pub painter: Option<crate::paint::Painter>,
@@ -90,6 +92,21 @@ impl Session {
             map_size,
             decode,
         );
+        // Windows laid out from the visual mods' templates draw a sprite or font the mods cannot
+        // draw from the recording's own declaration of it, as a whole; when the recording's own
+        // registry cannot be read, each file is retried by its path, as the map retries it, and
+        // every window says so.
+        let mut notes = Vec::new();
+        let gui = match presented.then(|| Registry::load(&layers.recorded_only())) {
+            Some(Ok(recorded)) => gui.with_recorded_registry(recorded),
+            Some(Err(error)) => {
+                notes.push(format!(
+                    "Game window: the recording's own interface sprites and fonts cannot be read, so what the visual mods cannot draw is drawn from the recording's file of the same path: {error}"
+                ));
+                gui
+            }
+            None => gui,
+        };
         Ok(Self {
             id: uuid::Uuid::new_v4().to_string(),
             viewport,
@@ -98,6 +115,7 @@ impl Session {
             images: Vec::new(),
             presented,
             fallbacks,
+            notes,
             painter: None,
         })
     }

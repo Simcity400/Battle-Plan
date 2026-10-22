@@ -762,8 +762,8 @@ fn mod_layers_supply_icons_and_replace_templates() {
 }
 
 /// A visual mod mounted as the stack's presentation styles the window (its own template), and
-/// a texture it breaks is the recording's, named on the window that drew it and on every later
-/// window of the session.
+/// a sprite whose texture it breaks is the recording's own, named on the window that drew it and
+/// on every later window of the session.
 #[test]
 fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_name() {
     use installed_content_core::content::{observe_overlay_refusals, visual};
@@ -830,7 +830,9 @@ fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_
     assert!(
         fallbacks
             .iter()
-            .any(|refusal| refusal.starts_with(&format!("texture {icon} ("))),
+            // The sprite is the recording's own declaration, drawn from the recording.
+            .any(|refusal| refusal.starts_with("sprite GFX_synthetic_policy_icon (")
+                && refusal.contains(&format!("texture {icon} ("))),
         "{fallbacks:?}"
     );
     let localisation = installed_content_localisation::localisation::read(&layers, "english").unwrap();
@@ -849,6 +851,61 @@ fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_
     assert_eq!(
         again, fallbacks,
         "a later window of the session names it again"
+    );
+}
+
+/// A session over the visual mods' templates whose recording's own interface sprites cannot be
+/// read (a recorded file listed when the mods were mounted, a folder when read) says so, by
+/// name, on every window it draws, rather than quietly retrying each file by its path.
+#[test]
+fn a_recorded_registry_that_cannot_be_read_is_named_on_every_window() {
+    use installed_content_core::content::visual;
+    tables();
+    let declared = br#"spriteTypes = { spriteType = { name = "GFX_synthetic_policy_icon" texturefile = "gfx/interface/synthetic_policy_icon.tga" } }"#;
+    let recorded = folder(
+        "unreadable_recorded_icons",
+        &[
+            ("interface/synthetic_policy_icons.gfx", declared.to_vec()),
+            ("gfx/interface/synthetic_policy_icon.tga", tga(36, 20)),
+        ],
+    );
+    // The mod's file of that path replaces the recording's in what its windows show.
+    let art = folder(
+        "unreadable_visual_art",
+        &[("interface/synthetic_policy_icons.gfx", declared.to_vec())],
+    );
+    let user = folder(
+        "unreadable_visual_user",
+        &[(
+            "mod/art.mod",
+            format!(
+                "name=\"Art\"\npath=\"{}\"\n",
+                art.display().to_string().replace('\\', "/")
+            )
+            .into_bytes(),
+        )],
+    );
+    let mut layers = installed(&[&recorded]);
+    let options = installed_content_core::ResolveOptions {
+        game_dir: user.clone(),
+        user_dir: user.clone(),
+        cache_dir: user.join("cache"),
+    };
+    let choice = visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    };
+    visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+    let file = recorded.join("interface/synthetic_policy_icons.gfx");
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir_all(&file).unwrap();
+    let rows = synthetic_rows(1, Some(b"GFX_synthetic_policy_icon"));
+    let (_, session) = drawn(&layers, &rows, &BTreeMap::new());
+    let notes = session.lock().unwrap().notes.clone();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("the recording's own interface sprites and fonts cannot be read"),
+        "{notes:?}"
     );
 }
 
