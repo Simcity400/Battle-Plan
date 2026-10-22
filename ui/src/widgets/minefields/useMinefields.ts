@@ -1,5 +1,5 @@
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
-import * as requests from '../../dashboard/batch5Requests';
+import { minefieldsRequest } from '../../dashboard/widgetRequests';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -12,9 +12,7 @@ import { OPTIONS } from './definition';
 export function useMinefields(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
-  const tags = widget.countries.kind === 'tags' ? widget.countries.tags : undefined;
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'minefields',
-    params: requests.minefieldsHistory(track.branch.id, tags) } : null;
+  const request = minefieldsRequest(widget, track);
   const product = useProduct<MinefieldsReply>(runtime.client, request, active, validateMinefields, track?.source);
   return { track, options, ...product };
 }

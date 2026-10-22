@@ -20,13 +20,14 @@ import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackSpeed } from '../../dashboard/playback';
-import { historyWindow, POLITICS_HISTORY, preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
+import { preparedThroughHour, readAt } from '../../dashboard/politicsHistory';
 import { loadTransientProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { PoliticsHistoryReply, PoliticsStateReply } from '../../generated/dashboard';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { deployedAirByTag, EXILE_VALUES, exilesAt, exileTooltip, exileWarnings, legitimacyShare, legitimacyText, manpowerText, validateExileDetails, validateExilesReply } from './governmentsInExileData';
 import type { ExileRow } from './governmentsInExileData';
+import { exilesRequest, shownHour } from '../../dashboard/widgetRequests';
 import './governmentsInExile.css';
 
 const NO_ROWS: readonly ExileRow[] = [];
@@ -93,7 +94,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
-  const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
+  const hour = shownHour(track, window);
   const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
@@ -103,10 +104,7 @@ export default function GovernmentsInExileWidget({ widget, runtime, active, head
   const fallback = useMemo(() => selected, [selectedKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? hour),
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
-  // One week of exiles per request; playback looks them up locally within it.
-  const span = track ? historyWindow(track.branch.firstHour, hour) : null;
-  const request = track && span ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'exiles', firstHour: span.firstHour, lastHour: span.lastHour } } : null;
+  const request = exilesRequest(track, hour);
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateExilesReply, track?.source);
   const prepared = !!data && preparedThroughHour(data, hour);
   const read = !!data && readAt(data.known, hour);

@@ -140,6 +140,20 @@ fn templates_bind_recording_facts_and_wait_for_their_windows() {
         Instantiated::Absent
     );
     assert!(instantiate(&json!({"x":"$unknown"}), &bindings, &replies).is_err());
+    let hours = json!(["$afterLast", "$firstWeekEnd", "$firstBlockEnd"]);
+    assert_eq!(
+        instantiate(&hours, &bindings, &replies).unwrap(),
+        Instantiated::Ready(json!([101, 177, 100]))
+    );
+    let long = Bindings {
+        first: 2150,
+        last: 9000,
+        ..bindings
+    };
+    assert_eq!(
+        instantiate(&hours, &long, &replies).unwrap(),
+        Instantiated::Ready(json!([9001, 2317, 2159]))
+    );
 }
 
 #[test]

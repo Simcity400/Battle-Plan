@@ -9,14 +9,14 @@ import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
 import { doctrineSprite, folderName, rewardDescriptions, validateDoctrineMastery } from './doctrineMasteryData';
 import type { DoctrineMasteryReply } from './doctrineMasteryData';
 import { OPTIONS } from './definition';
+import { doctrineMasteryRequest } from '../../dashboard/widgetRequests';
 
 /** The country's prepared doctrine history over the branch, looked up locally at every hour. */
 export function useDoctrineMastery(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'doctrine-mastery',
-    params: requests.doctrineMastery(track.branch.id, tag) } : null;
+  const request = doctrineMasteryRequest(widget, track);
   const product = useProduct<DoctrineMasteryReply>(runtime.client, request, active, validateDoctrineMastery, track?.source);
   return { track, tag, options, ...product };
 }

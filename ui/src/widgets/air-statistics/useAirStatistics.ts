@@ -2,9 +2,9 @@ import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
-import * as requests from '../../dashboard/batch5Requests';
 import { selectedTags } from '../../dashboard/countrySelection';
-import { DEFAULT_CHANNEL, validateAirStatistics } from './airStatisticsData';
+import { validateAirStatistics } from './airStatisticsData';
+import { airStatisticsChannel, airStatisticsRequest } from '../../dashboard/widgetRequests';
 import type { AirStatisticsReply } from './airStatisticsData';
 import { OPTIONS } from './definition';
 import { useAirTheatres } from '../air-missions/useAirTheatres';
@@ -15,9 +15,9 @@ export function useAirStatistics(widget: WidgetSpec, runtime: WidgetRuntime, act
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const channel = options.channel ? contentKey(String(options.channel)) : DEFAULT_CHANNEL;
-  const params = track && tag ? requests.airStatistics(track.branch.id, tag, channel) : null;
-  const request = track && params ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-statistics', params } : null;
+  const channel = airStatisticsChannel(widget);
+  const request = airStatisticsRequest(widget, track);
+  const params = request?.params ?? null;
   const product = useProduct<AirStatisticsReply>(runtime.client, request, active, validateAirStatistics, track?.source);
   return { track, tag, channel, params, options, ...product };
 }

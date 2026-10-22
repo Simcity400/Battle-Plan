@@ -19,6 +19,7 @@ import { mix } from '../../shell/appearance/color';
 import { regionDay, regionSeries, supremacyRows, supremacyTooltip } from './navalSupremacyData';
 import type { Control } from './navalSupremacyData';
 import { useNavalSupremacy } from './useNavalSupremacy';
+import { windowExtent } from '../../dashboard/widgetRequests';
 import '../air-superiority-timeline/airSuperiorityTimeline.css';
 
 const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: 'Enemy control', neither: 'Contested' };
@@ -32,7 +33,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const menu = useContextMenu('Naval supremacy');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
-  const extent: [number, number] | null = track && window ? [Math.max(track.branch.firstHour, window.firstHour), Math.min(track.branch.lastHour, window.lastHour)] : null;
+  const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
   const { tag, options, data, error, retry } = useNavalSupremacy(widget, runtime, active, extent);
   const chosen = contentSet(options.regions).map(contentKey);
   const regions = useMemo(() => data ? data.regions.filter(region => !chosen.length || chosen.includes(region.id)) : [], [data, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps

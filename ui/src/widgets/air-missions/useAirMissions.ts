@@ -10,14 +10,14 @@ import type { AirMissionsReply } from './airMissionsData';
 import { OPTIONS } from './definition';
 import { useAirTheatres } from './useAirTheatres';
 import { useSpriteArtwork } from '../../dashboard/useSpriteArtwork';
+import { airMissionsRequest } from '../../dashboard/widgetRequests';
 
 /** The country's prepared assignments over the branch, looked up locally at every hour. */
 export function useAirMissions(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const options = resolveOptions(OPTIONS, widget.options);
   const tag = selectedTags(widget.countries, track)[0] ?? null;
-  const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'air-missions',
-    params: requests.airMissionsHistory(track.branch.id, tag) } : null;
+  const request = airMissionsRequest(widget, track);
   const product = useProduct<AirMissionsReply>(runtime.client, request, active, validateAirMissions, track?.source);
   return { track, tag, options, ...product };
 }

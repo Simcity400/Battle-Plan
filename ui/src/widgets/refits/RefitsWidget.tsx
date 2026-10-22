@@ -34,7 +34,7 @@ export const lineProgress = (at: YardsAt, line: string): number | null => refitS
 export default function RefitsWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const playback = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
   const hoursPerSecond = usePlaybackSpeed(runtime.clock);
-  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'naval-refits', 'lines');
+  const { track, tag, options, data, error, retry } = useYards(widget, runtime, active, 'lines');
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const hour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const at = useMemo(() => data && tag ? yardsAt(data, tag, hour) : null, [data, tag, hour]);

@@ -31,6 +31,15 @@ export function minefieldReports(branchId: string, region: string, hour: number)
   return id === null ? null : { branchId, view: 'reports', region: id, hour };
 }
 
+/** Requests cover whole 90-day blocks, so following playback asks again only as it crosses one. */
+const BLOCK_HOURS = 90 * 24;
+
+/** The whole blocks holding `extent`, inside the branch. */
+export function blockSpan(branch: { firstHour: number; lastHour: number }, extent: readonly [number, number]): [number, number] {
+  return [Math.max(branch.firstHour, Math.floor(extent[0] / BLOCK_HOURS) * BLOCK_HOURS),
+    Math.min(branch.lastHour, Math.ceil((extent[1] + 1) / BLOCK_HOURS) * BLOCK_HOURS - 1)];
+}
+
 export const navalSupremacy = (branchId: string, tag: string, firstHour: number, lastHour: number): NavalSupremacyParams =>
   ({ branchId, tag, firstHour, lastHour, daily: true });
 

@@ -23,6 +23,7 @@ import { SHOWS } from './definition';
 import { shownRegions, weatherRows, weatherTooltip } from './weatherData';
 import type { WeatherShow } from './weatherData';
 import { useWeather } from './useWeather';
+import { windowExtent } from '../../dashboard/widgetRequests';
 import '../air-superiority-timeline/airSuperiorityTimeline.css';
 import './weather.css';
 
@@ -35,7 +36,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const menu = useContextMenu('Weather by region');
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
-  const extent: [number, number] | null = track && window ? [Math.max(track.branch.firstHour, window.firstHour), Math.min(track.branch.lastHour, window.lastHour)] : null;
+  const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
   const { options, show, modifier, data, error, retry } = useWeather(widget, runtime, active, extent);
   const regions = useMemo(() => data ? shownRegions(data, contentSet(options.regions).map(contentKey), contentSet(options.theatres).map(contentKey)) : [],
     [data, options.regions, options.theatres]);

@@ -238,6 +238,13 @@ impl Bindings {
             "$lastDayEnd" => {
                 Value::from((self.day_start(self.last) + 23).min(i64::from(self.last)))
             }
+            "$afterLast" => Value::from(i64::from(self.last) + 1),
+            // The week from the branch start that a history request holding the first hour asks for.
+            "$firstWeekEnd" => Value::from(i64::from(self.first) + 167),
+            // The end of the 90-day block (counted from hour 0) holding the first hour.
+            "$firstBlockEnd" => Value::from(
+                (i64::from(self.first).div_euclid(2160) * 2160 + 2159).min(i64::from(self.last)),
+            ),
             _ => return None,
         })
     }
