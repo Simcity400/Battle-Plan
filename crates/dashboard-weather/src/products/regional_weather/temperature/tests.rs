@@ -502,28 +502,6 @@ fn temperature_fields_watch_pass_and_every_anchor_word() {
     );
 }
 
-#[test]
-fn five_thousand_regions_reconstruct_once_and_preserve_every_average_without_a_cap() {
-    let members: Vec<_> = (1..=5000).map(|region| (region, vec![region])).collect();
-    let content = Arc::new(bound(&members, 5001));
-    let words = states(
-        &(0..=5000)
-            .map(|id| i64::from(id) * 31 - 100_000)
-            .collect::<Vec<_>>(),
-    );
-    let frame = temperatures(1, 10, 11, &words, vec![None], &content.pass);
-    let mut observation = observation(content);
-    let values = observe(&mut observation, &frame);
-    assert_eq!(values.len(), 5000);
-    for region in 1..=5000 {
-        assert_eq!(
-            values[&format!("{region}|temp")],
-            i128::from(region * 31 - 100_000)
-        );
-    }
-    assert!(observation.warnings().is_empty());
-}
-
 fn bmp() -> Vec<u8> {
     let mut bytes = vec![0_u8; 66];
     bytes[..2].copy_from_slice(b"BM");

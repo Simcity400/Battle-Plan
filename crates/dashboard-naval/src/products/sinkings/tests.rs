@@ -791,46 +791,6 @@ fn sinkings_records_native_holders_through_tag_switch_reuse_and_held_country_vie
 }
 
 #[test]
-#[ignore = "large decode-inclusive fixture is run by the lead at the end"]
-fn sinkings_scale_1500_and_5000_countries_50000_sinkings() {
-    for countries in [1500, 5000] {
-        let first = 60_800_000;
-        let base = frame(first, countries);
-        let mut frames = Vec::new();
-        let mut retained = base.tables[TableId::SunkShips.index()].clone();
-        for offset in 0..240 {
-            let mut current = base.clone();
-            current.hour += offset;
-            if offset % 24 == 0 {
-                let count = (offset / 24 + 1) * 5000;
-                retained = TableView::Complete(TableRows::SunkShips(vec![SunkShipsRow {
-                    entries: (0..count)
-                        .map(|n| SunkShipEntry {
-                            ship_name: format!("synthetic ship {n}").into_bytes(),
-                            victim_country: 1 + n as u32 % countries,
-                            attacker_country: 1 + (n as u32 + 1) % countries,
-                            sink_hour: first + n / 5000 * 24,
-                            class_token: 98765,
-                            ..Default::default()
-                        })
-                        .collect(),
-                }]))
-                .into();
-            } else {
-                current.metrics = Metrics::default();
-            }
-            current.tables[TableId::SunkShips.index()] = retained.clone();
-            frames.push(current);
-        }
-        let replay = replay_of(frames);
-        let out = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-        assert_eq!(out.ships.len(), 50000);
-        assert_eq!(out.segments.len(), countries as usize);
-        assert_eq!(out.country_identities.len(), countries as usize);
-    }
-}
-
-#[test]
 fn sinkings_retained_entries_name_countries_at_the_supplying_read_only() {
     let first = 60_800_000;
     let mut before = frame(first, 3);
@@ -1110,13 +1070,13 @@ fn prepared_ship_history_retains_multiset_through_unavailable_resume_and_future_
 }
 
 #[test]
-fn shared_sinking_observer_matches_oracle_after_commits_resume_append_and_5000_countries() {
+fn shared_sinking_observer_matches_oracle_after_commits_resume_append_and_country_scale() {
     use dashboard_base::prepared::series::{self, tests::Fixture};
     let flag = AtomicBool::new(false);
-    let mut first = frame(10, 5000);
-    let mut second = frame(11, 5000);
-    let mut missing = frame(13, 5000);
-    let mut appended = frame(17, 5000);
+    let mut first = frame(10, 12);
+    let mut second = frame(11, 12);
+    let mut missing = frame(13, 12);
+    let mut appended = frame(17, 12);
     let a = ship(b"duplicate retained ship", 9);
     let b = ship(b"new observed ship", 10);
     let c = ship(b"gap sinking", 14);

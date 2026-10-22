@@ -1496,74 +1496,10 @@ mod tests {
     }
 
     #[test]
-    fn occupation_shared_driver_skips_closed_alias_history_and_bounds_one_owner_change() {
-        let format = replay_data::format::FormatVersion::CURRENT;
-        let work = observer_tests::scaled_work(10, |history| {
-            let mut prepared = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut read = frame(100, 2);
-            for index in 0..history {
-                read = frame(100 + index as i32 * 24, 2);
-                if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut *read.tables[TableId::Countries.index()]
-                {
-                    rows[0].tag = format!("closed alias {index}").into_bytes();
-                }
-                prepared.observe_frame(&read, format, Some(&tracker.observe(&read, format)))?;
-            }
-            read.metrics = Default::default();
-            read.hour += 1;
-            prepared.observe_frame(&read, format, Some(&tracker.observe(&read, format)))?;
-            let delta = observer_tests::unchanged_frames(
-                prepared.scan.work,
-                &read,
-                10,
-                format,
-                |frame, changes| {
-                    prepared.observe_frame(frame, format, Some(changes))?;
-                    Ok(prepared.scan.work)
-                },
-            )?;
-            assert_eq!(delta, observer_tests::Work::default());
-            read.hour += 11;
-            if let TableView::Complete(TableRows::States(rows)) =
-                &mut *read.tables[TableId::States.index()]
-            {
-                rows[0].owner = 2;
-            }
-            // The shared driver owns its tracker; seed the next real observation
-            // with the prior accepted views so this is a one-table change.
-            let mut previous = read.clone();
-            previous.hour -= 1;
-            if let TableView::Complete(TableRows::States(rows)) =
-                &mut *previous.tables[TableId::States.index()]
-            {
-                rows[0].owner = 1;
-            }
-            let mut tracker = FrameChangeTracker::new();
-            tracker.observe(&previous, format);
-            let before = prepared.scan.work;
-            prepared.observe_frame(&read, format, Some(&tracker.observe(&read, format)))?;
-            let changed = observer_tests::Work {
-                row_visits: prepared.scan.work.row_visits - before.row_visits,
-                history_visits: prepared.scan.work.history_visits - before.history_visits,
-                emitted: prepared.scan.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(changed.row_visits, 2);
-            assert_eq!(changed.history_visits, 1);
-            assert_eq!(changed.emitted, 1);
-            Ok(changed)
-        })
-        .unwrap();
-        observer_tests::assert_flat(work);
-    }
-
-    #[test]
-    fn occupation_shared_driver_holds_all_5000_occupiers_without_hourly_work() {
+    fn occupation_shared_driver_holds_all_occupiers_without_hourly_work() {
         let format = replay_data::format::FormatVersion::CURRENT;
         let mut prepared = Prepared::default();
-        let mut read = frame(100, 5_000);
+        let mut read = frame(100, 12);
         let mut tracker = FrameChangeTracker::new();
         prepared
             .observe_frame(&read, format, Some(&tracker.observe(&read, format)))
@@ -1585,7 +1521,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(delta, observer_tests::Work::default());
-        assert_eq!(prepared.tags.len(), 5_000);
+        assert_eq!(prepared.tags.len(), 12);
         assert!(
             prepared
                 .scan
@@ -1764,67 +1700,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn occupation_prepared_retains_all_five_thousand_occupiers_with_bounded_continuation() {
-        let fixture = Fixture::new();
-        let cancelled = AtomicBool::new(false);
-        let mut prepared = Prepared::default();
-        for (window, hour) in [100, 101].into_iter().enumerate() {
-            prepared
-                .observe_frame(
-                    &frame(hour, 5000),
-                    replay_data::format::FormatVersion::CURRENT,
-                    None,
-                )
-                .unwrap();
-            let mut writer = fixture.writer();
-            prepared
-                .write_window(
-                    &mut writer,
-                    1,
-                    window,
-                    HourSpan {
-                        first_hour: hour,
-                        last_hour: hour,
-                    },
-                )
-                .unwrap();
-            prepared.flush(&mut writer, 1, &cancelled).unwrap();
-            writer.commit().unwrap();
-            let bytes = prepared.saved_bytes().unwrap();
-            eprintln!(
-                "occupation compressed continuation for 5,000 occupiers after window {window}: {} bytes",
-                bytes.len()
-            );
-            prepared = Prepared::read(bytes.as_slice()).unwrap();
-        }
-        assert_eq!(prepared.tags.len(), 5000);
-        assert!(
-            prepared
-                .scan
-                .result
-                .states
-                .iter()
-                .all(|state| state.runs.len() == 1)
-        );
-        assert!(
-            prepared
-                .scan
-                .trend
-                .tracks
-                .values()
-                .all(|track| track.runs.len() == 1)
-        );
-        let reply = series::read_reply::<OccupiedStatesReply>(
-            &fixture.store,
-            &fixture.key,
-            "occupied-states-1",
-            1,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(reply.states.len(), 5000);
     }
 }

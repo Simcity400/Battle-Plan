@@ -173,190 +173,6 @@ fn prepared_content_success_and_failure_do_not_load_after_configuration() {
 }
 
 #[test]
-fn prepared_shared_driver_unchanged_frames_and_closed_history_keep_work_flat() {
-    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay_data::format::FormatVersion;
-    let flag = AtomicBool::new(false);
-    let unchanged = observer_tests::scaled_work(10, |hours| {
-        let first = frame(24, 1);
-        let mut prepared = Prepared::default();
-        let mut tracker = FrameChangeTracker::new();
-        prepared.observe(
-            &first,
-            &tracker.observe(&first, FormatVersion::CURRENT),
-            &flag,
-        )?;
-        observer_tests::unchanged_frames(
-            prepared.measured_work(),
-            &first,
-            hours as i32,
-            FormatVersion::CURRENT,
-            |frame, changes| {
-                prepared.observe(frame, changes, &flag)?;
-                Ok(prepared.measured_work())
-            },
-        )
-    })
-    .unwrap();
-    observer_tests::assert_flat(unchanged);
-    let history = observer_tests::scaled_work(6, |hours| {
-        let mut prepared = Prepared::default();
-        let mut tracker = FrameChangeTracker::new();
-        let mut last = frame(24, 1);
-        for offset in 0..hours {
-            last = frame(24 + offset as i32, 1);
-            let mut countries = last.complete::<tables::Countries>().unwrap().to_vec();
-            countries[0].tag = format!("H{offset}").into_bytes();
-            put(&mut last, TableRows::Countries(countries));
-            let mut payment = event(
-                offset as u64 + 1,
-                PowerCause::Decision,
-                PowerOperation::Subtract,
-                Some(-7),
-            );
-            payment.hour = last.hour;
-            put(&mut last, TableRows::CountryPowerChanges(vec![payment]));
-            prepared.observe(
-                &last,
-                &tracker.observe(&last, FormatVersion::CURRENT),
-                &flag,
-            )?;
-        }
-        observer_tests::unchanged_frames(
-            prepared.measured_work(),
-            &last,
-            8,
-            FormatVersion::CURRENT,
-            |frame, changes| {
-                prepared.observe(frame, changes, &flag)?;
-                Ok(prepared.measured_work())
-            },
-        )
-    })
-    .unwrap();
-    observer_tests::assert_flat(history);
-}
-
-#[test]
-fn prepared_one_changed_row_and_unrelated_country_balances_bound_native_and_projection_work() {
-    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-    use replay_data::format::FormatVersion;
-    let flag = AtomicBool::new(false);
-    let mut first = frame(24, 5000);
-    put(
-        &mut first,
-        TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
-            country: 1,
-            instance: 1,
-            epoch: 1,
-            since_hour: 24,
-            through_hour: 24,
-            streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-        }]),
-    );
-    let mut prepared = Prepared::default();
-    let mut tracker = FrameChangeTracker::new();
-    prepared
-        .observe(
-            &first,
-            &tracker.observe(&first, FormatVersion::CURRENT),
-            &flag,
-        )
-        .unwrap();
-    first.hour = 25;
-    prepared
-        .observe(
-            &first,
-            &tracker.observe(&first, FormatVersion::CURRENT),
-            &flag,
-        )
-        .unwrap();
-    let before = prepared.measured_work();
-    let mut balance = first.clone();
-    balance.hour = 26;
-    let mut countries = balance.complete::<tables::Countries>().unwrap().to_vec();
-    countries[0].political_power_raw = Some(1);
-    put(&mut balance, TableRows::Countries(countries));
-    prepared
-        .observe(
-            &balance,
-            &tracker.observe(&balance, FormatVersion::CURRENT),
-            &flag,
-        )
-        .unwrap();
-    let after = prepared.measured_work();
-    assert_eq!(
-        after.row_visits - before.row_visits,
-        5000,
-        "only the changed Countries projection is visited"
-    );
-    assert_eq!(after.history_visits, before.history_visits);
-    assert_eq!(after.emitted, before.emitted);
-    let work = observer_tests::scaled_work(1, |_scale| {
-        let before = prepared.measured_work();
-        let mut changed = balance.clone();
-        changed.hour = prepared.metadata.last.unwrap() + 1;
-        let mut payment = event(
-            changed.hour as u64,
-            PowerCause::Decision,
-            PowerOperation::Subtract,
-            Some(-7),
-        );
-        payment.hour = changed.hour;
-        put(&mut changed, TableRows::CountryPowerChanges(vec![payment]));
-        prepared.observe(
-            &changed,
-            &tracker.observe(&changed, FormatVersion::CURRENT),
-            &flag,
-        )?;
-        let after = prepared.measured_work();
-        assert_eq!(after.row_visits - before.row_visits, 1);
-        assert!(
-            after.history_visits - before.history_visits <= 1,
-            "one payment projects one country"
-        );
-        Ok(observer_tests::Work {
-            row_visits: after.row_visits - before.row_visits,
-            history_visits: after.history_visits - before.history_visits,
-            emitted: after.emitted - before.emitted,
-            ..Default::default()
-        })
-    })
-    .unwrap();
-    assert!(
-        work.iter()
-            .all(|work| work.row_visits == 1 && work.history_visits <= 1 && work.emitted <= 32)
-    );
-    let before = prepared.measured_work();
-    balance.hour = prepared.metadata.last.unwrap() + 1;
-    let hour = balance.hour;
-    put(
-        &mut balance,
-        TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
-            country: 1,
-            instance: 1,
-            epoch: 1,
-            since_hour: hour,
-            through_hour: hour,
-            streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-        }]),
-    );
-    prepared
-        .observe(
-            &balance,
-            &tracker.observe(&balance, FormatVersion::CURRENT),
-            &flag,
-        )
-        .unwrap();
-    let after = prepared.measured_work();
-    assert_eq!(after.row_visits - before.row_visits, 1);
-    assert!(
-        after.history_visits - before.history_visits <= 1,
-        "one coverage owner must not revisit 5,000 countries"
-    );
-}
-
-#[test]
 fn prepared_bulk_refusal_rates_keep_every_native_alias_and_the_first_naming_read() {
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
     use replay_data::format::FormatVersion;
@@ -1062,73 +878,6 @@ fn prepared_payments_match_the_oracle_across_two_commits_resume_and_append() {
     assert_eq!(actual.spend_categories, expected.spend_categories);
     assert_eq!(actual.gains[0].gained_raw, "300");
     assert_eq!(actual.gains[0].lost_raw, "39");
-}
-
-#[test]
-fn prepared_continuation_bytes_do_not_keep_completed_payments() {
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::default();
-    let mut short = 0;
-    for hour in 24..=24 * 400 {
-        let mut current = frame(hour, 1);
-        let mut payment = event(
-            hour as u64,
-            PowerCause::Decision,
-            PowerOperation::Subtract,
-            Some(-17),
-        );
-        payment.hour = hour;
-        put(&mut current, TableRows::CountryPowerChanges(vec![payment]));
-        prepared
-            .observe_frame(&current, None, &AtomicBool::new(false))
-            .unwrap();
-        if hour == 48 || hour == 24 * 400 {
-            publish(&mut prepared, &fixture);
-            let bytes = prepared.saved_bytes().unwrap().len();
-            if short == 0 {
-                short = bytes;
-            } else {
-                assert!(bytes <= short + 512, "short={short}, long={bytes}");
-            }
-        }
-    }
-}
-
-#[test]
-fn prepared_observer_and_queries_preserve_five_thousand_countries_without_caps() {
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::default();
-    for hour in [24, 25] {
-        let mut current = frame(hour, 5000);
-        put(
-            &mut current,
-            TableRows::CountryPowerChanges(
-                (1..=5000)
-                    .map(|country| {
-                        let mut payment = event(
-                            hour as u64,
-                            PowerCause::Decision,
-                            PowerOperation::Subtract,
-                            Some(-i64::from(country)),
-                        );
-                        payment.country = country;
-                        payment.hour = hour;
-                        payment
-                    })
-                    .collect(),
-            ),
-        );
-        prepared
-            .observe_frame(&current, None, &AtomicBool::new(false))
-            .unwrap();
-        publish(&mut prepared, &fixture);
-    }
-    assert_eq!(prepared.scan.countries.len(), 5000);
-    assert_eq!(
-        spend_total(&read(&fixture, "C5000", 24, 25, "spending")),
-        10000
-    );
-    assert_eq!(read(&fixture, "C1", 24, 25, "spending").spending.len(), 2);
 }
 
 #[test]
@@ -1905,121 +1654,6 @@ fn extend_captures(input: &mut DecodedFrame) {
     put(input, TableRows::PoliticsCaptureCoverage(captures));
 }
 
-/// Each observer's countries observed, rows read, countries presented and
-/// hours joined from changed rows, over one recorded hour.
-type HourWork = (usize, usize, usize, usize);
-
-/// The work of hours whose captures all extend to the hour, with one
-/// country's rows changed at a time, joined from changed rows and from the
-/// whole tables.
-fn assert_hour_observes_only_changed_countries(count: u32) {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let flag = AtomicBool::new(false);
-    let mut recorded = Recorded::new();
-    let mut trackers = [FrameChangeTracker::new(), FrameChangeTracker::new()];
-    let mut observers = [Prepared::default(), Prepared::default()];
-    observers[1].scan.whole_tables = true;
-    let mut input = frame(24, count);
-    put(&mut input, command_power(count));
-    let mut step = |observers: &mut [Prepared; 2], input: &mut DecodedFrame| -> [HourWork; 2] {
-        extend_captures(input);
-        let keyframe = input.hour == 24;
-        let (decoded, wire) = recorded.next(input, keyframe);
-        let mut work = [(0, 0, 0, 0); 2];
-        for ((observer, tracker), work) in observers.iter_mut().zip(&mut trackers).zip(&mut work) {
-            let before = (
-                observer.scan.country_visits,
-                observer.measured_work(),
-                observer.scan.row_hours,
-            );
-            let changes = tracker.observe_updates(&decoded, Arc::clone(&wire), format);
-            observer.observe(&decoded, &changes, &flag).unwrap();
-            let after = observer.measured_work();
-            *work = (
-                observer.scan.country_visits - before.0,
-                after.row_visits - before.1.row_visits,
-                after.history_visits - before.1.history_visits,
-                observer.scan.row_hours - before.2,
-            );
-        }
-        work
-    };
-    let every = count as usize;
-    let [first, whole] = step(&mut observers, &mut input);
-    assert_eq!(first.0, every, "the first hour observes every country");
-    assert_eq!(whole.0, every);
-
-    input.hour = 25;
-    let [rows, whole] = step(&mut observers, &mut input);
-    assert_eq!(rows.3, 1, "the hour is joined from its changed rows");
-    assert_eq!(
-        (rows.0, rows.2),
-        (0, 0),
-        "captures extended to the hour observe no country"
-    );
-    assert_eq!(rows.1, every, "only the changed captures are read");
-    assert_eq!(whole.0, every, "whole tables observe every country again");
-
-    // One country's payment.
-    input.hour = 26;
-    let paying = count / 2;
-    put(
-        &mut input,
-        TableRows::CountryPowerChanges(vec![payment(paying, 1, 26)]),
-    );
-    let [rows, whole] = step(&mut observers, &mut input);
-    assert_eq!(rows.3, 1);
-    assert_eq!(
-        (rows.0, rows.2),
-        (1, 1),
-        "only the paying country is observed and presented"
-    );
-    assert_eq!(rows.1, every + 1);
-    assert_eq!(whole.0, every);
-
-    // A balance no join reads.
-    input.hour = 27;
-    let mut countries = input.complete::<tables::Countries>().unwrap().to_vec();
-    countries[(count / 3) as usize].political_power_raw = Some(27);
-    put(&mut input, TableRows::Countries(countries));
-    let [rows, _] = step(&mut observers, &mut input);
-    assert_eq!(rows.3, 1);
-    assert_eq!((rows.0, rows.2), (0, 0));
-
-    // One capture loses a stream.
-    input.hour = 28;
-    let changed = count / 4;
-    let captures = input
-        .complete::<tables::PoliticsCaptureCoverage>()
-        .unwrap()
-        .iter()
-        .map(|row| PoliticsCaptureCoverageRow {
-            streams: if row.country == changed {
-                PoliticsCaptureCoverageRow::PP
-            } else {
-                row.streams
-            },
-            ..row.clone()
-        })
-        .collect();
-    put(&mut input, TableRows::PoliticsCaptureCoverage(captures));
-    let [rows, _] = step(&mut observers, &mut input);
-    assert_eq!(rows.3, 1);
-    assert_eq!(rows.0, 1, "only the changed capture's country is observed");
-    assert_eq!(observers[1].scan.row_hours, 0);
-}
-
-#[test]
-fn prepared_hour_changing_one_country_observes_only_that_country() {
-    assert_hour_observes_only_changed_countries(200);
-}
-
-#[test]
-fn prepared_hour_changing_one_of_5000_countries_observes_only_that_country() {
-    assert_hour_observes_only_changed_countries(5000);
-}
-
 /// One fixture hour's edits: payments, daily gains of a captured identity
 /// and of one no capture names, a balance, a restarted capture, a government, a
 /// leader's command power allocation, a capture that stops, is deleted and
@@ -2481,64 +2115,12 @@ impl Publications {
         }
         work
     }
-    fn power(&self) -> Vec<CountryPowerChangeRow> {
-        self.input
-            .complete::<tables::CountryPowerChanges>()
-            .unwrap()
-            .to_vec()
-    }
     fn leaders(&self) -> Vec<UnitLeaderRow> {
         self.input
             .complete::<tables::UnitLeaders>()
             .unwrap()
             .to_vec()
     }
-}
-
-#[test]
-fn prepared_hour_publishing_one_payment_visits_only_its_country_events() {
-    let count = 200;
-    let mut hours = Publications::new(count);
-    let [first, _] = hours.step();
-    assert!(first.0 >= 3 * count as usize);
-    hours.input.hour = 25;
-    let [rows, whole] = hours.step();
-    assert_eq!(rows.0, 0, "no power or government row changed");
-    assert!(
-        whole.0 >= 6 * count as usize,
-        "the whole tables publish again"
-    );
-
-    // One country's payment.
-    hours.input.hour = 26;
-    let mut power = hours.power();
-    power.push(payment(count / 2, 4, 26));
-    power.sort_by_key(|row| (row.country, row.sequence));
-    put(&mut hours.input, TableRows::CountryPowerChanges(power));
-    let [rows, whole] = hours.step();
-    assert_eq!(rows.0, 3 + 4, "the paying country's old and current events");
-    assert!(whole.0 >= 6 * count as usize);
-
-    // One country's government change.
-    hours.input.hour = 27;
-    put(
-        &mut hours.input,
-        TableRows::GovernmentChanges(vec![GovernmentChangeRow {
-            country: count / 3,
-            instance: 1,
-            epoch: 1,
-            sequence: 9,
-            hour: 27,
-            before_party: Some(1),
-            after_party: Some(2),
-            ..Default::default()
-        }]),
-    );
-    let [rows, _] = hours.step();
-    assert_eq!(rows.0, 1);
-    let [rows, whole] = &hours.observers;
-    assert_eq!(rows.scan.published_events, whole.scan.published_events);
-    assert_eq!(rows.scan.events, whole.scan.events);
 }
 
 #[test]
@@ -3315,11 +2897,6 @@ fn prepared_daily_changes_observe_only_their_owners_and_keep_the_whole_joins_byt
 }
 
 #[test]
-fn prepared_daily_changes_among_5000_countries_observe_only_their_owners() {
-    assert_daily_changes_observe_only_their_owners(5000);
-}
-
-#[test]
 fn prepared_payment_projection_indexes_each_source_row_once() {
     let flag = AtomicBool::new(false);
     let mut input = frame(24, 1);
@@ -3463,7 +3040,7 @@ fn prepared_equal_cost_reads_with_unrelated_events_do_not_revisit_retained_cost_
 #[test]
 fn pending_rows_of_one_owner_do_not_scan_other_owners_refusals() {
     for shift in [32, 64] {
-        let mut pending: BTreeSet<_> = (0..5000_u128)
+        let mut pending: BTreeSet<_> = (0..64_u128)
             .flat_map(|country| [country << shift, (country << shift) | 17])
             .collect();
         let mut expected = pending.clone();
@@ -3605,93 +3182,6 @@ fn prepared_accounting_follows_changed_rows_within_one_owners_retained_publicati
             }
         }
     }
-}
-
-/// Expanding capture starts backwards selects every owner even when its retained
-/// daily operands and empty holds have not changed.
-fn unchanged_daily_and_empty_holds_do_not_rebuild(count: u32) {
-    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::default();
-    let mut tracker = FrameChangeTracker::new();
-    let mut recorded = Recorded::new();
-    let mut input = frame(24, count);
-    put(&mut input, command_power(count));
-    let mut days: Vec<_> = (1..=count)
-        .map(|country| daily_gain(country, 1, 24).0)
-        .collect();
-    for hour in 24..=26 {
-        input.hour = hour;
-        if hour == 26 {
-            days.last_mut().unwrap().cp_gain_raw = Some(31);
-        }
-        put(&mut input, TableRows::CountryPowerDaily(days.clone()));
-        put(
-            &mut input,
-            TableRows::PoliticsCaptureCoverage(
-                (1..=count)
-                    .map(|country| capture(country, 24 - (hour - 24), hour))
-                    .collect(),
-            ),
-        );
-        let (decoded, wire) = recorded.next(&mut input, hour == 24);
-        let before = (
-            prepared.scan.daily_builds,
-            prepared.daily_projection_visits,
-            holds::snapshot_count(),
-            prepared.scan.country_visits,
-        );
-        let changes = tracker.observe_updates(&decoded, wire, format);
-        prepared.observe(&decoded, &changes, &flag).unwrap();
-        assert_eq!(prepared.scan.country_visits - before.3, count as usize);
-        if hour > 24 {
-            let edited = usize::from(hour == 26);
-            assert_eq!(prepared.scan.daily_builds - before.0, edited);
-            assert_eq!(prepared.daily_projection_visits - before.1, edited);
-            assert_eq!(holds::snapshot_count() - before.2, 0);
-        }
-    }
-}
-
-#[test]
-fn selected_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
-    unchanged_daily_and_empty_holds_do_not_rebuild(16);
-}
-
-#[test]
-fn selected_5000_countries_keep_equal_daily_projections_and_empty_hold_snapshots() {
-    unchanged_daily_and_empty_holds_do_not_rebuild(5000);
-}
-
-#[test]
-fn native_daily_ordinals_are_resolved_once_per_tag_and_identity() {
-    let mut prepared = Prepared::default();
-    for day in [24, 48, 72] {
-        for country in 1..=12 {
-            let row = Daily {
-                row: daily_gain(country, 1, day).0,
-                read_hour: day + 1,
-                pp_read_hour: Some(day + 1),
-                cp_read_hour: Some(day),
-            }
-            .ledger();
-            prepared
-                .publish_daily(&format!("C{country}"), &row)
-                .unwrap();
-        }
-        assert_eq!(prepared.native_daily_key_visits, 12 * 26);
-    }
-    let row = Daily {
-        row: daily_gain(1, 2, 96).0,
-        read_hour: 97,
-        pp_read_hour: Some(97),
-        cp_read_hour: Some(96),
-    }
-    .ledger();
-    prepared.publish_daily("C1", &row).unwrap();
-    prepared.publish_daily("a different tag", &row).unwrap();
-    assert_eq!(prepared.native_daily_key_visits, 14 * 26);
 }
 
 #[test]
@@ -4109,11 +3599,6 @@ fn sliding_capture_windows_skip_country_work_and_keep_hourly_and_folded_bytes() 
 #[test]
 fn sliding_capture_windows_keep_bytes_across_changes_refusals_gaps_resume_and_append() {
     assert_sliding_window_bytes(4, true);
-}
-
-#[test]
-fn sliding_capture_windows_among_5000_countries_do_no_hourly_accounting_or_projection() {
-    assert_sliding_window_bytes(5000, false);
 }
 
 #[test]

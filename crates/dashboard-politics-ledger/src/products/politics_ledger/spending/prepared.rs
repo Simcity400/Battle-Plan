@@ -61,9 +61,6 @@ pub struct Prepared {
     native_daily: BTreeMap<String, BTreeMap<(u32, u32, String), [u64; 26]>>,
     #[cfg(test)]
     #[serde(skip)]
-    native_daily_key_visits: usize,
-    #[cfg(test)]
-    #[serde(skip)]
     daily_projection_visits: usize,
     #[cfg(test)]
     #[serde(skip)]
@@ -540,12 +537,6 @@ fn merge_payment(left: &mut Payment, right: Payment) -> io::Result<()> {
 }
 
 impl Prepared {
-    #[cfg(test)]
-    fn measured_work(&self) -> dashboard_base::prepared::observer_tests::Work {
-        let mut work = self.work;
-        work.row_visits = self.scan.inputs.row_visits;
-        work
-    }
     pub fn resume(&mut self, frame: &DecodedFrame) {
         self.scan.resume(frame);
         // Rebuild the current day's clock operands, never completed facts.
@@ -1051,10 +1042,6 @@ impl Prepared {
                     "Command:availability-lag",
                 ])) {
                     *key = self.key(tag, &format!("{prefix}:{field}"))?;
-                    #[cfg(test)]
-                    {
-                        self.native_daily_key_visits += 1;
-                    }
                 }
                 self.native_daily
                     .entry(tag.to_owned())

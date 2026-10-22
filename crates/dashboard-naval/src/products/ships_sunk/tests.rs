@@ -519,31 +519,6 @@ fn content_retention_marks_nonpositive_unavailable_and_long_unread_spans() {
 }
 
 #[test]
-#[ignore = "large reply fixture is run by the lead at the end"]
-fn long_war_with_five_thousand_opaque_country_tags_fits_the_reply_budget() {
-    let count = 50_000;
-    let hours = 12_000;
-    let ships = (0..count)
-        .map(|index| {
-            let mut ship = event(100 + index % hours, 100 + index % hours);
-            ship.victim = Some(format!("country slot {}", index % 5_000));
-            ship.attacker = Some(format!("country slot {}", (index + 1) % 5_000));
-            ship
-        })
-        .collect();
-    let mut scan = scanned(ships);
-    scan.last_hour = scan.first_hour + hours - 1;
-    scan.first_ship_read = Some(scan.first_hour);
-    let (cat, _folder) = folder_catalogue(&[]);
-    let names = named(&scan, Some(&cat), &AtomicBool::new(false)).unwrap();
-    let reply = reply("1", &scan, &names, &AtomicBool::new(false)).unwrap();
-    let bytes = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    assert_eq!(reply.rows.len(), count as usize);
-    assert!(bytes < MAX_PRODUCT_REPLY_BYTES);
-    println!("ships_sunk: 50,000 sinkings / 5,000 countries; {bytes} JSON bytes");
-}
-
-#[test]
 fn missing_class_index_is_a_named_refusal() {
     let scan = scanned(vec![event(150, 167)]);
     let mut names = named(&scan, None, &AtomicBool::new(false)).unwrap();

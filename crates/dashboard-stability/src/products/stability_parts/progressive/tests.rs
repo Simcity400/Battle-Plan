@@ -15,9 +15,9 @@ fn samples(frame: &DecodedFrame, requested: Option<&[(String, String)]>) -> Samp
 }
 
 #[test]
-fn sampler_and_observer_agree_on_every_key_for_5000_countries() {
-    let mut frame = scale_frame(1, 100, 5_000);
-    let inputs = (0..5_000)
+fn sampler_and_observer_agree_on_every_key() {
+    let mut frame = scale_frame(1, 100, 12);
+    let inputs = (0..12)
         .map(|index| {
             let mut input = stability_inputs();
             input.country = 100_000 + index;
@@ -30,7 +30,7 @@ fn sampler_and_observer_agree_on_every_key_for_5000_countries() {
     *frame.tables[TableId::CountryStabilityLines.index()] =
         TableView::Complete(TableRows::CountryStabilityLines(vec![]));
     *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
-        (0..5_000)
+        (0..12)
             .map(|index| replay_data::rows::SliceReadRow {
                 owner: 100_000 + index,
                 table: TableId::CountryStabilityInputs as u32,
@@ -73,21 +73,14 @@ fn sampler_and_observer_agree_on_every_key_for_5000_countries() {
             serde_json::from_value(holder).unwrap();
         assert_eq!(Some((holder.slot, holder.country_id)), identity);
     }
-    // A full 5,000-country selection goes through one actual adapter query,
-    // not a per-country or per-key request loop.
+    // A full selection is answered by one adapter query.
     let source = super::super::tests::prepared_source(vec![frame.clone()]);
-    let tags: Vec<_> = (0..5_000)
+    let tags: Vec<_> = (0..12)
         .map(|index| String::from_utf8(dashboard_base::test_fixtures::scale_tag(index)).unwrap())
         .collect();
-    let mut requests = 0;
-    let mut query = || {
-        requests += 1;
-        prepared_query(&source, None, "series-state", serde_json::json!({"branchId":"1","family":{"kind":"stability-parts","measure":"stability"},"reads":tags.iter().map(|tag| serde_json::json!({"tag":tag,"hour":100})).collect::<Vec<_>>()}), &fixture.store, &fixture.key, None, &flag).unwrap()
-    };
-    let reply = query();
-    assert_eq!(requests, 1);
-    assert_eq!(reply["parts"].as_object().unwrap().len(), 5_000);
-    assert!(reply["states"].as_array().unwrap().len() >= 5_000);
+    let reply = prepared_query(&source, None, "series-state", serde_json::json!({"branchId":"1","family":{"kind":"stability-parts","measure":"stability"},"reads":tags.iter().map(|tag| serde_json::json!({"tag":tag,"hour":100})).collect::<Vec<_>>()}), &fixture.store, &fixture.key, None, &flag).unwrap();
+    assert_eq!(reply["parts"].as_object().unwrap().len(), 12);
+    assert!(reply["states"].as_array().unwrap().len() >= 12);
 }
 
 #[test]

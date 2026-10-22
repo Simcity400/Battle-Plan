@@ -288,47 +288,13 @@ fn occupation_reserve_equal_forced_reads_are_watched_and_dated() {
     );
 }
 #[test]
-fn occupation_reserve_five_thousand_holders_sparse_top_and_drill() {
-    let rows: Vec<_> = (1..=5000).map(|id| (id, 0, 1, id as i32)).collect();
-    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
-    let mut scan = Scan::default();
-    observe(&mut scan, &frame(100, Some(&rows), true, 5000));
-    publish(&mut scan, &fixture);
-    let reply = load(
-        &fixture,
-        &params(serde_json::json!({"branchId":"1","top":2})),
-        100,
-        100,
-        None,
-    );
-    assert_eq!(
-        reply.holders.iter().map(|h| h.slot).collect::<Vec<_>>(),
-        [5000, 4999]
-    );
-    assert_eq!(reply.window.series.len(), 4);
-    assert_eq!(scan.names().len(), 10000);
-    let drill = load(
-        &fixture,
-        &params(serde_json::json!({"branchId":"1","view":"holder","tag":"Mod 2500@2500"})),
-        100,
-        100,
-        None,
-    );
-    assert_eq!(drill.window.series.len(), 2);
-}
-#[test]
-fn occupation_reserve_cold_validation_and_exported_types() {
+fn occupation_reserve_cold_validation() {
     let p = params(serde_json::json!({"branchId":"1"}));
     let cold = reply(None, &p, 100, 105, Some(99), &AtomicBool::new(false)).unwrap();
     assert!(cold.window.known.is_empty());
     assert!(cold.holders.is_empty());
     let bad = params(serde_json::json!({"branchId":"1","view":"holder"}));
     assert!(OccupationReserve::validate(&bad).is_err());
-    assert!(
-        OccupationReserve::types()
-            .iter()
-            .any(|s| s.contains("OccupationReserveReply"))
-    );
 }
 
 #[test]

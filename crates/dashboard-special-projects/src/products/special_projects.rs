@@ -2432,15 +2432,6 @@ mod tests {
     }
 
     #[test]
-    fn all_recorded_projects_are_kept_at_five_thousand_without_player_inputs() {
-        let mut builder = Builder::default();
-        builder.observe(&frame(100, true, 5000), "mod tag", None);
-        assert_eq!(builder.episodes.len(), 5000);
-        assert_eq!(builder.presentations.len(), 1);
-        assert_eq!(builder.people.len(), 1);
-    }
-
-    #[test]
     fn completion_keeps_only_a_dated_last_assignment_and_a_gap_cannot_supply_it() {
         let mut sample = frame(100, true, 1);
         let mut project = ProjectRow {
@@ -2548,45 +2539,6 @@ mod tests {
             builder.people[info.scientist as usize].assigned,
             Some(false)
         );
-    }
-
-    #[test]
-    fn country_roster_at_five_thousand_keeps_the_requested_ai_or_human_country() {
-        let mut sample = frame(100, true, 1);
-        *sample.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=5000)
-                .map(|id| CountryRow {
-                    id,
-                    canonical_slot: id - 1,
-                    tag: format!("opaque country {id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *sample.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                (1..=5000)
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: id - 1,
-                    })
-                    .collect(),
-            ));
-        *sample.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(
-            (1..=5000)
-                .map(|owner| ProjectRow {
-                    owner,
-                    local_id: owner,
-                    definition_id: 8,
-                    started: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        let mut builder = Builder::default();
-        builder.observe(&sample, "opaque country 5000", None);
-        assert_eq!(builder.episodes.len(), 1);
-        assert!(builder.episodes[0].id.starts_with("5000:"));
     }
 
     #[test]

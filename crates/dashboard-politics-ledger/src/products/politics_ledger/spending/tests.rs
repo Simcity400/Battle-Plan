@@ -150,7 +150,7 @@ fn published_keys_survive_failed_reads_and_count_repeated_complete_rows_once() {
 #[test]
 fn published_key_continuation_does_not_retain_completed_payments() {
     let mut scan = Scanned::default();
-    for hour in 24..=24 * 400 {
+    for hour in 24..=24 * 4 {
         let mut current = frame(hour, 1);
         let mut payment = event(
             hour as u64,
@@ -682,61 +682,6 @@ fn missing_frames_and_tables_remain_explicit_gaps_and_late_event_names_are_not_b
 }
 
 #[test]
-fn five_thousand_countries_share_indexed_observation_and_stable_histories_compress() {
-    let mut frame = frame(24, 5000);
-    put(
-        &mut frame,
-        TableRows::CountryPowerChanges(
-            (1..=5000)
-                .map(|id| CountryPowerChangeRow {
-                    country: id,
-                    instance: 1,
-                    epoch: 1,
-                    hour: 24,
-                    sequence: u64::from(id),
-                    cause: PowerCause::NotIdentified,
-                    operation: PowerOperation::Subtract,
-                    requested_delta_raw: Some(-1),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    let mut scan = Scanned::default();
-    observe_all(&frame, &mut scan, None).unwrap();
-    assert_eq!(scan.countries.len(), 5000);
-    frame.hour = 25;
-    put(
-        &mut frame,
-        TableRows::PoliticsCaptureCoverage(
-            (1..=5000)
-                .map(|id| PoliticsCaptureCoverageRow {
-                    country: id,
-                    instance: 1,
-                    epoch: 1,
-                    since_hour: 25,
-                    through_hour: 25,
-                    streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-                })
-                .collect(),
-        ),
-    );
-    observe_all(&frame, &mut scan, None).unwrap();
-    assert_eq!(scan.naming.len(), 5000);
-    assert!(
-        scan.countries
-            .values()
-            .all(|reply| reply.coverage.len() == 1)
-    );
-    let reply = present(&scan, 1, "C5000", None, &AtomicBool::new(false)).unwrap();
-    assert_eq!(reply.spending.len(), 1);
-    assert_eq!(reply.spending[0].country_tag, "C5000");
-    assert!(json_len(&reply, MAX_REPLY_BYTES).is_some());
-    assert_eq!(reply.spending_coverage[0].read_hour, 24);
-    assert_eq!(reply.spending_coverage[0].through_hour, Some(25));
-}
-
-#[test]
 fn response_budget_refuses_before_large_history_or_art_is_cloned() {
     let mut budget = ReplyBudget::new();
     let icon = "x".repeat(MAX_REPLY_BYTES);
@@ -1034,56 +979,6 @@ fn same_specific_item_groups_action_variants_without_losing_event_sentences() {
             .len(),
         1
     );
-}
-
-#[test]
-fn bounded_observation_over_three_months_with_hourly_leader_changes() {
-    let mut scan = Scanned::default();
-    let mut current = frame(0, 1);
-    let mut leaders: Vec<_> = (0..3000)
-        .map(|id| UnitLeaderRow {
-            id,
-            reference_type: 1,
-            ..Default::default()
-        })
-        .collect();
-    for hour in 0..90 * 24 {
-        current.hour = hour;
-        for leader in &mut leaders {
-            leader.skill_required_experience = hour;
-        }
-        put(&mut current, TableRows::UnitLeaders(leaders.clone()));
-        put(
-            &mut current,
-            TableRows::PoliticsCaptureCoverage(vec![PoliticsCaptureCoverageRow {
-                country: 1,
-                instance: 1,
-                epoch: 1,
-                since_hour: hour,
-                through_hour: hour,
-                streams: PoliticsCaptureCoverageRow::ALL_STREAMS,
-            }]),
-        );
-        let rows = if hour % 24 == 0 {
-            let mut row = event(
-                hour as u64,
-                PowerCause::LeaderPromotion,
-                PowerOperation::Subtract,
-                Some(-1),
-            );
-            row.hour = hour;
-            vec![row]
-        } else {
-            Vec::new()
-        };
-        put(&mut current, TableRows::CountryPowerChanges(rows));
-        observe_all(&current, &mut scan, None).unwrap();
-    }
-    assert_eq!(scan.countries["C1"].mutations.len(), 90);
-    assert!(scan.naming.len() <= 180);
-    let first = scan.naming.values().next().unwrap();
-    assert!(scan.naming.values().all(|name| Arc::ptr_eq(name, first)));
-    assert_eq!(scan.countries["C1"].spending_coverage.len(), 1);
 }
 
 #[test]

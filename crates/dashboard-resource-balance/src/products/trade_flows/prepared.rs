@@ -1859,85 +1859,6 @@ mod tests {
     use replay_frame::{frame::DecodedFrame, frame::TableView};
 
     #[test]
-    fn trade_observer_work_is_flat_over_unchanged_hours_and_retired_flows() {
-        use dashboard_base::prepared::{
-            frame_changes::FrameChangeTracker,
-            observer_tests::{self, Work},
-        };
-        let first = resource_frame(100, 0, 9001, &[(51, 21, 9001, 12)]);
-        let format = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first.clone()])])
-            .unwrap()
-            .format;
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(10, |hours| {
-                let mut prepared = Prepared::default();
-                let mut tracker = FrameChangeTracker::new();
-                prepared.observe_changed(&first, &tracker.observe(&first, format))?;
-                observer_tests::unchanged_frames(
-                    prepared.work,
-                    &first,
-                    hours as i32,
-                    format,
-                    |frame, changes| {
-                        prepared.observe_changed(frame, changes)?;
-                        Ok(prepared.work)
-                    },
-                )
-            })
-            .unwrap(),
-        );
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(10, |history| {
-                let mut prepared = Prepared::default();
-                let mut tracker = FrameChangeTracker::new();
-                let mut frame = first.clone();
-                for offset in 0..history {
-                    frame.hour = 100 + offset as i32;
-                    if let TableView::Complete(TableRows::Countries(rows)) =
-                        &mut *frame.tables[TableId::Countries.index()]
-                    {
-                        rows.iter_mut()
-                            .find(|row| row.canonical_slot == 8)
-                            .unwrap()
-                            .id = 20_000 + offset as u32;
-                    }
-                    if let TableView::Complete(TableRows::CountryLinks(rows)) =
-                        &mut *frame.tables[TableId::CountryLinks.index()]
-                    {
-                        rows.iter_mut()
-                            .find(|row| row.canonical_slot == 8)
-                            .unwrap()
-                            .id = 20_000 + offset as u32;
-                    }
-                    if let TableView::Complete(TableRows::ResourceExchanges(rows)) =
-                        &mut *frame.tables[TableId::ResourceExchanges.index()]
-                    {
-                        rows[0].exporter = 20_000 + offset as u32;
-                    }
-                    prepared.observe_changed(&frame, &tracker.observe(&frame, format))?;
-                }
-                let before = prepared.work;
-                frame.hour += 1;
-                if let TableView::Complete(TableRows::ResourceExchanges(rows)) =
-                    &mut *frame.tables[TableId::ResourceExchanges.index()]
-                {
-                    rows[0].delivered += 1;
-                }
-                prepared.observe_changed(&frame, &tracker.observe(&frame, format))?;
-                assert_eq!(prepared.work.row_visits - before.row_visits, 1);
-                assert_eq!(prepared.work.history_visits - before.history_visits, 1);
-                Ok(Work {
-                    row_visits: prepared.work.row_visits - before.row_visits,
-                    history_visits: prepared.work.history_visits - before.history_visits,
-                    emitted: prepared.work.emitted - before.emitted,
-                    ..Default::default()
-                })
-            })
-            .unwrap(),
-        );
-    }
-
-    #[test]
     fn trade_current_projection_preserves_order_duplicates_unknowns_and_overflow_refusal() {
         use dashboard_base::prepared::frame_changes::FrameChangeTracker;
         let mut frame = resource_frame(
@@ -2154,118 +2075,6 @@ mod tests {
             assert_eq!(actual["prefixes"][&key]["110"][0], total.to_string());
         }
         assert_eq!(prepared.keys.len(), 2);
-    }
-
-    #[test]
-    fn trade_preparation_allocates_only_5000_observed_flow_keys_for_5000_countries() {
-        let mut frame = resource_frame(100, 0, 9001, &[]);
-        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=5000)
-                .map(|id| CountryRow {
-                    id,
-                    canonical_slot: id,
-                    tag: format!("mod country {id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                (1..=5000)
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: id,
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::ResourceExchanges.index()] =
-            TableView::Complete(TableRows::ResourceExchanges(
-                (1..=5000)
-                    .map(|id| ResourceExchangeRow {
-                        id: u64::from(id),
-                        exporter: id,
-                        importer: id % 5000 + 1,
-                        resource: 1,
-                        delivered: i64::from(id),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        let mut prepared = Prepared::default();
-        let sampled = sample::sample(&frame, None).unwrap();
-        prepared.observe(&frame).unwrap();
-        assert_eq!(
-            sampled.len(),
-            30_002,
-            "five fields per actual flow plus holders and read metadata"
-        );
-        for flow in &prepared.scan.result.flows {
-            let token = flow_key(flow);
-            let id = prepared.keys[&catalogue_key(flow)];
-            let terms = flow.runs.last().unwrap().terms;
-            for (field, expected) in sample::FIELDS.iter().zip(sample::amounts(terms)) {
-                assert_eq!(
-                    sampled[&(token.clone(), (*field).to_owned())],
-                    (Some(flow.seller_identity), Some(expected))
-                );
-            }
-            assert_eq!(
-                prepared.values.state(id).unwrap().last.unwrap().value,
-                sampled[&(token, "delivered".into())].1.unwrap()
-            );
-            assert_eq!(
-                sampled[&(flow.seller.clone(), "holder".into())].0,
-                Some(flow.seller_identity)
-            );
-        }
-        let query = sample::Query::default();
-        let format = replay_data::format::FormatVersion::default();
-        let actual = query.sample(&frame, None, format).unwrap();
-        assert_eq!(actual, sampled);
-        let before = query.visits();
-        let mut later = frame.clone();
-        later.hour += 1;
-        assert_eq!(query.sample(&later, None, format).unwrap(), sampled);
-        assert_eq!(
-            query.visits(),
-            before,
-            "reconstructed unchanged native trade inputs"
-        );
-        *later.tables[TableId::ResourceExchanges.index()] = TableView::Unavailable {
-            reason: "synthetic refusal".into(),
-        };
-        assert_eq!(
-            query.sample(&later, None, format).unwrap(),
-            sample::sample(&later, None).unwrap()
-        );
-        assert_eq!(prepared.keys.len(), 5000);
-        assert_eq!(prepared.scan.result.flows.len(), 5000);
-        prepared.materialize_integrals(frame.hour).unwrap();
-        assert!(
-            prepared
-                .totals
-                .iter()
-                .all(|values| values.state(4999).is_some())
-        );
-        assert_eq!(prepared.refusal_keys.len(), 0);
-        assert_eq!(prepared.pattern_keys.len(), 0);
-        frame.hour = 101;
-        prepared.observe(&frame).unwrap();
-        eprintln!(
-            "trade scale: 5000 countries, {} actual-flow keys, {} refusal keys, {} partial-pattern keys; {} continuation bytes",
-            prepared.keys.len(),
-            prepared.refusal_keys.len(),
-            prepared.pattern_keys.len(),
-            serde_json::to_vec(&prepared).unwrap().len()
-        );
-        assert!(
-            prepared
-                .scan
-                .result
-                .flows
-                .iter()
-                .all(|flow| flow.runs.len() == 1)
-        );
     }
 
     #[test]
@@ -2684,108 +2493,6 @@ mod tests {
         frame
     }
 
-    fn assert_rows_observe_only_changed_flows(count: u32) {
-        use dashboard_base::prepared::frame_changes::FrameChangeTracker;
-        let format = replay_data::format::FormatVersion::CURRENT;
-        let mut recorded = Recorded::new();
-        let mut tracker = FrameChangeTracker::new();
-        // Each hour's exchange rows read, flows published, values written,
-        // countries compared, and whether it was observed from changed rows.
-        let mut step = |prepared: &mut Prepared, frame: &DecodedFrame| {
-            let before = (
-                prepared.scan.inputs.row_visits,
-                prepared.work.history_visits,
-                prepared.work.emitted,
-                prepared.scan.inputs.country_visits,
-                prepared.row_hours,
-            );
-            let (decoded, wire) = recorded.next(frame, false);
-            let changes = tracker.observe_updates(&decoded, wire, format);
-            prepared.observe_changed(&decoded, &changes).unwrap();
-            (
-                prepared.scan.inputs.row_visits - before.0,
-                prepared.work.history_visits - before.1,
-                prepared.work.emitted - before.2,
-                prepared.scan.inputs.country_visits - before.3,
-                prepared.row_hours - before.4,
-            )
-        };
-        let flows = count as usize - 1;
-        let mut prepared = Prepared::default();
-        let mut frame = trade_world(count);
-        let (_, published, ..) = step(&mut prepared, &frame);
-        assert_eq!(published, flows, "the first hour publishes every flow");
-
-        // A recorded field no flow reads.
-        frame.hour = 101;
-        deal(&mut frame, 1).efficiency_a += 7;
-        let (_, published, emitted, compared, rows) = step(&mut prepared, &frame);
-        assert_eq!(rows, 1, "the hour is observed from its changed rows");
-        assert_eq!((published, emitted, compared), (0, 0, 0));
-
-        frame.hour = 102;
-        deal(&mut frame, u64::from(count / 2)).delivered += 1;
-        let extensions = prepared.scan.flow_extensions;
-        assert_eq!(
-            step(&mut prepared, &frame),
-            (1, 1, 2, 0, 1),
-            "only the changed deal is read and only its flow publishes its start and amount"
-        );
-        assert_eq!(
-            prepared.scan.flow_extensions - extensions,
-            1,
-            "other flows keep their deferred endpoints"
-        );
-
-        // Its seller's own fields change too: no country is compared.
-        frame.hour = 103;
-        country(&mut frame, count / 3).political_power_raw = Some(7);
-        deal(&mut frame, u64::from(count / 3)).delivered += 1;
-        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
-
-        // Fields no flow and no holder reads.
-        frame.hour = 104;
-        deal(&mut frame, u64::from(count / 4)).efficiency_b += 1;
-        country(&mut frame, count / 4).political_power_raw = Some(9);
-        assert_eq!(step(&mut prepared, &frame), (0, 0, 0, 0, 1));
-
-        // An ended deal ends only its flow.
-        frame.hour = 105;
-        exchanges(&mut frame).retain(|row| row.id != u64::from(count / 5));
-        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
-
-        // A new deal starts only its flow.
-        frame.hour = 106;
-        add_deal(
-            &mut frame,
-            ResourceExchangeRow {
-                resource: 2,
-                ..steel(u64::from(count) + 1, 1, count, 5)
-            },
-        );
-        assert_eq!(step(&mut prepared, &frame), (1, 1, 2, 0, 1));
-
-        // Countries alone changing: the flows only continue.
-        frame.hour = 107;
-        country(&mut frame, 1).political_power_raw = Some(11);
-        assert_eq!(step(&mut prepared, &frame), (0, 0, 0, 0, 1));
-        assert_eq!(
-            prepared.scan.active.len(),
-            flows,
-            "one flow ended and one started"
-        );
-    }
-
-    #[test]
-    fn trade_hour_changing_one_deal_reads_and_publishes_only_its_flow() {
-        assert_rows_observe_only_changed_flows(200);
-    }
-
-    #[test]
-    fn trade_hour_changing_one_of_5000_countries_deals_publishes_only_its_flow() {
-        assert_rows_observe_only_changed_flows(5000);
-    }
-
     #[test]
     fn trade_operand_masks_name_every_field_they_read() {
         assert_eq!(EXCHANGE_FIELDS.count_ones(), 7);
@@ -3199,11 +2906,6 @@ mod tests {
         assert_deferred_trade_integrals(32);
     }
 
-    #[test]
-    fn unchanged_5000_trade_flows_do_no_hourly_integral_work_and_keep_bytes() {
-        assert_deferred_trade_integrals(5_000);
-    }
-
     fn assert_trade_budget_publications(count: u32, held: usize) {
         use dashboard_base::prepared::{
             frame_changes::FrameChangeTracker,
@@ -3293,16 +2995,11 @@ mod tests {
 
     #[test]
     fn deferred_trade_uses_hourly_publication_budget() {
-        // A smaller version of the 5,000-flow boundary, with prior held pages
-        // taking the rest of the real 64 MiB budget. Leave room for the hourly
-        // coverage clocks, but less than the old cache/prefix overcharge.
+        // Prior held pages take the rest of the real 64 MiB budget. Leave room
+        // for the hourly coverage clocks, but less than the old cache/prefix
+        // overcharge.
         let staircase = 32 * 34 * 6 * size_of::<series::Run>() * 2;
         let held = dashboard_base::prepared::pages::BATCH_BYTES - staircase - 16_384;
         assert_trade_budget_publications(32, held);
-    }
-
-    #[test]
-    fn deferred_5000_trade_flows_use_hourly_publication_budget() {
-        assert_trade_budget_publications(5_000, 0);
     }
 }

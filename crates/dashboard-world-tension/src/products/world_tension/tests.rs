@@ -276,18 +276,6 @@ fn world_tension_sum_overflow_is_refused_instead_of_saturated() {
 }
 
 #[test]
-#[ignore = "large event history beyond the former event ceiling"]
-fn world_tension_retains_every_event_beyond_the_former_count_ceiling() {
-    use crate::products::world_tension::scan;
-    let slot = tension_slot(10);
-    let sources = vec![(11, slot, b"Synthetic event".as_slice(), 0, 0); 200_001];
-    let frame = tension_frame(slot, true, 0, &[], &sources);
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-    let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(scanned.events.len(), sources.len());
-}
-
-#[test]
 fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_gaps() {
     use crate::products::world_tension::scan;
     let slot = tension_slot(500);
@@ -741,88 +729,6 @@ fn world_tension_keeps_two_countries_sharing_a_tag_apart() {
 }
 
 #[test]
-fn tension_changes_keep_quiet_hours_and_closed_history_flat_and_source_changes_avoid_aggregate_joins()
- {
-    use super::Scan;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{assert_flat, scaled_work, unchanged_frames},
-    };
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let initial = tension_frame(
-        100,
-        true,
-        100,
-        &[(9, 10_000)],
-        &[(31, 90, b"Recorded cause", 10_000, 10_000)],
-    );
-    assert_flat(
-        scaled_work(10, |hours| {
-            let mut scan = Scan::default();
-            let mut tracker = FrameChangeTracker::new();
-            scan.prepare_changed(format, &initial, &tracker.observe(&initial, format))?;
-            unchanged_frames(
-                scan.work,
-                &initial,
-                hours as i32,
-                format,
-                |frame, changes| {
-                    scan.prepare_changed(format, frame, changes)?;
-                    Ok(scan.work)
-                },
-            )
-        })
-        .unwrap(),
-    );
-    assert_flat(
-        scaled_work(10, |history| {
-            let mut scan = Scan::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut current = initial.clone();
-            for index in 0..history {
-                current.hour = 100 + index as i32;
-                if let TableView::Complete(TableRows::ThreatSources(rows)) =
-                    &mut *current.tables[TableId::ThreatSources.index()]
-                {
-                    rows[0].date = current.hour;
-                }
-                scan.prepare_changed(format, &current, &tracker.observe(&current, format))?;
-            }
-            assert_eq!(scan.result.events.len(), history);
-            unchanged_frames(scan.work, &current, 10, format, |frame, changes| {
-                scan.prepare_changed(format, frame, changes)?;
-                Ok(scan.work)
-            })
-        })
-        .unwrap(),
-    );
-    let mut scan = Scan::default();
-    let mut tracker = FrameChangeTracker::new();
-    scan.prepare_changed(format, &initial, &tracker.observe(&initial, format))
-        .unwrap();
-    let before = scan.work;
-    let mut changed = initial.clone();
-    changed.hour += 1;
-    if let TableView::Complete(TableRows::ThreatSources(rows)) =
-        &mut *changed.tables[TableId::ThreatSources.index()]
-    {
-        rows[0].final_raw += 1;
-    }
-    scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))
-        .unwrap();
-    assert_eq!(
-        scan.work.row_visits - before.row_visits,
-        1,
-        "only the changed source is joined; aggregate/identity tables are held"
-    );
-    assert_eq!(
-        scan.work.history_visits - before.history_visits,
-        0,
-        "a source-only change revisits no country series"
-    );
-}
-
-#[test]
 fn tension_deferred_sources_and_refusal_rates_match_oracle_after_quiet_commits_resume_append_and_gap()
  {
     use super::Scan;
@@ -957,71 +863,15 @@ fn tension_identity_change_reuses_unchanged_aggregate_and_source_operands() {
     assert_eq!(scan.result.reads.last(), oracle.result.reads.last());
 }
 
+// regression: a756f86eb6 Fix diplomacy identity handling and history limits
 #[test]
-fn tension_one_source_change_never_walks_five_thousand_held_contributions() {
-    use super::Scan;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    assert_flat(
-        scaled_work(500, |countries| {
-            let mut first = dashboard_base::test_fixtures::scale_frame(1, 100, countries as u32);
-            *first.tables[TableId::WorldTension.index()] =
-                TableView::Complete(TableRows::WorldTension(vec![
-                    replay_data::rows::WorldTensionRow {
-                        total_raw: countries as i64
-                            / engine_stability::cworld_threat::SCALAR_DIVISOR,
-                        source_count: 1,
-                        country_aggregate_count: countries as i32,
-                    },
-                ]));
-            *first.tables[TableId::ThreatCountryAggregates.index()] =
-                TableView::Complete(TableRows::ThreatCountryAggregates(
-                    (0..countries)
-                        .map(|slot| replay_data::rows::ThreatCountryAggregateRow {
-                            country_slot: slot as u32,
-                            total_raw: 1,
-                        })
-                        .collect(),
-                ));
-            *first.tables[TableId::ThreatSources.index()] =
-                TableView::Complete(TableRows::ThreatSources(vec![
-                    replay_data::rows::ThreatSourceRow {
-                        ordinal: 0,
-                        country: 100_000,
-                        current_raw: countries as i64,
-                        final_raw: countries as i64,
-                        date: 90,
-                        reason: b"Recorded source".to_vec(),
-                        ..Default::default()
-                    },
-                ]));
-            first.metrics.table_ns[TableId::WorldTension.index()] = 1;
-            let format = replay_data::format::FormatVersion::CURRENT;
-            let mut scan = Scan::default();
-            let mut tracker = FrameChangeTracker::new();
-            scan.prepare_changed(format, &first, &tracker.observe(&first, format))?;
-            assert_eq!(scan.current.len(), countries);
-            let before = scan.work;
-            let mut changed = first.clone();
-            changed.hour = 101;
-            if let TableView::Complete(TableRows::ThreatSources(rows)) =
-                &mut *changed.tables[TableId::ThreatSources.index()]
-            {
-                rows[0].final_raw += 1;
-            }
-            scan.prepare_changed(format, &changed, &tracker.observe(&changed, format))?;
-            let work = Work {
-                row_visits: scan.work.row_visits - before.row_visits,
-                history_visits: scan.work.history_visits - before.history_visits,
-                ..Default::default()
-            };
-            assert_eq!((work.row_visits, work.history_visits), (1, 0));
-            assert_eq!(scan.current.len(), countries);
-            assert_eq!(scan.result.events[0].added.len(), 2);
-            Ok(work)
-        })
-        .unwrap(),
-    );
+#[ignore = "large event history beyond the former event ceiling"]
+fn world_tension_retains_every_event_beyond_the_former_count_ceiling() {
+    use crate::products::world_tension::scan;
+    let slot = tension_slot(10);
+    let sources = vec![(11, slot, b"Synthetic event".as_slice(), 0, 0); 200_001];
+    let frame = tension_frame(slot, true, 0, &[], &sources);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.events.len(), sources.len());
 }

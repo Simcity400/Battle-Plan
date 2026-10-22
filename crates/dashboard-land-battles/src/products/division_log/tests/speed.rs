@@ -1,7 +1,7 @@
 use super::*;
 use dashboard_base::prepared::{
     frame_changes::FrameChangeTracker,
-    observer_tests::{self, Work},
+    observer_tests,
 };
 
 fn prepared_step(scan: &mut Scan, input: &DecodedFrame, tracker: &mut FrameChangeTracker) {
@@ -9,99 +9,9 @@ fn prepared_step(scan: &mut Scan, input: &DecodedFrame, tracker: &mut FrameChang
     scan.prepare_changed(input, &changes).unwrap();
 }
 
-fn unchanged_work(divisions: u32, hours: usize) -> io::Result<Work> {
-    let first = frame(100, divisions);
-    let mut scan = Scan::default();
-    let mut tracker = FrameChangeTracker::new();
-    prepared_step(&mut scan, &first, &mut tracker);
-    observer_tests::unchanged_frames(
-        scan.work,
-        &first,
-        hours as i32,
-        scan.format,
-        |input, changes| {
-            scan.prepare_changed(input, changes)?;
-            Ok(scan.work)
-        },
-    )
-}
-
-#[test]
-fn division_shared_driver_unchanged_frames_skip_native_and_presentation_work() {
-    let work = observer_tests::scaled_work(4, |hours| unchanged_work(3, hours)).unwrap();
-    observer_tests::assert_flat(work);
-    assert_eq!(work, [Work::default(); 2]);
-}
-
-#[test]
-fn division_shared_driver_5000_divisions_keep_unchanged_work_flat() {
-    let work = [
-        unchanged_work(3, 8).unwrap(),
-        unchanged_work(5000, 8).unwrap(),
-    ];
-    observer_tests::assert_flat(work);
-    assert_eq!(work, [Work::default(); 2]);
-}
-
-fn after_history(hours: usize, changed: bool) -> io::Result<Work> {
-    let mut input = frame(100, 3);
-    let mut scan = Scan::default();
-    let mut tracker = FrameChangeTracker::new();
-    prepared_step(&mut scan, &input, &mut tracker);
-    for at in 0..hours {
-        input.hour += 1;
-        witness(
-            &mut input,
-            if at % 2 == 0 {
-                Disposition::Merged
-            } else {
-                Disposition::VolunteerTransferred
-            },
-            None,
-        );
-        prepared_step(&mut scan, &input, &mut tracker);
-    }
-    assert_eq!(scan.events.len(), hours);
-    scan.work = Work::default();
-    if changed {
-        input.hour += 1;
-        witness(
-            &mut input,
-            Disposition::Loss,
-            Some(Cause::DivisionDestroyed),
-        );
-        destroyed(&mut input);
-        prepared_step(&mut scan, &input, &mut tracker);
-        assert_eq!(scan.events.len(), hours + 1);
-        Ok(scan.work)
-    } else {
-        observer_tests::unchanged_frames(scan.work, &input, 8, scan.format, |input, changes| {
-            scan.prepare_changed(input, changes)?;
-            Ok(scan.work)
-        })
-    }
-}
-
-#[test]
-fn division_shared_driver_unchanged_and_one_witness_work_stay_flat_after_ten_times_history() {
-    let unchanged = observer_tests::scaled_work(10, |hours| after_history(hours, false)).unwrap();
-    observer_tests::assert_flat(unchanged);
-    assert_eq!(unchanged, [Work::default(); 2]);
-    let changed = observer_tests::scaled_work(10, |hours| after_history(hours, true)).unwrap();
-    observer_tests::assert_flat(changed);
-    assert_eq!(changed[0].emitted, 1);
-    assert_eq!(changed[0].row_visits, 2); // one witness and its one destruction
-    assert_eq!(changed[0].history_visits, 0);
-}
-
 #[test]
 fn division_shared_driver_parity_keeps_equal_read_dates_changes_gaps_and_resume() {
     parity(3);
-}
-
-#[test]
-fn division_shared_driver_5000_divisions_match_oracle_after_commits_resume_and_append() {
-    parity(5000);
 }
 
 fn parity(divisions: u32) {

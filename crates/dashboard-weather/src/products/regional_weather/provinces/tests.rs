@@ -1,6 +1,6 @@
 use super::*;
 use crate::products::regional_weather::{
-    RegionalWeather, RegionalWeatherResponse,
+    RegionalWeatherResponse,
     tests::{answer, frame, row, source, write},
 };
 use dashboard_base::{
@@ -10,7 +10,7 @@ use dashboard_base::{
         query::frames,
         series::tests::Fixture,
     },
-    products::{Product, ReplyWarnings},
+    products::ReplyWarnings,
     test_fixtures::{CAMPAIGN, continuation_records, records},
 };
 use dashboard_core::config::ContentOptions;
@@ -426,7 +426,7 @@ fn reached_hour_reads_only_its_block_and_reuses_frame_cache_without_preparation(
 }
 
 #[test]
-fn validation_cancellation_retry_and_nested_wire_types() {
+fn validation_cancellation_and_retry() {
     let fixture = Fixture::new();
     let source = source(vec![weather(10)]);
     for bad in [
@@ -477,19 +477,6 @@ fn validation_cancellation_retry_and_nested_wire_types() {
         &reply,
         "province membership needs the recorded content stack"
     ));
-    for name in [
-        "RegionalWeatherView",
-        "RegionalWeatherResponse",
-        "RegionalWeatherProvincesReply",
-        "RegionalWeatherProvince",
-    ] {
-        assert!(
-            RegionalWeather::types()
-                .iter()
-                .any(|decl| decl.contains(name)),
-            "{name}"
-        );
-    }
     let mut reply = RegionalWeatherResponse::Provinces(RegionalWeatherProvincesReply {
         hour: 10,
         read_hour: None,

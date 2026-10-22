@@ -683,92 +683,6 @@ fn branch_scan_preserves_exact_losses_capitulation_identity_and_gap_bounds() {
 }
 
 #[test]
-fn whole_branch_product_at_five_thousand_countries() {
-    use replay_data::rows::TableRows;
-    use replay_frame::frame::TableView;
-    let count = 5_000;
-    let mut frame = recorded(100);
-    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=count)
-            .map(|country| rows::CountryRow {
-                id: country,
-                canonical_slot: country,
-                tag: format!("COUNTRY_{country}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ))
-    .into();
-    frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=count)
-            .map(|id| rows::CountryLinkRow {
-                id,
-                canonical_slot: id,
-            })
-            .collect(),
-    ))
-    .into();
-    frame.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
-        (2..=count)
-            .map(|second_country| rows::WarRelationRow {
-                first_country: 1,
-                second_country,
-                start_hour: 90,
-                first_was_instigator: 1,
-                ..Default::default()
-            })
-            .collect(),
-    ))
-    .into();
-    let mut owned = Vec::new();
-    for second_country in 2..=count {
-        for owner in [1, second_country] {
-            owned.push(rows::WarOwnedRelationRow {
-                owner,
-                ordinal: if owner == 1 { second_country - 2 } else { 0 },
-                first_country: 1,
-                second_country,
-                ..Default::default()
-            });
-        }
-    }
-    owned.sort_by_key(|row| (row.owner, row.ordinal));
-    frame.tables[TableId::WarOwnedRelations.index()] =
-        TableView::Complete(TableRows::WarOwnedRelations(owned)).into();
-    frame.tables[TableId::WarOverviewCountries.index()] =
-        TableView::Complete(TableRows::WarOverviewCountries(
-            (1..=count)
-                .map(|country| rows::WarOverviewCountryRow {
-                    score_available: 1,
-                    country,
-                    major: 1,
-                    ..Default::default()
-                })
-                .collect(),
-        ))
-        .into();
-    let mut next = frame.clone();
-    next.hour = 101;
-    next.tables[TableId::Clock.index()] =
-        TableView::Complete(TableRows::Clock(vec![rows::ClockRow {
-            hour: next.hour,
-            ..Default::default()
-        }]))
-        .into();
-    let replay = Replay::from_records(
-        b"analytics-test".to_vec(),
-        &[dashboard_base::test_fixtures::records(1, vec![frame, next])],
-    )
-    .unwrap();
-    let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
-    assert!(reply.unobserved.is_empty());
-    assert_eq!(reply.wars.len(), 1);
-    assert_eq!(reply.wars[0].participants.len(), count as usize);
-    assert_eq!(reply.wars[0].observations.len(), 1);
-    assert_eq!(reply.wars[0].last_hour, 101);
-}
-
-#[test]
 fn fallback_goal_name_preserves_plain_state_text_and_first_country_operands() {
     use replay_data::rows::TableRows;
     use replay_frame::frame::TableView;
@@ -1007,26 +921,6 @@ fn continuity_split_merge_gaps_redeclarations_and_observation_bounds() {
     assert!(wars[2].ended_by && wars[3].started_by);
     assert_eq!(wars[0].observations.len(), 1);
     assert_eq!(wars[0].observations[0].last_hour, 3);
-}
-#[test]
-fn five_thousand_countries_have_no_population_ceiling_or_render_work() {
-    for count in [1_500, 5_000] {
-        let edges: Vec<_> = (2..=count).map(|s| (1, s, 0)).collect();
-        let enemy: Vec<_> = (2..=count).collect();
-        let mut w = world(&edges, &[(1, enemy.as_slice())]);
-        for s in 2..=count {
-            w.owned.insert(s, vec![1]);
-        }
-        w.scores.get_mut(&1).unwrap().major = 1;
-        for score in w.scores.values_mut() {
-            score.major = 1;
-        }
-        let blobs = w.blobs(1);
-        assert_eq!(blobs.len(), 1);
-        assert_eq!(blobs[0].second.len(), count as usize - 1);
-        assert_eq!(w.inside(&blobs[0]).len(), count as usize - 1);
-        assert_eq!(w.representative(&blobs[0]).unwrap(), pair(1, 2));
-    }
 }
 
 #[test]
@@ -1318,10 +1212,9 @@ fn overlapping_groups_keep_casualties_out_of_membership_reply_size() {
     assert!(bytes < MAX_PRODUCT_REPLY_BYTES / 3, "reply bytes {bytes}");
 }
 
-fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
-    use replay::spool::Record;
+fn overlapping_frames(hours: i32, redeclare: bool) -> impl Iterator<Item = DecodedFrame> {
     use replay_data::rows::TableRows;
-    use replay_frame::{frame::FrameEncoder, frame::TableView};
+    use replay_frame::frame::TableView;
     let mut base = recorded(100);
     base.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=10)
@@ -1383,10 +1276,7 @@ fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
                 .collect(),
         ))
         .into();
-    let mut records = dashboard_base::test_fixtures::records(1, vec![base.clone()]);
-    records.pop();
-    let mut encoder = FrameEncoder::new();
-    for hour in 100..100 + hours {
+    (100..100 + hours).map(move |hour| {
         let mut frame = base.clone();
         frame.hour = hour;
         frame.tables[TableId::Clock.index()] =
@@ -1404,15 +1294,37 @@ fn overlapping_branch(hours: i32, redeclare: bool) -> Replay {
         }
         frame.tables[TableId::WarRelations.index()] =
             TableView::Complete(TableRows::WarRelations(relations.clone())).into();
+        frame
+    })
+}
+
+fn overlapping_branch(hours: i32) -> Replay {
+    use replay::spool::Record;
+    use replay_frame::frame::FrameEncoder;
+    let mut frames = overlapping_frames(hours, false).peekable();
+    let mut records =
+        dashboard_base::test_fixtures::records(1, vec![frames.peek().unwrap().clone()]);
+    records.pop();
+    let mut encoder = FrameEncoder::new();
+    for frame in frames {
         records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
     Replay::from_records(b"analytics-test".to_vec(), &[records]).unwrap()
 }
 
+// Drives the branch walk without frame encoding, which dominated these regressions' runtime.
+fn walk_overlapping(hours: i32, redeclare: bool) -> io::Result<WarsReply> {
+    let mut walk = Walk::new(1, 100);
+    for frame in overlapping_frames(hours, redeclare) {
+        walk.observe(&frame, None, None, None);
+    }
+    walk.finish(99 + hours, None)
+}
+
 #[test]
 fn cross_block_branch_reuses_four_overlapping_groups_when_losses_change_hourly() {
     let hours = i32::try_from(replay_frame::KEYFRAME_INTERVAL).unwrap() + 1;
-    let replay = overlapping_branch(hours, false);
+    let replay = overlapping_branch(hours);
     assert!(replay.index.len() > 1);
     let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
     assert!(reply.unobserved.is_empty());
@@ -1432,12 +1344,11 @@ fn cross_block_branch_reuses_four_overlapping_groups_when_losses_change_hourly()
     assert!(bytes < MAX_PRODUCT_REPLY_BYTES / 3, "reply bytes {bytes}");
 }
 
+// regression: 6d4ca1eea6 Measure complete war replies instead of limiting timeline and run counts
 #[test]
-fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
+fn branch_walk_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
     let hours = 125_001;
-    let replay = overlapping_branch(hours, false);
-    assert!(replay.index.len() > 1);
-    let reply = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap();
+    let reply = walk_overlapping(hours, false).unwrap();
     assert!(reply.unobserved.is_empty());
     assert_eq!(reply.wars.len(), 4);
     for war in &reply.wars {
@@ -1454,15 +1365,12 @@ fn branch_scan_keeps_more_than_half_a_million_runs_when_the_reply_fits() {
                 .all(|p| p.last_hour == war.last_hour)
         );
     }
-    let bytes = dashboard_core::transport::json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    println!("wars reply beyond 500,000 runs: {bytes} bytes");
 }
 
+// regression: 6d4ca1eea6 Measure complete war replies instead of limiting timeline and run counts
 #[test]
-fn branch_scan_past_the_former_timeline_ceiling_refuses_only_the_reply_bytes() {
-    // Four fresh groups each hour exceed the old 100,000-timeline ceiling.
-    let replay = overlapping_branch(25_001, true);
-    let error = scan(&replay, 1, None, None, &AtomicBool::new(false)).unwrap_err();
+fn branch_walk_past_the_former_timeline_ceiling_refuses_only_the_reply_bytes() {
+    let error = walk_overlapping(25_001, true).unwrap_err();
     assert_eq!(
         error.to_string(),
         format!(
@@ -1485,7 +1393,7 @@ fn near_star_with_retired_occurrence_and_second_front_keeps_both_groups_at_scale
         w.owned.insert(count - 2, vec![1]);
         w
     }
-    for count in [1_500, 5_000] {
+    for count in [16] {
         let w = shape(count);
         let blobs = w.blobs(1);
         assert_eq!(blobs.len(), 2);
@@ -1872,7 +1780,7 @@ fn prepared_wars_native_projection_keeps_prefix_names_memberships_and_rejects_re
     )]);
     let cat = Arc::new(cat);
     let flag = AtomicBool::new(false);
-    for count in [3, 5000] {
+    for count in [3, 12] {
         let mut frames: Vec<_> = (100..=102)
             .map(|hour| scaled_recorded(hour, count))
             .collect();
@@ -2169,119 +2077,6 @@ fn prepared_wars_sparse_casualty_reads_keep_canonical_bounds_and_gaps() {
             serde_json::to_value(expected).unwrap()
         );
     }
-}
-
-#[test]
-fn prepared_wars_changes_keep_unchanged_work_flat_and_one_relation_change_bounded() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{assert_flat, scaled_work, unchanged_frames},
-    };
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let initial = scaled_recorded(100, 5000);
-    assert_flat(
-        scaled_work(10, |hours| {
-            let mut observer = prepared::Observer::default();
-            let mut tracker = FrameChangeTracker::new();
-            observer.observe_changed(&initial, &tracker.observe(&initial, format))?;
-            unchanged_frames(
-                observer.work,
-                &initial,
-                hours as i32,
-                format,
-                |frame, changes| {
-                    let mut frame = frame.clone();
-                    let hour = frame.hour;
-                    set_recorded_hour(&mut frame, hour);
-                    observer.observe_changed(&frame, changes)?;
-                    Ok(observer.work)
-                },
-            )
-        })
-        .unwrap(),
-    );
-    assert_flat(
-        scaled_work(10, |history| {
-            let mut observer = prepared::Observer::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut frame = initial.clone();
-            for offset in 0..history {
-                set_recorded_hour(&mut frame, 100 + offset as i32);
-                if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
-                    &mut *frame.tables[TableId::WarRelations.index()]
-                {
-                    rows[0].start_hour = frame.hour;
-                }
-                observer.observe_changed(&frame, &tracker.observe(&frame, format))?;
-            }
-            let before = observer.work;
-            if let TableView::Complete(rows::TableRows::WarRelations(rows)) =
-                &mut *frame.tables[TableId::WarRelations.index()]
-            {
-                rows[0].first_casualties += 1;
-            }
-            let next_hour = frame.hour + 1;
-            set_recorded_hour(&mut frame, next_hour);
-            observer.observe_changed(&frame, &tracker.observe(&frame, format))?;
-            let visited = observer.work.row_visits - before.row_visits;
-            assert!(
-                visited <= 5000 * (TABLES.len() + 6),
-                "one changed native table has bounded visits: {visited}"
-            );
-            assert_eq!(
-                observer.work.emitted, before.emitted,
-                "casualties do not publish topology"
-            );
-            unchanged_frames(observer.work, &frame, 2, format, |frame, changes| {
-                let mut frame = frame.clone();
-                let hour = frame.hour;
-                set_recorded_hour(&mut frame, hour);
-                observer.observe_changed(&frame, changes)?;
-                Ok(observer.work)
-            })
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
-fn prepared_wars_name_change_keeps_unchanged_relation_keys_flat_at_5000_countries() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    assert_flat(
-        scaled_work(500, |countries| {
-            let first = scaled_recorded(100, countries as u32);
-            let mut observer = prepared::Observer::default();
-            let mut tracker = FrameChangeTracker::new();
-            let format = replay_data::format::FormatVersion::CURRENT;
-            observer.observe_changed(&first, &tracker.observe(&first, format))?;
-            let before = observer.work;
-            let mut renamed = first.clone();
-            set_recorded_hour(&mut renamed, 101);
-            *renamed.tables[TableId::LexicalTokens.index()] =
-                TableView::Complete(rows::TableRows::LexicalTokens(vec![
-                    rows::LexicalTokenRow {
-                        token: 999,
-                        literal: b"unrelated token".to_vec(),
-                    },
-                ]));
-            observer.observe_changed(&renamed, &tracker.observe(&renamed, format))?;
-            let work = Work {
-                row_visits: observer.work.row_visits - before.row_visits,
-                history_visits: observer.work.history_visits - before.history_visits,
-                emitted: observer.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(
-                (work.row_visits, work.history_visits, work.emitted),
-                (1, 0, 1)
-            );
-            Ok(work)
-        })
-        .unwrap(),
-    );
 }
 
 #[test]

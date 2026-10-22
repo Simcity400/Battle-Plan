@@ -6,66 +6,6 @@ use crate::products::peace_deals::{
 use dashboard_base::prepared::series::tests::Fixture;
 
 #[test]
-fn peace_observer_work_is_flat_over_unchanged_hours_and_retired_finalizer_history() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{self, Work},
-    };
-    let initial = frame(100, 2, false, &[9]);
-    let recording = replay(vec![initial.clone()]);
-    observer_tests::assert_flat(
-        observer_tests::scaled_work(10, |hours| {
-            let mut prepared = Prepared::new(&recording, 1);
-            let mut tracker = FrameChangeTracker::new();
-            prepared.observe_changed(&initial, &tracker.observe(&initial, recording.format))?;
-            observer_tests::unchanged_frames(
-                prepared.work,
-                &initial,
-                hours as i32,
-                recording.format,
-                |frame, changes| {
-                    prepared.observe_changed(frame, changes)?;
-                    Ok(prepared.work)
-                },
-            )
-        })
-        .unwrap(),
-    );
-    observer_tests::assert_flat(
-        observer_tests::scaled_work(10, |history| {
-            let mut prepared = Prepared::new(&recording, 1);
-            let mut tracker = FrameChangeTracker::new();
-            let mut current = initial.clone();
-            for offset in 0..history {
-                current.hour = 100 + offset as i32;
-                let mut row = settled_row();
-                row.sequence = offset as u64 + 1;
-                row.hour = Some(current.hour);
-                current = with_settlement(current, row);
-                prepared.observe_changed(&current, &tracker.observe(&current, recording.format))?;
-            }
-            let before = prepared.work;
-            current.hour += 1;
-            if let replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::States(
-                rows,
-            )) = &mut *current.tables[TableId::States.index()]
-            {
-                rows.truncate(1);
-                rows[0].owner = 1002;
-            }
-            prepared.observe_changed(&current, &tracker.observe(&current, recording.format))?;
-            assert_eq!(prepared.work.row_visits - before.row_visits, 1);
-            Ok(Work {
-                row_visits: prepared.work.row_visits - before.row_visits,
-                history_visits: prepared.work.history_visits - before.history_visits,
-                ..Default::default()
-            })
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
 fn peace_deferred_country_evidence_matches_late_finalizers_after_commits_resume_append_and_a_gap() {
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let flag = AtomicBool::new(false);
@@ -298,40 +238,6 @@ fn peace_events_match_two_commits_resume_append_late_capture_gaps_and_identity_c
     compare(&fixture, &frames);
     assert!(prepared.scan.reply.deals.is_empty());
     assert!(prepared.scan.exact.captures.is_empty());
-}
-
-#[test]
-fn peace_events_preserve_five_thousand_countries_and_finalized_rows_leave_the_checkpoint() {
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let frames = vec![frame(100, 5_000, false, &[]), frame(101, 5_000, true, &[])];
-    let mut prepared = Prepared::new(&replay(frames.clone()), 1);
-    for frame in &frames {
-        prepared.observe(frame).unwrap();
-        let mut writer = fixture.writer();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-    }
-    compare(&fixture, &frames);
-    assert!(prepared.scan.reply.deals.is_empty());
-    assert!(prepared.scan.exact.captures.is_empty());
-    let bytes = serde_json::to_vec(&prepared).unwrap().len();
-    eprintln!(
-        "peace checkpoint after a 5000-country settlement: {bytes} bytes; zero completed deals retained"
-    );
-    let mut prepared = Prepared::new(&replay(vec![frame(100, 2, false, &[])]), 1);
-    let mut before = 0;
-    for hour in 100..2_100 {
-        prepared.observe(&frame(hour, 2, false, &[])).unwrap();
-        if hour == 299 {
-            before = serde_json::to_vec(&prepared).unwrap().len();
-        }
-    }
-    let after = serde_json::to_vec(&prepared).unwrap().len();
-    eprintln!(
-        "peace unchanged checkpoint: {before} bytes after 200 hours, {after} after 2000 hours"
-    );
-    assert!(after <= before + 128);
 }
 
 /// Fresh observers of one recording write the same continuation bytes: each

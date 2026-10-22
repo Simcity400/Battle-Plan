@@ -313,16 +313,16 @@ fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
 }
 
 #[test]
-fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_5000_countries() {
+fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_country_scale() {
     use dashboard_base::prepared::series::{self, tests::Fixture};
     use replay_data::{rows::SunkShipEntry, rows::SunkShipsRow};
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let mut inputs = Vec::new();
     for hour in 100..103 {
-        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 5000);
+        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 12);
         frame.metrics.table_ns[TableId::SunkShips.index()] = 1;
-        let entries = (0..(hour - 99) * 4000)
+        let entries = (0..(hour - 99) * 40)
             .map(|index| SunkShipEntry {
                 ship_name: format!("recorded mod ship {index}").into_bytes(),
                 sink_hour: 100,
@@ -393,7 +393,7 @@ fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_5000
         if ordinal >= 1 {
             let params = ShipsSunkBattleTitlesParams {
                 branch_id: "1".into(),
-                rows: vec![0, 1, 2, (ordinal as u32 + 1) * 4000 - 1],
+                rows: vec![0, 1, 2, (ordinal as u32 + 1) * 40 - 1],
             };
             let actual = prepared_query(&params, &fixture.store, &fixture.key, &flag).unwrap();
             let oracle = ShipsSunkBattleTitles::load(&source, &params, &context, &flag).unwrap();

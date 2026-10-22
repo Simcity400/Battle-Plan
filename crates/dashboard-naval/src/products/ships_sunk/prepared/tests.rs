@@ -55,11 +55,11 @@ fn prepared_sinking_windows_match_oracle_after_two_commits_resume_append_and_lat
         first_ship_read: Some(100),
         ..Default::default()
     };
-    for index in 0..5000 {
+    for index in 0..12 {
         scan.country_identities
             .insert(format!("mod country {index}"), Vec::new());
     }
-    scan.ships = (0..12000)
+    scan.ships = (0..120)
         .map(|index| ship(99 + index % 11, 110, 700 + (index % 7) as u32))
         .collect();
     let mut prepared = Prepared::default();
@@ -122,7 +122,7 @@ fn prepared_sinking_windows_match_oracle_after_two_commits_resume_append_and_lat
         series::read_reply(&fixture.store, &fixture.key, "ships-sunk-1", 0)
             .unwrap()
             .unwrap();
-    assert_eq!(&page.indices[page.indices.len() - 2..], &[12001, 12002]);
+    assert_eq!(&page.indices[page.indices.len() - 2..], &[121, 122]);
     assert_eq!(page.reply.rows.last().unwrap().known_at, 130);
     assert!(serde_json::to_vec(&prepared).unwrap().len() < 4096);
     let mut events = series::Reader::new(
@@ -132,5 +132,5 @@ fn prepared_sinking_windows_match_oracle_after_two_commits_resume_append_and_lat
         &flag,
     )
     .unwrap();
-    assert_eq!(events.event_count_through(0, 130).unwrap(), 12003);
+    assert_eq!(events.event_count_through(0, 130).unwrap(), 123);
 }

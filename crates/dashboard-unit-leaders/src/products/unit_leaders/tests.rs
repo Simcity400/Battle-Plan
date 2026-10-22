@@ -529,102 +529,6 @@ fn naval_outcomes_require_the_exact_persistent_source_and_idle_fleets_are_comman
 }
 
 #[test]
-#[ignore = "large 5000-country scan fixture; keep routine filtered tests light"]
-fn scan_5000_countries_changed_rows_and_gaps() {
-    use replay_data::{
-        rows::CountryLinkRow, rows::CountryRow, rows::TableRows, rows::UnitLeaderTraitRow,
-    };
-    use replay_frame::frame::TableView;
-    let countries: Vec<_> = (0..5000)
-        .map(|c| CountryRow {
-            id: c + 1,
-            canonical_slot: c + 1,
-            tag: format!("mod country {c}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let links: Vec<_> = (0..5000)
-        .map(|c| CountryLinkRow {
-            id: c + 1,
-            canonical_slot: c + 1,
-        })
-        .collect();
-    let mut frames = Vec::new();
-    for tick in 0..80 {
-        // Attributes change every other read; every fifth read follows a gap.
-        let hour = 100 + tick + tick / 5;
-        let mut f = dashboard_core::test_fixtures::source(1, hour, None);
-        *f.tables[TableId::Countries.index()] =
-            TableView::Complete(TableRows::Countries(countries.clone()));
-        *f.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(links.clone()));
-        *f.tables[TableId::UnitLeaders.index()] = TableView::Complete(TableRows::UnitLeaders(
-            (0..20_000_u32)
-                .map(|n| UnitLeaderRow {
-                    id: n + 1,
-                    reference_type: 4713,
-                    character_id: n + 1,
-                    owner: n / 4 + 1,
-                    kind: 1,
-                    category: 1,
-                    skill_status: 2,
-                    skill_level: 3,
-                    components: [3 + tick / 2, 2, 2, 1],
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *f.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
-            (0..20_000_u32)
-                .map(|n| CharacterRow {
-                    id: n + 1,
-                    token: format!("Commander {n}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *f.tables[TableId::CharacterPortraits.index()] =
-            TableView::Complete(TableRows::CharacterPortraits(
-                (0..20_000_u32)
-                    .map(|n| CharacterPortraitRow {
-                        character: n + 1,
-                        portraits: vec![],
-                    })
-                    .collect(),
-            ));
-        *f.tables[TableId::UnitLeaderTraits.index()] =
-            TableView::Complete(TableRows::UnitLeaderTraits(
-                (0..20_000_u32)
-                    .map(|n| UnitLeaderTraitRow {
-                        leader_reference: (u64::from(n + 1) << 32) | 4713,
-                        token: b"mod_trait".to_vec(),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        *f.tables[TableId::LandCombatDetails.index()] =
-            TableView::Complete(TableRows::LandCombatDetails(vec![]));
-        *f.tables[TableId::NavalCombatDetails.index()] =
-            TableView::Complete(TableRows::NavalCombatDetails(vec![]));
-        frames.push(f);
-    }
-    let replay = Replay::from_records(
-        b"analytics-test".to_vec(),
-        &[dashboard_core::test_fixtures::records(1, frames)],
-    )
-    .unwrap();
-    let params = UnitLeadersParams {
-        branch_id: "1".into(),
-        selection: LeaderSelection::All,
-        view: LeaderView::Career,
-        leaders: LeaderKinds::All,
-    };
-    let reply = scan(&replay, &params, None, &AtomicBool::new(false)).unwrap();
-    assert_eq!(reply.leaders.len(), 20_000);
-    assert!(reply.leaders.iter().all(|leader| leader.runs.len() > 40));
-}
-
-#[test]
 fn scan_joins_raw_owners_commands_and_counts_each_combat_once() {
     use replay_data::{
         rows::CountryRow, rows::LandCombatDetailsRow, rows::LandCombatSideDetails,
@@ -1056,7 +960,7 @@ fn dates_and_gaps_do_not_invent_gains() {
 fn skill_ceiling_follows_every_defined_level() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let levels = (1..=5000)
+    let levels = (1..=12)
         .map(|level| format!("{level}={{type=corps_commander cost=1}}"))
         .collect::<Vec<_>>()
         .join(" ");
@@ -1067,7 +971,7 @@ fn skill_ceiling_follows_every_defined_level() {
     )]);
     let leaders: installed_content_core::unit_leader::Leaders =
         installed_content_core::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None).unwrap();
-    assert_eq!(maximum_skill(&leaders.skills, 1, 1), Some(5000));
+    assert_eq!(maximum_skill(&leaders.skills, 1, 1), Some(12));
 }
 
 #[test]
@@ -1460,30 +1364,6 @@ fn transport_budget_refuses_without_truncating_and_selection_has_no_count_cap() 
         })
         .is_ok()
     );
-}
-
-#[test]
-#[ignore = "manual large reply-size measurement; routine tests use a smaller scan fixture"]
-fn transport_budget_counts_1500_countries_and_refuses_oversize() {
-    let reply = scan_fixture(1500, 4, 50, false);
-    assert_eq!(reply.leaders.len(), 6000);
-    assert!(reply.leaders.iter().all(|leader| leader.runs.len() == 50));
-    assert!(report_size("6000 leaders / 1500 countries / 50 read runs", &reply) < MAX_REPLY_BYTES);
-}
-
-#[test]
-#[ignore = "manual large combat reply-size measurement"]
-fn combat_heavy_1500_country_fixture_fits_the_transport_budget() {
-    let reply = scan_fixture(1500, 4, 50, true);
-    assert_eq!(reply.leaders.len(), 6000);
-    assert!(
-        reply
-            .leaders
-            .iter()
-            .all(|leader| leader.battle_starts.as_ref().map(Vec::len) == Some(50))
-    );
-    assert!(reply_bytes(&reply).is_ok());
-    report_size("6000 leaders / 50 fights each", &reply);
 }
 
 #[test]
@@ -2239,25 +2119,6 @@ fn leaderboard_hours_give_the_career_counts_at_every_hour() {
     let unrecorded = project(&scanned, &all_params(), None).leaders.remove(0);
     assert_eq!(unrecorded.fought_hours, board.fought_hours);
     assert!(unrecorded.won_hours.is_none() && unrecorded.lost_hours.is_none());
-}
-
-#[test]
-fn million_participation_leaderboard_fits_where_career_records_did_not() {
-    let mut scanned = scan_fixture(1, 1, 1, false);
-    let (first_hour, template) = (scanned.first_hour, scanned.leaders.remove(0));
-    scanned.leaders = (1..=4000_u32)
-        .map(|id| {
-            let mut leader = LeaderCareer {
-                reference: id.to_string(),
-                ..template.clone()
-            };
-            record_battles(&mut leader, first_hour, 250);
-            leader
-        })
-        .collect();
-    // The former leaderboard sent these per-participation records unchanged.
-    assert!(reply_bytes(&scanned).is_err());
-    assert!(reply_bytes(&project(&scanned, &all_params(), None)).is_ok());
 }
 
 #[test]

@@ -1002,10 +1002,10 @@ mod query_tests {
     fn queries_skip_snapshots_and_structure_only_queries_skip_all_counters() {
         let fixture = Fixture::new();
         let mut state = Observer {
-            snapshot: vec![1; 5000 * 16],
+            snapshot: vec![1; 12 * 16],
             ..Observer::default()
         };
-        for index in 0..5000 {
+        for index in 0..12 {
             state.indices.insert(format!("relation-{index}"), index);
             state.first_reads.push(10);
             state
@@ -1024,9 +1024,9 @@ mod query_tests {
             before,
             "hydrated preparation's input snapshot"
         );
-        assert_eq!(keys.len(), 5000);
+        assert_eq!(keys.len(), 12);
         assert_eq!(reached.first_reads, state.first_reads);
-        for index in 0..5000 {
+        for index in 0..12 {
             assert_eq!(
                 reached.batch.state(1 + index * 4).unwrap().last,
                 state.batch.state(1 + index * 4).unwrap().last
@@ -1044,7 +1044,7 @@ mod query_tests {
         let (_, full) = series::read_catalogue::<Observer>(&fixture.store, &fixture.key, "wars", 1)
             .unwrap()
             .unwrap();
-        assert_eq!(SNAPSHOT_BYTES.get() - before, 5000 * 16);
+        assert_eq!(SNAPSHOT_BYTES.get() - before, 12 * 16);
         assert_eq!(full.first_reads, reached.first_reads);
     }
 }

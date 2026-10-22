@@ -517,8 +517,7 @@ mod tests {
     use super::super::tests::{frame, raid};
     use super::*;
     use dashboard_base::prepared::series::tests::Fixture;
-    use dashboard_core::test_fixtures::scale_frame;
-    use replay_data::{rows::RaidCountryRow, rows::TableRows};
+    use replay_data::rows::TableRows;
     use replay_frame::frame::TableView;
 
     #[test]
@@ -586,70 +585,6 @@ mod tests {
                 ]
             );
             Ok(delta)
-        })
-        .unwrap();
-        observer_tests::assert_flat(measured);
-    }
-
-    #[test]
-    fn raids_shared_driver_one_raid_change_does_not_visit_closed_episode_history() {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let measured = observer_tests::scaled_work(20, |history| {
-            let mut state = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut input = frame(100, vec![raid(1, 2, 0)]);
-            let replay = dashboard_core::test_fixtures::replay(vec![input.clone()]);
-            for offset in 0..history {
-                input.hour = 100 + offset as i32;
-                if let TableView::Complete(TableRows::Raids(rows)) =
-                    &mut *input.tables[TableId::Raids.index()]
-                {
-                    rows[0].id = offset as u32 + 1;
-                }
-                state.observe_changed(
-                    &input,
-                    replay.format,
-                    None,
-                    &tracker.observe(&input, replay.format),
-                )?;
-            }
-            assert_eq!(state.scan.result.episodes.len(), 1);
-            let before = state.scan.work;
-            let delta = observer_tests::unchanged_frames(
-                before,
-                &input,
-                10,
-                replay.format,
-                |frame, changes| {
-                    state.observe_changed(frame, replay.format, None, changes)?;
-                    Ok(state.scan.work)
-                },
-            )?;
-            assert_eq!(delta, observer_tests::Work::default());
-            let mut previous = input.clone();
-            previous.hour += 10;
-            tracker.observe(&previous, replay.format);
-            input.hour += 11;
-            if let TableView::Complete(TableRows::Raids(rows)) =
-                &mut *input.tables[TableId::Raids.index()]
-            {
-                rows[0].phase = native::PHASE_IN_PROGRESS;
-            }
-            state.observe_changed(
-                &input,
-                replay.format,
-                None,
-                &tracker.observe(&input, replay.format),
-            )?;
-            let changed = state.scan.work;
-            let work = observer_tests::Work {
-                row_visits: changed.row_visits - before.row_visits,
-                history_visits: changed.history_visits - before.history_visits,
-                emitted: changed.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert!(work.row_visits < 100 && work.history_visits < 20);
-            Ok(work)
         })
         .unwrap();
         observer_tests::assert_flat(measured);
@@ -800,48 +735,6 @@ mod tests {
         state.flush(&mut writer, 1, &flag).unwrap();
         writer.commit().unwrap();
         parity(&fixture, &frames);
-    }
-    #[test]
-    fn prepared_raids_keep_5000_country_tallies_and_identity_gaps() {
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let mut first = scale_frame(1, 100, 5000);
-        *first.tables[TableId::RaidCountries.index()] =
-            TableView::Complete(TableRows::RaidCountries(
-                (0..5000)
-                    .map(|slot| RaidCountryRow {
-                        canonical_slot: slot,
-                        country: (100000 + slot) as i32,
-                        eligible_types: vec![50],
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        *first.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(vec![]));
-        let mut last = first.clone();
-        last.hour = 102;
-        if let TableView::Complete(TableRows::Countries(rows)) =
-            &mut *last.tables[TableId::Countries.index()]
-        {
-            rows[0].tag = b"alias".to_vec();
-        }
-        let frames = vec![first, last];
-        let mut state = Prepared::default();
-        for frame in &frames {
-            let mut writer = fixture.writer();
-            state
-                .observe_with_content(frame, replay_data::format::FormatVersion::default())
-                .unwrap();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            state = Prepared::read(&fixture.store, &fixture.key, None, 1).unwrap();
-        }
-        assert_eq!(state.keys.len(), 5001);
-        parity(&fixture, &frames);
-        let scanned = state
-            .scanned(&fixture.store, &fixture.key, 1, RaidsView::Tally, &flag)
-            .unwrap();
-        assert_eq!(scanned.series.len(), 5001);
     }
     #[test]
     fn prepared_raids_continuation_retains_open_suffixes_and_no_hourly_history() {

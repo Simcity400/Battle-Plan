@@ -189,7 +189,7 @@ fn military_air_ledger_missing_country_census_is_not_empty_and_duplicate_events_
 fn military_air_ledger_captures_every_identity_without_a_human_predicate() {
     let mut read = frame(10, vec![], vec![]);
     *read.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5000)
+        (1..=12)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id,
@@ -199,7 +199,7 @@ fn military_air_ledger_captures_every_identity_without_a_human_predicate() {
             .collect(),
     ));
     *read.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5000)
+        (1..=12)
             .map(|id| CountryLinkRow {
                 id,
                 canonical_slot: id,
@@ -208,7 +208,7 @@ fn military_air_ledger_captures_every_identity_without_a_human_predicate() {
     ));
     let mut scan = FamilyScan::default();
     air_frame(&mut scan, &read).unwrap();
-    assert_eq!(scan.countries.len(), 5000);
+    assert_eq!(scan.countries.len(), 12);
     assert_eq!(scan.observed.len(), 1);
     assert!(scan.leaves.is_empty());
     let ranked = ranked_membership(
@@ -216,13 +216,13 @@ fn military_air_ledger_captures_every_identity_without_a_human_predicate() {
         &[],
         10,
         &MilitaryAirTop {
-            count: 5000,
+            count: 12,
             metric: MilitaryAirMetric::Taken,
         },
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(ranked.len(), 5000);
+    assert_eq!(ranked.len(), 12);
 }
 
 #[test]

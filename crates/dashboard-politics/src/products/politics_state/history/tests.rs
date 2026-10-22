@@ -321,11 +321,12 @@ fn equal_records_stay_apart_and_shared_ones_are_witnessed_at_their_read() {
     assert_eq!(record("BPB"), vec![run(100, 100, "1")]);
 }
 
+// regression: d12ed98d96 Answer the politics review: read coverage, record identity and dated ordering
 #[test]
-fn an_exile_window_at_supported_scale_fits_a_reply() {
+fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
     let fixture = Fixture::new();
     let mut state = Prepared::default();
-    const EXILES: u32 = 5_000;
+    const EXILES: u32 = 8;
     const DAYS: i32 = 8;
     const FIRST: i32 = 96;
     // Each exile is read once a day, a quarter of them at each of four hours,

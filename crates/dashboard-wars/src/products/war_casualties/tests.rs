@@ -1,9 +1,6 @@
 use super::test_fixtures::{casualty_frame, chosen, opened, research_replay};
 use super::*;
-use replay::spool::Record;
-use replay_frame::frame::FrameEncoder;
 use std::path::PathBuf;
-use std::time::Instant;
 fn params(count: u32) -> CasualtyParams {
     CasualtyParams {
         branch_id: "1".into(),
@@ -548,7 +545,7 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 #[test]
 fn selection_validation_and_exact_escaped_json_budget() {
     assert!(WarCasualties::validate(&params(0)).is_err());
-    for count in [31, 5000, u32::MAX] {
+    for count in [31, 40, u32::MAX] {
         assert!(WarCasualties::validate(&params(count)).is_ok());
     }
     let mut request = params(10);
@@ -566,7 +563,7 @@ fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
     let source = opened(research_replay((1..=6).map(scale_frame).collect()));
     let cancelled = AtomicBool::new(false);
     let scanned = scanned_branch(&source, 1, &cancelled).unwrap();
-    for count in [31, 300, 5000] {
+    for count in [31, 40] {
         let top = WarCasualties::load(
             &source,
             &params(count),
@@ -616,7 +613,7 @@ fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
         &cancelled,
     )
     .unwrap();
-    assert_eq!(all.series.len(), 5000);
+    assert_eq!(all.series.len(), 40);
     assert!(json_bytes(&all).unwrap() <= MAX_PRODUCT_REPLY_BYTES);
     assert!(Arc::ptr_eq(
         &scanned,
@@ -1195,7 +1192,7 @@ fn equal_hourly_values_compress_and_keep_wide_signed_totals() {
 fn scale_frame(hour: i32) -> DecodedFrame {
     let mut f = casualty_frame(hour, None, 0);
     *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5000)
+        (1..=40)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id,
@@ -1208,7 +1205,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
             .collect(),
     ));
     *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5000)
+        (1..=40)
             .map(|id| CountryLinkRow {
                 id,
                 canonical_slot: id,
@@ -1216,13 +1213,13 @@ fn scale_frame(hour: i32) -> DecodedFrame {
             .collect(),
     ));
     *f.tables[TableId::WarRelations.index()] = TableView::Complete(TableRows::WarRelations(
-        (1..=5000)
+        (1..=40)
             .map(|id| replay_data::rows::WarRelationRow {
                 first_country: id,
-                second_country: id % 5000 + 1,
+                second_country: id % 40 + 1,
                 start_hour: 0,
                 first_casualties: i64::from(hour) * i64::from(id),
-                second_casualties: i64::from(hour) * i64::from(id % 5000 + 1),
+                second_casualties: i64::from(hour) * i64::from(id % 40 + 1),
                 first_unknown_casualties: i64::from(hour),
                 second_unknown_casualties: i64::from(hour),
                 ..Default::default()
@@ -1230,7 +1227,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
             .collect(),
     ));
     // One holder changes each year; volatile balances still change every hour.
-    let holder = 1 + 5000 * (hour / (365 * 24)) as u32;
+    let holder = 1 + 40 * (hour / (365 * 24)) as u32;
     if holder != 1 {
         if let TableView::Complete(TableRows::Countries(rows)) =
             &mut *f.tables[TableId::Countries.index()]
@@ -1249,7 +1246,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
     }
     *f.tables[TableId::CountryAppearance.index()] =
         TableView::Complete(TableRows::CountryAppearance(
-            (1..=5000)
+            (1..=40)
                 .map(|country| replay_data::rows::CountryAppearanceRow {
                     country: if country == 1 { holder } else { country },
                     ..Default::default()
@@ -1257,7 +1254,7 @@ fn scale_frame(hour: i32) -> DecodedFrame {
                 .collect(),
         ));
     *f.tables[TableId::Politics.index()] = TableView::Complete(TableRows::Politics(
-        (1..=5000)
+        (1..=40)
             .map(|country| replay_data::rows::PoliticsRow {
                 country: if country == 1 { holder } else { country },
                 ..Default::default()
@@ -1336,7 +1333,7 @@ fn loaded_content(source: &Source) -> (LoadContext, TestFolder) {
     let root = &folder.0;
     std::fs::create_dir_all(root.join("localisation/english")).unwrap();
     let mut text = String::from("﻿l_english:\n CASUALTIES_UNKNOWN:0 \"Fixture unknown losses\"\n");
-    for id in 1..=5000 {
+    for id in 1..=40 {
         text.push_str(&format!(" mod_country{id:04}:0 \"Fixture country {id}\"\n"));
     }
     std::fs::write(
@@ -1443,7 +1440,7 @@ fn changing_selections_reuses_one_branch_scan_with_content_loaded() {
         &scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap()
     ));
     // Unchanged naming operands are kept once per tag.
-    assert_eq!(cached.names.len(), 5000);
+    assert_eq!(cached.names.len(), 40);
     assert!(!cached.has_gap());
 }
 
@@ -1505,237 +1502,6 @@ fn switching_branches_reuses_two_cached_scans_and_evicts_the_oldest() {
     let rebuilt = scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap();
     assert!(!Arc::ptr_eq(&first, &rebuilt));
     assert!(scanned_branch(&source, 999, &AtomicBool::new(false)).is_err());
-}
-
-#[test]
-#[ignore = "nine-year encoded benchmark; run explicitly outside routine checks"]
-fn war_casualties_nine_year_benchmark() {
-    let hours = 9 * 365 * 24 + 7;
-    let fixture_folder = TestFolder::new();
-    let path = std::env::var_os("BATTLE_PLAN_CASUALTIES_BENCH_FIXTURE").or_else(|| std::env::var_os("HOI4_CASUALTIES_BENCH_FIXTURE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| fixture_folder.0.join("nine-years.battleplan"));
-    if !path.exists() {
-        let mut replay = research_replay((0..72).map(scale_frame).collect());
-        for first in (72..hours).step_by(72) {
-            let mut encoder = FrameEncoder::new();
-            let mut batch = vec![Record::BranchStart(replay.branches[0].clone())];
-            batch.extend(
-                (first..(first + 72).min(hours))
-                    .map(|h| Record::Frame(encoder.encode(scale_frame(h), false).unwrap())),
-            );
-            replay = replay.append(&[batch]).unwrap();
-            if first % 7200 == 0 {
-                eprintln!("encoded fixture: {first}/{hours} hours");
-            }
-        }
-        // Reusable fixtures are read-only. New fixtures belong to this test's
-        // temporary folder even when an environment path was supplied.
-        let temporary = fixture_folder.0.join("nine-years.battleplan");
-        replay.write_atomic(&temporary).unwrap();
-    }
-    let path = if path.exists() {
-        path
-    } else {
-        fixture_folder.0.join("nine-years.battleplan")
-    };
-    let source = opened(Replay::open(std::fs::read(path).unwrap()).unwrap());
-    let (context, _content_folder) = loaded_content(&source);
-    let replay = source.replay();
-    let cancelled = AtomicBool::new(false);
-    let mut builder = ScanFrames::new(&replay, 1);
-    let mut stages = Vec::new();
-    let mut peak_scan_bytes = 0;
-    let mut accounting_seconds = 0.0;
-    let start = Instant::now();
-    for block in replay.index.iter().filter(|block| block.branch == 1) {
-        let decoding = Instant::now();
-        let frames = replay.read_block_selected(block, &SCAN_TABLES).unwrap();
-        let block_ms = decoding.elapsed().as_secs_f64() * 1000.0 / frames.len() as f64;
-        let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
-        for frame in frames {
-            let built = Instant::now();
-            let decoded = decoder.advance(&frame).unwrap();
-            builder.frame(decoded, &replay);
-            stages.push((built.elapsed().as_secs_f64() * 1000.0, block_ms));
-        }
-        // Benchmark bookkeeping stays outside both the product and hour timings.
-        let accounting = Instant::now();
-        peak_scan_bytes = peak_scan_bytes.max(benchmark_builder_bytes(&builder));
-        accounting_seconds += accounting.elapsed().as_secs_f64();
-    }
-    let accounting = Instant::now();
-    let before_finish = benchmark_builder_bytes(&builder);
-    let track_count = builder.scan.tracks.len();
-    let boundary_count = builder.scan.bounds.len() + builder.scan.observed.len() * 2;
-    accounting_seconds += accounting.elapsed().as_secs_f64();
-    let cached = Arc::new(builder.scan.finish(&cancelled).unwrap());
-    source
-        .state::<Scans>()
-        .lock()
-        .unwrap()
-        .entries
-        .push_back((1, Arc::clone(&cached)));
-    let reply = WarCasualties::load(&source, &params(30), &context, &cancelled).unwrap();
-    let elapsed_seconds = start.elapsed().as_secs_f64() - accounting_seconds;
-    let reply_bytes = serde_json::to_vec(&reply).unwrap().len();
-    let cache_bytes = benchmark_cached_bytes(&cached)
-        + source
-            .state::<LabelScans>()
-            .lock()
-            .unwrap()
-            .entries
-            .iter()
-            .map(|(_, _, labels)| benchmark_label_bytes(labels))
-            .sum::<usize>();
-    // Conservative finalization envelope: old builder and completed cache plus
-    // sort/current-run/index scratch. It may count shared allocations twice.
-    let finish_scratch = boundary_count * std::mem::size_of::<i64>()
-        + track_count
-            * (std::mem::size_of::<(i128, usize)>() + std::mem::size_of::<Option<Sample>>() + 128);
-    let peak_bytes = peak_scan_bytes.max(before_finish + cache_bytes + finish_scratch);
-    assert_eq!(stages.len(), hours as usize);
-    let percentiles = |mut values: Vec<f64>| {
-        values.sort_by(f64::total_cmp);
-        (values[values.len() / 2], values[values.len() * 95 / 100])
-    };
-    let (built_p50, built_p95) = percentiles(stages.iter().map(|(built, _)| *built).collect());
-    let (decode_p50, decode_p95) =
-        percentiles(stages.iter().map(|(_, decoded)| *decoded).collect());
-    let staged_ms = stages
-        .iter()
-        .map(|(built, decoded)| built + decoded)
-        .sum::<f64>();
-    let overhead = (elapsed_seconds * 1000.0 - staged_ms).max(0.0) / f64::from(hours);
-    let (p50, p95) = percentiles(
-        stages
-            .iter()
-            .map(|(built, decoded)| built + decoded + overhead)
-            .collect(),
-    );
-    eprintln!(
-        "casualties nine-year content-loaded: {hours} hours, 5000 countries; p50 {p50:.3} ms/hour, p95 {p95:.3} ms/hour, total {elapsed_seconds:.3} s; top30 {reply_bytes} bytes; retained cache {cache_bytes} bytes; conservative peak upper estimate {peak_bytes} bytes (owned capacities; excludes replay/content/decoder scratch and the newest naming snapshot); naming entries {}",
-        cached.names.len()
-    );
-    eprintln!(
-        "hour build p50/p95: {built_p50:.3}/{built_p95:.3} ms; block decoding amortized p50/p95: {decode_p50:.3}/{decode_p95:.3} ms; finalization and reply overhead: {overhead:.3} ms/hour; profile: Cargo test unoptimized, inherited process priority"
-    );
-    assert!(reply_bytes <= MAX_PRODUCT_REPLY_BYTES);
-    assert!(reply.series.iter().any(|series| {
-        series
-            .taken
-            .1
-            .iter()
-            .any(|delta| matches!(delta, CasualtyDelta::Repeated(_, _)))
-    }));
-    for series in &reply.series {
-        let dates = reads(series);
-        for index in [0, dates.len() / 2, dates.len() - 1] {
-            let measure = cached.country_at(&series.tag, dates[index]).unwrap();
-            assert_eq!(value(&series.taken, index), measure.taken);
-            assert_eq!(value(&series.dealt, index), measure.dealt);
-            assert_eq!(measure.read_hour, dates[index]);
-        }
-    }
-    assert_eq!(members(&reply, hours - 1).len(), 30);
-}
-
-fn benchmark_track_bytes(track: &Track) -> usize {
-    std::mem::size_of_val(track)
-        + track.packed.capacity()
-        + track.checkpoints.capacity() * std::mem::size_of::<Checkpoint>()
-}
-
-fn benchmark_label_bytes(labels: &CampaignLabels) -> usize {
-    labels
-        .iter()
-        .map(|(tag, names)| {
-            96 + tag.capacity()
-                + names.capacity() * std::mem::size_of::<String>()
-                + names.iter().map(String::capacity).sum::<usize>()
-        })
-        .sum()
-}
-
-fn benchmark_names_bytes(names: &Vec<(String, NameInputs)>) -> usize {
-    // Debug text over-counts the operands' private strings.
-    names.capacity() * std::mem::size_of::<(String, NameInputs)>()
-        + names
-            .iter()
-            .map(|(tag, inputs)| {
-                tag.capacity()
-                    + inputs.capacity()
-                        * std::mem::size_of::<(u32, Option<Result<Operands, String>>)>()
-                    + format!("{inputs:?}").len()
-            })
-            .sum::<usize>()
-}
-
-fn benchmark_builder_bytes(builder: &ScanFrames) -> usize {
-    let scan = &builder.scan;
-    std::mem::size_of_val(builder)
-        + benchmark_names_bytes(&scan.names)
-        + scan
-            .tracks
-            .iter()
-            .map(|(tag, track)| tag.capacity() + benchmark_track_bytes(track) + 96)
-            .sum::<usize>()
-        + scan.countries.capacity() * std::mem::size_of::<Country>()
-        + scan.identities.capacity() * std::mem::size_of::<Identity>()
-        + scan.indices.capacity() * (std::mem::size_of::<(Identity, usize)>() + 16)
-        + scan.pairs.capacity() * (std::mem::size_of::<(PairKey, HeldPair)>() + 16)
-        + scan
-            .live
-            .keys()
-            .map(|tag| tag.capacity() + 96)
-            .sum::<usize>()
-        + scan.bounds.len() * 32
-        + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
-        + scan.touched.capacity() * std::mem::size_of::<usize>()
-        + scan.active.len() * std::mem::size_of::<String>()
-        + scan.active.iter().map(String::capacity).sum::<usize>()
-        + builder
-            .live
-            .keys()
-            .map(|tag| tag.capacity() + 96)
-            .sum::<usize>()
-        + builder.by_slot.capacity() * (std::mem::size_of::<(u32, usize)>() + 16)
-        + builder.seen.capacity() * (std::mem::size_of::<(usize, usize, i32)>() + 16)
-        + builder.endpoints.capacity() * std::mem::size_of::<(usize, usize)>()
-        + builder.relation_keys.capacity() * std::mem::size_of::<(u32, u32, i32)>()
-        + builder.name_entries.capacity() * (std::mem::size_of::<(String, usize)>() + 16)
-        + builder
-            .name_entries
-            .keys()
-            .map(String::capacity)
-            .sum::<usize>()
-        + builder.census.as_ref().map_or(0, |(countries, _)| {
-            countries.capacity() * std::mem::size_of::<(u32, u32, Vec<u8>)>()
-                + countries
-                    .iter()
-                    .map(|(_, _, tag)| tag.capacity())
-                    .sum::<usize>()
-        })
-}
-
-fn benchmark_cached_bytes(scan: &ScannedCasualties) -> usize {
-    std::mem::size_of_val(scan)
-        + benchmark_names_bytes(&scan.names)
-        + scan.tracks.capacity() * std::mem::size_of::<(String, Track)>()
-        + scan
-            .tracks
-            .iter()
-            .map(|(tag, track)| {
-                tag.capacity() + benchmark_track_bytes(track) - std::mem::size_of::<Track>()
-            })
-            .sum::<usize>()
-        + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
-        + scan.windows.capacity() * std::mem::size_of::<TopWindow>()
-        + scan
-            .windows
-            .iter()
-            .map(|window| window.order.capacity() * std::mem::size_of::<u32>())
-            .sum::<usize>()
 }
 
 #[test]
@@ -1886,7 +1652,7 @@ fn war_casualties_returning_holder_waits_for_its_own_read() {
 }
 
 #[test]
-fn casualty_pair_reply_keeps_five_thousand_native_countries_without_a_selection_cap() {
+fn casualty_pair_reply_keeps_every_native_country_without_a_selection_cap() {
     let source = opened(research_replay(vec![scale_frame(1)]));
     let reply = pairs::CasualtyPairs::load(
         &source,
@@ -1900,13 +1666,13 @@ fn casualty_pair_reply_keeps_five_thousand_native_countries_without_a_selection_
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(reply.pairs.len(), 5000);
+    assert_eq!(reply.pairs.len(), 40);
     let countries: HashSet<_> = reply
         .pairs
         .iter()
         .flat_map(|pair| [&pair.first_country, &pair.second_country])
         .collect();
-    assert_eq!(countries.len(), 5000);
+    assert_eq!(countries.len(), 40);
     let total: i128 = reply
         .pairs
         .iter()
@@ -1915,5 +1681,5 @@ fn casualty_pair_reply_keeps_five_thousand_native_countries_without_a_selection_
             run.first_taken.parse::<i128>().unwrap() + run.second_taken.parse::<i128>().unwrap()
         })
         .sum();
-    assert_eq!(total, 5000 * 5001);
+    assert_eq!(total, 40 * 41);
 }

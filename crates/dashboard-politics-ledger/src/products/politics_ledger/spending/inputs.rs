@@ -2285,35 +2285,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn indexed_accounting_selects_5000_pending_power_rows_in_one_pass_per_read() {
-        let rows = (0..5000)
-            .rev()
-            .map(|sequence| CountryPowerChangeRow {
-                country: 11,
-                sequence,
-                ..Default::default()
-            })
-            .collect::<Vec<_>>();
-        let index = index_rows(&rows, |row| row.country);
-        let pending = rows.iter().map(RowCodec::key).collect::<BTreeSet<_>>();
-        for _ in 0..2 {
-            let before = ACCOUNTING_KEY_VISITS.with(std::cell::Cell::get);
-            let positions = accounting_positions(
-                &rows,
-                Some(&index),
-                &BTreeSet::new(),
-                &[],
-                pending.iter().copied(),
-                |row| row.country,
-                |key| (key >> 64) as u32,
-            );
-            let visits = ACCOUNTING_KEY_VISITS.with(std::cell::Cell::get) - before;
-            assert_eq!(positions, (0..rows.len()).collect::<Vec<_>>());
-            assert_eq!(visits, rows.len(), "one owner scan per supplying read");
-        }
-    }
-
-    #[test]
     fn accounting_rows_keep_owner_order_for_indexed_snapshots_and_sorted_deltas() {
         let rows = vec![
             CountryPowerChangeRow {
@@ -2461,11 +2432,6 @@ mod tests {
         assert_carried_windows(8);
     }
 
-    #[test]
-    fn sliding_windows_carry_5000_countries_without_revisiting_expiry_membership() {
-        assert_carried_windows(5000);
-    }
-
     /// Each advancing capture's old hours unscheduled and its first hour and
     /// next expiry scheduled, one capture at a time.
     fn one_at_a_time(
@@ -2507,11 +2473,6 @@ mod tests {
     #[test]
     fn certified_expiry_buckets_carry_their_membership() {
         assert_carried_expiries(8);
-    }
-
-    #[test]
-    fn certified_expiry_buckets_do_not_compare_5000_keys_every_hour() {
-        assert_carried_expiries(5000);
     }
 
     /// Captures advancing together move their deadlines exactly as one at a

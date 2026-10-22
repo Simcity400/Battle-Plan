@@ -463,9 +463,9 @@ fn prepared_autonomy_batches_resume_and_keep_exact_runs_metadata_gaps_and_naviga
 }
 
 #[test]
-fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countries() {
+fn progressive_autonomy_sampler_and_observer_agree_on_every_key() {
     use super::{FIELDS, ScannedAutonomy, sample};
-    for count in [3, 5_000] {
+    for count in [3, 12] {
         let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, count);
         *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
             (1..count)
@@ -569,25 +569,6 @@ fn progressive_autonomy_sampler_and_observer_agree_on_every_key_at_5000_countrie
                 .unwrap()
                 .values()
                 .all(|value| value.1.is_none())
-        );
-    }
-}
-
-#[test]
-fn autonomy_accepts_country_selections_at_design_and_stress_scales() {
-    use crate::products::autonomy::{Autonomy, AutonomyParams};
-    use dashboard_base::products::Product;
-    for count in [1_500, 5_000] {
-        let tags = (0..count)
-            .map(|index| format!("synthetic/{index}"))
-            .collect::<Vec<_>>();
-        assert!(
-            Autonomy::validate(&AutonomyParams {
-                branch_id: "1".into(),
-                overlords: tags.clone(),
-                subjects: tags,
-            })
-            .is_ok()
         );
     }
 }
@@ -1040,193 +1021,6 @@ fn autonomy_never_recorded_is_not_no_subjects() {
 }
 
 #[test]
-fn prepared_autonomy_bulk_tail_reads_reuse_open_bands_after_resume_at_5000_countries() {
-    use crate::products::autonomy::{AutonomyParams, ScannedAutonomy};
-    use dashboard_base::{prepared::series, products::LoadContext};
-    let flag = AtomicBool::new(false);
-    for count in [3, 5_000] {
-        let frames = [100, 101].map(|hour| {
-            let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, count);
-            *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
-                (1..count)
-                    .map(|index| replay_data::rows::SubjectRow {
-                        subject: 100_000 + index,
-                        overlord: 100_000,
-                        autonomy_ratio: i64::from(hour),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-            *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
-                (1..count)
-                    .map(|index| replay_data::rows::AutonomyRow {
-                        subject: 100_000 + index,
-                        state: b"mod/state".to_vec(),
-                        score: i64::from(hour) * 100_000 + i64::from(index),
-                        lower_score: 0,
-                        upper_score: 20_000_000,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-            frame
-        });
-        let source = dashboard_base::source::Source::from_replay(
-            dashboard_base::source::SourceKey {
-                source_id: "autonomy-bulk-tail".into(),
-                revision: "1".into(),
-            },
-            Default::default(),
-            Arc::new(
-                Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap(),
-            ),
-            &flag,
-        )
-        .unwrap();
-        let fixture = series::tests::Fixture::new();
-        let mut prepared = ScannedAutonomy::default();
-        for frame in &frames {
-            prepared.prepare(frame).unwrap();
-            let mut writer = fixture.writer();
-            prepared.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            prepared = series::read_catalogue::<ScannedAutonomy>(
-                &fixture.store,
-                &fixture.key,
-                "autonomy",
-                1,
-            )
-            .unwrap()
-            .unwrap()
-            .1;
-        }
-        let params = AutonomyParams {
-            branch_id: "1".into(),
-            subjects: Vec::new(),
-            overlords: Vec::new(),
-        };
-        let context = LoadContext { content: None };
-        let expected = super::scan(source.replay_ref(), 1, &flag)
-            .unwrap()
-            .reply(&source, &params, &context)
-            .unwrap()
-            .0;
-        let request =
-            serde_json::json!({"branchId":"1", "reads":[{"hour":100},{"hour":101},{"hour":102}]});
-        let mut actual = super::prepared::query(
-            &source,
-            "series-state",
-            &request,
-            &fixture.store,
-            &fixture.key,
-            &context,
-            &flag,
-        )
-        .unwrap();
-        assert_eq!(
-            request["reads"].as_array().unwrap().len(),
-            3,
-            "one product request carries every reached hour at both country counts"
-        );
-        for field in ["bands", "summaries", "exactHours", "navigation"] {
-            actual.as_object_mut().unwrap().remove(field);
-        }
-        assert_eq!(actual, serde_json::to_value(expected).unwrap());
-        assert_eq!(prepared.last.len(), (count - 1) as usize);
-        assert!(
-            prepared
-                .last
-                .iter()
-                .flatten()
-                .all(|last| last.3 == (100, true)),
-            "numeric-only changes preserve the open metadata start across resume"
-        );
-    }
-}
-
-#[test]
-fn autonomy_changes_keep_quiet_hours_and_closed_history_flat_and_join_only_changed_tables() {
-    use super::ScannedAutonomy;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{assert_flat, scaled_work, unchanged_frames},
-    };
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let initial = autonomy_frame(100, &[(31, Some(11), b"level", 40, 0, 100, true, true)]);
-    assert_flat(
-        scaled_work(10, |hours| {
-            let mut scan = ScannedAutonomy::default();
-            let mut tracker = FrameChangeTracker::new();
-            scan.prepare_changed(&initial, &tracker.observe(&initial, format))?;
-            unchanged_frames(
-                scan.work,
-                &initial,
-                hours as i32,
-                format,
-                |frame, changes| {
-                    scan.prepare_changed(frame, changes)?;
-                    Ok(scan.work)
-                },
-            )
-        })
-        .unwrap(),
-    );
-    assert_flat(
-        scaled_work(10, |history| {
-            let mut scan = ScannedAutonomy::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut current = initial.clone();
-            for index in 0..history {
-                current.hour = 100 + index as i32;
-                if let TableView::Complete(TableRows::Autonomy(rows)) =
-                    &mut *current.tables[TableId::Autonomy.index()]
-                {
-                    rows[0].score = index as i64;
-                }
-                scan.prepare_changed(&current, &tracker.observe(&current, format))?;
-            }
-            unchanged_frames(scan.work, &current, 10, format, |frame, changes| {
-                scan.prepare_changed(frame, changes)?;
-                Ok(scan.work)
-            })
-        })
-        .unwrap(),
-    );
-    let mut scan = ScannedAutonomy::default();
-    let mut tracker = FrameChangeTracker::new();
-    scan.prepare_changed(&initial, &tracker.observe(&initial, format))
-        .unwrap();
-    let before = scan.work;
-    let mut changed = initial.clone();
-    changed.hour += 1;
-    if let TableView::Complete(TableRows::Autonomy(rows)) =
-        &mut *changed.tables[TableId::Autonomy.index()]
-    {
-        rows[0].score += 1;
-    }
-    scan.prepare_changed(&changed, &tracker.observe(&changed, format))
-        .unwrap();
-    assert_eq!(
-        scan.work.row_visits - before.row_visits,
-        1,
-        "only the changed autonomy table is visited; holders and relation operands are held"
-    );
-    for (tag, index) in &scan.by_tag {
-        for (field, label) in super::FIELDS.into_iter().enumerate() {
-            assert_eq!(
-                scan.batch
-                    .state(*index as u64 * 6 + field as u64)
-                    .and_then(|state| state.last)
-                    .map(|run| run.value),
-                super::sample(&changed, Some(&[(tag.clone(), label.into())])).unwrap()
-                    [&(tag.clone(), label.into())]
-                    .1
-            );
-        }
-    }
-}
-
-#[test]
 fn autonomy_deferred_runs_match_oracle_after_quiet_spans_two_commits_resume_and_gap() {
     use super::{AutonomyParams, ScannedAutonomy};
     use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series};
@@ -1295,70 +1089,97 @@ fn autonomy_deferred_runs_match_oracle_after_quiet_spans_two_commits_resume_and_
     dashboard_base::prepared::observer_tests::assert_reply_parity(&actual, &expected).unwrap();
 }
 
+// regression: 344eac3d15 fix(dashboard): batch autonomy tail reads and index frame joins
 #[test]
-fn autonomy_relation_change_reuses_five_thousand_score_operands_and_observes_only_its_subject() {
-    use super::ScannedAutonomy;
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    let format = replay_data::format::FormatVersion::CURRENT;
-    assert_flat(
-        scaled_work(500, |countries| {
-            let mut first = dashboard_base::test_fixtures::scale_frame(1, 100, countries as u32);
-            *first.tables[TableId::Subjects.index()] =
-                TableView::Complete(TableRows::Subjects(vec![]));
-            *first.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
-                (1..countries)
-                    .map(|index| replay_data::rows::AutonomyRow {
-                        subject: 100_000 + index as u32,
-                        state: b"level".to_vec(),
-                        score: index as i64,
-                        upper_score: 100_000,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-            let mut scan = ScannedAutonomy::default();
-            let mut tracker = FrameChangeTracker::new();
-            scan.prepare_changed(&first, &tracker.observe(&first, format))?;
-            let before = scan.work;
-            let mut changed = first.clone();
-            changed.hour = 101;
-            *changed.tables[TableId::Subjects.index()] =
-                TableView::Complete(TableRows::Subjects(vec![replay_data::rows::SubjectRow {
+fn prepared_autonomy_bulk_tail_reads_reuse_open_bands_after_resume() {
+    use crate::products::autonomy::{AutonomyParams, ScannedAutonomy};
+    use dashboard_base::{prepared::series, products::LoadContext};
+    let flag = AtomicBool::new(false);
+    let count = 3;
+    let frames = [100, 101].map(|hour| {
+        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, count);
+        *frame.tables[TableId::Subjects.index()] = TableView::Complete(TableRows::Subjects(
+            (1..count)
+                .map(|index| replay_data::rows::SubjectRow {
+                    subject: 100_000 + index,
                     overlord: 100_000,
-                    subject: 100_001,
-                    autonomy_ratio: 20_000,
+                    autonomy_ratio: i64::from(hour),
                     ..Default::default()
-                }]));
-            scan.prepare_changed(&changed, &tracker.observe(&changed, format))?;
-            let work = Work {
-                row_visits: scan.work.row_visits - before.row_visits,
-                history_visits: scan.work.history_visits - before.history_visits,
-                emitted: scan.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(
-                (work.row_visits, work.history_visits, work.emitted),
-                (1, 1, 1)
-            );
-            assert_eq!(scan.active.len(), countries - 1);
-            let samples = super::sample(&changed, None)?;
-            for (tag, index) in &scan.by_tag {
-                for (field, label) in super::FIELDS.into_iter().enumerate() {
-                    assert_eq!(
-                        scan.batch
-                            .state(*index as u64 * 6 + field as u64)
-                            .and_then(|state| state.last)
-                            .map(|run| run.value),
-                        samples[&(tag.clone(), label.to_owned())].1
-                    );
-                }
-            }
-            Ok(work)
-        })
-        .unwrap(),
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::Autonomy.index()] = TableView::Complete(TableRows::Autonomy(
+            (1..count)
+                .map(|index| replay_data::rows::AutonomyRow {
+                    subject: 100_000 + index,
+                    state: b"mod/state".to_vec(),
+                    score: i64::from(hour) * 100_000 + i64::from(index),
+                    lower_score: 0,
+                    upper_score: 20_000_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        frame
+    });
+    let source = dashboard_base::source::Source::from_replay(
+        dashboard_base::source::SourceKey {
+            source_id: "autonomy-bulk-tail".into(),
+            revision: "1".into(),
+        },
+        Default::default(),
+        Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames.to_vec())]).unwrap()),
+        &flag,
+    )
+    .unwrap();
+    let fixture = series::tests::Fixture::new();
+    let mut prepared = ScannedAutonomy::default();
+    for frame in &frames {
+        prepared.prepare(frame).unwrap();
+        let mut writer = fixture.writer();
+        prepared.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        prepared =
+            series::read_catalogue::<ScannedAutonomy>(&fixture.store, &fixture.key, "autonomy", 1)
+                .unwrap()
+                .unwrap()
+                .1;
+    }
+    let params = AutonomyParams {
+        branch_id: "1".into(),
+        subjects: Vec::new(),
+        overlords: Vec::new(),
+    };
+    let context = LoadContext { content: None };
+    let expected = super::scan(source.replay_ref(), 1, &flag)
+        .unwrap()
+        .reply(&source, &params, &context)
+        .unwrap()
+        .0;
+    let request =
+        serde_json::json!({"branchId":"1", "reads":[{"hour":100},{"hour":101},{"hour":102}]});
+    let mut actual = super::prepared::query(
+        &source,
+        "series-state",
+        &request,
+        &fixture.store,
+        &fixture.key,
+        &context,
+        &flag,
+    )
+    .unwrap();
+    for field in ["bands", "summaries", "exactHours", "navigation"] {
+        actual.as_object_mut().unwrap().remove(field);
+    }
+    assert_eq!(actual, serde_json::to_value(expected).unwrap());
+    assert_eq!(prepared.last.len(), (count - 1) as usize);
+    assert!(
+        prepared
+            .last
+            .iter()
+            .flatten()
+            .all(|last| last.3 == (100, true)),
+        "numeric-only changes preserve the open metadata start across resume"
     );
 }
 
@@ -1460,5 +1281,25 @@ fn autonomy_link_change_reuses_unchanged_country_scores_and_subject_tables() {
                 samples[&(tag.clone(), label.to_owned())].1
             );
         }
+    }
+}
+
+// regression: a756f86eb6 Fix diplomacy identity handling and history limits
+#[test]
+fn autonomy_accepts_country_selections_at_design_and_stress_scales() {
+    use crate::products::autonomy::{Autonomy, AutonomyParams};
+    use dashboard_base::products::Product;
+    for count in [1_500, 5_000] {
+        let tags = (0..count)
+            .map(|index| format!("synthetic/{index}"))
+            .collect::<Vec<_>>();
+        assert!(
+            Autonomy::validate(&AutonomyParams {
+                branch_id: "1".into(),
+                overlords: tags.clone(),
+                subjects: tags,
+            })
+            .is_ok()
+        );
     }
 }

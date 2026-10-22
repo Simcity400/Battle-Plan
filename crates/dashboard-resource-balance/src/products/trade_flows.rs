@@ -279,9 +279,6 @@ struct Inputs {
     ready: bool,
     #[cfg(test)]
     row_visits: usize,
-    /// Countries rows compared with or read into `countries`.
-    #[cfg(test)]
-    country_visits: usize,
 }
 impl Inputs {
     fn refresh(
@@ -296,10 +293,6 @@ impl Inputs {
             || changes.rows_changed[TableId::CountryLinks.index()]
         {
             let rows = frame.complete::<tables::Countries>().ok();
-            #[cfg(test)]
-            {
-                self.country_visits += rows.map_or(0, |rows| rows.len());
-            }
             let same = rows.is_some_and(|rows| {
                 self.countries
                     .as_ref()

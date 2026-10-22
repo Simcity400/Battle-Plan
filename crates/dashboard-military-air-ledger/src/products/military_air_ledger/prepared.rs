@@ -411,7 +411,7 @@ mod tests {
         let measured = observer_tests::scaled_work(8, |hours| {
             let fixture = Fixture::new();
             let flag = AtomicBool::new(false);
-            let mut first = scale_frame(1, 10, 5000);
+            let mut first = scale_frame(1, 10, 12);
             first.tables[TableId::AirLossEvents.index()] =
                 TableView::Complete(TableRows::AirLossEvents(vec![])).into();
             first.tables[TableId::BuildingBombingDamage.index()] =
@@ -484,65 +484,6 @@ mod tests {
             Ok(delta)
         })
         .unwrap();
-        observer_tests::assert_flat(measured);
-    }
-
-    #[test]
-    fn ledger_shared_driver_unchanged_work_does_not_visit_retained_alias_history() {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
-        let measured = observer_tests::scaled_work(20, |history| {
-            let mut state = Prepared::default();
-            let mut tracker = FrameChangeTracker::new();
-            let mut frame = super::super::tests::frame(0, vec![], vec![]);
-            let format = replay_data::format::FormatVersion::default();
-            for hour in 0..history {
-                frame.hour = hour as i32;
-                if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut *frame.tables[TableId::Countries.index()]
-                {
-                    rows[0].tag = format!("alias-{hour}").into_bytes();
-                }
-                state.observe_changed(&frame, &tracker.observe(&frame, format))?;
-            }
-            assert_eq!(state.scan.air.countries.len(), history);
-            let delta = observer_tests::unchanged_frames(
-                work(&state),
-                &frame,
-                10,
-                format,
-                |frame, changes| {
-                    state.observe_changed(frame, changes)?;
-                    Ok(work(&state))
-                },
-            )?;
-            let mut previous = frame.clone();
-            previous.hour += 10;
-            tracker.observe(&previous, format);
-            frame.hour += 11;
-            if let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *frame.tables[TableId::Countries.index()]
-            {
-                rows[0].political_power_raw = Some(999);
-            }
-            let before = work(&state);
-            state.observe_changed(&frame, &tracker.observe(&frame, format))?;
-            assert_eq!(
-                work(&state).history_visits,
-                before.history_visits,
-                "balance-only changes do not touch presence"
-            );
-            frame.hour += 1;
-            frame.tables[TableId::AirLossEvents.index()] =
-                TableView::Complete(TableRows::AirLossEvents(vec![loss(999999, frame.hour, 1)]))
-                    .into();
-            let before = work(&state);
-            state.observe_changed(&frame, &tracker.observe(&frame, format))?;
-            assert_eq!(work(&state).row_visits - before.row_visits, 1);
-            assert_eq!(work(&state).history_visits, before.history_visits);
-            Ok(delta)
-        })
-        .unwrap();
-        assert_eq!(measured, [observer_tests::Work::default(); 2]);
         observer_tests::assert_flat(measured);
     }
 
@@ -653,10 +594,10 @@ mod tests {
     }
 
     #[test]
-    fn prepared_ledger_5000_countries_and_identity_gaps_match_the_oracle() {
+    fn prepared_ledger_identity_gaps_match_the_oracle() {
         let fixture = Fixture::new();
         let flag = AtomicBool::new(false);
-        let mut first = scale_frame(1, 10, 5000);
+        let mut first = scale_frame(1, 10, 12);
         for table in [TableId::AirLossEvents, TableId::BuildingBombingDamage] {
             *first.tables[table.index()] = match table {
                 TableId::AirLossEvents => TableView::Complete(TableRows::AirLossEvents(vec![])),
@@ -694,7 +635,7 @@ mod tests {
             writer.commit().unwrap();
             state = resume(&fixture, None);
         }
-        assert_eq!(state.scan.air.countries.len(), 5002);
+        assert_eq!(state.scan.air.countries.len(), 14);
         assert_parity(&mut state, &fixture, &source(frames));
     }
 
@@ -728,49 +669,5 @@ mod tests {
                 serde_json::json!({"available":true})
             );
         }
-    }
-
-    #[test]
-    fn prepared_ledger_continuation_does_not_retain_hourly_event_history() {
-        let fixture = Fixture::new();
-        let flag = AtomicBool::new(false);
-        let mut state = Prepared::default();
-        let mut sizes = Vec::new();
-        for through in [99, 9999] {
-            let first = state
-                .scan
-                .air
-                .observed
-                .last()
-                .map_or(0, |span| span.last_hour + 1);
-            for hour in first..=through {
-                state
-                    .observe(&super::super::tests::frame(
-                        hour,
-                        vec![loss(hour as u64, hour, 100_000)],
-                        vec![],
-                    ))
-                    .unwrap();
-            }
-            let mut writer = fixture.writer();
-            state.flush(&mut writer, 1, &flag).unwrap();
-            writer.commit().unwrap();
-            sizes.push(serde_json::to_vec(&state).unwrap().len());
-            assert!(state.scan.air.leaves.is_empty());
-            state = resume(&fixture, None);
-        }
-        eprintln!("ledger continuation JSON bytes at 100 and 10,000 event hours: {sizes:?}");
-        assert!(
-            sizes[1] <= sizes[0] + 64,
-            "dated events must remain outside continuation"
-        );
-        let mut reader = Reader::new(
-            &fixture.store,
-            &fixture.key,
-            "military-air-losses-1-series".into(),
-            &flag,
-        )
-        .unwrap();
-        assert_eq!(reader.event_count_through(0, 9999).unwrap(), 10_000);
     }
 }

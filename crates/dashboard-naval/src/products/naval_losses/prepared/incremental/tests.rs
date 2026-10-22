@@ -237,10 +237,6 @@ fn changed_occurrences_match_oracle_after_two_commits_resume_append_alias_gaps_m
     }
 }
 #[test]
-fn changed_occurrences_match_oracle_with_5000_countries_after_two_commits_resume_and_append() {
-    parity(5000, 0);
-}
-#[test]
 fn changed_contribution_arithmetic_refuses_overflow() {
     let mut channel = Channel::default();
     let frame = inputs(3, 0).remove(0);

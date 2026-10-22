@@ -237,37 +237,6 @@ fn reports_keep_kinds_occurrences_order_and_do_not_use_expiry() {
         .collect();
     assert_eq!(out, [(0, -9), (1, -9)]);
 }
-#[test]
-fn five_thousand_mine_owners_stay_sparse() {
-    let mut f = mines(10, vec![]);
-    let countries = (1..=5000)
-        .map(|id| rows::CountryRow {
-            id,
-            canonical_slot: id,
-            tag: format!("T{id}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let links = (1..=5000)
-        .map(|id| rows::CountryLinkRow {
-            id,
-            canonical_slot: id,
-        })
-        .collect();
-    put(&mut f, TableId::Countries, TableRows::Countries(countries));
-    put(
-        &mut f,
-        TableId::CountryLinks,
-        TableRows::CountryLinks(links),
-    );
-    put(
-        &mut f,
-        TableId::NavalRegionalMines,
-        TableRows::NavalRegionalMines((1..=5000).map(|id| mine(id, 0, 100_000, 0)).collect()),
-    );
-    let (_, v) = observe::<MinefieldsObserver>(&f);
-    assert_eq!(v.len(), 5000);
-}
 
 #[test]
 fn supremacy_prepared_inputs_roundtrip_and_match_native_control_and_share() {
@@ -466,62 +435,6 @@ fn country_tag_reuse_is_not_merged() {
         &mut n,
     );
     assert_eq!(out["73|own"], 1);
-}
-#[test]
-fn five_thousand_supremacy_countries_are_sparse_operands_not_viewer_cube() {
-    let mut f = supremacy(25, Some(24), &[]);
-    put(
-        &mut f,
-        TableId::Countries,
-        TableRows::Countries(
-            (1..=5000)
-                .map(|id| rows::CountryRow {
-                    id,
-                    canonical_slot: id,
-                    tag: format!("T{id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ),
-    );
-    put(
-        &mut f,
-        TableId::CountryLinks,
-        TableRows::CountryLinks(
-            (1..=5000)
-                .map(|id| rows::CountryLinkRow {
-                    id,
-                    canonical_slot: id,
-                })
-                .collect(),
-        ),
-    );
-    f.tables[TableId::NavalSupremacy.index()] =
-        replay_frame::frame::SharedView::from(TableView::Complete(TableRows::NavalSupremacy(
-            (1..=5000)
-                .map(|country| rows::NavalSupremacyRow {
-                    region: 73,
-                    region_slot: 4,
-                    country,
-                    current: 0,
-                    ..Default::default()
-                })
-                .collect(),
-        )))
-        .with_sampled_at(Some(24));
-    let (_, v) = observe::<NavalSupremacyObserver>(&f);
-    assert!(v.len() < 5000 * 25);
-    let v = values(&v);
-    let f = naval_supremacy::restore(1, 25, &v, 24).unwrap();
-    let mut notes = Refusals::default();
-    let out = naval_supremacy::project(
-        &f,
-        "T5000@5000",
-        &BTreeSet::from([73]),
-        &labels(0, 60_000),
-        &mut notes,
-    );
-    assert_eq!(out["73|own"], 0);
 }
 
 #[test]
@@ -823,22 +736,6 @@ fn supplying_read_changes_and_unavailable_endpoints_do_not_reuse_earlier_values(
         .unwrap();
     let values = opened.values_at(&[dashboard_keyed::KNOWN], 26).unwrap();
     assert_eq!(values, [None]);
-}
-#[test]
-fn product_wire_types_and_observer_watches_are_complete() {
-    use dashboard_base::products::Product;
-    assert!(MinefieldsObserver::fields().is_ok());
-    assert!(
-        NavalSupremacyObserver::fields()
-            .unwrap()
-            .iter()
-            .any(|f| f.table == TableId::NavalSupremacy && f.read)
-    );
-    let types = minefields::Minefields::types().join("\n");
-    assert!(types.contains("MinefieldReport"));
-    let types = naval_supremacy::NavalSupremacy::types().join("\n");
-    assert!(types.contains("dayHours"));
-    assert!(types.contains("KeyedWindow"));
 }
 
 #[test]

@@ -28,7 +28,6 @@ use std::{
 use ts_rs::TS;
 
 pub struct NavalRepairs;
-pub type NavalRepairsParams = NavalYardsParams;
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct NavalRepairsReply {
     pub window: KeyedWindow,
@@ -39,7 +38,7 @@ pub struct NavalRepairsReply {
 impl Product for NavalRepairs {
     const KEY: &'static str = "naval-repairs";
     const CONTENT_DEPENDENT: bool = true;
-    type Params = NavalRepairsParams;
+    type Params = NavalYardsParams;
     type Reply = NavalRepairsReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         params.validate()

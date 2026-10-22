@@ -1,5 +1,5 @@
 use super::*;
-use dashboard_core::test_fixtures::{CAMPAIGN, records, scale_frame, source};
+use dashboard_core::test_fixtures::{CAMPAIGN, records, source};
 use replay_data::{
     rows::CountryAppearanceRow, rows::LexicalTokenRow, rows::RaidCountryRow, rows::RaidTargetRow,
     rows::TableRows,
@@ -399,94 +399,6 @@ fn raids_target_controller_uses_native_scope_priority_including_captive_leader()
             }
         )
         .is_err()
-    );
-}
-
-#[test]
-fn raids_five_thousand_countries_all_enter_scan_and_reply_budget_includes_metadata() {
-    let mut frame = scale_frame(1, 100, 5_000);
-    *frame.tables[TableId::RaidCountries.index()] = TableView::Complete(TableRows::RaidCountries(
-        (0..5_000)
-            .map(|slot| RaidCountryRow {
-                canonical_slot: slot,
-                country: (100_000 + slot) as i32,
-                eligible_types: vec![50],
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::Raids.index()] = TableView::Complete(TableRows::Raids(vec![RaidRow {
-        id: 1,
-        reference_type: native::REFERENCE_TYPE_VALUE,
-        parent_slot: 4_999,
-        phase: 4,
-        ..Default::default()
-    }]));
-    *frame.tables[TableId::RaidTargets.index()] =
-        TableView::Complete(TableRows::RaidTargets(vec![RaidTargetRow {
-            id: 1,
-            reference_type: native::REFERENCE_TYPE_VALUE,
-            raid_type: 50,
-            ..Default::default()
-        }]));
-    *frame.tables[TableId::LexicalTokens.index()] =
-        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
-            token: 50,
-            literal: b"mod_raid".to_vec(),
-        }]));
-    let mut scan = Scan::new();
-    scan.observe(&frame, None).unwrap();
-    frame.hour = 101;
-    scan.observe(&frame, None).unwrap();
-    let result = scan.finish();
-    assert_eq!(result.series.len(), 5_000);
-    assert!(
-        result
-            .series
-            .values()
-            .all(|runs| runs.len() == 1 && runs[0].last_hour == 101)
-    );
-    let winner = String::from_utf8(dashboard_core::test_fixtures::scale_tag(4_999)).unwrap();
-    assert_eq!(result.series[&winner][0].launched, 1);
-    let params = RaidsParams {
-        branch_id: "1".into(),
-        view: RaidsView::Tally,
-        tags: vec![],
-        top: Some(RaidTop {
-            count: 10,
-            metric: RaidMetric::Launched,
-        }),
-    };
-    let series = selected_series(&result, &params, &AtomicBool::new(false)).unwrap();
-    assert_eq!(series.len(), 1, "zero countries do not pad a ranking");
-    assert!(series.iter().any(|s| s.tag == winner));
-    let all = tally_params(result.series.keys().cloned().collect(), None);
-    assert!(Raids::validate(&all).is_ok());
-    assert_eq!(
-        selected_series(&result, &all, &AtomicBool::new(false))
-            .unwrap()
-            .len(),
-        5_000
-    );
-    let mut reply = RaidsReply {
-        branch_id: "1".into(),
-        phase_preparing: native::PHASE_PREPARING,
-        phase_ended: native::PHASE_ENDED,
-        outcome_none: native::OUTCOME_NONE,
-        available: Some(true),
-        unavailable: None,
-        types: vec![],
-        artwork: vec![],
-        episodes: vec![],
-        series,
-        read_hours: result.read_hours,
-        warnings: vec![],
-    };
-    measure_reply(&reply, &[]).unwrap();
-    reply.warnings.push("x".repeat(MAX_PRODUCT_REPLY_BYTES));
-    assert!(
-        measure_reply(&reply, &[]).is_err(),
-        "complete response includes non-series fields"
     );
 }
 

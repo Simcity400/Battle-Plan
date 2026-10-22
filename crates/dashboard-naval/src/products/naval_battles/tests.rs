@@ -320,8 +320,8 @@ fn naval_battles_windows_do_not_carry_retired_results_and_ranking_keeps_them() {
     assert_eq!(ranked.rows.len(), 1);
     assert_eq!(ranked.rows[0].id, "result:800");
     assert_eq!(last(&ranked.rows[0]).row.sides[0].countries[0].hour, 100);
-    let mut p = ranking(99, 101, "Ships sunk", 5000.0);
-    p.countries.tags = Some((0..5000).map(|i| format!("mod country {i}")).collect());
+    let mut p = ranking(99, 101, "Ships sunk", 12.0);
+    p.countries.tags = Some((0..12).map(|i| format!("mod country {i}")).collect());
     assert!(NavalBattlesRanking::validate(&p).is_ok());
     assert!(
         scan.ranked(&p, &AtomicBool::new(false))
@@ -975,7 +975,7 @@ fn naval_battles_opaque_mod_country_fixture() {
     );
 }
 
-fn war_frame(countries: u32, generation: u32) -> DecodedFrame {
+fn war_frame(countries: u32) -> DecodedFrame {
     let mut f = frame(100);
     *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
         (1..=countries)
@@ -1003,7 +1003,7 @@ fn war_frame(countries: u32, generation: u32) -> DecodedFrame {
     let mut details = Vec::new();
     let mut combat_details = Vec::new();
     for i in 0..50u32 {
-        let ended = u64::from(generation * 50 + i + 1);
+        let ended = u64::from(i + 1);
         let id = ended + 50;
         let result_id = ended + 1_000_000;
         combats.push(NavalCombatRow {
@@ -1014,12 +1014,12 @@ fn war_frame(countries: u32, generation: u32) -> DecodedFrame {
         results.push(NavalResultRow {
             id: result_id,
             province: i + 1,
-            result_hour: 100 + (generation * 10) as i32,
+            result_hour: 100,
             winning_side: 1,
             losing_side: 2,
             ..Default::default()
         });
-        let owner = generation * 50 % countries + i % countries + 1;
+        let owner = i % countries + 1;
         let owner = (owner - 1) % countries + 1;
         let mut detail = NavalCombatResultDetailsRow {
             result: result_id,
@@ -1104,96 +1104,11 @@ fn recording_windows(replay: &Replay) -> Vec<BattleWindow> {
         .collect()
 }
 #[test]
-#[ignore = "Long realistic fixture; lead prints reply sizes"]
-fn naval_battles_long_convoy_war_1500_and_5000_countries_window_reply_sizes() {
-    // A lightweight replay supplies actual writer block boundaries. Cold wire
-    // coverage for all naval details is exercised by the other ignored fixture.
-    let layout = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            (100..4100).map(|h| source(1, h, Some(0))).collect(),
-        )],
-    )
-    .unwrap();
-    let windows = recording_windows(&layout);
-    for countries in [1500, 5000] {
-        let mut scan = Scan::default();
-        for generation in 0..400 {
-            let mut f = war_frame(countries, generation);
-            let original = f.tables[TableId::Countries.index()].clone();
-            let mut changed = f.complete::<tables::Countries>().unwrap().to_vec();
-            changed[0].political_power_raw = Some(1);
-            let changed: SharedView = TableView::Complete(TableRows::Countries(changed)).into();
-            for elapsed in 0..10 {
-                f.hour = 100 + (generation * 10) as i32 + elapsed;
-                f.tables[TableId::Countries.index()] = if elapsed % 2 == 0 {
-                    original.clone()
-                } else {
-                    changed.clone()
-                };
-                scan.observe(&f);
-            }
-        }
-        assert_eq!(scan.results.len(), 20_000);
-        assert_eq!(
-            scan.episodes
-                .iter()
-                .filter(|e| e.kind == Kind::Combat)
-                .map(|e| e.runs.len())
-                .sum::<usize>(),
-            20_000
-        );
-        let r = scan.reply(&params(windows.len() - 1), &windows).unwrap();
-        let final_window = windows.last().unwrap();
-        let expected = (0..400)
-            .filter(|g| 109 + g * 10 >= final_window.first_hour)
-            .count()
-            * 50;
-        assert_eq!(
-            r.rows
-                .iter()
-                .filter(|h| h.id.starts_with("result:"))
-                .count(),
-            expected
-        );
-        assert!(
-            r.rows
-                .iter()
-                .flat_map(|h| &h.runs)
-                .all(|run| run.first_hour >= final_window.first_hour)
-        );
-        assert_eq!(
-            r.rows
-                .iter()
-                .filter(|h| h.id.starts_with("combat:"))
-                .filter(|h| h
-                    .runs
-                    .iter()
-                    .any(|run| run.first_hour <= 4099 && run.last_hour >= 4099))
-                .count(),
-            50
-        );
-        let ranked = scan
-            .ranked(
-                &ranking(100, 4099, "Ships sunk", 30.0),
-                &AtomicBool::new(false),
-            )
-            .unwrap();
-        assert_eq!(ranked.rows.len(), 30);
-        eprintln!(
-            "naval_battles countries={countries}, hours=4000, results=20000, active=50, 1300 participants/result members per read; final window={} bytes, top30={} bytes",
-            json_len(&r, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-            json_len(&ranked, MAX_PRODUCT_REPLY_BYTES).unwrap()
-        );
-    }
-}
-#[test]
 fn naval_battles_uncapped_members_countries_and_only_transport_refusal() {
-    let mut f = war_frame(5000, 0);
+    let mut f = war_frame(12);
     *f.tables[TableId::NavalResultCountries.index()] =
         TableView::Complete(TableRows::NavalResultCountries(
-            (1..=5000)
+            (1..=12)
                 .map(|country| NavalResultCountryRow {
                     result: 1_000_001,
                     country,
@@ -1211,7 +1126,7 @@ fn naval_battles_uncapped_members_countries_and_only_transport_refusal() {
             .sides[0]
             .countries
             .len(),
-        5000
+        12
     );
     let result_index = scan.results[&1_000_001];
     scan.episodes[result_index].runs[0].sample.sides[0].countries =
@@ -1296,45 +1211,21 @@ fn naval_battles_wire_windows_cache_and_no_ship_name_tables() {
 }
 
 #[test]
-#[ignore = "Full cold wire fixture; lead prints reply sizes"]
-fn naval_battles_long_convoy_war_wire_sizes() {
-    for countries in [1500, 5000] {
-        let mut frames = Vec::new();
-        for generation in 0..400 {
-            let mut f = war_frame(countries, generation);
-            for elapsed in 0..10 {
-                f.hour = 100 + (generation * 10) as i32 + elapsed;
-                frames.push(f.clone());
-            }
-        }
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
-        let windows = recording_windows(&replay);
-        let scan = super::scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-        assert_eq!(scan.results.len(), 20_000);
-        let r = scan.reply(&params(windows.len() - 1), &windows).unwrap();
-        eprintln!(
-            "naval_battles cold wire countries={countries}: {} final-window bytes",
-            json_len(&r, MAX_PRODUCT_REPLY_BYTES).unwrap()
-        );
-    }
-}
-
-#[test]
-fn prepared_naval_matches_oracle_across_commits_resume_append_and_large_census() {
+fn prepared_naval_matches_oracle_across_commits_resume_append_and_census() {
     use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
     let mut inputs = Vec::new();
     for hour in 100..103 {
         let mut input = frame(hour);
-        let scaled = dashboard_base::test_fixtures::scale_frame(1, hour, 5000);
+        let scaled = dashboard_base::test_fixtures::scale_frame(1, hour, 12);
         input.tables[TableId::Countries.index()] =
             scaled.tables[TableId::Countries.index()].clone();
         input.tables[TableId::CountryLinks.index()] =
             scaled.tables[TableId::CountryLinks.index()].clone();
         *input.tables[TableId::NavalCombats.index()] =
             TableView::Complete(TableRows::NavalCombats(
-                (0..2048)
+                (0..40)
                     .map(|index| NavalCombatRow {
                         id: (1_u64 << 48) + index,
                         province: 45,

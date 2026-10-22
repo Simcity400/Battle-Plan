@@ -808,7 +808,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
     scan.events.sort_by_key(|event| event.row.read_hour);
     Ok(scan)
 }
-type CachedLegacyNames = (
+pub type DivisionNameGroups = (
     Result<Arc<installed_content_division_names::division_names::Database>, String>,
     Vec<String>,
 );
@@ -818,7 +818,7 @@ struct Cache {
     #[cfg(any(test, feature = "test-support"))]
     branch: Option<(u64, Arc<Scan>)>,
     catalogue: Option<Arc<Catalogue>>,
-    names: Option<CachedLegacyNames>,
+    names: Option<DivisionNameGroups>,
     icons: HashMap<IconOperands, catalogue::Drawn<Result<String, String>>>,
     icon_bytes: usize,
     #[cfg(any(test, feature = "test-support"))]
@@ -1006,7 +1006,9 @@ fn names(
     cache.select_content(&cat);
     Some(cat)
 }
-fn legacy_names(source: &Source, cat: &Arc<Catalogue>) -> CachedLegacyNames {
+/// The content stack's division name groups, read once per content binding,
+/// and the notes their read made.
+pub fn division_name_groups(source: &Source, cat: &Arc<Catalogue>) -> DivisionNameGroups {
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
     cache.select_content(cat);
@@ -1041,18 +1043,6 @@ pub fn template_icon(
     row: &replay_data::rows::DivisionTemplateIconRow,
 ) -> Result<String, String> {
     icon(source, cat, row.priority_unit, row.custom_icon, &row.priority_unit_name)
-}
-
-/// The content stack's division name groups, read once per content binding,
-/// and the notes their read made.
-pub fn division_name_groups(
-    source: &Source,
-    cat: &Arc<Catalogue>,
-) -> (
-    Result<Arc<installed_content_division_names::division_names::Database>, String>,
-    Vec<String>,
-) {
-    legacy_names(source, cat)
 }
 
 fn icon_key(
@@ -1183,18 +1173,18 @@ fn named(
     if let Some(status) = &presentation.status
         && division_name
     {
-        let legacy = std::cell::OnceCell::new();
+        let groups = std::cell::OnceCell::new();
         let name = dashboard_text::unit_names::army_name(
             &status.status(),
             &cat.localisation,
             &cat.recorded_language,
             || {
-                let (database, _) = legacy.get_or_init(|| legacy_names(source, cat));
+                let (database, _) = groups.get_or_init(|| division_name_groups(source, cat));
                 database.as_ref().map(Arc::as_ref).map_err(Clone::clone)
             },
         )
         .and_then(|name| catalogue::plain_text(&name));
-        if let Some((_, notes)) = legacy.get() {
+        if let Some((_, notes)) = groups.get() {
             for note in notes {
                 warnings.entry(note.clone()).or_insert(1);
             }

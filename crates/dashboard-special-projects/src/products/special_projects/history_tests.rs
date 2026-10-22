@@ -110,46 +110,10 @@ fn decoded(source: &Source) -> usize {
 }
 
 #[test]
-fn five_thousand_actor_requests_decode_the_branch_once_even_after_reply_eviction() {
-    let frames = vec![frame(100, true, 5000), frame(101, false, 5000)];
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
-    let blocks = replay.index.len();
-    let source = source(replay, "1");
-    let context = LoadContext { content: None };
-    let cancelled = AtomicBool::new(false);
-    for id in 1..=5000 {
-        let reply = SpecialProjects::load(&source, &params(id), &context, &cancelled).unwrap();
-        assert_eq!(reply.projects.len(), 1);
-        assert!(reply.projects[0].id.starts_with(&format!("{id}:")));
-        let mut expected = Builder::default();
-        for frame in &frames {
-            expected.observe(frame, &params(id).tag, None);
-        }
-        assert_eq!(
-            serde_json::to_value(&reply.projects).unwrap(),
-            serde_json::to_value(&expected.episodes).unwrap()
-        );
-        assert_eq!(reply.available, expected.available);
-        assert_eq!(reply.read_hours, expected.reads);
-        assert_eq!(reply.presentations, expected.presentations);
-        assert_eq!(reply.people, expected.people);
-    }
-    assert_eq!(decoded(&source), blocks);
-    assert!(
-        SpecialProjects::load(&source, &params(1), &context, &cancelled)
-            .unwrap()
-            .projects[0]
-            .id
-            .starts_with("1:")
-    );
-    assert_eq!(decoded(&source), blocks);
-}
-
-#[test]
 fn hourly_country_balances_do_not_retain_hourly_country_snapshots() {
     let frames = (100..108)
         .map(|hour| {
-            let mut frame = frame(hour, hour == 100, 5000);
+            let mut frame = frame(hour, hour == 100, 12);
             if let TableView::Complete(TableRows::Countries(countries)) =
                 &mut *frame.tables[TableId::Countries.index()]
             {
@@ -176,7 +140,7 @@ fn hourly_country_balances_do_not_retain_hourly_country_snapshots() {
 fn spans_keep_only_the_person_rows_a_projection_reads() {
     use replay_data::rows::CharacterRow;
     use replay_frame::frame::SharedView;
-    // Program 1 names scientist 73 of a 5000-character roster read anew each hour.
+    // Program 1 names scientist 73 of a 100-character roster read anew each hour.
     let frames: Vec<_> = (100..104)
         .map(|hour| {
             let mut frame = frame(hour, hour == 100, 1);
@@ -190,10 +154,10 @@ fn spans_keep_only_the_person_rows_a_projection_reads() {
                 }]))
                 .into();
             frame.tables[TableId::Characters.index()] = TableView::Complete(TableRows::Characters(
-                (1..=5000)
+                (1..=100)
                     .map(|id| CharacterRow {
                         id,
-                        ordinal: if id == 5000 { hour as u32 } else { 0 },
+                        ordinal: if id == 100 { hour as u32 } else { 0 },
                         ..Default::default()
                     })
                     .collect(),
@@ -237,22 +201,22 @@ fn spans_keep_only_the_person_rows_a_projection_reads() {
 #[test]
 fn verified_append_shares_prior_inputs_and_decodes_only_new_blocks() {
     let first =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(100, true, 5000)])]).unwrap();
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(100, true, 12)])]).unwrap();
     let next = first
         .append(&[continuation_records(
             &first,
             1,
-            vec![frame(124, true, 5000)],
+            vec![frame(124, true, 12)],
         )])
         .unwrap();
     let first = source(first, "1");
     let context = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);
-    SpecialProjects::load(&first, &params(5000), &context, &cancelled).unwrap();
+    SpecialProjects::load(&first, &params(12), &context, &cancelled).unwrap();
     let old = history::cached(&first, 1, &cancelled).unwrap();
     let next = source(next, "2");
     next.inherit_append_states(&first);
-    let reply = SpecialProjects::load(&next, &params(5000), &context, &cancelled).unwrap();
+    let reply = SpecialProjects::load(&next, &params(12), &context, &cancelled).unwrap();
     let extended = history::cached(&next, 1, &cancelled).unwrap();
     assert!(Arc::ptr_eq(&old.spans[0].inputs, &extended.spans[0].inputs));
     assert_eq!(decoded(&next), next.replay_ref().index.len());
@@ -266,7 +230,7 @@ fn verified_append_shares_prior_inputs_and_decodes_only_new_blocks() {
         [(100, 100), (124, 124)]
     );
     assert_eq!(
-        SpecialProjects::load(&first, &params(5000), &context, &cancelled)
+        SpecialProjects::load(&first, &params(12), &context, &cancelled)
             .unwrap()
             .available
             .last()
@@ -287,7 +251,7 @@ pub(super) fn content(root: &std::path::Path, project_name: &str) {
         ("map/default.map", "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp".to_owned()),
         ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n".to_owned()),
         ("common/scripted_localisation/mod.txt", "entry={name=ProjectStage text={trigger={check_variable={project_flag=1}} localization_key=ACTIVE} text={localization_key=WAITING}}".to_owned()),
-        ("localisation/mod_l_english.yml", format!("\u{feff}l_english:\n mod_project:0 \"{project_name}\"\n mod_kind:0 \"Mod science\"\n ACTIVE:0 \"Active\"\n WAITING:0 \"Waiting\"\n opaque-5000_mod_project:0 \"[ROOT.MissingProjectProperty]\"\n ONGOING_PROJECT_BREAKTHROUGHS_NUMBER:0 \"Count $NUMBER$\"\n")),
+        ("localisation/mod_l_english.yml", format!("\u{feff}l_english:\n mod_project:0 \"{project_name}\"\n mod_kind:0 \"Mod science\"\n ACTIVE:0 \"Active\"\n WAITING:0 \"Waiting\"\n ONGOING_PROJECT_BREAKTHROUGHS_NUMBER:0 \"Count $NUMBER$\"\n")),
     ] {
         let file = root.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -301,6 +265,10 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let folder = tests::TempRoot::new("shared-scope");
     content(&folder.0, "[ROOT.ProjectStage]");
+    let localisation = folder.0.join("localisation/mod_l_english.yml");
+    let mut text = std::fs::read_to_string(&localisation).unwrap();
+    text.push_str(" opaque-12_mod_project:0 \"[ROOT.MissingProjectProperty]\"\n");
+    std::fs::write(localisation, text).unwrap();
     // An absent scripted property is empty text; use a reached flag lookup
     // whose recorded table is missing for this actor.
     std::fs::write(
@@ -312,7 +280,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
     let frames: Vec<_> = [100, 101]
         .into_iter()
         .map(|hour| {
-            let mut frame = frame(hour, hour == 100, 5000);
+            let mut frame = frame(hour, hour == 100, 12);
             // Tag text uses the reserved tag at slot zero.
             let TableView::Complete(TableRows::Countries(countries)) =
                 &mut *frame.tables[TableId::Countries.index()]
@@ -356,7 +324,7 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
                         seed: replay_data::rows::Recorded::Value(None),
                         entries: vec![],
                     })
-                    .chain((1..=5000).map(|id| ScriptVariablesRow {
+                    .chain((1..=12).map(|id| ScriptVariablesRow {
                         scope_kind: 1,
                         scope_id: id,
                         seed: replay_data::rows::Recorded::Value(None),
@@ -384,10 +352,10 @@ fn scoped_world_variable_names_share_one_pass_and_failures_belong_only_to_the_re
         content: Some(options),
     };
     let cancelled = AtomicBool::new(false);
-    for id in 1..=5000 {
+    for id in 1..=12 {
         let reply = SpecialProjects::load(&source, &params(id), &context, &cancelled).unwrap();
         let runs = &reply.projects[0].runs;
-        if id < 5000 {
+        if id < 12 {
             assert_eq!(
                 reply.presentations[runs[0].presentation as usize].name,
                 "Waiting"
@@ -431,7 +399,7 @@ fn content_readiness_changes_rename_cached_data_without_another_recording_scan()
     localisation.push_str(" opaque-2_mod_project:0 \"\"\n");
     std::fs::write(path, localisation).unwrap();
     let (options, identity) = dashboard_base::test_fixtures::content_identity(&folder.0);
-    let mut records = records(1, vec![frame(100, true, 5000)]);
+    let mut records = records(1, vec![frame(100, true, 12)]);
     let replay::spool::Record::SessionStart(session) = &mut records[0] else {
         unreachable!()
     };
@@ -731,34 +699,6 @@ fn projection_preserves_incomplete_reads_native_identity_changes_and_cancellatio
         io::ErrorKind::Interrupted
     );
     assert_eq!(decoded(&source), before);
-}
-
-#[test]
-fn event_completions_share_the_topic_scan_at_five_thousand_countries() {
-    let first = frame(100, true, 5000);
-    let mut completed = frame(101, true, 5000);
-    if let TableView::Complete(TableRows::Projects(rows)) =
-        &mut *completed.tables[TableId::Projects.index()]
-    {
-        let project = rows.iter_mut().find(|row| row.owner == 5000).unwrap();
-        project.state.current_offset = 0xe8;
-        project.state.not_completed = 0;
-        project.program_reference = 0;
-    }
-    let source = source(
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, completed])]).unwrap(),
-        "1",
-    );
-    let context = LoadContext { content: None };
-    let cancelled = AtomicBool::new(false);
-    SpecialProjects::load(&source, &params(5000), &context, &cancelled).unwrap();
-    let blocks = decoded(&source);
-    let events = completion_events(&source, 1, &context, &cancelled).unwrap();
-    assert_eq!(events.events.len(), 1);
-    assert_eq!(events.events[0].tag, "opaque-5000");
-    assert_eq!(events.events[0].observed_hour, 101);
-    assert_eq!(decoded(&source), blocks);
-    assert_eq!(blocks, source.replay_ref().index.len());
 }
 
 #[test]

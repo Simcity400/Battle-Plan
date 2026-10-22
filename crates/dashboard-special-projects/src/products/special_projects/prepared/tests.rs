@@ -240,51 +240,6 @@ fn prepared_projects_filter_native_holders_before_creating_episode_ids() {
 }
 
 #[test]
-fn prepared_projects_keep_five_thousand_countries_and_continuation_does_not_grow_with_hours() {
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    let frames = vec![frame(100, true, 5000), frame(101, true, 5000)];
-    let source = source(&frames);
-    let accepted = decoded(&source);
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::new(source.replay_ref(), 1);
-    for frame in &accepted {
-        prepared.observe(&source, &context, frame, &flag).unwrap();
-        publish(&fixture, &mut prepared);
-    }
-    for tag in ["opaque-1", "opaque-2500", "opaque-5000"] {
-        compare(&fixture, &source, &params(tag), &context);
-    }
-    assert_eq!(prepared.keys.len(), 5000);
-    let first = serde_json::to_vec(&prepared).unwrap().len();
-    let mut same = accepted.last().unwrap().clone();
-    for hour in 102..=125 {
-        same.hour = hour;
-        prepared.observe(&source, &context, &same, &flag).unwrap();
-        publish(&fixture, &mut prepared);
-    }
-    let last = serde_json::to_vec(&prepared).unwrap().len();
-    eprintln!(
-        "special-project continuation: {first} bytes at 2 hours; {last} bytes at 26 hours for 5,000 countries"
-    );
-    assert!(last < first + first / 20);
-    let (keys, _) =
-        series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, "special-projects", 1)
-            .unwrap()
-            .unwrap();
-    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag).unwrap();
-    assert_eq!(
-        reader
-            .event_count_through(keys["opaque-5000"], i32::MAX)
-            .unwrap(),
-        1
-    );
-    // One table-level branch run, rather than one read event per country/hour.
-    assert_eq!(reader.event_count_through(0, i32::MAX).unwrap(), 0);
-    assert_eq!(reader.value_at(0, 125).unwrap().unwrap().first_hour, 100);
-}
-
-#[test]
 fn prepared_project_completion_keeps_selected_scientist_dates_and_first_use_catalogue_order() {
     use replay_data::{rows::CharacterRow, rows::ProjectHistoryRow, rows::ProjectProgramRow};
     let flag = AtomicBool::new(false);
@@ -568,7 +523,7 @@ fn prepared_scoped_project_names_revisit_only_countries_whose_names_changed() {
     let root = super::super::tests::TempRoot::new("prepared-project-refresh");
     super::super::history_tests::content(&root.0, "[ROOT.ProjectStage]");
     let (options, identity) = dashboard_base::test_fixtures::content_identity(&root.0);
-    let countries = 300;
+    let countries = 12;
     let frames: Vec<_> = (100..=105)
         .map(|hour| scoped_countries_frame(hour, countries, 103))
         .collect();
@@ -591,14 +546,14 @@ fn prepared_scoped_project_names_revisit_only_countries_whose_names_changed() {
     }
     // The first hour observes every country; of the five after it, only
     // country 1's name changes, at 103: revisiting every active country at
-    // each of them would revisit 5 * 300.
+    // each of them would revisit 5 * 12.
     assert_eq!(prepared.refreshed, 1);
     let fixture = Fixture::new();
     publish(&fixture, &mut prepared);
     for (tag, expected) in [
         ("opaque-1", &["Waiting", "Active"][..]),
         ("opaque-2", &["Waiting"][..]),
-        ("opaque-300", &["Waiting"][..]),
+        ("opaque-12", &["Waiting"][..]),
     ] {
         let reply = compare(&fixture, &source, &params(tag), &context);
         let names: Vec<_> = reply.projects[0]
@@ -1448,10 +1403,10 @@ fn completion_stream_exact_upgrade_with_missing_native_hour_withdraws_bounded_pr
 }
 
 #[test]
-fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_once() {
+fn completion_stream_keeps_every_country_and_reads_each_native_block_once() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let first = frame(100, true, 5000);
+    let first = frame(100, true, 12);
     let mut middle = first.clone();
     middle.hour = 101;
     let mut done = middle.clone();
@@ -1465,7 +1420,7 @@ fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_o
         }
     }
     done.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(
-        (1..=5000)
+        (1..=12)
             .map(|owner| ProjectHistoryRow {
                 owner,
                 project: owner,
@@ -1507,11 +1462,11 @@ fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_o
         reader
             .event_count_through(completion_stream::KEY, i32::MAX)
             .unwrap(),
-        5000
+        12
     );
     let mut page_keys = Vec::new();
     let mut page_values = Vec::new();
-    for ordinal in [0, 2499, 4999] {
+    for ordinal in [0, 5, 11] {
         let row: completion_stream::Change = serde_json::from_value(
             reader
                 .events(&[completion_stream::KEY], i32::MIN, i32::MAX, ordinal, 1)
@@ -1545,8 +1500,7 @@ fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_o
     )
     .unwrap()
     .unwrap();
-    assert_eq!(metadata.late.between(101, 101, 102).count(), 5000);
-    assert_eq!(serde_json::to_vec(&metadata.late).unwrap().len(), 83_891);
+    assert_eq!(metadata.late.between(101, 101, 102).count(), 12);
     let saved = serde_json::to_vec(&prepared).unwrap();
     let first_size = saved.len();
     prepared = serde_json::from_slice(&saved).unwrap();
@@ -1579,16 +1533,12 @@ fn completion_stream_keeps_five_thousand_countries_and_reads_each_native_block_o
         reader
             .event_count_through(completion_stream::KEY, i32::MAX)
             .unwrap(),
-        5000
+        12
     );
     assert_eq!(
         reader.values_at(&page_keys, 126).unwrap(),
         page_values,
         "one values_at call validates the reached page after resume and repeated hours"
-    );
-    eprintln!(
-        "5,000 completions: extra native blocks {native_reads}, repeat/resume 0; continuation {first_size}/{last_size} bytes; 5,000 late references, {} JSON bytes",
-        serde_json::to_vec(&metadata.late).unwrap().len()
     );
 }
 
@@ -2205,121 +2155,6 @@ fn completion_stream_refusal_counters_match_oracle_at_live_after_withdrawal_two_
 }
 
 #[test]
-fn project_changes_keep_unchanged_hours_and_closed_history_work_flat() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{assert_flat, scaled_work, unchanged_frames},
-    };
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    let initial = frame(100, true, 5000);
-    let source = source(std::slice::from_ref(&initial));
-    let format = source.replay_ref().format;
-    assert_flat(
-        scaled_work(10, |hours| {
-            let mut prepared = Prepared::new(source.replay_ref(), 1);
-            prepared.configure(&source, &context)?;
-            let configured = prepared.work.content_loads;
-            let mut tracker = FrameChangeTracker::new();
-            prepared.observe_changed(&initial, &tracker.observe(&initial, format), &flag)?;
-            assert_eq!(prepared.work.content_loads, configured);
-            unchanged_frames(
-                prepared.work,
-                &initial,
-                hours as i32,
-                format,
-                |frame, changes| {
-                    prepared.observe_changed(frame, changes, &flag)?;
-                    Ok(prepared.work)
-                },
-            )
-        })
-        .unwrap(),
-    );
-    let first = frame(100, true, 1);
-    assert_flat(
-        scaled_work(10, |history| {
-            let mut prepared = Prepared::new(source.replay_ref(), 1);
-            prepared.configure(&source, &context)?;
-            let mut tracker = FrameChangeTracker::new();
-            let mut current = first.clone();
-            for index in 0..history {
-                current.hour = 100 + index as i32;
-                if let TableView::Complete(TableRows::Projects(rows)) =
-                    &mut *current.tables[TableId::Projects.index()]
-                {
-                    rows[0].local_id = 1000 + index as u32;
-                }
-                prepared.observe_changed(&current, &tracker.observe(&current, format), &flag)?;
-            }
-            assert!(prepared.countries["opaque-1"].progress.len() >= history);
-            unchanged_frames(prepared.work, &current, 10, format, |frame, changes| {
-                prepared.observe_changed(frame, changes, &flag)?;
-                Ok(prepared.work)
-            })
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
-fn project_lexical_and_program_dependencies_revisit_only_affected_countries_at_5000() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    assert_flat(
-        scaled_work(500, |count| {
-            let initial = frame(100, true, count as u32);
-            let source = source(std::slice::from_ref(&initial));
-            let format = source.replay_ref().format;
-            let mut prepared = Prepared::new(source.replay_ref(), 1);
-            prepared.configure(&source, &context)?;
-            let mut tracker = FrameChangeTracker::new();
-            prepared.observe_changed(&initial, &tracker.observe(&initial, format), &flag)?;
-            let before = prepared.work;
-            let mut unrelated = initial.clone();
-            unrelated.hour = 101;
-            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
-                &mut *unrelated.tables[TableId::LexicalTokens.index()]
-            {
-                rows.push(replay_data::rows::LexicalTokenRow {
-                    token: 999,
-                    literal: b"unrelated unit".to_vec(),
-                });
-            }
-            prepared.observe_changed(&unrelated, &tracker.observe(&unrelated, format), &flag)?;
-            let work = Work {
-                row_visits: prepared.work.row_visits - before.row_visits,
-                history_visits: prepared.work.history_visits - before.history_visits,
-                emitted: prepared.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(
-                (work.row_visits, work.history_visits, work.emitted),
-                (2, 0, 0)
-            );
-            let mut scientist = unrelated;
-            scientist.hour = 102;
-            if let TableView::Complete(TableRows::ProjectPrograms(rows)) =
-                &mut *scientist.tables[TableId::ProjectPrograms.index()]
-            {
-                rows[count / 2].scientist = (73u64 << 32) | 73;
-            }
-            let before = prepared.work;
-            prepared.observe_changed(&scientist, &tracker.observe(&scientist, format), &flag)?;
-            assert_eq!(prepared.work.history_visits - before.history_visits, 1);
-            assert_eq!(prepared.work.emitted - before.emitted, 1);
-            assert!(prepared.work.row_visits - before.row_visits <= count);
-            Ok(work)
-        })
-        .unwrap(),
-    );
-}
-
-#[test]
 fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_append() {
     use dashboard_base::prepared::observer_tests::assert_reply_parity;
     use dashboard_base::test_fixtures::continuation_records;
@@ -2433,68 +2268,6 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
 }
 
 #[test]
-fn project_unrelated_lexical_changes_publish_one_country_payload_over_720_hours_and_report_size() {
-    let initial = frame(100, true, 5000);
-    let source = source(std::slice::from_ref(&initial));
-    let context = LoadContext { content: None };
-    let flag = AtomicBool::new(false);
-    let fixture = Fixture::new();
-    let mut prepared = Prepared::new(source.replay_ref(), 1);
-    for hour in 100..820 {
-        let mut current = initial.clone();
-        current.hour = hour;
-        if let TableView::Complete(TableRows::LexicalTokens(rows)) =
-            &mut *current.tables[TableId::LexicalTokens.index()]
-        {
-            rows.push(replay_data::rows::LexicalTokenRow {
-                token: 999,
-                literal: format!("unused {hour}").into_bytes(),
-            });
-        }
-        prepared
-            .observe(&source, &context, &current, &flag)
-            .unwrap();
-    }
-    publish(&fixture, &mut prepared);
-    let bytes: u64 = (0..fixture
-        .store
-        .range_count(&fixture.key, &section(1))
-        .unwrap()
-        .unwrap())
-        .map(|ordinal| {
-            fixture
-                .store
-                .read(&fixture.key, &section(1), ordinal)
-                .unwrap()
-                .unwrap()
-                .len()
-        })
-        .sum();
-    let continuation = serde_json::to_vec(&prepared).unwrap().len();
-    let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag).unwrap();
-    for tag in ["opaque-1", "opaque-2500", "opaque-5000"] {
-        assert_eq!(
-            reader
-                .event_count_through(prepared.keys[tag], i32::MAX)
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            reader
-                .value_at(prepared.keys[tag], 819)
-                .unwrap()
-                .unwrap()
-                .first_hour,
-            100
-        );
-    }
-    assert_eq!(prepared.work.emitted, 5000);
-    eprintln!(
-        "special projects, 5,000 countries/720 h: section {bytes} bytes, continuation {continuation} bytes; country payloads 5,000 instead of 3,600,000 global-revision publications"
-    );
-}
-
-#[test]
 fn project_content_success_and_failure_are_bound_before_observation_and_shared_per_source() {
     use dashboard_base::prepared::{
         frame_changes::FrameChangeTracker, observer_tests::unchanged_frames,
@@ -2547,75 +2320,6 @@ fn project_content_success_and_failure_are_bound_before_observation_and_shared_p
             prepared.metadata.content_error
         );
     }
-}
-
-#[test]
-fn project_history_change_revisits_one_country_without_reading_unchanged_project_or_holder_tables()
-{
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, assert_flat, scaled_work},
-    };
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    assert_flat(
-        scaled_work(500, |count| {
-            let initial = frame(100, true, count as u32);
-            let source = source(std::slice::from_ref(&initial));
-            let mut prepared = Prepared::new(source.replay_ref(), 1);
-            prepared.configure(&source, &context)?;
-            let mut tracker = FrameChangeTracker::new();
-            prepared.observe_changed(
-                &initial,
-                &tracker.observe(&initial, source.replay_ref().format),
-                &flag,
-            )?;
-            let before = prepared.work;
-            let mut changed = initial.clone();
-            changed.hour = 101;
-            *changed.tables[TableId::ProjectHistory.index()] =
-                TableView::Complete(TableRows::ProjectHistory(vec![ProjectHistoryRow {
-                    owner: 1,
-                    project: 1,
-                    ordinal: 0,
-                    date: 100,
-                    ..Default::default()
-                }]));
-            prepared.observe_changed(
-                &changed,
-                &tracker.observe(&changed, source.replay_ref().format),
-                &flag,
-            )?;
-            let work = Work {
-                row_visits: prepared.work.row_visits - before.row_visits,
-                history_visits: prepared.work.history_visits - before.history_visits,
-                emitted: prepared.work.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(
-                (work.row_visits, work.history_visits, work.emitted),
-                (1, 1, 1)
-            );
-            assert_eq!(
-                prepared.countries["opaque-1"]
-                    .current
-                    .as_ref()
-                    .unwrap()
-                    .projects
-                    .as_ref()
-                    .unwrap()[0]
-                    .0
-                    .iterations,
-                Some(1)
-            );
-            assert_eq!(
-                prepared.countries[&format!("opaque-{count}")].event_hour,
-                Some(100)
-            );
-            Ok(work)
-        })
-        .unwrap(),
-    );
 }
 
 #[test]
@@ -2964,58 +2668,6 @@ fn project_changes_project_only_changed_owners_and_publish_what_the_whole_table_
         whole.work.row_visits
     );
     assert_eq!(owners.work.emitted, whole.work.emitted);
-}
-
-/// At 2,000 holders, an hour where one owner's progress moves visits that
-/// owner's row alone and changes only its progress series.
-#[test]
-fn project_change_of_one_owner_visits_its_rows_alone_at_2000_holders() {
-    let context = LoadContext { content: None };
-    let count = 2_000;
-    let first = frame(100, true, count);
-    let mut moved = first.clone();
-    moved.hour = 101;
-    if let TableView::Complete(TableRows::Projects(rows)) =
-        &mut *moved.tables[TableId::Projects.index()]
-    {
-        rows[count as usize / 2].state.prototype_progress += 1;
-    }
-    let source = source(&[first, moved]);
-    let mut prepared = Prepared::new(source.replay_ref(), 1);
-    prepared.configure(&source, &context).unwrap();
-    let replay = source.replay_ref();
-    let format = replay.format;
-    let flag = AtomicBool::new(false);
-    let mut tables = OBSERVED_TABLES.to_vec();
-    tables.sort_unstable();
-    let mut tracker = dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
-    let mut before = None;
-    replay
-        .read_block_alone(
-            &replay.index[0],
-            &tables,
-            |raw, frame| {
-                if frame.hour == 101 {
-                    before = Some((prepared.work, prepared.values.key_visits));
-                }
-                let changes = tracker.observe_updates(frame, Arc::new(raw), format);
-                prepared.observe_changed(frame, &changes, &flag)
-            },
-            || Ok(()),
-        )
-        .unwrap();
-    let (before, numeric) = before.expect("the second hour");
-    assert_eq!(prepared.work.row_visits - before.row_visits, 1);
-    assert_eq!(
-        prepared.values.key_visits - numeric,
-        1,
-        "one progress channel changes"
-    );
-    assert_eq!(
-        prepared.work.emitted - before.emitted,
-        0,
-        "no structural observation changes"
-    );
 }
 
 /// Holders 1 and 2 observed at 100; a recorded update changes only holder

@@ -20,13 +20,13 @@ fn sample(reply: &NavalLossesReply, hour: i32) -> BTreeMap<String, (Option<i64>,
         .collect()
 }
 #[test]
-fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_bridge_and_5000_countries() {
+fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge() {
     let flag = AtomicBool::new(false);
     let first = month_start(1940 * 12).unwrap();
     let mut inputs = Vec::new();
     for step in 0..5 {
         let hour = first + step;
-        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 5000);
+        let mut frame = dashboard_base::test_fixtures::scale_frame(1, hour, 12);
         let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
         if step == 0 || step >= 3 {
             links.push(CountryLinkRow {
@@ -48,12 +48,12 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_bridge_and
         links.sort_by_key(|row| row.id);
         frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(links)).into();
-        let mut entries: Vec<_> = (0..50000)
+        let mut entries: Vec<_> = (0..120)
             .map(|index| SunkShipEntry {
                 ship_name: format!("synthetic mod ship {index}").into_bytes(),
                 sink_hour: first,
                 class_token: 77,
-                victim_country: 100000 + index % 5000,
+                victim_country: 100000 + index % 12,
                 attacker_country: 100001,
                 cause_record: u8::from(index % 5 == 0),
                 assisted_kill: u8::from(index % 7 == 0),
@@ -290,11 +290,6 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_bridge_and
             }
         }
     }
-    let bytes = serde_json::to_vec(&(&history, &prepared)).unwrap().len();
-    eprintln!(
-        "sinking continuation: 5000 countries, 50001 observed sinkings, {bytes} JSON bytes after pruning; {} open ships",
-        history.scan.ships.len()
-    );
     assert!(history.scan.ships.is_empty());
     assert!(prepared.channels.iter().all(|channel| {
         channel

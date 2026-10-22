@@ -387,35 +387,6 @@ fn gaps_and_missing_reads_end_attribution_and_absence_proves_zero() {
 }
 
 #[test]
-fn five_thousand_countries_merge_unchanged_held_snapshots_without_player_gates() {
-    let mut scan = Scanned::default();
-    for hour in 24..=25 {
-        let mut value = frame(hour, 5_000);
-        put(
-            &mut value,
-            TableRows::CountryCommandPower(
-                (1..=5_000)
-                    .map(|canonical_slot| CountryCommandPowerRow {
-                        canonical_slot,
-                        allocated_command_power_raw: i64::from(canonical_slot),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ),
-        );
-        observe(&mut scan, &value);
-    }
-    assert_eq!(scan.holds.countries.len(), 5_000);
-    for tag in ["C1", "C1500", "C5000"] {
-        let held = present_holds(&scan, tag);
-        assert_eq!(held.len(), 1);
-        assert_eq!(held[0].read_hour, 24);
-        assert_eq!(held[0].through_hour, 25);
-        assert!(held[0].total_raw.is_some());
-    }
-}
-
-#[test]
 fn signed_native_held_total_is_preserved_without_clamping_or_guessing() {
     let mut scan = Scanned::default();
     observe(

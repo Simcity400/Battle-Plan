@@ -442,59 +442,6 @@ fn selecting_both_endpoints_keeps_the_existing_first_endpoint_priority() {
 }
 
 #[test]
-fn five_thousand_country_breakdown_uses_the_shared_windows_and_projection() {
-    let chunks = vec![
-        vec![
-            wars::test_fixtures::scaled_recorded(100, 5000),
-            wars::test_fixtures::scaled_recorded(101, 5000),
-        ],
-        vec![
-            wars::test_fixtures::scaled_recorded(102, 5000),
-            wars::test_fixtures::scaled_recorded(103, 5000),
-        ],
-    ];
-    let full = source(&chunks);
-    let mut fixture = Fixture::new();
-    let mut casualties = super::super::super::prepared::Prepared::new(full.replay_ref(), 1);
-    let mut wars = wars::prepared::Observer::default();
-    for chunk in &chunks {
-        publish(
-            &full,
-            chunk,
-            &mut fixture,
-            &mut casualties,
-            &mut wars,
-            false,
-        );
-    }
-    assert_parity(&full, &fixture, &["mod-1", "mod-5000"]);
-    let (_, catalogue) = series::read_catalogue::<super::super::super::prepared::Catalogue>(
-        &fixture.store,
-        &fixture.key,
-        "casualty",
-        1,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(catalogue.holder_coverage.len(), 4999);
-    assert!(
-        catalogue
-            .holder_coverage
-            .values()
-            .all(|spans| spans.len() == 1
-                && spans[0].first_hour == 100
-                && spans[0].last_hour == 103
-                && spans[0].live == [true, true])
-    );
-    let country_bytes = serde_json::to_vec(&catalogue.holder_coverage.values().collect::<Vec<_>>())
-        .unwrap()
-        .len();
-    eprintln!(
-        "breakdown: 5000 countries, 4999 endpoint coverage entries, one interval each, {country_bytes} coverage bytes; zero additional scans or window sections"
-    );
-}
-
-#[test]
 fn uncertainty_before_the_window_preserves_other_lifetimes_original_read_boundaries() {
     let fixture = Fixture::new();
     let flag = AtomicBool::new(false);

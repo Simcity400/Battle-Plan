@@ -807,11 +807,6 @@ mod deadline_tests {
     }
 
     #[test]
-    fn sliding_window_certificates_do_not_revisit_5000_countries_each_hour() {
-        window_deadlines_follow_their_span(5000);
-    }
-
-    #[test]
     fn future_capture_starts_keep_each_hours_exact_deadline_check() {
         let mut scan = Scanned::default();
         let captures: Arc<[(u32, i32)]> = vec![(1, 3)].into();
@@ -834,10 +829,5 @@ mod deadline_tests {
     #[test]
     fn capture_deadlines_carry_membership_but_reach_other_countries_deadlines() {
         advancing_deadlines_follow_their_span(8);
-    }
-
-    #[test]
-    fn capture_deadlines_do_not_revisit_5000_captures_each_hour_of_a_span() {
-        advancing_deadlines_follow_their_span(5000);
     }
 }

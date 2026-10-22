@@ -169,8 +169,6 @@ pub(super) struct Scanned {
     country_visits: usize,
     #[cfg(test)]
     accounting_visits: usize,
-    #[cfg(test)]
-    daily_builds: usize,
     /// Join every hour from the whole tables, never from changed rows.
     #[cfg(test)]
     whole_tables: bool,
@@ -1733,10 +1731,6 @@ fn observe_accounting(
                 && scan.countries[&tag].daily[index].row == *row
             {
                 continue;
-            }
-            #[cfg(test)]
-            {
-                scan.daily_builds += 1;
             }
             let mut value = Daily {
                 row: row.clone(),

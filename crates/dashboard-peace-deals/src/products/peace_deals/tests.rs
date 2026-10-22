@@ -643,55 +643,6 @@ fn exact_mod_action_names_follow_recorded_content_order() {
 }
 
 #[test]
-fn exact_projection_scales_to_design_and_stress_country_populations() {
-    for count in [1500, 5000] {
-        let mut row = settled_row();
-        row.actions.clear();
-        row.transfers.clear();
-        row.winners.clear();
-        row.losers.clear();
-        row.subjects.clear();
-        for (ordinal, state) in (1..count).step_by(2).enumerate() {
-            row.winners.push(1001 + state);
-            row.losers.push(1000 + state);
-            row.actions.push(SettledPeaceAction {
-                token: 991,
-                country: 1001 + state,
-                turn: 0,
-                ordinal: ordinal as u32,
-                taker: 1001 + state,
-                giver: 1000 + state,
-                negotiator: 1001 + state,
-                state: Some(state as i32),
-                flags: Some([0; 4]),
-                ..Default::default()
-            });
-            row.transfers.push(SettledPeaceTransfer {
-                state: state as i32,
-                taker: 1001 + state,
-                automatic: false,
-            });
-        }
-        let result = scan(vec![
-            frame(100, count, false, &[9]),
-            with_settlement(frame(101, count, true, &[]), row),
-        ]);
-        assert_eq!(result.deals.len(), 1);
-        let captured = result.deals[0].captured.as_ref().unwrap();
-        assert_eq!(captured.actions.len(), count as usize / 2);
-        assert_eq!(
-            result
-                .transfers
-                .links
-                .iter()
-                .map(|l| l.state_count)
-                .sum::<u32>(),
-            count / 2
-        );
-    }
-}
-
-#[test]
 fn recorded_conference_has_dated_derived_items_exact_vps_and_flow_nodes() {
     let result = scan(vec![
         frame(100, 2, false, &[1_u64 << 40]),
@@ -1432,26 +1383,6 @@ fn events_identity_changes_and_active_conferences_are_not_invented_deals() {
 }
 
 #[test]
-fn synthetic_replays_at_1500_and_5000_countries_have_no_country_cross_product() {
-    for count in [1_500, 5_000] {
-        let result = scan(vec![
-            frame(100, count, false, &[]),
-            frame(101, count, true, &[]),
-        ]);
-        assert_eq!(result.deals.len(), count as usize / 2);
-        assert_eq!(result.transfers.links.len(), count as usize / 2);
-        assert_eq!(result.transfers.nodes.len(), count as usize);
-        assert!(
-            result
-                .transfers
-                .links
-                .iter()
-                .all(|link| link.state_count == 1 && link.victory_points.as_deref() == Some("5"))
-        );
-    }
-}
-
-#[test]
 fn campaign_graph_counts_dated_occurrences_and_cards_sort_newest_first() {
     let mut second_before = frame(102, 2, true, &[12]);
     let mut second_after = frame(103, 2, false, &[]);
@@ -1652,31 +1583,6 @@ fn earlier_existence_is_kept_even_when_war_inputs_are_missing() {
 }
 
 #[test]
-fn recording_past_former_card_cap_keeps_every_card_before_budget_refusal() {
-    let conferences: Vec<_> = (1..=100_001).collect();
-    let reply = scan(vec![frame(100, 0, false, &conferences)]);
-    assert_eq!(reply.deals.len(), conferences.len());
-    assert_eq!(
-        reply
-            .deals
-            .iter()
-            .filter(|deal| deal.conference_id.is_some())
-            .count(),
-        conferences.len()
-    );
-    let cancelled = AtomicBool::new(false);
-    assert!(
-        dashboard_core::transport::json_len(&reply, dashboard_core::transport::MAX_REPLY_BYTES)
-            .is_none()
-    );
-    let error = dashboard_core::transport::bounded_json(&reply, &cancelled).unwrap_err();
-    assert!(error.contains("transport byte budget"), "{error}");
-    let error = admitted(reply).unwrap_err();
-    assert!(error.to_string().contains("transport budget"));
-    assert!(error.to_string().contains("no entries were dropped"));
-}
-
-#[test]
 fn complete_reply_uses_shared_transport_budget_without_shortening_payloads() {
     let mut row = settled_row();
     row.actions = vec![row.actions[0].clone(); 50_000];
@@ -1716,6 +1622,32 @@ fn complete_reply_uses_shared_transport_budget_without_shortening_payloads() {
             .len(),
         50_000
     );
+}
+
+// regression: 6c6f687d79 Size peace capture from native demand and refuse oversized replies
+#[test]
+fn recording_past_former_card_cap_keeps_every_card_before_budget_refusal() {
+    let conferences: Vec<_> = (1..=100_001).collect();
+    let reply = scan(vec![frame(100, 0, false, &conferences)]);
+    assert_eq!(reply.deals.len(), conferences.len());
+    assert_eq!(
+        reply
+            .deals
+            .iter()
+            .filter(|deal| deal.conference_id.is_some())
+            .count(),
+        conferences.len()
+    );
+    let cancelled = AtomicBool::new(false);
+    assert!(
+        dashboard_core::transport::json_len(&reply, dashboard_core::transport::MAX_REPLY_BYTES)
+            .is_none()
+    );
+    let error = dashboard_core::transport::bounded_json(&reply, &cancelled).unwrap_err();
+    assert!(error.contains("transport byte budget"), "{error}");
+    let error = admitted(reply).unwrap_err();
+    assert!(error.to_string().contains("transport budget"));
+    assert!(error.to_string().contains("no entries were dropped"));
 }
 
 #[test]

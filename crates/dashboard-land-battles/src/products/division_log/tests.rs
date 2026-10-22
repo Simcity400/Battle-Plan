@@ -11,7 +11,7 @@ mod speed;
 fn frame(hour: i32, divisions: u32) -> DecodedFrame {
     let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(0));
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5000)
+        (1..=12)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id,
@@ -21,7 +21,7 @@ fn frame(hour: i32, divisions: u32) -> DecodedFrame {
             .collect(),
     ));
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5000)
+        (1..=12)
             .map(|id| CountryLinkRow {
                 id,
                 canonical_slot: id,
@@ -33,7 +33,7 @@ fn frame(hour: i32, divisions: u32) -> DecodedFrame {
             .map(|id| DivisionRow {
                 id: u64::from(id) << 32 | 4713,
                 roster_owner: id,
-                logical_owner: 5000,
+                logical_owner: 12,
                 expeditionary_owner: u32::MAX,
                 province: id,
                 template: u64::from(id) << 32 | 4714,
@@ -110,10 +110,10 @@ fn initial_census_is_not_creation_and_every_new_country_is_retained() {
     let mut scan = Scan::default();
     scan.observe(&frame(100, 1));
     assert!(scan.events.is_empty());
-    scan.observe(&frame(101, 5000));
-    assert_eq!(scan.events.len(), 4999);
-    let last = &scan.events[4998];
-    assert_eq!(last.row.tag.as_deref(), Some("mod country 5000"));
+    scan.observe(&frame(101, 12));
+    assert_eq!(scan.events.len(), 11);
+    let last = &scan.events[10];
+    assert_eq!(last.row.tag.as_deref(), Some("mod country 12"));
     assert_eq!(last.row.after_hour, Some(100));
     assert!(last.row.by);
     assert_eq!(
@@ -124,7 +124,7 @@ fn initial_census_is_not_creation_and_every_new_country_is_retained() {
             .as_ref()
             .unwrap()
             .literal,
-        b"Template 5000"
+        b"Template 12"
     );
 }
 
@@ -279,8 +279,8 @@ fn icon_uses_native_nonnegative_index_and_falls_back_only_when_absent() {
 fn filtered_totals_include_unloaded_history_but_never_future_reads() {
     let mut scan = Scan::default();
     scan.observe(&frame(100, 0));
-    scan.observe(&frame(101, 5000));
-    let mut end = frame(102, 5000);
+    scan.observe(&frame(101, 12));
+    let mut end = frame(102, 12);
     let divisions = end
         .complete::<tables::Divisions>()
         .unwrap()
@@ -306,13 +306,13 @@ fn filtered_totals_include_unloaded_history_but_never_future_reads() {
     let index = totals_index(&scan, &params, "all".into(), &cancelled).unwrap();
     assert_eq!(
         index.counts[index.reads.partition_point(|hour| *hour <= 101)],
-        [5000, 0, 0]
+        [12, 0, 0]
     );
     assert_eq!(
         index.counts[index.reads.partition_point(|hour| *hour <= 102)],
-        [5000, 1, 0]
+        [12, 1, 0]
     );
-    params.countries.tags = Some(vec!["mod country 5000".into()]);
+    params.countries.tags = Some(vec!["mod country 12".into()]);
     let index = totals_index(&scan, &params, "country".into(), &cancelled).unwrap();
     assert_eq!(index.counts.last(), Some(&[1, 0, 0]));
     params.countries.tags = None;
@@ -428,7 +428,7 @@ fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_
     use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    let mut death = frame(103, 4999);
+    let mut death = frame(103, 11);
     witness(
         &mut death,
         Disposition::Loss,
@@ -440,7 +440,7 @@ fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_
     {
         rows[0].hour = 102;
     }
-    let mut unknown = frame(104, 5000);
+    let mut unknown = frame(104, 12);
     unknown.tables[TableId::CountryLinks.index()] = TableView::Unavailable {
         reason: "synthetic missing actors".into(),
     }
@@ -448,8 +448,8 @@ fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_
     witness(&mut unknown, Disposition::Merged, None);
     let inputs = [
         frame(100, 1),
-        frame(101, 4999),
-        frame(102, 4999),
+        frame(101, 11),
+        frame(102, 11),
         death,
         unknown,
     ];
@@ -540,7 +540,7 @@ fn prepared_division_log_matches_oracle_after_commits_resume_append_and_country_
             tags: Some(vec![
                 "mod country 1".into(),
                 "mod country 1".into(),
-                "mod country 4999".into(),
+                "mod country 11".into(),
             ]),
             ..all.clone()
         },

@@ -357,20 +357,5 @@ mod tests {
         );
         let value = serde_json::to_value(row).unwrap();
         assert_eq!(value["equipmentDamage"], "9007199254740993");
-        if let Some(path) = std::env::var_os("BATTLE_PLAN_PARTICIPATION_TYPES").or_else(|| std::env::var_os("HOI4_PARTICIPATION_TYPES")) {
-            let declarations = [
-                WarsAtHour::decl(),
-                WarContributionGroup::decl(),
-                WarContributionCountry::decl(),
-            ];
-            std::fs::write(
-                path,
-                declarations
-                    .iter()
-                    .map(|d| format!("export {d}\n"))
-                    .collect::<String>(),
-            )
-            .unwrap();
-        }
     }
 }

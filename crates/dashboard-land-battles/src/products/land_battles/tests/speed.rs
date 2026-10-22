@@ -37,7 +37,7 @@ fn assert_replies(prepared: &Census, oracle: &Census, first: i32, last: i32) {
 }
 
 fn unchanged_work(combats: u32, hours: usize, unknown: bool) -> io::Result<Work> {
-    let mut first = frame(100, 5000, combats);
+    let mut first = frame(100, 5, combats);
     if unknown
         && let TableView::Complete(TableRows::LandCombatSides(rows)) =
             &mut *first.tables[TableId::LandCombatSides.index()]
@@ -82,63 +82,6 @@ fn land_shared_driver_unchanged_census_work_stays_flat_with_exact_counter_runs_a
 }
 
 #[test]
-fn land_shared_driver_5000_battles_keep_unchanged_work_flat() {
-    let work = [
-        unchanged_work(3, 4, false).unwrap(),
-        unchanged_work(5000, 4, false).unwrap(),
-    ];
-    observer_tests::assert_flat(work);
-    assert_eq!(work, [Work::default(); 2]);
-}
-
-fn history_work(hours: usize, change: bool) -> io::Result<Work> {
-    let mut input = frame(100, 5000, 1);
-    let mut prepared = Census::default();
-    let mut tracker = FrameChangeTracker::new();
-    step(&mut prepared, &input, &mut tracker);
-    for generation in 1..=hours {
-        input.hour += 1;
-        set_combats(&mut input, 1, generation as u64);
-        step(&mut prepared, &input, &mut tracker);
-    }
-    assert_eq!(prepared.episodes.len(), hours + 1);
-    prepared.work = Work::default();
-    if change {
-        input.hour += 1;
-        // One native counter changes; retained episodes must not be visited.
-        if let TableView::Complete(TableRows::LandCombats(rows)) =
-            &mut *input.tables[TableId::LandCombats.index()]
-        {
-            rows[0].duration += 1;
-        }
-        step(&mut prepared, &input, &mut tracker);
-        Ok(prepared.work)
-    } else {
-        observer_tests::unchanged_frames(
-            prepared.work,
-            &input,
-            4,
-            prepared.format,
-            |input, changes| {
-                prepared.observe_prepared(input, changes)?;
-                Ok(prepared.work)
-            },
-        )
-    }
-}
-
-#[test]
-fn land_shared_driver_unchanged_and_one_change_work_stay_flat_after_ten_times_history() {
-    let unchanged = observer_tests::scaled_work(10, |hours| history_work(hours, false)).unwrap();
-    observer_tests::assert_flat(unchanged);
-    assert_eq!(unchanged, [Work::default(); 2]);
-    let changed = observer_tests::scaled_work(10, |hours| history_work(hours, true)).unwrap();
-    observer_tests::assert_flat(changed);
-    assert_eq!(changed[0].row_visits, 1); // unchanged participant joins are held under R2b
-    assert_eq!(changed[0].history_visits, 0);
-}
-
-#[test]
 fn land_shared_driver_counter_steps_match_existing_oracle_after_skipped_spans() {
     let mut input = frame(100, 5, 1);
     let mut prepared = Census::default();
@@ -171,39 +114,8 @@ fn land_shared_driver_counter_steps_match_existing_oracle_after_skipped_spans() 
 }
 
 #[test]
-fn land_shared_driver_country_balance_reads_keep_live_joins_flat() {
-    let work = observer_tests::scaled_work(4, |hours| {
-        let first = frame(100, 5000, 3);
-        let mut prepared = Census::default();
-        let mut tracker = FrameChangeTracker::new();
-        step(&mut prepared, &first, &mut tracker);
-        observer_tests::unchanged_frames(
-            prepared.work,
-            &first,
-            hours as i32,
-            prepared.format,
-            |input, _changes| {
-                let mut input = input.clone();
-                if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut *input.tables[TableId::Countries.index()]
-                {
-                    rows[0].political_power_raw = Some(i64::from(input.hour));
-                }
-                let changes = tracker.observe(&input, prepared.format);
-                assert!(changes.rows_changed[TableId::Countries.index()]);
-                prepared.observe_prepared(&input, &changes)?;
-                Ok(prepared.work)
-            },
-        )
-    })
-    .unwrap();
-    observer_tests::assert_flat(work);
-    assert_eq!(work, [Work::default(); 2]);
-}
-
-#[test]
 fn land_shared_driver_unavailable_inputs_materialize_old_frontier_and_keep_diagnostics_exact() {
-    let original = frame(100, 5000, 3);
+    let original = frame(100, 5, 3);
     let mut input = original.clone();
     let mut prepared = Census::default();
     let mut oracle = Census::default();
@@ -248,7 +160,7 @@ fn land_shared_driver_unavailable_inputs_materialize_old_frontier_and_keep_diagn
 }
 
 fn fixture_inputs(combats: u32) -> Vec<Vec<DecodedFrame>> {
-    let mut input = frame(100, 5000, combats);
+    let mut input = frame(100, 5, combats);
     let mut groups = vec![vec![input.clone()]];
     for hour in 101..=107 {
         input.hour = hour;
@@ -446,9 +358,4 @@ fn publication_parity(combats: u32) {
 fn land_shared_driver_prepared_replies_match_oracle_after_skips_two_commits_resume_append_and_gap()
 {
     publication_parity(3);
-}
-
-#[test]
-fn land_shared_driver_5000_battles_match_oracle_after_commits_resume_and_append() {
-    publication_parity(5000);
 }

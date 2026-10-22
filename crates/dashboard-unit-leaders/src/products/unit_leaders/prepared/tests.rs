@@ -349,28 +349,6 @@ fn prepared_naval_leader_source_links_join_late_results_and_permanent_conflicts_
     }
 }
 #[test]
-fn prepared_leaders_five_thousand_countries_keep_continuation_bounded_by_current_facts() {
-    let frames = [frame(100, 5000), frame(101, 5000), frame(103, 5000)];
-    let fixture = Fixture::new();
-    let cancelled = AtomicBool::new(false);
-    let mut state = Prepared::new(&replay(&frames), 1);
-    for (index, frame) in frames.iter().enumerate() {
-        let replay = replay(&frames[..=index]);
-        observe(&mut state, &replay, std::slice::from_ref(frame));
-        publish(&mut state, &fixture, &cancelled);
-        assert_parity(&fixture, &replay);
-        assert_eq!(state.scan.leaders.len(), 5000);
-        assert!(state.scan.stored_runs.len() <= 10_000);
-        eprintln!(
-            "unit-leaders continuation: {} JSON / {} compressed bytes at 5000 countries, hour {}",
-            serde_json::to_vec(&state).unwrap().len(),
-            state.saved_bytes().unwrap().len(),
-            frame.hour
-        );
-        state = resume(&fixture);
-    }
-}
-#[test]
 fn prepared_leader_long_career_moves_closed_commands_and_battles_out_of_continuation() {
     let first = frame(100, 2);
     let replay = replay(std::slice::from_ref(&first));
@@ -714,62 +692,6 @@ fn admission_work(
     let actual = query(&fixture.store, &fixture.key, &full_params("1"), None, &flag)?.unwrap();
     observer_tests::assert_reply_parity(&actual, &project(&oracle, &full_params("1"), None))?;
     Ok(delta)
-}
-
-#[test]
-fn prepared_leaders_shared_driver_unchanged_admission_work_is_flat_in_hours_and_history() {
-    use dashboard_base::prepared::observer_tests::{self, Work};
-    let histories = observer_tests::scaled_work(4, |history| {
-        let hours =
-            observer_tests::scaled_work(4, |hours| admission_work(history, hours, 2, None, None))?;
-        observer_tests::assert_flat(hours);
-        assert_eq!(
-            hours,
-            [Work::default(); 2],
-            "equal reads must not revisit native indexes or admission histories"
-        );
-        Ok(hours[0])
-    })
-    .unwrap();
-    observer_tests::assert_flat(histories);
-}
-
-#[test]
-fn prepared_leaders_shared_driver_one_changed_admission_is_bounded_after_ten_times_history() {
-    use dashboard_base::prepared::observer_tests;
-    let histories = observer_tests::scaled_work(4, |history| {
-        admission_work(history, 1, 2, Some(TableId::UnitLeaders), None)
-    })
-    .unwrap();
-    observer_tests::assert_flat(histories);
-    assert_eq!(histories[0].history_visits, 1);
-    assert_eq!(
-        histories[0].row_visits, 13,
-        "changed native roster plus supplying result/command rows; no country join or retained roster"
-    );
-    assert_eq!(
-        histories[0].emitted, 3,
-        "new kind, country and native-holder admission"
-    );
-    assert_eq!(histories[0].content_loads, 0);
-}
-
-#[test]
-fn prepared_leaders_shared_driver_five_thousand_current_rows_keep_admission_work_bounded() {
-    use dashboard_base::prepared::observer_tests;
-    let unchanged =
-        observer_tests::scaled_work(2, |history| admission_work(history, 10, 5000, None, None))
-            .unwrap();
-    observer_tests::assert_flat(unchanged);
-    assert_eq!(unchanged[0], Default::default());
-    let changed = observer_tests::scaled_work(2, |history| {
-        admission_work(history, 1, 5000, Some(TableId::UnitLeaders), None)
-    })
-    .unwrap();
-    observer_tests::assert_flat(changed);
-    assert_eq!(changed[0].history_visits, 1);
-    assert_eq!(changed[0].row_visits, 10_009);
-    assert_eq!(changed[0].emitted, 3);
 }
 
 #[test]

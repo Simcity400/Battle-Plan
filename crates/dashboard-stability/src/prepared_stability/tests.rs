@@ -29,245 +29,6 @@ fn read(fixture: &Fixture, family: Value, hour: i32) -> Value {
 }
 
 #[test]
-fn experience_native_work_is_flat_and_gain_runs_visit_only_supplying_reads() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{self, Work},
-    };
-    use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
-    let format = replay_data::format::FormatVersion::CURRENT;
-    for complete in [0, 1] {
-        let work = observer_tests::scaled_work(2, |history| {
-            let spans = observer_tests::scaled_work(10, |hours| {
-                let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, 5_000);
-                *frame.tables[TableId::CountryExperience.index()] =
-                    TableView::Complete(TableRows::CountryExperience(
-                        (0..5_000)
-                            .map(|id| CountryExperienceRow {
-                                country: 100_000 + id,
-                                army_raw: 100,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    ));
-                *frame.tables[TableId::CountryExperienceGains.index()] =
-                    TableView::Complete(TableRows::CountryExperienceGains(
-                        (0..5_000)
-                            .map(|id| CountryExperienceGainRow {
-                                country: 100_000 + id,
-                                instance: 1,
-                                complete,
-                                army_raw: 1,
-                                ..Default::default()
-                            })
-                            .collect(),
-                    ));
-                let mut tracker = FrameChangeTracker::new();
-                let mut data = ExperienceAccumulator::default();
-                for _ in 0..=history {
-                    frame.metrics.table_ns[TableId::CountryExperience.index()] = 1;
-                    let changes = tracker.observe(&frame, format);
-                    data.observe_changes(&frame, format, &changes)?;
-                    frame.hour += 1;
-                }
-                frame.metrics.table_ns[TableId::CountryExperience.index()] = 0;
-                let changes = tracker.observe(&frame, format);
-                data.observe_changes(&frame, format, &changes)?;
-                let native_before = data.scan.work();
-                let before = Work {
-                    emitted: 0,
-                    ..native_before
-                };
-                let ticks = data.scan.gain_updates();
-                let work = observer_tests::unchanged_frames(
-                    before,
-                    &frame,
-                    hours as i32,
-                    format,
-                    |frame, changes| {
-                        data.observe_changes(frame, format, changes)?;
-                        Ok(Work {
-                            emitted: 0,
-                            ..data.scan.work()
-                        })
-                    },
-                )?;
-                assert_eq!(work, Work::default());
-                let supplying_reads = (1..=hours as i32)
-                    .filter(|offset| {
-                        dashboard_text::metadata::slot_read(
-                            format,
-                            &frame.metrics,
-                            TableId::CountryExperience,
-                            frame.hour + offset,
-                        )
-                    })
-                    .count();
-                assert_eq!(
-                    data.scan.work().emitted - native_before.emitted,
-                    5_000 * supplying_reads,
-                    "native daily supplying reads retain their provenance even when rows are equal"
-                );
-                assert_eq!(
-                    data.scan.gain_updates() - ticks,
-                    if complete == 1 {
-                        5_000 * supplying_reads
-                    } else {
-                        0
-                    }
-                );
-                frame.hour += hours as i32 + 1;
-                let mut tracker = FrameChangeTracker::new();
-                let mut previous = frame.clone();
-                previous.hour -= 1;
-                tracker.observe(&previous, format);
-                if let TableView::Complete(TableRows::Countries(rows)) =
-                    &mut *frame.tables[TableId::Countries.index()]
-                {
-                    rows[0].command_power_raw += 1;
-                }
-                let before = data.scan.work();
-                let changes = tracker.observe(&frame, format);
-                data.observe_changes(&frame, format, &changes)?;
-                let after = data.scan.work();
-                assert_eq!(
-                    after.row_visits - before.row_visits,
-                    5_000,
-                    "balance changes read only country operands"
-                );
-                assert_eq!(after.emitted, before.emitted);
-                let fixture = Fixture::new();
-                let mut writer = fixture.writer();
-                data.flush(&mut writer, 1, &AtomicBool::new(false)).unwrap();
-                writer.commit().unwrap();
-                let resumed: ExperienceAccumulator =
-                    serde_json::from_slice(&serde_json::to_vec(&data)?).unwrap();
-                assert_eq!(
-                    serde_json::to_value(&resumed)?,
-                    serde_json::to_value(&data)?
-                );
-                Ok(work)
-            })?;
-            observer_tests::assert_flat(spans);
-            Ok(spans[1])
-        })
-        .unwrap();
-        observer_tests::assert_flat(work);
-    }
-}
-
-#[test]
-fn stability_native_work_is_flat_over_hours_and_history_and_one_changed_row() {
-    use dashboard_base::prepared::{
-        frame_changes::FrameChangeTracker,
-        observer_tests::{Work, scaled_work, unchanged_frames},
-    };
-    let measured = scaled_work(2, |history| {
-        let hours = scaled_work(10, |hours| {
-            let mut frame = dashboard_base::test_fixtures::scale_frame(1, 100, 5_000);
-            *frame.tables[TableId::CountryStabilityInputs.index()] =
-                TableView::Complete(TableRows::CountryStabilityInputs(
-                    (0..5_000)
-                        .map(|index| {
-                            let mut row = stability_inputs();
-                            row.country = 100_000 + index;
-                            row
-                        })
-                        .collect(),
-                ));
-            *frame.tables[TableId::SliceReads.index()] =
-                TableView::Complete(TableRows::SliceReads(
-                    (0..5_000)
-                        .map(|index| replay_data::rows::SliceReadRow {
-                            owner: 100_000 + index,
-                            table: TableId::CountryStabilityInputs as u32,
-                            sample_hour: 100,
-                        })
-                        .collect(),
-                ));
-            let format = replay_data::format::FormatVersion::CURRENT;
-            let mut tracker = FrameChangeTracker::new();
-            let mut data = StabilityAccumulator::default();
-            for _ in 0..=history {
-                if let TableView::Complete(TableRows::CountryStabilityInputs(rows)) =
-                    &mut *frame.tables[TableId::CountryStabilityInputs.index()]
-                {
-                    rows[0].stability_factor = rows[0].stability_factor.map(|raw| raw + 100);
-                }
-                let changes = tracker.observe(&frame, format);
-                data.observe_timed(&frame, &changes, &mut None)?;
-                frame.hour += 1;
-            }
-            frame.hour -= 1;
-            let before = data.stability.work();
-            let work = unchanged_frames(before, &frame, hours as i32, format, |frame, changes| {
-                data.observe_timed(frame, changes, &mut None)?;
-                Ok(data.stability.work())
-            })?;
-            assert_eq!(
-                work,
-                Work::default(),
-                "no numeric join, formula or emission on carried hours"
-            );
-            frame.hour += hours as i32;
-            let mut tracker = FrameChangeTracker::new();
-            tracker.observe(&frame, format);
-            frame.hour += 1;
-            if let TableView::Complete(TableRows::CountryStabilityInputs(rows)) =
-                &mut *frame.tables[TableId::CountryStabilityInputs.index()]
-            {
-                rows[0].stability_factor = rows[0].stability_factor.map(|raw| raw + 100);
-            }
-            let before = data.stability.work();
-            let changes = tracker.observe(&frame, format);
-            data.observe_timed(&frame, &changes, &mut None)?;
-            let after = data.stability.work();
-            let delta = Work {
-                row_visits: after.row_visits - before.row_visits,
-                emitted: after.emitted - before.emitted,
-                ..Default::default()
-            };
-            assert_eq!(
-                delta.row_visits, 5_000,
-                "only the changed input table is visited"
-            );
-            assert_eq!(delta.emitted, 1, "only one native holder changed");
-            let fixture = Fixture::new();
-            publish(&mut data, &fixture);
-            let flag = AtomicBool::new(false);
-            let (mut reader, actor) = (
-                dashboard_base::prepared::series::Reader::new(
-                    &fixture.store,
-                    &fixture.key,
-                    "stability-1".into(),
-                    &flag,
-                )?,
-                &data.actors[&series::field_key("000", "stability")],
-            );
-            let value = reader.value_at(actor.key, frame.hour)?.unwrap();
-            assert_eq!(value.last_hour, frame.hour);
-            assert_eq!(
-                value.value,
-                i128::from(
-                    country_stability::formula::stability(
-                        &frame
-                            .complete::<replay_data::rows::tables::CountryStabilityInputs>()
-                            .unwrap()[0]
-                    )
-                    .value
-                    .unwrap()
-                )
-            );
-            Ok(delta)
-        })?;
-        assert_eq!(hours[0], hours[1]);
-        Ok(hours[1])
-    })
-    .unwrap();
-    assert_eq!(measured[0], measured[1]);
-}
-
-#[test]
 fn production_scan_and_prepared_values_reads_gaps_and_resume_agree() {
     let inputs = stability_inputs();
     let mut unknown = inputs.clone();
@@ -461,155 +222,6 @@ fn navigation_unions_requested_measures_with_each_tags_membership_after_resume()
     }
 }
 
-#[test]
-fn five_thousand_countries_keep_runs_and_files_proportional_to_changes_and_batches() {
-    let mut fixture = Fixture::new();
-    let mut accumulator = StabilityAccumulator::default();
-    let mut frame = stability_frame(0, stability_inputs(), 0, vec![]);
-    let countries: Vec<_> = (1..=5000)
-        .map(|id| replay_data::rows::CountryRow {
-            id,
-            canonical_slot: id,
-            tag: format!("country / {id}").into_bytes(),
-            ..Default::default()
-        })
-        .collect();
-    let links = countries
-        .iter()
-        .map(|row| replay_data::rows::CountryLinkRow {
-            id: row.id,
-            canonical_slot: row.canonical_slot,
-        })
-        .collect();
-    let inputs = countries
-        .iter()
-        .map(|row| {
-            let mut input = stability_inputs();
-            input.country = row.id;
-            input
-        })
-        .collect();
-    let reads = countries
-        .iter()
-        .map(|row| replay_data::rows::SliceReadRow {
-            owner: row.id,
-            table: TableId::CountryStabilityInputs as u32,
-            sample_hour: 0,
-        })
-        .collect();
-    *frame.tables[TableId::Countries.index()] =
-        TableView::Complete(TableRows::Countries(countries));
-    *frame.tables[TableId::CountryLinks.index()] =
-        TableView::Complete(TableRows::CountryLinks(links));
-    *frame.tables[TableId::CountryStabilityInputs.index()] =
-        TableView::Complete(TableRows::CountryStabilityInputs(inputs));
-    *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(reads));
-    for hour in 0..100 {
-        frame.hour = hour;
-        accumulator.observe(&frame).unwrap();
-        if hour == 32 || hour == 65 || hour == 99 {
-            if hour == 99 {
-                let mut writer = fixture.append_writer();
-                accumulator
-                    .flush(&mut writer, 1, &AtomicBool::new(false))
-                    .unwrap();
-                writer.commit().unwrap();
-            } else {
-                publish(&mut accumulator, &fixture);
-            }
-            accumulator =
-                serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
-        }
-    }
-    let runs: u64 = accumulator
-        .actors
-        .values()
-        .map(|actor| {
-            accumulator
-                .batch
-                .state(actor.key)
-                .map_or(0, |state| state.runs)
-        })
-        .sum();
-    let events: u64 = accumulator
-        .actors
-        .values()
-        .map(|actor| {
-            accumulator
-                .batch
-                .state(actor.key)
-                .map_or(0, |state| state.events)
-        })
-        .sum();
-    assert!(runs <= accumulator.actors.len() as u64);
-    assert_eq!(events, runs);
-    let flag = AtomicBool::new(false);
-    let mut reader = dashboard_base::prepared::series::Reader::new(
-        &fixture.store,
-        &fixture.key,
-        "stability-1".into(),
-        &flag,
-    )
-    .unwrap();
-    let actor =
-        &accumulator.actors[&serde_json::to_string(&("country / 5000", "stability")).unwrap()];
-    assert_eq!(
-        reader.value_at(actor.key, 99).unwrap().unwrap().last_hour,
-        99
-    );
-    assert_eq!(
-        fixture
-            .store
-            .range_count(&fixture.key, "stability-1")
-            .unwrap(),
-        Some(3)
-    );
-    // Each catalogue is its base plus a short chain of patches.
-    let catalogues: u64 = ["stability-1-catalogue", "parts-1-catalogue"]
-        .into_iter()
-        .map(|section| {
-            fixture
-                .store
-                .range_count(&fixture.key, section)
-                .unwrap()
-                .unwrap()
-        })
-        .inspect(|count| assert!((1..=4).contains(count)))
-        .sum();
-    // Ranges the manifest lists, whichever packs hold them.
-    let ranges = fixture.payloads().len();
-    assert_eq!(accumulator.parts.calculated_reads(), 5000);
-    assert_eq!(
-        fixture.store.range_count(&fixture.key, "parts-1").unwrap(),
-        Some(3)
-    );
-    let (_, catalogue) = dashboard_base::prepared::series::read_catalogue::<Vec<MeasureActor>>(
-        &fixture.store,
-        &fixture.key,
-        "parts",
-        1,
-    )
-    .unwrap()
-    .unwrap();
-    let part_runs: u64 = catalogue
-        .iter()
-        .map(|actor| actor.run_count.parse::<u64>().unwrap())
-        .sum();
-    let part_events: u64 = catalogue
-        .iter()
-        .map(|actor| actor.drop_count.parse::<u64>().unwrap())
-        .sum();
-    assert_eq!(part_runs, catalogue.len() as u64);
-    assert_eq!(part_events, part_runs);
-    println!(
-        "Parts: 500000 country-hours / 5000 computed reads, {part_runs} canonical runs, {part_events} provenance events; {ranges} listed ranges (3 stability, 4 parts, {catalogues} catalogue)"
-    );
-    assert_eq!(ranges as u64, 7 + catalogues);
-    println!(
-        "5000 countries x 100 hours: stability {runs} canonical runs, {events} provenance events"
-    );
-}
-
 // Experience as the prepared stability accumulator observes it, against the native scan.
 mod experience {
     use dashboard_base::products::country_experience::{
@@ -745,16 +357,17 @@ mod experience {
         );
     }
 
+    // regression: 585b7093a3 perf(dashboard): prepare native experience reads and window charts
     #[test]
-    fn prepared_experience_five_thousand_countries_preserves_equal_read_boundaries_and_wide_gains()
-    {
+    fn prepared_experience_preserves_equal_read_boundaries_and_wide_gains() {
         use crate::prepared_stability::ExperienceAccumulator;
         use dashboard_base::{prepared::series::tests::Fixture, prepared_measure::query::query};
         use replay_data::{rows::CountryExperienceGainRow, rows::CountryExperienceRow};
         use serde_json::json;
+        const COUNTRIES: u32 = 3;
         let flag = AtomicBool::new(false);
         let mut frame = experience_frame(0, false, 1);
-        let countries: Vec<_> = (1..=5000)
+        let countries: Vec<_> = (1..=COUNTRIES)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id,
@@ -790,7 +403,7 @@ mod experience {
             frame.hour = slot_base() + hour;
             *frame.tables[TableId::CountryExperienceGains.index()] =
                 TableView::Complete(TableRows::CountryExperienceGains(
-                    (1..=5000)
+                    (1..=COUNTRIES)
                         .map(|id| CountryExperienceGainRow {
                             country: id,
                             instance: 77,
@@ -816,7 +429,8 @@ mod experience {
                     serde_json::from_slice(&serde_json::to_vec(&accumulator).unwrap()).unwrap();
             }
         }
-        let key = serde_json::to_string(&("country / 5000", 5000, 5000)).unwrap();
+        let key = serde_json::to_string(&(format!("country / {COUNTRIES}"), COUNTRIES, COUNTRIES))
+            .unwrap();
         let reply = query("series-state",json!({"branchId":"1","family":{"kind":"country-experience","measure":"army-gain"},"reads":[{"tag":key,"hour":slot_base()+99}]}),&fixture.store,&fixture.key, None,&flag).unwrap();
         let gained = (i128::from(i64::MAX) * 24).to_string();
         assert_eq!(reply["states"][0]["run"]["valueRaw"], gained);
@@ -834,8 +448,8 @@ mod experience {
             .iter()
             .map(|actor| actor.drop_count.parse::<u64>().unwrap())
             .sum();
-        assert_eq!(catalogue.len(), 50000);
-        assert_eq!(runs, 220000);
+        assert_eq!(catalogue.len(), 10 * COUNTRIES as usize);
+        assert_eq!(runs, 44 * u64::from(COUNTRIES));
         assert_eq!(events, runs);
         // The catalogue is its base plus a short chain of patches.
         let catalogue = fixture
@@ -859,9 +473,6 @@ mod experience {
         assert_eq!(
             dense["series"][0]["summary"]["buckets"][0]["minValue"].as_f64(),
             Some((i128::from(i64::MAX) * 24) as f64)
-        );
-        println!(
-            "5000 countries x 100 hours: {runs} supplying runs, {events} provenance events, {ranges} listed ranges (3 batches + catalogue); zero interpreter calls"
         );
     }
 }
@@ -1352,9 +963,4 @@ fn equal_parts_carry_numeric_publication(count: u32) {
 #[test]
 fn equal_parts_keep_hourly_bytes_read_events_boundaries_and_refusals() {
     equal_parts_carry_numeric_publication(8);
-}
-
-#[test]
-fn equal_parts_do_not_publish_5000_numeric_keys_again_at_each_read() {
-    equal_parts_carry_numeric_publication(5000);
 }

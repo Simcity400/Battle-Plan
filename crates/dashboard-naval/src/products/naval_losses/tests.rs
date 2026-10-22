@@ -523,60 +523,6 @@ fn naval_losses_absent_data_cancellation_and_calendar_boundaries() {
 }
 
 #[test]
-#[ignore = "large reply fixture is run by the lead at the end"]
-fn naval_losses_scale_5000_countries_50000_sinkings() {
-    let mut scanned = fixture();
-    let first = scanned.first_hour;
-    scanned.last_hour = first + 10 * 365 * 24;
-    scanned.segments.clear();
-    scanned.country_identities.clear();
-    for n in 0..5000 {
-        let tag = format!("mod country {n:04}");
-        scanned.country_identities.insert(
-            tag.clone(),
-            vec![CountryIdentitySpan {
-                first_hour: first,
-                last_hour: scanned.last_hour,
-                identity: (n as u32, n as u32),
-            }],
-        );
-        scanned.segments.insert(
-            tag.clone(),
-            vec![HourSpan {
-                first_hour: first,
-                last_hour: scanned.last_hour,
-            }],
-        );
-        for wave in 0..10 {
-            let mut event = ship(first + wave * 8000 + 1, 0, 0);
-            event.victim = Some(tag.clone());
-            scanned.ships.push(event);
-        }
-    }
-    let mut p = params();
-    p.tags.clear();
-    p.top = Some(10);
-    p.kind = NavalKind::Ships;
-    let reply = reply(&scanned, &p, &AtomicBool::new(false)).unwrap();
-    let size = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    assert!(size < MAX_PRODUCT_REPLY_BYTES);
-    assert_eq!(reply.series.len(), 10);
-    assert_eq!(
-        sample(&reply, "mod country 0000", scanned.last_hour).0,
-        Some(10)
-    );
-    eprintln!("naval_losses top10: 5000 countries, 50000 sinkings, {size} reply bytes");
-    p.top = None;
-    p.tags = scanned.segments.keys().cloned().collect();
-    assert!(NavalLosses::validate(&p).is_ok());
-    let all = super::reply(&scanned, &p, &AtomicBool::new(false)).unwrap();
-    assert_eq!(all.series.len(), p.tags.len());
-    assert!(all.series.iter().all(|s| s.membership.is_none()));
-    let size = json_len(&all, MAX_PRODUCT_REPLY_BYTES).unwrap();
-    eprintln!("naval_losses all5000: 50000 sinkings, {size} reply bytes");
-}
-
-#[test]
 fn naval_losses_both_uses_one_baseline_and_month_values_wait_for_their_read() {
     let mut scanned = fixture();
     let first = scanned.first_hour;

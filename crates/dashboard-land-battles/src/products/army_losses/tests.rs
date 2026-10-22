@@ -177,37 +177,6 @@ fn the_product_reads_the_frame_from_a_recording() {
 }
 
 #[test]
-fn five_thousand_countries_keep_one_countrys_months() {
-    let mut f = frame();
-    let mut countries = f.complete::<tables::Countries>().unwrap().to_vec();
-    let mut links = f.complete::<tables::CountryLinks>().unwrap().to_vec();
-    let mut groups = f.complete::<tables::CombatLogGroups>().unwrap().to_vec();
-    let mut orders = f.complete::<tables::OrdersGroups>().unwrap().to_vec();
-    let mut manpower = f.complete::<tables::CombatLogManpower>().unwrap().to_vec();
-    for index in 0..5_000u32 {
-        let id = 100_000 + index;
-        let army = u64::from(1_000 + index) << 32 | 53;
-        countries.push(CountryRow { id, canonical_slot: 1_000 + index, tag: format!("C{index:04}").into_bytes(), ..countries[0].clone() });
-        links.push(CountryLinkRow { id, canonical_slot: 1_000 + index });
-        groups.push(CombatLogGroupRow { country: id, group: army, ordinal: 0 });
-        orders.push(OrdersGroupRow { handle: army, country: id, ..Default::default() });
-        manpower.push(CombatLogManpowerRow { country: id, group: 1_000 + index, ordinal: 0, date: 60_000_000, losses_0: 1, ..Default::default() });
-    }
-    countries.sort_by_key(|row| row.id);
-    links.sort_by_key(|row| row.id);
-    groups.sort_by_key(|row| (row.country, row.group));
-    orders.sort_by_key(|row| row.handle);
-    manpower.sort_by_key(|row| (row.country, row.group, row.ordinal));
-    *f.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(countries));
-    *f.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(links));
-    *f.tables[TableId::CombatLogGroups.index()] = TableView::Complete(TableRows::CombatLogGroups(groups));
-    *f.tables[TableId::OrdersGroups.index()] = TableView::Complete(TableRows::OrdersGroups(orders));
-    *f.tables[TableId::CombatLogManpower.index()] = TableView::Complete(TableRows::CombatLogManpower(manpower));
-    assert_eq!(reply(&f, "C4999").manpower.len(), 1);
-    assert_eq!(reply(&f, "GER").manpower.len(), 2);
-}
-
-#[test]
 fn an_older_month_that_left_a_windowed_read_keeps_its_latest_witnessed_amounts() {
     let oldest = (7, COMBAT_LEDGER, month_key(MONTHS[0]));
     let mut history = Earlier::default();

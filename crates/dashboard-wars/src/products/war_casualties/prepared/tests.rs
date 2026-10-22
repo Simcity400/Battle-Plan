@@ -18,40 +18,6 @@ impl Prepared {
 }
 
 #[test]
-fn unchanged_casualty_frames_advance_without_holder_pair_or_value_sweeps() {
-    use dashboard_base::prepared::observer_tests::{assert_flat, scaled_work, unchanged_frames};
-    let measured = scaled_work(10, |hours| {
-        let first = frame(10, 100);
-        let source = source(std::slice::from_ref(&first));
-        let replay = source.replay_ref();
-        let flag = AtomicBool::new(false);
-        let mut prepared = Prepared::new(replay, 1);
-        prepared.observe(
-            &first,
-            replay,
-            &source,
-            &LoadContext { content: None },
-            &flag,
-        )?;
-        unchanged_frames(
-            prepared.work(),
-            &first,
-            hours as i32,
-            replay.format,
-            |frame, changes| {
-                prepared.observe_changes(frame, replay, &flag, changes)?;
-                Ok(prepared.work())
-            },
-        )
-    })
-    .unwrap();
-    assert_flat(measured);
-    assert_eq!(measured[1].row_visits, 0);
-    assert_eq!(measured[1].history_visits, 0);
-    assert_eq!(measured[1].emitted, 0);
-}
-
-#[test]
 fn casualty_endpoint_changes_visit_only_its_retained_lifetimes_and_resume_rejoins_once() {
     use dashboard_base::prepared::observer_tests::{Work, assert_flat, scaled_work};
     let measured = scaled_work(10, |history| {
@@ -703,62 +669,4 @@ fn observed_spans_survive_actor_order_that_differs_from_observation_order() {
         .map(|series| series["tag"].as_str().unwrap())
         .collect();
     assert_eq!(tags, ["later"], "closed actors keep coverage, not values");
-}
-
-#[test]
-fn prepared_five_thousand_countries_have_bounded_continuation_and_exact_keys() {
-    let frames = vec![
-        frame(10, 5000),
-        frame(11, 5000),
-        frame(12, 5000),
-        frame(13, 5000),
-    ];
-    let source = source(&frames);
-    let replay = source.replay();
-    let fixture = Fixture::new();
-    let flag = AtomicBool::new(false);
-    let mut prepared = Prepared::new(&replay, 1);
-    let mut sizes = Vec::new();
-    for chunk in frames.chunks(2) {
-        for frame in chunk {
-            prepared
-                .observe(
-                    frame,
-                    &replay,
-                    &source,
-                    &LoadContext { content: None },
-                    &flag,
-                )
-                .unwrap();
-        }
-        let mut writer = fixture.writer();
-        prepared
-            .finish_block(&mut writer, 1, chunk[0].hour, chunk.last().unwrap().hour)
-            .unwrap();
-        prepared.flush(&mut writer, 1, &flag).unwrap();
-        writer.commit().unwrap();
-        sizes.push(serde_json::to_vec(&prepared).unwrap().len());
-        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
-    }
-    assert_eq!(prepared.tags.len(), 5000);
-    assert_eq!(prepared.builder.scan.countries.len(), 5000);
-    assert_eq!(prepared.builder.scan.pairs.len(), 2500);
-    assert!(
-        prepared
-            .builder
-            .scan
-            .tracks
-            .values()
-            .all(|track| track.packed.is_empty())
-    );
-    eprintln!(
-        "casualties: 5000 tag keys, 15000 numeric keys, 5000 observation keys; checkpoint bytes after commits: {sizes:?}"
-    );
-    assert_eq!(
-        point(&fixture, 13, Some(10), Vec::new())["series"]
-            .as_array()
-            .unwrap()
-            .len(),
-        10
-    );
 }

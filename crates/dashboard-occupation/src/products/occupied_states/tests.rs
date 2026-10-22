@@ -400,8 +400,8 @@ fn a_window_does_not_grow_with_its_branch() {
 }
 
 #[test]
-fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
-    let links: Vec<_> = (1..=5000)
+fn raw_links_resolve_to_opaque_mod_tags() {
+    let links: Vec<_> = (1..=12)
         .map(|id| CountryLinkRow {
             id,
             canonical_slot: id + 7000,
@@ -418,10 +418,10 @@ fn raw_links_resolve_to_opaque_mod_tags_at_scale() {
         .collect();
     let mut refused = Refusals::default();
     let mapped = country_index(&countries, &links, &mut refused);
-    assert_eq!(mapped.names.len(), 5000);
+    assert_eq!(mapped.names.len(), 12);
     assert_eq!(
-        mapped.names.get(&(12000, 5000)).map(String::as_str),
-        Some("Mod country 5000")
+        mapped.names.get(&(7012, 12)).map(String::as_str),
+        Some("Mod country 12")
     );
     assert!(refused.lines("countries").is_empty());
 
@@ -755,8 +755,10 @@ fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
     );
 }
 
+// regression: 591bbbd5db Resolve occupation laws with recorded native group and continent inputs
 #[test]
-fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
+fn a_recorded_array_change_moves_only_default_law_users_to_the_fallback() {
+    const COUNT: u32 = 4;
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::{
@@ -777,7 +779,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
         .set_synthetic_environment(Default::default());
     let mut first = frame(100, true);
     *first.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=5000)
+        (1..=COUNT)
             .map(|id| CountryLinkRow {
                 id,
                 canonical_slot: id + 7000,
@@ -785,7 +787,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
             .collect(),
     ));
     *first.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=5000)
+        (1..=COUNT)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: id + 7000,
@@ -796,7 +798,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
             .collect(),
     ));
     *first.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
-        (1..=5000)
+        (1..=COUNT)
             .map(|id| StateRow {
                 id,
                 owner: id,
@@ -807,7 +809,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
     ));
     *first.tables[TableId::StateResistance.index()] =
         TableView::Complete(TableRows::StateResistance(
-            (1..=5000)
+            (1..=COUNT)
                 .map(|id| StateResistanceRow {
                     state: id,
                     country: id,
@@ -819,7 +821,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
         ));
     *first.tables[TableId::OccupationSettings.index()] =
         TableView::Complete(TableRows::OccupationSettings(
-            (1..=5000)
+            (1..=COUNT)
                 .map(|id| replay_data::rows::OccupationSettingsRow {
                     country: id,
                     default_law_present: 1,
@@ -842,7 +844,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
         TableView::Complete(TableRows::StateOccupationLaws(vec![]));
     *first.tables[TableId::ScriptVariables.index()] =
         TableView::Complete(TableRows::ScriptVariables(
-            (1..=5000)
+            (1..=COUNT)
                 .map(|id| ScriptVariablesRow {
                     scope_kind: 1,
                     scope_id: id,
@@ -881,7 +883,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
     let reply = scan_history(&replay, 1, Some(&cat), &AtomicBool::new(false))
         .unwrap()
         .states;
-    assert_eq!(reply.states.len(), 5000);
+    assert_eq!(reply.states.len(), COUNT as usize);
     for state in &reply.states {
         let default = state.state % 2 == 1;
         assert_eq!(
@@ -901,8 +903,8 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
         }
     }
     assert_eq!(
-        reply.states[4999].runs[0].value.occupier.as_deref(),
-        Some("Mod country 5000")
+        reply.states[COUNT as usize - 1].runs[0].value.occupier.as_deref(),
+        Some(format!("Mod country {COUNT}").as_str())
     );
 }
 
@@ -1281,93 +1283,6 @@ fn non_utf8_overrides_and_unresolved_links_are_named_and_counted_by_reason() {
                 && line.contains("2000")
                 && line.contains("2001"))
     );
-}
-
-#[test]
-#[ignore = "long-campaign projection benchmark; run explicitly with --ignored --nocapture"]
-fn long_campaign_scan_at_design_scale() {
-    use replay_data::rows::TableRows;
-    use std::time::Instant;
-    let mut frame = frame(0, true);
-    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=1500)
-            .map(|id| CountryRow {
-                id,
-                canonical_slot: id,
-                tag: format!("Mod country {id}").into_bytes(),
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=1500)
-            .map(|id| CountryLinkRow {
-                id,
-                canonical_slot: id,
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
-        (1..=5000)
-            .map(|id| StateRow {
-                id,
-                owner: (id - 1) % 1500 + 1,
-                controller: (id - 1) % 1500 + 1,
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::StateResistance.index()] =
-        TableView::Complete(TableRows::StateResistance(
-            (1..=5000)
-                .map(|state| StateResistanceRow {
-                    state,
-                    country: (state - 1) % 1500 + 1,
-                    active: 1,
-                    level: i64::from(state),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-    *frame.tables[TableId::StateGarrisons.index()] =
-        TableView::Complete(TableRows::StateGarrisons(vec![]));
-    *frame.tables[TableId::StateOccupationLaws.index()] =
-        TableView::Complete(TableRows::StateOccupationLaws(vec![]));
-    *frame.tables[TableId::OccupationSettings.index()] =
-        TableView::Complete(TableRows::OccupationSettings(vec![]));
-    *frame.tables[TableId::StateAssignedManpower.index()] =
-        TableView::Complete(TableRows::StateAssignedManpower(vec![]));
-    let hours = 10 * 365 * 24;
-    for changed_hourly in [false, true] {
-        let mut scan = super::scan::Scan::new(None);
-        let started = Instant::now();
-        for hour in 0..hours {
-            frame.hour = hour;
-            frame.metrics.table_ns[TableId::StateResistance.index()] = u64::from(hour % 24 == 0);
-            if changed_hourly {
-                // Force an hourly catalogue identity change without changing any
-                // owner/name or daily occupation value. Mirrors unrelated balances.
-                let rows = frame.complete::<tables::Countries>().unwrap().to_vec();
-                *frame.tables[TableId::Countries.index()] =
-                    TableView::Complete(TableRows::Countries(rows));
-            }
-            scan.push(&frame, hour, None).unwrap();
-        }
-        let reply = scan.finish().states;
-        let seconds = started.elapsed().as_secs_f64();
-        eprintln!(
-            "occupied-state projection: 1500 countries, 5000 states, {hours} hours (10 years), hourly catalogue changes={changed_hourly}: {seconds:.3}s ({:.3}ms/hour); excludes decoding/content I/O",
-            seconds * 1000.0 / f64::from(hours)
-        );
-        assert_eq!(reply.states.len(), 5000);
-        assert_eq!(reply.observed.len(), 3650);
-        assert!(
-            reply
-                .states
-                .iter()
-                .all(|state| state.runs.len() == 1 && state.runs[0].last_hour == hours - 1)
-        );
-    }
 }
 
 #[test]

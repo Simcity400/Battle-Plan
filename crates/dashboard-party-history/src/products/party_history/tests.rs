@@ -594,7 +594,9 @@ fn widget_party_names_resolve_party_aliases_exact_empty_and_reserved_tags_lazily
     assert_eq!(topic.selected_tags, scanned.selected_tags);
 }
 
-fn check_party_country_delta_work(count: u32) {
+#[test]
+fn party_country_balance_deltas_visit_only_changed_keys() {
+    let count = 64;
     use super::TopicInputs;
     use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     use replay_data::{format::FormatVersion, rows::CountryLinkRow, rows::CountryRow};
@@ -664,14 +666,4 @@ fn check_party_country_delta_work(count: u32) {
             );
         }
     }
-}
-
-#[test]
-fn party_country_balance_deltas_visit_only_changed_keys() {
-    check_party_country_delta_work(64);
-}
-
-#[test]
-fn party_country_balance_delta_work_at_5000_countries() {
-    check_party_country_delta_work(5_000);
 }

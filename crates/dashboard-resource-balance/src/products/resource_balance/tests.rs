@@ -4,9 +4,11 @@ use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};
 
+// regression: 0e43acf21d Remove shared and remaining economy data caps
 #[test]
 fn resource_history_keeps_every_run_from_the_recording() {
     use crate::products::resource_balance::scan;
+    // 405,000 trade runs: past the former 400,000-run refusal.
     const DEALS: usize = 5_000;
     const READS: i32 = 81;
     let replay = Replay::from_records(

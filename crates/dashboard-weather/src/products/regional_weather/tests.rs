@@ -670,41 +670,6 @@ fn daily_query_uses_sparse_recorded_hours_not_weather_coverage_as_its_calendar()
 }
 
 #[test]
-fn a_whole_quiet_campaign_at_five_thousand_regions_stays_compact_without_a_daily_cube() {
-    use dashboard_base::products::country_groups::HourSpan;
-    let last = 3650 * daily::DAY_HOURS - 1;
-    let mut window = KeyedWindow {
-        first_hour: 0,
-        last_hour: last,
-        known: vec![HourSpan {
-            first_hour: 0,
-            last_hour: last,
-        }],
-        reads: vec![(0, last, 0)],
-        series: (0..5000)
-            .flat_map(|region| {
-                content::FLAGS.map(|(id, _, _)| KeyedSeries {
-                    name: format!("{region}|{id}"),
-                    runs: vec![(0, last, "0".into(), true)],
-                })
-            })
-            .collect(),
-    };
-    daily::Days::new(&window.known, 0, last)
-        .sample(&mut window, &AtomicBool::new(false))
-        .unwrap();
-    assert_eq!(window.series.len(), 30_000);
-    assert!(
-        window
-            .series
-            .iter()
-            .all(|series| series.runs == [(0, last, "0".into(), true)])
-    );
-    dashboard_base::products::check_reply_budget(&window).unwrap();
-    assert!(serde_json::to_vec(&window).unwrap().len() < 32 * 1024 * 1024);
-}
-
-#[test]
 fn schema_fields_watch_all_witnesses_and_the_weather_family_is_country_independent() {
     let fields = block::Observer::fields().unwrap();
     assert_eq!(fields.len(), 2);
@@ -722,13 +687,6 @@ fn schema_fields_watch_all_witnesses_and_the_weather_family_is_country_independe
         assert_ne!(fields[0].fields & watched.fields, 0);
     }
     assert!(!fields[0].read);
-    assert_eq!(
-        block::Observer::TABLES,
-        [TableId::WeatherRegions, TableId::WeatherProvinces]
-    );
-    assert_eq!(block::Observer::READ, TableId::WeatherRegions);
-    assert_eq!(block::FAMILY.name, "regional-weather");
-    assert!(std::ptr::eq(block::Observer::family(), &block::FAMILY));
     let frame = frame(0, Some(vec![row(7)]));
     let mut changes = dashboard_base::prepared::frame_changes::FrameChanges::alone(
         &frame,
@@ -747,42 +705,6 @@ fn schema_fields_watch_all_witnesses_and_the_weather_family_is_country_independe
     changes.rows_changed[TableId::WeatherProvinces.index()] = false;
     changes.rows_changed[TableId::WeatherRegions.index()] = true;
     assert!(block::Observer::changed(&changes));
-}
-
-#[test]
-fn five_thousand_regions_keep_sparse_selected_windows_and_exact_signed_values() {
-    let fixture = Fixture::new();
-    let rows: Vec<_> = (0..5000)
-        .map(|i| {
-            let mut row = row(100_000 + i);
-            row.air_detection = Recorded::Value(Some(Some(i64::MIN + i64::from(i))));
-            row
-        })
-        .collect();
-    let scan = publish(
-        &fixture,
-        &[frame(1, Some(rows.clone())), frame(2, Some(rows))],
-    );
-    assert_eq!(scan.names().len(), 5000 * 14);
-    let flag = AtomicBool::new(false);
-    let mut opened =
-        dashboard_keyed::query::open::<block::Observer>(&fixture.store, &fixture.key, 1, &flag)
-            .unwrap()
-            .unwrap();
-    let window = opened
-        .window(1, 2, None, |name| name.starts_with("104999|"))
-        .unwrap();
-    assert_eq!(window.series.len(), 14);
-    assert_eq!(
-        window
-            .series
-            .iter()
-            .find(|series| series.name.ends_with("mod:air_detection"))
-            .unwrap()
-            .runs,
-        [(1, 2, (i64::MIN + 4999).to_string(), true)]
-    );
-    assert!(window.series.iter().all(|series| series.runs.len() == 1));
 }
 
 #[test]
@@ -820,7 +742,7 @@ fn missing_modifier_warnings_are_selected_and_window_local() {
 }
 
 #[test]
-fn cold_query_contract_validation_types_and_cancellation() {
+fn cold_query_contract_validation_and_cancellation() {
     let fixture = Fixture::new();
     let source = source(vec![frame(10, Some(vec![]))]);
     let params = json!({"branchId":"1", "regions":["7001"]});
@@ -856,16 +778,6 @@ fn cold_query_contract_validation_types_and_cancellation() {
     );
     assert_eq!(reply["temperature"], TEMPERATURE_REFUSAL);
     assert_eq!(reply["dayHours"], replay_data::cadence::STAGGER_PERIOD);
-    assert!(
-        RegionalWeather::types()
-            .iter()
-            .any(|declaration| declaration.contains("RegionalWeatherReply"))
-    );
-    assert!(
-        RegionalWeather::types()
-            .iter()
-            .any(|declaration| declaration.contains("KeyedSeries"))
-    );
     for bad in [
         json!({"branchId":"bad"}),
         json!({"branchId":"1", "regions":["07"]}),

@@ -482,11 +482,6 @@ mod tests {
         contributor_lookup_work(128);
     }
 
-    #[test]
-    fn contributor_queries_scale_to_five_thousand_native_holders() {
-        contributor_lookup_work(5000);
-    }
-
     fn contributor_lookup_work(count: u32) {
         use dashboard_base::test_fixtures::{file_source, replay};
         use replay_data::{

@@ -742,9 +742,6 @@ impl CountryScan {
 struct TopicScan {
     countries: BTreeMap<String, CountryScan>,
     unobserved: Vec<HourSpan>,
-    #[cfg(test)]
-    #[serde(skip)]
-    calls: usize,
     #[serde(skip)]
     native: TopicInputs,
     hour: Option<i32>,
@@ -777,8 +774,6 @@ struct TopicInputs {
     lexical: Option<BTreeMap<u32, Vec<u8>>>,
     script_users: BTreeMap<u32, BTreeSet<String>>,
     duplicates: BTreeSet<String>,
-    #[cfg(test)]
-    work: dashboard_base::prepared::observer_tests::Work,
 }
 impl TopicInputs {
     fn refresh(
@@ -793,10 +788,6 @@ impl TopicInputs {
         let mut dirty = BTreeSet::new();
         if changed(TableId::Countries) {
             let rows = frame.complete::<tables::Countries>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             if !self
                 .country_view
                 .as_ref()
@@ -818,10 +809,6 @@ impl TopicInputs {
         }
         if changed(TableId::CountryLinks) {
             let rows = frame.complete::<tables::CountryLinks>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             let next = rows.map(|rows| rows.to_vec());
             roster |= self.links != next;
             self.links = next;
@@ -853,10 +840,6 @@ impl TopicInputs {
         if changed(TableId::PoliticalParties) || roster {
             if changed(TableId::PoliticalParties) {
                 let rows = frame.complete::<tables::PoliticalParties>().ok();
-                #[cfg(test)]
-                {
-                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
-                }
                 let next = rows.map(|rows| rows.to_vec());
                 // Compare the product's current native row projection, not histories.
                 let mut owners = BTreeSet::new();
@@ -916,10 +899,6 @@ impl TopicInputs {
         }
         if changed(TableId::CountryAppearance) {
             let rows = frame.complete::<tables::CountryAppearance>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             let next: BTreeMap<_, _> = rows
                 .into_iter()
                 .flatten()
@@ -963,10 +942,6 @@ impl TopicInputs {
         if changed(TableId::Politics) || roster {
             if changed(TableId::Politics) {
                 let rows = frame.complete::<tables::Politics>().ok();
-                #[cfg(test)]
-                {
-                    self.work.row_visits += rows.map_or(0, |rows| rows.len());
-                }
                 self.politics_rows = rows.map_or_else(Vec::new, |rows| rows.to_vec());
             }
             let mut next = BTreeMap::new();
@@ -1017,10 +992,6 @@ impl TopicInputs {
         }
         if changed(TableId::Characters) {
             let rows = frame.complete::<tables::Characters>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
                 rows.iter()
                     .map(|row| {
@@ -1055,10 +1026,6 @@ impl TopicInputs {
         }
         if changed(TableId::CharacterPortraits) {
             let rows = frame.complete::<tables::CharacterPortraits>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
                 rows.iter()
                     .map(|row| (row.character, row.clone()))
@@ -1096,10 +1063,6 @@ impl TopicInputs {
         }
         if changed(TableId::LexicalTokens) {
             let rows = frame.complete::<tables::LexicalTokens>().ok();
-            #[cfg(test)]
-            {
-                self.work.row_visits += rows.map_or(0, |rows| rows.len());
-            }
             let next: Option<BTreeMap<_, _>> = rows.map(|rows| {
                 rows.iter()
                     .map(|row| (row.token, row.literal.clone()))
@@ -1194,11 +1157,6 @@ impl TopicScan {
                 self.native.duplicates.remove(&tag);
             } else {
                 self.native.duplicates.insert(tag.clone());
-            }
-            #[cfg(test)]
-            {
-                self.calls += 1;
-                self.native.work.emitted += 1;
             }
             state.observe(
                 decoded,

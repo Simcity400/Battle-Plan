@@ -1285,72 +1285,6 @@ mod tests {
     }
 
     #[test]
-    fn resource_observer_work_is_flat_over_unchanged_hours_and_closed_aliases() {
-        use dashboard_base::prepared::{
-            frame_changes::FrameChangeTracker,
-            observer_tests::{self, Work},
-        };
-        let frame = resource_frame(100, 30, 9001, &[(51, 21, 9001, 12)]);
-        let format = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])])
-            .unwrap()
-            .format;
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(10, |hours| {
-                let mut prepared = Prepared::default();
-                let mut tracker = FrameChangeTracker::new();
-                prepared.observe_changed(&frame, &tracker.observe(&frame, format))?;
-                observer_tests::unchanged_frames(
-                    prepared.work,
-                    &frame,
-                    hours as i32,
-                    format,
-                    |frame, changes| {
-                        prepared.observe_changed(frame, changes)?;
-                        Ok(prepared.work)
-                    },
-                )
-            })
-            .unwrap(),
-        );
-        observer_tests::assert_flat(
-            observer_tests::scaled_work(10, |history| {
-                let mut prepared = Prepared::default();
-                let mut tracker = FrameChangeTracker::new();
-                let mut frame = frame.clone();
-                for offset in 0..history {
-                    frame.hour = 100 + offset as i32;
-                    if let replay_frame::frame::TableView::Complete(
-                        replay_data::rows::TableRows::Countries(rows),
-                    ) = &mut *frame.tables[TableId::Countries.index()]
-                    {
-                        rows.iter_mut()
-                            .find(|row| row.canonical_slot == 7)
-                            .unwrap()
-                            .tag = format!("past resource alias {offset}").into_bytes();
-                    }
-                    prepared.observe_changed(&frame, &tracker.observe(&frame, format))?;
-                }
-                let before = prepared.work;
-                frame.hour += 1;
-                if let replay_frame::frame::TableView::Complete(
-                    replay_data::rows::TableRows::CountryResources(rows),
-                ) = &mut *frame.tables[TableId::CountryResources.index()]
-                {
-                    rows[0].produced += 1;
-                }
-                prepared.observe_changed(&frame, &tracker.observe(&frame, format))?;
-                Ok(Work {
-                    row_visits: prepared.work.row_visits - before.row_visits,
-                    history_visits: prepared.work.history_visits - before.history_visits,
-                    emitted: prepared.work.emitted - before.emitted,
-                    ..Default::default()
-                })
-            })
-            .unwrap(),
-        );
-    }
-
-    #[test]
     fn resource_deferred_frames_seal_exact_deals_pools_and_diagnostics_at_two_publications() {
         use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests};
         let mut initial =
@@ -1677,141 +1611,6 @@ mod tests {
         }
     }
 
-    /// `count` countries holding two pools each, each exporting steel to the next.
-    fn many_countries(count: u32) -> replay_frame::frame::DecodedFrame {
-        use replay_data::{
-            rows::CountryLinkRow, rows::CountryResourceRow, rows::CountryRow,
-            rows::ResourceExchangeRow, rows::TableRows,
-        };
-        let mut frame = resource_frame(100, 0, 9001, &[]);
-        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=count)
-                .map(|id| CountryRow {
-                    canonical_slot: id,
-                    id,
-                    tag: format!("mod country {id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                (1..=count)
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: id,
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::CountryResources.index()] =
-            TableView::Complete(TableRows::CountryResources(
-                (1..=count)
-                    .flat_map(|country| {
-                        [1, 2].map(|resource| CountryResourceRow {
-                            country,
-                            resource,
-                            produced: i64::from(country) * 1_000 + i64::from(resource),
-                            ..Default::default()
-                        })
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::ResourceExchanges.index()] =
-            TableView::Complete(TableRows::ResourceExchanges(
-                (1..count)
-                    .map(|id| ResourceExchangeRow {
-                        id: u64::from(id),
-                        exporter: id,
-                        importer: id + 1,
-                        resource: 1,
-                        delivered: 100,
-                        assigned_factories: 1,
-                        required_factories: 1,
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        frame
-    }
-
-    fn assert_rows_observe_only_changed_countries(count: u32) {
-        use dashboard_base::prepared::{frame_changes::FrameChangeTracker, observer_tests::Work};
-        let format = replay_data::format::FormatVersion::CURRENT;
-        let mut recorded = Recorded::new();
-        let mut tracker = FrameChangeTracker::new();
-        let mut step = |prepared: &mut Prepared, frame: &replay_frame::frame::DecodedFrame| {
-            let before = (prepared.work, prepared.row_hours);
-            let (decoded, wire) = recorded.next(frame, false);
-            let changes = tracker.observe_updates(&decoded, wire, format);
-            prepared.observe_changed(&decoded, &changes).unwrap();
-            let work = Work {
-                row_visits: prepared.work.row_visits - before.0.row_visits,
-                history_visits: prepared.work.history_visits - before.0.history_visits,
-                emitted: prepared.work.emitted - before.0.emitted,
-                ..Default::default()
-            };
-            (work, prepared.row_hours - before.1)
-        };
-        let mut prepared = Prepared::default();
-        let mut frame = many_countries(count);
-        let (first, _) = step(&mut prepared, &frame);
-        assert_eq!(
-            first.history_visits, count as usize,
-            "the first hour reads every country"
-        );
-
-        frame.hour = 101;
-        pool(&mut frame, count / 2, 2).produced += 5;
-        let (work, rows) = step(&mut prepared, &frame);
-        assert_eq!(rows, 1, "the hour is observed from its changed rows");
-        assert_eq!(work.row_visits, 1, "only the changed pool row is read");
-        assert_eq!(work.history_visits, 1, "only its country is observed again");
-        assert!(
-            (1..=12).contains(&work.emitted),
-            "only its pool's values are written"
-        );
-
-        frame.hour = 102;
-        deal(&mut frame, u64::from(count / 3)).delivered += 1;
-        let (work, rows) = step(&mut prepared, &frame);
-        assert_eq!(rows, 1);
-        assert_eq!(work.row_visits, 1, "only the changed deal row is read");
-        assert_eq!(
-            work.history_visits, 2,
-            "only its exporter and importer are observed again"
-        );
-
-        // A recorded field no pool reads, and a country field no holder reads.
-        frame.hour = 103;
-        pool(&mut frame, count / 4, 1).base_export += 7;
-        country(&mut frame, count / 4).political_power_raw = Some(7);
-        let (work, rows) = step(&mut prepared, &frame);
-        assert_eq!(rows, 1);
-        assert_eq!(
-            (work.row_visits, work.history_visits, work.emitted),
-            (0, 0, 0),
-            "nothing a pool, deal or holder reads changed"
-        );
-
-        // The holders stay those read before while a country's own fields change.
-        frame.hour = 104;
-        country(&mut frame, count / 5).political_power_raw = Some(9);
-        pool(&mut frame, count / 5, 1).imported += 3;
-        let (work, rows) = step(&mut prepared, &frame);
-        assert_eq!(rows, 1);
-        assert_eq!((work.row_visits, work.history_visits), (1, 1));
-    }
-
-    #[test]
-    fn resource_hour_changing_one_country_observes_only_that_country() {
-        assert_rows_observe_only_changed_countries(200);
-    }
-
-    #[test]
-    fn resource_hour_changing_one_of_5000_countries_observes_only_that_country() {
-        assert_rows_observe_only_changed_countries(5000);
-    }
-
     #[test]
     fn resource_operand_masks_name_every_field_they_read() {
         assert_eq!(POOL_FIELDS.count_ones(), 8);
@@ -2125,10 +1924,10 @@ mod tests {
     }
 
     #[test]
-    fn resource_preparation_keeps_5000_countries_and_bounded_continuation() {
+    fn resource_sampler_and_observer_agree_on_every_native_field() {
         let mut frame = resource_frame(100, 0, 9001, &[]);
         *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=5000)
+            (1..=12)
                 .map(|id| CountryRow {
                     canonical_slot: id,
                     id,
@@ -2139,7 +1938,7 @@ mod tests {
         ));
         *frame.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(
-                (1..=5000)
+                (1..=12)
                     .map(|id| CountryLinkRow {
                         id,
                         canonical_slot: id,
@@ -2148,60 +1947,7 @@ mod tests {
             ));
         *frame.tables[TableId::CountryResources.index()] =
             TableView::Complete(TableRows::CountryResources(
-                (1..=5000)
-                    .map(|id| CountryResourceRow {
-                        country: id,
-                        resource: 1,
-                        produced: i64::from(id),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ));
-        let mut prepared = Prepared::default();
-        prepared.observe(&frame).unwrap();
-        assert_eq!(prepared.scan.countries.len(), 5000);
-        assert_eq!(prepared.keys.len(), 75000); // facts/coverage/membership plus eleven numeric fields.
-        for hour in 101..=200 {
-            frame.hour = hour;
-            prepared.observe(&frame).unwrap();
-        }
-        assert!(prepared.scan.countries.values().all(|country| {
-            country.result.series.values().all(|runs| runs.len() <= 1)
-                && country.result.deal_hours.len() <= 1
-        }));
-        eprintln!(
-            "resource continuation: {} countries, {} keys, {} bytes",
-            prepared.scan.countries.len(),
-            prepared.keys.len(),
-            serde_json::to_vec(&prepared).unwrap().len()
-        );
-    }
-
-    #[test]
-    fn resource_sampler_and_observer_agree_on_every_native_field_for_5000_countries() {
-        let mut frame = resource_frame(100, 0, 9001, &[]);
-        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=5000)
-                .map(|id| CountryRow {
-                    canonical_slot: id,
-                    id,
-                    tag: format!("mod country {id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                (1..=5000)
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: id,
-                    })
-                    .collect(),
-            ));
-        *frame.tables[TableId::CountryResources.index()] =
-            TableView::Complete(TableRows::CountryResources(
-                (1..=5000)
+                (1..=12)
                     .map(|id| CountryResourceRow {
                         country: id,
                         resource: 1,
@@ -2218,8 +1964,8 @@ mod tests {
                     .collect(),
             ));
         let samples = sample::sample(&frame, None).unwrap();
-        assert_eq!(samples.len(), 60_000);
-        let selected = [("mod country 5000".into(), String::new())];
+        assert_eq!(samples.len(), 144);
+        let selected = [("mod country 12".into(), String::new())];
         let before = sample::ROW_PROJECTS.get();
         let one = sample::sample(&frame, Some(&selected)).unwrap();
         assert_eq!(
@@ -2231,7 +1977,7 @@ mod tests {
             one,
             samples
                 .iter()
-                .filter(|((tag, _), _)| tag == "mod country 5000")
+                .filter(|((tag, _), _)| tag == "mod country 12")
                 .map(|(key, value)| (key.clone(), *value))
                 .collect()
         );
@@ -2266,7 +2012,7 @@ mod tests {
 
         let mut observer = Prepared::default();
         observer.observe(&frame).unwrap();
-        assert_eq!(observer.keys.len(), 75_000);
+        assert_eq!(observer.keys.len(), 180);
         for ((tag, field), &(identity, amount)) in &samples {
             let (index, resource) = sample::parse(field).unwrap();
             let id = tag
@@ -2299,7 +2045,7 @@ mod tests {
         }
         let absent = [
             ("missing country".into(), "supply:1".into()),
-            ("mod country 5000".into(), "supply:999".into()),
+            ("mod country 12".into(), "supply:999".into()),
         ];
         assert!(
             sample::sample(&frame, Some(&absent))

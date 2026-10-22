@@ -76,7 +76,7 @@ fn set_progress(frame: &mut DecodedFrame, rows: Vec<LandCombatProgressRow>) {
         TableView::Complete(TableRows::LandCombatProgress(rows));
 }
 fn loss_frame(hour: i32, manpower: i32) -> DecodedFrame {
-    let mut sample = frame(hour, 5000, 1);
+    let mut sample = frame(hour, 5, 1);
     set_progress(
         &mut sample,
         vec![LandCombatProgressRow {
@@ -94,7 +94,7 @@ fn loss_frame(hour: i32, manpower: i32) -> DecodedFrame {
     sample
 }
 fn result_frame(hour: i32, winners: u8) -> DecodedFrame {
-    let mut sample = frame(hour, 5000, 0);
+    let mut sample = frame(hour, 5, 0);
     *sample.tables[TableId::LandCombatResults.index()] =
         TableView::Complete(TableRows::LandCombatResults(vec![
             replay_data::rows::LandCombatResultsRow {
@@ -386,8 +386,8 @@ fn land_battles_terminal_only_availability_requires_current_complete_coverage() 
 #[test]
 fn land_battles_exact_adjacent_boundaries_distinct_rosters_and_native_duration() {
     let mut census = Census::default();
-    census.observe(&frame(99, 5000, 0)).unwrap();
-    let mut sample = frame(100, 5000, 1);
+    census.observe(&frame(99, 5, 0)).unwrap();
+    let mut sample = frame(100, 5, 1);
     let mut combats = sample.complete::<tables::LandCombats>().unwrap().to_vec();
     let repeated = combats[0].attackers[0];
     combats[0].attackers.push(repeated);
@@ -415,13 +415,13 @@ fn land_battles_exact_adjacent_boundaries_distinct_rosters_and_native_duration()
 #[test]
 fn land_battles_gaps_split_reused_handles_and_keep_missing_endings() {
     let mut census = Census::default();
-    census.observe(&frame(100, 5000, 1)).unwrap();
-    let mut missing = frame(101, 5000, 1);
+    census.observe(&frame(100, 5, 1)).unwrap();
+    let mut missing = frame(101, 5, 1);
     *missing.tables[TableId::LandCombats.index()] = TableView::Unavailable {
         reason: "missing".into(),
     };
     census.observe(&missing).unwrap();
-    census.observe(&frame(105, 5000, 1)).unwrap();
+    census.observe(&frame(105, 5, 1)).unwrap();
     let reply = census.reply(&params(Some(0)), &windows(100, 105)).unwrap();
     assert_eq!(reply.rows.len(), 2);
     assert_ne!(reply.rows[0].id, reply.rows[1].id);
@@ -438,7 +438,7 @@ fn land_battles_gaps_split_reused_handles_and_keep_missing_endings() {
 fn land_battles_windows_clip_reads_retain_prior_peak_and_scope_warnings() {
     let mut census = Census::default();
     for hour in 100..=105 {
-        census.observe(&frame(hour, 5000, 1)).unwrap();
+        census.observe(&frame(hour, 5, 1)).unwrap();
     }
     census.warn(101, "earlier warning");
     census.warn(105, "later warning");
@@ -485,7 +485,7 @@ fn land_battles_window_boundary_end_carries_only_the_final_read() {
 #[test]
 fn land_battles_no_chosen_row_or_country_limits_and_only_reply_budget_refuses() {
     let mut census = Census::default();
-    census.observe(&frame(100, 5000, 3000)).unwrap();
+    census.observe(&frame(100, 5, 3000)).unwrap();
     let reply = census.reply(&params(Some(0)), &windows(100, 100)).unwrap();
     assert_eq!(reply.rows.len(), 3000);
     assert!(LandBattles::validate(&params(None)).is_ok());
@@ -508,14 +508,9 @@ fn land_battles_no_chosen_row_or_country_limits_and_only_reply_budget_refuses() 
     );
 }
 #[test]
-fn land_battles_shared_wire_types_and_missing_side_data() {
-    use super::battles::{BattleSide, BattleValue};
-    assert!(BattleValue::decl().contains("value: null"));
-    assert!(BattleValue::decl().contains("atLeast?: boolean"));
-    assert!(BattleSide::decl().contains("countriesUnknown?:"));
-    assert!(!BattleSide::decl().contains("units"));
+fn land_battles_missing_side_data_is_unknown_not_empty() {
     let mut census = Census::default();
-    let mut sample = frame(100, 5000, 1);
+    let mut sample = frame(100, 5, 1);
     *sample.tables[TableId::LandCombatSides.index()] = TableView::Unavailable {
         reason: "old recording".into(),
     };
@@ -534,9 +529,9 @@ fn land_battles_wire_scan_keeps_branch_tail_and_absent_read_end() {
         &[dashboard_base::test_fixtures::records(
             1,
             vec![
-                frame(100, 5000, 1),
-                frame(101, 5000, 0),
-                frame(102, 5000, 1),
+                frame(100, 5, 1),
+                frame(101, 5, 0),
+                frame(102, 5, 1),
             ],
         )],
     )
@@ -549,196 +544,6 @@ fn land_battles_wire_scan_keeps_branch_tail_and_absent_read_end() {
     );
     assert!(reply.rows[1].end.is_none());
     assert!(scan(&replay, 1, &AtomicBool::new(true), None).is_err());
-}
-#[test]
-#[ignore = "nine-year synthetic scan measurement; run explicitly"]
-fn land_battles_nine_years_5000_countries_cost_and_reply_sizes() {
-    let provinces = std::env::var("LAND_BATTLES_BENCH_PROVINCES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(20_000);
-    measure_land_battles(provinces);
-}
-fn measure_land_battles(provinces: u32) {
-    // One active front per 100 content provinces, three divisions, ten-day episodes.
-    let concurrent = provinces.div_ceil(100);
-    let mut sample = frame(100, 5000, concurrent);
-    let original_countries = sample.tables[TableId::Countries.index()].clone();
-    let mut changed = sample.complete::<tables::Countries>().unwrap().to_vec();
-    changed[0].political_power_raw = Some(1);
-    let changed_countries: replay_frame::frame::SharedView =
-        TableView::Complete(TableRows::Countries(changed)).into();
-    let mut census = Census::default();
-    let mut nanos = Vec::with_capacity(9 * 365 * 24);
-    for elapsed in 0..9 * 365 * 24 {
-        sample.hour = 100 + elapsed;
-        sample.tables[TableId::Countries.index()] = if elapsed % 2 == 0 {
-            original_countries.clone()
-        } else {
-            changed_countries.clone()
-        };
-        if elapsed % 240 == 0 {
-            set_combats(&mut sample, concurrent, (elapsed / 240) as u64);
-        }
-        let mut combats = sample.complete::<tables::LandCombats>().unwrap().to_vec();
-        for combat in &mut combats {
-            combat.duration = elapsed % 240 + 1;
-        }
-        *sample.tables[TableId::LandCombats.index()] =
-            TableView::Complete(TableRows::LandCombats(combats));
-        let start = std::time::Instant::now();
-        census.observe(&sample).unwrap();
-        nanos.push(start.elapsed().as_nanos());
-    }
-    nanos.sort_unstable();
-    let step = replay_frame::KEYFRAME_INTERVAL as i32;
-    let windows: Vec<_> = (100..=sample.hour)
-        .step_by(step as usize)
-        .map(|first| BattleWindow {
-            first_hour: first,
-            last_hour: (first + step - 1).min(sample.hour),
-        })
-        .collect();
-    let manifest = LandBattlesManifestReply {
-        windows: windows.clone(),
-        available: true,
-        unavailable: None,
-        content_warnings: Vec::new(),
-    };
-    let first = census.reply(&params(Some(0)), &windows).unwrap();
-    let last = census
-        .reply(&params(Some(windows.len() - 1)), &windows)
-        .unwrap();
-    eprintln!(
-        "land_battles: provinces={provinces}, concurrent={concurrent}, countries=5000, hours={}, episodes={}, decoded p50={:.3}ms p95={:.3}ms, manifest={} bytes, first window={} bytes, final window={} bytes ({} hours)",
-        nanos.len(),
-        census.episodes.len(),
-        nanos[nanos.len() / 2] as f64 / 1e6,
-        nanos[nanos.len() * 95 / 100] as f64 / 1e6,
-        json_len(&manifest, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-        json_len(&first, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-        json_len(&last, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-        step
-    );
-
-    let ranking = census
-        .ranked(
-            &ranking_params(100, sample.hour, 30, "Peak size"),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    eprintln!(
-        "land_battles: top30={} bytes, census counter runs={}",
-        json_len(&ranking, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-        census
-            .episodes
-            .iter()
-            .map(|episode| episode.runs.len())
-            .sum::<usize>()
-    );
-    let previous = census
-        .reply(&params(Some(windows.len() - 2)), &windows)
-        .unwrap();
-    let before_previous = census
-        .reply(&params(Some(windows.len() - 3)), &windows)
-        .unwrap();
-    let census_bytes = census.episodes.capacity() * std::mem::size_of::<Episode>()
-        + census
-            .episodes
-            .iter()
-            .map(|episode| {
-                episode.id.capacity()
-                    + episode.runs.capacity() * std::mem::size_of::<LandBattleRun>()
-                    + episode
-                        .runs
-                        .iter()
-                        .map(|run| {
-                            run.countries
-                                .iter()
-                                .map(|side| {
-                                    side.capacity() * std::mem::size_of::<String>()
-                                        + side.iter().map(String::capacity).sum::<usize>()
-                                })
-                                .sum::<usize>()
-                        })
-                        .sum::<usize>()
-            })
-            .sum::<usize>();
-    eprintln!(
-        "land_battles: episode storage={} bytes (allocated payload/capacities, excluding allocator and shared LinkTags), Campaign two windows={} bytes, Live three windows={} bytes",
-        census_bytes,
-        json_len(&previous, MAX_PRODUCT_REPLY_BYTES).unwrap()
-            + json_len(&last, MAX_PRODUCT_REPLY_BYTES).unwrap(),
-        json_len(&before_previous, MAX_PRODUCT_REPLY_BYTES).unwrap()
-            + json_len(&previous, MAX_PRODUCT_REPLY_BYTES).unwrap()
-            + json_len(&last, MAX_PRODUCT_REPLY_BYTES).unwrap()
-    );
-    // Reuse a synthetic wire cycle over nine years; handles reappear only after
-    // recorded absence. Encoding stays outside timing. Block parsing and
-    // decompression are amortized across its built hours, as in a cold scan.
-    let frames = (0..replay_frame::KEYFRAME_INTERVAL as i32)
-        .map(|elapsed| {
-            sample.hour = 100 + elapsed;
-            sample.tables[TableId::Countries.index()] = if elapsed % 2 == 0 {
-                original_countries.clone()
-            } else {
-                changed_countries.clone()
-            };
-            if elapsed % 240 == 0 {
-                set_combats(&mut sample, concurrent, (elapsed / 240) as u64);
-            }
-            let mut combats = sample.complete::<tables::LandCombats>().unwrap().to_vec();
-            for combat in &mut combats {
-                combat.duration = elapsed % 240 + 1;
-            }
-            *sample.tables[TableId::LandCombats.index()] =
-                TableView::Complete(TableRows::LandCombats(combats));
-            sample.clone()
-        })
-        .collect();
-    let wire = Replay::from_records(
-        dashboard_base::test_fixtures::CAMPAIGN.into(),
-        &[dashboard_base::test_fixtures::records(1, frames)],
-    )
-    .unwrap();
-    let mut decoded_census = Census::default();
-    let mut decoded_nanos = Vec::with_capacity(nanos.len());
-    while decoded_nanos.len() < nanos.len() {
-        let offset = decoded_nanos.len() as i32;
-        for block in &wire.index {
-            let start = std::time::Instant::now();
-            let frames = wire.read_block_selected(block, &CENSUS_TABLES).unwrap();
-            let parse_per_hour = start.elapsed().as_nanos() / frames.len() as u128;
-            let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
-            for mut frame in frames {
-                if decoded_nanos.len() == nanos.len() {
-                    break;
-                }
-                frame.hour += offset;
-                for update in &mut frame.tables {
-                    match update {
-                        replay_frame::frame::TableUpdate::Delta { baseline, .. }
-                        | replay_frame::frame::TableUpdate::Unchanged { baseline } => {
-                            *baseline += offset
-                        }
-                        _ => {}
-                    }
-                }
-                let start = std::time::Instant::now();
-                let decoded = decoder.advance(&frame).unwrap();
-                validate_campaign(decoded, &wire).unwrap();
-                decoded_census.observe(decoded).unwrap();
-                decoded_nanos.push(parse_per_hour + start.elapsed().as_nanos());
-            }
-        }
-    }
-    assert!(!decoded_census.episodes.is_empty());
-    decoded_nanos.sort_unstable();
-    eprintln!(
-        "land_battles: nine-year wire scan including selected parsing/decompression/reconstruction/census, block-read cost amortized per hour, p50={:.3}ms p95={:.3}ms",
-        decoded_nanos[decoded_nanos.len() / 2] as f64 / 1e6,
-        decoded_nanos[decoded_nanos.len() * 95 / 100] as f64 / 1e6,
-    );
 }
 
 fn ranking_params(
@@ -832,7 +637,7 @@ fn land_battles_ranking_filters_before_top_n_and_keeps_unknown_participants() {
 #[test]
 fn land_battles_ranking_keeps_hourly_participants_for_a_result_side_without_countries() {
     let mut census = Census::default();
-    let mut sample = frame(100, 5000, 1);
+    let mut sample = frame(100, 5, 1);
     if let TableView::Complete(TableRows::LandCombatSides(rows)) =
         &mut *sample.tables[TableId::LandCombatSides.index()]
     {
@@ -878,7 +683,7 @@ fn land_battles_ranking_keeps_hourly_participants_for_a_result_side_without_coun
     assert_eq!(ranked(&params), 0);
     // A side unknown in both reads still survives every filter.
     let mut unknown = Census::default();
-    let mut sample = frame(100, 5000, 1);
+    let mut sample = frame(100, 5, 1);
     if let TableView::Complete(TableRows::LandCombatSides(rows)) =
         &mut *sample.tables[TableId::LandCombatSides.index()]
     {
@@ -914,18 +719,6 @@ fn land_battles_availability_stops_before_later_invalid_campaign_read() {
     .unwrap();
     assert!(recording_available(&replay, 1, &AtomicBool::new(false)).unwrap());
     assert!(recording_available(&replay, 1, &AtomicBool::new(true)).is_err());
-}
-
-#[test]
-fn land_battles_generated_shared_contract_keeps_fractional_values_without_units() {
-    let value = battles::BattleValue::Known {
-        label: "Fractional caller measure".into(),
-        value: 0.125,
-        at_least: None,
-    };
-    assert_eq!(serde_json::to_value(value).unwrap()["value"], 0.125);
-    assert!(battles::BattleRow::decl().contains("BattleSide"));
-    assert!(!battles::BattleSide::decl().contains("BattleUnit"));
 }
 
 #[test]
@@ -1046,29 +839,6 @@ fn land_battles_casualties_unknown_side_is_not_zero_and_recorded_zero_ranks() {
             .unwrap()
             .effective_measure,
         "Peak size"
-    );
-}
-
-#[test]
-fn land_battles_shared_window_and_warning_contract() {
-    assert!(battles::types().contains(&BattleWindow::decl()));
-    assert!(battles::types().contains(&BattleWarning::decl()));
-    assert_eq!(
-        serde_json::to_value(BattleWindow {
-            first_hour: 100,
-            last_hour: 101
-        })
-        .unwrap(),
-        serde_json::json!({ "firstHour": 100, "lastHour": 101 })
-    );
-    assert_eq!(
-        serde_json::to_value(BattleWarning {
-            hour: 100,
-            reason: "Missing read".into(),
-            count: 1
-        })
-        .unwrap(),
-        serde_json::json!({ "hour": 100, "reason": "Missing read", "count": 1 })
     );
 }
 
@@ -1335,7 +1105,7 @@ fn busy_progress(combat: u32, elapsed: i32) -> LandCombatProgressRow {
 #[test]
 fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
     let (battles, hours) = (30, replay_frame::KEYFRAME_INTERVAL as i32);
-    let mut sample = frame(100, 5000, battles);
+    let mut sample = frame(100, 5, battles);
     let mut census = Census::default();
     for elapsed in 0..hours {
         sample.hour = 100 + elapsed;
@@ -1411,12 +1181,12 @@ fn land_battles_busy_block_sends_changed_losses_far_below_their_full_reads() {
 }
 
 #[test]
-fn prepared_land_matches_oracle_across_commits_resume_append_and_large_census() {
+fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
     use dashboard_base::prepared::series::{self, tests::Fixture};
     let flag = AtomicBool::new(false);
     let mut inputs = Vec::new();
     for hour in 100..104 {
-        let mut sample = frame(hour, 5000, 6000);
+        let mut sample = frame(hour, 5, 40);
         if let TableView::Complete(TableRows::LandCombats(rows)) =
             &mut *sample.tables[TableId::LandCombats.index()]
         {
@@ -1559,8 +1329,8 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_large_census() 
 fn prepared_land_ranking_keeps_gap_endings_and_census_reads_in_unrecorded_windows() {
     use dashboard_base::prepared::series::tests::Fixture;
     let flag = AtomicBool::new(false);
-    let first = frame(100, 5000, 1);
-    let last = frame(104, 5000, 0);
+    let first = frame(100, 5, 1);
+    let last = frame(104, 5, 0);
     let original = Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(

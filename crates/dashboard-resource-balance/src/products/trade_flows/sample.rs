@@ -74,11 +74,6 @@ impl Query {
         let _cpu = replay_frame::cpu::scope_phase("trade:query_flows");
         sample_inputs(frame, requested, &inputs)
     }
-    #[cfg(test)]
-    pub(super) fn visits(&self) -> (usize, usize) {
-        let inputs = self.inputs.borrow();
-        (inputs.country_visits, inputs.row_visits)
-    }
 }
 
 /// Country selectors have an empty field; native flow tokens select particular fields.

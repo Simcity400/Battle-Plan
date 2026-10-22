@@ -1173,6 +1173,7 @@ mod bytes_tests {
 
     /// Every naming change keeps its operands' own strings, so the naming
     /// history holds at least each cosmetic tag once per country and hour.
+    // regression: 36c91d8fee Count the naming operands a casualty block's history keeps
     #[test]
     fn naming_history_bytes_grow_with_countries_times_hours() {
         let per = COSMETIC as u64;
