@@ -195,25 +195,32 @@ impl Product for Wargoals {
             (Err(why), _) => Err(why.clone()),
             _ => Err("War-goal content is unavailable".into()),
         };
-        let mut tables = TABLES.to_vec();
-        tables.extend(installed_content_country_names::country_names::TABLES);
-        tables.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
-        tables.sort_by_key(|t| t.index());
-        tables.dedup();
-        let frame = match source.replay_ref().seek_selected(
-            p.branch_id
-                .parse()
-                .map_err(|_| io::Error::other("Invalid war-goal branch"))?,
-            p.hour,
-            Some(&tables),
-        )? {
-            SeekResult::Frame(frame) => frame,
-            SeekResult::Gap { reason, .. } => {
-                return Err(io::Error::other(format!(
+        let branch = p
+            .branch_id
+            .parse()
+            .map_err(|_| io::Error::other("Invalid war-goal branch"))?;
+        // Through the shared frame cache, which keeps a gap's reason.
+        let read = |tables: &[TableId]| -> io::Result<_> {
+            match dashboard_base::prepared::query::frames::seek(
+                source, branch, p.hour, tables, cancelled,
+            )? {
+                SeekResult::Frame(frame) => Ok(frame),
+                SeekResult::Gap { reason, .. } => Err(io::Error::other(format!(
                     "War goals not recorded: {reason}"
-                )));
+                ))),
             }
         };
+        let mut tables = TABLES.to_vec();
+        tables.extend(installed_content_country_names::country_names::TABLES);
+        tables.sort_by_key(|t| t.index());
+        tables.dedup();
+        let mut frame = read(&tables)?;
+        if describes_gates(&frame, &p.tag, definitions.as_ref().ok().copied()) {
+            tables.extend_from_slice(dashboard_text::triggers::RECORDED_TABLES);
+            tables.sort_by_key(|t| t.index());
+            tables.dedup();
+            frame = read(&tables)?;
+        }
         let slot = frame
             .complete::<tables::Countries>()?
             .iter()
@@ -351,6 +358,54 @@ impl Product for Wargoals {
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+/// Whether the selected country holds a goal or justification whose terms have
+/// an allowed or available gate: describing one reads the trigger world.
+fn describes_gates(
+    frame: &DecodedFrame,
+    tag: &str,
+    definitions: Option<&installed_content_wargoals::wargoals::Database>,
+) -> bool {
+    let Some(definitions) = definitions else {
+        return false;
+    };
+    let (Ok(countries), Ok(links), Ok(tokens), Ok(goals), Ok(justifications)) = (
+        frame.complete::<tables::Countries>(),
+        frame.complete::<tables::CountryLinks>(),
+        frame.complete::<tables::LexicalTokens>(),
+        frame.complete::<tables::CountryWargoals>(),
+        frame.complete::<tables::WargoalJustifications>(),
+    ) else {
+        // The inventory refuses before it describes a gate.
+        return false;
+    };
+    let Some(selected) = countries.iter().find(|c| c.tag == tag.as_bytes()) else {
+        return false;
+    };
+    let slots: BTreeMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
+    let same = |raw: u32| slots.get(&raw) == Some(&selected.canonical_slot);
+    let literals: BTreeMap<_, _> = tokens
+        .iter()
+        .map(|r| (r.token, r.literal.as_slice()))
+        .collect();
+    goals
+        .iter()
+        .filter(|r| same(r.country))
+        .map(|r| r.goal_type)
+        .chain(
+            justifications
+                .iter()
+                .filter(|r| same(r.country))
+                .map(|r| r.goal_type),
+        )
+        .any(|token| {
+            literals.get(&token).is_some_and(|literal| {
+                definitions
+                    .terms(literal)
+                    .is_ok_and(|term| !term.allowed.is_empty() || !term.available.is_empty())
+            })
+        })
 }
 
 fn invalid(why: impl Into<String>) -> io::Error {
