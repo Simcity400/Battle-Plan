@@ -139,7 +139,9 @@ struct ContentCache {
     catalogue: Arc<Catalogue>,
     /// By token and which declaration of it (from 1).
     resources: BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
-    warnings: Vec<String>,
+    /// The standing notes and every warning reading names and icons made, in order, each with
+    /// what it is about.
+    warnings: Vec<(Note, String)>,
 }
 
 /// A declaration's name and icon from content.
@@ -247,6 +249,30 @@ pub fn resource_content(
     warnings: &mut Vec<String>,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<dashboard_core::findings::Finding>> {
+    resource_content_noted(
+        view,
+        wanted,
+        cached,
+        &mut |_, warning| warnings.push(warning),
+        cancelled,
+    )
+}
+
+/// What a resource warning is about: the resource's name, or the art its icon is drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Note {
+    Name,
+    Art,
+}
+
+/// [`resource_content`], each warning given to `note` with what it is about, in order.
+fn resource_content_noted(
+    view: &ContentView,
+    wanted: &[(String, u32)],
+    cached: &mut BTreeMap<(String, u32), catalogue::Drawn<Declared>>,
+    note: &mut dyn FnMut(Note, String),
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<dashboard_core::findings::Finding>> {
     use dashboard_core::findings::{Finding, Kind};
     let missing: Vec<&(String, u32)> = wanted
         .iter()
@@ -263,13 +289,15 @@ pub fn resource_content(
                     .iter()
                     .map(|note| Finding::new(Kind::Warning, "resource icons", note)),
             );
-            warnings.extend(notes);
+            for warning in notes {
+                note(Note::Art, warning);
+            }
             Some(icons)
         }
         Err(error) => {
             let message = format!("Resource icons are unavailable: {error}");
             findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-            warnings.push(message);
+            note(Note::Art, message);
             None
         }
     };
@@ -278,7 +306,7 @@ pub fn resource_content(
         (Some(_), Err(why)) => {
             let message = format!("Resource icons are unavailable: {why}");
             findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-            warnings.push(message);
+            note(Note::Art, message);
             None
         }
         (None, _) => None,
@@ -331,7 +359,9 @@ pub fn resource_content(
         }
         findings.extend(name_findings);
         if *ordinal == 1 {
-            warnings.extend(notes);
+            for warning in notes {
+                note(Note::Name, warning);
+            }
         }
         let Some(icons) = &icons else {
             let declared = catalogue::Drawn::new(|| Declared { name, icon: None });
@@ -355,7 +385,7 @@ pub fn resource_content(
                         refused = true;
                         let message = format!("Resource icons are unavailable: {error}");
                         findings.push(Finding::new(Kind::Refused, "resource icons", &message));
-                        warnings.push(message);
+                        note(Note::Art, message);
                         None
                     }
                 },
@@ -368,7 +398,7 @@ pub fn resource_content(
                         format!("resource {token} declaration {ordinal}"),
                         &message,
                     ));
-                    warnings.push(message);
+                    note(Note::Art, message);
                     None
                 }
             };
@@ -383,15 +413,49 @@ pub fn resource_content(
 
 /// Every recorded resource (native index and token, in the game's order) with its
 /// content name and icon, and the warnings that go with them. Without the game
-/// folders each keeps its token and has no icon, and a warning says why.
+/// folders each keeps its token and has no icon, and a warning says why. Names are the
+/// recording's; while the request shows visual mods, icons are drawn as it shows them, each one
+/// operation ([`present_stored`]), so where the selection cannot draw one the recording's own
+/// is drawn, named, as every resource widget draws it, and the art warnings are the chosen
+/// draws'. Art that cannot be drawn at all leaves the names, by why.
 pub fn resource_infos(
     source: &Source,
     context: &LoadContext,
     resources: &[(u32, String)],
     cancelled: &AtomicBool,
 ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
-    ResourceNaming::of(source, context).infos(resources, cancelled)
+    let naming = ResourceNaming::stored(source, context);
+    let Some(content) = context
+        .content()
+        .ok()
+        .filter(|content| content.presentation.shows_mods())
+    else {
+        return naming.infos(resources, cancelled);
+    };
+    let (mut infos, mut warnings) =
+        infos(&naming.catalogue, &naming.cache, resources, cancelled, false)?;
+    match present_icons(source, Some(content), &mut infos, cancelled) {
+        Ok(refused) => warnings.extend(
+            refused
+                .into_iter()
+                .map(|why| format!("Resource icons are unavailable: {why}")),
+        ),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        Err(error) => {
+            for info in &mut infos {
+                info.icon = None;
+            }
+            warnings.push(format!("Resource icons are unavailable: {error}"));
+        }
+    }
+    if infos.iter().any(|resource| resource.icon.is_some()) {
+        warnings.push(ARTWORK_NOTE.to_owned());
+    }
+    Ok((infos, warnings))
 }
+
+/// What a reply showing resource icons says of where they come from.
+const ARTWORK_NOTE: &str = "Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.";
 
 /// [`resource_infos`] for payloads the prepared store keeps ([`ResourceNaming::stored`]).
 pub fn stored_resource_infos(
@@ -412,8 +476,20 @@ pub fn present_stored(
     resources: &mut [ResourceInfo],
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
+    present_icons(source, content, resources, cancelled).map(|_| ())
+}
+
+/// [`present_stored`], with why each icon neither the selection nor the recording draws is
+/// unavailable, each reason once.
+fn present_icons(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    resources: &mut [ResourceInfo],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeSet<String>> {
+    let mut refused = BTreeSet::new();
     let Some((admitted, recorded)) = catalogue::presenting(source, content)? else {
-        return Ok(());
+        return Ok(refused);
     };
     let state = source.state::<catalogue::ByCatalogue<ResourceArt>>();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -434,17 +510,20 @@ pub fn present_stored(
             ));
         }
         let key = (resource.token.clone(), resource.ordinal);
-        resource.icon = drawn
-            .get(
-                key,
-                || format!("resource {} icon", resource.token),
-                |catalogue| resource_icon(catalogue, frames, &resource.token, resource.ordinal),
-            )
-            .as_ref()
-            .ok()
-            .cloned();
+        let shown = drawn.get(
+            key,
+            || format!("resource {} icon", resource.token),
+            |catalogue| resource_icon(catalogue, frames, &resource.token, resource.ordinal),
+        );
+        resource.icon = match shown {
+            Ok(icon) => Some(icon.clone()),
+            Err(why) => {
+                refused.insert(why.clone());
+                None
+            }
+        };
     }
-    Ok(())
+    Ok(refused)
 }
 
 /// The recorded frames of each resource declaration and the icons drawn for one selection; one
@@ -523,19 +602,9 @@ pub struct ResourceNaming {
 }
 
 impl ResourceNaming {
-    /// Naming as a reply shows it when it answers: icons follow the source's visual mods.
-    pub fn of(source: &Source, context: &LoadContext) -> Self {
-        Self {
-            catalogue: context
-                .content()
-                .and_then(|content| catalogue::catalogue(source, content))
-                .map_err(|error| error.to_string()),
-            cache: source.state(),
-        }
-    }
-
-    /// Naming for payloads the prepared store keeps by recorded content alone: icons are the
-    /// recording's (`catalogue::recorded_catalogue`), which their replies name by product.
+    /// Naming as the recording gives it: names, warnings and the recording's own icons
+    /// (`catalogue::recorded_catalogue`), which a reply showing visual mods draws again as it
+    /// shows them ([`present_stored`]); what preparation publishes for the prepared store.
     pub fn stored(source: &Source, context: &LoadContext) -> Self {
         Self {
             catalogue: context
@@ -546,21 +615,24 @@ impl ResourceNaming {
         }
     }
 
-    /// [`resource_infos`] of `resources`.
+    /// [`resource_infos`] of `resources`, with the recording's icons and their warnings.
     pub fn infos(
         &self,
         resources: &[(u32, String)],
         cancelled: &AtomicBool,
     ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
-        infos(&self.catalogue, &self.cache, resources, cancelled)
+        infos(&self.catalogue, &self.cache, resources, cancelled, true)
     }
 }
 
+/// The names and the recording's icons of `resources`, with the warnings reading them made: the
+/// art warnings and the artwork note only with `art`, for a reply that shows these icons.
 fn infos(
     catalogue: &Result<Arc<Catalogue>, String>,
     state: &std::sync::Mutex<catalogue::ByCatalogue<ContentState>>,
     resources: &[(u32, String)],
     cancelled: &AtomicBool,
+    art: bool,
 ) -> io::Result<(Vec<ResourceInfo>, Vec<String>)> {
     let mut warnings = Vec::new();
     let ordinals = ordinals(resources);
@@ -588,8 +660,12 @@ fn infos(
                 .as_ref()
                 .is_some_and(|cached| Arc::ptr_eq(&cached.catalogue, catalogue))
             {
-                let mut standing = catalogue.verification.clone();
-                standing.extend(catalogue.warnings.iter().cloned());
+                let standing = catalogue
+                    .verification
+                    .iter()
+                    .chain(&catalogue.warnings)
+                    .map(|warning| (Note::Name, warning.clone()))
+                    .collect();
                 cache.content = Some(ContentCache {
                     catalogue: Arc::clone(catalogue),
                     resources: BTreeMap::new(),
@@ -597,14 +673,21 @@ fn infos(
                 });
             }
             let content = cache.content.as_mut().expect("content cached");
-            resource_content(
+            let kept = &mut content.warnings;
+            resource_content_noted(
                 &ContentView::of(catalogue),
                 &declarations,
                 &mut content.resources,
-                &mut content.warnings,
+                &mut |about, warning| kept.push((about, warning)),
                 cancelled,
             )?;
-            warnings.extend(content.warnings.iter().cloned());
+            warnings.extend(
+                content
+                    .warnings
+                    .iter()
+                    .filter(|(about, _)| art || *about == Note::Name)
+                    .map(|(_, warning)| warning.clone()),
+            );
             let infos: Vec<ResourceInfo> = declarations
                 .iter()
                 .enumerate()
@@ -612,8 +695,8 @@ fn infos(
                     info(index, content.resources.get(key).map(catalogue::Drawn::get))
                 })
                 .collect();
-            if infos.iter().any(|resource| resource.icon.is_some()) {
-                warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
+            if art && infos.iter().any(|resource| resource.icon.is_some()) {
+                warnings.push(ARTWORK_NOTE.to_owned());
             }
             infos
         }
@@ -878,6 +961,128 @@ mod tests {
             assert_eq!(first_pixel(resources[0].icon.as_deref().unwrap()), RED);
             assert!(line.is_some_and(|line| line.contains("resource oil icon")));
         }
+    }
+
+    /// A reply that names resources when it answers (faction details) draws their icons as the
+    /// prepared families do: the mod's selector picks B, which the mod cannot draw, so the
+    /// recording's own choice, A, is drawn and named on every reply; the names stay the
+    /// recording's. Without a selection the reply is drawn as it is.
+    #[test]
+    fn resources_named_when_a_reply_answers_make_the_recordings_own_choice_again() {
+        use crate::test_fixtures::visual_mods::{
+            GREEN, Machine, RED, fallback_line, first_pixel, png, select,
+        };
+        let gui = |sprite: &str| {
+            format!(
+                "guiTypes = {{ containerWindowType = {{ name = resources_info_entry                  buttonType = {{ name = resources_icon spriteType = {sprite} }} }} }}"
+            )
+        };
+        let machine = Machine::new("resource_reply_selection");
+        machine.write("interface/resources.gui", gui("GFX_a").as_bytes());
+        machine.write(
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/b.png } }",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        machine.write("gfx/b.png", &png(GREEN));
+        machine.write("common/resources/00.txt", b"resources = { oil = { icon_frame = 1 } }");
+        machine.write_mod("selector", "interface/resources.gui", gui("GFX_b").as_bytes());
+        machine.write_mod(
+            "selector",
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/broken.png } }",
+        );
+        machine.write_mod("selector", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        let cancelled = AtomicBool::new(false);
+        let reply = |options: &crate::products::ContentOptions| {
+            let context = LoadContext {
+                content: Some(options.clone()),
+            };
+            let ((infos, _), line) = fallback_line(|| {
+                resource_infos(&source, &context, &[(3, "oil".into())], &cancelled).unwrap()
+            });
+            assert_eq!((infos[0].id, infos[0].ordinal), (3, 1));
+            (first_pixel(infos[0].icon.as_deref().unwrap()), line)
+        };
+        select(&source, &mut options, &[]);
+        assert_eq!(reply(&options), (RED, None));
+        select(&source, &mut options, &["selector"]);
+        for _ in 0..2 {
+            let (colour, line) = reply(&options);
+            assert_eq!(colour, RED, "the recording's own choice");
+            assert!(line.is_some_and(|line| line.contains("resource oil icon")));
+        }
+    }
+
+    /// While mods are shown, a reply naming resources keeps only its chosen draws' art warnings:
+    /// a recording without the trade view's icon binding that a mod supplies draws the mod's
+    /// icon with no word of the recording's missing one; and art that cannot be drawn at all (the
+    /// recorded definitions unreadable) leaves the names, by why, rather than failing the reply.
+    #[test]
+    fn resources_named_when_a_reply_answers_keep_their_names_and_the_chosen_art_warnings() {
+        use crate::test_fixtures::visual_mods::{BLUE, Machine, first_pixel, png, select};
+        let machine = Machine::new("resource_reply_warnings");
+        machine.write("common/resources/00.txt", b"resources = { oil = { icon_frame = 1 } }");
+        machine.write_mod(
+            "binding",
+            "interface/resources.gui",
+            b"guiTypes = { containerWindowType = { name = resources_info_entry               buttonType = { name = resources_icon spriteType = GFX_strip } } }",
+        );
+        machine.write_mod(
+            "binding",
+            "interface/resources.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_strip textureFile = gfx/strip.png } }",
+        );
+        machine.write_mod("binding", "gfx/strip.png", &png(BLUE));
+        let (source, mut options) = machine.open();
+        let cancelled = AtomicBool::new(false);
+        let reply = |options: &crate::products::ContentOptions| {
+            resource_infos(
+                &source,
+                &LoadContext {
+                    content: Some(options.clone()),
+                },
+                &[(3, "oil".into())],
+                &cancelled,
+            )
+        };
+        select(&source, &mut options, &[]);
+        let (infos, warnings) = reply(&options).unwrap();
+        assert_eq!(infos[0].icon, None);
+        assert!(
+            warnings.iter().any(|why| why.starts_with("Resource icons are unavailable")),
+            "{warnings:?}"
+        );
+        select(&source, &mut options, &["binding"]);
+        let (infos, warnings) = reply(&options).unwrap();
+        assert_eq!(first_pixel(infos[0].icon.as_deref().unwrap()), BLUE);
+        assert!(
+            !warnings.iter().any(|why| why.starts_with("Resource icons are unavailable")),
+            "{warnings:?}"
+        );
+        // Recorded definitions listed when the content was mounted and gone when the art reads
+        // them, on a source that has drawn nothing yet.
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["binding"]);
+        catalogue::catalogue(&source, &options).unwrap();
+        std::fs::remove_file(machine.root.join("common/resources/00.txt")).unwrap();
+        let (infos, warnings) = resource_infos(
+            &source,
+            &LoadContext {
+                content: Some(options.clone()),
+            },
+            &[(3, "oil".into())],
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(infos[0].token, "oil");
+        assert!(infos[0].name.is_some(), "{infos:?}");
+        assert_eq!(infos[0].icon, None);
+        assert!(
+            warnings.iter().any(|why| why.starts_with("Resource icons are unavailable")),
+            "{warnings:?}"
+        );
     }
 
     /// The A/B selection, with an ordinary draw of the mod's B (which falls back to the

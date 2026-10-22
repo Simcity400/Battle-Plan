@@ -12,7 +12,7 @@ use dashboard_text::{
     catalogue::Catalogue,
     metadata::{link_slot, tagged_country, validate_campaign},
 };
-use installed_content_core::equipment::Database;
+use installed_content_core::{content::ArtworkMode, equipment::Database};
 use replay::container::SeekResult;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
@@ -156,12 +156,53 @@ fn best_variants(
         .collect())
 }
 
+/// The icon content and pictures of the catalogue a request shows and, when it shows visual mods,
+/// of the recording's own catalogue it keeps ([`Catalogue::recorded`]): the selector and the
+/// picture run against either ([`catalogue::draw`]).
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     content: Option<Arc<IconContent>>,
-    images: BTreeMap<Icon, catalogue::Drawn<Result<String, String>>>,
-    image_bytes: usize,
+    recorded: Option<Arc<IconContent>>,
+    images: Images,
+}
+
+/// Each picture by the catalogue it was drawn through (the recording's own or the shown one),
+/// the artwork mode it was drawn in and its icon, with their retained bytes.
+#[derive(Default)]
+struct Images {
+    drawn: BTreeMap<(bool, ArtworkMode, Icon), catalogue::Drawn<Result<String, String>>>,
+    bytes: usize,
+}
+
+impl Images {
+    /// `icon`'s picture through `cat`, drawn once per catalogue and mode.
+    fn get(&mut self, recorded: bool, cat: &Catalogue, icon: &Icon) -> Result<String, String> {
+        let key = (recorded, installed_content_core::content::artwork_mode(), icon.clone());
+        if let Some(image) = self.drawn.get(&key) {
+            return image.get().clone();
+        }
+        let drawn = catalogue::Drawn::new(|| {
+            equipment_icon::image(cat, icon, dashboard_base::products::artwork::ICON_EDGE)
+                .map_err(|why| why.to_string())
+        });
+        let image = drawn.get().clone();
+        let bytes = match &image {
+            Ok(text) | Err(text) => text.len(),
+        } + match icon {
+            Icon::Path(key) | Icon::Sprite(key) => key.len(),
+        };
+        let budget = dashboard_base::products::artwork::MAX_RETAINED_ARTWORK_BYTES;
+        if bytes <= budget {
+            if self.bytes > budget - bytes {
+                self.drawn.clear();
+                self.bytes = 0;
+            }
+            self.bytes += bytes;
+            self.drawn.insert(key, drawn);
+        }
+        image
+    }
 }
 
 impl Product for StockpileArtwork {
@@ -298,17 +339,34 @@ impl Product for StockpileArtwork {
             .as_ref()
             .is_some_and(|held| Arc::ptr_eq(held, &catalogue))
         {
-            cache.content = Some(Arc::new(IconContent::with_equipment(
-                Arc::clone(&catalogue),
-                Some(database),
-            )?));
-            cache.catalogue = Some(Arc::clone(&catalogue));
-            cache.images.clear();
-            cache.image_bytes = 0;
+            let recorded = catalogue
+                .recorded()
+                .map(|recorded| {
+                    IconContent::with_equipment(Arc::clone(recorded), Some(Arc::clone(&database)))
+                        .map(Arc::new)
+                })
+                .transpose()?;
+            *cache = Cache {
+                content: Some(Arc::new(IconContent::with_equipment(
+                    Arc::clone(&catalogue),
+                    Some(database),
+                )?)),
+                recorded,
+                catalogue: Some(Arc::clone(&catalogue)),
+                images: Images::default(),
+            };
         }
-        let content = cache.content.as_ref().expect("icon content prepared");
+        let Cache {
+            content,
+            recorded,
+            images,
+            ..
+        } = &mut *cache;
+        let content = content.as_ref().expect("icon content prepared");
         reply.warnings.extend(content.warnings());
+        // The hour's operands are recorded facts, read alike from either content.
         let icon_hour = IconHour::read(&frame, content)?;
+        let images = std::cell::RefCell::new(images);
         for (key, id) in requested {
             if cancelled.load(Ordering::Acquire) {
                 return Err(io::Error::new(
@@ -327,56 +385,29 @@ impl Product for StockpileArtwork {
             if name.is_none() {
                 reply.warnings.push(format!("1 stockpile artwork name refused for variant {id}: absent from recorded content"));
             }
-            let selected = equipment_icon::variant_icon(
-                cache.content.as_ref().expect("icon content prepared"),
-                &icon_hour,
-                definition,
-                &raw.token,
-            );
-            let (icon, reason) = match selected {
-                Ok(Some(icon)) => {
-                    let decoded = match cache.images.get(&icon) {
-                        Some(image) => image.get().clone(),
-                        None => {
-                            let drawn = catalogue::Drawn::new(|| {
-                                equipment_icon::image(
-                                    &catalogue,
-                                    &icon,
-                                    dashboard_base::products::artwork::ICON_EDGE,
-                                )
-                                .map_err(|why| why.to_string())
-                            });
-                            let image = drawn.get().clone();
-                            let bytes = match &image {
-                                Ok(text) | Err(text) => text.len(),
-                            } + match &icon {
-                                Icon::Path(key) | Icon::Sprite(key) => key.len(),
-                            };
-                            let budget =
-                                dashboard_base::products::artwork::MAX_RETAINED_ARTWORK_BYTES;
-                            if bytes <= budget {
-                                if cache.image_bytes > budget - bytes {
-                                    cache.images.clear();
-                                    cache.image_bytes = 0;
-                                }
-                                cache.image_bytes += bytes;
-                                cache.images.insert(icon, drawn);
-                            }
-                            image
-                        }
+            // The native selector and the picture, as one operation through the catalogue drawing
+            // it: when the shown one cannot draw its choice, the recording's own choice is drawn.
+            let drawn = catalogue::draw(
+                || format!("equipment icon of variant {id}"),
+                &catalogue,
+                |cat| {
+                    let drawing_recorded = !std::ptr::eq(cat, &*catalogue);
+                    let content = if drawing_recorded {
+                        recorded.as_ref().expect("the recording's icon content prepared")
+                    } else {
+                        content
                     };
-                    match decoded {
-                        Ok(image) => (Some(image), None),
-                        Err(why) => (None, Some(why)),
+                    match equipment_icon::variant_icon(content, &icon_hour, definition, &raw.token)? {
+                        Some(icon) => images.borrow_mut().get(drawing_recorded, cat, &icon),
+                        None => Err(
+                            "The native icon selector found no picture in the recorded content"
+                                .to_owned(),
+                        ),
                     }
-                }
-                Ok(None) => (
-                    None,
-                    Some(
-                        "The native icon selector found no picture in the recorded content"
-                            .to_owned(),
-                    ),
-                ),
+                },
+            );
+            let (icon, reason) = match drawn.get().clone() {
+                Ok(image) => (Some(image), None),
                 Err(why) => (None, Some(why)),
             };
             if let Some(why) = &reason {

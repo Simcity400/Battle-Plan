@@ -54,6 +54,9 @@ test('wing details validate and efficiency keeps the game percent scale', () => 
 test('a mission icon is a strip frame or none, and anything else refuses the reply', () => {
   const base = { window: { firstHour: 0, lastHour: 0, known: [], reads: [], series: [] }, regions: [], warnings: [] };
   assert.equal(validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon: null }] }).missions[0].icon, null);
-  for (const icon of [undefined, 'GFX_strip', { key: 'GFX_strip', frame: -1 }, { key: 'GFX_strip', frame: 0.5 }])
+  const recorded = { key: 'GFX_strip', frame: 2, recorded: 'GFX_x' };
+  assert.deepEqual(validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon: recorded }] }).missions[0].icon, recorded);
+  for (const icon of [undefined, 'GFX_strip', { key: 'GFX_strip', frame: -1 }, { key: 'GFX_strip', frame: 0.5 },
+    { key: 'GFX_strip', frame: 0, recorded: 5 }, { key: 'GFX_strip', frame: 0, recorded: '' }])
     assert.throws(() => validateAirMissions({ ...base, missions: [{ id: '0', name: 'A', icon }] }), /malformed/u);
 });

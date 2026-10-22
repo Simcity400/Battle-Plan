@@ -6,7 +6,7 @@
 
 use crate::shared::{self, Choice, TheatreChoice};
 use dashboard_base::{
-    catalogue::{self, Refusals},
+    catalogue::{self, Catalogue, Refusals},
     prepared::{prepass::Family, query::progressive},
     products::{
         Product, ReplyWarnings,
@@ -280,11 +280,32 @@ const MISSION_KEYS: [&str; MISSIONS] = [
 ];
 
 /// The mission strip sprite the regional map's mission entry draws, resolved
-/// through the recorded stack's GUI registry: mission bit `b` is its one-based
-/// frame `b + 1`, which the sprite route draws as zero-based frame `b`.
-fn mission_strip(query: &Query<'_>) -> Result<String, String> {
+/// through the GUI registry of the catalogue the request shows: mission bit `b` is its one-based
+/// frame `b + 1`, which the sprite route draws as zero-based frame `b`. With the strip, the
+/// sprite the recording's own interface chooses in its place, when it differs
+/// ([`SpriteFrame::recorded`]): the choice is made with the drawing, so where the selection
+/// cannot make or draw its own, the recording's is drawn. When the selection cannot make its
+/// choice at all, the recording's is the strip, named.
+fn mission_strip(query: &Query<'_>) -> Result<(String, Option<String>), String> {
     let options = query.content.ok_or("Game folders are not chosen")?;
     let catalogue = catalogue::catalogue(query.source, options).map_err(|e| e.to_string())?;
+    let Some(recorded) = catalogue.recorded() else {
+        return strip_in(&catalogue).map(|key| (key, None));
+    };
+    let chosen = catalogue::present("air mission icons", &catalogue, recorded, |drawing| {
+        strip_in(drawing).map(|key| (key, !std::ptr::eq(drawing, &*catalogue)))
+    });
+    let (key, fell_back) = chosen.get().clone()?;
+    if fell_back {
+        return Ok((key.clone(), Some(key)));
+    }
+    let own = strip_in(recorded).ok().filter(|own| *own != key);
+    Ok((key, own))
+}
+
+/// The mission strip sprite `catalogue`'s mission entry template draws, validated as the sprite
+/// route draws it.
+fn strip_in(catalogue: &Catalogue) -> Result<String, String> {
     let guis = catalogue.guis().map_err(|e| e.to_string())?;
     let button = guis
         .template(MISSION_ENTRY_TEMPLATE)
@@ -292,7 +313,7 @@ fn mission_strip(query: &Query<'_>) -> Result<String, String> {
         .find(installed_content_core::gui::native::Kind::Button, "button")
         .and_then(|element| element.button())
         .ok_or_else(|| format!("GUI template {MISSION_ENTRY_TEMPLATE} has no button"))?;
-    sprites::icon_key(&catalogue, &button.sprite)
+    sprites::icon_key(catalogue, &button.sprite)
 }
 
 pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
@@ -349,9 +370,10 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
                     "Mission name unavailable".into()
                 });
             let icon = match strip.as_ref().expect("a mission column reads the strip") {
-                Ok(key) => Some(SpriteFrame {
+                Ok((key, recorded)) => Some(SpriteFrame {
                     key: key.clone(),
                     frame: bit as u32,
+                    recorded: recorded.clone(),
                 }),
                 Err(why) => {
                     notes.note(format!("icon: {why}"), format!("mission {bit}"));

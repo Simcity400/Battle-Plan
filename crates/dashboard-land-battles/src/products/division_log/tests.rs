@@ -639,3 +639,44 @@ fn prepared_division_resume_keeps_last_complete_presentation_and_witness_signatu
         serde_json::to_value(&oracle.events).unwrap()
     );
 }
+
+/// The recording draws a template by its unit's sprite (it declares no custom template sprite);
+/// a mod declares the custom one, which it cannot draw. The recording's own choice, the unit's
+/// sprite, is drawn and named, on the memoised reply too; without a selection it is drawn as
+/// it is, naming nothing.
+#[test]
+fn a_custom_template_icon_the_mod_cannot_draw_draws_the_recordings_own_choice() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("division_template_icon");
+    machine.write(
+        "interface/units.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_unit_infantry_icon_medium textureFile = gfx/unit.png } }",
+    );
+    machine.write("gfx/unit.png", &png(RED));
+    machine.write_mod(
+        "templates",
+        "interface/templates.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_div_templ_3_large textureFile = gfx/templ.png } }",
+    );
+    machine.write_mod("templates", "gfx/templ.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let drawn = |options: &dashboard_core::config::ContentOptions| {
+        let cat = catalogue::catalogue(&source, options).unwrap();
+        let (icon, line) = fallback_line(|| icon(&source, &cat, 1, 3, b"infantry"));
+        (first_pixel(&icon.unwrap()), line)
+    };
+    select(&source, &mut options, &[]);
+    assert_eq!(drawn(&options), (RED, None));
+    select(&source, &mut options, &["templates"]);
+    for _ in 0..2 {
+        let (colour, line) = drawn(&options);
+        assert_eq!(colour, RED, "the recording's own choice, the unit's sprite");
+        assert!(
+            line.as_ref()
+                .is_some_and(|line| line.contains("division template icon (infantry)")),
+            "{line:?}"
+        );
+    }
+}

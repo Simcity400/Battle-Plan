@@ -413,43 +413,7 @@ impl PoliticsContent {
     }
 
     pub fn sprite_png_sized(&self, name: &str, edge: u32) -> io::Result<Option<String>> {
-        let Some(sprite) = self.catalogue.sprites.find(name).map_err(crate::invalid)? else {
-            if name.starts_with("GFX_") || name.is_empty() {
-                return Ok(None);
-            }
-            let path = name
-                .split(['/', '\\'])
-                .filter(|part| !part.is_empty())
-                .collect::<Vec<_>>()
-                .join("/");
-            return catalogue::texture_png(
-                &self.catalogue.content.layers,
-                &path,
-                *self
-                    .catalogue
-                    .gui_decode
-                    .as_ref()
-                    .map_err(|why| crate::invalid(why.clone()))?,
-                1,
-                edge,
-            )
-            .map(Some);
-        };
-        if sprite.texture.is_none() {
-            return Ok(None);
-        }
-        catalogue::sprite_frame_png(
-            &self.catalogue.content.layers,
-            sprite,
-            *self
-                .catalogue
-                .gui_decode
-                .as_ref()
-                .map_err(|why| crate::invalid(why.clone()))?,
-            0,
-            edge,
-        )
-        .map(Some)
+        sprite_png_in(&self.catalogue, name, edge)
     }
 
     /// The first small portrait in native role order. An
@@ -487,46 +451,6 @@ impl PoliticsContent {
             }
         }
         Ok(None)
-    }
-
-    /// The first declared sprite, with a refused declaration ending the search.
-    fn first_sprite_png(
-        &self,
-        names: &[String],
-        token: &str,
-        recorded_tag: bool,
-    ) -> Result<Option<String>, Box<Finding>> {
-        let refused = |message: String| Box::new(Finding::new(Kind::Refused, token, message));
-        for name in names {
-            if self
-                .catalogue
-                .sprites
-                .find(name)
-                .map_err(&refused)?
-                .is_some()
-            {
-                return self
-                    .sprite_png(name)
-                    .map_err(|why| refused(why.to_string()))?
-                    .map(Some)
-                    .ok_or_else(|| refused(format!("sprite {name} has no readable texture")));
-            }
-        }
-        if !recorded_tag {
-            let reason = "idea icon needs the recorded holder tag after its static candidates; unavailable offline";
-            return Err(Box::new(Finding::grouped(
-                Kind::Offline,
-                token,
-                reason,
-                reason,
-            )));
-        }
-        // Use the shared fallback sprite after all authored candidates miss.
-        const UNKNOWN: &str = "GFX_idea_unknown";
-        self.sprite_png(UNKNOWN)
-            .map_err(|why| refused(format!("idea fallback sprite {UNKNOWN} is unreadable: {why}")))?
-            .map(Some)
-            .ok_or_else(|| Box::new(Finding::new(Kind::Fallback, token, format!("{token}: icon unavailable: idea fallback sprite {UNKNOWN} is undeclared or has no texture; a placeholder is shown"))))
     }
 
     /// A recorded character's name: the saved name first (a rename shows its
@@ -753,7 +677,11 @@ impl PoliticsContent {
         {
             return cached.get().clone();
         }
-        let drawn = catalogue::Drawn::new(|| self.load_recorded_portrait(kind, text, edge));
+        let drawn = catalogue::draw(
+            || format!("portrait {text}"),
+            &self.catalogue,
+            |catalogue| recorded_portrait_in(catalogue, kind, text, edge),
+        );
         let loaded = drawn.get().clone();
         let mut cached = store.lock().unwrap_or_else(|error| error.into_inner());
         // Start over rather than grow without bound, as idea artwork does.
@@ -762,41 +690,6 @@ impl PoliticsContent {
         }
         cached.insert(key, drawn);
         loaded
-    }
-
-    fn load_recorded_portrait(&self, kind: u32, text: &str, edge: u32) -> Result<String, String> {
-        let loaded = match kind {
-            0 => match self.catalogue.sprites.find(text) {
-                Ok(Some(_)) => self.sprite_png_sized(text, edge),
-                Err(why) => return Err(why),
-                Ok(None) => {
-                    return Err(format!(
-                        "Content has no sprite {text}; the game generates this portrait."
-                    ));
-                }
-            },
-            1 => {
-                let path = text
-                    .split(['/', '\\'])
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                catalogue::texture_png(
-                    &self.catalogue.content.layers,
-                    &path,
-                    *self.catalogue.gui_decode.as_ref().map_err(Clone::clone)?,
-                    1,
-                    edge,
-                )
-                .map(Some)
-            }
-            other => return Err(format!("Portrait kind {other} is not supported.")),
-        };
-        match loaded {
-            Ok(Some(png)) => Ok(png),
-            Ok(None) => Err(format!("{text} has no texture.")),
-            Err(error) => Err(format!("{text} did not load: {error}")),
-        }
     }
 
     /// Name, description and icon for an idea token, with why the icon is missing
@@ -900,6 +793,36 @@ impl PoliticsContent {
         result
     }
 
+    /// `icon` as the reply shows it ([`catalogue::draw`]): drawn through this content's
+    /// catalogue and, when the selected visual mods cannot draw it, as a whole through the
+    /// recording's own, whose own choice of candidate is made again. When neither draws it, why
+    /// is the recording's.
+    fn shown_idea_icon(
+        &self,
+        token: &str,
+        icon: &IdeaIcon,
+    ) -> Result<Option<String>, Box<Finding>> {
+        let recorded = match self.catalogue.recorded() {
+            Some(recorded) if !installed_content_core::content::is_strict() => recorded,
+            // The recording's own catalogue, or inside another transaction's strict attempt:
+            // drawn once, as it is.
+            _ => return idea_icon(&self.catalogue, token, icon),
+        };
+        let drawn = catalogue::draw(
+            || format!("idea {token} icon"),
+            &self.catalogue,
+            |catalogue| match idea_icon(catalogue, token, icon) {
+                Ok(Some(png)) => Ok(png),
+                Ok(None) => Err(format!("{token}: no artwork")),
+                Err(finding) => Err(finding.message),
+            },
+        );
+        match drawn.get() {
+            Ok(png) => Ok(Some(png.clone())),
+            Err(_) => idea_icon(recorded, token, icon),
+        }
+    }
+
     /// An idea's name, description and icon from the content that says what it is, with why
     /// the icon is missing if it is.
     fn draw_idea_artwork(
@@ -918,23 +841,27 @@ impl PoliticsContent {
         let description = self
             .idea_description_key(token)
             .and_then(|key| self.localised(&key, View::Scripted));
+        // Recorded facts decide what the icon is drawn from; what the catalogue declares decides
+        // which candidate sprite is drawn.
         let icon = match idea {
-            Some(idea) => self.first_sprite_png(
-                &idea.sprite_candidates(country.map(|country| country.tag)),
+            Some(idea) => self.shown_idea_icon(
                 token,
-                country.is_some(),
+                &IdeaIcon::Candidates {
+                    names: idea.sprite_candidates(country.map(|country| country.tag)),
+                    recorded_tag: country.is_some(),
+                },
             ),
             None => match advisor
                 .map(|character| self.portrait(character))
                 .transpose()
             {
-                Ok(Some(Some(portrait))) => self
-                    .sprite_png(portrait)
-                    .map_err(|why| Box::new(Finding::new(Kind::Refused, token, why.to_string()))),
+                Ok(Some(Some(portrait))) => {
+                    self.shown_idea_icon(token, &IdeaIcon::Sprite(portrait.to_owned()))
+                }
                 Err(finding) => Err(finding),
-                Ok(_) => self
-                    .sprite_png(&format!("GFX_idea_{token}"))
-                    .map_err(|why| Box::new(Finding::new(Kind::Refused, token, why.to_string()))),
+                Ok(_) => {
+                    self.shown_idea_icon(token, &IdeaIcon::Sprite(format!("GFX_idea_{token}")))
+                }
             },
         };
         let (icon, problem) = match icon {
@@ -1001,6 +928,134 @@ impl PoliticsContent {
     }
 }
 
+/// What an idea's icon is drawn from: its candidate sprites in priority order (and whether the
+/// recorded holder tag that ends them is known), or one sprite or texture path.
+enum IdeaIcon {
+    Candidates {
+        names: Vec<String>,
+        recorded_tag: bool,
+    },
+    Sprite(String),
+}
+
+/// `icon` drawn through `catalogue`, or None when it has no such sprite or texture: the first
+/// candidate it declares (a refused declaration ending the search), else the shared fallback
+/// sprite once the recorded holder tag is known.
+fn idea_icon(
+    catalogue: &Catalogue,
+    token: &str,
+    icon: &IdeaIcon,
+) -> Result<Option<String>, Box<Finding>> {
+    let refused = |message: String| Box::new(Finding::new(Kind::Refused, token, message));
+    let (names, recorded_tag) = match icon {
+        IdeaIcon::Sprite(name) => {
+            return sprite_png_in(catalogue, name, ICON_EDGE)
+                .map_err(|why| refused(why.to_string()));
+        }
+        IdeaIcon::Candidates {
+            names,
+            recorded_tag,
+        } => (names, *recorded_tag),
+    };
+    for name in names {
+        if catalogue.sprites.find(name).map_err(&refused)?.is_some() {
+            return sprite_png_in(catalogue, name, ICON_EDGE)
+                .map_err(|why| refused(why.to_string()))?
+                .map(Some)
+                .ok_or_else(|| refused(format!("sprite {name} has no readable texture")));
+        }
+    }
+    if !recorded_tag {
+        let reason = "idea icon needs the recorded holder tag after its static candidates; unavailable offline";
+        return Err(Box::new(Finding::grouped(
+            Kind::Offline,
+            token,
+            reason,
+            reason,
+        )));
+    }
+    // Use the shared fallback sprite after all authored candidates miss.
+    const UNKNOWN: &str = "GFX_idea_unknown";
+    sprite_png_in(catalogue, UNKNOWN, ICON_EDGE)
+        .map_err(|why| refused(format!("idea fallback sprite {UNKNOWN} is unreadable: {why}")))?
+        .map(Some)
+        .ok_or_else(|| Box::new(Finding::new(Kind::Fallback, token, format!("{token}: icon unavailable: idea fallback sprite {UNKNOWN} is undeclared or has no texture; a placeholder is shown"))))
+}
+
+/// A texture path as authored, its separators normalised.
+fn texture_path(text: &str) -> String {
+    text.split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// A sprite's first frame drawn through `catalogue` as a PNG data URL, or None when it has no
+/// such sprite or texture. A name that is not a sprite and not a `GFX_` name is a texture path,
+/// as authored portraits may give one.
+pub fn sprite_png_in(catalogue: &Catalogue, name: &str, edge: u32) -> io::Result<Option<String>> {
+    let decode = || -> io::Result<installed_content_image::native::Decode> {
+        catalogue
+            .gui_decode
+            .as_ref()
+            .copied()
+            .map_err(|why| crate::invalid(why.clone()))
+    };
+    let Some(sprite) = catalogue.sprites.find(name).map_err(crate::invalid)? else {
+        if name.starts_with("GFX_") || name.is_empty() {
+            return Ok(None);
+        }
+        return catalogue::texture_png(
+            &catalogue.content.layers,
+            &texture_path(name),
+            decode()?,
+            1,
+            edge,
+        )
+        .map(Some);
+    };
+    if sprite.texture.is_none() {
+        return Ok(None);
+    }
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode()?, 0, edge).map(Some)
+}
+
+/// A recorded portrait entry drawn through `catalogue` (kind 0 a sprite, kind 1 a texture path),
+/// or why it cannot be shown: a sprite the content lacks or a texture that does not load is one
+/// the game replaces with a generated portrait.
+fn recorded_portrait_in(
+    catalogue: &Catalogue,
+    kind: u32,
+    text: &str,
+    edge: u32,
+) -> Result<String, String> {
+    let loaded = match kind {
+        0 => match catalogue.sprites.find(text) {
+            Ok(Some(_)) => sprite_png_in(catalogue, text, edge),
+            Err(why) => return Err(why),
+            Ok(None) => {
+                return Err(format!(
+                    "Content has no sprite {text}; the game generates this portrait."
+                ));
+            }
+        },
+        1 => catalogue::texture_png(
+            &catalogue.content.layers,
+            &texture_path(text),
+            *catalogue.gui_decode.as_ref().map_err(Clone::clone)?,
+            1,
+            edge,
+        )
+        .map(Some),
+        other => return Err(format!("Portrait kind {other} is not supported.")),
+    };
+    match loaded {
+        Ok(Some(png)) => Ok(png),
+        Ok(None) => Err(format!("{text} has no texture.")),
+        Err(error) => Err(format!("{text} did not load: {error}")),
+    }
+}
+
 pub(crate) fn advisor_finding(
     characters: &Characters,
     token: &str,
@@ -1032,6 +1087,9 @@ pub(crate) fn advisor_finding(
 
 #[cfg(test)]
 mod idea_name_tests;
+
+#[cfg(test)]
+mod presentation_tests;
 
 #[cfg(test)]
 mod recorded_name_tests;

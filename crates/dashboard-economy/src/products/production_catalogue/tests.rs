@@ -59,8 +59,7 @@ fn read(
         &Naming {
             texts: None,
             units: None,
-            sprite: &|_| false,
-            image: &|_| Err("no pictures in tests".into()),
+            icon: &|_| None,
         },
         Vec::new(),
         &flag,

@@ -27,6 +27,14 @@ pub struct SpriteFrame {
     /// The zero-based native frame; offsets may continue past the authored strip.
     #[serde(default)]
     pub frame: u32,
+    /// Where the visual mods' interface chose `key`, the sprite the recording's own interface
+    /// chooses in its place: drawn, named, when the selection cannot draw `key`. Equal to `key`
+    /// when the selection could not make its own choice, so the recording's is drawn alone.
+    /// Absent where recorded facts name the sprite (or both choose the same one); a sprite the
+    /// selection cannot draw is then the recording's of that name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -40,6 +48,10 @@ pub struct SpriteArtworkParams {
 pub struct SpriteImage {
     pub key: String,
     pub frame: u32,
+    /// The asked frame's `recorded` choice, as it was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded: Option<String>,
     /// A PNG data URL, or null with a named, counted refusal.
     pub icon: Option<String>,
 }
@@ -71,6 +83,37 @@ pub fn icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String
     Ok(key.to_owned())
 }
 
+/// [`icon_key`] as the request's catalogue shows it: a key the selection cannot draw that the
+/// recording's own catalogue declares with a texture is valid, since the sprite route draws the
+/// recording's sprite of that name in its place ([`catalogue::draw`]). When neither declares
+/// it, why is the recording's.
+pub fn shown_icon_key(catalogue: &Catalogue, authored: &[u8]) -> Result<String, String> {
+    icon_key(catalogue, authored).or_else(|why| match catalogue.recorded() {
+        Some(recorded) => icon_key(recorded, authored),
+        None => Err(why),
+    })
+}
+
+/// `key`'s `frame` drawn through `catalogue`, validated as [`icon_key`] validates it.
+fn frame_png(catalogue: &Catalogue, key: &str, frame: u32) -> io::Result<String> {
+    icon_key(catalogue, key.as_bytes()).map_err(crate::invalid)?;
+    let sprite = catalogue
+        .sprites
+        .find(key)
+        .map_err(crate::invalid)?
+        .expect("validated sprite key");
+    catalogue::sprite_frame_png(
+        &catalogue.content.layers,
+        sprite,
+        *catalogue
+            .gui_decode
+            .as_ref()
+            .map_err(|why| crate::invalid(why.clone()))?,
+        frame,
+        super::ICON_EDGE,
+    )
+}
+
 impl Product for SpriteArtwork {
     const KEY: &'static str = "sprite-artwork";
     const CONTENT_DEPENDENT: bool = true;
@@ -79,11 +122,11 @@ impl Product for SpriteArtwork {
     type Reply = SpriteArtworkReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        let invalid = |key: &str| key.is_empty() || key.contains('\0');
         if params.sprites.is_empty()
-            || params
-                .sprites
-                .iter()
-                .any(|sprite| sprite.key.is_empty() || sprite.key.contains('\0'))
+            || params.sprites.iter().any(|sprite| {
+                invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid)
+            })
         {
             return Err("Invalid sprite keys");
         }
@@ -126,24 +169,28 @@ fn images(
     for asked in params.sprites.iter().collect::<BTreeSet<_>>() {
         crate::metadata::check_cancel(cancelled)?;
         let key = &asked.key;
-        let result = (|| {
-            icon_key(catalogue, key.as_bytes()).map_err(crate::invalid)?;
-            let sprite = catalogue
-                .sprites
-                .find(key)
-                .map_err(crate::invalid)?
-                .expect("validated sprite key");
-            catalogue::sprite_frame_png(
-                &catalogue.content.layers,
-                sprite,
-                *catalogue
-                    .gui_decode
-                    .as_ref()
-                    .map_err(|why| crate::invalid(why.clone()))?,
-                asked.frame,
-                super::ICON_EDGE,
+        let result = match &asked.recorded {
+            // The selection could not make its own choice: the recording's is drawn alone.
+            Some(recorded) if recorded == key => {
+                frame_png(catalogue.recorded().map_or(catalogue, |recorded| &**recorded), key, asked.frame)
+            }
+            // The key drawn as the selection shows it; where it cannot be, the recording's own
+            // choice (or its sprite of that name) is drawn, named.
+            recorded => catalogue::draw(
+                || format!("sprite {key}"),
+                catalogue,
+                |drawing| {
+                    let key = match recorded {
+                        Some(recorded) if !std::ptr::eq(drawing, catalogue) => recorded,
+                        _ => key,
+                    };
+                    frame_png(drawing, key, asked.frame).map_err(|error| error.to_string())
+                },
             )
-        })();
+            .get()
+            .clone()
+            .map_err(crate::invalid),
+        };
         let icon = match result {
             Ok(icon) => Some(icon),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
@@ -157,6 +204,7 @@ fn images(
         reply.items.push(SpriteImage {
             key: key.clone(),
             frame: asked.frame,
+            recorded: asked.recorded.clone(),
             icon,
         });
         // Refuse the complete ask, never omit later requested sprites to fit it.
@@ -189,6 +237,7 @@ mod tests {
         SpriteFrame {
             key: key.into(),
             frame,
+            recorded: None,
         }
     }
 
@@ -454,5 +503,84 @@ mod tests {
                 .iter()
                 .any(|decl| decl.contains("type SpriteImage"))
         );
+        let with_recorded = |recorded: &str| SpriteFrame {
+            recorded: Some(recorded.into()),
+            ..frame("GFX_b", 0)
+        };
+        assert!(
+            SpriteArtwork::validate(&SpriteArtworkParams {
+                sprites: vec![with_recorded("")]
+            })
+            .is_err()
+        );
+        assert!(
+            SpriteArtwork::validate(&SpriteArtworkParams {
+                sprites: vec![with_recorded("GFX_a")]
+            })
+            .is_ok()
+        );
+    }
+
+    /// A product's interface picks sprite A in the recording and B in a selected mod, which
+    /// cannot draw its B (the recording's B would draw): the recording's own choice, A, is
+    /// drawn and named, never the mod's choice patched with the recording's B. Where the
+    /// selection could not make its own choice, the recording's is drawn alone, named by the
+    /// product that chose it. A recorded-facts key the mod breaks is the recording's of that
+    /// name; without a selection every key is drawn as it is.
+    #[test]
+    fn a_sprite_the_mod_chose_and_cannot_draw_is_the_recordings_own_choice() {
+        use crate::test_fixtures::visual_mods::{
+            GREEN, Machine, RED, fallback_line, first_pixel, png, select,
+        };
+        let machine = Machine::new("sprite_route_choice");
+        machine.write(
+            "interface/art.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/b.png } }",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        machine.write("gfx/b.png", &png(GREEN));
+        // The mod's declarations replace the recording's file: its B does not load.
+        machine.write_mod(
+            "broken",
+            "interface/art.gfx",
+            b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png }               spriteType = { name = GFX_b textureFile = gfx/broken.png } }",
+        );
+        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        let ask = |options: &crate::products::ContentOptions, asked: SpriteFrame| {
+            let catalogue = catalogue::catalogue(&source, options).unwrap();
+            let (reply, line) = fallback_line(|| {
+                images(
+                    &catalogue,
+                    &SpriteArtworkParams {
+                        sprites: vec![asked],
+                    },
+                    &AtomicBool::new(false),
+                )
+                .unwrap()
+            });
+            assert_eq!(reply.items.len(), 1);
+            (first_pixel(reply.items[0].icon.as_deref().unwrap()), line)
+        };
+        let chosen = |recorded: &str| SpriteFrame {
+            recorded: Some(recorded.into()),
+            ..frame("GFX_b", 0)
+        };
+        select(&source, &mut options, &[]);
+        assert_eq!(ask(&options, frame("GFX_b", 0)), (GREEN, None));
+        select(&source, &mut options, &["broken"]);
+        for _ in 0..2 {
+            let (colour, line) = ask(&options, chosen("GFX_a"));
+            assert_eq!(colour, RED, "the recording's own choice");
+            assert!(line.is_some_and(|line| line.contains("sprite GFX_b")));
+        }
+        let (colour, line) = ask(&options, frame("GFX_b", 0));
+        assert_eq!(colour, GREEN, "the recording's sprite of that name");
+        assert!(line.is_some_and(|line| line.contains("sprite GFX_b")));
+        let alone = SpriteFrame {
+            recorded: Some("GFX_a".into()),
+            ..frame("GFX_a", 0)
+        };
+        assert_eq!(ask(&options, alone), (RED, None));
     }
 }

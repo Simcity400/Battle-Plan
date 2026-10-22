@@ -1,6 +1,7 @@
 import { countryPart, keyedKnown, keyedRead, runAtHour, validateKeyedWindow } from '../../dashboard/keyedHistory.ts';
 import type { KeyedWindow } from '../../dashboard/keyedHistory';
 import type { TooltipContent } from '../../charts/tooltip';
+import { optionalKey } from '../../dashboard/spriteArtwork.ts';
 import type { SpriteFrame } from '../../dashboard/spriteArtwork';
 
 export interface Choice { id: string; name: string }
@@ -14,7 +15,8 @@ export interface AirWingsReply { hour: number; readHour: number | null; region: 
 const isChoice = (value: unknown): value is Choice => !!value && typeof value === 'object'
   && typeof (value as Choice).id === 'string' && typeof (value as Choice).name === 'string';
 const isSprite = (value: unknown) => value === null || !!value && typeof value === 'object'
-  && typeof (value as SpriteFrame).key === 'string' && Number.isSafeInteger((value as SpriteFrame).frame) && (value as SpriteFrame).frame >= 0;
+  && typeof (value as SpriteFrame).key === 'string' && Number.isSafeInteger((value as SpriteFrame).frame) && (value as SpriteFrame).frame >= 0
+  && optionalKey((value as SpriteFrame).recorded);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
 
 export function validateAirMissions(value: unknown): AirMissionsReply {

@@ -841,11 +841,26 @@ pub struct Catalogue {
     war_names: OnceLock<Result<installed_content_wargoals::wargoals::Names, String>>,
     /// State templates are usable without the scripted-localisation inputs.
     pub state_content: Arc<OnceLock<Result<crate::scripted_text::StateContent, String>>>,
+    /// The recording's own catalogue for the same folders, kept by a catalogue that shows visual
+    /// mods ([`Self::keep_recorded`]): art the mods cannot draw is drawn from it again, as one
+    /// operation, the recording's own choice made again.
+    recorded: OnceLock<Arc<Catalogue>>,
     #[cfg(any(test, feature = "test-support"))]
     content_loads: std::sync::atomic::AtomicUsize,
 }
 
 impl Catalogue {
+    /// The recording's own catalogue a catalogue showing visual mods keeps; `None` for the
+    /// recording's own.
+    pub fn recorded(&self) -> Option<&Arc<Catalogue>> {
+        self.recorded.get()
+    }
+
+    /// Keeps `recorded`, the recording's own catalogue for these folders, the first time only.
+    pub fn keep_recorded(&self, recorded: Arc<Catalogue>) {
+        let _ = self.recorded.set(recorded);
+    }
+
     /// Load the presentation's complete native registry once, retaining its template order
     /// and post-load pass. A failure refuses GUI-dependent fields; text stays usable.
     pub fn guis(&self) -> io::Result<&installed_content_core::gui::native::Guis> {
@@ -964,6 +979,7 @@ impl Catalogue {
             scripted: OnceLock::new(),
             war_names: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
+            recorded: OnceLock::new(),
             #[cfg(any(test, feature = "test-support"))]
             content_loads: Default::default(),
         })
@@ -2299,6 +2315,7 @@ pub mod tests {
             scripted: OnceLock::new(),
             war_names: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
+            recorded: OnceLock::new(),
             content_loads: Default::default(),
         }
     }

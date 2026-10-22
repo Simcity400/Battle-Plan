@@ -403,27 +403,22 @@ fn economy(
                     .map_err(|error| warnings.push(format!("Equipment types unavailable: {error}")))
                     .ok()
             });
-            let sprite = |name: &str| {
-                catalogue.as_ref().is_some_and(|catalogue| {
-                    catalogue.sprites.contains(name) || catalogue.sprites.refusal(name).is_some()
+            // Each organisation's icon is chosen and drawn together, through the catalogue the
+            // request shows.
+            let icon = |raw: &dashboard_base::products::production_lines::RawOrganisation| {
+                use dashboard_base::products::production_lines::{
+                    organisation_picture, organisation_shown,
+                };
+                catalogue.as_ref().and_then(|catalogue| {
+                    organisation_shown(&organisation_picture(catalogue, raw, 48), catalogue, raw)
                 })
-            };
-            let image = |name: &str| match &catalogue {
-                Some(catalogue) => dashboard_base::products::equipment_icon::image(
-                    catalogue,
-                    &dashboard_base::products::equipment_icon::Icon::Sprite(name.to_owned()),
-                    48,
-                )
-                .map_err(|error| error.to_string()),
-                None => Err("content is unavailable".to_owned()),
             };
             let naming = production_catalogue::Naming {
                 texts: catalogue
                     .as_deref()
                     .map(|catalogue| catalogue as &dyn Texts),
                 units: units.as_deref(),
-                sprite: &sprite,
-                image: &image,
+                icon: &icon,
             };
             serde_json::to_value(production_catalogue::query(
                 store, key, &params, through, &naming, warnings, cancelled,
@@ -433,7 +428,9 @@ fn economy(
             let params: convoy_health::ConvoyHealthParams =
                 serde_json::from_value(request.params.clone())?;
             let regions = convoy_health::region_names(source, &context, &mut warnings);
-            let naming = dashboard_base::products::resources::ResourceNaming::of(source, &context);
+            // Only the names are shown: the recording's.
+            let naming =
+                dashboard_base::products::resources::ResourceNaming::stored(source, &context);
             let resources = |list: &[(u32, String)]| match naming.infos(list, cancelled) {
                 Ok((infos, notes)) => (
                     infos

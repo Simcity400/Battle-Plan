@@ -2080,6 +2080,41 @@ pub fn organisation_icon_with_token(
     .find(|name| exists(name)))
 }
 
+/// An organisation's icon as one operation through `shown`, the catalogue its reply shows
+/// ([`catalogue::draw`]): the sprite [`organisation_icon`] chooses by what the drawing catalogue
+/// declares and its picture at `edge`, with the picture's key ([`picture_key`]), kept with it. When the shown catalogue cannot draw
+/// its choice, the recording's own choice is drawn, named. `None` when no candidate is declared.
+pub fn organisation_picture(
+    shown: &Catalogue,
+    raw: &RawOrganisation,
+    edge: u32,
+) -> catalogue::Drawn<Result<Option<(String, String)>, String>> {
+    catalogue::draw(
+        || format!("organisation {} icon", raw.token),
+        shown,
+        |cat| {
+            let Some(name) = organisation_icon(raw, declared_in(cat)) else {
+                return Ok(None);
+            };
+            let icon = Icon::Sprite(name);
+            let image = super::equipment_icon::image(cat, &icon, edge)
+                .map_err(|error| error.to_string())?;
+            Ok(Some((picture_key(&icon_key(&icon), Some(&image)), image)))
+        },
+    )
+}
+
+/// The asset key of the sprite `shown` chooses for an organisation, drawn or not.
+pub fn organisation_asset(shown: &Catalogue, raw: &RawOrganisation) -> Option<String> {
+    organisation_icon(raw, declared_in(shown)).map(|name| icon_key(&Icon::Sprite(name)))
+}
+
+/// Whether `cat` declares a sprite, refused declarations included, as the icon selector asks.
+fn declared_in(cat: &Catalogue) -> impl Fn(&str) -> bool + '_ {
+    move |name| cat.sprites.contains(name) || cat.sprites.refusal(name).is_some()
+}
+
+
 /// The produced variants' names and icons by hour, merged from the variant catalogue
 /// (names, and where they are known) and the line reads (icons), each icon's key the one
 /// `shown` gives its choice (choosing and drawing it), or why it has none. Names are known
@@ -2241,60 +2276,74 @@ fn draw_variant_icon(
     }
 }
 
-/// Draws each organisation picture `shown` names, by its asset's key, from `catalogue` (kept
-/// per catalogue in the product's cache), adds it to `images` under its picture's key, and
-/// returns each asset's picture key.
-fn draw_organisation_pictures(
-    source: &Source,
+/// An organisation's picture key and picture as `catalogue` shows it ([`organisation_shown`]),
+/// kept per catalogue in the product's cache by what the choice reads, so a memo hit names what
+/// its first draw named; a picture neither the selection nor the recording can draw is warned
+/// when it is first drawn.
+fn kept_organisation_picture(
+    state: &std::sync::Mutex<Cache>,
     catalogue: &Arc<Catalogue>,
-    shown: &BTreeMap<String, Icon>,
-    images: &mut BTreeMap<String, Option<String>>,
+    raw: &RawOrganisation,
     warnings: &mut Vec<String>,
-    cancelled: &AtomicBool,
-) -> io::Result<BTreeMap<String, String>> {
-    let state = source.state::<Cache>();
-    let mut keys = BTreeMap::new();
-    for (asset, icon) in shown {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancelled_error());
-        }
-        let cached = cached_image(
-            &state.lock().unwrap_or_else(|error| error.into_inner()).images,
-            catalogue,
-            asset,
-        );
-        let image = match cached {
-            Some(image) => image,
-            None => {
-                let drawn = catalogue::Drawn::new(|| match icon_image(catalogue, icon) {
-                    Ok(image) => Some(image),
-                    Err(error) => {
-                        warnings.push(format!("{asset}: picture unavailable: {error}"));
-                        None
-                    }
-                });
-                let image = drawn.get().clone();
-                keep_image(
-                    &mut state.lock().unwrap_or_else(|error| error.into_inner()).images,
-                    catalogue,
-                    asset.clone(),
-                    drawn,
-                );
-                image
+) -> Option<(String, Option<String>)> {
+    let key = OrganisationIcon::of(raw);
+    let kept = state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .organisations
+        .as_ref()
+        .filter(|(held, _)| Arc::ptr_eq(held, catalogue))
+        .and_then(|(_, drawn)| drawn.get(&key).cloned());
+    let (shown, first) = match kept {
+        Some(drawn) => (organisation_shown(&drawn, catalogue, raw), false),
+        None => {
+            let drawn = organisation_picture(catalogue, raw, ICON_EDGE);
+            let shown = organisation_shown(&drawn, catalogue, raw);
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            match &mut state.organisations {
+                Some((held, kept)) if Arc::ptr_eq(held, catalogue) => {
+                    kept.insert(key, drawn);
+                }
+                slot => *slot = Some((Arc::clone(catalogue), [(key, drawn)].into())),
             }
-        };
-        let key = picture_key(asset, image.as_deref());
-        images.entry(key.clone()).or_insert(image);
-        keys.insert(asset.clone(), key);
+            (shown, true)
+        }
+    };
+    let (key, image) = shown?;
+    Some((
+        key.clone(),
+        image
+            .map_err(|error| {
+                if first {
+                    warnings.push(format!("{key}: picture unavailable: {error}"));
+                }
+            })
+            .ok(),
+    ))
+}
+
+/// What an organisation icon [`organisation_picture`] drew shows, its fallbacks credited to the
+/// reply: its picture's key and the picture; when neither the selection nor the recording can
+/// draw it, the key of the shown choice without a picture (`{asset}#none`) and why. `None` when
+/// no candidate is declared.
+pub fn organisation_shown(
+    drawn: &catalogue::Drawn<Result<Option<(String, String)>, String>>,
+    shown: &Catalogue,
+    raw: &RawOrganisation,
+) -> Option<(String, Result<String, String>)> {
+    match drawn.get() {
+        Ok(Some((key, image))) => Some((key.clone(), Ok(image.clone()))),
+        Ok(None) => None,
+        Err(error) => organisation_asset(shown, raw)
+            .map(|asset| (picture_key(&asset, None), Err(error.clone()))),
     }
-    Ok(keys)
 }
 
 /// The key a reply's picture is shared under: the asset it shows (`icon_key`) and a digest of
 /// its pixels, so two elements share a key only when they show the same picture. The same
 /// asset drawn from the selection and, where the selection could not draw a choice, from the
 /// recording are two pictures under two keys.
-fn picture_key(asset: &str, image: Option<&str>) -> String {
+pub fn picture_key(asset: &str, image: Option<&str>) -> String {
     match image {
         Some(image) => format!("{asset}#{}", blake3::hash(image.as_bytes()).to_hex()),
         None => format!("{asset}#none"),
@@ -2383,36 +2432,34 @@ fn same_scan<T>(a: &ScanKey<T>, b: &ScanKey<T>) -> bool {
         }
 }
 
-/// Decoded pictures by key, for one catalogue (held, so its identity stays unique).
-type Images<T = Catalogue> = (Arc<T>, BTreeMap<String, catalogue::Drawn<Option<String>>>);
-
-/// A decoded picture of `owner`'s, if one is cached.
-fn cached_image<T>(
-    images: &Option<Images<T>>,
-    owner: &Arc<T>,
-    key: &str,
-) -> Option<Option<String>> {
-    images
-        .as_ref()
-        .filter(|(held, _)| Arc::ptr_eq(held, owner))
-        .and_then(|(_, images)| images.get(key).map(|image| image.get().clone()))
+/// What an organisation's icon choice reads ([`organisation_icon`]): its stored sprite, its
+/// owner and its token.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct OrganisationIcon {
+    icon: String,
+    owner_tag: Option<String>,
+    owner_unknown: bool,
+    token: String,
 }
 
-/// Keeps a picture decoded from `owner`, under that owner alone: another owner's
-/// pictures are replaced, never mixed with these.
-fn keep_image<T>(
-    images: &mut Option<Images<T>>,
-    owner: &Arc<T>,
-    key: String,
-    image: catalogue::Drawn<Option<String>>,
-) {
-    match images {
-        Some((held, images)) if Arc::ptr_eq(held, owner) => {
-            images.insert(key, image);
+impl OrganisationIcon {
+    fn of(raw: &RawOrganisation) -> Self {
+        Self {
+            icon: raw.icon.clone(),
+            owner_tag: raw.owner_tag.clone(),
+            owner_unknown: raw.owner_unknown,
+            token: raw.token.clone(),
         }
-        _ => *images = Some((Arc::clone(owner), [(key, image)].into())),
     }
 }
+
+/// Organisation pictures drawn through one catalogue (held, so its identity stays unique), by
+/// what their choice reads.
+type OrganisationPictures = (
+    Arc<Catalogue>,
+    BTreeMap<OrganisationIcon, catalogue::Drawn<Result<Option<(String, String)>, String>>>,
+);
+
 
 #[derive(Default)]
 struct Cache {
@@ -2420,10 +2467,10 @@ struct Cache {
     /// First views by the same key, with the hours each does not answer exactly.
     first_views: VecDeque<(ScanKey, FirstView)>,
     icons: Option<Arc<IconContent>>,
-    /// Pictures of the catalogue they were decoded from: a request for another
-    /// catalogue never reads them, and a decode finishing after the content changed
-    /// is stored only under its own catalogue, never served to another.
-    images: Option<Images>,
+    /// Organisation pictures of the catalogue they were drawn through: a request for another
+    /// catalogue never reads them, and a draw finishing after the content changed is stored
+    /// only under its own catalogue, never served to another.
+    organisations: Option<OrganisationPictures>,
 }
 
 /// A line's steps: its runs joined while the variant and factories stay the same
@@ -3229,27 +3276,22 @@ impl Product for ProductionLines {
         }
         warnings.extend(scanned.variants.warnings());
         let pictured = pictured.and_then(Result::ok);
-        // Organisations' icons, chosen and drawn here from the selection.
-        let mut shown: BTreeMap<String, Icon> = BTreeMap::new();
-        // Organisations.
+        // Organisations: each one's choice of sprite and its picture drawn as one operation from
+        // the selection, kept per catalogue, its picture under the picture's key.
         let mut organisations = Vec::new();
+        let state = source.state::<Cache>();
         for (id, versions) in &scanned.organisations {
             let mut previous: Option<OrganisationName> = None;
             for raw in versions {
-                let icon = pictured
-                    .as_ref()
-                    .and_then(|catalogue| {
-                        organisation_icon(raw, |name| {
-                            catalogue.sprites.contains(name)
-                                || catalogue.sprites.refusal(name).is_some()
-                        })
-                    })
-                    .map(|name| {
-                        let icon = Icon::Sprite(name);
-                        let key = icon_key(&icon);
-                        shown.insert(key.clone(), icon);
-                        key
-                    });
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancelled_error());
+                }
+                let icon = pictured.as_ref().and_then(|catalogue| {
+                    let (key, image) =
+                        kept_organisation_picture(&state, catalogue, raw, &mut warnings)?;
+                    images.entry(key.clone()).or_insert(image);
+                    Some(key)
+                });
                 let entry = OrganisationName {
                     id: id.to_string(),
                     first_hour: raw.first_hour,
@@ -3268,23 +3310,6 @@ impl Product for ProductionLines {
                     previous = Some(entry.clone());
                     organisations.push(entry);
                 }
-            }
-        }
-        // Organisations' pictures, decoded once per catalogue, each under its picture's key.
-        if let Some(catalogue) = &pictured {
-            let keys = draw_organisation_pictures(
-                source,
-                catalogue,
-                &shown,
-                &mut images,
-                &mut warnings,
-                cancelled,
-            )?;
-            for organisation in &mut organisations {
-                organisation.icon = organisation
-                    .icon
-                    .take()
-                    .and_then(|asset| keys.get(&asset).cloned());
             }
         }
         let icons_out: Vec<EquipmentIcon> = images

@@ -373,7 +373,17 @@ impl IntelligenceContent {
         };
         let drawn = catalogue::Drawn::new(|| {
             artwork.name = self.operation_name(token).ok();
-            let icon = self.sprite_png(&definition.sprite);
+            // The sprite is the definition's; drawn as the selection shows it, else the
+            // recording's own, named.
+            let icon = catalogue::draw(
+                || format!("operation {token} icon"),
+                &self.catalogue,
+                |catalogue| {
+                    operation_icon(catalogue, &definition.sprite).map_err(|why| why.to_string())
+                },
+            )
+            .get()
+            .clone();
             let reason = match icon {
                 Ok(icon) => {
                     artwork.icon = Some(icon);
@@ -394,29 +404,28 @@ impl IntelligenceContent {
         cached.entries.insert(token.to_owned(), drawn);
         result
     }
+}
 
-    fn sprite_png(&self, sprite: &str) -> io::Result<String> {
-        if sprite.is_empty() {
-            return Err(dashboard_core::invalid("no authored sprite"));
-        }
-        let sprite = self
-            .catalogue
-            .sprites
-            .lookup(sprite)
-            .map_err(dashboard_core::invalid)?;
-        let decode = self
-            .catalogue
-            .gui_decode
-            .as_ref()
-            .map_err(dashboard_core::invalid)?;
-        catalogue::sprite_frame_png(
-            &self.catalogue.content.layers,
-            sprite,
-            *decode,
-            0,
-            dashboard_base::products::artwork::ICON_EDGE,
-        )
+/// An operation's authored sprite drawn through `catalogue`.
+fn operation_icon(catalogue: &Catalogue, sprite: &str) -> io::Result<String> {
+    if sprite.is_empty() {
+        return Err(dashboard_core::invalid("no authored sprite"));
     }
+    let sprite = catalogue
+        .sprites
+        .lookup(sprite)
+        .map_err(dashboard_core::invalid)?;
+    let decode = catalogue
+        .gui_decode
+        .as_ref()
+        .map_err(dashboard_core::invalid)?;
+    catalogue::sprite_frame_png(
+        &catalogue.content.layers,
+        sprite,
+        *decode,
+        0,
+        dashboard_base::products::artwork::ICON_EDGE,
+    )
 }
 
 #[cfg(test)]

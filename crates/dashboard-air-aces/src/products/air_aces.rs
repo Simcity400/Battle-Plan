@@ -1122,7 +1122,20 @@ fn cached_portrait(
             return found.get().clone();
         }
     }
-    let found = catalogue::Drawn::new(|| portrait(facts, cat));
+    // The whole ladder is one operation: the visual mods' choice of sprite, or, when they cannot
+    // draw it, the recording's own choice made again.
+    let found = catalogue::draw(
+        || {
+            format!(
+                "ace portrait {} {} {}",
+                facts.tag.as_deref().unwrap_or(""),
+                String::from_utf8_lossy(&facts.name),
+                String::from_utf8_lossy(&facts.surname)
+            )
+        },
+        cat,
+        |cat| portrait(facts, cat),
+    );
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if state
         .catalogue

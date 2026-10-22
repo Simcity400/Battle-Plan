@@ -1887,50 +1887,42 @@ fn scans_are_keyed_by_the_content_they_were_made_with() {
     ));
 }
 
-/// A picture decoded from one content stack is never served for another, even
-/// when its decode finishes after the content changed.
+/// An organisation picture drawn through one catalogue is never served for another: a reply
+/// showing the mods' catalogue draws the mods' picture, and one showing the recording's again
+/// draws the recording's, never the other's kept one.
 #[test]
-fn pictures_are_served_only_for_the_catalogue_they_were_decoded_from() {
-    let (a, b) = (Arc::new("folder A"), Arc::new("folder B"));
-    let mut images: Option<Images<&str>> = None;
-    keep_image(
-        &mut images,
-        &b,
-        "path:x.dds".into(),
-        catalogue::Drawn::new(|| Some("B".into())),
+fn organisation_pictures_are_served_only_for_the_catalogue_they_were_drawn_through() {
+    use crate::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    let machine = Machine::new("organisation_picture_owner");
+    machine.write(
+        "interface/organisations.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_tok textureFile = gfx/tok.png } }",
     );
-    // A's decode, started before the switch, lands late: B never reads it as its own.
-    keep_image(
-        &mut images,
-        &a,
-        "path:x.dds".into(),
-        catalogue::Drawn::new(|| Some("A".into())),
-    );
-    assert_eq!(cached_image(&images, &b, "path:x.dds"), None);
-    assert_eq!(
-        cached_image(&images, &a, "path:x.dds"),
-        Some(Some("A".into()))
-    );
-    keep_image(
-        &mut images,
-        &b,
-        "path:x.dds".into(),
-        catalogue::Drawn::new(|| Some("B".into())),
-    );
-    assert_eq!(
-        cached_image(&images, &b, "path:x.dds"),
-        Some(Some("B".into()))
-    );
-    assert_eq!(cached_image(&images, &a, "path:x.dds"), None);
-    // A cached miss is the owner's own too.
-    keep_image(
-        &mut images,
-        &b,
-        "path:gone.dds".into(),
-        catalogue::Drawn::new(|| None),
-    );
-    assert_eq!(cached_image(&images, &b, "path:gone.dds"), Some(None));
-    assert_eq!(cached_image(&images, &a, "path:gone.dds"), None);
+    machine.write("gfx/tok.png", &png(RED));
+    machine.write_mod("art", "gfx/tok.png", &png(BLUE));
+    let raw = RawOrganisation {
+        first_hour: 0,
+        token: "tok".into(),
+        name_key: String::new(),
+        icon: String::new(),
+        owner_tag: None,
+        owner_unknown: false,
+        state: None,
+    };
+    let (source, mut options) = machine.open();
+    let state = source.state::<Cache>();
+    let shown = |options: &crate::products::ContentOptions| {
+        let catalogue = catalogue::catalogue(&source, options).unwrap();
+        let (_, image) =
+            kept_organisation_picture(&state, &catalogue, &raw, &mut Vec::new()).unwrap();
+        first_pixel(&image.unwrap())
+    };
+    select(&source, &mut options, &[]);
+    assert_eq!(shown(&options), RED);
+    select(&source, &mut options, &["art"]);
+    assert_eq!(shown(&options), BLUE);
+    select(&source, &mut options, &[]);
+    assert_eq!(shown(&options), RED);
 }
 
 #[test]
@@ -3144,18 +3136,22 @@ fn reply_pictures_are_keyed_by_what_they_show() {
     let plain = draw_variant_icon(drawn, &mut images, &sprites(&["GFX_a"]))
         .unwrap()
         .unwrap();
-    let a = Icon::Sprite("GFX_a".into());
-    let organisation = draw_organisation_pictures(
-        &source,
+    let raw = RawOrganisation {
+        first_hour: 0,
+        token: "tok".into(),
+        name_key: String::new(),
+        icon: "GFX_a".into(),
+        owner_tag: None,
+        owner_unknown: false,
+        state: None,
+    };
+    let (organisation, image) = organisation_shown(
+        &organisation_picture(&admitted, &raw, ICON_EDGE),
         &admitted,
-        &BTreeMap::from([(icon_key(&a), a.clone())]),
-        &mut images,
-        &mut Vec::new(),
-        &AtomicBool::new(false),
+        &raw,
     )
-    .unwrap()
-    .remove(&icon_key(&a))
     .unwrap();
+    images.entry(organisation.clone()).or_insert(image.ok());
     let pixel = |key: &str| first_pixel(images[key].as_deref().unwrap());
     assert_eq!(pixel(&fallen), RED, "the recording's own choice");
     assert_eq!(pixel(&plain), BLUE);
@@ -3163,4 +3159,58 @@ fn reply_pictures_are_keyed_by_what_they_show() {
     assert_ne!(fallen, plain);
     assert_eq!(plain, organisation, "one picture, one key");
     assert_eq!(images.len(), 2);
+}
+
+/// The recording declares only the organisation's untagged sprite (A); a mod declares the
+/// owner's tagged one (B), which comes first and which the mod cannot draw. The recording's own
+/// choice, A, is drawn, named on the reply and again on a memo hit; without a selection A
+/// is the shown choice, drawn as it is.
+#[test]
+fn an_organisation_icon_the_mod_cannot_draw_draws_the_recordings_own_choice() {
+    use crate::test_fixtures::visual_mods::{Machine, RED, fallback_line, first_pixel, png, select};
+    let machine = Machine::new("organisation_icon");
+    machine.write(
+        "interface/organisations.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_tok textureFile = gfx/tok.png } }",
+    );
+    machine.write("gfx/tok.png", &png(RED));
+    machine.write_mod(
+        "tagged",
+        "interface/tagged.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_TAG_tok textureFile = gfx/tagged.png } }",
+    );
+    machine.write_mod("tagged", "gfx/tagged.png", b"not a png");
+    let raw = RawOrganisation {
+        first_hour: 0,
+        token: "tok".into(),
+        name_key: String::new(),
+        icon: String::new(),
+        owner_tag: Some("TAG".into()),
+        owner_unknown: false,
+        state: None,
+    };
+    let (source, mut options) = machine.open();
+    let drawn = |options: &crate::products::ContentOptions| {
+        let shown = catalogue::catalogue(&source, options).unwrap();
+        let (drawn, line) = fallback_line(|| organisation_picture(&shown, &raw, ICON_EDGE));
+        let (key, image) = drawn.get().clone().unwrap().unwrap();
+        // A memo hit names what the first draw named.
+        let ((), again) = fallback_line(|| {
+            drawn.get();
+        });
+        assert_eq!(line, again);
+        (key, first_pixel(&image), line)
+    };
+    select(&source, &mut options, &[]);
+    let (plain, colour, line) = drawn(&options);
+    assert!(plain.starts_with("sprite:GFX_tok#"), "{plain}");
+    assert_eq!((colour, line), (RED, None));
+    select(&source, &mut options, &["tagged"]);
+    let (key, colour, line) = drawn(&options);
+    assert_eq!(key, plain, "the recording's own picture, the same pixels");
+    assert_eq!(colour, RED, "the recording's own choice");
+    assert!(
+        line.as_ref().is_some_and(|line| line.contains("organisation tok icon")),
+        "{line:?}"
+    );
 }

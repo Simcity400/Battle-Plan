@@ -1,17 +1,24 @@
 import { drawableIcon } from './artwork.ts';
 
-/** One frame of an authored sprite, as a product returned it; frame is zero-based. */
-export interface SpriteFrame { key: string; frame: number }
+/** One frame of an authored sprite, as a product returned it; frame is zero-based. `recorded`
+ * is the sprite the recording's own interface chooses in its place, which the sprite route draws
+ * when the selected visual mods cannot draw `key`. */
+export interface SpriteFrame { key: string; frame: number; recorded?: string }
 
-/** The lookup id of one sprite frame. */
-export const spriteId = (sprite: SpriteFrame) => `${sprite.frame}:${sprite.key}`;
+/** The lookup id of one sprite frame: its parts as a list, so no two frames share one. */
+export const spriteId = (sprite: SpriteFrame) => JSON.stringify([sprite.frame, sprite.key, sprite.recorded ?? null]);
+
+/** Whether `value` is an absent or usable `recorded` choice. */
+export const optionalKey = (value: unknown) => value === undefined || typeof value === 'string' && value.length > 0;
 
 /** The distinct sprite frames a widget draws, in a stable order, so one request serves them all. */
 export function spriteFrames(sprites: Iterable<SpriteFrame | null | undefined>): SpriteFrame[] {
   const shown = new Map<string, SpriteFrame>();
   for (const sprite of sprites)
-    if (sprite && typeof sprite.key === 'string' && sprite.key.length > 0 && Number.isSafeInteger(sprite.frame) && sprite.frame >= 0)
-      shown.set(spriteId(sprite), { key: sprite.key, frame: sprite.frame });
+    if (sprite && typeof sprite.key === 'string' && sprite.key.length > 0 && Number.isSafeInteger(sprite.frame) && sprite.frame >= 0
+      && optionalKey(sprite.recorded))
+      shown.set(spriteId(sprite), sprite.recorded === undefined ? { key: sprite.key, frame: sprite.frame }
+        : { key: sprite.key, frame: sprite.frame, recorded: sprite.recorded });
   return [...shown.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, sprite]) => sprite);
 }
 
@@ -25,9 +32,10 @@ export function spriteIcons(reply: unknown, asked: readonly SpriteFrame[]): Map<
   const ids = new Set(asked.map(spriteId));
   const icons = new Map<string, string | null>();
   for (const item of value.items as unknown[]) {
-    const image = item as { key?: unknown; frame?: unknown; icon?: unknown };
-    if (!image || typeof image.key !== 'string' || typeof image.frame !== 'number' || !('icon' in image)) throw malformed();
-    const id = spriteId({ key: image.key, frame: image.frame });
+    const image = item as { key?: unknown; frame?: unknown; recorded?: unknown; icon?: unknown };
+    if (!image || typeof image.key !== 'string' || typeof image.frame !== 'number' || !optionalKey(image.recorded) || !('icon' in image))
+      throw malformed();
+    const id = spriteId({ key: image.key, frame: image.frame, recorded: image.recorded as string | undefined });
     if (!ids.has(id) || icons.has(id)) throw malformed();
     icons.set(id, drawableIcon(image.icon));
   }

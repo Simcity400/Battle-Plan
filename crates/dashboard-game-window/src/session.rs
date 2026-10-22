@@ -51,15 +51,36 @@ impl Session {
         decode: Decode,
         viewport: [i32; 2],
     ) -> io::Result<Self> {
+        let read = |stack: &ResolvedLayers| -> io::Result<_> {
+            Ok((
+                native::read_layers_at(stack, viewport)?,
+                Registry::load(stack)?,
+                shader_pipeline::artwork::map_size(stack).map_err(invalid)?,
+                stack.shows_visual_mods(),
+            ))
+        };
         let (opened, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
-            layers.artwork("game windows", |stack| {
-                Ok((
-                    native::read_layers_at(stack, viewport)?,
-                    Registry::load(stack)?,
-                    shader_pipeline::artwork::map_size(stack).map_err(invalid)?,
-                    stack.shows_visual_mods(),
-                ))
-            })
+            let presentation = layers.presentation();
+            if !presentation.shows_visual_mods() {
+                return read(layers);
+            }
+            // The windows' templates and registry are one choice: the visual mods', read
+            // strictly with what it notes kept to itself, or, when any of it cannot be read, the
+            // recording's whole, named.
+            let (shown, noted) = installed_content_core::content::observe_overlay_refusals_isolated(|| {
+                installed_content_core::content::strict(|| read(presentation))
+            });
+            match shown {
+                Ok(opened) => {
+                    installed_content_core::content::credit_overlay_refusals(&noted);
+                    Ok(opened)
+                }
+                Err(error) => {
+                    let opened = read(&layers.recorded_only())?;
+                    layers.note_overlay_refusal(format!("game windows ({error})"));
+                    Ok(opened)
+                }
+            }
         });
         let (guis, registry, map_size, presented) = opened?;
         // Font families are selected by the complete `l_` language key.

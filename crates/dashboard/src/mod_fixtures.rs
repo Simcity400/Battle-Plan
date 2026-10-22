@@ -1346,6 +1346,106 @@ fn flags_follow_the_visual_mods_and_fall_back_to_the_recording_by_name() {
     );
 }
 
+/// A flag search is one transaction. The recording draws the country's second candidate (A, its
+/// GER), and a mod adds the first (B, an undecodable GER_fascism) and a GER of its own. The
+/// recording's own choice is made again, its GER drawn from the recording, never the mod's GER
+/// patched in below the mod's broken B, and B is named on every search. Without a selection, and
+/// with a mod that only restyles GER, nothing is named.
+#[test]
+fn a_flag_search_the_mods_break_makes_the_recordings_own_choice_again() {
+    use crate::products::country_flags::FlagCache;
+    use installed_content_core::{content::visual, flags::FlagSet};
+    let search = |name: &str, files: &[(&str, Vec<u8>)]| {
+        let stack = Stack::new(name);
+        let (base, art) = (stack.base(), stack.addon());
+        stack.write(
+            &base,
+            "common/defines/00_flags.lua",
+            "NDefines = { NGraphics = { COUNTRY_FLAG_TEX_WIDTH = 1, COUNTRY_FLAG_TEX_HEIGHT = 1, \
+             COUNTRY_FLAG_TEX_MAX_SIZE = 4, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 1, \
+             COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 1, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 4, \
+             COUNTRY_FLAG_SMALL_TEX_WIDTH = 1, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, \
+             COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 4 } }",
+        );
+        stack.write(&base, "gfx/flags/GER.tga", tga_row(&[RED]));
+        let mut layers = ResolvedLayers::from_folders(&[(&base, &[])]).unwrap();
+        if !files.is_empty() {
+            for (path, bytes) in files {
+                stack.write(&art, path, bytes);
+            }
+            let user = stack.root.join("user");
+            stack.write(
+                &user,
+                "mod/art.mod",
+                format!(
+                    "name=\"Art\"\npath=\"{}\"\n",
+                    art.display().to_string().replace('\\', "/")
+                ),
+            );
+            let options = installed_content_core::ResolveOptions {
+                game_dir: base.clone(),
+                user_dir: user,
+                cache_dir: stack.root.join("cache"),
+            };
+            let choice = visual::Choice {
+                id: "mod/art.mod".into(),
+                name: "Art".into(),
+            };
+            visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+        }
+        let mut cache = FlagCache::default();
+        let candidates = ["GER_fascism".to_owned(), "GER".to_owned()];
+        // Two searches in one reply: the second reuses the decoded files.
+        [(); 2].map(|()| {
+            installed_content_core::content::observe_overlay_refusals(|| {
+                match find_flag(&layers, &[FlagSet::Normal], &[[1, 1]; 3], &candidates, &mut cache)
+                    .unwrap()
+                    .0
+                {
+                    FlagSearch::Found { asset, image } => (asset, image.pixels[..4].to_vec()),
+                    other => panic!("{other:?}"),
+                }
+            })
+        })
+    };
+    let recorded_ger = ("gfx/flags/GER.tga".to_owned(), RED.to_vec());
+    // The recording's GER and the mod's of the same path are two pictures under two keys.
+    let key = |(asset, pixels): &(String, Vec<u8>)| crate::products::country_flags::flag_key(asset, pixels);
+    assert_ne!(
+        key(&recorded_ger),
+        key(&("gfx/flags/GER.tga".to_owned(), BLUE.to_vec()))
+    );
+    for (found, fallbacks) in search("flag_transaction_none", &[]) {
+        assert_eq!(found, recorded_ger, "without a selection, as before");
+        assert!(fallbacks.is_empty(), "{fallbacks:?}");
+    }
+    for (found, fallbacks) in search(
+        "flag_transaction_restyled",
+        &[("gfx/flags/GER.tga", tga_row(&[BLUE]))],
+    ) {
+        assert_eq!(found, ("gfx/flags/GER.tga".to_owned(), BLUE.to_vec()));
+        assert!(fallbacks.is_empty(), "{fallbacks:?}");
+    }
+    let mut broken = tga_row(&[GREEN]);
+    broken[2] = 10;
+    for (found, fallbacks) in search(
+        "flag_transaction_broken",
+        &[
+            ("gfx/flags/GER_fascism.tga", broken),
+            ("gfx/flags/GER.tga", tga_row(&[BLUE])),
+        ],
+    ) {
+        assert_eq!(found, recorded_ger, "the recording's own choice, from the recording");
+        assert_eq!(fallbacks.len(), 1, "{fallbacks:?}");
+        assert!(
+            fallbacks
+                .iter()
+                .all(|why| why.starts_with("flag gfx/flags/GER_fascism.tga (")),
+            "{fallbacks:?}"
+        );
+    }
+}
+
 #[test]
 fn flag_search_reports_rejected_files_and_reuses_each_decode() {
     use crate::{

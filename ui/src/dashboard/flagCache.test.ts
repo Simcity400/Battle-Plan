@@ -16,7 +16,7 @@ function fakeClient() {
       if (request.product !== 'country-flags') { productCalls++; return { ...request, data: { calls: productCalls } }; }
       requests.push(request);
       const flags = request.params.tags.filter(tag => tag !== 'NOFLAG')
-        .map(tag => ({ tag, asset: `gfx/flags/medium/${tag}.tga`, width: 1, height: 1, pixels: [0, 0, 0, 255] }));
+        .map(tag => ({ tag, asset: `gfx/flags/medium/${tag}.tga`, key: `gfx/flags/medium/${tag}.tga#0`, width: 1, height: 1, pixels: [0, 0, 0, 255] }));
       return { ...request, data: { branchId: request.params.branchId, hour: request.params.hour, size: request.params.size, flags, warnings: [] } };
     },
   } as unknown as DashboardClient;
@@ -53,7 +53,7 @@ test('scrolling through thousands of flags never evicts widget products', async 
 });
 
 test('the flag store is bounded by bytes and keeps pixels as bytes', () => {
-  const flag = (tag: string) => storedFlag({ tag, asset: `gfx/flags/medium/${tag}.tga`, width: 41, height: 26, pixels: Array.from({ length: 41 * 26 * 4 }, () => 255) });
+  const flag = (tag: string) => storedFlag({ tag, asset: `gfx/flags/medium/${tag}.tga`, key: `gfx/flags/medium/${tag}.tga#255`, width: 41, height: 26, pixels: Array.from({ length: 41 * 26 * 4 }, () => 255) });
   assert.ok(flag('A').pixels instanceof Uint8ClampedArray);
   assert.equal(flag('A').pixels.byteLength, 41 * 26 * 4);
   const key = (tag: string, sourceId = 's') => FlagStore.key(sourceId, 'v', '1', 100, tag);
@@ -86,7 +86,7 @@ test('five thousand medium flags stay within the default flag budget', () => {
   const store = new FlagStore(FLAG_STORE_BYTES);
   const pixels = Array.from({ length: 41 * 26 * 4 }, () => 7);
   for (let index = 0; index < 5_000; index++) {
-    store.set(FlagStore.key('s', 'v', '1', 100, `T${index}`), storedFlag({ tag: `T${index}`, asset: 'a', width: 41, height: 26, pixels }));
+    store.set(FlagStore.key('s', 'v', '1', 100, `T${index}`), storedFlag({ tag: `T${index}`, asset: 'a', key: 'a#', width: 41, height: 26, pixels }));
   }
   assert.equal(store.size, 5_000);
   assert.ok(store.bytes < FLAG_STORE_BYTES);

@@ -819,7 +819,7 @@ struct Cache {
     branch: Option<(u64, Arc<Scan>)>,
     catalogue: Option<Arc<Catalogue>>,
     names: Option<CachedLegacyNames>,
-    icons: HashMap<String, catalogue::Drawn<Result<String, String>>>,
+    icons: HashMap<IconOperands, catalogue::Drawn<Result<String, String>>>,
     icon_bytes: usize,
     #[cfg(any(test, feature = "test-support"))]
     totals: Option<Totals>,
@@ -1086,6 +1086,10 @@ fn icon_key(
         Err(format!("Division sprite {key} is unavailable"))
     }
 }
+/// What a template's icon is drawn from: its priority unit, custom icon index and the priority
+/// unit's name, the operands of the sprite choice.
+type IconOperands = (u32, i32, Vec<u8>);
+
 fn icon(
     source: &Source,
     cat: &Arc<Catalogue>,
@@ -1093,26 +1097,29 @@ fn icon(
     custom: i32,
     unit: &[u8],
 ) -> Result<String, String> {
-    let key = icon_key(priority_unit, custom, unit, |key| {
-        cat.sprites.find(key).map(|sprite| sprite.is_some())
-    })?;
     let state = source.state::<Cache>();
     let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
     cache.select_content(cat);
-    if let Some(icon) = cache.icons.get(&key) {
+    let operands: IconOperands = (priority_unit, custom, unit.to_vec());
+    if let Some(icon) = cache.icons.get(&operands) {
         return icon.get().clone();
     }
-    let sprite = cat
-        .sprites
-        .find(&key)?
-        .ok_or_else(|| format!("Division sprite {key} is unavailable"))?;
-    let decode = cat.gui_decode.clone()?;
-    let drawn = catalogue::Drawn::new(|| {
-        catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, 0, 48)
-            .map_err(|why| format!("Division sprite {key}: {why}"))
-    });
+    // The choice between the custom template sprite and the unit's sprite is made against the
+    // catalogue drawing it: when the shown one cannot draw its choice, the recording's own
+    // choice is made again and drawn.
+    let drawn = catalogue::draw(
+        || {
+            format!(
+                "division template icon ({})",
+                String::from_utf8_lossy(unit)
+            )
+        },
+        cat,
+        |cat| template_sprite(cat, priority_unit, custom, unit),
+    );
     let result = drawn.get().clone();
-    let bytes = key.len()
+    let bytes = operands.2.len()
+        + 8
         + result
             .as_ref()
             .map_or_else(|reason| reason.len(), |value| value.len());
@@ -1123,9 +1130,29 @@ fn icon(
             cache.icon_bytes = 0;
         }
         cache.icon_bytes += bytes;
-        cache.icons.insert(key, drawn);
+        cache.icons.insert(operands, drawn);
     }
     result
+}
+
+/// A template's icon drawn through `cat`: the sprite [`icon_key`] chooses by what `cat`
+/// declares, rendered at the division log's edge.
+fn template_sprite(
+    cat: &Catalogue,
+    priority_unit: u32,
+    custom: i32,
+    unit: &[u8],
+) -> Result<String, String> {
+    let key = icon_key(priority_unit, custom, unit, |key| {
+        cat.sprites.find(key).map(|sprite| sprite.is_some())
+    })?;
+    let sprite = cat
+        .sprites
+        .find(&key)?
+        .ok_or_else(|| format!("Division sprite {key} is unavailable"))?;
+    let decode = cat.gui_decode.clone()?;
+    catalogue::sprite_frame_png(&cat.content.layers, sprite, decode, 0, 48)
+        .map_err(|why| format!("Division sprite {key}: {why}"))
 }
 fn named(
     source: &Source,

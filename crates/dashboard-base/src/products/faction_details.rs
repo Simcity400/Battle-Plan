@@ -497,14 +497,21 @@ fn goal_icon(cat: &catalogue::Catalogue, group: Option<&[u8]>) -> Result<Option<
     let group =
         std::str::from_utf8(group).map_err(|_| "Faction goal artwork: group is not UTF-8")?;
     let name = format!("GFX_{group}");
-    let read = || -> io::Result<String> {
+    // The sprite is the goal group's; drawn as the selection shows it, else the recording's
+    // own, named.
+    let read = |cat: &catalogue::Catalogue| -> io::Result<String> {
         let sprite = cat.sprites.lookup(&name).map_err(invalid)?;
         let decode = cat.gui_decode.as_ref().map_err(invalid)?;
         catalogue::sprite_frame_png(&cat.content.layers, sprite, *decode, 0, 64)
     };
-    read()
-        .map(Some)
-        .map_err(|why| format!("Faction goal artwork {name}: {why}"))
+    catalogue::draw(
+        || format!("faction goal {name} icon"),
+        cat,
+        |cat| read(cat).map_err(|why| format!("Faction goal artwork {name}: {why}")),
+    )
+    .get()
+    .clone()
+    .map(Some)
 }
 
 fn collect_icon_refusals(reply: &mut FactionDetailReply) {

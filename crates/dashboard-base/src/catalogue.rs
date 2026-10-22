@@ -199,19 +199,35 @@ pub fn binding_matches(key: &Binding, options: &ContentOptions) -> bool {
 /// gets a catalogue of its own, which displaces nothing.
 ///
 /// Recorded-only work (preparation) gets the recording's own catalogue and never mounts a
-/// visual mod.
+/// visual mod. A catalogue showing visual mods keeps the recording's own
+/// ([`Catalogue::recorded`]), which art the mods cannot draw is drawn from ([`draw`]).
 pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
     // Without a visual mod the recording's own catalogue is the one shown: recorded-only work
     // and requests share it, so caches built from it serve both.
     if reads_recorded(options) {
         return recorded_slot(source, options);
     }
-    if !source.still_admitted(options) {
-        return load(source, options, source.presented_for(options)?).map(Arc::new);
+    let shown = if source.still_admitted(options) {
+        kept_in::<Cached>(binding(options), source, options, || {
+            source.presented_for(options)
+        })?
+    } else {
+        Arc::new(load(source, options, source.presented_for(options)?)?)
+    };
+    keeping_recorded(source, options, shown)
+}
+
+/// `shown`, a catalogue showing visual mods, keeping the recording's own catalogue for these
+/// folders ([`Catalogue::recorded`]), which [`draw`] draws what the mods cannot from.
+fn keeping_recorded(
+    source: &Source,
+    options: &ContentOptions,
+    shown: Arc<Catalogue>,
+) -> io::Result<Arc<Catalogue>> {
+    if shown.recorded().is_none() {
+        shown.keep_recorded(recorded_slot(source, options)?);
     }
-    kept_in::<Cached>(binding(options), source, options, || {
-        source.presented_for(options)
-    })
+    Ok(shown)
 }
 
 /// The catalogue of these folders drawing the recording's own artwork whatever visual mods the
@@ -236,7 +252,8 @@ pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Resu
 /// the fallback once, as `what` with the stage that failed (decision 5). When the recording
 /// cannot draw it either, the recording's failure is the result: the art is unavailable, as it
 /// always was. Everything runs in one capture, so the memo names its notes on every reply that
-/// shows it.
+/// shows it. Inside another transaction's strict attempt it draws `admitted` alone, strictly:
+/// falling back to the recording is that transaction's.
 pub fn present<T>(
     what: &str,
     admitted: &Catalogue,
@@ -246,8 +263,8 @@ pub fn present<T>(
     #[cfg(any(test, feature = "test-support"))]
     PRESENTED.with(|count| count.set(count.get() + 1));
     Drawn::new(|| {
-        if std::ptr::eq(admitted, recorded) {
-            return draw(recorded);
+        if std::ptr::eq(admitted, recorded) || installed_content_core::content::is_strict() {
+            return draw(admitted);
         }
         let (shown, noted) =
             capture_isolated(|| installed_content_core::content::strict(|| draw(admitted)));
@@ -267,6 +284,24 @@ pub fn present<T>(
             }
         }
     })
+}
+
+/// Art a reply draws when it answers, through `shown`, the catalogue its request shows
+/// ([`catalogue`]): one transaction ([`present`]) against `shown` and then, when any stage of
+/// `operation` fails there, against the recording's own catalogue `shown` keeps
+/// ([`Catalogue::recorded`]), named as `what` gives it. `operation` is the whole draw, every
+/// choice that depends on what the catalogue declares included. A catalogue showing no visual
+/// mod draws it once, as it is. A memo keeping the result keeps it per artwork mode
+/// (`installed_content_core::content::ByMode`) when another transaction's strict attempt can reach it.
+pub fn draw<T>(
+    what: impl FnOnce() -> String,
+    shown: &Catalogue,
+    operation: impl Fn(&Catalogue) -> Result<T, String>,
+) -> Drawn<Result<T, String>> {
+    match shown.recorded() {
+        Some(recorded) => present(&what(), shown, recorded, operation),
+        None => Drawn::new(|| operation(shown)),
+    }
 }
 
 #[cfg(test)]
@@ -316,6 +351,79 @@ mod present_tests {
         });
         assert_eq!(*drawn.get(), Ok(8));
         assert!(line.is_some_and(|line| line.contains("kept selector note")));
+    }
+
+    /// A catalogue showing visual mods keeps the recording's own, which [`draw`] falls back to as
+    /// a whole; without a selection the catalogue is the recording's, keeps none, and draws once.
+    #[test]
+    fn draw_falls_back_through_the_recorded_catalogue_the_shown_one_keeps() {
+        let machine = Machine::new("draw_keeps_recorded");
+        machine.write("gfx/icon.png", &png(RED));
+        machine.write_mod("art", "gfx/icon.png", &png(RED));
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &[]);
+        let plain = catalogue(&source, &options).unwrap();
+        assert!(plain.recorded().is_none());
+        let attempts = std::cell::Cell::new(0);
+        let (drawn, line) = fallback_line(|| {
+            draw(|| unreachable!("nothing is named"), &plain, |cat| {
+                attempts.set(attempts.get() + 1);
+                assert!(!installed_content_core::content::is_strict());
+                assert!(std::ptr::eq(cat, &*plain));
+                Ok(1)
+            })
+        });
+        assert_eq!((drawn.get().clone(), attempts.get(), line), (Ok(1), 1, None));
+        select(&source, &mut options, &["art"]);
+        let shown = catalogue(&source, &options).unwrap();
+        let recorded = shown.recorded().expect("the recording's own catalogue kept");
+        assert!(Arc::ptr_eq(recorded, &recorded_catalogue(&source, &options).unwrap()));
+        let (drawn, line) = fallback_line(|| {
+            draw(|| "the icon".to_owned(), &shown, |cat| {
+                if std::ptr::eq(cat, &*shown) {
+                    Err("the mod's sprite does not load".to_owned())
+                } else {
+                    Ok(2)
+                }
+            })
+        });
+        assert_eq!(*drawn.get(), Ok(2));
+        assert!(line.is_some_and(|line| line.contains("the icon (the mod's sprite does not load)")));
+    }
+
+    /// A transaction reached inside another's strict attempt draws the selection alone,
+    /// strictly, and names nothing: when the outer attempt fails, only the outer fallback is
+    /// named, and the outer operation, not the inner one, makes the recording's choice again.
+    #[test]
+    fn a_nested_transaction_leaves_falling_back_to_the_outer_one() {
+        let machine = Machine::new("nested_present");
+        machine.write("gfx/icon.png", &png(RED));
+        machine.write_mod("art", "gfx/icon.png", &png(RED));
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["art"]);
+        let shown = catalogue(&source, &options).unwrap();
+        let inner = |cat: &Catalogue| {
+            draw(|| "the inner icon".to_owned(), cat, |drawing| {
+                if std::ptr::eq(drawing, &*shown) {
+                    assert!(installed_content_core::content::is_strict());
+                    Err("the mod's inner sprite does not load".to_owned())
+                } else {
+                    Ok("recorded inner")
+                }
+            })
+            .get()
+            .clone()
+        };
+        let (drawn, line) = fallback_line(|| {
+            draw(|| "the outer icon".to_owned(), &shown, |cat| {
+                let inner = inner(cat)?;
+                Ok(if std::ptr::eq(cat, &*shown) { "shown" } else { inner })
+            })
+        });
+        assert_eq!(*drawn.get(), Ok("recorded inner"), "the outer operation's fallback");
+        let line = line.unwrap();
+        assert!(line.contains("the outer icon (the mod's inner sprite does not load)"), "{line}");
+        assert!(!line.contains("the inner icon"), "{line}");
     }
 }
 
@@ -465,14 +573,19 @@ pub(crate) fn bound_catalogue_with(
         })
     })?;
     before_load();
-    Some(result.get_or_init(|| {
+    let loaded = result.get_or_init(|| {
         load_with(
             source,
             options,
             || Ok(Arc::clone(&content)),
             || Ok(Arc::clone(&presented)),
         )
-    }))
+    });
+    Some(if reads_recorded(options) {
+        loaded
+    } else {
+        loaded.and_then(|shown| keeping_recorded(source, options, shown))
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]

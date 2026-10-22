@@ -1334,3 +1334,57 @@ fn air_aces_generic_portrait_preserves_retained_pool_and_native_culture_holes() 
             .contains("absent from recorded content")
     );
 }
+
+/// The recording draws an ace from its retained pool sprite, A; a selected mod declares the
+/// ace's own named sprite, B, which the ladder tries first and the mod cannot draw. The
+/// recording's own choice, A, is drawn and named, on the first reply and again from the memo,
+/// never left unavailable for want of the recording's B; without a selection nothing is named.
+#[test]
+fn an_ace_portrait_the_mod_cannot_draw_makes_the_recordings_own_choice_again() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("ace_portrait_selection");
+    machine.write(
+        "interface/aces.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_retained_ace textureFile = gfx/retained.png } }",
+    );
+    machine.write("gfx/retained.png", &png(RED));
+    machine.write_mod(
+        "named",
+        "interface/named.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_MOD_ace_Hans_Muster textureFile = gfx/named.png } }",
+    );
+    machine.write_mod("named", "gfx/named.png", b"not a png");
+    let operands = PortraitOperands {
+        tag: Some("MOD".into()),
+        name: b"Hans".to_vec(),
+        surname: b"Muster".to_vec(),
+        fields: Ok(Some(PortraitSelection {
+            gender: 0,
+            pool_index: 0,
+            portrait: Some(PortraitPool {
+                cached: Some(b"GFX_retained_ace".to_vec()),
+                culture: None,
+                fallback: None,
+            }),
+        })),
+    };
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &[]);
+    let cat = catalogue::catalogue(&source, &options).unwrap();
+    let (portrait, line) = fallback_line(|| cached_portrait(&source, &operands, &cat));
+    assert_eq!(first_pixel(&portrait.unwrap()), RED);
+    assert_eq!(line, None);
+    select(&source, &mut options, &["named"]);
+    for _ in 0..2 {
+        let cat = catalogue::catalogue(&source, &options).unwrap();
+        let (portrait, line) = fallback_line(|| cached_portrait(&source, &operands, &cat));
+        assert_eq!(first_pixel(&portrait.unwrap()), RED, "the recording's own A");
+        assert!(
+            line.as_ref()
+                .is_some_and(|line| line.contains("ace portrait MOD Hans Muster")),
+            "{line:?}"
+        );
+    }
+}

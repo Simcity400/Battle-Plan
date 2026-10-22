@@ -86,7 +86,12 @@ pub struct CountryFlagParams {
 #[serde(rename_all = "camelCase")]
 pub struct CountryFlagImage {
     pub tag: String,
+    /// The flag file drawn, as the content names it.
     pub asset: String,
+    /// What the flag shows: its file and a digest of its pixels, so two flags share it only
+    /// when they show the same picture (the visual mods' file and the recording's of one path
+    /// are two).
+    pub key: String,
     pub width: u32,
     pub height: u32,
     /// Straight-alpha RGBA bytes, at most 128 pixels on the longer side.
@@ -292,53 +297,40 @@ impl ShieldStyle {
         })?;
         let layers = &catalogue.content.layers;
         let mut warnings = Vec::new();
-        let shown = (|| {
-            let name = installed_content_core::gui::native::window_button_sprite(
-                catalogue.guis()?,
-                TOP_BAR,
-                PLAYER_FLAG,
-                &mut warnings,
-            )?;
-            let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
-            let shield =
-                crate::catalogue::MaskedShield::load(layers.presentation(), sprite, decode)?;
-            if layers.presentation().shows_visual_mods() {
-                // A shield that loads may still not draw (an effect the mods break): it is
-                // drawn once here, so the recording's shield replaces it before any flag is
-                // chosen for it.
-                let cells = flag_cells(layers)?;
-                let cell = cells[if shield.small() { 2 } else { 0 }];
-                let probe = Rgba8Image {
-                    width: cell[0],
-                    height: cell[1],
-                    pixels: vec![255; (cell[0] * cell[1] * 4) as usize],
-                };
-                shield.draw(layers.presentation(), &[&probe], decode)?;
+        let (shield, recorded) = if !layers.presentation().shows_visual_mods() {
+            (Self::shown(catalogue, decode, &mut warnings)?, None)
+        } else {
+            // One transaction, as `catalogue::present` draws: the visual mods' whole choice,
+            // strictly and with its notes kept to itself, then the recording's whole choice
+            // when any stage of theirs fails.
+            let (shown, noted) = crate::catalogue::capture_isolated(|| {
+                installed_content_core::content::strict(|| Self::shown(catalogue, decode, &mut warnings))
+            });
+            match shown {
+                Ok(shield) => {
+                    crate::catalogue::credit(&noted);
+                    (shield, None)
+                }
+                Err(error) => {
+                    // The recording's own top bar binding, its declaration, flag set and cells.
+                    let recorded = layers.recorded_only();
+                    warnings.clear();
+                    let guis = installed_content_core::gui::native::read_layers(&recorded)?;
+                    let name = installed_content_core::gui::native::window_button_sprite(
+                        &guis,
+                        TOP_BAR,
+                        PLAYER_FLAG,
+                        &mut warnings,
+                    )?;
+                    let sprites = crate::catalogue::recorded_sprites(&recorded);
+                    let sprites = (*sprites).as_ref().map_err(|why| invalid(why.clone()))?;
+                    let sprite = crate::catalogue::created_gui_sprite(sprites, &name)?;
+                    let shield = crate::catalogue::MaskedShield::load(&recorded, sprite, decode)?;
+                    let cells = flag_cells(&recorded)?;
+                    layers.note_overlay_refusal(format!("shield {PLAYER_FLAG} ({error})"));
+                    (shield, Some((recorded, cells)))
+                }
             }
-            io::Result::Ok(shield)
-        })();
-        let (shield, recorded) = match shown {
-            Ok(shield) => (shield, None),
-            Err(error) if layers.presentation().shows_visual_mods() => {
-                // The recording's own top bar binding, its declaration, flag set and cells.
-                let recorded = layers.recorded_only();
-                let guis = installed_content_core::gui::native::read_layers(&recorded)?;
-                warnings.clear();
-                let name = installed_content_core::gui::native::window_button_sprite(
-                    &guis,
-                    TOP_BAR,
-                    PLAYER_FLAG,
-                    &mut warnings,
-                )?;
-                let sprites = crate::catalogue::recorded_sprites(&recorded);
-                let sprites = (*sprites).as_ref().map_err(|why| invalid(why.clone()))?;
-                let sprite = crate::catalogue::created_gui_sprite(sprites, &name)?;
-                let shield = crate::catalogue::MaskedShield::load(&recorded, sprite, decode)?;
-                let cells = flag_cells(&recorded)?;
-                layers.note_overlay_refusal(format!("shield {PLAYER_FLAG} ({error})"));
-                (shield, Some((recorded, cells)))
-            }
-            Err(error) => return Err(error),
         };
         // A shield without an overlay has no shading to even.
         let panel = match shield.overlay()? {
@@ -352,6 +344,36 @@ impl ShieldStyle {
             decode,
             warnings,
         })
+    }
+
+    /// The top bar's shield as `catalogue`'s presentation binds, declares and loads it. With
+    /// visual mods shown it is drawn once too: a shield that loads may still not draw (an effect
+    /// the mods break), and the recording's must replace it before any flag is chosen for it.
+    fn shown(
+        catalogue: &Catalogue,
+        decode: installed_content_image::native::Decode,
+        warnings: &mut Vec<String>,
+    ) -> io::Result<crate::catalogue::MaskedShield> {
+        let layers = &catalogue.content.layers;
+        let name = installed_content_core::gui::native::window_button_sprite(
+            catalogue.guis()?,
+            TOP_BAR,
+            PLAYER_FLAG,
+            warnings,
+        )?;
+        let sprite = crate::catalogue::created_gui_sprite(&catalogue.sprites, &name)?;
+        let shield = crate::catalogue::MaskedShield::load(layers.presentation(), sprite, decode)?;
+        if layers.presentation().shows_visual_mods() {
+            let cells = flag_cells(layers)?;
+            let cell = cells[if shield.small() { 2 } else { 0 }];
+            let probe = Rgba8Image {
+                width: cell[0],
+                height: cell[1],
+                pixels: vec![255; (cell[0] * cell[1] * 4) as usize],
+            };
+            shield.draw(layers.presentation(), &[&probe], decode)?;
+        }
+        Ok(shield)
     }
 
     /// The layers and cells the flags this shield frames are read at: the recording's when it
@@ -442,21 +464,59 @@ enum FlagFile {
     Image(Arc<Rgba8Image>),
 }
 
+/// The stack a flag file was read from: the presentation of the layers searched, or the
+/// recorded layers below its visual mods.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stack {
+    Shown,
+    Recorded,
+}
+
+/// What a reply's searches have reported once, kept only with the search that reported it.
+#[derive(Clone, Default)]
+struct Reported {
+    refused: BTreeSet<(Stack, usize, String)>,
+    substitutions: BTreeSet<String>,
+    unresolvable: BTreeSet<String>,
+}
+
 /// One decoding per file/set, shared across the country's key ladders.
 #[derive(Default)]
 pub(crate) struct FlagCache {
-    /// Each file as decoded, and why the visual mods' file could not be shown when the
-    /// recording's is ([`find_flag`]).
-    files: BTreeMap<(usize, String), (FlagFile, Option<String>)>,
-    /// The recorded layers below the visual mods, read when a mod's flag cannot be shown, and
-    /// the cells of the recording's own defines its files are decoded at.
+    /// Each file as decoded, by the stack it was read from, its set and its path.
+    files: BTreeMap<(Stack, usize, String), FlagFile>,
+    /// The recorded layers below the visual mods, searched when the mods' search fails, and
+    /// the cells of the recording's own defines their files are decoded at.
     recorded: Option<(
         installed_content_core::ResolvedLayers,
         Result<[[u32; 2]; 3], String>,
     )>,
-    reported: BTreeSet<(usize, String)>,
-    substitutions: BTreeSet<String>,
-    unresolvable: BTreeSet<String>,
+    reported: Reported,
+}
+
+/// The file at `asset` of `layers` in set `set_index`, decoded at `cell`, once per `stack`.
+fn flag_file(
+    files: &mut BTreeMap<(Stack, usize, String), FlagFile>,
+    stack: Stack,
+    layers: &installed_content_core::ResolvedLayers,
+    set_index: usize,
+    asset: &str,
+    cell: [u32; 2],
+) -> io::Result<FlagFile> {
+    let key = (stack, set_index, asset.to_owned());
+    if let Some(file) = files.get(&key) {
+        return Ok(file.clone());
+    }
+    let file = match layers.read_uncovered(asset) {
+        Ok(bytes) => match installed_content_core::flags::decode_checked(&bytes, cell) {
+            Ok(image) => FlagFile::Image(Arc::new(image)),
+            Err(reason) => FlagFile::Refused(reason),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => FlagFile::Missing,
+        Err(error) => return Err(error),
+    };
+    files.insert(key, file.clone());
+    Ok(file)
 }
 
 /// Searches `sets` in order, and in each the candidates in order: a missing
@@ -464,10 +524,14 @@ pub(crate) struct FlagCache {
 /// A candidate [`safe_flag_key`] refuses stops the search, because falling
 /// past it would draw a flag the game does not.
 ///
-/// Files are read from the presentation of `layers`: a candidate the visual mods
-/// leave missing or undecodable that the recording draws is the recording's,
-/// named as the map names its own (`ResolvedLayers::note_overlay_refusal`) on
-/// every search that uses it.
+/// Files are read from the presentation of `layers`. With visual mods shown the search is one
+/// transaction, as `catalogue::present` draws: the mods' search fails at a candidate whose file
+/// they supply but which does not decode, whose read fails, or which they hide or leave
+/// undecodable where the recording draws its own. Then the whole ladder is searched again in
+/// the recording, at the recording's own cells, so the recording's own choice is made again,
+/// and the failing file is named as the map names its own
+/// (`ResolvedLayers::note_overlay_refusal`) on every search that falls back. Only the chosen
+/// search's findings are returned.
 pub(crate) fn find_flag(
     layers: &installed_content_core::ResolvedLayers,
     sets: &[FlagSet],
@@ -475,6 +539,99 @@ pub(crate) fn find_flag(
     candidates: &[String],
     cache: &mut FlagCache,
 ) -> io::Result<(FlagSearch, Vec<crate::content_check::Finding>)> {
+    let FlagCache {
+        files,
+        recorded,
+        reported,
+    } = cache;
+    let presentation = layers.presentation();
+    let plain = |files: &mut BTreeMap<_, _>, reported: &mut Reported| {
+        let Ok(found) = ladder(
+            Stack::Shown,
+            presentation,
+            None,
+            sets,
+            cells,
+            candidates,
+            files,
+            reported,
+        )?
+        else {
+            unreachable!("only the visual mods' search breaks");
+        };
+        io::Result::Ok(found)
+    };
+    if !presentation.shows_visual_mods() {
+        return plain(files, reported);
+    }
+    let (recorded, recorded_cells) = recorded.get_or_insert_with(|| {
+        let recorded = layers.recorded_only();
+        let cells = flag_cells(&recorded).map_err(|error| error.to_string());
+        (recorded, cells)
+    });
+    let recorded = &*recorded;
+    // Without the recording's own cells nothing can be drawn from the recording: the mods'
+    // search stands as it is.
+    let Ok(recorded_cells) = recorded_cells.as_ref() else {
+        return plain(files, reported);
+    };
+    let mut shown = reported.clone();
+    match ladder(
+        Stack::Shown,
+        presentation,
+        Some((recorded, recorded_cells)),
+        sets,
+        cells,
+        candidates,
+        files,
+        &mut shown,
+    )? {
+        Ok(found) => {
+            *reported = shown;
+            Ok(found)
+        }
+        Err(Broken { asset, why }) => {
+            let Ok(found) = ladder(
+                Stack::Recorded,
+                recorded,
+                None,
+                sets,
+                recorded_cells,
+                candidates,
+                files,
+                reported,
+            )?
+            else {
+                unreachable!("only the visual mods' search breaks");
+            };
+            if matches!(found.0, FlagSearch::Found { .. }) {
+                layers.note_overlay_refusal(format!("flag {asset} ({why})"));
+            }
+            Ok(found)
+        }
+    }
+}
+
+/// Where the visual mods' search of a ladder fails: the file they break or hide, and why.
+struct Broken {
+    asset: String,
+    why: String,
+}
+
+/// [`find_flag`]'s ladder over `layers`, its files read once per `stack`. Given `recorded` (the
+/// recorded layers and their cells) it is the visual mods' search, which fails at the first
+/// candidate they break or hide ([`Broken`]); otherwise it never fails that way.
+#[allow(clippy::too_many_arguments)]
+fn ladder(
+    stack: Stack,
+    layers: &installed_content_core::ResolvedLayers,
+    recorded: Option<(&installed_content_core::ResolvedLayers, &[[u32; 2]; 3])>,
+    sets: &[FlagSet],
+    cells: &[[u32; 2]; 3],
+    candidates: &[String],
+    files: &mut BTreeMap<(Stack, usize, String), FlagFile>,
+    reported: &mut Reported,
+) -> io::Result<Result<(FlagSearch, Vec<crate::content_check::Finding>), Broken>> {
     use crate::content_check::{Finding, Kind};
     let mut findings = Vec::new();
     for &set in sets {
@@ -486,62 +643,49 @@ pub(crate) fn find_flag(
         let cell = cells[set_index];
         for key in candidates {
             if !safe_flag_key(key) {
-                if cache.unresolvable.insert(key.clone()) {
+                if reported.unresolvable.insert(key.clone()) {
                     findings.push(Finding::new(Kind::Refused, key,
                         format!("flag name {key:?} cannot be resolved inside the flag folder, so the country's flag is unavailable")));
                 }
-                return Ok((FlagSearch::Unresolvable, findings));
+                return Ok(Ok((FlagSearch::Unresolvable, findings)));
             }
             let asset = format!("{}{key}.tga", set.directory());
-            let cache_key = (set_index, asset.clone());
-            if !cache.files.contains_key(&cache_key) {
-                let read = |stack: &installed_content_core::ResolvedLayers, cell| match stack
-                    .read_uncovered(&asset)
-                {
-                    Ok(bytes) => Ok(match installed_content_core::flags::decode_checked(&bytes, cell) {
-                        Ok(image) => FlagFile::Image(Arc::new(image)),
-                        Err(reason) => FlagFile::Refused(reason),
-                    }),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(FlagFile::Missing),
-                    Err(error) => Err(error),
+            let read = flag_file(files, stack, layers, set_index, &asset, cell);
+            if let Some((recorded, recorded_cells)) = recorded
+                && !matches!(read, Ok(FlagFile::Image(_)))
+            {
+                // A file the mods supply that does not decode, or a read that fails, is theirs
+                // to fail, as is one they hide or leave undecodable where the recording draws
+                // its own. A file missing or refused alike in both falls through, as the game's
+                // search does.
+                let breaks = match &read {
+                    Ok(FlagFile::Refused(_)) if layers.supplied_by_visual_mod(&asset) => true,
+                    Err(_) => true,
+                    _ => matches!(
+                        flag_file(
+                            files,
+                            Stack::Recorded,
+                            recorded,
+                            set_index,
+                            &asset,
+                            recorded_cells[set_index],
+                        ),
+                        Ok(FlagFile::Image(_))
+                    ),
                 };
-                let presentation = layers.presentation();
-                let shown = read(presentation, cell);
-                let mut entry = None;
-                if presentation.shows_visual_mods() && !matches!(shown, Ok(FlagFile::Image(_))) {
-                    // The recording's own file, at the recording's own cell size.
-                    let (recorded, cells) = cache.recorded.get_or_insert_with(|| {
-                        let recorded = layers.recorded_only();
-                        let cells = flag_cells(&recorded).map_err(|error| error.to_string());
-                        (recorded, cells)
-                    });
-                    if let Ok(cells) = cells
-                        && let Ok(FlagFile::Image(image)) = read(recorded, cells[set_index])
-                    {
-                        let why = match &shown {
-                            Ok(FlagFile::Refused(reason)) => format!("{reason:?}"),
-                            Err(error) => error.to_string(),
-                            _ => "the visual mods give no such file".to_owned(),
-                        };
-                        let refusal = format!("flag {asset} ({why})");
-                        layers.note_overlay_refusal(refusal.clone());
-                        entry = Some((FlagFile::Image(image), Some(refusal)));
-                    }
+                if breaks {
+                    let why = match &read {
+                        Ok(FlagFile::Refused(reason)) => format!("{reason:?}"),
+                        Err(error) => error.to_string(),
+                        _ => "the visual mods give no such file".to_owned(),
+                    };
+                    return Ok(Err(Broken { asset, why }));
                 }
-                let entry = match entry {
-                    Some(entry) => entry,
-                    None => (shown?, None),
-                };
-                cache.files.insert(cache_key.clone(), entry);
-            } else if let (_, Some(refusal)) = &cache.files[&cache_key] {
-                installed_content_core::content::credit_overlay_refusals(&BTreeSet::from(
-                    [refusal.clone()],
-                ));
             }
-            match &cache.files[&cache_key].0 {
+            match read? {
                 FlagFile::Missing => {}
                 FlagFile::Refused(reason) => {
-                    if !cache.reported.insert(cache_key.clone()) {
+                    if !reported.refused.insert((stack, set_index, asset.clone())) {
                         continue;
                     }
                     // The game's decoder rejects these headers and skips the candidate.
@@ -569,7 +713,7 @@ pub(crate) fn find_flag(
                 FlagFile::Image(image) => {
                     if sets.first() == Some(&FlagSet::Medium)
                         && set == FlagSet::Normal
-                        && cache.substitutions.insert(asset.clone())
+                        && reported.substitutions.insert(asset.clone())
                     {
                         // Medium-to-normal substitution is not established: actionable.
                         let mut finding = Finding::new(
@@ -582,13 +726,7 @@ pub(crate) fn find_flag(
                         finding.file = Some(asset.clone());
                         findings.push(finding);
                     }
-                    return Ok((
-                        FlagSearch::Found {
-                            asset,
-                            image: image.clone(),
-                        },
-                        findings,
-                    ));
+                    return Ok(Ok((FlagSearch::Found { asset, image }, findings)));
                 }
             }
         }
@@ -599,7 +737,12 @@ pub(crate) fn find_flag(
         candidates.first().cloned().unwrap_or_default(),
         "no decodable flag in the requested sets; flag artwork is unavailable",
     ));
-    Ok((FlagSearch::Absent, findings))
+    Ok(Ok((FlagSearch::Absent, findings)))
+}
+
+/// What a drawn flag shows ([`CountryFlagImage::key`]): its file and a digest of its pixels.
+pub(crate) fn flag_key(asset: &str, pixels: &[u8]) -> String {
+    format!("{asset}#{}", blake3::hash(pixels).to_hex())
 }
 
 /// The extent `width` x `height` scaled so its longer side is at most `edge`.
@@ -895,8 +1038,10 @@ impl FlagContext {
                 for ((tag, asset, _), image) in shielded.into_iter().zip(images) {
                     let (width, height) = bounded(image.width, image.height, MAX_FLAG_EDGE);
                     let image = resize(&image, width, height);
+                    let key = flag_key(&asset, &image.pixels);
                     flags.push(CountryFlagImage {
                         tag,
+                        key,
                         asset,
                         width: image.width,
                         height: image.height,

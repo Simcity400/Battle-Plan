@@ -32,9 +32,10 @@ function encode(image: CountryFlagImage): Promise<string | undefined> {
 }
 
 /** A flag's pixels as an image URL, for places that take an image (tooltip rows):
- * encoded once per `scope` (recording, content and size) and artwork. */
+ * encoded once per `scope` (recording, content and size) and picture (`key`, which tells the
+ * visual mods' file from the recording's of one path). */
 export function flagImageUrl(image: CountryFlagImage, scope = ''): Promise<string | undefined> {
-  const key = JSON.stringify([scope, image.asset, image.width, image.height]);
+  const key = JSON.stringify([scope, image.key, image.width, image.height]);
   const known = encoded.get(key);
   if (known) { encoded.delete(key); encoded.set(key, known); return known.url; }
   const entry = { url: encode(image), bytes: 0 };

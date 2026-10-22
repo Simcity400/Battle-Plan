@@ -497,7 +497,17 @@ export type ResearchReply = { history: ResearchHistory, artwork: Array<Artwork>,
 export type TechnologyArtworkParams = { tokens: Array<string>, };
 export type TechnologyArtworkReply = { items: Array<Artwork>, warnings: Array<string>, };
 export type CountryFlagSize = "full" | "medium" | "small" | "shield" | "panel";
-export type CountryFlagImage = { tag: string, asset: string, width: number, height: number,
+export type CountryFlagImage = { tag: string,
+/**
+ * The flag file drawn, as the content names it.
+ */
+asset: string,
+/**
+ * What the flag shows: its file and a digest of its pixels, so two flags share it only
+ * when they show the same picture (the visual mods' file and the recording's of one path
+ * are two).
+ */
+key: string, width: number, height: number,
 /**
  * Straight-alpha RGBA bytes, at most 128 pixels on the longer side.
  */
@@ -2937,7 +2947,8 @@ policyUnresolved: Array<EconomyRun>, cooldown: Array<EconomyRun>,
 names: Array<OrganisationLabel>, };
 export type OrganisationLabel = { firstHour: number, token: string, name: string | null,
 /**
- * The icon's sprite name, where the content declares one.
+ * The icon's key in `icons`: its asset and a digest of its picture
+ * (`production_lines::picture_key`), where the content declares one.
  */
 icon: string | null, };
 export type DesignHistory = {
@@ -5292,7 +5303,15 @@ key: string,
 /**
  * The zero-based native frame; offsets may continue past the authored strip.
  */
-frame: number, };
+frame: number,
+/**
+ * Where the visual mods' interface chose `key`, the sprite the recording's own interface
+ * chooses in its place: drawn, named, when the selection cannot draw `key`. Equal to `key`
+ * when the selection could not make its own choice, so the recording's is drawn alone.
+ * Absent where recorded facts name the sprite (or both choose the same one); a sprite the
+ * selection cannot draw is then the recording's of that name.
+ */
+recorded?: string, };
 export type KeyedChoice = { id: string, name: string, };
 export type AirOperationTheatreChoice = { id: string, name: string, regions: Array<string>, };
 export type KeyedWindow = { firstHour: number, lastHour: number, known: Array<HourSpan>, reads: Array<[number, number, number]>, series: Array<KeyedSeries>, };
@@ -5366,6 +5385,10 @@ export type DoctrineMasteryReward = { id: string, name: string | null, descripti
 export type SpriteArtworkParams = { sprites: Array<SpriteFrame>, };
 export type SpriteArtworkReply = { items: Array<SpriteImage>, warnings: Array<string>, };
 export type SpriteImage = { key: string, frame: number,
+/**
+ * The asked frame's `recorded` choice, as it was asked.
+ */
+recorded?: string,
 /**
  * A PNG data URL, or null with a named, counted refusal.
  */

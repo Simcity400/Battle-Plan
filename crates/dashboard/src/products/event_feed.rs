@@ -851,26 +851,35 @@ fn script_presentation(
             Some(1),
         );
     } else if let Ok(picture) = std::str::from_utf8(&event.picture) {
-        let image = (|| -> Result<String, String> {
-            let sprite = catalogue
-                .sprites
-                .find(picture)?
-                .ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
-            let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
-            catalogue::sprite_frame_png(
-                &catalogue.content.layers,
-                sprite,
-                decode,
-                0,
-                artwork::ICON_EDGE,
-            )
-            .map_err(|why| why.to_string())
-        })();
-        match image {
-            Ok(icon) => item.icon = Some(icon),
-            Err(reason) => {
-                builder.unavailable("scriptEventPicture", "Event picture", reason, Some(1))
-            }
+        // The event's picture is the definition's; drawn as the selection shows it, else the
+        // recording's own, named.
+        let image = catalogue::draw(
+            || format!("event {token} picture"),
+            catalogue,
+            |catalogue| {
+                let sprite = catalogue
+                    .sprites
+                    .find(picture)?
+                    .ok_or_else(|| format!("Event {token}: picture {picture} is undeclared"))?;
+                let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
+                catalogue::sprite_frame_png(
+                    &catalogue.content.layers,
+                    sprite,
+                    decode,
+                    0,
+                    artwork::ICON_EDGE,
+                )
+                .map_err(|why| why.to_string())
+            },
+        );
+        match image.get() {
+            Ok(icon) => item.icon = Some(icon.clone()),
+            Err(reason) => builder.unavailable(
+                "scriptEventPicture",
+                "Event picture",
+                reason.clone(),
+                Some(1),
+            ),
         }
     } else {
         builder.unavailable(

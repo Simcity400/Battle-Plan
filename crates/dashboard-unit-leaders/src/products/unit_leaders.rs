@@ -3781,8 +3781,14 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
             let catalogue = &content.catalogue;
             let name = catalogue.localised(token, View::Plain);
             // The assignment tree admits every defined trait; icon construction
-            // retries the stack's fallback drawable for an absent name.
-            match trait_icon(catalogue, &content.leaders.traits, token) {
+            // retries the stack's fallback drawable for an absent name. The whole choice is
+            // made against the selection, else again as the recording's own, named.
+            let icon = catalogue::draw(
+                || format!("trait {token} icon"),
+                catalogue,
+                |catalogue| trait_icon(catalogue, &content.leaders.traits, token),
+            );
+            match icon.get().clone() {
                 Ok(icon) => (name, Some(icon), None),
                 Err(error) => (name, None, Some(error)),
             }

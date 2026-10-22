@@ -33,6 +33,37 @@ pub enum Kind {
     Technology,
 }
 
+impl Kind {
+    /// What a fallback note calls one of this kind's items.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+            Self::Technology => "technology",
+        }
+    }
+}
+
+/// Why a token's icon is a placeholder: its sprite is undeclared or has no texture.
+fn undeclared_icon(sprite: &str) -> String {
+    format!("sprite {sprite} is undeclared or has no texture; a placeholder is shown")
+}
+
+/// `sprite`'s first frame drawn through `catalogue`, or `None` when it declares no such sprite
+/// or the sprite has no texture.
+fn declared_icon_png(catalogue: &Catalogue, sprite: &str) -> io::Result<Option<String>> {
+    let Some(sprite) = catalogue.sprites.find(sprite).map_err(invalid)? else {
+        return Ok(None);
+    };
+    if sprite.texture.is_none() {
+        return Ok(None);
+    }
+    let decode = *catalogue
+        .gui_decode
+        .as_ref()
+        .map_err(|why| invalid(why.clone()))?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, ICON_EDGE).map(Some)
+}
+
 struct TechnologyName {
     presentation: Result<installed_content_core::technology::PresentationName, String>,
     children: std::sync::OnceLock<Result<Vec<String>, String>>,
@@ -201,6 +232,10 @@ impl Preparation {
     }
 }
 
+/// An icon a context keeps: whether the recording's own catalogue drew it, the artwork mode it
+/// was drawn in and its sprite.
+type IconKey = (bool, installed_content_core::content::ArtworkMode, String);
+
 pub struct Context {
     kind: Kind,
     technology_names: Arc<BTreeMap<String, TechnologyName>>,
@@ -208,7 +243,10 @@ pub struct Context {
     catalogue: Arc<Catalogue>,
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
     artwork_bytes: usize,
-    icon_cache: BTreeMap<String, catalogue::Drawn<Result<Option<String>, String>>>,
+    /// Each icon by the catalogue it was drawn through, the artwork mode it was drawn in and its
+    /// sprite ([`IconKey`]), with the bytes they keep.
+    icon_cache: std::cell::RefCell<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
+    icon_bytes: std::cell::Cell<usize>,
     definitions: Arc<BTreeMap<String, installed_content_focus::focus::FocusDefinition>>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
@@ -411,7 +449,8 @@ impl Context {
             catalogue,
             artwork_cache: BTreeMap::new(),
             artwork_bytes: 0,
-            icon_cache: BTreeMap::new(),
+            icon_cache: Default::default(),
+            icon_bytes: Default::default(),
             definitions,
             focus_text_needs_frame: OnceLock::new(),
             point_days,
@@ -672,86 +711,98 @@ impl Context {
         self.localise(key)
     }
 
-    fn declared_icon(
+    /// The sprite a token's icon is drawn from, as recorded facts choose it: the technology's
+    /// badge, or the focus definition's static icon. `Ok(None)` when the focus is not defined;
+    /// `Err` with the finding when the choice needs the recorded country and hour.
+    fn selected_icon(
         &self,
         token: &str,
-    ) -> io::Result<(
-        Option<&installed_content_gfx::gfx::SpriteType>,
-        Vec<dashboard_core::findings::Finding>,
-    )> {
+    ) -> Result<Option<String>, dashboard_core::findings::Finding> {
         use dashboard_core::findings::{Finding, Kind as FindingKind};
-        let selected = match self.kind {
+        match self.kind {
             // Technology badges use the _medium suffix.
-            Kind::Technology => Some(format!("GFX_{token}_medium")),
+            Kind::Technology => Ok(Some(format!("GFX_{token}_medium"))),
             Kind::Focus => match self.definitions.get(token) {
-                Some(definition) => match definition.icon(None, |trigger| {
-                    if trigger.is_empty() {
-                        Ok(true)
-                    } else {
-                        Err("focus icon requires recorded country/hour trigger operands".into())
-                    }
-                }) {
-                    Ok(name) => Some(name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned()),
-                    Err(reason) => {
-                        return Ok((
-                            None,
-                            vec![Finding::grouped(
-                                FindingKind::Offline,
-                                token,
-                                "focus icon requires recorded context",
-                                reason,
-                            )],
-                        ));
-                    }
-                },
-                None => None,
+                Some(definition) => definition
+                    .icon(None, |trigger| {
+                        if trigger.is_empty() {
+                            Ok(true)
+                        } else {
+                            Err("focus icon requires recorded country/hour trigger operands".into())
+                        }
+                    })
+                    .map(|name| Some(name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned()))
+                    .map_err(|reason| {
+                        Finding::grouped(
+                            FindingKind::Offline,
+                            token,
+                            "focus icon requires recorded context",
+                            reason,
+                        )
+                    }),
+                None => Ok(None),
             },
-        };
-        let declared = selected
-            .as_deref()
-            .map(|name| self.catalogue.sprites.find(name).map_err(invalid))
-            .transpose()?
-            .flatten();
-        let mut findings = Vec::new();
-        if declared.is_none_or(|sprite| sprite.texture.is_none()) {
-            let message = match selected {
-                Some(name) => {
-                    format!("sprite {name} is undeclared or has no texture; a placeholder is shown")
-                }
-                None => {
-                    "focus definition is absent from the recorded content; a placeholder is shown"
-                        .into()
-                }
-            };
-            findings.push(Finding::grouped(
-                FindingKind::Fallback,
-                token,
-                "icon is unavailable; a placeholder is shown",
-                message,
-            ));
         }
-        Ok((declared, findings))
+    }
+
+    /// The sprite `selected_icon` names as this context's catalogue declares it, with a texture.
+    fn declared_icon(&self, token: &str) -> Option<&installed_content_gfx::gfx::SpriteType> {
+        let name = self.selected_icon(token).ok()??;
+        self.catalogue
+            .sprites
+            .find(&name)
+            .ok()
+            .flatten()
+            .filter(|sprite| sprite.texture.is_some())
     }
 
     fn artwork(
         &self,
         token: &str,
     ) -> io::Result<(Artwork, Vec<dashboard_core::findings::Finding>)> {
+        use dashboard_core::findings::{Finding, Kind as FindingKind};
         let name = self.name(token);
-        let (declared, findings) = self.declared_icon(token)?;
-        let icon = match declared {
-            Some(sprite) if sprite.texture.is_some() => Some(catalogue::sprite_frame_png(
-                &self.catalogue.content.layers,
-                sprite,
-                *self
-                    .catalogue
-                    .gui_decode
-                    .as_ref()
-                    .map_err(|why| invalid(why.clone()))?,
-                0,
-                ICON_EDGE,
-            )?),
-            _ => None,
+        let placeholder = |message: String| {
+            Finding::grouped(
+                FindingKind::Fallback,
+                token,
+                "icon is unavailable; a placeholder is shown",
+                message,
+            )
+        };
+        let mut findings = Vec::new();
+        let icon = match self.selected_icon(token) {
+            Err(finding) => {
+                findings.push(finding);
+                None
+            }
+            Ok(None) => {
+                findings.push(placeholder(
+                    "focus definition is absent from the recorded content; a placeholder is shown"
+                        .into(),
+                ));
+                None
+            }
+            Ok(Some(sprite)) => {
+                let undeclared = undeclared_icon(&sprite);
+                let drawn = catalogue::draw(
+                    || format!("{} {token} icon", self.kind.noun()),
+                    &self.catalogue,
+                    |catalogue| {
+                        declared_icon_png(catalogue, &sprite)
+                            .map_err(|error| error.to_string())?
+                            .ok_or_else(|| undeclared.clone())
+                    },
+                );
+                match drawn.get() {
+                    Ok(icon) => Some(icon.clone()),
+                    Err(why) if *why == undeclared => {
+                        findings.push(placeholder(undeclared));
+                        None
+                    }
+                    Err(why) => return Err(invalid(why.clone())),
+                }
+            }
         };
         Ok((
             Artwork {
@@ -827,15 +878,22 @@ impl Context {
     }
 
     /// A country-qualified sprite makes otherwise static display country-specific.
+    ///
+    /// Asked of every catalogue a tree icon can be drawn through: this context's and, while it
+    /// shows visual mods, the recording's own its draw falls back to ([`Self::drawing_catalogues`]).
     pub fn focus_country_icon_override(&self, token: &str, tag: &str) -> bool {
         self.definitions.get(token).is_some_and(|definition| {
-            !matches!(
-                self.catalogue
-                    .sprites
-                    .find(&definition.sprite_overrides(token, Some(tag))[0]),
-                Ok(None)
-            )
+            let country = &definition.sprite_overrides(token, Some(tag))[0];
+            self.drawing_catalogues()
+                .any(|catalogue| !matches!(catalogue.sprites.find(country), Ok(None)))
         })
+    }
+
+    /// Every catalogue an icon of this context can be drawn through: its own and, while it shows
+    /// visual mods, the recording's own its draws fall back to as a whole ([`catalogue::draw`]).
+    /// Plans of what a draw reads ask all of them, since the fallback makes its own choice.
+    fn drawing_catalogues(&self) -> impl Iterator<Item = &Catalogue> {
+        std::iter::once(&*self.catalogue).chain(self.catalogue.recorded().map(|recorded| &**recorded))
     }
 
     /// Titles and icons do not depend on unrequested description operands.
@@ -891,13 +949,17 @@ impl Context {
         projection: FocusProjection,
     ) -> bool {
         let tokens = [token.to_owned()];
+        // The definition's conditional icon is evaluated where a drawing catalogue declares no
+        // override: this context's, or the recording's own its draw can fall back to.
         let icons = projection.icons()
             && self.definitions.get(token).is_some_and(|definition| {
-                !definition
-                    .sprite_overrides(token, Some(tag))
-                    .iter()
-                    .any(|name| !matches!(self.catalogue.sprites.find(name), Ok(None)))
-                    && focus_icons_need_frame(definition)
+                let overrides = definition.sprite_overrides(token, Some(tag));
+                focus_icons_need_frame(definition)
+                    && self.drawing_catalogues().any(|catalogue| {
+                        !overrides
+                            .iter()
+                            .any(|name| !matches!(catalogue.sprites.find(name), Ok(None)))
+                    })
             });
         icons
             || match projection {
@@ -1060,61 +1122,94 @@ impl Context {
                 })
                 .clone();
             let context = || inputs.text();
-            let selected = (|| -> Result<String, String> {
-                if !projection.icons() {
-                    return Ok(String::new());
-                }
-                let definition = self.definitions.get(token).ok_or_else(|| {
-                    format!("focus {token}: definition absent from recorded content")
-                })?;
-                // Focus-tree buttons probe authored country/id and id overrides before
-                // the definition's icon. Events use the definition.
-                if tree {
-                    for name in definition.sprite_overrides(token, Some(tag)) {
-                        if catalogue.sprites.find(&name)?.is_some() {
-                            return Ok(name);
+            let (icon, mut refusal) = if !projection.icons() {
+                (None, None)
+            } else {
+                match self.definitions.get(token) {
+                    None => (
+                        None,
+                        Some(format!("focus {token}: definition absent from recorded content")),
+                    ),
+                    Some(definition) => {
+                        // Focus-tree buttons probe authored country/id and id overrides before
+                        // the definition's icon. Events use the definition.
+                        let overrides = if tree {
+                            definition.sprite_overrides(token, Some(tag))
+                        } else {
+                            Vec::new()
+                        };
+                        // The definition's icon: recorded facts, its triggers evaluated at the
+                        // hour only when no override is declared.
+                        let evaluated = std::cell::OnceCell::new();
+                        let definition_icon = || {
+                            evaluated
+                                .get_or_init(|| {
+                                    definition
+                                        .icon(None, |trigger| {
+                                            if trigger.is_empty() {
+                                                return Ok(true);
+                                            }
+                                            let slot = country.clone()?.ok_or_else(|| {
+                                                format!("focus {token}: country scope was not recorded")
+                                            })?;
+                                            let graph = std::rc::Rc::new(std::cell::RefCell::new(
+                                                crate::scripted_text::EventScopes::new(vec![
+                                                    crate::scripted_text::EventScope::of(
+                                                        crate::scripted_text::EventObject::Country(slot),
+                                                    ),
+                                                ]),
+                                            ));
+                                            let evaluator = crate::triggers::Evaluator::new(
+                                                context()?.trigger_world()?,
+                                                None,
+                                            )
+                                            .with_event_scopes(graph);
+                                            evaluator
+                                                .evaluate(
+                                                    trigger,
+                                                    evaluator
+                                                        .event_scopes(0)
+                                                        .map_err(|why| why.to_string())?,
+                                                )
+                                                .decided()
+                                        })
+                                        .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
+                                })
+                                .clone()
+                        };
+                        // Which override is drawn is the drawing catalogue's choice, made with
+                        // the draw as one operation.
+                        let drawn = catalogue::draw(
+                            || format!("focus {token} icon"),
+                            &catalogue,
+                            |drawing| {
+                                let mut chosen = None;
+                                for name in &overrides {
+                                    if drawing.sprites.find(name)?.is_some() {
+                                        chosen = Some(name.clone());
+                                        break;
+                                    }
+                                }
+                                let name = match chosen {
+                                    Some(name) => name,
+                                    None => definition_icon()?,
+                                };
+                                match self.cached_icon(drawing, &name) {
+                                    Ok(Some(icon)) => Ok(icon),
+                                    Ok(None) => Err(format!(
+                                        "focus {token}: selected sprite {name} is undeclared or has no texture"
+                                    )),
+                                    Err(reason) => Err(format!("focus {token}: {reason}")),
+                                }
+                            },
+                        );
+                        match drawn.get() {
+                            Ok(icon) => (Some(icon.clone()), None),
+                            Err(reason) => (None, Some(reason.clone())),
                         }
                     }
                 }
-                definition
-                    .icon(None, |trigger| {
-                        if trigger.is_empty() {
-                            return Ok(true);
-                        }
-                        let slot = country.clone()?.ok_or_else(|| {
-                            format!("focus {token}: country scope was not recorded")
-                        })?;
-                        let graph = std::rc::Rc::new(std::cell::RefCell::new(
-                            crate::scripted_text::EventScopes::new(vec![
-                                crate::scripted_text::EventScope::of(
-                                    crate::scripted_text::EventObject::Country(slot),
-                                ),
-                            ]),
-                        ));
-                        let evaluator =
-                            crate::triggers::Evaluator::new(context()?.trigger_world()?, None)
-                                .with_event_scopes(graph);
-                        evaluator
-                            .evaluate(trigger, evaluator.event_scopes(0).map_err(|why| why.to_string())?)
-                            .decided()
-                    })
-                    .map(|name| name.unwrap_or(UNKNOWN_FOCUS_ICON).to_owned())
-            })();
-            let (icon, mut refusal) = if !projection.icons() {
-                (None, None)
-            } else { match selected {
-                Ok(name) => match self.cached_icon(&name) {
-                    Ok(Some(icon)) => (Some(icon), None),
-                    Ok(None) => (
-                        None,
-                        Some(format!(
-                            "focus {token}: selected sprite {name} is undeclared or has no texture"
-                        )),
-                    ),
-                    Err(reason) => (None, Some(format!("focus {token}: {reason}"))),
-                },
-                Err(reason) => (None, Some(reason)),
-            } };
+            };
             let mut art = Artwork {
                 token: token.into(),
                 name: None,
@@ -1224,47 +1319,44 @@ impl Context {
             return;
         }
         // A refused batch is retried by the ordinary reader so each requested
-        // item retains its output and named refusal.
-        let _ = catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
+        // item retains its output and named refusal. With visual mods shown the draws that
+        // read them are strict attempts at the selection, so the batch is drawn as they are.
+        let batch = || catalogue::sprite_frames_png(layers, &sprites, *decode, ICON_EDGE);
+        let _ = if self.catalogue.recorded().is_some() {
+            installed_content_core::content::strict(batch)
+        } else {
+            batch()
+        };
     }
 
-    fn cached_icon(&mut self, name: &str) -> io::Result<Option<String>> {
-        if let Some(result) = self.icon_cache.get(name) {
+    /// `name`'s icon drawn through `drawing` (this context's catalogue or the recording's own it
+    /// keeps), kept per catalogue and artwork mode, so a strict attempt to draw the selection
+    /// neither reads nor leaves an ordinary draw's image.
+    fn cached_icon(&self, drawing: &Catalogue, name: &str) -> io::Result<Option<String>> {
+        let key = (
+            !std::ptr::eq(drawing, &*self.catalogue),
+            installed_content_core::content::artwork_mode(),
+            name.to_owned(),
+        );
+        if let Some(result) = self.icon_cache.borrow().get(&key) {
             return result.get().clone().map_err(invalid);
         }
-        let render = || -> io::Result<Option<String>> {
-            let Some(sprite) = self.catalogue.sprites.find(name).map_err(invalid)? else {
-                return Ok(None);
-            };
-            if sprite.texture.is_none() {
-                return Ok(None);
-            }
-            Ok(Some(catalogue::sprite_frame_png(
-                &self.catalogue.content.layers,
-                sprite,
-                *self
-                    .catalogue
-                    .gui_decode
-                    .as_ref()
-                    .map_err(|why| invalid(why.clone()))?,
-                0,
-                ICON_EDGE,
-            )?))
-        };
-        let drawn = catalogue::Drawn::new(|| render().map_err(|error| error.to_string()));
+        let drawn = catalogue::Drawn::new(|| {
+            declared_icon_png(drawing, name).map_err(|error| error.to_string())
+        });
         let result = drawn.get().clone();
         let size = name.len()
             + result.as_ref().map_or_else(
                 |error| error.len(),
                 |icon| icon.as_ref().map_or(0, String::len),
             );
-        if self.artwork_bytes.saturating_add(size) > MAX_RETAINED_ARTWORK_BYTES {
-            self.artwork_cache.clear();
-            self.icon_cache.clear();
-            self.artwork_bytes = 0;
+        // Icons share the context's budget with its artwork; past it they start over.
+        if self.artwork_bytes + self.icon_bytes.get() + size > MAX_RETAINED_ARTWORK_BYTES {
+            self.icon_cache.borrow_mut().clear();
+            self.icon_bytes.set(0);
         }
-        self.artwork_bytes = self.artwork_bytes.saturating_add(size);
-        self.icon_cache.insert(name.into(), drawn);
+        self.icon_bytes.set(self.icon_bytes.get() + size);
+        self.icon_cache.borrow_mut().insert(key, drawn);
         result.map_err(invalid)
     }
 
@@ -1331,12 +1423,7 @@ impl Context {
             let sprites = tokens
                 .iter()
                 .filter(|token| !self.artwork_cache.contains_key(**token))
-                .filter_map(|token| {
-                    self.declared_icon(token)
-                        .ok()
-                        .and_then(|(sprite, _)| sprite)
-                        .filter(|sprite| sprite.texture.is_some())
-                })
+                .filter_map(|token| self.declared_icon(token))
                 .collect();
             self.prefetch_icons(sprites);
         }
@@ -1361,10 +1448,11 @@ impl Context {
                     artwork_bytes(art) + messages.iter().map(|s| s.len() + 32).sum::<usize>();
                 // Retain a multi-country dashboard's working set of compressed
                 // icons so switching countries does not repeatedly decode them.
-                if self.artwork_bytes + size > MAX_RETAINED_ARTWORK_BYTES {
+                if self.artwork_bytes + self.icon_bytes.get() + size > MAX_RETAINED_ARTWORK_BYTES {
                     self.artwork_cache.clear();
-                    self.icon_cache.clear();
+                    self.icon_cache.get_mut().clear();
                     self.artwork_bytes = 0;
+                    self.icon_bytes.set(0);
                 }
                 self.artwork_bytes += size;
                 self.artwork_cache.insert(token.into(), drawn);
@@ -1384,7 +1472,23 @@ impl Context {
 /// The stockpile indicator's authored image uses the topbar template's nukes
 /// container. Its sole icon supplies the artwork through the authored sprite;
 /// ambiguous content refuses by authored paths.
+///
+/// The container's choice of icon and its sprite are drawn as one operation through the
+/// catalogue the request shows ([`catalogue::draw`]).
 pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
+    catalogue::draw(
+        || "nuclear stockpile icon".to_owned(),
+        catalogue,
+        |catalogue| draw_nuke_icon(catalogue).map_err(|error| error.to_string()),
+    )
+    .get()
+    .clone()
+    .map(Some)
+    .map_err(invalid)
+}
+
+/// [`nuke_icon`] drawn through `catalogue` alone.
+fn draw_nuke_icon(catalogue: &Catalogue) -> io::Result<String> {
     use installed_content_core::{gui::native::Fields, gui::native::Kind};
     let (_, root) = installed_content_core::gui::native::kept_container_window(
         catalogue.guis()?,
@@ -1452,7 +1556,7 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
             icons[0].path, icon.frame
         ))
     })?;
-    Ok(Some(catalogue::sprite_frame_png(
+    catalogue::sprite_frame_png(
         &catalogue.content.layers,
         sprite,
         *catalogue
@@ -1461,7 +1565,7 @@ pub fn nuke_icon(catalogue: &Catalogue) -> io::Result<Option<String>> {
             .map_err(|why| invalid(why.clone()))?,
         frame,
         ICON_EDGE,
-    )?))
+    )
 }
 
 pub(crate) fn artwork_bytes(art: &Artwork) -> usize {
@@ -1526,7 +1630,7 @@ mod tests {
                 .iter()
                 .all(|(art, reason)| art.icon.is_none() && reason.is_none())
         );
-        assert!(text.icon_cache.is_empty());
+        assert!(text.icon_cache.borrow().is_empty());
         let (static_text, _) = text
             .text_catalogue(
                 BTreeSet::from(["mod_focus", "mod_empty"]),
@@ -1639,7 +1743,7 @@ mod tests {
             assert!(art.icon.is_none());
             assert!(reason.is_none(), "{reason:?}");
         }
-        assert!(context.icon_cache.is_empty());
+        assert!(context.icon_cache.borrow().is_empty());
         let displayed: Vec<_> =
             context.focus_display_at(&requests, &frame, |items| items.collect());
         for ((art, reason), expected) in displayed.iter().zip(expected) {
@@ -2554,5 +2658,176 @@ mod interface_refusals {
         assert!(summary[0].contains("1 refusals"), "{summary:?}");
         assert!(summary[0].contains("GFX_refused"), "{summary:?}");
         assert!(summary[0].contains("synthetic.gfx"), "{summary:?}");
+    }
+}
+
+// Focus art as the request's visual mods show it.
+#[cfg(test)]
+mod presentation {
+    use super::{Context, Kind};
+    use crate::catalogue;
+    use crate::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    use std::collections::BTreeSet;
+    use std::sync::atomic::AtomicBool;
+
+    fn empty_frame() -> replay_frame::frame::DecodedFrame {
+        use replay_data::{rows::TableId, rows::TableRows};
+        use replay_frame::frame::{DecodedFrame, TableView};
+        DecodedFrame {
+            branch: 1,
+            hour: 10,
+            tables: std::array::from_fn(|index| {
+                TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+            }),
+            metrics: Default::default(),
+        }
+    }
+
+    /// The recording's focus draws its definition's icon (A); a mod declares the tree's
+    /// country override (B), which comes first. Where the mod's B draws it is shown; where it
+    /// does not, the recording's own choice, A, is drawn, never the mod's choice patched, and
+    /// named on the first reply and on the memoised second one. Without a selection, A as it is.
+    #[test]
+    fn a_focus_tree_override_the_mod_cannot_draw_makes_the_recordings_own_choice_again() {
+        let machine = Machine::new("focus_override");
+        machine.write(
+            "common/national_focus/tree.txt",
+            b"focus_tree={focus={id=f_one icon=GFX_f_one_icon}}",
+        );
+        machine.write(
+            "interface/focus.gfx",
+            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}}",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        machine.write_mod(
+            "art",
+            "interface/override.gfx",
+            b"spriteTypes={spriteType={name=GFX_TAG_f_one textureFile=gfx/b.png}}",
+        );
+        machine.write_mod("art", "gfx/b.png", &png(BLUE));
+        machine.write_mod(
+            "broken",
+            "interface/override.gfx",
+            b"spriteTypes={spriteType={name=GFX_TAG_f_one textureFile=gfx/broken.png}}",
+        );
+        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        let frame = empty_frame();
+        let shown = |options: &crate::products::ContentOptions| {
+            let mut context =
+                Context::load(catalogue::catalogue(&source, options).unwrap(), Kind::Focus)
+                    .unwrap();
+            (0..2)
+                .map(|_| {
+                    let (items, line) = fallback_line(|| {
+                        context.focus_icons_at(&[("f_one", "TAG")], &frame, |items| {
+                            items.collect::<Vec<_>>()
+                        })
+                    });
+                    let (art, refusal) = &items[0];
+                    assert_eq!(*refusal, None);
+                    (first_pixel(art.icon.as_deref().unwrap()), line)
+                })
+                .collect::<Vec<_>>()
+        };
+        select(&source, &mut options, &[]);
+        assert_eq!(shown(&options), vec![(RED, None), (RED, None)]);
+        select(&source, &mut options, &["art"]);
+        assert_eq!(shown(&options), vec![(BLUE, None), (BLUE, None)]);
+        select(&source, &mut options, &["broken"]);
+        for (colour, line) in shown(&options) {
+            assert_eq!(colour, RED, "the recording's own choice");
+            assert!(
+                line.as_ref().is_some_and(|line| line.contains("focus f_one icon")),
+                "{line:?}"
+            );
+        }
+    }
+
+    /// A focus's own icon redeclared by a mod with art that does not load is the recording's,
+    /// named, in the catalogue reply and its memo; without a selection it is drawn as it is.
+    #[test]
+    fn a_focus_icon_the_mod_cannot_draw_is_the_recordings_in_the_catalogue_reply() {
+        let machine = Machine::new("focus_catalogue_icon");
+        machine.write(
+            "common/national_focus/tree.txt",
+            b"focus_tree={focus={id=f_one icon=GFX_f_one_icon}}",
+        );
+        machine.write(
+            "interface/focus.gfx",
+            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}}",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        machine.write_mod(
+            "broken",
+            "interface/focus.gfx",
+            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/broken.png}}",
+        );
+        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        let reply = |options: &crate::products::ContentOptions| {
+            let mut context =
+                Context::load(catalogue::catalogue(&source, options).unwrap(), Kind::Focus)
+                    .unwrap();
+            (0..2)
+                .map(|_| {
+                    let ((art, _), line) = fallback_line(|| {
+                        context
+                            .catalogue(BTreeSet::from(["f_one"]), &AtomicBool::new(false))
+                            .unwrap()
+                    });
+                    (first_pixel(art[0].icon.as_deref().unwrap()), line)
+                })
+                .collect::<Vec<_>>()
+        };
+        select(&source, &mut options, &[]);
+        assert_eq!(reply(&options), vec![(RED, None), (RED, None)]);
+        select(&source, &mut options, &["broken"]);
+        for (colour, line) in reply(&options) {
+            assert_eq!(colour, RED);
+            assert!(
+                line.as_ref().is_some_and(|line| line.contains("focus f_one icon")),
+                "{line:?}"
+            );
+        }
+    }
+
+    /// What a tree icon's draw reads is planned for the recording's own catalogue too, which a
+    /// draw falls back to: a mod's override over a conditional recorded icon still needs the
+    /// hour, and a country override the mod hides still makes the icon the country's own.
+    #[test]
+    fn tree_icon_plans_cover_the_recordings_own_choice() {
+        let machine = Machine::new("focus_plans");
+        machine.write(
+            "common/national_focus/tree.txt",
+            b"focus_tree={focus={id=f_one icon={GFX_f_one_icon={has_country_flag=f_flag}}}}",
+        );
+        machine.write(
+            "interface/focus.gfx",
+            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}               spriteType={name=GFX_GER_f_one textureFile=gfx/a.png}}",
+        );
+        machine.write("gfx/a.png", &png(RED));
+        // The mod's file replaces the recording's: it hides the German override and declares
+        // a generic one it cannot draw.
+        machine.write_mod(
+            "override",
+            "interface/focus.gfx",
+            b"spriteTypes={spriteType={name=GFX_f_one_icon textureFile=gfx/a.png}               spriteType={name=GFX_f_one textureFile=gfx/broken.png}}",
+        );
+        machine.write_mod("override", "gfx/a.png", &png(RED));
+        machine.write_mod("override", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &["override"]);
+        let shown = catalogue::catalogue(&source, &options).unwrap();
+        assert!(shown.sprites.find("GFX_GER_f_one").unwrap().is_none());
+        let context = Context::load(shown, Kind::Focus).unwrap();
+        // The selection declares an override; the recording, for a country without one, the
+        // conditional icon.
+        assert!(context.requested_tree_focus_needs_frame("f_one", "ITA", super::FocusProjection::Icons));
+        // The recording's German override, which the mod hides, is German art.
+        assert!(context.focus_country_icon_override("f_one", "GER"));
+        assert!(!context.focus_country_icon_override("f_one", "ITA"));
     }
 }

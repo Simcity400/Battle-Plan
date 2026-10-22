@@ -283,7 +283,8 @@ fn subdoctrine(
 }
 
 fn icon(catalogue: &Catalogue, authored: &[u8], what: &str, notes: &mut Notes) -> Option<String> {
-    match dashboard_base::products::artwork::sprites::icon_key(catalogue, authored) {
+    // A key the selection cannot draw is the recording's, which the sprite route draws.
+    match dashboard_base::products::artwork::sprites::shown_icon_key(catalogue, authored) {
         Ok(key) => Some(key),
         Err(why) => {
             notes.add(format!("{what} icon: {why}"));

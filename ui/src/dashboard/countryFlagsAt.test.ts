@@ -77,7 +77,8 @@ test('one flag artwork is encoded once for every hour and widget showing it, and
       readAsDataURL(blob: Blob) { void blob.text().then(text => { this.result = `data:${text}`; this.onload(); }); } },
   });
   try {
-    const image = (tag: string) => ({ tag, asset: 'gfx/flags/small/MOD_mod ideology.tga', width: 1, height: 1, pixels: [9, 8, 7, 255] });
+    const image = (tag: string) => ({ tag, asset: 'gfx/flags/small/MOD_mod ideology.tga', key: 'gfx/flags/small/MOD_mod ideology.tga#9',
+      width: 1, height: 1, pixels: [9, 8, 7, 255] });
     const source = { sourceId: 'source', revision: 'revision', branchId: 'branch', content: 0 };
     const first = await flagSpec('small').extract({ flags: [image('A'), image('B')] }, undefined, source);
     const later = await flagSpec('small').extract({ flags: [image('A')] }, undefined, { ...source, branchId: 'other branch' });
@@ -86,5 +87,12 @@ test('one flag artwork is encoded once for every hour and widget showing it, and
     assert.equal(later.get('A'), 'data:png 1');
     assert.equal((await flagSpec('small').extract({ flags: [image('A')] }, undefined, { ...source, content: 1 })).get('A'), 'data:png 2');
     assert.equal((await flagSpec('medium').extract({ flags: [image('A')] }, undefined, source)).get('A'), 'data:png 3');
+    // The same file shown in other pixels (the recording's where the mods' cannot draw) is
+    // another picture, encoded apart.
+    const restyled = { ...image('C'), key: 'gfx/flags/small/MOD_mod ideology.tga#7', pixels: [7, 8, 9, 255] };
+    const both = await flagSpec('small').extract({ flags: [image('A'), restyled] }, undefined, source);
+    assert.equal(both.get('A'), 'data:png 1');
+    assert.equal(both.get('C'), 'data:png 4');
+    assert.equal(encoded, 4);
   } finally { for (const name of ['ImageData', 'document', 'FileReader']) delete page[name]; }
 });

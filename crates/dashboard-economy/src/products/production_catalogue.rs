@@ -459,7 +459,8 @@ pub struct OrganisationLabel {
     pub first_hour: i32,
     pub token: String,
     pub name: Option<String>,
-    /// The icon's sprite name, where the content declares one.
+    /// The icon's key in `icons`: its asset and a digest of its picture
+    /// (`production_lines::picture_key`), where the content declares one.
     pub icon: Option<String>,
 }
 
@@ -532,9 +533,10 @@ impl Product for ProductionCatalogue {
 pub struct Naming<'a> {
     pub texts: Option<&'a dyn Texts>,
     pub units: Option<&'a installed_content_core::equipment::Database>,
-    pub sprite: &'a dyn Fn(&str) -> bool,
-    /// A declared sprite's picture as a PNG data URL.
-    pub image: &'a dyn Fn(&str) -> Result<String, String>,
+    /// An organisation's icon, chosen and drawn as one operation: its picture's key and the
+    /// picture or why it is unavailable (`production_lines::organisation_shown`); `None` where
+    /// no candidate is declared.
+    pub icon: &'a dyn Fn(&production_lines::RawOrganisation) -> Option<(String, Result<String, String>)>,
 }
 
 pub fn query(
@@ -747,15 +749,15 @@ pub fn query(
                     if name.is_none() {
                         refused_names += 1;
                     }
-                    let icon = production_lines::organisation_icon(raw, naming.sprite);
-                    if let Some(icon) = &icon
-                        && !reply.icons.contains_key(icon)
-                    {
-                        let image = (naming.image)(icon)
-                            .map_err(|error| warnings.push(format!("{icon}: picture unavailable: {error}")))
-                            .ok();
-                        reply.icons.insert(icon.clone(), image);
-                    }
+                    let icon = (naming.icon)(raw).map(|(key, image)| {
+                        if !reply.icons.contains_key(&key) {
+                            let image = image
+                                .map_err(|error| warnings.push(format!("{key}: picture unavailable: {error}")))
+                                .ok();
+                            reply.icons.insert(key.clone(), image);
+                        }
+                        key
+                    });
                     mio.names.push(OrganisationLabel {
                         first_hour: raw.first_hour,
                         token: raw.token.clone(),
