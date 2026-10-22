@@ -6,7 +6,7 @@ use dashboard_base::products::{
     CountryParams, Product, equipment,
     equipment_icon::{self, Icon, IconContent, IconHour},
 };
-use dashboard_base::{catalogue, source::Source};
+use dashboard_base::{catalogue, prepared::query::frames, source::Source};
 use dashboard_core::config::LoadContext;
 use dashboard_text::{
     catalogue::Catalogue,
@@ -14,7 +14,7 @@ use dashboard_text::{
 };
 use installed_content_core::{content::ArtworkMode, equipment::Database};
 use replay::container::SeekResult;
-use replay_data::rows::tables;
+use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,6 +28,23 @@ use std::{
 use ts_rs::TS;
 
 pub struct StockpileArtwork;
+
+/// Every table the reply reads (the seek adds the campaign).
+const TABLES: &[TableId] = &[
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::CountryAppearance,
+    TableId::PoliticalParties,
+    TableId::Politics,
+    TableId::Factions,
+    TableId::FactionMembers,
+    TableId::States,
+    TableId::LexicalTokens,
+    TableId::VariantDefinitions,
+    TableId::VariantUpgrades,
+    TableId::AvailableEquipmentVariants,
+    TableId::SimulationFeatures,
+];
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -238,6 +255,21 @@ impl Product for StockpileArtwork {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
+        Self::load_with(source, params, context, cancelled, |branch, hour| {
+            frames::seek(source, branch, hour, TABLES, cancelled)
+        })
+    }
+}
+
+impl StockpileArtwork {
+    /// The reply from the frame `seek` reconstructs.
+    fn load_with(
+        source: &Source,
+        params: &StockpileArtworkParams,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+        seek: impl FnOnce(u64, i32) -> io::Result<SeekResult>,
+    ) -> io::Result<StockpileArtworkReply> {
         let mut reply = StockpileArtworkReply {
             branch_id: params.branch_id.clone(),
             tag: params.tag.clone(),
@@ -276,7 +308,7 @@ impl Product for StockpileArtwork {
             .warnings
             .extend(catalogue.verification.iter().cloned());
         reply.warnings.extend(catalogue.warnings.iter().cloned());
-        let frame = match source.replay().seek(
+        let frame = match seek(
             params
                 .branch_id
                 .parse()
