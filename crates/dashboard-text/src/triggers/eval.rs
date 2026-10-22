@@ -92,6 +92,12 @@ pub struct Evaluator<'e, 'a> {
     /// The scripted triggers and leader roles being evaluated, outermost
     /// first: the game guards neither against a cycle.
     stack: RefCell<Vec<Vec<u8>>>,
+    /// An organisation or trait condition reached inside itself in the
+    /// outermost evaluation under way: the game recurses without end there,
+    /// so nothing enclosing it has a result.
+    pub(super) diverged: RefCell<Option<Failure>>,
+    /// How many evaluations ([`Self::evaluate`]) enclose the current one.
+    pub(super) evaluations: Cell<usize>,
     /// What the thread-local variable store may hold besides the caller's
     /// temps.
     temps: Temps,
@@ -195,6 +201,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             world,
             combat,
             stack: RefCell::default(),
+            diverged: RefCell::default(),
+            evaluations: Cell::new(0),
             temps: Temps::Fresh,
             local_temps: RefCell::default(),
             checking: Cell::new(0),
@@ -689,6 +697,27 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     pub(super) fn leave_frame(&self) {
         self.stack.borrow_mut().pop();
+    }
+
+    /// Record that the game recurses without end at `why`: every evaluation
+    /// enclosing it, up to the outermost, is refused with it.
+    pub(super) fn diverge(&self, why: Failure) -> Eval {
+        self.diverged.replace(Some(why.clone()));
+        Eval::unknown(why)
+    }
+
+    /// The refusal of a reached endless recursion in the outermost
+    /// evaluation under way, if one was reached.
+    pub(super) fn divergence(&self) -> Option<Failure> {
+        self.diverged.borrow().clone()
+    }
+
+    /// Start a composition of evaluations; outside any evaluation it starts
+    /// the outermost one, which no earlier recursion encloses.
+    pub(super) fn begin_composition(&self) {
+        if self.evaluations.get() == 0 {
+            self.diverged.replace(None);
+        }
     }
 
     /// A coded trigger whose class does not accept THIS's kinds: false

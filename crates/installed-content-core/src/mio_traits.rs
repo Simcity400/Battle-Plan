@@ -28,6 +28,13 @@ pub struct TraitName {
     pub mutually_exclusive: Vec<String>,
     pub equipment_types: Vec<Vec<u8>>,
     pub special_background: bool,
+    /// The trait's own `available` and `visible` bodies, each block's children
+    /// in order, and the bodies an empty one falls back to: the included
+    /// trait's own (local) bodies, never their fallbacks ([`Self::available`]).
+    available: Vec<Item>,
+    visible: Vec<Item>,
+    inherited_available: Vec<Item>,
+    inherited_visible: Vec<Item>,
     deleted: Vec<Token>,
     /// Equipment and production bonuses in stored order.
     pub bonuses: Vec<Bonus>,
@@ -67,6 +74,8 @@ pub struct Tree<'a> {
     pub available: &'a [Item],
     pub visible: &'a [Item],
     pub equipment_types: &'a [Vec<u8>],
+    /// The organisation's research categories, as authored.
+    pub research_categories: &'a [Vec<u8>],
     pub initial: Option<&'a TraitName>,
     pub traits: &'a [TraitName],
 }
@@ -128,6 +137,25 @@ impl TraitName {
             parent: self.modifier_parent.clone(),
         }
     }
+    /// The `available` body evaluated: its own when not empty, else the one
+    /// it falls back to. An empty result holds.
+    pub fn available(&self) -> &[Item] {
+        if self.available.is_empty() {
+            &self.inherited_available
+        } else {
+            &self.available
+        }
+    }
+
+    /// The `visible` body evaluated, as [`Self::available`].
+    pub fn visible(&self) -> &[Item] {
+        if self.visible.is_empty() {
+            &self.inherited_visible
+        } else {
+            &self.visible
+        }
+    }
+
     pub fn local_position(&self) -> [i32; 2] {
         self.position.unwrap_or([-1, -1])
     }
@@ -168,6 +196,14 @@ impl TraitName {
         }
         if copy(self.equipment_types.is_empty(), b"limit_to_equipment_type") {
             self.equipment_types.clone_from(&parent.equipment_types);
+        }
+        // Condition bodies fall back to the parent's local body, even an
+        // empty one, not to what that body itself falls back to.
+        if copy(self.available.is_empty(), b"available") {
+            self.inherited_available.clone_from(&parent.available);
+        }
+        if copy(self.visible.is_empty(), b"visible") {
+            self.inherited_visible.clone_from(&parent.visible);
         }
         if copy(self.parents.is_empty(), b"parent") {
             self.parents.clone_from(&parent.parents);
@@ -220,6 +256,7 @@ struct Organisation {
     inherited_available: Vec<Item>,
     inherited_visible: Vec<Item>,
     equipment_types: Vec<Vec<u8>>,
+    research_categories: Vec<Vec<u8>>,
     deleted: Vec<Token>,
     traits: Vec<TraitName>,
     initial: Option<TraitName>,
@@ -258,6 +295,7 @@ impl Catalog {
                     &row.visible
                 },
                 equipment_types: &row.equipment_types,
+                research_categories: &row.research_categories,
                 initial: row.initial.as_ref(),
                 traits: &row.traits,
             }))
@@ -379,6 +417,7 @@ impl Catalog {
             let available = self.organisations[parent].available.clone();
             let visible = self.organisations[parent].visible.clone();
             let equipment_types = self.organisations[parent].equipment_types.clone();
+            let research_categories = self.organisations[parent].research_categories.clone();
             let child = &mut self.organisations[index];
             // Inherited trigger pointers select the parent's local body,
             // including an empty one; they do not follow its own fallback.
@@ -392,6 +431,13 @@ impl Catalog {
                 && !child.deleted.contains(&Token::c_str(b"equipment_type"))
             {
                 child.equipment_types = equipment_types;
+            }
+            if child.research_categories.is_empty()
+                && !child
+                    .deleted
+                    .contains(&Token::c_str(b"research_categories"))
+            {
+                child.research_categories = research_categories;
             }
             if !child.delete_initial
                 && let Some(initial) = initial
@@ -433,6 +479,10 @@ impl Catalog {
                     // Copying into a fresh child never copies the parent's
                     // `delete_included_values` list.
                     row.deleted.clear();
+                    // The copy's own condition bodies are empty and fall back
+                    // to the parent's local ones.
+                    row.inherited_available = std::mem::take(&mut row.available);
+                    row.inherited_visible = std::mem::take(&mut row.visible);
                     let source = row.modifier_source();
                     row.organisation_modifiers = Default::default();
                     row.modifier_parent = Some(Box::new(source));
@@ -464,6 +514,19 @@ fn string(item: &Item, read_string: bool) -> io::Result<String> {
     .ok_or_else(|| invalid("MIO name or token is not a scalar (count: 1)"))?;
     String::from_utf8(text.to_vec())
         .map_err(|why| invalid(format!("MIO name or token: {why} (count: 1)")))
+}
+
+/// A raw list's tokens, each up to its first NUL.
+fn raw_tokens(field: &Item) -> Vec<Vec<u8>> {
+    field
+        .value
+        .items()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|item| item.value.scalar())
+        .map(crate::parser::c_string)
+        .map(<[u8]>::to_vec)
+        .collect()
 }
 
 fn token_strings(items: &[Item]) -> io::Result<Vec<String>> {
@@ -541,6 +604,14 @@ fn trait_name(items: &[Item]) -> io::Result<TraitName> {
                     .filter_map(|item| item.value.scalar())
                     .map(Token::c_str),
             );
+        } else if field.keyword_is("available") {
+            result
+                .available
+                .extend_from_slice(field.value.items().unwrap_or_default());
+        } else if field.keyword_is("visible") {
+            result
+                .visible
+                .extend_from_slice(field.value.items().unwrap_or_default());
         } else if field.keyword_is("organization_modifier") {
             result
                 .organisation_modifiers
@@ -719,15 +790,10 @@ fn parse(input: &[u8], names: &KeyNames) -> io::Result<(Vec<Organisation>, Vec<S
                 row.visible
                     .extend_from_slice(field.value.items().unwrap_or_default());
             } else if field.keyword_is("equipment_type") {
-                row.equipment_types = field
-                    .value
-                    .items()
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|item| item.value.scalar())
-                    .map(crate::parser::c_string)
-                    .map(<[u8]>::to_vec)
-                    .collect();
+                row.equipment_types = raw_tokens(field);
+            } else if field.keyword_is("research_categories") {
+                // Repeated lists append.
+                row.research_categories.extend(raw_tokens(field));
             } else if field.keyword_is("include") {
                 row.include = Some(string(field, false)?);
             } else if field.keyword_is("trait") || field.keyword_is("add_trait") {
@@ -803,6 +869,22 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Catalog> {
     result.finalize();
     result.warnings.extend(result.refusals.iter().cloned());
     Ok(result)
+}
+
+/// The stack's catalogue ([`read`]), read once per resolved stack and shared by
+/// every consumer of it.
+pub fn cached(layers: &ResolvedLayers) -> Result<std::sync::Arc<Catalog>, String> {
+    #[derive(Default)]
+    struct Cached(std::sync::OnceLock<Result<std::sync::Arc<Catalog>, String>>);
+    layers
+        .derived::<Cached>()
+        .0
+        .get_or_init(|| {
+            read(layers)
+                .map(std::sync::Arc::new)
+                .map_err(|why| why.to_string())
+        })
+        .clone()
 }
 
 #[cfg(test)]

@@ -121,6 +121,10 @@ fn store(store: Store, field: &str) -> Vec<TableRead> {
             TableRead::fields(TableId::Projects, &["runtime"])
                 .row((u128::from(owner) << 32) | u128::from(id)),
         ],
+        Store::IndustrialOrganisation(reference) => vec![
+            TableRead::fields(TableId::IndustrialOrganisationDetails, &["variables"])
+                .row(reference.into()),
+        ],
     }
 }
 
@@ -149,6 +153,8 @@ impl Query {
         Some(match self {
             // Freshness reads acquisition metadata and the enclosing hour, not row values.
             Query::TableFresh(_) => return None,
+            // The hour itself changes every hour: read it again.
+            Query::Clock => return None,
             Query::TableStatus(_)
             | Query::CoreGap
             | Query::TableGap(_)
@@ -174,6 +180,25 @@ impl Query {
             }
             &Query::IndustrialOrganisationSize(reference) => vec![
                 TableRead::fields(T::IndustrialOrganisationDetails, &["state.size"])
+                    .row(reference.into()),
+            ],
+            &Query::IndustrialOrganisationUnlocked(reference) => vec![
+                TableRead::fields(T::IndustrialOrganisationDetails, &["unlocked"])
+                    .row(reference.into()),
+            ],
+            &Query::IndustrialOrganisationPolicies(reference) => vec![
+                TableRead::fields(
+                    T::IndustrialOrganisationDetails,
+                    &["allowed_policies", "state.policy"],
+                )
+                .row(reference.into()),
+            ],
+            &Query::IndustrialOrganisationFlags(reference) => vec![
+                TableRead::fields(T::IndustrialOrganisationDetails, &["flags"])
+                    .row(reference.into()),
+            ],
+            &Query::IndustrialOrganisationTasks(reference) => vec![
+                TableRead::fields(T::IndustrialOrganisationDetails, &["tasks"])
                     .row(reference.into()),
             ],
             &Query::Slot(raw) => vec![links().row(raw.into())],

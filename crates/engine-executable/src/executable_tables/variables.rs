@@ -10,6 +10,8 @@ const GLOBAL_DIGEST: &str = "d53ce197135d0b5761e928a3f9d98aaa090945a0cc0040f697f
 const COUNTRY_DIGEST: &str = "02a404e2978857358947650ebe3707e85d53d0cb7912e64e53d16c4388c212f3";
 const STATE_DIGEST: &str = "0f68ad3d80b7fb287f8645191600899e3ddd2e5ec10a6d13f5b22280fb358c0e";
 const UNIT_LEADER_DIGEST: &str = "234247476dc1902370ec71cb263af291c56ddb3d1c16097291a3138d40b8754a";
+const ORGANISATION_DIGEST: &str =
+    "3793c302479ab950c505ed3fe798c1141f45201ad724b82c8f51616fc584a0a4";
 
 /// Exact names in increasing byte order for the supported variable stores.
 #[derive(Debug)]
@@ -18,6 +20,9 @@ pub struct VariableTables {
     pub country: Vec<&'static str>,
     pub state: Vec<&'static str>,
     pub unit_leader: Vec<&'static str>,
+    /// An industrial organisation's store, documented as
+    /// `military_industrial_organization`.
+    pub industrial_organisation: Vec<&'static str>,
 }
 
 impl VariableTables {
@@ -30,6 +35,7 @@ impl VariableTables {
             country: publish_scope(&mut scopes, "country"),
             state: publish_scope(&mut scopes, "state"),
             unit_leader: publish_scope(&mut scopes, "unit_leader"),
+            industrial_organisation: publish_scope(&mut scopes, ORGANISATION_SCOPE),
         })
     }
 
@@ -38,6 +44,9 @@ impl VariableTables {
         validate_documentation(&read_documentation(game_dir)?)
     }
 }
+
+/// The documentation's heading for an industrial organisation's store.
+const ORGANISATION_SCOPE: &str = "military_industrial_organization";
 
 fn read_documentation(game_dir: &Path) -> io::Result<BTreeMap<String, Vec<String>>> {
     let text = fs::read_to_string(game_dir.join(DOCUMENTATION_FILE)).map_err(|error| {
@@ -64,6 +73,7 @@ fn validate_documentation(scopes: &BTreeMap<String, Vec<String>>) -> io::Result<
         ("country", COUNTRY_DIGEST),
         ("state", STATE_DIGEST),
         ("unit_leader", UNIT_LEADER_DIGEST),
+        (ORGANISATION_SCOPE, ORGANISATION_DIGEST),
     ] {
         let names = scopes
             .get(scope)
@@ -312,6 +322,18 @@ mod tests {
             66,
             UNIT_LEADER_DIGEST,
             "unit leader variables",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
+    fn installed_organisation_variables_match_digest() {
+        let tables = crate::executable_tables::initialize_for_tests().unwrap();
+        assert_scope_digest(
+            &tables.variables.industrial_organisation,
+            8,
+            ORGANISATION_DIGEST,
+            "industrial organisation variables",
         );
     }
 }

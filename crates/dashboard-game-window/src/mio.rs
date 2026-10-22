@@ -44,7 +44,7 @@ use dashboard_base::{
 };
 use dashboard_text::{
     scripted_text::EventScopes,
-    triggers::{Evaluator, RECORDED_TABLES, inputs::capture},
+    triggers::{Evaluator, OrganisationCondition, RECORDED_TABLES, Undecided, inputs::capture},
 };
 use installed_content_core::{
     ResolvedLayers, industrial_organisations::policies::Catalog as Policies, parser::Item,
@@ -252,20 +252,10 @@ fn lossy(bytes: &[u8]) -> String {
 #[allow(clippy::type_complexity)]
 struct PolicyDefinitions(std::sync::OnceLock<Result<Arc<(Policies, Vec<String>)>, String>>);
 
-/// The organisations' trait trees, read once per stack.
-#[derive(Default)]
-struct Trees(std::sync::OnceLock<Result<Arc<installed_content_core::mio_traits::Catalog>, String>>);
-
+/// The organisations' trait trees, read once per stack and shared with the trigger interpreter.
 fn trees(layers: &ResolvedLayers) -> Result<Arc<installed_content_core::mio_traits::Catalog>, String> {
-    layers
-        .derived::<Trees>()
-        .0
-        .get_or_init(|| {
-            installed_content_core::mio_traits::read(layers)
-                .map(Arc::new)
-                .map_err(|why| format!("the organisations' content does not read: {why}"))
-        })
-        .clone()
+    installed_content_core::mio_traits::cached(layers)
+        .map_err(|why| format!("the organisations' content does not read: {why}"))
 }
 
 /// Reads the policies' and organisations' definitions ahead of the first window over `layers`.
@@ -393,8 +383,8 @@ pub fn hover(shown: &Shown) -> Hover {
 type Gated = (
     Vec<Shown>,
     Vec<(String, String)>,
-    Result<bool, String>,
-    Result<PolicyCost, String>,
+    Result<bool, Undecided>,
+    Result<PolicyCost, Undecided>,
 );
 
 /// A frame's conditions, and whether one was left undecided having read tables the frame does
@@ -443,22 +433,19 @@ fn gates(
         undecided.set(undecided.get() || decided.is_err());
         decided
     };
-    // The organisation's `available`, then its `visible`; an empty body holds.
-    let condition = |items: &[Item]| {
-        if items.is_empty() {
-            Ok(true)
-        } else {
-            gate(items)
-        }
-    };
-    let organisation_gate = || -> Result<bool, String> {
+    let organisation_gate = || -> Result<bool, Undecided> {
         let name = lossy(&inputs.token);
         let trees = trees.as_ref().map_err(Clone::clone)?;
         let tree = trees
             .tree(&name)?
             .ok_or_else(|| format!("organisation {name} is not defined in the recorded content"))?;
-        // The game checks `available`, then `visible`; either failing fails the gate.
-        both(condition(tree.available), || condition(tree.visible))
+        let decided = organisation_holds(
+            &tree,
+            organisation,
+            evaluator.as_ref().map_err(Clone::clone),
+        );
+        undecided.set(undecided.get() || decided.is_err());
+        decided
     };
     let stored = |bytes: &[u8]| {
         dashboard_text::scripted_text::stored_text(
@@ -469,8 +456,8 @@ fn gates(
         )
     };
     // The quote evaluates the organisation's conditions too, so it reads under the same capture.
-    let cost = || -> Result<PolicyCost, String> {
-        let world = world.as_ref().map_err(Clone::clone)?;
+    let cost = || -> Result<PolicyCost, Undecided> {
+        let world = world.as_ref().map_err(Clone::clone);
         let trees = trees.as_ref().map_err(Clone::clone)?;
         let policies = policies.as_ref().map_err(Clone::clone)?;
         let (row, details) = organisation_rows(frame, organisation)?;
@@ -500,6 +487,26 @@ fn gates(
     } else {
         Gates::Read(more)
     }
+}
+
+/// Whether the organisation's own conditions hold: `available`, then `visible`, either failing
+/// fails the gate, and one the game never returns from decides nothing
+/// ([`Evaluator::organisation_conditions`]). Empty conditions hold without the interpreter.
+fn organisation_holds(
+    tree: &installed_content_core::mio_traits::Tree<'_>,
+    organisation: u64,
+    evaluator: Result<&Evaluator<'_, '_>, String>,
+) -> Result<bool, Undecided> {
+    if tree.available.is_empty() && tree.visible.is_empty() {
+        return Ok(true);
+    }
+    Ok(evaluator?.organisation_conditions(
+        organisation,
+        &[
+            (OrganisationCondition::Available, tree.available),
+            (OrganisationCondition::Visible, tree.visible),
+        ],
+    )?)
 }
 
 /// What one hour records of an organisation's chooser, its conditions evaluated: the rows, the
@@ -954,49 +961,63 @@ pub fn check(layers: &ResolvedLayers, guis: &installed_content_core::gui::native
 /// power (fixed5), each or why it is unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gate {
-    pub organisation: Result<bool, String>,
+    pub organisation: Result<bool, Undecided>,
     pub cooldown_days: i32,
-    pub cost: Result<PolicyCost, String>,
+    pub cost: Result<PolicyCost, Undecided>,
     pub political_power_raw: Result<i64, String>,
 }
 
 /// The attach quote of `shown` under `gate`, or why it is unknown.
-fn quote(shown: &Shown, gate: &Gate) -> Result<i32, String> {
+fn quote(shown: &Shown, gate: &Gate) -> Result<i32, Undecided> {
     gate.cost
         .as_ref()
         .map(|cost| cost.quote(shown.policy.cost))
-        .map_err(|why| format!("the attach quote is unknown: {why}"))
+        .map_err(|why| match why {
+            Undecided::Unknown(why) => {
+                Undecided::Unknown(format!("the attach quote is unknown: {why}"))
+            }
+            Undecided::Diverged(why) => {
+                Undecided::Diverged(format!("the attach quote has no value: {why}"))
+            }
+        })
 }
 
-/// Whether the row's action is blocked, as the game decides it: the organisation's own
-/// conditions and a cooldown over (0 or fewer days left) for every row, and for an unattached
-/// policy also the owner's political power for its attach quote and its `available` condition.
-/// Any part that fails blocks it; a row no failing part blocks is undecided while a part is
-/// unknown.
+/// Whether the row's action is blocked, as the game decides it, in its order: the
+/// organisation's own conditions and a cooldown over (0 or fewer days left) for every row, and
+/// for an unattached policy also the owner's political power for its attach quote, then its
+/// `available` condition. Any part that fails blocks it; a row no failing part blocks is
+/// undecided while a part is unknown. A part the game never returns from leaves the row
+/// undecided whatever the parts after it say, since the game never reaches them.
 pub fn row_blocked(shown: &Shown, gate: &Gate) -> Result<bool, String> {
     let mut unknown = Vec::new();
     match &gate.organisation {
         Ok(false) => return Ok(true),
         Ok(true) => {}
-        Err(why) => unknown.push(format!("the organisation's conditions are unknown: {why}")),
+        Err(Undecided::Diverged(why)) => {
+            return Err(format!("the organisation's conditions have no result: {why}"));
+        }
+        Err(Undecided::Unknown(why)) => {
+            unknown.push(format!("the organisation's conditions are unknown: {why}"))
+        }
     }
     if gate.cooldown_days > 0 {
         return Ok(true);
     }
     if !shown.policy.selected {
-        match &shown.available {
-            Ok(false) => return Ok(true),
-            Ok(true) => {}
-            Err(why) => unknown.push(format!("availability unknown: {why}")),
-        }
         match (quote(shown, gate), &gate.political_power_raw) {
             (Ok(quote), Ok(power)) => {
                 if !affordable(*power, quote) {
                     return Ok(true);
                 }
             }
-            (Err(why), _) => unknown.push(why),
+            (Err(Undecided::Diverged(why)), _) => return Err(why),
+            (Err(Undecided::Unknown(why)), _) => unknown.push(why),
             (_, Err(why)) => unknown.push(format!("political power unknown: {why}")),
+        }
+        match &shown.available {
+            Ok(false) => return Ok(true),
+            Ok(true) => {}
+            Err(why) => unknown.push(format!("availability unknown: {why}")),
         }
     }
     if unknown.is_empty() {
@@ -1405,7 +1426,7 @@ mod gate_tests {
             icon: Vec::new(),
             available,
         };
-        let gate = |organisation: Result<bool, String>, cooldown_days| Gate {
+        let gate = |organisation: Result<bool, Undecided>, cooldown_days| Gate {
             organisation,
             cooldown_days,
             cost: Err("not recorded".into()),
@@ -1436,6 +1457,42 @@ mod gate_tests {
             assert_eq!(blocked(&gate(Err("unknown".into()), 3)), Ok(true));
         }
         assert!(row_blocked(&row(true, Ok(true)), &gate(Err("unknown".into()), 0)).is_err());
+        // Conditions the game never returns from leave every row undecided, whatever the
+        // blockers the game would check after them: a cooldown, the power or `available`.
+        let diverged = || Err(Undecided::Diverged("recursion".into()));
+        for selected in [true, false] {
+            assert!(row_blocked(&row(selected, Ok(false)), &gate(diverged(), 3)).is_err());
+        }
+        // A quote the game never returns from does too, past the cooldown; a cooldown it
+        // checks first still blocks.
+        let endless = |cooldown_days| Gate {
+            cost: Err(Undecided::Diverged("recursion".into())),
+            ..gate(Ok(true), cooldown_days)
+        };
+        assert!(row_blocked(&row(false, Ok(false)), &endless(0)).is_err());
+        assert_eq!(row_blocked(&row(false, Ok(false)), &endless(2)), Ok(true));
+        assert_eq!(row_blocked(&row(true, Ok(true)), &endless(0)), Ok(false));
+    }
+
+    /// Empty organisation conditions hold without the trigger interpreter; a condition that
+    /// is not empty needs it.
+    #[test]
+    fn empty_organisation_conditions_need_no_interpreter() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
+            "common/military_industrial_organization/organizations/syn.txt",
+            "syn_org = { } gated_org = { visible = { always = yes } }",
+        )]);
+        let trees = trees(&catalogue.content.layers).unwrap();
+        let absent = || Err("the interpreter is not available".to_owned());
+        let empty = trees.tree("syn_org").unwrap().unwrap();
+        assert_eq!(organisation_holds(&empty, ORGANISATION, absent()), Ok(true));
+        let gated = trees.tree("gated_org").unwrap().unwrap();
+        assert!(matches!(
+            organisation_holds(&gated, ORGANISATION, absent()),
+            Err(Undecided::Unknown(_))
+        ));
     }
 
     /// A false organisation condition decides the gate even when the other is unknown, so an
@@ -1450,7 +1507,7 @@ mod gate_tests {
         assert!(both(unknown(), || Ok(true)).is_err());
         assert!(both(Ok(true), unknown).is_err());
         let gate = Gate {
-            organisation: both(unknown(), || Ok(false)),
+            organisation: both(unknown(), || Ok(false)).map_err(Undecided::Unknown),
             cooldown_days: 0,
             cost: Err("not recorded".into()),
             political_power_raw: Err("not recorded".into()),

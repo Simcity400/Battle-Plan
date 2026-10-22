@@ -241,7 +241,7 @@ fn quote(
         KEY,
         &content.traits,
         &content.policies,
-        &world,
+        Ok(&world),
     )?;
     let cost = policy_cost(
         frame,
@@ -249,7 +249,7 @@ fn quote(
         &details,
         &content.traits,
         &content.policies,
-        &world,
+        Ok(&world),
     )?;
     assert_eq!(cost.local, local);
     Ok((local, cost.quote(base)))

@@ -3,7 +3,8 @@
 //! select its store and build its key.
 //!
 //! The persistent stores (global, country, state and character) are the
-//! recorded `ScriptVariables` rows. The thread-local store holds known local
+//! recorded `ScriptVariables` rows; a project's and an industrial
+//! organisation's are their own rows' recorded stores. The thread-local store holds known local
 //! setter results and the caller's injected temps, including raid event
 //! scope temps, in a trigger-check context. Starting a new context
 //! clears the store when no context is active. A read the thread-local store
@@ -94,6 +95,9 @@ pub enum Store {
         owner: u32,
         id: u32,
     },
+    /// An industrial organisation's persistent store, by its full reference
+    /// (`IndustrialOrganisationDetails.variables`).
+    IndustrialOrganisation(u64),
 }
 
 impl Store {
@@ -104,6 +108,7 @@ impl Store {
             Self::Country(_) => &variable_builtins::COUNTRY,
             Self::State(_) => &variable_builtins::STATE,
             Self::Character(_) => &variable_builtins::CHARACTER,
+            Self::IndustrialOrganisation(_) => &variable_builtins::ORGANISATION,
             Self::Project { .. } => &[],
         }
     }
@@ -863,6 +868,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Store::State(state) => Scope::State(state),
             Store::Character(character) => Scope::Character(character),
             Store::Project { owner, id } => Scope::Project { owner, id },
+            Store::IndustrialOrganisation(reference) => Scope::IndustrialOrganisation(reference),
             Store::Global => Scope::State(NULL_STATE),
         };
         callback.bare = true;
@@ -876,14 +882,18 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             Store::State(id) => format!("state {id}"),
             Store::Character(id) => format!("character {id}"),
             Store::Project { owner, id } => format!("project {owner}:{id}"),
+            Store::IndustrialOrganisation(reference) => {
+                self.describe(Scope::IndustrialOrganisation(reference))
+            }
         }
     }
 
     /// Resolve storage: `global.`, a country specifier,
     /// an explicit state, an `a:` prefix's decoded scope, a saved event
     /// target, else the scope the chain walks to: a country's
-    /// store, a state's, a unit leader's character's, a character's, and with
-    /// none of them the global store.
+    /// store, a state's, a unit leader's character's, a character's, a
+    /// project's, an industrial organisation's, and with none of them the
+    /// global store.
     fn resolve(
         &self,
         operand: &ScopedVariable,
@@ -989,11 +999,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             },
             Scope::State(id) => at(Store::State(id)),
             Scope::Character(id) => at(Store::Character(id)),
+            // The organisation's own persistent store.
             Scope::IndustrialOrganisation(reference) => {
-                return Err(format!(
-                    "industrial organisation {reference:#x} variable store is not recorded"
-                )
-                .into());
+                at(Store::IndustrialOrganisation(reference))
             }
             Scope::Project { owner, id } => at(Store::Project { owner, id }),
             Scope::Raid(reference) => {

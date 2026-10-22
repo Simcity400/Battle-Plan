@@ -31,6 +31,72 @@ fn organisation_gates_inherit_parent_local_bodies_and_filters_copy() {
     assert_eq!(local.equipment_types, [b"air".to_vec()]);
 }
 
+/// Research categories are held as authored (repeated lists append) and an empty list copies
+/// the included definition's current list, inherited or not, unless deleted. A trait's
+/// `available` and `visible` bodies are its own when not empty, else the included trait's own
+/// body, never what that one falls back to; deletion keeps the fallback out.
+#[test]
+fn research_categories_and_trait_conditions_are_retained_and_inherited() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let db = catalog(br#"
+      base={research_categories={cat_a cat_b}
+          trait={token=gated available={always=no} visible={always=yes}}
+          trait={token=open}}
+      child={include=base
+          override_trait={token=gated visible={always=no}}}
+      local={include=base research_categories={cat_c}
+          override_trait={token=gated delete_included_values={available}}}
+      deleted={include=base delete_included_values={research_categories}}
+      grandchild={include=child}
+      copied_again={include=deleted}
+      repeated={research_categories={cat_x} research_categories={cat_y}}
+    "#);
+    let base = db.tree("base").unwrap().unwrap();
+    assert_eq!(base.research_categories, [b"cat_a".to_vec(), b"cat_b".to_vec()]);
+    let gated = db.trait_definition("base", "gated").unwrap().unwrap();
+    assert_eq!(gated.available()[0].value.scalar_str(), Some("no"));
+    assert_eq!(gated.visible()[0].value.scalar_str(), Some("yes"));
+    let open = db.trait_definition("base", "open").unwrap().unwrap();
+    assert!(open.available().is_empty() && open.visible().is_empty());
+    assert_eq!(
+        db.tree("child").unwrap().unwrap().research_categories,
+        [b"cat_a".to_vec(), b"cat_b".to_vec()]
+    );
+    let gated = db.trait_definition("child", "gated").unwrap().unwrap();
+    assert_eq!(gated.available()[0].value.scalar_str(), Some("no"));
+    assert_eq!(gated.visible()[0].value.scalar_str(), Some("no"));
+    assert_eq!(
+        db.tree("local").unwrap().unwrap().research_categories,
+        [b"cat_c".to_vec()]
+    );
+    let gated = db.trait_definition("local", "gated").unwrap().unwrap();
+    assert!(gated.available().is_empty());
+    assert_eq!(gated.visible()[0].value.scalar_str(), Some("yes"));
+    // A fresh copy falls back to the included trait's own bodies...
+    let copied = db.trait_definition("deleted", "gated").unwrap().unwrap();
+    assert_eq!(copied.available()[0].value.scalar_str(), Some("no"));
+    // ...and a copy of that copy to its empty own bodies, not to the first trait's.
+    let again = db.trait_definition("copied_again", "gated").unwrap().unwrap();
+    assert!(again.available().is_empty() && again.visible().is_empty());
+    // The child's already inherited list is copied on.
+    assert_eq!(
+        db.tree("grandchild").unwrap().unwrap().research_categories,
+        [b"cat_a".to_vec(), b"cat_b".to_vec()]
+    );
+    assert_eq!(
+        db.tree("repeated").unwrap().unwrap().research_categories,
+        [b"cat_x".to_vec(), b"cat_y".to_vec()]
+    );
+    assert!(
+        db.tree("deleted")
+            .unwrap()
+            .unwrap()
+            .research_categories
+            .is_empty()
+    );
+}
+
 fn catalog(input: &[u8]) -> Catalog {
     let (rows, warnings) = parse(input, &KeyNames::default()).unwrap();
     let mut result = Catalog {

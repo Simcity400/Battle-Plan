@@ -163,6 +163,16 @@ impl Groups {
         Ok(out)
     }
 
+    /// [`Self::expand`] keeping each group's name too: a group member adds its
+    /// own name, then its members. The expansion an organisation's equipment
+    /// type list is tested against.
+    pub fn expand_inclusive(&self, names: &[impl AsRef<[u8]>]) -> Result<Vec<Vec<u8>>, String> {
+        let names: Vec<Vec<u8>> = names.iter().map(|name| name.as_ref().to_vec()).collect();
+        let mut out = Vec::new();
+        self.collect(&names, &mut out, &mut Vec::new(), true)?;
+        Ok(out)
+    }
+
     /// Expand into an existing list, retaining names already present only once.
     pub fn expand_into(
         &self,
@@ -170,7 +180,7 @@ impl Groups {
         out: &mut Vec<Vec<u8>>,
     ) -> Result<(), String> {
         let names: Vec<Vec<u8>> = names.iter().map(|name| name.as_ref().to_vec()).collect();
-        self.collect(&names, out, &mut Vec::new())
+        self.collect(&names, out, &mut Vec::new(), false)
     }
 
     fn collect(
@@ -178,7 +188,13 @@ impl Groups {
         members: &[Vec<u8>],
         out: &mut Vec<Vec<u8>>,
         within: &mut Vec<usize>,
+        named: bool,
     ) -> Result<(), String> {
+        let keep = |member: &Vec<u8>, out: &mut Vec<Vec<u8>>| {
+            if !out.iter().any(|seen| seen.eq_ignore_ascii_case(member)) {
+                out.push(member.clone());
+            }
+        };
         for member in members {
             match self.position(member)? {
                 Some(at) if within.contains(&at) => {
@@ -193,15 +209,14 @@ impl Groups {
                     ));
                 }
                 Some(at) => {
+                    if named {
+                        keep(member, out);
+                    }
                     within.push(at);
-                    self.collect(&self.groups[at].members, out, within)?;
+                    self.collect(&self.groups[at].members, out, within, named)?;
                     within.pop();
                 }
-                None => {
-                    if !out.iter().any(|seen| seen.eq_ignore_ascii_case(member)) {
-                        out.push(member.clone());
-                    }
-                }
+                None => keep(member, out),
             }
         }
         Ok(())
@@ -229,5 +244,43 @@ impl Groups {
                 String::from_utf8_lossy(member)
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inclusive expansion keeps each group's name, as written, before its members, nested
+    /// groups included, every name once without case; plain expansion drops group names.
+    /// A cycle is refused either way.
+    #[test]
+    fn inclusive_expansion_keeps_group_names() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let mut groups = Groups::default();
+        groups.read_file(
+            b"outer = { equipment_type = { inner plain_type } }
+              inner = { equipment_type = { PLAIN_TYPE other_type } }
+              loop_a = { equipment_type = { loop_b } }
+              loop_b = { equipment_type = { loop_a } }",
+            "common/equipment_groups/g.txt",
+        );
+        assert!(groups.lost.is_none(), "{:?}", groups.lost);
+        assert_eq!(
+            groups.expand_inclusive(&["Outer", "loose"]).unwrap(),
+            [
+                b"Outer".to_vec(),
+                b"inner".to_vec(),
+                b"PLAIN_TYPE".to_vec(),
+                b"other_type".to_vec(),
+                b"loose".to_vec(),
+            ]
+        );
+        assert_eq!(
+            groups.expand(&["Outer"]).unwrap(),
+            [b"PLAIN_TYPE".to_vec(), b"other_type".to_vec()]
+        );
+        assert!(groups.expand_inclusive(&["loop_a"]).is_err());
     }
 }

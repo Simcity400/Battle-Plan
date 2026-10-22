@@ -14,6 +14,8 @@ pub(super) struct PreparedInputs {
     constants: OnceLock<Result<installed_content_core::script_constants::Constants, String>>,
     traits: OnceLock<Result<installed_content_core::unit_leader::Traits, String>>,
     invasion_days: OnceLock<Result<i32, String>>,
+    mio_traits: OnceLock<Result<std::sync::Arc<installed_content_core::mio_traits::Catalog>, String>>,
+    equipment_groups: OnceLock<Result<installed_content_core::equipment::Groups, String>>,
     pub(super) dlcs: OnceLock<Result<BTreeSet<String>, String>>,
     pub(super) neighbors: OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
     pub(super) terrain: OnceLock<Option<installed_content_core::movement::MovementMap>>,
@@ -128,6 +130,30 @@ impl ScriptedContent {
 impl PreparedContent for ScriptedContent {
     fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str> {
         self.prepared_environment()?.ideas()
+    }
+    fn mio_traits(&self) -> Result<&installed_content_core::mio_traits::Catalog, &str> {
+        self.prepared_environment()?
+            .prepared
+            .mio_traits
+            .get_or_init(|| installed_content_core::mio_traits::cached(&self.layers.layers))
+            .as_deref()
+            .map_err(String::as_str)
+    }
+    fn equipment_groups(&self) -> Result<&installed_content_core::equipment::Groups, &str> {
+        self.prepared_environment()?
+            .prepared
+            .equipment_groups
+            .get_or_init(|| {
+                let groups = installed_content_core::equipment::Groups::load(&self.layers.layers)
+                    .map_err(|error| error.to_string())?;
+                // Past a reading the port cannot follow, the groups are unknown.
+                match &groups.lost {
+                    Some(lost) => Err(format!("the equipment groups are unread past {lost}")),
+                    None => Ok(groups),
+                }
+            })
+            .as_ref()
+            .map_err(String::as_str)
     }
     fn authored_states(&self) -> AuthoredStates<'_> {
         static PROVINCES: BTreeMap<u32, Vec<u32>> = BTreeMap::new();

@@ -23,6 +23,9 @@ mod event_scopes;
 #[path = "carriers/tests.rs"]
 mod carriers;
 
+#[path = "organisations/tests.rs"]
+mod organisations;
+
 #[path = "collections/tests.rs"]
 mod collections;
 

@@ -5,7 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 
 const RAID: u64 = 7 << 32 | 84;
 const UNIT: u64 = 8 << 32 | 55;
-const MIO: u64 = 6 << 32 | 79;
+pub(super) const MIO: u64 = 6 << 32 | 79;
 
 fn fixture() -> DecodedFrame {
     let mut f = frame(&countries(), &[]);
@@ -500,7 +500,7 @@ fn persisted_carrier_targets_name_the_missing_reference_and_keep_raid_context() 
 /// A frame of the carrier fixture at `hour` whose organisations' details are `sizes` (none: the
 /// table unavailable), with a third organisation of the same definition held by country 102 and
 /// owned by country 104.
-fn sized(hour: i32, sizes: Option<&[(u64, i32)]>) -> DecodedFrame {
+pub(super) fn sized(hour: i32, sizes: Option<&[(u64, i32)]>) -> DecodedFrame {
     let mut f = fixture();
     f.hour = hour;
     let TableView::Complete(TableRows::IndustrialOrganisations(organisations)) =
@@ -539,13 +539,13 @@ fn sized(hour: i32, sizes: Option<&[(u64, i32)]>) -> DecodedFrame {
 }
 
 /// The fixture's second organisation, of the same holder and definition as [`MIO`].
-const OTHER: u64 = MIO + (1 << 32);
+pub(super) const OTHER: u64 = MIO + (1 << 32);
 /// An organisation of the same definition held by another country.
-const HELD: u64 = MIO + (3 << 32);
+pub(super) const HELD: u64 = MIO + (3 << 32);
 /// The sizes the size tests start from.
-const SIZES: &[(u64, i32)] = &[(MIO, 6), (OTHER, 5), (HELD, 8)];
+pub(super) const SIZES: &[(u64, i32)] = &[(MIO, 6), (OTHER, 5), (HELD, 8)];
 
-fn in_organisation(world: &World, organisation: u64, trigger: &str) -> Eval {
+pub(super) fn in_organisation(world: &World, organisation: u64, trigger: &str) -> Eval {
     world.evaluate(
         &items(trigger),
         Scopes::of(Scope::IndustrialOrganisation(organisation)),

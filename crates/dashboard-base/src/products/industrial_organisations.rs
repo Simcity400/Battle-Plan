@@ -2,6 +2,7 @@
 //! modifier metadata and country values are recorded; trait, policy and
 //! modifier definitions resolve through the recorded content stack.
 use crate::products::equipment::designs::queries::spelling;
+use dashboard_text::triggers::{OrganisationCondition, Undecided};
 use replay_data::rows::{self, tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -77,7 +78,9 @@ pub(crate) fn organisation_modifier_value(
 /// The organisation's own sum of the modifier `key`, in signed fixed5: its
 /// completed traits while the organisation is visible and available, its
 /// initial trait, and its currently attached policy's organisation modifier.
-/// Each source's entry is taken effectively before the sum.
+/// Each source's entry is taken effectively before the sum. The trigger
+/// `world` is needed only when a condition is not empty; a condition the game
+/// never returns from leaves the sum [`Undecided::Diverged`].
 pub fn local_modifier(
     frame: &DecodedFrame,
     organisation: &rows::IndustrialOrganisationRow,
@@ -85,8 +88,8 @@ pub fn local_modifier(
     key: u32,
     traits: &installed_content_core::mio_traits::Catalog,
     policies: &installed_content_core::industrial_organisations::policies::Catalog,
-    world: &dashboard_text::triggers::World<'_>,
-) -> Result<i64, String> {
+    world: Result<&dashboard_text::triggers::World<'_>, String>,
+) -> Result<i64, Undecided> {
     let reference = organisation.organisation;
     let name =
         std::str::from_utf8(spelling(frame, organisation.token)?).map_err(|e| e.to_string())?;
@@ -99,22 +102,19 @@ pub fn local_modifier(
         organisation_modifier_value(frame, modifiers, modifier_name, key)
     };
     let mut local = 0_i64;
-    // The organisation's conditions read the game's two-scope context: an
-    // owner the recording cannot resolve leaves FROM unknown, so only a
-    // condition that reads it is undecided.
-    let owner = frame
-        .complete::<tables::CountryLinks>()
-        .ok()
-        .and_then(|links| dashboard_text::metadata::link_slot(&links, organisation.owner));
-    let evaluator = dashboard_text::triggers::Evaluator::new(world, None).with_event_scopes(
-        std::rc::Rc::new(std::cell::RefCell::new(
-            dashboard_text::scripted_text::EventScopes::organisation(reference, owner),
-        )),
-    );
-    let scope = evaluator.event_scopes(0).map_err(|e| e.to_string())?;
-    let ordinary = both(evaluator.evaluate(tree.visible, scope).decided(), || {
-        evaluator.evaluate(tree.available, scope).decided()
-    })?;
+    // `visible`, then `available`, each in the game's organisation/owner
+    // scope pair; empty conditions hold without evaluating anything.
+    let ordinary = if tree.visible.is_empty() && tree.available.is_empty() {
+        true
+    } else {
+        dashboard_text::triggers::Evaluator::new(world?, None).organisation_conditions(
+            reference,
+            &[
+                (OrganisationCondition::Visible, tree.visible),
+                (OrganisationCondition::Available, tree.available),
+            ],
+        )?
+    };
     if ordinary {
         for token in &details.unlocked {
             let token = std::str::from_utf8(spelling(frame, *token)?).map_err(|e| e.to_string())?;
@@ -253,8 +253,8 @@ pub fn policy_cost(
     details: &rows::IndustrialOrganisationDetailsRow,
     traits: &installed_content_core::mio_traits::Catalog,
     policies: &installed_content_core::industrial_organisations::policies::Catalog,
-    world: &dashboard_text::triggers::World<'_>,
-) -> Result<PolicyCost, String> {
+    world: Result<&dashboard_text::triggers::World<'_>, String>,
+) -> Result<PolicyCost, Undecided> {
     let country = owner_roster(frame, organisation)?
         .cost_modifier_raw
         .ok_or_else(|| {

@@ -78,6 +78,8 @@ pub(crate) type AuthoredStates<'a> = (
 );
 pub(crate) trait PreparedContent: Send + Sync {
     fn ideas(&self) -> Result<&installed_content_core::ideas::IdeaContent, &str>;
+    fn mio_traits(&self) -> Result<&installed_content_core::mio_traits::Catalog, &str>;
+    fn equipment_groups(&self) -> Result<&installed_content_core::equipment::Groups, &str>;
     fn authored_states(&self) -> AuthoredStates<'_>;
     fn continents(&self) -> Result<&[String], &str>;
     fn ideologies(&self) -> Result<&installed_content_core::ideologies::Ideologies, &str>;
@@ -438,6 +440,13 @@ pub struct World<'a> {
         PreparedOperand<'a, Result<(&'a Traits, &'a LeaderTraits), &'a str>>,
     /// A character scope's recorded operands (`crate::character_scope`).
     pub(super) ideas: PreparedOperand<'a, Result<&'a installed_content_core::ideas::IdeaContent, &'a str>>,
+    /// Content: the organisations' definitions (their conditions, traits and
+    /// categories), or why they are unread.
+    pub(super) mio_traits:
+        PreparedOperand<'a, Result<&'a installed_content_core::mio_traits::Catalog, &'a str>>,
+    /// Content: the equipment groups, or why they are unread.
+    pub(super) equipment_groups:
+        PreparedOperand<'a, Result<&'a installed_content_core::equipment::Groups, &'a str>>,
     character_tables: OnceLock<character_scope::Tables<'a>>,
     /// Content: the tag alias database, which the hour's scopes consult.
     aliases: &'a Arc<TagAliases>,
@@ -744,6 +753,11 @@ pub enum Query {
     RaidWingName(u64),
     IndustrialOrganisation(u64),
     IndustrialOrganisationSize(u64),
+    IndustrialOrganisationUnlocked(u64),
+    IndustrialOrganisationPolicies(u64),
+    IndustrialOrganisationFlags(u64),
+    IndustrialOrganisationTasks(u64),
+    Clock,
     Slot(u32),
     Tag(u32),
     StateRow(u32),
@@ -838,6 +852,19 @@ impl World<'_> {
             Query::IndustrialOrganisationSize(reference) => super::inputs::digest_debug(
                 &self.industrial_organisation_size_unrecorded(*reference),
             ),
+            Query::IndustrialOrganisationUnlocked(reference) => super::inputs::digest_debug(
+                &self.organisation_details(*reference).map(|row| &row.unlocked),
+            ),
+            Query::IndustrialOrganisationPolicies(reference) => super::inputs::digest_debug(
+                &self.organisation_policies_unrecorded(*reference),
+            ),
+            Query::IndustrialOrganisationFlags(reference) => super::inputs::digest_debug(
+                &self.organisation_details(*reference).map(|row| &row.flags),
+            ),
+            Query::IndustrialOrganisationTasks(reference) => super::inputs::digest_debug(
+                &self.organisation_details(*reference).map(|row| &row.tasks),
+            ),
+            Query::Clock => super::inputs::digest(&self.hour),
             Query::Slot(raw) => super::inputs::digest(&self.slot_unrecorded(*raw)),
             Query::Tag(slot) => super::inputs::digest(&self.tag_unrecorded(*slot)),
             Query::StateRow(state) => super::inputs::digest(&self.state_row_unrecorded(*state)),
@@ -1164,6 +1191,12 @@ impl<'a> World<'a> {
         self.hour
     }
 
+    /// The hour this world was read at, read as an input of an evaluation
+    /// whose result depends on it.
+    pub(crate) fn clock(&self) -> Hour {
+        super::inputs::query_resolved(|| super::inputs::Key::World(Query::Clock), || self.hour)
+    }
+
     /// Every raw country reference's canonical slot, read whole.
     pub fn links(&self) -> &BTreeMap<u32, u32> {
         super::inputs::table(self.frame, replay_data::rows::TableId::CountryLinks);
@@ -1344,6 +1377,8 @@ impl<'a> World<'a> {
             character_traits: content.character_traits.into(),
             character_tables: OnceLock::new(),
             ideas: Err("idea definitions are not supplied").into(),
+            mio_traits: Err("industrial organisation definitions are not supplied").into(),
+            equipment_groups: Err("equipment groups are not supplied").into(),
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
@@ -1396,6 +1431,18 @@ impl<'a> World<'a> {
         }
     }
 
+    /// The organisations' definitions and equipment groups a test holds.
+    #[cfg(test)]
+    pub(crate) fn with_organisation_content(
+        mut self,
+        catalog: &'a installed_content_core::mio_traits::Catalog,
+        groups: &'a installed_content_core::equipment::Groups,
+    ) -> Self {
+        self.mio_traits = Ok(catalog).into();
+        self.equipment_groups = Ok(groups).into();
+        self
+    }
+
     pub(crate) fn with_prepared_content(mut self, content: &'a dyn PreparedContent) -> Self {
         self.prepared_content = Some(content);
         self.state_provinces = PreparedOperand::lazy(content, self.frame, |content, _| {
@@ -1413,6 +1460,10 @@ impl<'a> World<'a> {
             PreparedOperand::lazy(content, self.frame, |content, _| content.ideologies());
         self.triggers = PreparedOperand::lazy(content, self.frame, |content, _| content.triggers());
         self.ideas = PreparedOperand::lazy(content, self.frame, |content, _| content.ideas());
+        self.mio_traits =
+            PreparedOperand::lazy(content, self.frame, |content, _| content.mio_traits());
+        self.equipment_groups =
+            PreparedOperand::lazy(content, self.frame, |content, _| content.equipment_groups());
         self.character_traits =
             PreparedOperand::lazy(content, self.frame, |content, _| content.character_traits());
         self.leader_roles =
@@ -1550,10 +1601,69 @@ impl<'a> World<'a> {
     }
 
     fn industrial_organisation_size_unrecorded(&self, reference: u64) -> Result<i32, Failure> {
+        Ok(self.organisation_details(reference)?.state.size)
+    }
+
+    /// An organisation's completed traits, by lexer token, in stored order.
+    pub(crate) fn organisation_unlocked(&self, reference: u64) -> Result<&'a [u32], Failure> {
+        super::inputs::query_debug_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationUnlocked(reference)),
+            || Ok(self.organisation_details(reference)?.unlocked.as_slice()),
+        )
+    }
+
+    /// An organisation's allowed policies, by lexer token in stored order, and
+    /// its attached policy's token.
+    pub(crate) fn organisation_policies(
+        &self,
+        reference: u64,
+    ) -> Result<(&'a [u32], u32), Failure> {
+        super::inputs::query_debug_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationPolicies(reference)),
+            || self.organisation_policies_unrecorded(reference),
+        )
+    }
+
+    fn organisation_policies_unrecorded(
+        &self,
+        reference: u64,
+    ) -> Result<(&'a [u32], u32), Failure> {
+        let row = self.organisation_details(reference)?;
+        Ok((&row.allowed_policies, row.state.policy))
+    }
+
+    /// An organisation's own flags, as stored.
+    pub(crate) fn organisation_flags(
+        &self,
+        reference: u64,
+    ) -> Result<&'a [replay_data::rows::IndustrialOrganisationFlag], Failure> {
+        super::inputs::query_debug_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationFlags(reference)),
+            || Ok(self.organisation_details(reference)?.flags.as_slice()),
+        )
+    }
+
+    /// An organisation's task slots, every native slot, empty ones included.
+    pub(crate) fn organisation_tasks(
+        &self,
+        reference: u64,
+    ) -> Result<&'a [replay_data::rows::IndustrialOrganisationTask], Failure> {
+        super::inputs::query_debug_resolved(
+            || super::inputs::Key::World(Query::IndustrialOrganisationTasks(reference)),
+            || Ok(self.organisation_details(reference)?.tasks.as_slice()),
+        )
+    }
+
+    /// An organisation's details row, by its full reference. Read only inside
+    /// a query, which declares the fields it reads.
+    fn organisation_details(
+        &self,
+        reference: u64,
+    ) -> Result<&'a replay_data::rows::IndustrialOrganisationDetailsRow, Failure> {
         let details = table::<tables::IndustrialOrganisationDetails>(self.frame)?;
         details
             .binary_search_by_key(&reference, |row| row.organisation)
-            .map(|index| details[index].state.size)
+            .map(|index| &details[index])
             .map_err(|_| -> Failure {
                 super::refusal::missing_reference(tables::IndustrialOrganisationDetails::ID, None)
             })
@@ -2983,6 +3093,26 @@ impl<'a> World<'a> {
     }
 
     fn variable_unrecorded(&self, store: Store, key: &[u8]) -> Result<Option<i64>, Failure> {
+        // An organisation's persistent store is its details' variables: a
+        // dictionary of unique keys, compared byte for byte. Capture sorts
+        // them by name without keeping the order of equal names, so a key
+        // recorded twice has no value the recording can name.
+        if let Store::IndustrialOrganisation(reference) = store {
+            let mut found = self
+                .organisation_details(reference)?
+                .variables
+                .entries
+                .iter()
+                .filter(|entry| entry.name == key);
+            let value = found.next().map(|entry| entry.value_raw);
+            if found.next().is_some() {
+                return Err(super::refusal::refused(format!(
+                    "industrial organisation {reference:#x} records variable {} more than once, and the game's store holds each key once",
+                    String::from_utf8_lossy(key)
+                )));
+            }
+            return Ok(value);
+        }
         if let Store::Project { owner, id } = store {
             let runtime = self
                 .project(owner, id)?
@@ -3079,6 +3209,10 @@ impl<'a> World<'a> {
             Store::State(id) => (2, id),
             Store::Character(id) => (3, id),
             Store::Project { .. } => unreachable!("project stores are carried by Projects.runtime"),
+            // Variable-random seeding never selects an organisation's store.
+            Store::IndustrialOrganisation(_) => {
+                unreachable!("organisation stores are carried by IndustrialOrganisationDetails")
+            }
         };
         rows.binary_search_by_key(&(kind, id), |row| (row.scope_kind, row.scope_id))
             .map(|at| &rows[at])

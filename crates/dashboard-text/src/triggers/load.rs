@@ -194,15 +194,35 @@ impl<'a> Evaluator<'_, 'a> {
 
     /// [`Self::evaluate`] with temp variables set before the body runs, as a caller that
     /// initialises its outputs does (fixed5 values).
+    /// An endless recursion reached inside it (`Evaluator::diverge`) refuses
+    /// it, whatever else it read: the game never returns from it.
     pub fn evaluate_seeded(&self, items: &[Item], scopes: Scopes, seeds: &[(&[u8], i64)]) -> Eval {
-        self.with_variable_context(scopes, || {
+        let depth = self.evaluations.get();
+        if depth == 0 {
+            self.diverged.replace(None);
+        }
+        self.evaluations.set(depth + 1);
+        let value = self.with_variable_context(scopes, || {
             for (name, value) in seeds {
                 self.local_temps
                     .borrow_mut()
                     .insert(name.to_vec(), Ok(super::variables::Value::Raw(*value)));
             }
             self.all(&self.units(items), scopes)
-        })
+        });
+        self.evaluations.set(depth);
+        match self.divergence() {
+            Some(why) => {
+                // What the evaluation read past the recursion is discarded.
+                if let Eval::Unknown(reasons) = &value {
+                    for failure in reasons {
+                        failure.consumed();
+                    }
+                }
+                Eval::Unknown(std::collections::BTreeSet::from([why]))
+            }
+            None => value,
+        }
     }
 
     pub(super) fn all(&self, units: &[Unit<'_, 'a>], scopes: Scopes) -> Eval {

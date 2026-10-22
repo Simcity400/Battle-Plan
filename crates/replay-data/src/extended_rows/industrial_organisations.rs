@@ -2,6 +2,7 @@
 //! daily funds do not rewrite trait trees, tasks, variables or policies.
 use super::*;
 pub use engine_native::cequipment_variant::OrganisationBonus as IndustrialOrganisationBonus;
+pub use engine_scripts::cscript_flag::Row as IndustrialOrganisationFlag;
 pub use engine_production::nindustrial_organisation_corganisation::details::{
     Policy as IndustrialOrganisationPolicy, State as IndustrialOrganisationState,
     Task as IndustrialOrganisationTask, Technology as IndustrialOrganisationTechnology,

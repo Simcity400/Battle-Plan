@@ -162,7 +162,7 @@ pub fn organisation_change_xp(
         ORGANISATION_CHANGE,
         traits,
         policies,
-        world,
+        Ok(world),
     )?;
     let factor = local
         .wrapping_add(country_modifier(

@@ -26,6 +26,13 @@ pub static CHARACTER: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(
         .unit_leader
 });
 
+/// Built-ins of an industrial organisation's variable store.
+pub static ORGANISATION: RuntimeTable<&'static [&'static str]> = RuntimeTable::new(|| {
+    &engine_executable::executable_tables::get()
+        .variables
+        .industrial_organisation
+});
+
 /// Whether `name` is a built-in of `table` (sorted by bytes).
 pub fn contains(table: &[&str], name: &[u8]) -> bool {
     table
@@ -50,7 +57,13 @@ mod tests {
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn installed_tables_are_sorted_and_unique() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        for table in [&GLOBAL[..], &COUNTRY[..], &STATE[..], &CHARACTER[..]] {
+        for table in [
+            &GLOBAL[..],
+            &COUNTRY[..],
+            &STATE[..],
+            &CHARACTER[..],
+            &ORGANISATION[..],
+        ] {
             assert!(
                 table
                     .windows(2)
