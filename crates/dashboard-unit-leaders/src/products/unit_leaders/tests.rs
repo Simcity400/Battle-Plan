@@ -1993,6 +1993,77 @@ fn projections_share_a_branch_scan_and_remap_selected_histories() {
         && leader.fought_hours.is_none()));
 }
 
+#[test]
+fn a_leaderboard_at_an_hour_keeps_what_that_hour_shows() {
+    let decoded = |deltas: &Option<Vec<i64>>| {
+        let mut hour = 0_i64;
+        deltas.as_deref().map(|deltas| {
+            deltas
+                .iter()
+                .map(|delta| {
+                    hour += delta;
+                    hour
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let mut scanned = scan_fixture(2, 2, 3, false);
+    let first_hour = scanned.first_hour;
+    for leader in &mut scanned.leaders {
+        record_battles(leader, first_hour, 40);
+    }
+    let board = project(&scanned, &all_params(), None);
+    let covers = |run: &UnitLeaderRun, hour: i32| run.first_hour <= hour && hour <= run.last_hour;
+    let last = board
+        .leaders
+        .iter()
+        .filter_map(|leader| leader.runs.last())
+        .map(|run| run.last_hour)
+        .max()
+        .unwrap();
+    for hour in [first_hour - 1, first_hour, first_hour + 400, last / 2 + first_hour / 2, last, last + 1] {
+        let mut at = board.clone();
+        leaderboard_at(&mut at, hour);
+        let shown: Vec<_> = board
+            .leaders
+            .iter()
+            .filter(|leader| leader.runs.iter().any(|run| covers(run, hour)))
+            .collect();
+        assert_eq!(at.leaders.len(), shown.len(), "hour {hour}");
+        for (leader, full) in at.leaders.iter().zip(shown) {
+            let run = full.runs.iter().find(|run| covers(run, hour)).unwrap();
+            assert_eq!(leader.runs.len(), 1);
+            assert_eq!((leader.runs[0].first_hour, leader.runs[0].last_hour), (run.first_hour, run.last_hour));
+            assert_eq!(at.people[leader.runs[0].value.person as usize], board.people[run.value.person as usize]);
+            assert_eq!(at.roles[leader.runs[0].value.role as usize], board.roles[run.value.role as usize]);
+            let gains = |reply: &UnitLeadersReply, career: &LeaderCareer| {
+                career
+                    .trait_gains
+                    .iter()
+                    .filter(|gain| gain.hour <= hour)
+                    .map(|gain| (gain.hour, reply.traits[gain.token as usize].token.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(gains(&at, leader), gains(&board, full));
+            let through = |hours: Option<Vec<i64>>| {
+                hours.map(|hours| hours.iter().filter(|&&at| at <= i64::from(hour)).count() as u32)
+            };
+            assert_eq!(
+                leader.at_hour,
+                Some(LeaderAtHour {
+                    hour,
+                    first_seen_hour: full.runs[0].first_hour,
+                    fought: through(decoded(&full.fought_hours)).unwrap(),
+                    won: through(decoded(&full.won_hours)),
+                    lost: through(decoded(&full.lost_hours)),
+                })
+            );
+            assert!(leader.fought_hours.is_none() && leader.won_hours.is_none() && leader.lost_hours.is_none());
+        }
+        assert!(at.observed.iter().all(|span| span.first_hour <= hour && hour <= span.last_hour));
+    }
+}
+
 /// Raw battles as the scan keeps them: unknown starts before the recording,
 /// shared hours, delayed reads, undecided battles and results read before or
 /// after their participation.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { UnitLeadersData } from './generalsData';
-import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, ownerReadHour, pinnedCareer, leaderRequestSelection, validateUnitLeadersReply } from './generalsData.ts';
+import { battleHistoryComplete, battleTotals, attributeNames, careerEmptyEntry, recordedSince, careerCountryFacts, careerLanes, leaderAt, leadersAt, leaderName, leaderTooltip, pinnedCareer, leaderRequestSelection, validateUnitLeadersReply } from './generalsData.ts';
 import { leaderChoices } from '../general-career/choicesData.ts';
 import { createWidget, resolveWindow } from '../../dashboard/model.ts';
 import type { BoundTrack } from '../../dashboard/model';
@@ -35,6 +35,47 @@ function asLeaderboard(data: UnitLeadersData, hours: Pick<UnitLeadersData['leade
   for (const key of ['battleStarts', 'battleStartReadHours', 'unknownBattleStarts', 'battleWon', 'battleResultHours', 'battleResultReadHours'] as const) delete data.leaders[0][key];
   Object.assign(data.leaders[0], hours);
 }
+
+test('a leaderboard read at one hour shows that hour as the whole career did', () => {
+  const career = fixture(); const leader = career.leaders[0];
+  leader.runs[0].lastHour = 102;
+  leader.runs.push({ ...leader.runs[0], firstHour: 103, lastHour: 104, value: { ...leader.runs[0].value, skill: 4 } }, { ...leader.runs[0], firstHour: 105, lastHour: 106, value: { ...leader.runs[0].value, role: 1 } });
+  career.roles.push({ ...career.roles[0], owner: 'transfer country' });
+  leader.traitGains.push({ hour: 104, token: 0, date: 'gained' });
+  asLeaderboard(career, { foughtHours: [101, 1, 2], wonHours: [102], lostHours: [104] });
+  const full = validateUnitLeadersReply(wire(career));
+  const at = fixture(); const projected = at.leaders[0];
+  projected.runs = [{ ...full.leaders[0].runs[1] }];
+  projected.traitGains = [{ hour: 101, token: 0, date: 'gained' }, { hour: 104, token: 0, date: 'gained' }];
+  asLeaderboard(at, {});
+  projected.atHour = { hour: 104, firstSeenHour: 101, fought: 3, won: 1, lost: 1 };
+  const shown = validateUnitLeadersReply(wire(at));
+  const view = (data: UnitLeadersData, hour = 104) => {
+    const { career: row, traitCatalogue: _catalogue, ...rest } = leaderAt(data, data.leaders[0], hour)!;
+    return { ...rest, gains: row.traitGains.filter(gain => gain.hour <= hour), since: recordedSince(row, data.firstHour) };
+  };
+  assert.deepEqual(view(shown), view(full));
+  assert.equal(leaderAt(shown, shown.leaders[0], 103), null, 'it answers no other hour');
+  assert.deepEqual(battleTotals(shown.leaders[0], 103), { fought: null, won: null, lost: null, winRate: null, unresolved: null });
+  assert.deepEqual(battleTotals(shown.leaders[0], 104), battleTotals(full.leaders[0], 104));
+  // After a transfer before the hour shown, and without recorded results.
+  const transferred = fixture(); transferred.roles.push({ ...transferred.roles[0], owner: 'transfer country' });
+  transferred.leaders[0].runs = [{ ...full.leaders[0].runs[2] }];
+  transferred.leaders[0].traitGains = [...projected.traitGains];
+  asLeaderboard(transferred, {});
+  transferred.leaders[0].atHour = { hour: 106, firstSeenHour: 101, fought: 3, won: null, lost: null };
+  const unrecorded = { ...career, leaders: career.leaders.map(item => ({ ...item, wonHours: undefined, lostHours: undefined })) };
+  const after = validateUnitLeadersReply(wire(transferred));
+  const before = validateUnitLeadersReply(wire(unrecorded));
+  assert.deepEqual(view(after, 106), view(before, 106));
+  assert.equal(view(after, 106).value.owner, 'transfer country');
+  assert.equal(view(after, 106).won, null, 'results not recorded stay unknown, never zero');
+  assert.throws(() => validateUnitLeadersReply(wire({ ...at, leaders: [{ ...projected, foughtHours: [101] }] })), /malformed/, 'never both counts and battle hours');
+  projected.atHour = { ...projected.atHour, won: 3 };
+  assert.throws(() => validateUnitLeadersReply(wire(at)), /malformed/, 'results never outnumber battles');
+  projected.atHour = { ...projected.atHour, won: 1, hour: 107 };
+  assert.throws(() => validateUnitLeadersReply(wire(at)), /malformed/, 'its run covers its hour');
+});
 
 test('battle delta spans the full signed32 hour range exactly', () => {
   const data = fixture(); const leader = data.leaders[0];
@@ -214,12 +255,11 @@ test('trait dates retain honest held bounds and ordinary career spans omit suppl
   assert.equal(ordinary.label, 'Skill 3');
 });
 
-test('owner read dates survive skill changes and follow transfers; picker uses last owner date and sorts names', () => {
+test('the picker uses the last owner date and sorts names', () => {
   const data = fixture(); const leader = data.leaders[0];
   leader.runs[0].lastHour = 102;
   leader.runs.push({ ...leader.runs[0], firstHour: 103, lastHour: 104 }, { ...leader.runs[0], firstHour: 105, lastHour: 106, value: { ...leader.runs[0].value, role: 1 } });
   data.roles.push({ ...data.roles[0], owner: 'transfer country' });
-  assert.equal(ownerReadHour(data, leader, 104), 101); assert.equal(ownerReadHour(data, leader, 106), 105);
   assert.equal(leadersAt(data, 106, new Set(['country with spaces']), 'all').length, 0);
   data.people.push({ ...data.people[0], name: 'Zed' });
   data.leaders.unshift({ ...leader, reference: '8', runs: [{ ...leader.runs[0], value: { ...leader.runs[0].value, person: 1 } }] });

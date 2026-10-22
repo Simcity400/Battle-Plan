@@ -420,6 +420,22 @@ pub struct LeaderCareer {
     pub lost_hours: Option<Vec<i64>>,
     /// First hour with incomplete battle observations; recorded totals remain visible.
     pub partial_from: Option<i32>,
+    /// Leaderboards at an hour: the facts its other runs and battle hours gave there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub at_hour: Option<LeaderAtHour>,
+}
+
+/// A leaderboard row at `hour`: where the career's first run started, and its
+/// battles counted then.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderAtHour {
+    pub hour: i32,
+    pub first_seen_hour: i32,
+    pub fought: u32,
+    pub won: Option<u32>,
+    pub lost: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -1112,7 +1128,11 @@ fn visible_reusing(
 }
 
 fn reply_bytes(reply: &UnitLeadersReply) -> io::Result<usize> {
-    dashboard_core::transport::json_len(reply, MAX_REPLY_BYTES).ok_or_else(|| {
+    reply_bytes_within(reply, MAX_REPLY_BYTES)
+}
+
+fn reply_bytes_within(reply: &UnitLeadersReply, budget: usize) -> io::Result<usize> {
+    dashboard_core::transport::json_len(reply, budget).ok_or_else(|| {
         io::Error::other(
             "Leader reply exceeds its transport budget; select fewer countries or one career",
         )
@@ -1409,6 +1429,7 @@ impl LeaderState {
                 won_hours: None,
                 lost_hours: None,
                 partial_from: None,
+                at_hour: None,
             },
             command_indices: HashMap::new(),
             last_read: None,
@@ -4272,6 +4293,7 @@ fn project(
                 won_hours,
                 lost_hours,
                 partial_from: leader.partial_from,
+                at_hour: None,
             }
         })
         .collect();
@@ -4296,6 +4318,17 @@ fn project(
         navy_commands_missing: scanned.navy_commands_missing.clone(),
         warnings: scanned.warnings.clone(),
     };
+    compact(&mut reply, &scanned.people, &scanned.roles, &scanned.traits);
+    reply
+}
+
+/// Keep only the people, roles and traits the reply's leaders still name.
+fn compact(
+    reply: &mut UnitLeadersReply,
+    people: &[LeaderPerson],
+    roles: &[LeaderRole],
+    traits: &[LeaderTraitInfo],
+) {
     let used: BTreeSet<_> = reply
         .leaders
         .iter()
@@ -4308,23 +4341,23 @@ fn project(
         .collect();
     reply.people = used
         .iter()
-        .map(|index| scanned.people[*index as usize].clone())
+        .map(|index| people[*index as usize].clone())
         .collect();
-    let roles: BTreeSet<_> = reply
+    let used_roles: BTreeSet<_> = reply
         .leaders
         .iter()
         .flat_map(|leader| leader.runs.iter().map(|run| run.value.role))
         .collect();
-    let role_remap: BTreeMap<_, _> = roles
+    let role_remap: BTreeMap<_, _> = used_roles
         .iter()
         .enumerate()
         .map(|(new, old)| (*old, new as u32))
         .collect();
-    reply.roles = roles
+    reply.roles = used_roles
         .iter()
-        .map(|index| scanned.roles[*index as usize].clone())
+        .map(|index| roles[*index as usize].clone())
         .collect();
-    let traits: BTreeSet<_> = reply
+    let used_traits: BTreeSet<_> = reply
         .leaders
         .iter()
         .flat_map(|leader| {
@@ -4340,17 +4373,17 @@ fn project(
                 }))
         })
         .collect();
-    let trait_remap: BTreeMap<_, _> = traits
+    let trait_remap: BTreeMap<_, _> = used_traits
         .iter()
         .enumerate()
         .map(|(new, old)| (*old, new as u32))
         .collect();
-    reply.traits = traits
+    reply.traits = used_traits
         .iter()
-        .map(|index| scanned.traits[*index as usize].clone())
+        .map(|index| traits[*index as usize].clone())
         .collect();
     let mut trait_sets = HashMap::<Vec<u32>, Arc<[u32]>>::new();
-    let remap_traits = reply.traits.len() != scanned.traits.len();
+    let remap_traits = reply.traits.len() != traits.len();
     for leader in &mut reply.leaders {
         for run in &mut leader.runs {
             run.value.person = remap[&run.value.person];
@@ -4366,7 +4399,55 @@ fn project(
             gain.token = trait_remap[&gain.token];
         }
     }
+}
+
+/// A leaderboard for one hour: each leader shown then keeps only the run
+/// covering it, its trait gains through it and its battle counts then, and the
+/// reply only the observation span covering it.
+pub fn leaderboard_at(reply: &mut UnitLeadersReply, hour: i32) {
+    let count = |hours: &Option<Vec<i64>>| {
+        let mut at = 0_i64;
+        hours.as_deref().map(|deltas| {
+            let shown = deltas
+                .iter()
+                .take_while(|delta| {
+                    at += **delta;
+                    at <= i64::from(hour)
+                })
+                .count();
+            u32::try_from(shown).expect("battle count fits the reply")
+        })
+    };
+    reply.leaders.retain_mut(|leader| {
+        let index = leader.runs.partition_point(|run| run.last_hour < hour);
+        if leader
+            .runs
+            .get(index)
+            .is_none_or(|run| run.first_hour > hour)
+        {
+            return false;
+        }
+        leader.at_hour = Some(LeaderAtHour {
+            hour,
+            first_seen_hour: leader.runs[0].first_hour,
+            fought: count(&leader.fought_hours).expect("leaderboard participations"),
+            won: count(&leader.won_hours),
+            lost: count(&leader.lost_hours),
+        });
+        leader.runs = vec![leader.runs.swap_remove(index)];
+        leader.trait_gains.retain(|gain| gain.hour <= hour);
+        leader.fought_hours = None;
+        leader.won_hours = None;
+        leader.lost_hours = None;
+        true
+    });
     reply
+        .observed
+        .retain(|span| span.first_hour <= hour && hour <= span.last_hour);
+    let people = std::mem::take(&mut reply.people);
+    let roles = std::mem::take(&mut reply.roles);
+    let traits = std::mem::take(&mut reply.traits);
+    compact(reply, &people, &roles, &traits);
 }
 
 impl Product for UnitLeaders {
@@ -4418,6 +4499,7 @@ impl Product for UnitLeaders {
             LeaderFormationKind::decl(),
             LeaderCommand::decl(),
             LeaderCareer::decl(),
+            LeaderAtHour::decl(),
             LeaderTraitInfo::decl(),
             LeaderObservation::decl(),
             UnitLeadersReply::decl(),

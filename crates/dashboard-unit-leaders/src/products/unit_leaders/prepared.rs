@@ -600,6 +600,39 @@ pub fn query(
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
+    query_at(store, key, params, history, None, cancelled)
+}
+
+/// A leaderboard asked at `hour` is projected to that hour before its size is
+/// checked: the whole history is never held to the transport budget.
+pub fn query_at(
+    store: &store::Store,
+    key: &store::SourceKey,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    hour: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<UnitLeadersReply>> {
+    query_within(
+        store,
+        key,
+        params,
+        history,
+        hour,
+        MAX_REPLY_BYTES,
+        cancelled,
+    )
+}
+
+fn query_within(
+    store: &store::Store,
+    key: &store::SourceKey,
+    params: &UnitLeadersParams,
+    history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    hour: Option<i32>,
+    budget: usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<UnitLeadersReply>> {
     let branch = params.branch_id.parse().expect("validated leader branch");
     let Some((keys, metadata)) =
         series::read_catalogue::<Metadata>(store, key, "unit-leaders", branch)?
@@ -705,7 +738,7 @@ pub fn query(
         };
         let mut reply = project(&full, &choice_params, None);
         reply.selection_tags = choice_tags;
-        reply_bytes(&reply)?;
+        reply_bytes_within(&reply, budget)?;
         return Ok(Some(reply));
     }
     let mut materialized = Vec::new();
@@ -763,8 +796,13 @@ pub fn query(
     }
     scan.stored_runs = materialized;
     let full = scan.finish(&full_params(&params.branch_id), None)?;
-    let reply = project(&full, params, history);
-    reply_bytes(&reply)?;
+    let mut reply = project(&full, params, history);
+    if params.view == LeaderView::Leaderboard
+        && let Some(hour) = hour
+    {
+        leaderboard_at(&mut reply, hour);
+    }
+    reply_bytes_within(&reply, budget)?;
     Ok(Some(reply))
 }
 fn events(reader: &mut Reader<'_>, key: u64, cancelled: &AtomicBool) -> io::Result<Vec<Event>> {

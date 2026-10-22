@@ -1364,3 +1364,65 @@ fn battle_only_hours_do_not_materialize_unchanged_leader_careers() {
         }
     }
 }
+
+#[test]
+fn a_leaderboard_at_an_hour_is_held_to_the_budget_only_once_projected() {
+    // Skill changes each hour, so the whole history grows with every frame.
+    let mut frames: Vec<_> = (100..=160).map(|hour| frame(hour, 2)).collect();
+    for (index, frame) in frames.iter_mut().enumerate() {
+        if let TableView::Complete(TableRows::UnitLeaders(rows)) =
+            &mut *frame.tables[TableId::UnitLeaders.index()]
+        {
+            for row in rows {
+                row.components[0] = index as i32;
+            }
+        }
+    }
+    let replay = replay(&frames);
+    let fixture = Fixture::new();
+    let cancelled = AtomicBool::new(false);
+    let mut state = Prepared::new(&replay, 1);
+    observe(&mut state, &replay, &frames);
+    publish(&mut state, &fixture, &cancelled);
+    let params = UnitLeadersParams {
+        view: LeaderView::Leaderboard,
+        ..full_params("1")
+    };
+    let whole = query(&fixture.store, &fixture.key, &params, None, &cancelled)
+        .unwrap()
+        .unwrap();
+    let mut projected = whole.clone();
+    leaderboard_at(&mut projected, 130);
+    let [whole_bytes, projected_bytes] =
+        [&whole, &projected].map(|reply| serde_json::to_vec(reply).unwrap().len());
+    assert!(projected_bytes < whole_bytes);
+    let budget = projected_bytes + (whole_bytes - projected_bytes) / 2;
+    assert!(
+        query_within(
+            &fixture.store,
+            &fixture.key,
+            &params,
+            None,
+            None,
+            budget,
+            &cancelled
+        )
+        .is_err(),
+        "the whole history exceeds the budget"
+    );
+    let reply = query_within(
+        &fixture.store,
+        &fixture.key,
+        &params,
+        None,
+        Some(130),
+        budget,
+        &cancelled,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&reply).unwrap(),
+        serde_json::to_value(&projected).unwrap()
+    );
+}

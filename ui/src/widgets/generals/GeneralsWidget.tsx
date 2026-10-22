@@ -23,7 +23,7 @@ import CareerView from '../general-career/CareerView';
 import { DEFAULT_SORT, OPTIONS } from './definition';
 import { Attributes, AttributesHeader } from './Attributes';
 import { LeaderIdentity, SkillStars } from './LeaderIdentity';
-import { leadersAt, leaderName, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
+import { firstSeenHour, leadersAt, leaderName, leaderTooltip, pinnedCareer, attributeNames, recordedSince } from './generalsData';
 import type { LeaderRow } from './generalsData';
 import { useLeaderCountries, useLeaders } from './useLeaders';
 import './generals.css';
@@ -117,8 +117,13 @@ export default function GeneralsWidget(props: WidgetProps) {
       sort={sort} setOption={setOption} cellBars={options.cellBars === true} rankMarkers={options.rankMarkers === true}
       density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)} onRowClick={open} tooltip={tooltip} onVisibleRows={setVisible}
       {...(import.meta.env.MODE === 'parity' ? { parity: { complete: true, reads: { traitCatalogue: data.traits },
-        item: ({ traitCatalogue: _catalogue, ...row }: LeaderRow) => row } } : {})}
-      menu={r => r.preparing ? [] : [{ ...jumpItem(runtime, track.id, r.career.runs[0].firstHour), label: `Jump to first seen ${formatDateTime(r.career.runs[0].firstHour)}` }, { label: 'Open career', run: () => open(r) }]}
+        // What a row shows of its career: the hour-projected reply renumbers people, roles and gains.
+        item: ({ traitCatalogue: _catalogue, career, value: { person: _person, role: _role, ...value }, ...row }: LeaderRow) => {
+          const dates = new Map(career.traitGains.filter(gain => gain.hour <= row.hour).map(gain => [gain.token, [gain.hour, gain.date] as const]));
+          return { ...row, value, firstSeen: firstSeenHour(career), traitDates: value.traits?.map(token => dates.get(token) ?? null) ?? null };
+        } } } : {})}
+      menu={r => { const first = firstSeenHour(r.career);
+        return r.preparing || first === undefined ? [] : [{ ...jumpItem(runtime, track.id, first), label: `Jump to first seen ${formatDateTime(first)}` }, { label: 'Open career', run: () => open(r) }]; }}
       hoursPerSecond={hoursPerSecond} />
       {!observed?.leaders && <p className="career-note">Some leaders are missing.</p>}
     </div>;

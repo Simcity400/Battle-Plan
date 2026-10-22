@@ -1580,11 +1580,12 @@ fn query_data(
             let Some(prefix) = prefix else {
                 return Ok(Value::Null);
             };
-            let mut reply = crate::products::unit_leaders::prepared::query(
+            let mut reply = crate::products::unit_leaders::prepared::query_at(
                 &store,
                 &key,
                 &params,
                 history.as_deref(),
+                hour,
                 cancelled,
             )?;
             if let Some(reply) = &mut reply {

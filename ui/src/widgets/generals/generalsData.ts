@@ -92,6 +92,13 @@ export function validateUnitLeadersReply(input: unknown): UnitLeadersData {
       if (!Array.isArray(g) || g.length !== 3 || !integer(g[0]) || !u32(g[1]) || g[1] >= traitCount || !(g[2] === 0 || g[2] === 1 || g[2] === 2)) return bad();
       traitGains.push({ hour: g[0], token: g[1], date: g[2] === 0 ? 'heldBefore' : g[2] === 1 ? 'gained' : 'firstObserved' });
     }
+    const at = l.atHour;
+    // A leader read at one hour carries its counts there, never its battle hours.
+    if (at !== undefined && (!object(at) || !integer(at.hour) || !integer(at.firstSeenHour) || !u32(at.fought)
+      || ['foughtHours', 'wonHours', 'lostHours', 'battleStarts'].some(field => l[field] !== undefined)
+      || !(at.won === null || u32(at.won)) || !(at.lost === null || u32(at.lost)) || (at.won === null) !== (at.lost === null)
+      || runs.length !== 1 || !(at.firstSeenHour <= runs[0].firstHour && runs[0].firstHour <= at.hour && at.hour <= runs[0].lastHour)
+      || at.won !== null && at.won + at.lost! > at.fought || traitGains.some(gain => gain.hour > (at.hour as number)))) return bad();
     if (!ordered(runs)
       || !l.commands.every(c => span(c) && handle(c.formation) && (c.kind === 'army' || c.kind === 'armyGroup' || c.kind === 'fleet') && text(c.name)
         && (c.nameReadHour === null || integer(c.nameReadHour) && c.firstHour <= c.nameReadHour && c.nameReadHour <= c.lastHour) && ordered(c.nameUnknown))) return bad();
@@ -171,13 +178,19 @@ const through = (hours: readonly number[], hour: number) => {
   return lo;
 };
 export function battleTotals(leader: LeaderCareer, hour: number) {
-  const hours = battleHours(leader); const fought = through(hours.fought, hour);
-  if (!hours.won || !hours.lost) return { fought, won: null, lost: null, winRate: null, unresolved: fought };
-  const won = through(hours.won, hour); const lost = through(hours.lost, hour);
+  const at = leader.atHour;
+  // A leader read at one hour has no totals at another.
+  if (at && at.hour !== hour) return { fought: null, won: null, lost: null, winRate: null, unresolved: null };
+  const hours = at ? null : battleHours(leader); const fought = at ? at.fought : through(hours!.fought, hour);
+  const known = at ? at.won !== null && at.lost !== null : !!hours!.won && !!hours!.lost;
+  if (!known) return { fought, won: null, lost: null, winRate: null, unresolved: fought };
+  const won = at ? at.won! : through(hours!.won!, hour); const lost = at ? at.lost! : through(hours!.lost!, hour);
   const decided = won + lost;
   return { fought, won, lost, winRate: decided ? won * 100 / decided : null, unresolved: fought - decided };
 }
 export function leaderAt(reply: UnitLeadersData, leader: LeaderCareer, hour: number, coverage?: ReadonlyMap<number, boolean>): LeaderRow | null {
+  // A leaderboard read at one hour answers only that hour.
+  if (leader.atHour && leader.atHour.hour !== hour) return null;
   const run = runAt(leader.runs, hour); if (!run) return null;
   const role = reply.roles[run.value.role]; const totals = battleTotals(leader, hour);
   const preparing = reply.preparing?.includes('battles') === true;
@@ -189,17 +202,6 @@ export function leadersAt(reply: UnitLeadersData, hour: number, countries: Reado
   const coverage = new Map([1, 2].map(k => [k, battleHistoryComplete(reply, k, hour)]));
   return reply.leaders.flatMap(l => { const row = leaderAt(reply, l, hour, coverage); return row && (!countries || row.value.owner != null && countries.has(row.value.owner))
     && (kind === 'all' || row.value.kind === (kind === 'navy' ? 2 : 1)) ? [row] : []; });
-}
-
-/** Owner runs start at a transfer or a visibility gap; skill changes keep that read. */
-export function ownerReadHour(reply: UnitLeadersData, leader: LeaderCareer, hour: number): number | null {
-  let first: number | null = null; let previous: LeaderRun | undefined;
-  for (const run of leader.runs) {
-    if (run.firstHour > hour) break;
-    if (!previous || previous.lastHour + 1 !== run.firstHour || reply.roles[previous.value.role].owner !== reply.roles[run.value.role].owner) first = run.firstHour;
-    previous = run;
-  }
-  return previous && previous.lastHour >= hour ? first : null;
 }
 
 /** Warm owner changes, then read header and hover identities at their exact hours. */
@@ -220,7 +222,9 @@ export function careerCountryFacts(reply: UnitLeadersData, leader: LeaderCareer,
 }
 export const leaderName = (row: Pick<LeaderRow, 'person'>) => row.person.name ?? 'Character name unavailable';
 export const attributeNames = (role: Pick<LeaderRole, 'attributeNames'>) => role.attributeNames.map(name => name ?? 'Name not recorded');
-export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Battles since ${formatDateTime(leader.runs[0]?.firstHour ?? recordingStart)}`;
+/** The first hour the leader was seen, whether the reply carries its whole career or one hour of it. */
+export const firstSeenHour = (leader: LeaderCareer): number | undefined => leader.atHour?.firstSeenHour ?? leader.runs[0]?.firstHour;
+export const recordedSince = (leader: LeaderCareer, recordingStart: number) => `Battles since ${formatDateTime(firstSeenHour(leader) ?? recordingStart)}`;
 
 export function careerEmptyEntry(reply: UnitLeadersData, leader: LeaderCareer, laneId: string, hour: number): string {
   const run = runAt(leader.runs, hour);

@@ -726,7 +726,12 @@ lostHours?: number[],
 /**
  * First hour with incomplete battle observations; recorded totals remain visible.
  */
-partialFrom: number | null, };
+partialFrom: number | null,
+/**
+ * Leaderboards at an hour: the facts its other runs and battle hours gave there.
+ */
+atHour?: LeaderAtHour, };
+export type LeaderAtHour = { hour: number, firstSeenHour: number, fought: number, won: number | null, lost: number | null, };
 export type LeaderTraitInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
 export type LeaderObservation = { firstHour: number, lastHour: number, leaders: boolean, landBattles: boolean, navalBattles: boolean, landCommands: boolean, navalCommands: boolean, };
 export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: Array<LeaderCareer>, people: Array<LeaderPerson>,
