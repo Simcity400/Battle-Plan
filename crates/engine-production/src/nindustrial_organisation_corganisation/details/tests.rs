@@ -395,3 +395,59 @@ fn country_policies_keep_cached_names_context_and_selection_score() {
         "organisation policy vtable mismatch"
     );
 }
+
+#[test]
+fn policy_cost_modifier_is_the_country_accumulators_effective_entry() {
+    use crate::modifier_definition as definitions;
+    use crate::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST as KEY;
+    use std::collections::BTreeMap;
+    const COUNTRY: usize = 0x1_0000;
+    const VALUES: usize = 0x2_0000;
+    const DEFINITIONS: usize = 0x3_0000;
+    #[derive(Default)]
+    struct Sparse(BTreeMap<usize, u8>);
+    impl Memory for Sparse {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            for (index, byte) in output.iter_mut().enumerate() {
+                let Some(value) = self.0.get(&(address + index)) else {
+                    return false;
+                };
+                *byte = *value;
+            }
+            true
+        }
+    }
+    impl Sparse {
+        fn put(&mut self, at: usize, bytes: &[u8]) {
+            for (index, byte) in bytes.iter().enumerate() {
+                self.0.insert(at + index, *byte);
+            }
+        }
+        fn entries(&mut self, entries: &[(u32, i64)]) {
+            let header = COUNTRY + crate::ccountry::MODIFIER_ACCUMULATOR;
+            self.put(header, &(VALUES as u64).to_le_bytes());
+            self.put(header + 12, &(entries.len() as u32).to_le_bytes());
+            for (index, (key, value)) in entries.iter().enumerate() {
+                self.put(VALUES + index * 16, &key.to_le_bytes());
+                self.put(VALUES + index * 16 + 8, &value.to_le_bytes());
+            }
+        }
+        fn flags(&mut self, flags: u32) {
+            self.put(definitions::TABLE_RVA, &(DEFINITIONS as u64).to_le_bytes());
+            let row = DEFINITIONS + KEY as usize * definitions::STRIDE;
+            self.put(row + definitions::FLAGS, &flags.to_le_bytes());
+            self.put(row + definitions::FEATURE_SELECTOR, &0_u32.to_le_bytes());
+        }
+    }
+    let mut memory = Sparse::default();
+    memory.entries(&[(KEY - 1, 11), (KEY, -75_000), (KEY + 1, 13)]);
+    memory.flags(0);
+    assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(-75_000));
+    // The definition's clamp applies as the game's getter applies it.
+    memory.flags(definitions::CLAMP_MAXIMUM);
+    assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(0));
+    // A known absent entry is zero; an unreadable accumulator is not.
+    memory.entries(&[(KEY - 1, 11), (KEY + 1, 13)]);
+    assert_eq!(policy_cost_modifier(&memory, 0, COUNTRY), Ok(0));
+    assert!(policy_cost_modifier(&memory, 0, COUNTRY + 0x100).is_err());
+}

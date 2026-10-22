@@ -1,5 +1,6 @@
 //! Every stored organisation field the save writer emits, including empty stores.
 use super::*;
+use engine_executable::modifier_keys;
 
 /// Native constructor and save-writer sentinel for no selected policy.
 const UNSELECTED_POLICY: u32 = 0x4c17;
@@ -56,6 +57,22 @@ pub(super) fn compare(
             .map(|&token| name(token).map(<[u8]>::to_vec))
             .collect()
     };
+    // Every successful demanded design-context read of the same key, by the
+    // country its raw reference (possibly one of several aliases) resolves to.
+    let mut design_costs = BTreeMap::<&[u8], Vec<(u32, i64)>>::new();
+    if let Ok(rows) = frame.complete::<tables::DesignCountryModifiers>() {
+        for row in rows.iter().filter(|row| {
+            row.modifier == modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST
+                && row.failure == 0
+        }) {
+            if let Some(value) = row.value {
+                design_costs
+                    .entry(required_country_tag(row.country, links)?)
+                    .or_default()
+                    .push((row.country, value));
+            }
+        }
+    }
     let mut matched = 0;
     let mut policy_matched = 0;
     for (tag, country) in report.canonical_countries(countries) {
@@ -66,6 +83,25 @@ pub(super) fn compare(
             .remove(tag.as_slice())
             .ok_or_else(|| invalid(format!("country {tag:?} MIO policies absent")))?;
         policy_matched += 1;
+        // The save omits accumulators. A failed read is a capture failure, and
+        // a design-context read of the same key must agree with it.
+        match policy.cost_modifier_raw {
+            None => report.difference(
+                format!("country {tag:?}.policy_cost_modifier"),
+                "unread",
+                "readable",
+            ),
+            Some(value) => {
+                for (raw, design) in design_costs.get(tag.as_slice()).into_iter().flatten() {
+                    equal(
+                        report,
+                        format!("country {tag:?}.policy_cost_modifier (design read {raw})"),
+                        value,
+                        *design,
+                    );
+                }
+            }
+        }
         equal(
             report,
             format!("country {tag:?}.policies"),
@@ -251,7 +287,7 @@ pub(super) fn compare(
     }
     report.compared("IndustrialOrganisationDetails", matched);
     report.compared("IndustrialOrganisationPolicies", policy_matched);
-    report.limitation("policy country-context links, cached localised names and cached selection scores are runtime values omitted by the policy save writer", "IndustrialOrganisationPolicies");
+    report.limitation("policy country-context links, cached localised names, cached selection scores and the country's effective policy-cost modifier are runtime values omitted by the policy save writer", "IndustrialOrganisationPolicies");
     report.limitation("trait definitions, local coordinates, relative anchors, task slots, queue cursor, size-cost factor and source locations are runtime/content operands omitted by the organisation save writer", "IndustrialOrganisationDetails");
     Ok(())
 }

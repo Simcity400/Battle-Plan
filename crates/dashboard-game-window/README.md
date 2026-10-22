@@ -79,7 +79,8 @@ This is a product crate above [dashboard-base](../dashboard-base/README.md). The
 The chooser's rows are the organisation's recorded allowed policies joined to its owner's
 policy instances. The organisation's own `available` and `visible` conditions and each policy's
 `visible` and `available` conditions are evaluated at the hour by the shared trigger interpreter
-in the scopes the game gives them: the organisation, whose FROM is its owner country. A policy
+in the scopes the game gives them (`EventScopes::organisation`): the organisation, whose FROM is
+its owner country. A policy
 that is not visible has no row; one whose visibility the recording cannot decide is withheld by
 name, counted. Each row draws as the game draws it:
 
@@ -88,12 +89,18 @@ name, counted. Each row draws as the game draws it:
   organisation's own conditions, a remaining cooldown (counted in calendar days), or, for an
   unattached policy, its `available` condition or the political power for its attach quote. A
   failing part blocks the row whatever the others are;
-- the attach quote takes the owner's effective policy-cost modifier, which the recording does
-  not hold. An unattached row no other part blocks is therefore undecided: its background and
-  icon are hidden and counted in the `row state` slot, never drawn in a guessed state. Its cost
-  is left as construction leaves it, also named;
-- the attached policy hides its cost; the AI value is hidden, as the game hides it with its AI
-  view off;
+- the attach quote is the stored base cost scaled by one factor: the organisation's own
+  `military_industrial_organization_policy_cost` entries (its completed traits while it is
+  visible and available, its initial trait, its attached policy's organisation modifier) and its
+  owner's recorded effective modifier, rounded as the game rounds it
+  ([industrial_organisations.rs](../dashboard-base/src/products/industrial_organisations.rs)).
+  The owner's political power (exact fixed5) must cover it. A row whose gate the recording does
+  not decide (the owner's modifier or political power not recorded, say) has its background and
+  icon hidden and counted in the `row state` slot, never drawn in a guessed state;
+- an unattached row with a positive quote shows it through the content's
+  `INDUSTRIAL_ORG_POLICY_PP_COST`; the attached policy and a quote of zero or less hide the cost,
+  as the game does, and an unknown quote hides it, counted in the `row attach cost` slot; the AI
+  value is hidden, as the game hides it with its AI view off;
 - the icon is the policy's own, else the sprite for its country and token, its token, then the
   unknown idea's sprite; a name that is not declared is refused and its control hidden.
 

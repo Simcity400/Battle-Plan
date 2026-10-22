@@ -2035,6 +2035,7 @@ impl Fixture for IndustrialOrganisationPoliciesRow {
                 name: Vec::<u8>::sample(tick + 2),
                 cached_score_raw: i64::sample(tick + 3),
             }],
+            cost_modifier_raw: Option::<i64>::sample(tick + 4),
         }
     }
 }

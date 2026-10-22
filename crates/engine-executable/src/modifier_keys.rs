@@ -304,6 +304,10 @@ keys! {
     INITIATIVE_FACTOR = 0x250;
 
     ACE_EFFECTIVENESS_FACTOR = 0x25a;
+    /// Scales the experience a design's organisation change costs.
+    MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST = 0x269;
+    /// The owner country's share of a military-industrial organisation's policy attach quote.
+    MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST = 0x26e;
     /// Selected-attack country/state modifier.
     LAND_BUNKER_EFFECTIVENESS_FACTOR = 0x272;
 
@@ -322,4 +326,21 @@ keys! {
     CANNOT_RETREAT_WHILE_DEFENDING = 0x297;
 
     CANNOT_RETREAT_WHILE_ATTACKING = 0x298;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn organisation_cost_keys_name_their_verified_modifiers() {
+        crate::executable_tables::initialize_for_tests()
+            .expect("modifier name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        assert_eq!(
+            super::name(super::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST),
+            Some("military_industrial_organization_policy_cost")
+        );
+        assert_eq!(
+            super::name(super::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST),
+            Some("military_industrial_organization_design_team_change_cost")
+        );
+    }
 }

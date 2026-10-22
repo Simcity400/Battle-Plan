@@ -502,10 +502,17 @@ fn synthetic_rows(count: usize, icon: Option<&[u8]>) -> Vec<mio::Shown> {
         .collect()
 }
 
-/// An organisation whose own conditions hold and whose cooldown is over.
+/// An organisation whose own conditions hold and whose cooldown is over, its quotes unscaled
+/// (a base cost of 10 quotes 10) and its owner's political power unknown, so an unattached
+/// available row no other part blocks is undecided.
 const OPEN: mio::Gate = mio::Gate {
     organisation: Ok(true),
     cooldown_days: 0,
+    cost: Ok(dashboard_base::products::industrial_organisations::PolicyCost {
+        local: 0,
+        country: 0,
+    }),
+    political_power_raw: Err(String::new()),
 };
 
 type Drawn = (
@@ -591,8 +598,9 @@ fn technique(part: &viewer_foundation::map::native_gui::Part) -> Option<&str> {
 /// sprites, fonts and list, and its rows scroll. The attached policy, removable, draws its
 /// background in frame 2 and its icon in Up and hides its cost; an unattached policy that is not
 /// available draws both in their Disable technique; a row whose gate is not decided (an
-/// unattached policy waiting on its quote) draws neither, counted. A policy with no icon of its
-/// own takes the game's lookup, ending at the unknown idea's sprite.
+/// unattached policy whose owner's political power is unknown) draws neither, counted. Every
+/// unattached row shows its positive quote through the content's cost text. A policy with no
+/// icon of its own takes the game's lookup, ending at the unknown idea's sprite.
 #[test]
 fn the_installed_policy_window_draws_and_scrolls() {
     tables();
@@ -633,6 +641,18 @@ fn the_installed_policy_window_draws_and_scrolls() {
         .collect();
     assert_eq!(frames, [true, false]);
     assert!(drawn_of(".ai_value").is_empty());
+    // Unattached rows show their quote through the content's cost text; the attached row
+    // alone shows none.
+    assert!(!drawn_of(".attach_cost").is_empty());
+    let (attached, _) = drawn(&layers, &rows[..1], &BTreeMap::new());
+    assert!(
+        !attached
+            .scene
+            .unwrap()
+            .parts
+            .iter()
+            .any(|part| part.path.ends_with(".attach_cost"))
+    );
     let slot = |name: &str| {
         bound
             .slots
@@ -643,6 +663,7 @@ fn the_installed_policy_window_draws_and_scrolls() {
     };
     use crate::products::game_window::SlotState;
     assert_eq!(slot("row icon"), SlotState::Bound);
+    assert_eq!(slot("row attach cost"), SlotState::Bound);
     assert_eq!(slot("row state"), SlotState::Refused);
     // At the end of its run the first rows have left the list.
     let path = list.path.clone();

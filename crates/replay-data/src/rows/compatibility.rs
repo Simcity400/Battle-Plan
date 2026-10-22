@@ -47,6 +47,9 @@ pub const DAILY_PROGRESS_FORMAT: u16 = 116;
 pub const COMBAT_LOG_OBSERVER_KEYS_FORMAT: u16 = 106;
 /// Owner-approved daily CountryUnitBonuses: every country's persistent unit-bonus list.
 pub const UNIT_BONUSES_FORMAT: u16 = 117;
+/// Owner-approved IndustrialOrganisationPolicies.cost_modifier_raw: each
+/// country's effective policy-cost modifier, read in the daily MIO census.
+pub const MIO_POLICY_COST_FORMAT: u16 = 118;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -3741,10 +3744,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     }
     history[TableId::IndustrialOrganisationPolicies.index()] = LastChange {
         introduced: INDUSTRIAL_ORGANISATION_DETAILS_FORMAT,
-        ..table(
+        ..appended_at(
             TableId::IndustrialOrganisationPolicies,
-            INDUSTRIAL_ORGANISATION_DETAILS_FORMAT,
-            "pol/capture-mios",
+            MIO_POLICY_COST_FORMAT,
+            "feat/mio-policy-cost",
+            &[AppendedField {
+                index: 1,
+                name: "cost_modifier_raw",
+                introduced: MIO_POLICY_COST_FORMAT,
+            }],
         )
     };
     history[TableId::IndustrialOrganisationDetails.index()] = LastChange {
@@ -4361,7 +4369,11 @@ mod tests {
         let history = table.last_change();
         assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
         assert_eq!(history.kind, ChangeKind::Meaning);
-        assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT - 1).is_some());
+        assert!(
+            history
+                .table_gap(table, DAILY_PROGRESS_FORMAT - 1)
+                .is_some()
+        );
         assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT).is_none());
     }
 
@@ -4370,7 +4382,11 @@ mod tests {
         let table = TableId::EventFeedHistory;
         let history = table.last_change();
         assert_eq!(history.format, EVENT_FEED_COLUMNS_FORMAT);
-        assert!(history.table_gap(table, EVENT_FEED_COLUMNS_FORMAT).is_none());
+        assert!(
+            history
+                .table_gap(table, EVENT_FEED_COLUMNS_FORMAT)
+                .is_none()
+        );
         assert!(
             history
                 .table_gap(table, EVENT_FEED_OWNER_REFUSALS_FORMAT)
@@ -4646,10 +4662,11 @@ mod tests {
                 PRIVATE_DISPLAY_ALIASES_FORMAT,
                 DAILY_PROGRESS_FORMAT,
                 UNIT_BONUSES_FORMAT,
+                MIO_POLICY_COST_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117],
+            [111, 112, 113, 114, 115, 116, 117, 118],
         );
-        assert_eq!(FORMAT_VERSION, UNIT_BONUSES_FORMAT);
+        assert_eq!(FORMAT_VERSION, MIO_POLICY_COST_FORMAT);
     }
 
     #[test]

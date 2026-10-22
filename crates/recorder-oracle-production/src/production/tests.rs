@@ -2474,6 +2474,7 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
                     days: 29,
                     ..Default::default()
                 }],
+                cost_modifier_raw: Some(0),
             },
         ]));
     let country = CountryRow {
@@ -2492,6 +2493,63 @@ fn organisations_compare_every_saved_detail_and_detect_queue_points_policy_store
     mios::compare(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert_eq!(report.compared_tables["IndustrialOrganisationDetails"], 1);
+    // The save omits the policy-cost modifier: a failed read is a difference,
+    // and a successful design-context read of the same key must agree.
+    let policies = |cost_modifier_raw| {
+        TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
+            IndustrialOrganisationPoliciesRow {
+                country: 11,
+                policies: vec![IndustrialOrganisationPolicy {
+                    token: 3,
+                    cost: 17,
+                    days: 29,
+                    ..Default::default()
+                }],
+                cost_modifier_raw,
+            },
+        ]))
+    };
+    // Raw reference 12 is an alias of the same country: its design reads
+    // resolve to it and are compared too.
+    let aliased = BTreeMap::from([(11, &country), (12, &country)]);
+    let design = |reads: &[(u32, i64, u8)]| {
+        TableView::Complete(TableRows::DesignCountryModifiers(
+            reads
+                .iter()
+                .map(
+                    |&(country, value, failure)| replay_data::rows::DesignCountryModifierRow {
+                        country,
+                        modifier: engine_executable::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST,
+                        value: Some(value),
+                        failure,
+                    },
+                )
+                .collect(),
+        ))
+    };
+    for (recorded, demanded, differences) in [
+        (Some(-75_000), vec![(11, -75_000, 0)], 0),
+        (Some(-75_000), vec![(11, -50_000, 0)], 1),
+        (Some(-75_000), vec![(11, -50_000, 2)], 0),
+        (Some(-75_000), vec![(11, -75_000, 0), (12, -75_000, 0)], 0),
+        (Some(-75_000), vec![(11, -75_000, 0), (12, -50_000, 0)], 1),
+        (Some(-75_000), vec![(12, -50_000, 0)], 1),
+        (None, Vec::new(), 1),
+    ] {
+        *frame.tables[TableId::IndustrialOrganisationPolicies.index()] = policies(recorded);
+        *frame.tables[TableId::DesignCountryModifiers.index()] = design(&demanded);
+        let mut report = Report::default();
+        mios::compare(&frame, &saved, &aliased, &tokens, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{recorded:?} {demanded:?}: {:?}",
+            report.differences
+        );
+    }
+    *frame.tables[TableId::IndustrialOrganisationPolicies.index()] = policies(Some(0));
+    *frame.tables[TableId::DesignCountryModifiers.index()] =
+        TableView::Complete(TableRows::DesignCountryModifiers(Vec::new()));
     row.queued.reverse();
     row.queued.pop();
     row.state.points += 1;

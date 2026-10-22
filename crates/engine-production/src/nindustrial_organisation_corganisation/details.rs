@@ -75,6 +75,9 @@ pub struct Policy {
 pub struct CountryPolicies {
     pub country: u32,
     pub policies: Vec<Policy>,
+    /// The country's effective policy-cost modifier in signed fixed5, read in
+    /// the same visit; `None` when its accumulator could not be read.
+    pub cost_modifier_raw: Option<i64>,
 }
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Technology {
@@ -234,6 +237,23 @@ pub fn capture_policies_selected(
     }
     Ok(())
 }
+/// The effective policy-cost modifier of a country the caller has
+/// authenticated: the owner's term of every attach quote. Feature eligibility
+/// and the definition's clamp apply as the game's getter applies them; an
+/// absent entry is zero.
+pub fn policy_cost_modifier(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+) -> Result<i64, &'static str> {
+    crate::modifier_accumulator::requested_effective_at(
+        memory,
+        base,
+        at(country, crate::ccountry::MODIFIER_ACCUMULATOR)?,
+        crate::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST,
+    )
+}
+
 /// The caller has authenticated this organisation in its country's roster.
 /// The caller owns scratch across all MIOs; no per-object temporary arenas.
 pub fn capture(

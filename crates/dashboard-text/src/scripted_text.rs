@@ -284,6 +284,27 @@ impl EventScopes {
             global_tooltip_targets: Vec::new(),
         }
     }
+
+    /// The scopes the game evaluates an organisation's conditions and text
+    /// in: the organisation, whose ROOT and PREV are itself and whose FROM is
+    /// its owner, then the owner country (canonical slot), whose links are
+    /// all itself. An unknown owner leaves FROM unknown.
+    pub fn organisation(organisation: u64, owner: Option<u32>) -> Self {
+        let this = EventScope::of(EventObject::IndustrialOrganisation(organisation));
+        Self::new(match owner {
+            Some(owner) => vec![
+                EventScope {
+                    from: Link::Scope(1),
+                    ..this
+                },
+                EventScope::of(EventObject::Country(owner)),
+            ],
+            None => vec![EventScope {
+                from: Link::Unknown,
+                ..this
+            }],
+        })
+    }
 }
 
 /// The index of the scope that `link` of scope `at` names.
@@ -879,14 +900,10 @@ impl<'a> ScriptedText<'a> {
         } else {
             name
         };
-        let scopes = EventScopes::new(vec![
-            EventScope {
-                from: Link::Scope(1),
-                ..EventScope::of(EventObject::IndustrialOrganisation(reference))
-            },
-            EventScope::of(EventObject::Country(owner)),
-        ]);
-        Ok((self.localise(key)?, scopes))
+        Ok((
+            self.localise(key)?,
+            EventScopes::organisation(reference, Some(owner)),
+        ))
     }
 
     /// Expand in the caller's event scopes, the first being the caller's own.

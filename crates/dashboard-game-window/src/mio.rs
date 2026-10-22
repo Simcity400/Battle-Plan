@@ -7,7 +7,7 @@
 //! Rows are the policies the organisation allows (`IndustrialOrganisationDetails.allowed_policies`),
 //! each joined to its instance in its owner's policy roster (`IndustrialOrganisationPolicies`).
 //! The organisation's and its policies' conditions are evaluated at the hour by the shared
-//! trigger interpreter in the scopes the game gives them ([`organisation_scopes`]): a policy
+//! trigger interpreter in the scopes the game gives them ([`EventScopes::organisation`]): a policy
 //! whose visibility does not hold has no row. A condition the recording cannot decide never guesses: the policy is withheld by
 //! name, counted. The game's display order is not established: rows keep the recorded order of
 //! the organisation's allowed policies, and the reply says so.
@@ -16,15 +16,17 @@
 //! background takes frame 2 for the organisation's attached policy and 1 for the others, and the
 //! background and icon draw their Disable technique when the row's action is blocked
 //! ([`row_blocked`]): by the organisation's own `available` or `visible`, a remaining cooldown,
-//! or for an unattached policy its own `available` or the political power for its attach quote.
-//! A failing part blocks the row whatever the others. The quote takes the owner's effective
-//! policy-cost modifier, which the recording does not hold, so an unattached row no other part
-//! blocks is undecided: a row whose gate the recording does not decide has its background and
-//! icon hidden, counted, rather than drawn in a guessed state. An attached policy hides its cost. `name` is the country's stored policy name
-//! (already localised text); the icon follows the game's lookup ([`policy_icon`]). The cost an
-//! unattached row shows is not established and is left as construction leaves it (empty); the AI
-//! value is hidden, as the game hides it with its AI view off. What the recording holds of each
-//! row (its key, base cost, cooldown and whether it is attached) is shown on hover.
+//! or for an unattached policy its own `available` or the owner's political power for its attach
+//! quote. A failing part blocks the row whatever the others. The quote scales the stored base
+//! cost by the organisation's own modifiers and its owner's recorded effective policy-cost
+//! modifier ([`PolicyCost`]); a row whose gate the recording does not decide (that modifier not
+//! recorded, say) has its background and icon hidden, counted, rather than drawn in a guessed
+//! state. `name` is the country's stored policy name (already localised text); the icon follows
+//! the game's lookup ([`policy_icon`]). An unattached row with a positive quote shows it through
+//! [`COST_KEY`]; an attached row, or a quote of zero or less, hides the cost, and an unknown
+//! quote hides it, counted. The AI value is hidden, as the game hides it with its AI view off.
+//! What the recording holds of each row (its key, base cost, cooldown and whether it is
+//! attached) is shown on hover.
 
 use std::{
     collections::BTreeMap,
@@ -32,18 +34,26 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use dashboard_base::{Source, catalogue::Catalogue, metadata::check_cancel};
+use dashboard_base::{
+    Source,
+    catalogue::Catalogue,
+    metadata::check_cancel,
+    products::industrial_organisations::{
+        PolicyCost, affordable, both, owner_country, owner_roster, policy_cost, shows_attach_cost,
+    },
+};
 use dashboard_text::{
-    scripted_text::{EventObject, EventScope, EventScopes, Link},
+    scripted_text::EventScopes,
     triggers::{Evaluator, RECORDED_TABLES, inputs::capture},
 };
 use installed_content_core::{
     ResolvedLayers, industrial_organisations::policies::Catalog as Policies, parser::Item,
 };
-use installed_content_localisation::localisation::Localisation;
+use installed_content_localisation::localisation::{Argument, Localisation};
 use replay::container::SeekResult;
 use replay_data::rows::{
-    IndustrialOrganisationDetailsRow, IndustrialOrganisationPolicy, TableId, tables,
+    IndustrialOrganisationDetailsRow, IndustrialOrganisationPolicy, IndustrialOrganisationRow,
+    TableId, tables,
 };
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::native_gui::{Assets, SpriteSetter, assets_in};
@@ -77,16 +87,21 @@ const UNATTACHED_FRAME: i32 = 1;
 const UNKNOWN_ICON: &[u8] = b"GFX_idea_unknown";
 /// The organisation's selected policy when none is selected: the constructor's sentinel.
 const UNSELECTED_POLICY: u32 = 0x4c17;
+/// The text an unattached row's cost shows, its `VALUE` the attach quote.
+const COST_KEY: &str = "INDUSTRIAL_ORG_POLICY_PP_COST";
 
 /// The tables one hour of the chooser reads. Its conditions are evaluated on them first; the
 /// tables an undecided condition read beyond them are read only then ([`gates`]).
-const TABLES: [TableId; 6] = [
+const TABLES: [TableId; 8] = [
     TableId::IndustrialOrganisations,
     TableId::IndustrialOrganisationDetails,
     TableId::IndustrialOrganisationPolicies,
     TableId::LexicalTokens,
     TableId::Countries,
     TableId::CountryLinks,
+    // The quote's per-source modifier eligibility and clamp.
+    TableId::ModifierDefinitions,
+    TableId::SimulationFeatures,
 ];
 
 /// One row as the recording supplies it.
@@ -155,8 +170,11 @@ fn spelling(frame: &DecodedFrame, token: u32) -> Result<Vec<u8>, String> {
         .map_err(|_| format!("LexicalTokens does not spell token {token}"))
 }
 
-/// The organisation's chooser inputs at the frame's hour.
-pub fn inputs(frame: &DecodedFrame, organisation: u64) -> Result<Inputs, String> {
+/// The organisation's identity and details rows at the frame's hour.
+fn organisation_rows(
+    frame: &DecodedFrame,
+    organisation: u64,
+) -> Result<(&IndustrialOrganisationRow, &IndustrialOrganisationDetailsRow), String> {
     let organisations = frame
         .complete::<tables::IndustrialOrganisations>()
         .map_err(|why| why.to_string())?;
@@ -173,13 +191,15 @@ pub fn inputs(frame: &DecodedFrame, organisation: u64) -> Result<Inputs, String>
         .ok()
         .filter(|details| details.country == row.country)
         .ok_or_else(|| "the organisation's details are not recorded at this hour".to_owned())?;
-    // The game reads the candidates and the attached policy from the owner's roster.
-    let rosters = frame
-        .complete::<tables::IndustrialOrganisationPolicies>()
-        .map_err(|why| why.to_string())?;
-    let roster = rosters
-        .binary_search_by_key(&row.owner, |roster| roster.country)
-        .map(|index| &rosters[index])
+    Ok((row, details))
+}
+
+/// The organisation's chooser inputs at the frame's hour.
+pub fn inputs(frame: &DecodedFrame, organisation: u64) -> Result<Inputs, String> {
+    let (row, details) = organisation_rows(frame, organisation)?;
+    // The game reads the candidates and the attached policy from the owner's roster, through
+    // the owner's country (its raw reference can be an alias).
+    let roster = owner_roster(frame, row)
         .map_err(|_| "the owner's policy roster is not recorded at this hour".to_owned())?;
     let countries = frame
         .complete::<tables::Countries>()
@@ -368,9 +388,14 @@ pub fn hover(shown: &Shown) -> Hover {
     Hover { title, details }
 }
 
-/// What a frame's conditions decide: the rows they show ([`shown`]), the policies withheld and
-/// whether the organisation's own conditions hold.
-type Gated = (Vec<Shown>, Vec<(String, String)>, Result<bool, String>);
+/// What a frame's conditions decide: the rows they show ([`shown`]), the policies withheld,
+/// whether the organisation's own conditions hold and what scales its attach quotes.
+type Gated = (
+    Vec<Shown>,
+    Vec<(String, String)>,
+    Result<bool, String>,
+    Result<PolicyCost, String>,
+);
 
 /// A frame's conditions, and whether one was left undecided having read tables the frame does
 /// not hold.
@@ -381,25 +406,6 @@ enum Gates {
     Undecided(Gated),
     /// Undecided conditions read these tables, which the frame does not hold.
     Read(Vec<TableId>),
-}
-
-/// The event scopes the game evaluates an organisation's and its policies' conditions in: the
-/// organisation, whose ROOT and PREV are itself and whose FROM is its owner, and the owner,
-/// whose links are all itself. An unknown owner leaves FROM unknown.
-fn organisation_scopes(organisation: u64, owner: &Result<u32, String>) -> EventScopes {
-    let mut scope = EventScope::of(EventObject::IndustrialOrganisation(organisation));
-    let mut scopes = Vec::with_capacity(2);
-    match owner {
-        Ok(owner) => {
-            scope.from = Link::Scope(1);
-            scopes.extend([scope, EventScope::of(EventObject::Country(*owner))]);
-        }
-        Err(_) => {
-            scope.from = Link::Unknown;
-            scopes.push(scope);
-        }
-    }
-    EventScopes::new(scopes)
 }
 
 /// Evaluates every policy's conditions in the organisation's scope on `frame`. A decided
@@ -420,9 +426,10 @@ fn gates(
     let world = catalogue
         .scripted_content()
         .and_then(|content| content.recorded_world(frame));
-    let graph = std::rc::Rc::new(std::cell::RefCell::new(organisation_scopes(
+    // The game's organisation/owner scope pair; an unknown owner leaves FROM unknown.
+    let graph = std::rc::Rc::new(std::cell::RefCell::new(EventScopes::organisation(
         organisation,
-        &inputs.owner,
+        inputs.owner.as_ref().ok().copied(),
     )));
     let evaluator = world
         .as_ref()
@@ -461,9 +468,19 @@ fn gates(
             "the policy's stored name",
         )
     };
+    // The quote evaluates the organisation's conditions too, so it reads under the same capture.
+    let cost = || -> Result<PolicyCost, String> {
+        let world = world.as_ref().map_err(Clone::clone)?;
+        let trees = trees.as_ref().map_err(Clone::clone)?;
+        let policies = policies.as_ref().map_err(Clone::clone)?;
+        let (row, details) = organisation_rows(frame, organisation)?;
+        let cost = policy_cost(frame, row, details, trees, policies, world);
+        undecided.set(undecided.get() || cost.is_err());
+        cost
+    };
     let (gated, read) = capture(frame, || {
         let (shown, withheld) = shown(inputs.rows.clone(), policies.clone(), gate, stored);
-        (shown, withheld, organisation_gate())
+        (shown, withheld, organisation_gate(), cost())
     });
     if !undecided.get() {
         return Gates::Decided(gated);
@@ -558,7 +575,7 @@ fn hour(
     // A condition that read a table beyond those read has the hour read again with it; the
     // tables only grow, so this ends.
     let mut tables = TABLES.to_vec();
-    let (shown, withheld, organisation_gate) = loop {
+    let (shown, withheld, organisation_gate, cost) = loop {
         match gates(
             catalogue,
             &frame,
@@ -585,10 +602,20 @@ fn hour(
         gate: Gate {
             organisation: organisation_gate,
             cooldown_days: inputs.cooldown_days,
+            cost,
+            political_power_raw: political_power(&frame, organisation),
         },
         read_hour: inputs.read_hour,
         warnings,
     }))
+}
+
+/// The owner's political power (fixed5) at the frame's hour, or why it is unknown.
+fn political_power(frame: &DecodedFrame, organisation: u64) -> Result<i64, String> {
+    let (row, _) = organisation_rows(frame, organisation)?;
+    owner_country(frame, row)?
+        .political_power_raw
+        .ok_or_else(|| "the owner's political power is not recorded".to_owned())
 }
 
 /// The chooser of `organisation` at `hour`.
@@ -703,12 +730,19 @@ pub fn draw(
         .iter()
         .map(|row| policy_icon(&row.icon, &row.policy, declared))
         .collect();
-    for (row, icon) in shown.iter().zip(&icons) {
+    let costs: Vec<Result<Option<String>, String>> = shown
+        .iter()
+        .map(|row| cost_text(row, gate, localisation))
+        .collect();
+    for ((row, icon), cost) in shown.iter().zip(&icons).zip(&costs) {
         if let Ok(name) = &row.name {
             assets.add_text(name);
         }
         if let Ok(icon) = icon {
             assets.sprites.insert(icon.clone());
+        }
+        if let Ok(Some(cost)) = cost {
+            assets.add_text(cost);
         }
     }
     session.load(layers, &assets)?;
@@ -740,7 +774,8 @@ pub fn draw(
     let mut refused_icons = BTreeMap::<String, usize>::new();
     let mut refused_names = BTreeMap::<String, usize>::new();
     let mut undecided = BTreeMap::<String, usize>::new();
-    for (shown, icon) in shown.iter().zip(&icons) {
+    let mut refused_costs = BTreeMap::<String, usize>::new();
+    for ((shown, icon), cost) in shown.iter().zip(&icons).zip(&costs) {
         let mut instance = match compose::construct(&row, viewport, &resources) {
             Ok(instance) => instance,
             Err(why) => return Ok(refuse(why)),
@@ -782,8 +817,14 @@ pub fn draw(
                     instance.hide(&row, icon_control)?;
                 }
             }
-            if attached {
-                instance.hide(&row, cost_control)?;
+            match cost {
+                Ok(Some(cost)) => instance.set_text(&row, cost_control, cost, &resources)?,
+                // The game hides it on the attached policy and for a quote of zero or less.
+                Ok(None) => instance.hide(&row, cost_control)?,
+                Err(why) => {
+                    *refused_costs.entry(why.clone()).or_default() += 1;
+                    instance.hide(&row, cost_control)?;
+                }
             }
             instance.hide(&row, ai_control)
         })();
@@ -861,11 +902,7 @@ pub fn draw(
             ),
         )
     });
-    slots.push(slot(
-        "row attach cost",
-        SlotState::Unbound,
-        Some(format!("hidden on the attached policy, as the game hides it; on the others {QUOTE_UNKNOWN}, so the cost is left as construction leaves it; the recorded base cost is shown on hover")),
-    ));
+    slots.push(counted_slot("row attach cost", &refused_costs));
     slots.push(counted_slot("row state", &undecided));
     slots.push(slot(
         "row AI value",
@@ -912,39 +949,30 @@ pub fn check(layers: &ResolvedLayers, guis: &installed_content_core::gui::native
     refused
 }
 
-/// The conjunction of `first` and `second`, three-valued: a false part decides it whatever the
-/// other, so an unknown first part still lets a false second one decide. `second` is evaluated
-/// only when `first` does not already fail.
-fn both(
-    first: Result<bool, String>,
-    second: impl FnOnce() -> Result<bool, String>,
-) -> Result<bool, String> {
-    match first {
-        Ok(false) => Ok(false),
-        Ok(true) => second(),
-        Err(why) => match second() {
-            Ok(false) => Ok(false),
-            _ => Err(why),
-        },
-    }
-}
-
-/// The parts of the row gate one organisation shares: whether its own conditions hold, and its
-/// remaining policy cooldown in days.
+/// The parts of the row gate one organisation shares: whether its own conditions hold, its
+/// remaining policy cooldown in days, what scales its attach quotes and its owner's political
+/// power (fixed5), each or why it is unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gate {
     pub organisation: Result<bool, String>,
     pub cooldown_days: i32,
+    pub cost: Result<PolicyCost, String>,
+    pub political_power_raw: Result<i64, String>,
 }
 
-/// Why an unattached row passing every other part is undecided: the attach quote takes the
-/// owner's effective policy-cost modifier, which the recording does not hold.
-const QUOTE_UNKNOWN: &str = "the attach quote is not established: it takes the owner's effective policy cost modifier, which the recording does not hold";
+/// The attach quote of `shown` under `gate`, or why it is unknown.
+fn quote(shown: &Shown, gate: &Gate) -> Result<i32, String> {
+    gate.cost
+        .as_ref()
+        .map(|cost| cost.quote(shown.policy.cost))
+        .map_err(|why| format!("the attach quote is unknown: {why}"))
+}
 
 /// Whether the row's action is blocked, as the game decides it: the organisation's own
 /// conditions and a cooldown over (0 or fewer days left) for every row, and for an unattached
-/// policy also the political power for its attach quote and its `available` condition. Any part
-/// that fails blocks it; a row no failing part blocks is undecided while a part is unknown.
+/// policy also the owner's political power for its attach quote and its `available` condition.
+/// Any part that fails blocks it; a row no failing part blocks is undecided while a part is
+/// unknown.
 pub fn row_blocked(shown: &Shown, gate: &Gate) -> Result<bool, String> {
     let mut unknown = Vec::new();
     match &gate.organisation {
@@ -961,13 +989,42 @@ pub fn row_blocked(shown: &Shown, gate: &Gate) -> Result<bool, String> {
             Ok(true) => {}
             Err(why) => unknown.push(format!("availability unknown: {why}")),
         }
-        unknown.push(QUOTE_UNKNOWN.to_owned());
+        match (quote(shown, gate), &gate.political_power_raw) {
+            (Ok(quote), Ok(power)) => {
+                if !affordable(*power, quote) {
+                    return Ok(true);
+                }
+            }
+            (Err(why), _) => unknown.push(why),
+            (_, Err(why)) => unknown.push(format!("political power unknown: {why}")),
+        }
     }
     if unknown.is_empty() {
         Ok(false)
     } else {
         Err(unknown.join("; "))
     }
+}
+
+/// The text a row's cost shows: none on the attached policy or for a quote of zero or less, as
+/// the game hides it; otherwise [`COST_KEY`] with the quote as its `VALUE`. An unknown quote, or
+/// text that does not localise, is refused.
+fn cost_text(
+    shown: &Shown,
+    gate: &Gate,
+    localisation: &Localisation,
+) -> Result<Option<String>, String> {
+    if shown.policy.selected {
+        return Ok(None);
+    }
+    let quote = quote(shown, gate)?;
+    if !shows_attach_cost(quote, false) {
+        return Ok(None);
+    }
+    localisation
+        .localise_with(COST_KEY.as_bytes(), &[("VALUE", Argument::Int32(quote))])
+        .map(Some)
+        .map_err(|why| format!("{COST_KEY}: {why:?}"))
 }
 
 /// The policy's icon as the game looks it up: its authored icon when it names one, else the
@@ -1096,6 +1153,7 @@ mod gate_tests {
             IndustrialOrganisationPoliciesRow {
                 country: 10,
                 policies: vec![policy(2), policy(3)],
+                cost_modifier_raw: Some(-20_000),
             },
         ]));
         set(TableRows::LexicalTokens(
@@ -1110,6 +1168,7 @@ mod gate_tests {
             id: 10,
             canonical_slot: 4,
             tag: b"SYN".to_vec(),
+            political_power_raw: Some(800_000),
             ..Default::default()
         }]));
         set(TableRows::CountryLinks(vec![CountryLinkRow {
@@ -1165,9 +1224,9 @@ mod gate_tests {
             &Ok(&definitions.0),
             &trees(layers),
         );
-        let (shown, withheld, organisation) = match gated {
+        let (shown, withheld, organisation, cost) = match gated {
             Gates::Decided(gated) => gated,
-            Gates::Undecided((shown, _, organisation)) => panic!(
+            Gates::Undecided((shown, _, organisation, _)) => panic!(
                 "undecided: {organisation:?} {:?}",
                 shown
                     .iter()
@@ -1185,17 +1244,138 @@ mod gate_tests {
                 .collect::<Vec<_>>(),
             [Ok(true), Ok(false)]
         );
-        // `p_other` is blocked by its own condition; `p_from` waits only on its quote.
-        let gate = Gate {
+        // The owner's -0.2 scales the base cost of 10 to a quote of 8.
+        assert_eq!(
+            cost,
+            Ok(PolicyCost {
+                local: 0,
+                country: -20_000
+            })
+        );
+        // `p_other` is blocked by its own condition; `p_from` by the political power for its
+        // quote alone: 8 political power affords it exactly, a raw unit less does not.
+        let mut gate = Gate {
             organisation,
             cooldown_days: inputs.cooldown_days,
+            cost,
+            political_power_raw: Ok(800_000),
         };
         assert_eq!(row_blocked(&shown[1], &gate), Ok(true));
-        assert!(
-            row_blocked(&shown[0], &gate)
-                .unwrap_err()
-                .contains("attach quote")
+        assert_eq!(row_blocked(&shown[0], &gate), Ok(false));
+        gate.political_power_raw = Ok(799_999);
+        assert_eq!(row_blocked(&shown[0], &gate), Ok(true));
+    }
+
+    /// The owner's raw reference can be an alias of its country: the roster, the political power
+    /// and FROM all follow the country, and an unrecorded policy-cost modifier leaves an
+    /// unattached row's quote unknown, never zero.
+    #[test]
+    fn the_quote_follows_the_owner_alias_and_refuses_an_unrecorded_modifier() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let (catalogue, _folder) = dashboard_text::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/00_defines.lua",
+                "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
+            ),
+            (
+                "common/military_industrial_organization/organizations/syn.txt",
+                "syn_org = { available = { FROM = { tag = SYN } } }",
+            ),
+            (
+                "common/military_industrial_organization/policies/syn.txt",
+                "p_from = { } p_other = { }",
+            ),
+        ]);
+        let layers = &catalogue.content.layers;
+        let start = engine_native::cdate::HOUR_EPOCH + 1936 * 8760;
+        let mut frame = frame(start, None);
+        let set = |frame: &mut DecodedFrame, rows: TableRows| {
+            let id = rows.table();
+            *frame.tables[id.index()] = TableView::Complete(rows);
+        };
+        // The organisation names its owner by the alias 11 of the country 10.
+        set(
+            &mut frame,
+            TableRows::IndustrialOrganisations(vec![IndustrialOrganisationRow {
+                organisation: ORGANISATION,
+                country: 10,
+                owner: 11,
+                token: 1,
+                ..Default::default()
+            }]),
         );
+        set(
+            &mut frame,
+            TableRows::CountryLinks(
+                [(10, 4), (11, 4)]
+                    .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                    .to_vec(),
+            ),
+        );
+        let definitions = definitions(layers).unwrap();
+        let read = |frame: &DecodedFrame| {
+            let inputs = inputs(frame, ORGANISATION).unwrap();
+            match gates(
+                &catalogue,
+                frame,
+                &TableId::ALL,
+                ORGANISATION,
+                &inputs,
+                &Ok(&definitions.0),
+                &trees(layers),
+            ) {
+                Gates::Decided(gated) | Gates::Undecided(gated) => (inputs, gated),
+                Gates::Read(tables) => panic!("reads {tables:?}"),
+            }
+        };
+        let (inputs, (shown, _, organisation, cost)) = read(&frame);
+        assert_eq!(inputs.owner, Ok(4));
+        assert_eq!(organisation, Ok(true));
+        let gate = Gate {
+            organisation,
+            cooldown_days: 0,
+            cost,
+            political_power_raw: political_power(&frame, ORGANISATION),
+        };
+        assert_eq!(gate.political_power_raw, Ok(800_000));
+        assert_eq!(row_blocked(&shown[0], &gate), Ok(false));
+        assert_eq!(quote(&shown[0], &gate), Ok(8));
+        // No recorded modifier: the unattached rows are undecided, by name.
+        set(
+            &mut frame,
+            TableRows::IndustrialOrganisationPolicies(vec![IndustrialOrganisationPoliciesRow {
+                country: 10,
+                policies: vec![
+                    IndustrialOrganisationPolicy {
+                        token: 2,
+                        cost: 10,
+                        days: 30,
+                        country: 10,
+                        name: Vec::new(),
+                        cached_score_raw: 0,
+                    },
+                    IndustrialOrganisationPolicy {
+                        token: 3,
+                        cost: 10,
+                        days: 30,
+                        country: 10,
+                        name: Vec::new(),
+                        cached_score_raw: 0,
+                    },
+                ],
+                cost_modifier_raw: None,
+            }]),
+        );
+        let (_, (shown, _, organisation, cost)) = read(&frame);
+        let gate = Gate {
+            organisation,
+            cooldown_days: 0,
+            cost,
+            political_power_raw: Ok(800_000),
+        };
+        let why = row_blocked(&shown[0], &gate).unwrap_err();
+        assert!(why.contains("policy cost modifier is not recorded"), "{why}");
     }
 
     #[test]
@@ -1228,11 +1408,27 @@ mod gate_tests {
         let gate = |organisation: Result<bool, String>, cooldown_days| Gate {
             organisation,
             cooldown_days,
+            cost: Err("not recorded".into()),
+            political_power_raw: Ok(0),
         };
         let open = gate(Ok(true), 0);
         assert_eq!(row_blocked(&row(true, Ok(false)), &open), Ok(false));
         assert_eq!(row_blocked(&row(false, Ok(false)), &open), Ok(true));
         assert!(row_blocked(&row(false, Ok(true)), &open).is_err());
+        // A known quote the power does not afford blocks; one it affords opens the row.
+        let quoted = |power| Gate {
+            cost: Ok(PolicyCost {
+                local: 0,
+                country: 0,
+            }),
+            political_power_raw: power,
+            ..gate(Ok(true), 0)
+        };
+        assert_eq!(row_blocked(&row(false, Ok(true)), &quoted(Ok(99_999))), Ok(true));
+        assert_eq!(row_blocked(&row(false, Ok(true)), &quoted(Ok(100_000))), Ok(false));
+        assert!(row_blocked(&row(false, Ok(true)), &quoted(Err("unread".into()))).is_err());
+        // An unaffordable quote decides even when availability is unknown.
+        assert_eq!(row_blocked(&row(false, Err("unknown".into())), &quoted(Ok(0))), Ok(true));
         for selected in [true, false] {
             let blocked = |gate: &Gate| row_blocked(&row(selected, Ok(true)), gate);
             assert_eq!(blocked(&gate(Ok(false), 0)), Ok(true));
@@ -1256,6 +1452,8 @@ mod gate_tests {
         let gate = Gate {
             organisation: both(unknown(), || Ok(false)),
             cooldown_days: 0,
+            cost: Err("not recorded".into()),
+            political_power_raw: Err("not recorded".into()),
         };
         let attached = Shown {
             policy: PolicyRow {

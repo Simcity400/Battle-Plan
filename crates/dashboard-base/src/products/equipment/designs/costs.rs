@@ -1,67 +1,8 @@
 //! Save XP for one selected source and target. No pair values are recorded.
 use super::{queries::*, *};
+use crate::products::industrial_organisations::local_modifier;
+use engine_executable::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_DESIGN_TEAM_CHANGE_COST as ORGANISATION_CHANGE;
 use installed_content_core::equipment::{ModuleXpRules, UpgradeXpRules};
-
-fn modifier_eligible(frame: &DecodedFrame, name: &str) -> Result<bool, String> {
-    let definition = frame
-        .complete::<tables::ModifierDefinitions>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| {
-            spelling(frame, row.token)
-                .is_ok_and(|token| token.eq_ignore_ascii_case(name.as_bytes()))
-        })
-        .ok_or_else(|| format!("organisation modifier {name} definition unavailable (count: 1)"))?;
-    if definition.feature_selector == 0 {
-        return Ok(true);
-    }
-    if definition.eligibility == 0 {
-        return Ok(false);
-    }
-    let [features] = frame
-        .complete::<tables::SimulationFeatures>()
-        .map_err(|e| e.to_string())?
-    else {
-        return Err("organisation modifier feature mask is not unique (count: 1)".into());
-    };
-    Ok(features.dlc_mask & definition.feature_selector != 0)
-}
-
-fn organisation_modifier_value(
-    frame: &DecodedFrame,
-    modifiers: &installed_content_core::modifiers::Modifiers,
-    modifier_name: &str,
-    key: u32,
-) -> Result<i64, String> {
-    if let Some(reason) = modifiers.unheld.cause() {
-        return Err(format!("organisation modifier: {reason} (count: 1)"));
-    }
-    let Some(entry) = modifiers
-        .values
-        .iter()
-        .find(|row| row.name.eq_ignore_ascii_case(modifier_name))
-    else {
-        return Ok(0);
-    };
-    if !modifier_eligible(frame, modifier_name)? {
-        return Ok(0);
-    }
-    let definition = frame
-        .complete::<tables::ModifierDefinitions>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| row.index == key)
-        .ok_or("organisation change modifier definition unavailable (count: 1)")?;
-    // The native getter selects the object's own numeric entry. Added
-    // modifier objects affect effective emptiness, not this value lookup.
-    Ok(
-        if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
-            entry.value.clamp(0, 100_000)
-        } else {
-            entry.value
-        },
-    )
-}
 
 #[derive(Default)]
 pub struct OrganisationContent {
@@ -214,58 +155,21 @@ pub fn organisation_change_xp(
         .iter()
         .find(|row| row.organisation == reference)
         .ok_or_else(|| format!("organisation {reference} identity is not recorded"))?;
-    let name =
-        std::str::from_utf8(spelling(frame, organisation.token)?).map_err(|e| e.to_string())?;
-    let tree = traits
-        .tree(name)?
-        .ok_or_else(|| format!("organisation {name} traits are absent"))?;
-    let modifier_name = engine_executable::modifier_keys::names()
-        .get(0x269)
-        .ok_or("organisation change modifier metadata unavailable")?;
-    let value = |modifiers: &installed_content_core::modifiers::Modifiers| {
-        organisation_modifier_value(frame, modifiers, modifier_name, 0x269)
-    };
-    let mut local = 0_i64;
-    use dashboard_text::triggers::{Scope, Scopes};
-    let scope = Scopes::of(Scope::IndustrialOrganisation(reference));
-    let ordinary = world.evaluate(tree.visible, scope).decided()?
-        && world.evaluate(tree.available, scope).decided()?;
-    if ordinary {
-        for token in &details.unlocked {
-            let token = std::str::from_utf8(spelling(frame, *token)?).map_err(|e| e.to_string())?;
-            // An unresolved completed-trait token contributes nothing in the
-            // native first-match template lookup.
-            if let Some(definition) = traits.trait_definition(name, token)? {
-                let modifiers = definition
-                    .resolved_organisation_modifiers(|name| modifier_eligible(frame, name))?;
-                local = local.wrapping_add(value(&modifiers)?);
-            }
-        }
-    }
-    if let Some(initial) = tree.initial {
-        let modifiers =
-            initial.resolved_organisation_modifiers(|name| modifier_eligible(frame, name))?;
-        local = local.wrapping_add(value(&modifiers)?);
-    }
-    let roster = frame
-        .complete::<tables::IndustrialOrganisationPolicies>()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .find(|row| row.country == organisation.owner)
-        .ok_or_else(|| format!("organisation {reference} country policy roster is unavailable"))?;
-    if let Some(selected) = roster
-        .policies
-        .iter()
-        .find(|policy| policy.token == details.state.policy)
-    {
-        local = local.wrapping_add(value(
-            &policies
-                .policy(spelling(frame, selected.token)?)?
-                .organisation_modifiers,
-        )?);
-    }
+    let local = local_modifier(
+        frame,
+        organisation,
+        details,
+        ORGANISATION_CHANGE,
+        traits,
+        policies,
+        world,
+    )?;
     let factor = local
-        .wrapping_add(country_modifier(frame, organisation.owner, 0x269)?)
+        .wrapping_add(country_modifier(
+            frame,
+            organisation.owner,
+            ORGANISATION_CHANGE,
+        )?)
         .wrapping_add(100_000);
     let raw = i64::from(details.state.design_team_change_cost)
         .wrapping_mul(100_000)
@@ -456,6 +360,7 @@ pub fn module_save_xp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::products::industrial_organisations::organisation_modifier_value;
     use replay_data::rows::{Recorded, TableId, TableRows};
     use replay_frame::frame::{Metrics, TableView};
     use std::cell::Cell;
@@ -597,6 +502,19 @@ mod tests {
             TableView::Complete(TableRows::SimulationFeatures(vec![
                 rows::SimulationFeatureRow::default(),
             ]));
+        // The organisation owner 5_000 resolves through CountryLinks to the country keying its roster.
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![rows::CountryRow {
+                id: 5_000,
+                canonical_slot: 50,
+                tag: b"SYN".to_vec(),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![rows::CountryLinkRow {
+                id: 5_000,
+                canonical_slot: 50,
+            }]));
         (frame, content, defines)
     }
 
@@ -877,6 +795,7 @@ mod tests {
                             token: 300,
                             ..Default::default()
                         }],
+                        ..Default::default()
                     },
                 ]));
             *frame.tables[TableId::DesignCountryModifiers.index()] =
@@ -924,5 +843,154 @@ mod tests {
             );
             std::fs::remove_dir_all(&root).unwrap();
         }
+    }
+
+    /// Fixed results of the organisation change cost across clamp, feature and
+    /// rounding edges: the shared organisation modifier sum must not move them.
+    #[test]
+    fn organisation_change_cost_keeps_its_clamped_ineligible_and_negative_results() {
+        use dashboard_text::triggers::{ContentFacts, World};
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let modifier = engine_executable::modifier_keys::name(0x269).unwrap();
+        let root = std::env::temp_dir().join(format!("design_mio_edges_{}", uuid::Uuid::new_v4()));
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        // The completed trait counts only while the organisation is visible; a
+        // visible body that reads FROM reads the owner, as the game's context links it.
+        for visible in ["always=yes", "FROM={always=yes}"] {
+        write(
+            "common/military_industrial_organization/organizations/cost.txt",
+            &format!(
+                "synthetic_org={{visible={{{visible}}} available={{always=yes}} initial_trait={{token=initial organization_modifier={{{modifier}=0.3}}}} trait={{token=unlocked organization_modifier={{{modifier}=-0.9}}}}}}"
+            ),
+        );
+        write(
+            "common/military_industrial_organization/policies/cost.txt",
+            &format!("synthetic_policy={{organization_modifier={{{modifier}=0.25}}}}"),
+        );
+        let layers = installed_content_core::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let content = OrganisationContent::load(&layers).unwrap();
+        // (definition flags, feature selector, country value, base cost, cost)
+        for (flags, selector, country, base, expected) in [
+            (0, 0, -200_000, 3, -4),
+            (
+                engine_native::modifier_definition::CLAMP_MAXIMUM,
+                0,
+                -200_000,
+                3,
+                -1,
+            ),
+            (0, 4, -200_000, 3, -3),
+            (0, 0, -85_000, 7, -1),
+            (
+                engine_native::modifier_definition::CLAMP_MAXIMUM,
+                0,
+                10_000,
+                9,
+                15,
+            ),
+        ] {
+            let (mut frame, _, _) = inputs();
+            let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+                &mut *frame.tables[TableId::LexicalTokens.index()]
+            else {
+                unreachable!()
+            };
+            for (token, name) in [
+                (100, "synthetic_org"),
+                (200, "unlocked"),
+                (300, "synthetic_policy"),
+                (400, modifier),
+            ] {
+                tokens.push(rows::LexicalTokenRow {
+                    token,
+                    literal: name.as_bytes().to_vec(),
+                });
+            }
+            *frame.tables[TableId::ModifierDefinitions.index()] =
+                TableView::Complete(TableRows::ModifierDefinitions(vec![
+                    rows::ModifierDefinitionRow {
+                        index: 0x269,
+                        token: 400,
+                        flags,
+                        feature_selector: selector,
+                        ..Default::default()
+                    },
+                ]));
+            *frame.tables[TableId::DesignOrganisationLiveness.index()] =
+                TableView::Complete(TableRows::DesignOrganisationLiveness(vec![
+                    rows::DesignOrganisationLivenessRow {
+                        organisation: 7,
+                        live: true,
+                    },
+                ]));
+            *frame.tables[TableId::IndustrialOrganisations.index()] =
+                TableView::Complete(TableRows::IndustrialOrganisations(vec![
+                    rows::IndustrialOrganisationRow {
+                        organisation: 7,
+                        country: 4_999,
+                        owner: 5_000,
+                        token: 100,
+                        ..Default::default()
+                    },
+                ]));
+            *frame.tables[TableId::IndustrialOrganisationDetails.index()] =
+                TableView::Complete(TableRows::IndustrialOrganisationDetails(vec![
+                    rows::IndustrialOrganisationDetailsRow {
+                        organisation: 7,
+                        country: 4_999,
+                        unlocked: vec![200],
+                        state: rows::IndustrialOrganisationState {
+                            design_team_change_cost: base,
+                            policy: 300,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ]));
+            *frame.tables[TableId::IndustrialOrganisationPolicies.index()] =
+                TableView::Complete(TableRows::IndustrialOrganisationPolicies(vec![
+                    rows::IndustrialOrganisationPoliciesRow {
+                        country: 5_000,
+                        policies: vec![rows::IndustrialOrganisationPolicy {
+                            token: 300,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ]));
+            *frame.tables[TableId::DesignCountryModifiers.index()] =
+                TableView::Complete(TableRows::DesignCountryModifiers(vec![
+                    rows::DesignCountryModifierRow {
+                        country: 5_000,
+                        modifier: 0x269,
+                        value: Some(country),
+                        failure: 0,
+                    },
+                ]));
+            let dlcs = Default::default();
+            let triggers = Default::default();
+            let aliases = Default::default();
+            let world = World::read(
+                &frame,
+                ContentFacts::content_only(&dlcs, &triggers, &aliases),
+            );
+            assert_eq!(
+                organisation_change_xp(
+                    &frame,
+                    7,
+                    &content.traits,
+                    &content.definitions.policies,
+                    &world
+                ),
+                Ok(expected),
+                "{visible} {flags} {selector} {country} {base}"
+            );
+        }
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

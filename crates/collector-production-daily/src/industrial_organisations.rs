@@ -295,6 +295,7 @@ impl Captured {
                 |row| IndustrialOrganisationPoliciesRow {
                     country: row.country,
                     policies: owned_vec(replay_data::rows::NativeValue::try_clone(&row.policies)),
+                    cost_modifier_raw: row.cost_modifier_raw,
                 },
             ),
         ]
@@ -357,10 +358,11 @@ fn digest(row: &native::details::Row) -> [u64; 3] {
     [roster.finish(), variables.finish(), flags.finish()]
 }
 impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
-    fn country(&mut self, country: u32, status: usize) {
+    fn country(&mut self, identity: &engine_native::ccountry::Country, status: usize) {
         if self.policies_failure.is_some() {
             return;
         }
+        let country = identity.id;
         let result = (|| {
             ensure(self.policies, self.policies_len)?;
             ensure(self.held_policies, self.policies_len)?;
@@ -410,6 +412,11 @@ impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
                 mismatch,
             );
             row.country = country;
+            // A scalar any modifier source can move: read on every daily visit.
+            // A failed read is unknown, never zero, and leaves the roster valid.
+            row.cost_modifier_raw =
+                native::details::policy_cost_modifier(self.memory, self.base, identity.pointer)
+                    .ok();
             *held = PolicyHeld {
                 country,
                 status,
@@ -676,6 +683,7 @@ mod country_scale_tests {
                         cached_score_raw: -(index as i64),
                         ..Default::default()
                     }],
+                    cost_modifier_raw: (index % 2 == 1).then_some(-(index as i64)),
                 });
         }
         captured.details.outcome = Outcome::Rows { len: COUNTRIES };
@@ -697,5 +705,8 @@ mod country_scale_tests {
             0x8000_0000 | COUNTRIES as u32
         );
         assert_eq!(policies[COUNTRIES - 1].policies[0].name, [0xff, 0]);
+        // Each country keeps its own policy-cost verdict: a failed read stays unknown.
+        assert_eq!(policies[COUNTRIES - 1].cost_modifier_raw, Some(-4999));
+        assert_eq!(policies[COUNTRIES - 2].cost_modifier_raw, None);
     }
 }

@@ -160,7 +160,7 @@ pub fn walk_growing(
 /// Additional operands read only while the existing census holds authenticated
 /// objects. A visitor keeps its own independent outcome; it cannot add a census.
 pub trait Visitor {
-    fn country(&mut self, _country: u32, _status: usize) {}
+    fn country(&mut self, _country: &ccountry::Country, _status: usize) {}
     fn organisation(&mut self, _pointer: usize, _row: &Row) {}
 }
 impl Visitor for () {}
@@ -267,7 +267,7 @@ fn walk_inner(
         };
         found_country = true;
         let status = cproduction_status::manager(memory, base, country)?;
-        visitor.country(country.id, status);
+        visitor.country(&country, status);
         let array = status
             .checked_add(cproduction_status::ORGANISATIONS)
             .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))

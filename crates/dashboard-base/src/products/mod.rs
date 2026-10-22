@@ -25,6 +25,7 @@ pub mod fixed5_runs;
 pub mod force_census;
 pub mod idea_format;
 pub mod idea_history;
+pub mod industrial_organisations;
 pub mod military_factory_spending;
 pub mod place_names;
 pub mod politics_content;

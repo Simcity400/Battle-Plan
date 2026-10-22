@@ -90,10 +90,15 @@ typed_codec!(IndustrialOrganisationDetailsRow, 64, |row| row.organisation as u12
 /// Every country's complete policy roster, in native order, including empty
 /// rosters. Costs and cooldown days are stored per-country policy values;
 /// the selected policy and absolute cooldown belong to each organisation.
+/// `cost_modifier_raw` is the country's effective policy-cost modifier in
+/// signed fixed5, read in the same visit: the owner's term of every attach
+/// quote. `None` means its read failed: unknown, never zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IndustrialOrganisationPoliciesRow {
     pub country: u32,
     pub policies: Vec<IndustrialOrganisationPolicy>,
+    pub cost_modifier_raw: Option<i64>,
 }
 typed_codec!(IndustrialOrganisationPoliciesRow, 32, |row| row.country as u128,
-    |key| Self { country: key as u32, ..Default::default() }, { 0 => (policies): Opaque }, |_row| Ok(()));
+    |key| Self { country: key as u32, ..Default::default() },
+    { 0 => (policies): Opaque, 1 => (cost_modifier_raw): OptionalI64 }, |_row| Ok(()));
