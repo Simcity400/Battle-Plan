@@ -17,13 +17,127 @@ use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::System::{
     Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler},
     Performance::QueryPerformanceFrequency,
 };
+
+/// The recorded speed index of the game's fastest speed.
+const FASTEST_SPEED: i32 = 4;
+
+/// Below its fastest speed the game waits between hours; nothing read tells a pause from a long hour.
+fn writes_ahead(speed: Option<i32>) -> bool {
+    speed.is_some_and(|speed| speed < FASTEST_SPEED)
+}
+
+/// Finalizes a growing spool ahead while the game runs below its fastest speed, on one background thread.
+struct FinalizingAhead {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<(replay_io::Ahead, Duration, Duration)>>,
+}
+
+impl FinalizingAhead {
+    fn start(session: &Path, target: &Path) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (session, target, stopping) = (session.to_owned(), target.to_owned(), stop.clone());
+        let thread = std::thread::Builder::new()
+            .name("finalize ahead".into())
+            .spawn(move || {
+                use windows_sys::Win32::System::Threading::{
+                    GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+                };
+                // SAFETY: the calling thread's own pseudo-handle.
+                unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
+                let stopped = || stopping.load(Ordering::Acquire);
+                let mut ahead = replay_io::Ahead::default();
+                let (mut reading, mut writing) = (Duration::ZERO, Duration::ZERO);
+                let mut failed = false;
+                let mut fail = |error: String| {
+                    if !std::mem::replace(&mut failed, true) {
+                        eprintln!("Finalizing ahead paused: {error}");
+                    }
+                };
+                while !stopped() {
+                    let before = thread_cpu();
+                    if let Err(error) = ahead.read(&session) {
+                        fail(error);
+                    }
+                    reading += thread_cpu() - before;
+                    if writes_ahead(ahead.speed()) {
+                        let began = Instant::now();
+                        let busy = || stopped() || began.elapsed() >= Duration::from_secs(1);
+                        let before = thread_cpu();
+                        if let Err(error) = ahead.write(&session, &target, &busy) {
+                            fail(error);
+                        }
+                        writing += thread_cpu() - before;
+                        if began.elapsed() >= Duration::from_secs(1) {
+                            continue;
+                        }
+                    }
+                    for _ in 0..10 {
+                        if stopped() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+                (ahead, reading, writing)
+            })
+            .ok();
+        Self { stop, thread }
+    }
+
+    fn finish(mut self) -> replay_io::Ahead {
+        self.stop.store(true, Ordering::Release);
+        match self.thread.take().map(std::thread::JoinHandle::join) {
+            Some(Ok((ahead, reading, writing))) => {
+                let (read, written) = (ahead.frames_read(), ahead.written());
+                let per =
+                    |cpu: Duration, hours: usize| cpu.as_secs_f64() * 1e3 / hours.max(1) as f64;
+                println!(
+                    "Finalize ahead: read {read} hours at {:.2} ms CPU per hour; wrote {written} ({} packed) at {:.1} ms CPU per hour written, {:.1} ms per hour read.",
+                    per(reading, read),
+                    ahead.hours(),
+                    per(writing, written),
+                    per(writing, read),
+                );
+                ahead
+            }
+            _ => replay_io::Ahead::default(),
+        }
+    }
+}
+
+impl Drop for FinalizingAhead {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+/// The calling thread's CPU time.
+fn thread_cpu() -> Duration {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentThread, GetThreadTimes},
+    };
+    // SAFETY: FILETIME is plain data.
+    let mut times: [FILETIME; 4] = unsafe { std::mem::zeroed() };
+    let [creation, exit, kernel, user] = &mut times;
+    // SAFETY: the calling thread's pseudo-handle and four owned FILETIMEs.
+    if unsafe { GetThreadTimes(GetCurrentThread(), creation, exit, kernel, user) } == 0 {
+        return Duration::ZERO;
+    }
+    let ticks =
+        |time: &FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
 
 /// Stop and discard requests for a capture. The command line's console
 /// handler owns one; the tray recorder owns one per capture.
@@ -907,6 +1021,7 @@ pub(crate) fn capture(
         &json!({"recorder_pid":std::process::id(),"game_pid":pid,"session_id":session.id,"process_start_time":process.start_time,"session_dir":directory,"dll":dll,"detach_event":detach_name,"done_event":done_name}),
     )?;
     println!("Recording process {pid}. Spool: {}", directory.display());
+    let ahead = FinalizingAhead::start(&directory, target);
     let status_path = directory.join("status.json");
     stage(Stage::Recording {
         session: &directory,
@@ -1046,6 +1161,7 @@ pub(crate) fn capture(
             }),
         )?;
         remove_active(&active, &directory)?;
+        drop(ahead.finish());
         discard_session(&directory)?;
         return Ok(CaptureOutcome {
             detach_requested: requested_detach,
@@ -1137,11 +1253,17 @@ pub(crate) fn capture(
     stage(Stage::Saving { records: 0 });
     let saving = |records| stage(Stage::Saving { records });
     let progress = FinalizationProgress::new(&directory, &saving);
+    let ahead = ahead.finish();
     let (finalized, omitted) = match outcome.recovery_allowed.then(|| {
-        replay_io::finalize_session_outcome_with_progress(&directory, target, &|| {
-            progress.advance();
-            Ok(())
-        })
+        replay_io::finalize_session_ahead(
+            &directory,
+            target,
+            &|| {
+                progress.advance();
+                Ok(())
+            },
+            ahead,
+        )
     }) {
         Some(Ok(done)) => {
             outcome.issues.extend(
@@ -2015,6 +2137,15 @@ fn finalization_lock(output: &Path) -> Result<File, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_speed_below_the_fastest_writes_ahead() {
+        use super::{FASTEST_SPEED, writes_ahead};
+        // No speed read yet, or the fastest, which a pause or a long hour also leaves unchanged.
+        assert!(!writes_ahead(None));
+        assert!(!writes_ahead(Some(FASTEST_SPEED)));
+        assert!((0..FASTEST_SPEED).all(|speed| writes_ahead(Some(speed))));
+    }
+
     use super::*;
     use replay::container::Replay;
     use std::{cell::RefCell, collections::BTreeMap};

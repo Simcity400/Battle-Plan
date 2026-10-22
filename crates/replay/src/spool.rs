@@ -351,7 +351,7 @@ fn encode_frame_record(frame: EncodedFrame) -> io::Result<Vec<u8>> {
 }
 
 /// This checks segment context, not table baselines, which belong to FrameDecoder.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct SegmentState {
     records: usize,
     session: Option<u64>,
@@ -701,7 +701,9 @@ pub fn read_frame_at(
     };
     let envelope = envelopes.read(Vec::new())?.ok_or_else(missing)?;
     if envelope.crc != placement.crc || envelope.payload.len() != placement.length {
-        return Err(invalid_static("spool record changed since it was recovered"));
+        return Err(invalid_static(
+            "spool record changed since it was recovered",
+        ));
     }
     match envelope.record()? {
         Record::Frame(frame) => Ok(frame),
@@ -751,95 +753,233 @@ struct Placed {
     format: FormatVersion,
 }
 
-/// Decodes on `threads` threads but accepts in order, finding damage where a sequential read does.
 fn recover_records<T: SpoolRecord + Send>(
     input: impl Read,
     length: usize,
     keep: impl Fn(Record, Placement) -> T + Sync,
-    mut observe: impl FnMut(&T) -> io::Result<()>,
+    observe: impl FnMut(&T) -> io::Result<()>,
     fail_resources: bool,
     threads: usize,
 ) -> io::Result<Recovery<T>> {
-    let mut result = Recovery {
-        format: None,
-        records: Vec::new(),
-        valid_bytes: 0,
-        damage: None,
-    };
-    let mut envelopes = Envelopes::new(input, length);
-    let mut accepted = Accepted::default();
-    let mut failure = None;
-    let mut ended = false;
-    crate::container::pack::ordered(
-        threads,
-        || {
-            if ended {
-                return None;
-            }
-            let offset = envelopes.read_bytes;
-            let envelope = envelopes.read(Vec::new());
-            ended = !matches!(envelope, Ok(Some(_)));
-            envelope.map_err(|error| (offset, error)).transpose()
-        },
-        |envelope| {
-            envelope.map(|envelope| {
-                let placed = envelope.placed();
-                let record = envelope.record();
-                drop(envelope);
-                (record.map(|record| keep(record, placed.placement)), placed)
-            })
-        },
-        |read| {
-            let (offset, kept) = match read {
-                Err((offset, error)) => (offset, Err(error)),
-                Ok((record, placed)) => (
-                    placed.placement.offset,
-                    record.and_then(|kept| {
-                        accepted.accept(&kept.view(), placed)?;
-                        observe(&kept)?;
-                        engine_allocation::reserve(&mut result.records, 1)?;
-                        Ok(kept)
-                    }),
-                ),
-            };
-            match kept {
-                Ok(kept) => {
-                    result.records.push(kept);
-                    result.valid_bytes = accepted.valid_bytes;
-                    result.format = accepted.format;
-                    true
-                }
-                Err(error) => {
-                    failure = Some((offset, error));
-                    false
-                }
-            }
-        },
-    );
-    let Some((offset, error)) = failure.or_else(|| {
-        accepted
-            .finished()
-            .err()
-            .map(|error| (accepted.valid_bytes, error))
-    }) else {
-        return Ok(result);
-    };
-    if fail_resources
-        && !matches!(
-            error.kind(),
-            io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
-        )
-    {
-        return Err(error);
+    let mut tail = Tail::default();
+    let failure = tail.extend(input, length, keep, observe, threads);
+    tail.recovery(length, failure, fail_resources)
+}
+
+/// A segment's records recovered so far, continued as the segment grows.
+pub struct Tail<T> {
+    records: Vec<T>,
+    accepted: Accepted,
+    /// Each record's placement and format, in order: finishing checks the file still holds them.
+    placements: crc32fast::Hasher,
+}
+
+impl<T> Default for Tail<T> {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            accepted: Accepted::default(),
+            placements: crc32fast::Hasher::new(),
+        }
     }
-    result.damage = Some(
-        if offset == length && accepted.state.needs_keyframe && !accepted.state.partial {
-            "segment ended before initial keyframe".into()
-        } else {
-            format!("segment byte {offset}: {error}")
-        },
-    );
-    Ok(result)
+}
+
+fn fold_placement(hasher: &mut crc32fast::Hasher, placement: Placement, format: FormatVersion) {
+    hasher.update(&(placement.offset as u64).to_le_bytes());
+    hasher.update(&(placement.length as u64).to_le_bytes());
+    hasher.update(&placement.crc.to_le_bytes());
+    hasher.update(&format.version().to_le_bytes());
+}
+
+impl<T: SpoolRecord + Send> Tail<T> {
+    pub fn records(&self) -> &[T] {
+        &self.records
+    }
+
+    pub fn valid_bytes(&self) -> usize {
+        self.accepted.valid_bytes
+    }
+
+    /// Reads, on this thread, the records now whole and valid in the first `length` bytes; a failing one waits.
+    pub fn grow(
+        &mut self,
+        input: &mut (impl Read + Seek),
+        length: usize,
+        keep: impl Fn(Record, Placement) -> T + Sync,
+    ) -> io::Result<()> {
+        input.seek(SeekFrom::Start(self.accepted.valid_bytes as u64))?;
+        match self.extend(input, length, keep, |_| Ok(()), 1) {
+            Some((_, error))
+                if !matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Err(error)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// What [`recover_reader`] recovers from the first `length` bytes; none if this tail read past them.
+    pub fn finish(
+        mut self,
+        input: &mut (impl Read + Seek),
+        length: usize,
+        keep: impl Fn(Record, Placement) -> T + Sync,
+        mut observe: impl FnMut(&T) -> io::Result<()>,
+    ) -> io::Result<Option<Recovery<T>>> {
+        if self.accepted.valid_bytes > length || !self.still_held(input)? {
+            return Ok(None);
+        }
+        for record in &self.records {
+            observe(record)?;
+        }
+        input.seek(SeekFrom::Start(self.accepted.valid_bytes as u64))?;
+        let failure = self.extend(
+            input,
+            length,
+            keep,
+            observe,
+            crate::container::pack::workers(),
+        );
+        self.recovery(length, failure, true).map(Some)
+    }
+
+    /// Whether each record keeps the offset, length and checksum its payload was verified against here.
+    fn still_held(&self, input: &mut (impl Read + Seek)) -> io::Result<bool> {
+        let mut placements = crc32fast::Hasher::new();
+        let mut offset = 0;
+        while offset < self.accepted.valid_bytes {
+            input.seek(SeekFrom::Start(offset as u64))?;
+            let mut header = [0; RECORD_HEADER_BYTES];
+            if input.read_exact(&mut header).is_err() || header[..4] != RECORD_MAGIC {
+                return Ok(false);
+            }
+            let Ok(format) =
+                FormatVersion::read(u16::from_le_bytes(header[4..6].try_into().unwrap()))
+            else {
+                return Ok(false);
+            };
+            let placement = Placement {
+                offset,
+                length: u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize,
+                crc: u32::from_le_bytes(header[10..14].try_into().unwrap()),
+            };
+            fold_placement(&mut placements, placement, format);
+            offset += RECORD_HEADER_BYTES + placement.length;
+        }
+        Ok(offset == self.accepted.valid_bytes
+            && placements.finalize() == self.placements.clone().finalize())
+    }
+
+    /// Decodes on `threads` threads but accepts in order, finding damage where a sequential read does.
+    fn extend(
+        &mut self,
+        input: impl Read,
+        length: usize,
+        keep: impl Fn(Record, Placement) -> T + Sync,
+        mut observe: impl FnMut(&T) -> io::Result<()>,
+        threads: usize,
+    ) -> Option<(usize, io::Error)> {
+        let mut envelopes = Envelopes {
+            input,
+            length,
+            read_bytes: self.accepted.valid_bytes,
+            format: self.accepted.format,
+        };
+        let (records, accepted, placements) =
+            (&mut self.records, &mut self.accepted, &mut self.placements);
+        let mut failure = None;
+        let mut ended = false;
+        crate::container::pack::ordered(
+            threads,
+            || {
+                if ended {
+                    return None;
+                }
+                let offset = envelopes.read_bytes;
+                let envelope = envelopes.read(Vec::new());
+                ended = !matches!(envelope, Ok(Some(_)));
+                envelope.map_err(|error| (offset, error)).transpose()
+            },
+            |envelope| {
+                envelope.map(|envelope| {
+                    let placed = envelope.placed();
+                    let record = envelope.record();
+                    drop(envelope);
+                    (record.map(|record| keep(record, placed.placement)), placed)
+                })
+            },
+            |read| {
+                let (offset, kept) = match read {
+                    Err((offset, error)) => (offset, Err(error)),
+                    Ok((record, placed)) => (
+                        placed.placement.offset,
+                        record.and_then(|kept| {
+                            let mut next = accepted.clone();
+                            next.accept(&kept.view(), placed)?;
+                            observe(&kept)?;
+                            engine_allocation::reserve(records, 1)?;
+                            *accepted = next;
+                            fold_placement(placements, placed.placement, placed.format);
+                            Ok(kept)
+                        }),
+                    ),
+                };
+                match kept {
+                    Ok(kept) => {
+                        records.push(kept);
+                        true
+                    }
+                    Err(error) => {
+                        failure = Some((offset, error));
+                        false
+                    }
+                }
+            },
+        );
+        failure
+    }
+
+    fn recovery(
+        self,
+        length: usize,
+        failure: Option<(usize, io::Error)>,
+        fail_resources: bool,
+    ) -> io::Result<Recovery<T>> {
+        let accepted = self.accepted;
+        let mut result = Recovery {
+            format: accepted.format,
+            records: self.records,
+            valid_bytes: accepted.valid_bytes,
+            damage: None,
+        };
+        let Some((offset, error)) = failure.or_else(|| {
+            accepted
+                .finished()
+                .err()
+                .map(|error| (accepted.valid_bytes, error))
+        }) else {
+            return Ok(result);
+        };
+        if fail_resources
+            && !matches!(
+                error.kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            )
+        {
+            return Err(error);
+        }
+        result.damage = Some(
+            if offset == length && accepted.state.needs_keyframe && !accepted.state.partial {
+                "segment ended before initial keyframe".into()
+            } else {
+                format!("segment byte {offset}: {error}")
+            },
+        );
+        Ok(result)
+    }
 }
 
 struct Envelopes<R> {
@@ -902,7 +1042,7 @@ impl<R: Read> Envelopes<R> {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Accepted {
     valid_bytes: usize,
     format: Option<FormatVersion>,

@@ -1652,26 +1652,6 @@ pub(crate) fn fresh_and_failed_reuse(raw: &[u8], level: i32) -> io::Result<(Vec<
     Ok((fresh, failed))
 }
 
-/// Each chosen section (its id, plain length and [`compress`]ed bytes)
-/// compressed again at [`STORED_LEVEL`] when that is smaller, the largest
-/// first, on this thread and the threads `cores` has free; each holds one
-/// level-19 compression context. Each section's bytes depend only on it.
-fn store_sections(sections: &mut [(usize, usize, Vec<u8>)], cores: &Cores) -> io::Result<()> {
-    let mut order: Vec<usize> = (0..sections.len()).collect();
-    order.sort_by_key(|&at| std::cmp::Reverse(sections[at].2.len()));
-    let chosen = &*sections;
-    let stored = pack::each(cores, order, |at| {
-        let (_, raw, bytes) = &chosen[at];
-        Ok((at, store(bytes, *raw)?))
-    })?;
-    for (at, bytes) in stored {
-        if let Some(bytes) = bytes {
-            sections[at].2 = bytes;
-        }
-    }
-    Ok(())
-}
-
 /// `compressed`, a frame of `raw` plain bytes, at [`STORED_LEVEL`]; none when
 /// that is not smaller.
 fn store(compressed: &[u8], raw: usize) -> io::Result<Option<Vec<u8>>> {
@@ -2272,41 +2252,114 @@ impl BlockWriter {
 
     /// The block's sections, on this thread and the threads `cores` has
     /// free: each table's choices depend only on its own entries.
-    pub(crate) fn compress(mut self, cores: &Cores) -> io::Result<CompressedBlock> {
-        let magic = self.layout().magic();
-        // Each table's later entries as it stores them, compressed.
-        let force_residual = self.force_residual;
-        let tables: Vec<_> = self.tables.iter_mut().collect();
-        let chosen = pack::each(cores, tables, |writer: &mut TableWriter| {
-            let mut best = writer.plain.compress()?;
-            let mut predicted = false;
-            if let Some(later) = &mut writer.predicted {
-                let candidate = later.compress()?;
-                if force_residual
-                    || candidate.1.as_ref().map_or(0, Vec::len)
-                        < best.1.as_ref().map_or(0, Vec::len)
-                {
-                    best = candidate;
-                    predicted = true;
+    pub(crate) fn compress(self, cores: &Cores) -> io::Result<CompressedBlock> {
+        Ok(Compressing::new(self)
+            .run(cores, &|| false)?
+            .expect("a compression that never stops finishes"))
+    }
+}
+
+/// A block's compression, which stops between tables and sections and resumes there.
+pub(crate) struct Compressing {
+    block: BlockWriter,
+    chosen: Vec<Option<(usize, Option<Vec<u8>>)>>,
+    sections: Vec<(usize, usize, Vec<u8>)>,
+    /// Sections not yet tried at the stored level, largest first.
+    unstored: Vec<usize>,
+}
+
+impl Compressing {
+    pub(crate) fn new(block: BlockWriter) -> Self {
+        let chosen = block.tables.iter().map(|_| None).collect();
+        Self {
+            block,
+            chosen,
+            sections: Vec::new(),
+            unstored: Vec::new(),
+        }
+    }
+
+    /// None where `stop` held before every table and section was done.
+    pub(crate) fn run(
+        &mut self,
+        cores: &Cores,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<Option<CompressedBlock>> {
+        if self.sections.is_empty() {
+            let force_residual = self.block.force_residual;
+            let tables: Vec<_> = self
+                .block
+                .tables
+                .iter_mut()
+                .zip(&mut self.chosen)
+                .filter(|(_, chosen)| chosen.is_none())
+                .collect();
+            pack::each(cores, tables, |(writer, chosen)| {
+                if stop() {
+                    return Ok(());
                 }
+                let mut best = writer.plain.compress()?;
+                let mut predicted = false;
+                if let Some(later) = &mut writer.predicted {
+                    let candidate = later.compress()?;
+                    if force_residual
+                        || candidate.1.as_ref().map_or(0, Vec::len)
+                            < best.1.as_ref().map_or(0, Vec::len)
+                    {
+                        best = candidate;
+                        predicted = true;
+                    }
+                }
+                if !predicted {
+                    writer.predicted = None;
+                }
+                *chosen = Some(best);
+                Ok(())
+            })?;
+            if self.chosen.iter().any(Option::is_none) {
+                return Ok(None);
             }
-            if !predicted {
-                writer.predicted = None;
+            self.sections = self.sections()?;
+            self.unstored = (0..self.sections.len()).collect();
+            self.unstored
+                .sort_by_key(|&at| std::cmp::Reverse(self.sections[at].2.len()));
+        }
+        let sections = &self.sections;
+        let stored = pack::each(cores, std::mem::take(&mut self.unstored), |at| {
+            if stop() {
+                return Ok((at, None, false));
             }
-            Ok(best)
+            let (_, raw, bytes) = &sections[at];
+            Ok((at, store(bytes, *raw)?, true))
         })?;
+        for (at, bytes, done) in stored {
+            match (bytes, done) {
+                (Some(bytes), _) => self.sections[at].2 = bytes,
+                (None, false) => self.unstored.push(at),
+                (None, true) => {}
+            }
+        }
+        if !self.unstored.is_empty() {
+            return Ok(None);
+        }
+        self.assemble().map(Some)
+    }
+
+    /// The header, diagnostics and each table's chosen sections, each at the choosing level.
+    fn sections(&mut self) -> io::Result<Vec<(usize, usize, Vec<u8>)>> {
+        let block = &mut self.block;
         // Which tables have an entry in each frame after the keyframe, as
         // the change from the frame before.
-        let width = self.present.width();
+        let width = block.present.width();
         let mut header = Vec::new();
         let mut previous = vec![0_u8; width];
-        for ordinal in 0..self.tables.len() {
+        for ordinal in 0..block.tables.len() {
             set(&mut previous, ordinal);
         }
-        for (frame, gap) in self.gaps.iter().enumerate() {
+        for (frame, gap) in block.gaps.iter().enumerate() {
             put_varint(&mut header, *gap);
             let mut entries = vec![0_u8; width];
-            for (ordinal, writer) in self.tables.iter().enumerate() {
+            for (ordinal, writer) in block.tables.iter().enumerate() {
                 let later = writer.predicted.as_ref().unwrap_or(&writer.plain);
                 if later.present[frame + 1] {
                     set(&mut entries, ordinal);
@@ -2320,32 +2373,41 @@ impl BlockWriter {
             );
             previous = entries;
         }
-        self.header = header;
+        block.header = header;
         let mut sections: Vec<(usize, usize, Vec<u8>)> = Vec::new();
-        if !self.header.is_empty() {
-            sections.push((HEADER, self.header.len(), compress(&self.header)?));
+        if !block.header.is_empty() {
+            sections.push((HEADER, block.header.len(), compress(&block.header)?));
         }
         sections.push((
             DIAGNOSTICS,
-            self.diagnostics.len(),
-            compress(&self.diagnostics)?,
+            block.diagnostics.len(),
+            compress(&block.diagnostics)?,
         ));
-        for (writer, (raw, later)) in self.tables.into_iter().zip(chosen) {
+        // Each table's entries are released once its sections are taken.
+        for (writer, chosen) in std::mem::take(&mut block.tables)
+            .into_iter()
+            .zip(&mut self.chosen)
+        {
             sections.push((
                 keyframe_section(writer.table),
                 writer.keyframe_raw,
                 writer.keyframe,
             ));
-            if let Some(later) = later {
+            if let Some((raw, Some(later))) = chosen.take() {
                 sections.push((later_section(writer.table), raw, later));
             }
         }
-        store_sections(&mut sections, cores)?;
+        Ok(sections)
+    }
+
+    fn assemble(&mut self) -> io::Result<CompressedBlock> {
+        let block = &self.block;
+        let sections = &self.sections;
         let mut directory = Vec::new();
-        put_varint(&mut directory, u128::from(self.frames));
+        put_varint(&mut directory, u128::from(block.frames));
         put_varint(&mut directory, sections.len() as u128);
         let mut raw_length = 0_usize;
-        for (id, raw, bytes) in &sections {
+        for (id, raw, bytes) in sections {
             put_varint(&mut directory, *id as u128);
             put_varint(&mut directory, *raw as u128);
             put_varint(&mut directory, bytes.len() as u128);
@@ -2361,16 +2423,16 @@ impl BlockWriter {
                     .map(|section| section.2.len())
                     .sum::<usize>(),
         );
-        bytes.extend_from_slice(magic);
+        bytes.extend_from_slice(block.layout().magic());
         bytes.extend_from_slice(&crc32fast::hash(&directory).to_le_bytes());
         bytes.extend_from_slice(&directory);
-        for (_, _, section) in &sections {
+        for (_, _, section) in sections {
             bytes.extend_from_slice(section);
         }
         Ok(CompressedBlock {
-            branch: self.branch,
-            first_hour: self.first_hour,
-            last_hour: self.last_hour,
+            branch: block.branch,
+            first_hour: block.first_hour,
+            last_hour: block.last_hour,
             raw_length: raw_length as u64,
             bytes,
         })

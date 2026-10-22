@@ -4,15 +4,16 @@ use replay_data::identity::IdentityCodec;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Seek,
     path::{Path, PathBuf},
     time::Instant,
 };
 
 use replay::{
     container::Incomplete, container::Observed, container::RecoveryNote, container::Replay,
-    container::SeekResult, container::UpdateKind, spool::ControlRecord,
-    spool::FrameMetadata, spool::Record, spool::RecordReader, spool::RecordRef, spool::Recovered,
-    spool::Recovery, spool::SpoolRecord, spool::read_frame_at, spool::recover_reader,
+    container::SeekResult, container::UpdateKind, spool::ControlRecord, spool::FrameMetadata,
+    spool::Record, spool::RecordReader, spool::RecordRef, spool::Recovered, spool::Recovery,
+    spool::SpoolRecord, spool::Tail, spool::read_frame_at, spool::recover_reader,
 };
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
@@ -23,7 +24,7 @@ use replay_data::{
 use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES, witness::WITNESS_FILE_NAME};
 use replay_frame::{
     branches::Gap, branches::Parentage, frame::DecodedFrame, frame::Frame, frame::FrameDecoder,
-    frame::TableUpdate,
+    frame::TableUpdate, frame::TableView,
 };
 
 use crate::windows;
@@ -118,7 +119,13 @@ const ALLOCATION_GAP_REASON: &str = "collector allocation failed";
 
 /// Each recovered segment through the handle it was recovered with, which no one may write or delete.
 struct FinalizationFrames {
-    segments: BTreeMap<u32, (std::sync::Mutex<fs::File>, usize)>,
+    segments: BTreeMap<u32, (Segment, usize)>,
+}
+
+enum Segment {
+    Held(std::sync::Mutex<fs::File>),
+    /// Still written by the collector, so opened for each read.
+    Growing(PathBuf),
 }
 
 /// A segment opened so that no one else may write, truncate, replace or delete it while held.
@@ -131,6 +138,220 @@ fn open_held(path: &Path) -> std::io::Result<fs::File> {
         .open(path)
 }
 
+/// A session's spool recovered and its blocks written while it records, for finalization to take over.
+#[derive(Default)]
+pub struct Ahead {
+    campaigns: BTreeMap<PathBuf, CampaignAhead>,
+    /// The game speed index the last frame read recorded.
+    speed: Option<i32>,
+}
+
+#[derive(Default)]
+struct CampaignAhead {
+    tails: BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
+    clock: Option<FrameDecoder>,
+    written: Option<(replay::container::Ahead, Summary)>,
+    /// It could not go on; finalization writes every block.
+    stopped: bool,
+}
+
+impl Ahead {
+    /// Reads what each campaign's spool added; whether a frame was added.
+    pub fn read(&mut self, session_dir: &Path) -> Result<bool> {
+        let mut grew = false;
+        for name in spooled_campaigns(session_dir)? {
+            let campaign_dir = session_dir.join(&name);
+            let campaign = self.campaigns.entry(campaign_dir.clone()).or_default();
+            for (number, path) in segment_paths(&campaign_dir)? {
+                let (_, tail) = campaign
+                    .tails
+                    .entry(number)
+                    .or_insert_with(|| (path.clone(), Tail::default()));
+                let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
+                let length = file
+                    .metadata()
+                    .map_err(|error| failure(&path, error))?
+                    .len();
+                let length = usize::try_from(length).map_err(|error| failure(&path, error))?;
+                let read = tail.records().len();
+                tail.grow(&mut std::io::BufReader::new(file), length, Recovered::keep)
+                    .map_err(|error| failure(&path, error))?;
+                let clock = campaign
+                    .clock
+                    .get_or_insert_with(|| FrameDecoder::for_tables(&[TableId::Clock]));
+                for record in &tail.records()[read..] {
+                    let Recovered::Frame(metadata) = record else {
+                        continue;
+                    };
+                    grew = true;
+                    self.speed = metadata.frame().ok().and_then(|frame| {
+                        match clock
+                            .advance(&frame)
+                            .ok()
+                            .map(|hour| &*hour.tables[TableId::Clock.index()])
+                        {
+                            Some(TableView::Complete(TableRows::Clock(rows))) => {
+                                rows.first().map(|row| row.speed)
+                            }
+                            _ => None,
+                        }
+                    });
+                }
+            }
+        }
+        Ok(grew)
+    }
+
+    pub fn speed(&self) -> Option<i32> {
+        self.speed
+    }
+
+    /// Frames read from the spools.
+    pub fn frames_read(&self) -> usize {
+        self.campaigns
+            .values()
+            .flat_map(|campaign| campaign.tails.values())
+            .flat_map(|(_, tail)| tail.records())
+            .filter(|record| matches!(record, Recovered::Frame(_)))
+            .count()
+    }
+
+    /// Writes and compresses the blocks of what was read, until `stop`.
+    pub fn write(
+        &mut self,
+        session_dir: &Path,
+        replay_dir: &Path,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> Result<()> {
+        let admissions = session_admissions(session_dir)?;
+        for (campaign_dir, campaign) in &mut self.campaigns {
+            let Some(name) = campaign_dir.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let name = name.to_owned();
+            if campaign.stopped || stop() {
+                continue;
+            }
+            let admitted = admissions
+                .as_ref()
+                .map(|admissions| admissions.loads.get(&name).cloned().unwrap_or_default());
+            let segments = admitted_prefix(&campaign.tails, admitted.as_ref());
+            let Ok(id) = campaign_id(segments.iter().map(|(_, records)| *records)) else {
+                continue;
+            };
+            if campaign_filename(&id).ok() != Some(name.as_str()) {
+                campaign.stopped = true;
+                continue;
+            }
+            if campaign.written.is_none() {
+                let destination = replay_dir.join(format!("{name}.battleplan"));
+                let existing = if destination.exists() {
+                    match open(&destination) {
+                        Ok(previous)
+                            if previous.require_undamaged().is_ok()
+                                && previous.campaign_id == id =>
+                        {
+                            Some(previous)
+                        }
+                        _ => {
+                            campaign.stopped = true;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let ahead = replay::container::Ahead::new(existing)
+                    .map_err(|error| failure(&destination, error))?;
+                campaign.written = Some((ahead, Summary::default()));
+            }
+            let frames = FinalizationFrames {
+                segments: campaign
+                    .tails
+                    .iter()
+                    .map(|(number, (path, tail))| {
+                        (
+                            *number,
+                            (Segment::Growing(path.clone()), tail.valid_bytes()),
+                        )
+                    })
+                    .collect(),
+            };
+            let (ahead, summary) = campaign.written.as_mut().unwrap();
+            let advanced = ahead.advance(
+                &id,
+                &segments,
+                |number, frame| frames.read(number, frame),
+                |hour| summary.observe_hour(hour).map_err(std::io::Error::other),
+                stop,
+            );
+            if !matches!(advanced, Ok(true)) {
+                campaign.written = None;
+                campaign.stopped = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Hours written ahead, whose blocks are packed.
+    pub fn hours(&self) -> usize {
+        self.campaigns
+            .values()
+            .filter_map(|campaign| campaign.written.as_ref())
+            .map(|(ahead, _)| ahead.hours())
+            .sum()
+    }
+
+    /// Hours whose frames are written ahead, packed or not.
+    pub fn written(&self) -> usize {
+        self.campaigns
+            .values()
+            .filter_map(|campaign| campaign.written.as_ref())
+            .map(|(ahead, _)| ahead.written())
+            .sum()
+    }
+}
+
+/// The records before the first branch whose load is not admitted (yet); every record without admissions.
+fn admitted_prefix<'a>(
+    tails: &'a BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
+    admitted: Option<&BTreeSet<i64>>,
+) -> Vec<(u32, &'a [Recovered])> {
+    let all: Vec<(u32, &[Recovered])> = tails
+        .iter()
+        .map(|(number, (_, tail))| (*number, tail.records()))
+        .collect();
+    let Some(admitted) = admitted else {
+        return all;
+    };
+    let mut branches = BranchLoads::default();
+    for record in all.iter().flat_map(|(_, records)| records.iter()) {
+        branches.observe(record.view());
+    }
+    let mut prefix = Vec::new();
+    for (number, records) in all {
+        let mut current = None;
+        for (at, record) in records.iter().enumerate() {
+            match record {
+                Recovered::SessionStart(_) => current = None,
+                Recovered::BranchStart(branch) => current = Some(branch.id),
+                _ => {}
+            }
+            if current.is_some_and(|branch| {
+                !branches
+                    .loads
+                    .get(&branch)
+                    .is_some_and(|load| admitted.contains(load))
+            }) {
+                prefix.push((number, &records[..at]));
+                return prefix;
+            }
+        }
+        prefix.push((number, records));
+    }
+    prefix
+}
+
 impl FinalizationFrames {
     fn new(held: BTreeMap<u32, fs::File>, segments: &[(u32, Recovery<Recovered>)]) -> Self {
         Self {
@@ -141,7 +362,8 @@ impl FinalizationFrames {
                         .iter()
                         .find(|(segment, _)| *segment == number)
                         .map(|(_, recovery)| {
-                            (number, (std::sync::Mutex::new(file), recovery.valid_bytes))
+                            let file = Segment::Held(std::sync::Mutex::new(file));
+                            (number, (file, recovery.valid_bytes))
                         })
                 })
                 .collect(),
@@ -149,12 +371,22 @@ impl FinalizationFrames {
     }
 
     fn read(&self, number: u32, expected: &FrameMetadata) -> std::io::Result<Frame> {
-        let (file, length) = self
+        let (segment, length) = self
             .segments
             .get(&number)
             .ok_or_else(|| std::io::Error::other("recovered spool segment is missing"))?;
-        let mut file = file.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let frame = read_frame_at(&mut *file, expected.placement, *length)?;
+        let frame = match segment {
+            Segment::Held(file) => read_frame_at(
+                &mut *file
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                expected.placement,
+                *length,
+            )?,
+            Segment::Growing(path) => {
+                read_frame_at(&mut fs::File::open(path)?, expected.placement, *length)?
+            }
+        };
         if (frame.branch, frame.hour, frame.keyframe)
             != (expected.branch, expected.hour, expected.keyframe)
         {
@@ -261,10 +493,10 @@ fn segment_paths(directory: &Path) -> Result<Vec<(u32, PathBuf)>> {
     Ok(paths)
 }
 
-fn campaign_id(segments: &[(u32, Recovery<Recovered>)]) -> Result<Vec<u8>> {
+fn campaign_id<'a>(segments: impl IntoIterator<Item = &'a [Recovered]>) -> Result<Vec<u8>> {
     segments
-        .iter()
-        .flat_map(|(_, recovery)| &recovery.records)
+        .into_iter()
+        .flatten()
         .find_map(|record| match record {
             Recovered::Frame(frame) => match &frame.campaign {
                 TableUpdate::Snapshot(TableRows::Campaign(rows)) => match rows.as_slice() {
@@ -703,6 +935,16 @@ pub fn finalize_session_outcome_with_progress(
     replay_dir: &Path,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<Finalized> {
+    finalize_session_ahead(session_dir, replay_dir, progress, Ahead::default())
+}
+
+/// Finalizes taking over the recovery and blocks written ahead where they still hold.
+pub fn finalize_session_ahead(
+    session_dir: &Path,
+    replay_dir: &Path,
+    progress: &dyn Fn() -> std::io::Result<()>,
+    mut ahead: Ahead,
+) -> Result<Finalized> {
     progress().map_err(|error| failure(session_dir, error))?;
     let admissions = session_admissions(session_dir)?;
     let mut finalized = Finalized::default();
@@ -764,6 +1006,7 @@ pub fn finalize_session_outcome_with_progress(
     }
     let mut process_context = None;
     for (campaign_dir, name, paths, admitted) in campaigns {
+        let ahead = ahead.campaigns.remove(&campaign_dir);
         match finalize_campaign(
             &campaign_dir,
             &paths,
@@ -772,6 +1015,7 @@ pub fn finalize_session_outcome_with_progress(
             witness.as_ref(),
             admitted,
             progress,
+            ahead,
         ) {
             Ok((path, omitted)) => {
                 finalized.replays.extend(path);
@@ -818,6 +1062,7 @@ fn finalize_campaign(
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
+    ahead: Option<CampaignAhead>,
 ) -> Result<CampaignOutcome> {
     finalize_campaign_with_publisher(
         campaign_dir,
@@ -827,6 +1072,7 @@ fn finalize_campaign(
         witness,
         admitted,
         progress,
+        ahead,
         |replay, destination| replay.write_atomic_with(destination, |_| progress()),
     )
 }
@@ -840,8 +1086,11 @@ fn finalize_campaign_with_publisher(
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
+    ahead: Option<CampaignAhead>,
     publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
 ) -> Result<CampaignOutcome> {
+    let (mut tails, written) =
+        ahead.map_or_else(Default::default, |ahead| (ahead.tails, ahead.written));
     let started = Instant::now();
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
@@ -918,13 +1167,25 @@ fn finalize_campaign_with_publisher(
                 watermark_found = true;
             }
         }
-        let recovered = recover_reader(
-            std::io::BufReader::new(&file),
-            prefix_length,
-            Recovered::keep,
-            |_| progress(),
-        )
-        .map_err(|error| failure(path, error))?;
+        let recovered = {
+            let mut input = std::io::BufReader::new(&file);
+            let continued = match tails.remove(number) {
+                Some((tail_path, tail)) if tail_path == *path => tail
+                    .finish(&mut input, prefix_length, Recovered::keep, |_| progress())
+                    .map_err(|error| failure(path, error))?,
+                _ => None,
+            };
+            match continued {
+                Some(recovered) => recovered,
+                None => {
+                    input
+                        .seek(std::io::SeekFrom::Start(0))
+                        .map_err(|error| failure(path, error))?;
+                    recover_reader(input, prefix_length, Recovered::keep, |_| progress())
+                        .map_err(|error| failure(path, error))?
+                }
+            }
+        };
         held.insert(*number, file);
         if watermark.is_some_and(|(segment, _)| segment == *number)
             && recovered.valid_bytes != prefix_length
@@ -975,7 +1236,12 @@ fn finalize_campaign_with_publisher(
             *process_context = Some(context);
         }
     }
-    let id = campaign_id(&segments).map_err(|error| failure(campaign_dir, error))?;
+    let id = campaign_id(
+        segments
+            .iter()
+            .map(|(_, recovery)| recovery.records.as_slice()),
+    )
+    .map_err(|error| failure(campaign_dir, error))?;
     let name = campaign_filename(&id).map_err(|error| failure(campaign_dir, error))?;
     if campaign_dir.file_name().and_then(|name| name.to_str()) != Some(name) {
         return Err(failure(
@@ -1029,15 +1295,7 @@ fn finalize_campaign_with_publisher(
             .map_err(|error| failure(campaign_dir, error))?;
     }
     let destination = replay_dir.join(format!("{name}.battleplan"));
-    let mut unchanged = false;
-    let mut summary = Summary::default();
-    let frames = FinalizationFrames::new(held, &segments);
-    let read = |number, frame: &FrameMetadata| frames.read(number, frame);
-    let observe = |hour: &Observed| {
-        progress()?;
-        summary.observe_hour(hour).map_err(std::io::Error::other)
-    };
-    let replay = if destination.exists() {
+    let previous = if destination.exists() {
         let previous = open(&destination)?;
         previous
             .require_undamaged()
@@ -1048,6 +1306,36 @@ fn finalize_campaign_with_publisher(
                 "existing replay belongs to a different campaign",
             ));
         }
+        Some(previous)
+    } else {
+        None
+    };
+    let mut sorted: Vec<_> = segments
+        .iter()
+        .map(|(number, recovery)| (*number, recovery.records.as_slice()))
+        .collect();
+    sorted.sort_unstable_by_key(|(number, _)| *number);
+    let (ahead, mut summary) = match written {
+        Some((ahead, summary))
+            if ahead.continues(&sorted)
+                && match (ahead.existing(), &previous) {
+                    (None, None) => true,
+                    (Some(before), Some(previous)) => before.bytes() == previous.bytes(),
+                    _ => false,
+                } =>
+        {
+            (Some(ahead), summary)
+        }
+        _ => (None, Summary::default()),
+    };
+    let mut unchanged = false;
+    let frames = FinalizationFrames::new(held, &segments);
+    let read = |number, frame: &FrameMetadata| frames.read(number, frame);
+    let observe = |hour: &Observed| {
+        progress()?;
+        summary.observe_hour(hour).map_err(std::io::Error::other)
+    };
+    let replay = if let Some(previous) = previous {
         if already_finalized_with_reader(&previous, &segments, |number, frame| {
             progress()?;
             frames.read(number, frame)
@@ -1056,11 +1344,11 @@ fn finalize_campaign_with_publisher(
             previous
         } else {
             previous
-                .append_recovered_with_reader(&segments, read, progress, observe)
+                .append_recovered_with_reader(&segments, read, progress, observe, ahead)
                 .map_err(|error| failure(&destination, error))?
         }
     } else {
-        Replay::from_recovered_with_reader(id, &segments, read, progress, observe)
+        Replay::from_recovered_with_reader(id, &segments, read, progress, observe, ahead)
             .map_err(|error| failure(&destination, error))?
     };
     if unchanged {
@@ -1093,6 +1381,7 @@ fn finalize_campaign_with_publisher(
         .flat_map(|(_, recovered)| &recovered.records)
         .collect();
     if unchanged {
+        summary = Summary::default();
         for (number, recovery) in &segments {
             for record in &recovery.records {
                 if let Recovered::Frame(frame) = record {
@@ -1351,7 +1640,10 @@ fn apply_failure_witness(
         position += 1;
     }
     if !partial_exists {
-        target.1.records.insert(position, Recovered::Control(partial));
+        target
+            .1
+            .records
+            .insert(position, Recovered::Control(partial));
     }
     Ok(())
 }
@@ -2068,12 +2360,7 @@ impl Summary {
         self.totals.push(hour.metrics.total_ns);
         self.max_pool = self.max_pool.max(hour.metrics.pool_bytes);
         self.max_dropped = self.max_dropped.max(hour.metrics.dropped_frames);
-        if !self
-            .hours
-            .entry(hour.branch)
-            .or_default()
-            .insert(hour.hour)
-        {
+        if !self.hours.entry(hour.branch).or_default().insert(hour.hour) {
             return Err(format!(
                 "duplicate frame on branch {} at hour {}",
                 hour.branch, hour.hour
@@ -2279,7 +2566,7 @@ fn print_throughput<'a>(
 mod tests {
     use super::*;
     use replay::spool::recover_prefix;
-    use replay_frame::{branches::BranchReason, branches::BranchStart, frame::TableView};
+    use replay_frame::{branches::BranchReason, branches::BranchStart};
 
     #[test]
     fn a_session_without_campaign_segments_has_no_spool() {
@@ -2697,6 +2984,7 @@ mod tests {
             None,
             None,
             &|| Ok(()),
+            None,
             |replay, path| {
                 replay.publish_with(
                     &mut FailPostRenameFlush {
@@ -2869,6 +3157,131 @@ mod tests {
     }
 
     #[test]
+    fn a_spool_finalized_ahead_while_it_grows_publishes_the_same_recording() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_test_directory};
+        let directory = allocation_test_directory("finalized-ahead");
+        let session = directory.join("session");
+        let campaign = session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap());
+        fs::create_dir_all(&campaign).unwrap();
+        let path = campaign.join("spool.0000.h4s");
+        let ahead_dir = directory.join("ahead");
+        let mut ahead = Ahead::default();
+        let mut written = Vec::new();
+        for (at, record) in long_finalization_records(Some(12)).iter().enumerate() {
+            let record = replay::spool::encode_record(record).unwrap();
+            written.extend_from_slice(&record);
+            // The collector's write of a record may not be whole yet.
+            fs::write(&path, &written[..written.len() - record.len() / 2]).unwrap();
+            ahead.read(&session).unwrap();
+            ahead.write(&session, &ahead_dir, &|| false).unwrap();
+            fs::write(&path, &written).unwrap();
+            if at % 3 == 0 {
+                ahead.read(&session).unwrap();
+                ahead.write(&session, &ahead_dir, &|| false).unwrap();
+            }
+        }
+        // The first block, hours 2 to 11, is packed; the second is still open.
+        assert_eq!(ahead.hours(), 10);
+        assert_eq!(ahead.frames_read(), 20);
+        assert_eq!(ahead.speed(), Some(0));
+        let with = finalize_session_ahead(&session, &ahead_dir, &|| Ok(()), ahead).unwrap();
+        let without = finalize_session(&session, &directory.join("plain")).unwrap();
+        assert_eq!(
+            fs::read(&with.replays[0]).unwrap(),
+            fs::read(&without[0]).unwrap()
+        );
+        // Records that differ from those written ahead are finalized from the spool.
+        let mut ahead = Ahead::default();
+        ahead.read(&session).unwrap();
+        ahead
+            .write(&session, &directory.join("changed"), &|| false)
+            .unwrap();
+        let mut records = long_finalization_records(Some(12));
+        records.remove(records.len() - 2);
+        let spool: Vec<_> = records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        fs::write(&path, spool).unwrap();
+        let changed =
+            finalize_session_ahead(&session, &directory.join("changed"), &|| Ok(()), ahead)
+                .unwrap();
+        let plain = finalize_session(&session, &directory.join("changed-plain")).unwrap();
+        assert_eq!(
+            fs::read(&changed.replays[0]).unwrap(),
+            fs::read(&plain[0]).unwrap()
+        );
+        // A spool cut short since it was read ahead is finalized from what it still holds.
+        let mut ahead = Ahead::default();
+        ahead.read(&session).unwrap();
+        ahead
+            .write(&session, &directory.join("truncated"), &|| false)
+            .unwrap();
+        assert!(ahead.written() > 0);
+        let spool = fs::read(&path).unwrap();
+        fs::write(&path, &spool[..spool.len() * 2 / 3]).unwrap();
+        let truncated =
+            finalize_session_ahead(&session, &directory.join("truncated"), &|| Ok(()), ahead)
+                .unwrap();
+        let plain = finalize_session(&session, &directory.join("truncated-plain")).unwrap();
+        assert_eq!(
+            fs::read(&truncated.replays[0]).unwrap(),
+            fs::read(&plain[0]).unwrap()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn blocks_are_written_ahead_only_up_to_a_load_not_yet_admitted() {
+        let records = crate::test_support::two_load_records();
+        let spool: Vec<_> = records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect();
+        let mut tail = Tail::default();
+        tail.grow(
+            &mut std::io::Cursor::new(&spool),
+            spool.len(),
+            Recovered::keep,
+        )
+        .unwrap();
+        let tails = BTreeMap::from([(0, (PathBuf::new(), tail))]);
+        let count = |admitted: Option<&BTreeSet<i64>>| -> usize {
+            admitted_prefix(&tails, admitted)
+                .iter()
+                .map(|(_, records)| records.len())
+                .sum()
+        };
+        let second = records
+            .iter()
+            .position(|record| matches!(record, Record::BranchStart(branch) if branch.id == 10))
+            .unwrap();
+        let first_load = records
+            .iter()
+            .find_map(|record| match record {
+                Record::Control(ControlRecord::ClockWitness { load_signal, .. }) => *load_signal,
+                _ => None,
+            })
+            .unwrap();
+        let second_load = records
+            .iter()
+            .rev()
+            .find_map(|record| match record {
+                Record::Control(ControlRecord::ClockWitness { load_signal, .. }) => *load_signal,
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(count(None), records.len());
+        assert_eq!(count(Some(&BTreeSet::from([first_load]))), second);
+        assert_eq!(
+            count(Some(&BTreeSet::from([first_load, second_load]))),
+            records.len()
+        );
+        // Nothing past the session start before its first load is admitted.
+        assert_eq!(count(Some(&BTreeSet::new())), 1);
+    }
+
+    #[test]
     fn spool_segments_cannot_change_between_recovery_and_reread() {
         use crate::test_support::{ALLOCATION_CAMPAIGN, allocation_test_directory};
         let directory = allocation_test_directory("held-segments");
@@ -2884,8 +3297,8 @@ mod tests {
         let records = long_finalization_records(Some(12));
         let path = campaign.join("spool.0000.h4s");
         fs::write(&path, encode(&records)).unwrap();
-        let expected = fs::read(&finalize_session(&session, &directory.join("plain")).unwrap()[0])
-            .unwrap();
+        let expected =
+            fs::read(&finalize_session(&session, &directory.join("plain")).unwrap()[0]).unwrap();
         // The same records with one hour's rows changed, each with a valid checksum.
         let mut changed = records.clone();
         let Record::Frame(frame) = &mut changed[10] else {

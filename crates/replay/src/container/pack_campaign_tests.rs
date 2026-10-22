@@ -98,6 +98,7 @@ fn packed_on(
         Observer::Hours(observe),
         Frames::Kept,
         limit,
+        None,
     );
     pack::WORKERS.set(None);
     replay
@@ -282,6 +283,7 @@ fn recovered_frames_read_on_several_threads_write_the_sequential_bytes() {
                 hours.push((hour.hour, hour.sizes, hour.updates));
                 Ok(())
             },
+            None,
         );
         pack::WORKERS.set(None);
         (replay.unwrap().bytes().to_vec(), hours, progress)
@@ -301,6 +303,207 @@ fn recovered_frames_read_on_several_threads_write_the_sequential_bytes() {
         assert_eq!(parallel.1, sequential.1, "{workers} workers");
         assert_eq!(parallel.2, sequential.2, "{workers} workers");
     }
+}
+
+/// Hours a write reports: hour, plain sizes and how each table was recorded.
+type Hours = Vec<(i32, [usize; TABLE_COUNT], [UpdateKind; TABLE_COUNT])>;
+
+/// `records` finalized, with blocks first written ahead from each prefix in `steps`, stopping
+/// at every `stop_every`th check; the bytes, the hours reported ahead, then by finalization, and
+/// the frames finalization wrote and reported progress for.
+fn finalized_ahead(
+    records: &[Record],
+    existing: Option<&Replay>,
+    steps: &[usize],
+    stop_every: usize,
+    workers: usize,
+) -> (Vec<u8>, Hours, usize, usize) {
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records.to_vec(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let kept = kept(&segments);
+    let read = |number, frame: &crate::spool::FrameMetadata| restore(&segments, number, frame);
+    let mut hours = Vec::new();
+    let mut ahead =
+        Ahead::new(existing.map(|replay| Replay::open(replay.bytes().to_vec()).unwrap())).unwrap();
+    let checks = std::sync::atomic::AtomicUsize::new(0);
+    let stop =
+        || checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % stop_every == stop_every - 1;
+    for &step in steps {
+        // A stopped advance resumes where it stopped.
+        for _ in 0..4 {
+            assert!(
+                ahead
+                    .advance(
+                        CAMPAIGN,
+                        &[(0, &kept[0].1.records[..step])],
+                        read,
+                        |hour| {
+                            hours.push((hour.hour, hour.sizes, hour.updates));
+                            Ok(())
+                        },
+                        &stop,
+                    )
+                    .unwrap()
+            );
+        }
+    }
+    assert!(ahead.continues(&[(0, kept[0].1.records.as_slice())]));
+    // The sequential writer writes every frame again; the parallel one only those not written ahead.
+    let frames = records
+        .iter()
+        .filter(|record| matches!(record, Record::Frame(_)))
+        .count();
+    let written = if workers > 1 {
+        frames - ahead.written()
+    } else {
+        frames
+    };
+    pack::WORKERS.set(Some(workers));
+    let mut observe = |hour: &Observed| {
+        hours.push((hour.hour, hour.sizes, hour.updates));
+        Ok(())
+    };
+    let mut progress = 0;
+    let counting = || {
+        progress += 1;
+        Ok(())
+    };
+    let replay = match existing {
+        Some(existing) => {
+            existing.append_recovered_with_reader(&kept, read, counting, &mut observe, Some(ahead))
+        }
+        None => Replay::from_recovered_with_reader(
+            CAMPAIGN.into(),
+            &kept,
+            read,
+            counting,
+            &mut observe,
+            Some(ahead),
+        ),
+    };
+    pack::WORKERS.set(None);
+    (replay.unwrap().bytes().to_vec(), hours, written, progress)
+}
+
+#[test]
+fn blocks_written_ahead_finalize_to_the_same_bytes_and_hours() {
+    let records = scaled_records(200, 4, 6);
+    let whole = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records))
+        .unwrap()
+        .bytes()
+        .to_vec();
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let mut hours = Vec::new();
+    Replay::from_recovered_with(CAMPAIGN.into(), &segments, |hour| {
+        hours.push((hour.hour, hour.sizes, hour.updates));
+        Ok(())
+    })
+    .unwrap();
+    let frames = |count| {
+        records
+            .iter()
+            .scan(0, |frames, record| {
+                *frames += usize::from(matches!(record, Record::Frame(_)));
+                Some(*frames)
+            })
+            .position(|frames| frames == count)
+            .map_or(records.len(), |at| at + 1)
+    };
+    // Mid-block, at block ends, past the last keyframe and the whole spool.
+    let steps = [
+        frames(3),
+        frames(6),
+        frames(7),
+        frames(13),
+        frames(19),
+        records.len(),
+    ];
+    for workers in [1, 3] {
+        for stop_every in [1_000_000, 7, 2] {
+            for end in 1..=steps.len() {
+                let ahead = finalized_ahead(&records, None, &steps[..end], stop_every, workers);
+                assert!(ahead.0 == whole, "{workers} {stop_every} {end}");
+                assert_eq!(ahead.1, hours, "{workers} {stop_every} {end}");
+                assert_eq!(ahead.3, ahead.2, "{workers} {stop_every} {end}");
+            }
+        }
+    }
+}
+
+#[test]
+fn blocks_written_ahead_append_to_the_same_bytes() {
+    let records = scaled_records(100, 3, 4);
+    let existing = Replay::from_records(CAMPAIGN.into(), &[records[..9].to_vec()]).unwrap();
+    let mut later = vec![
+        Record::SessionStart(session(2)),
+        Record::BranchStart(branch(2, 2)),
+    ];
+    let mut encoder = FrameEncoder::new();
+    for at in 0..9 {
+        let mut frame = scaled(at + 20, 100);
+        frame.branch = 2;
+        later.push(Record::Frame(encoder.encode(frame, at % 4 == 0).unwrap()));
+    }
+    let whole = existing.append(std::slice::from_ref(&later)).unwrap();
+    for workers in [1, 3] {
+        let (bytes, _, written, progress) =
+            finalized_ahead(&later, Some(&existing), &[6, 9], 5, workers);
+        assert!(bytes == whole.bytes(), "{workers}");
+        assert_eq!(progress, written, "{workers}");
+    }
+}
+
+#[test]
+fn records_that_change_under_blocks_written_ahead_are_not_continued() {
+    let records = scaled_records(50, 2, 3);
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let kept = kept(&segments);
+    let mut ahead = Ahead::new(None).unwrap();
+    let read = |number, frame: &crate::spool::FrameMetadata| restore(&segments, number, frame);
+    assert!(
+        ahead
+            .advance(
+                CAMPAIGN,
+                &[(0, &kept[0].1.records[..5])],
+                read,
+                |_| Ok(()),
+                &|| false
+            )
+            .unwrap()
+    );
+    let mut changed = kept[0].1.records.clone();
+    changed.remove(3);
+    assert!(!ahead.continues(&[(0, changed.as_slice())]));
+    assert!(!ahead.continues(&[(1, kept[0].1.records.as_slice())]));
+    assert!(ahead.continues(&[(0, kept[0].1.records.as_slice())]));
+    assert!(
+        !ahead
+            .advance(CAMPAIGN, &[(0, &changed)], read, |_| Ok(()), &|| false)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -369,6 +572,7 @@ fn a_fallback_after_partial_progress_reports_each_frame_once() {
             }),
             Frames::Shared(&read, &mut counting),
             300 * 1024,
+            None,
         );
         pack::WORKERS.set(None);
         (replay.unwrap().bytes().to_vec(), hours, progress)

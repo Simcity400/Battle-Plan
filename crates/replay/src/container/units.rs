@@ -187,6 +187,7 @@ fn restore<'r>(
 struct Started {
     writing: Writing,
     observed: Vec<Observed>,
+    written: usize,
 }
 
 /// Blocks held at once, from keyframe until packed: as many as the sequential writer holds unpacked.
@@ -222,8 +223,215 @@ enum Outcome {
     Stop,
 }
 
+enum Begun {
+    Writing(Started),
+    Compressing(grouped::Compressing, Vec<Observed>),
+}
+
+/// A block written ahead: packed with its hours reported, or written and compressing.
+enum Finished {
+    Packed(CompressedBlock),
+    Compressing(grouped::Compressing, Vec<Observed>),
+}
+
+/// Blocks written while a spool still grows, for its finalization to take over.
+pub struct Ahead {
+    existing: Option<Replay>,
+    /// Finalization takes over only records that start with these.
+    records: Vec<(u32, Vec<Recovered>)>,
+    anchors: grouped::Anchors,
+    blocks: Vec<Finished>,
+    open: Option<Started>,
+    /// Hours of packed blocks, reported already.
+    hours: usize,
+}
+
+impl Ahead {
+    pub fn new(existing: Option<Replay>) -> io::Result<Self> {
+        let anchors = match &existing {
+            Some(replay) => grouped::Anchors::seed(replay)?,
+            None => grouped::Anchors::default(),
+        };
+        Ok(Self {
+            existing,
+            records: Vec::new(),
+            anchors,
+            blocks: Vec::new(),
+            open: None,
+            hours: 0,
+        })
+    }
+
+    pub fn existing(&self) -> Option<&Replay> {
+        self.existing.as_ref()
+    }
+
+    /// Hours whose blocks are packed.
+    pub fn hours(&self) -> usize {
+        self.hours
+    }
+
+    /// Hours whose frames are written, packed or not.
+    pub fn written(&self) -> usize {
+        let compressing = self.blocks.iter().map(|block| match block {
+            Finished::Packed(_) => 0,
+            Finished::Compressing(_, observed) => observed.len(),
+        });
+        self.hours + compressing.sum::<usize>() + self.open.as_ref().map_or(0, |open| open.written)
+    }
+
+    /// Whether finalizing `segments` writes first what this wrote.
+    pub fn continues<R: PartialEq<Recovered>>(&self, segments: &[(u32, &[R])]) -> bool {
+        self.records.len() <= segments.len()
+            && self.records.iter().zip(segments).enumerate().all(
+                |(at, ((number, kept), (next, records)))| {
+                    number == next
+                        && records.len() >= kept.len()
+                        && records
+                            .iter()
+                            .zip(kept)
+                            .all(|(record, kept)| record == kept)
+                        && (at + 1 == self.records.len() || records.len() == kept.len())
+                },
+            )
+    }
+
+    /// Writes the frames of `segments` not yet written and compresses finished blocks,
+    /// reporting their hours in order, until `stop`. False where it cannot go on.
+    pub fn advance(
+        &mut self,
+        campaign_id: &[u8],
+        segments: &[(u32, &[Recovered])],
+        read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
+        mut observe: impl FnMut(&Observed) -> io::Result<()>,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<bool> {
+        if !self.continues(segments) {
+            return Ok(false);
+        }
+        for (at, (number, records)) in segments.iter().enumerate() {
+            match self.records.get_mut(at) {
+                Some((_, kept)) => kept.extend_from_slice(&records[kept.len()..]),
+                None => self.records.push((*number, records.to_vec())),
+            }
+        }
+        let identity = match &self.existing {
+            Some(replay) => Some(replay.identity.clone()),
+            None => segments
+                .iter()
+                .flat_map(|(_, records)| records.iter())
+                .find_map(|record| match record {
+                    Recovered::SessionStart(session) => Some(session.identity.clone()),
+                    _ => None,
+                }),
+        };
+        let records: Vec<&[Recovered]> = segments.iter().map(|(_, records)| *records).collect();
+        let Some(Ok((_, planned))) = identity.map(|identity| {
+            plan(
+                &records,
+                &identity,
+                self.existing.as_ref(),
+                KEYFRAME_INTERVAL,
+            )
+        }) else {
+            return Ok(false);
+        };
+        let cores = pack::Cores::new(1);
+        let read = |position: usize, metadata: &FrameMetadata| read(segments[position].0, metadata);
+        let observation =
+            |observed: &mut Vec<Observed>, frame: &Frame, decoded: &DecodedFrame, sizes| {
+                engine_allocation::reserve(observed, 1)?;
+                observed.push(Observed::new(frame, decoded, sizes)?);
+                Ok(())
+            };
+        loop {
+            // Blocks compress in order, and at most one waits, so a fast game waits in the spool.
+            if let Some(at) = self
+                .blocks
+                .iter()
+                .position(|block| matches!(block, Finished::Compressing(..)))
+            {
+                let Finished::Compressing(compressing, observed) = &mut self.blocks[at] else {
+                    unreachable!("a compressing block");
+                };
+                let Some(packed) = compressing.run(&cores, stop)? else {
+                    return Ok(true);
+                };
+                for hour in observed.iter() {
+                    observe(hour)?;
+                }
+                self.hours += observed.len();
+                self.blocks[at] = Finished::Packed(packed);
+                continue;
+            }
+            let at = self.blocks.len();
+            let Some(block) = planned.get(at) else {
+                return Ok(true);
+            };
+            if stop() {
+                return Ok(true);
+            }
+            let open = match &mut self.open {
+                Some(open) => open,
+                None => {
+                    let frame = restore(Some(&read), block.position, block.frames[0])?;
+                    let mut writing = Writing::new(&frame);
+                    let mut observed = Vec::new();
+                    if !writing.frame(
+                        &frame,
+                        campaign_id,
+                        MAX_BLOCK_RAW_BYTES,
+                        &mut self.anchors,
+                        &cores,
+                        &mut |frame, decoded, sizes| {
+                            observation(&mut observed, frame, decoded, sizes)
+                        },
+                        None,
+                    )? {
+                        return Ok(false);
+                    }
+                    self.open.insert(Started {
+                        writing,
+                        observed,
+                        written: 1,
+                    })
+                }
+            };
+            for record in &block.frames[open.written..] {
+                if stop() {
+                    return Ok(true);
+                }
+                let frame = restore(Some(&read), block.position, *record)?;
+                let observed = &mut open.observed;
+                if !open.writing.frame(
+                    &frame,
+                    campaign_id,
+                    MAX_BLOCK_RAW_BYTES,
+                    &mut self.anchors,
+                    &cores,
+                    &mut |frame, decoded, sizes| observation(observed, frame, decoded, sizes),
+                    None,
+                )? {
+                    return Ok(false);
+                }
+                open.written += 1;
+            }
+            if at + 1 == planned.len() {
+                return Ok(true);
+            }
+            let Started {
+                writing, observed, ..
+            } = self.open.take().unwrap();
+            self.blocks.push(Finished::Compressing(
+                grouped::Compressing::new(writing.finish()),
+                observed,
+            ));
+        }
+    }
+}
+
 struct Lanes {
-    started: VecDeque<(usize, Started)>,
+    started: VecDeque<(usize, Begun)>,
     done: BTreeMap<usize, Outcome>,
     keyframes_done: bool,
     taken: usize,
@@ -307,24 +515,51 @@ pub(super) fn write<R: SpoolRecord>(
     read: Option<&SharedReader<'_>>,
     block_limit: usize,
     threads: usize,
+    ahead: Option<Ahead>,
 ) -> io::Result<Written> {
+    let reported_ahead = ahead.as_ref().map_or(0, Ahead::hours);
     let Ok((mut pending, planned)) = plan(segments, identity, existing, interval) else {
         return Ok(Written::Stopped {
-            hours: 0,
+            hours: reported_ahead,
             progress: 0,
         });
     };
+    let mut started = VecDeque::new();
+    let mut packed = BTreeMap::new();
     let mut anchors = match existing {
         Some(replay) => grouped::Anchors::seed(replay)?,
         None => grouped::Anchors::default(),
     };
+    let mut first = 0;
+    if let Some(ahead) = ahead {
+        anchors = ahead.anchors;
+        for block in ahead.blocks {
+            match block {
+                Finished::Packed(block) => {
+                    packed.insert(first, Outcome::Packed(block, Vec::new()));
+                }
+                Finished::Compressing(compressing, observed) => {
+                    started.push_back((first, Begun::Compressing(compressing, observed)));
+                }
+            }
+            first += 1;
+        }
+        if let Some(open) = ahead.open {
+            started.push_back((first, Begun::Writing(open)));
+            first += 1;
+        }
+        if first > planned.len() {
+            return Err(invalid_static("more blocks written ahead than planned"));
+        }
+    }
+    let held = started.len();
     let shared = Shared {
         lanes: Mutex::new(Lanes {
-            started: VecDeque::new(),
-            done: BTreeMap::new(),
+            started,
+            done: packed,
             keyframes_done: false,
             taken: 0,
-            held: 0,
+            held,
         }),
         changed: Condvar::new(),
         stop: AtomicBool::new(false),
@@ -349,7 +584,7 @@ pub(super) fn write<R: SpoolRecord>(
     };
     // Bounds the blocks held: one waiting, `HELD` unpacked, twice the threads ahead of those reported.
     let keyframes = move || {
-        for (at, block) in planned.iter().enumerate() {
+        for (at, block) in planned.iter().enumerate().skip(first) {
             {
                 let mut lanes = shared.lock();
                 while (!lanes.started.is_empty()
@@ -392,7 +627,11 @@ pub(super) fn write<R: SpoolRecord>(
                     if !written {
                         return Err(invalid_static("a keyframe is never split"));
                     }
-                    Ok(Started { writing, observed })
+                    Ok(Started {
+                        writing,
+                        observed,
+                        written: 1,
+                    })
                 })
             }));
             shared
@@ -400,7 +639,10 @@ pub(super) fn write<R: SpoolRecord>(
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             match started {
                 Ok(Ok(started)) => {
-                    shared.lock().started.push_back((at, started));
+                    shared
+                        .lock()
+                        .started
+                        .push_back((at, Begun::Writing(started)));
                     shared.changed.notify_all();
                 }
                 _ => {
@@ -416,7 +658,7 @@ pub(super) fn write<R: SpoolRecord>(
     };
     let work = move || {
         loop {
-            let (at, mut started) = {
+            let (at, begun) = {
                 let mut lanes = shared.lock();
                 loop {
                     if shared.stopped() {
@@ -438,8 +680,20 @@ pub(super) fn write<R: SpoolRecord>(
             let block = &planned[at];
             let outcome = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 shared.cores.busy(|| -> io::Result<Outcome> {
+                    let mut started = match begun {
+                        Begun::Writing(started) => started,
+                        Begun::Compressing(mut compressing, observed) => {
+                            let Some(packed) =
+                                compressing.run(&shared.cores, &|| shared.stopped())?
+                            else {
+                                return Ok(Outcome::Stop);
+                            };
+                            shared.packed();
+                            return Ok(Outcome::Packed(packed, observed));
+                        }
+                    };
                     let mut anchors = grouped::Anchors::default();
-                    for record in &block.frames[1..] {
+                    for record in &block.frames[started.written..] {
                         if shared.stopped() {
                             return Ok(Outcome::Stop);
                         }
@@ -463,7 +717,9 @@ pub(super) fn write<R: SpoolRecord>(
                             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                         shared.changed.notify_all();
                     }
-                    let Started { writing, observed } = started;
+                    let Started {
+                        writing, observed, ..
+                    } = started;
                     let packed = writing.finish().compress(&shared.cores)?;
                     #[cfg(test)]
                     shared.watch(Step::Packing);
@@ -499,11 +755,11 @@ pub(super) fn write<R: SpoolRecord>(
         if !lane || workers == 0 {
             drop(stopping);
             return Ok(Written::Stopped {
-                hours: 0,
+                hours: reported_ahead,
                 progress: 0,
             });
         }
-        let (mut next, mut observed, mut reported) = (0, 0, 0);
+        let (mut next, mut observed, mut reported) = (0, reported_ahead, 0);
         loop {
             let outcome = {
                 let mut lanes = shared.lock();

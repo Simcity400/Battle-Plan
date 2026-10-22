@@ -62,10 +62,7 @@ type SharedReader<'a> = dyn Fn(usize, &FrameMetadata) -> io::Result<Frame> + Syn
 
 enum Frames<'a> {
     Kept,
-    Shared(
-        &'a SharedReader<'a>,
-        &'a mut dyn FnMut() -> io::Result<()>,
-    ),
+    Shared(&'a SharedReader<'a>, &'a mut dyn FnMut() -> io::Result<()>),
     Ordered(&'a mut FrameReader<'a>),
 }
 
@@ -151,10 +148,12 @@ impl Observed {
     }
 
     pub fn unavailable(&self, table: TableId) -> Option<&str> {
-        self.incomplete.iter().find_map(|(id, incomplete)| match incomplete {
-            Incomplete::Unavailable { reason } if *id == table => Some(reason.as_str()),
-            _ => None,
-        })
+        self.incomplete
+            .iter()
+            .find_map(|(id, incomplete)| match incomplete {
+                Incomplete::Unavailable { reason } if *id == table => Some(reason.as_str()),
+                _ => None,
+            })
     }
 }
 type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>);
@@ -566,6 +565,7 @@ impl Replay {
             Observer::Nothing,
             Frames::Kept,
             MAX_BLOCK_RAW_BYTES,
+            None,
         )
     }
 
@@ -575,6 +575,7 @@ impl Replay {
         observe: Observer<'_>,
         frames: Frames<'_>,
         block_limit: usize,
+        ahead: Option<Ahead>,
     ) -> io::Result<Self> {
         if campaign_id.is_empty() {
             return Err(invalid("empty campaign identity"));
@@ -604,6 +605,7 @@ impl Replay {
             observe,
             frames,
             block_limit,
+            ahead,
         )?;
         let mut index = Vec::new();
         append_owned_blocks(&mut bytes, &mut index, pending.blocks)?;
@@ -622,7 +624,7 @@ impl Replay {
     /// Existing compressed blocks and their original offsets are copied verbatim.
     pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
         let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
-        self.append_record_slices(&segments, Observer::Nothing, Frames::Kept)
+        self.append_record_slices(&segments, Observer::Nothing, Frames::Kept, None)
     }
 
     fn append_record_slices<R: SpoolRecord>(
@@ -630,6 +632,7 @@ impl Replay {
         segments: &[&[R]],
         observe: Observer<'_>,
         frames: Frames<'_>,
+        ahead: Option<Ahead>,
     ) -> io::Result<Self> {
         self.require_undamaged()?;
         // Existing blocks keep their original contract. Never mix current
@@ -649,6 +652,7 @@ impl Replay {
             observe,
             frames,
             MAX_BLOCK_RAW_BYTES,
+            ahead,
         )?;
         let mut bytes = self.bytes[..self.trailer_start].to_vec();
         let mut index = self.index.clone();
@@ -685,6 +689,7 @@ impl Replay {
             Observer::Nothing,
             Frames::Kept,
             MAX_BLOCK_RAW_BYTES,
+            None,
         )?
         .add_recovery_notes(segments)
     }
@@ -703,6 +708,7 @@ impl Replay {
             Observer::Hours(&mut observe),
             Frames::Kept,
             MAX_BLOCK_RAW_BYTES,
+            None,
         )?
         .add_recovery_notes(segments)
     }
@@ -714,7 +720,7 @@ impl Replay {
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
-        self.append_record_slices(&records, Observer::Nothing, Frames::Kept)?
+        self.append_record_slices(&records, Observer::Nothing, Frames::Kept, None)?
             .add_recovery_notes(segments)
     }
 
@@ -727,7 +733,7 @@ impl Replay {
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
-        self.append_record_slices(&records, Observer::Hours(&mut observe), Frames::Kept)?
+        self.append_record_slices(&records, Observer::Hours(&mut observe), Frames::Kept, None)?
             .add_recovery_notes(segments)
     }
 
@@ -738,6 +744,7 @@ impl Replay {
         read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
         mut progress: impl FnMut() -> io::Result<()>,
         mut observe: impl FnMut(&Observed) -> io::Result<()>,
+        ahead: Option<Ahead>,
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
@@ -749,6 +756,7 @@ impl Replay {
             Observer::Hours(&mut observe),
             Frames::Shared(&read_frame, &mut progress),
             MAX_BLOCK_RAW_BYTES,
+            ahead,
         )?
         .add_recovery_notes(segments)
     }
@@ -760,6 +768,7 @@ impl Replay {
         read: impl Fn(u32, &FrameMetadata) -> io::Result<Frame> + Sync,
         mut progress: impl FnMut() -> io::Result<()>,
         mut observe: impl FnMut(&Observed) -> io::Result<()>,
+        ahead: Option<Ahead>,
     ) -> io::Result<Self> {
         require_current_spools(segments)?;
         let records = ordered_records(segments)?;
@@ -769,6 +778,7 @@ impl Replay {
             &records,
             Observer::Hours(&mut observe),
             Frames::Shared(&read_frame, &mut progress),
+            ahead,
         )?
         .add_recovery_notes(segments)
     }
@@ -1675,6 +1685,7 @@ impl Replay {
             Observer::Frames(&mut observe),
             Frames::Ordered(&mut read),
             MAX_BLOCK_RAW_BYTES,
+            None,
         )?;
         replay.bytes.truncate(replay.trailer_start);
         finish_file(
@@ -2044,6 +2055,7 @@ fn collect<R: SpoolRecord>(
     observe: Observer<'_>,
     mut frames: Frames<'_>,
     block_limit: usize,
+    ahead: Option<Ahead>,
 ) -> io::Result<Pending> {
     let threads = pack::workers();
     let (mut hours, mut whole) = match observe {
@@ -2051,7 +2063,8 @@ fn collect<R: SpoolRecord>(
         Observer::Hours(hours) => (Some(hours), None),
         Observer::Frames(whole) => (None, Some(whole)),
     };
-    let (mut reported, mut progressed) = (0, 0);
+    let (mut reported, mut progressed) = (ahead.as_ref().map_or(0, Ahead::hours), 0);
+    let mut ahead = ahead;
     if threads > 1 && whole.is_none() {
         let mut quiet = || Ok(());
         let parallel = match &mut frames {
@@ -2071,6 +2084,7 @@ fn collect<R: SpoolRecord>(
                 read,
                 block_limit,
                 threads,
+                ahead.take(),
             )? {
                 units::Written::Pending(pending) => return Ok(pending),
                 units::Written::Stopped { hours, progress } => {
@@ -2805,6 +2819,7 @@ fn parallel_map<T: Sync, R: Send>(
 mod grouped;
 pub(crate) mod pack;
 mod units;
+pub use units::Ahead;
 pub mod patch;
 pub use grouped::{ColumnSize, ColumnSizes, STORED_LEVEL, Section, SectionLevels, SectionSize};
 #[cfg(test)]

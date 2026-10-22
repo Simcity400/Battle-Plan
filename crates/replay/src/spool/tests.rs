@@ -102,9 +102,13 @@ fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
     let good = valid_segment();
     for cut in [0, RECORD_HEADER_BYTES - 1, good.len() - 1, good.len()] {
         let old = recover_prefix(&good[..cut]);
-        let streamed =
-            recover_reader(io::Cursor::new(&good[..cut]), cut, |record, _| record, |_| Ok(()))
-                .unwrap();
+        let streamed = recover_reader(
+            io::Cursor::new(&good[..cut]),
+            cut,
+            |record, _| record,
+            |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(streamed.records, old.records);
         assert_eq!(streamed.valid_bytes, old.valid_bytes);
         assert_eq!(streamed.damage, old.damage);
@@ -139,9 +143,14 @@ fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
         }
     }
     assert_eq!(
-        recover_reader(FailedRead, RECORD_HEADER_BYTES, |record, _| record, |_| Ok(()))
-            .unwrap_err()
-            .kind(),
+        recover_reader(
+            FailedRead,
+            RECORD_HEADER_BYTES,
+            |record, _| record,
+            |_| Ok(())
+        )
+        .unwrap_err()
+        .kind(),
         io::ErrorKind::OutOfMemory
     );
 }
@@ -1542,8 +1551,13 @@ fn records_decoded_on_several_threads_keep_the_sequential_prefix_and_first_damag
 #[test]
 fn recovered_frames_keep_their_offsets_and_are_read_again_whole() {
     let bytes = valid_segment();
-    let kept = recover_reader(io::Cursor::new(&bytes), bytes.len(), Recovered::keep, |_| Ok(()))
-        .unwrap();
+    let kept = recover_reader(
+        io::Cursor::new(&bytes),
+        bytes.len(),
+        Recovered::keep,
+        |_| Ok(()),
+    )
+    .unwrap();
     let whole = recover_prefix(&bytes);
     assert_eq!(kept.valid_bytes, whole.valid_bytes);
     let mut cursor = io::Cursor::new(&bytes);
@@ -1556,9 +1570,14 @@ fn recovered_frames_keep_their_offsets_and_are_read_again_whole() {
                 );
                 assert_eq!(metadata.campaign, frame.tables[TableId::Campaign.index()]);
                 let only = metadata.frame().unwrap();
-                assert_eq!(only.tables[TableId::Clock.index()], frame.tables[TableId::Clock.index()]);
+                assert_eq!(
+                    only.tables[TableId::Clock.index()],
+                    frame.tables[TableId::Clock.index()]
+                );
             }
-            (kept, whole) => assert_eq!(*kept, Recovered::keep(whole.clone(), Placement::default())),
+            (kept, whole) => {
+                assert_eq!(*kept, Recovered::keep(whole.clone(), Placement::default()))
+            }
         }
     }
     // An offset that is not a frame's, or past the valid prefix, is refused.
@@ -1582,12 +1601,18 @@ fn a_frame_record_changed_since_recovery_is_refused() {
         .iter()
         .flat_map(|record| encode_record(record).unwrap())
         .collect();
-    let kept = recover_reader(io::Cursor::new(&bytes), bytes.len(), Recovered::keep, |_| Ok(()))
-        .unwrap();
+    let kept = recover_reader(
+        io::Cursor::new(&bytes),
+        bytes.len(),
+        Recovered::keep,
+        |_| Ok(()),
+    )
+    .unwrap();
     let Recovered::Frame(metadata) = &kept.records[2] else {
         unreachable!()
     };
-    let read = |bytes: &[u8]| read_frame_at(&mut io::Cursor::new(bytes), metadata.placement, bytes.len());
+    let read =
+        |bytes: &[u8]| read_frame_at(&mut io::Cursor::new(bytes), metadata.placement, bytes.len());
     assert_eq!(read(&bytes).unwrap().hour, 11);
     // The same hour with other rows and its own valid checksum, then truncated and cut short.
     let mut changed = frame(11, false);
@@ -1607,4 +1632,123 @@ fn a_frame_record_changed_since_recovery_is_refused() {
     assert!(read(&mutated).is_err());
     let truncated = &bytes[..metadata.placement.offset + RECORD_HEADER_BYTES + 3];
     assert!(read(truncated).is_err());
+}
+
+#[test]
+fn a_tail_grown_in_steps_finishes_as_the_whole_recovery() {
+    let mut records = vec![branch()];
+    records.extend((10..30).map(|hour| Record::Frame(frame(hour, hour == 10))));
+    let mut bytes: Vec<u8> = records
+        .iter()
+        .flat_map(|record| encode_record(record).unwrap())
+        .collect();
+    let whole = bytes.len();
+    // Damage partway: a record that never completes its payload.
+    let mut damaged = bytes.clone();
+    damaged.truncate(whole - 9);
+    let mut corrupt = bytes.clone();
+    corrupt[whole / 2] ^= 0x40;
+    for bytes in [&mut bytes, &mut damaged, &mut corrupt] {
+        let full = recover_records(
+            io::Cursor::new(&bytes[..]),
+            bytes.len(),
+            Recovered::keep,
+            |_| Ok(()),
+            true,
+            1,
+        )
+        .unwrap();
+        for step in [1, 37, 1_000, 9_999] {
+            let mut tail = Tail::default();
+            let mut length = 0;
+            while length < bytes.len() {
+                length = (length + step).min(bytes.len());
+                tail.grow(&mut io::Cursor::new(&bytes[..]), length, Recovered::keep)
+                    .unwrap();
+            }
+            assert!(tail.valid_bytes() <= full.valid_bytes);
+            let mut observed = 0;
+            let finished = tail
+                .finish(
+                    &mut io::Cursor::new(&bytes[..]),
+                    bytes.len(),
+                    Recovered::keep,
+                    |_| {
+                        observed += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(finished.records, full.records, "{step}");
+            assert_eq!(finished.valid_bytes, full.valid_bytes);
+            assert_eq!(finished.damage, full.damage);
+            assert_eq!(finished.format, full.format);
+            assert_eq!(observed, full.records.len());
+        }
+    }
+    // A tail read past a shorter committed prefix is not continued.
+    let mut tail = Tail::default();
+    tail.grow(
+        &mut io::Cursor::new(&bytes[..]),
+        bytes.len(),
+        Recovered::keep,
+    )
+    .unwrap();
+    assert!(
+        tail.finish(
+            &mut io::Cursor::new(&bytes[..]),
+            10,
+            Recovered::keep,
+            |_| Ok(())
+        )
+        .unwrap()
+        .is_none()
+    );
+}
+
+#[test]
+fn a_tail_of_a_segment_replaced_since_it_was_read_is_not_continued() {
+    let records = [
+        branch(),
+        Record::Frame(frame(10, true)),
+        Record::Frame(frame(11, false)),
+    ];
+    let bytes: Vec<u8> = records
+        .iter()
+        .flat_map(|record| encode_record(record).unwrap())
+        .collect();
+    let mut tail = Tail::default();
+    tail.grow(&mut io::Cursor::new(&bytes), bytes.len(), Recovered::keep)
+        .unwrap();
+    let mut changed = frame(11, false);
+    changed.tables[1] = TableUpdate::Unavailable {
+        reason: "changed".into(),
+    };
+    let replaced: Vec<u8> = [
+        records[0].clone(),
+        records[1].clone(),
+        Record::Frame(changed),
+    ]
+    .iter()
+    .flat_map(|record| encode_record(record).unwrap())
+    .collect();
+    let finish = |tail: Tail<Recovered>, bytes: &[u8]| {
+        tail.finish(
+            &mut io::Cursor::new(bytes),
+            bytes.len(),
+            Recovered::keep,
+            |_| Ok(()),
+        )
+        .unwrap()
+    };
+    let same = || {
+        let mut tail = Tail::default();
+        tail.grow(&mut io::Cursor::new(&bytes), bytes.len(), Recovered::keep)
+            .unwrap();
+        tail
+    };
+    assert!(finish(same(), &bytes).is_some());
+    assert!(finish(tail, &replaced).is_none());
+    assert!(finish(same(), &bytes[..bytes.len() - 1]).is_none());
 }

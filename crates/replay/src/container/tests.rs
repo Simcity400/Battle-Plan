@@ -514,6 +514,7 @@ fn size_driven_blocks_preserve_every_hour_value_origin_and_metric() {
         }),
         Frames::Kept,
         limit,
+        None,
     )
     .unwrap();
     // Each block keeps every table's plain updates within the bound; tables
@@ -612,6 +613,7 @@ fn blocks_keep_the_keyframe_cadence_while_each_table_stays_within_the_bound() {
         }),
         Frames::Kept,
         limit,
+        None,
     )
     .unwrap();
     assert!(plain[TableId::LexicalTokens.index()] + plain[TableId::ArmyOrders.index()] > limit);
@@ -654,7 +656,8 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
             &[&input],
             Observer::Nothing,
             Frames::Kept,
-            exact - 1
+            exact - 1,
+            None
         )
         .err()
         .unwrap()
@@ -676,6 +679,7 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
         Observer::Nothing,
         Frames::Kept,
         exact,
+        None,
     )
     .err()
     .unwrap()
@@ -752,6 +756,7 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
         },
         || Ok(()),
         |_| Ok(()),
+        None,
     )
     .unwrap();
     let mut restored = restored.into_inner().unwrap();
@@ -778,6 +783,7 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
             |number, frame| restore(&next, number, frame),
             || Ok(()),
             |_| Ok(()),
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -790,7 +796,8 @@ fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
             &kept(&segments),
             |_, _| { Err(io::Error::from(io::ErrorKind::OutOfMemory)) },
             || Ok(()),
-            |_| Ok(())
+            |_| Ok(()),
+            None
         )
         .is_err()
     );
@@ -1937,7 +1944,8 @@ fn recovered_recordings_refuse_every_rewrite_and_append_without_touching_the_fil
                     &kept(&segments),
                     |_, _| panic!("must not read new frames"),
                     || Ok(()),
-                    |_| panic!("must not observe new frames")
+                    |_| panic!("must not observe new frames"),
+                    None
                 )
                 .err()
                 .unwrap()
