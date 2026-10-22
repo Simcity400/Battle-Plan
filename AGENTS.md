@@ -35,6 +35,7 @@
 - After changing dependencies, run `python tools/check-build-dependencies.py`, `python tools/check-content-dependencies.py` and `python tools/check-feature-unification.py --fix`.
 - After changing types the UI reads, regenerate them with `cargo run -q -p dashboard --features export-types --bin export-types`.
 - Don't write READMEs or other docs.
+- Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
 
 ## Tests
 
