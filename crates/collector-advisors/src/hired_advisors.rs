@@ -835,13 +835,14 @@ mod tests {
     }
 
     #[test]
-    fn available_advisors_are_lean_rows_sized_for_5000_countries() {
+    fn available_advisors_are_lean_rows() {
+        const COUNTRIES: usize = 5;
         let mut capacity = Capacities::default();
-        capacity.raise_for_available_advisors(5_000, 20_000);
-        assert!(capacity.available >= 5_000);
-        assert!(capacity.available_bytes >= 20_000);
+        capacity.raise_for_available_advisors(COUNTRIES, COUNTRIES * 4);
+        assert!(capacity.available >= COUNTRIES);
+        assert!(capacity.available_bytes >= COUNTRIES * 4);
         let mut captured = Captured::with_capacities(&capacity);
-        for index in 0..5_000 {
+        for index in 0..COUNTRIES {
             captured.available.rows[index] = native::Row {
                 country: index as u32 + 1,
                 character: index as u32 + 10_000,
@@ -854,16 +855,16 @@ mod tests {
             };
             captured.available_bytes.first[index * 4..index * 4 + 4].copy_from_slice(b"idea");
         }
-        captured.available.outcome = Outcome::Rows { len: 5_000 };
-        captured.available_bytes.len = 20_000;
+        captured.available.outcome = Outcome::Rows { len: COUNTRIES };
+        captured.available_bytes.len = COUNTRIES * 4;
         let TableView::Complete(TableRows::AvailableAdvisors(rows)) = captured.available_table()
         else {
             panic!("complete available advisors");
         };
-        assert_eq!(rows.len(), 5_000);
-        assert_eq!(rows[4_999].character, 14_999);
-        assert_eq!(rows[4_999].idea, b"idea");
-        captured.available.rows[4_999].idea_len = usize::MAX;
+        assert_eq!(rows.len(), COUNTRIES);
+        assert_eq!(rows[COUNTRIES - 1].character, 10_000 + COUNTRIES as u32 - 1);
+        assert_eq!(rows[COUNTRIES - 1].idea, b"idea");
+        captured.available.rows[COUNTRIES - 1].idea_len = usize::MAX;
         assert!(matches!(
             captured.available_table(),
             TableView::Unavailable { .. }

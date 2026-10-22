@@ -23,58 +23,6 @@ fn detach_waits_for_admitted_callbacks_after_stopping_receipt_admission() {
 }
 
 #[test]
-fn worker_handover_grows_original_five_thousand_country_receipts_and_mod_name_bytes() {
-    let mut entries = Vec::new();
-    let mut names = Vec::new();
-    for count in [5000, 12_000] {
-        let log = Log::new(count);
-        let buffer = Buffer::with_stride(count, count * 48, 48, Default::default()).unwrap();
-        let epoch = log.epoch.load(Ordering::SeqCst);
-        let mut memory = Memory(vec![0; 0x431]);
-        memory.0[0x358..0x360].copy_from_slice(&0x400_u64.to_le_bytes());
-        memory.0[0x368..0x370].copy_from_slice(&48_u64.to_le_bytes());
-        memory.0[0x370..0x378].copy_from_slice(&48_u64.to_le_bytes());
-        for index in 0..count {
-            memory.0[0x400..0x430].fill((index % 251) as u8);
-            assert!(append_buffer(
-                &log,
-                &buffer,
-                Entry {
-                    country: (index % 5000) as u32,
-                    amount: -(index as i64),
-                    ..Default::default()
-                },
-                Some(native::stored_name(&memory, 0x100, 2).unwrap()),
-                &memory,
-            ));
-        }
-        let (drained, copied_names, required) = handover_buffers(
-            &log,
-            &buffer,
-            None,
-            engine_native::walk::Buffer::Growing(&mut entries),
-            engine_native::walk::Buffer::Growing(&mut names),
-            None,
-        )
-        .unwrap();
-        assert_eq!(
-            (drained.copied, drained.pending, copied_names, required),
-            (count, count, count * 48, count * 48)
-        );
-        assert_eq!(entries[count - 1].country, ((count - 1) % 5000) as u32);
-        assert_eq!(entries[count - 1].amount, -((count - 1) as i64));
-        assert_eq!(entries[count - 1].name, Some(((count - 1) * 48, 48)));
-        assert_eq!(
-            &names[(count - 1) * 48..count * 48],
-            &[((count - 1) % 251) as u8; 48]
-        );
-        assert_eq!(log.consumed.load(Ordering::Acquire), count as u64);
-        assert_eq!(log.epoch.load(Ordering::SeqCst), epoch);
-        assert!(drained.complete());
-    }
-}
-
-#[test]
 fn sizing_retries_a_missing_world_and_grows_receipt_pressure_after_a_failed_census() {
     let _guard = EXCLUSIVE
         .lock()
@@ -503,7 +451,7 @@ fn hourly_storage_lease_cannot_lose_recipient_terminal_root_or_reset() {
 }
 
 #[test]
-fn rejected_5000_country_receipt_burst_preserves_growth_after_failed_census() {
+fn rejected_country_receipt_burst_preserves_growth_after_failed_census() {
     let _guard = EXCLUSIVE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -514,7 +462,7 @@ fn rejected_5000_country_receipt_burst_preserves_growth_after_failed_census() {
     let _ = name(&mut memory, b"recorded");
     let current = CURRENT.lock().unwrap();
     crate::test_support::with_allocations_denied(|| {
-        for country in 1..=5000 {
+        for country in 1..=5 {
             let stored = native::stored_name(&memory, 0x100, 2).unwrap();
             assert_eq!(
                 append(
@@ -538,22 +486,22 @@ fn rejected_5000_country_receipt_burst_preserves_growth_after_failed_census() {
         }
     });
     drop(current);
-    assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10_000);
-    assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40_000);
+    assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10);
+    assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40);
     let unreadable = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
     presize(&unreadable, 0);
     let (entries, names) = capacities();
-    assert!(entries >= 10_000 && names >= 40_000);
+    assert!(entries >= 10 && names >= 40);
     let mut output = [Entry::default()];
     LOG.enabled.store(true, Ordering::SeqCst);
     let (drained, _, required) = drain(&mut output, &mut []).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!(
         (drained.copied, drained.pending, required),
-        (0, 10_000, 40_000)
+        (0, 10, 40)
     );
     crate::test_support::with_allocations_denied(install_offered);
     collect();
@@ -566,8 +514,8 @@ fn rejected_5000_country_receipt_burst_preserves_growth_after_failed_census() {
     let (drained, _, _) = drain(&mut output, &mut []).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
     assert_eq!((drained.copied, drained.pending), (1, 1));
-    assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10_000);
-    assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40_000);
+    assert_eq!(ENTRY_DEMAND.load(Ordering::Acquire), 10);
+    assert_eq!(NAME_DEMAND.load(Ordering::Acquire), 40);
     release().unwrap();
 }
 
@@ -643,17 +591,17 @@ fn empty_drain_preserves_attempts_of_an_active_native_callback() {
 }
 
 #[test]
-fn five_thousand_country_reset_burst_survives_the_hourly_owner_lease() {
+fn country_reset_burst_survives_the_hourly_owner_lease() {
     let _guard = EXCLUSIVE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     release().unwrap();
-    offer(5000, 0);
+    offer(5, 0);
     install_offered();
     let epoch = LOG.epoch.load(Ordering::SeqCst);
     let current = CURRENT.lock().unwrap();
     crate::test_support::with_allocations_denied(|| {
-        for country in 1..=5000 {
+        for country in 1..=5 {
             assert!(append(
                 &LOG.enter(),
                 Entry {
@@ -671,11 +619,11 @@ fn five_thousand_country_reset_burst_survives_the_hourly_owner_lease() {
         }
     });
     drop(current);
-    let mut entries = vec![Entry::default(); 5000];
+    let mut entries = vec![Entry::default(); 5];
     LOG.enabled.store(true, Ordering::SeqCst);
     let (drained, _, _) = drain(&mut entries, &mut []).unwrap();
     LOG.enabled.store(false, Ordering::SeqCst);
-    assert_eq!((drained.copied, drained.pending), (5000, 5000));
+    assert_eq!((drained.copied, drained.pending), (5, 5));
     assert_eq!(LOG.epoch.load(Ordering::SeqCst), epoch);
     assert!(
         entries

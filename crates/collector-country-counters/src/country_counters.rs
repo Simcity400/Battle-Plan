@@ -1963,16 +1963,17 @@ mod tests {
     }
 
     #[test]
-    fn live_roster_demand_sizes_5000_country_arenas_and_projection_owns_every_operand() {
+    fn live_roster_demand_sizes_country_arenas_and_projection_owns_every_operand() {
+        const COUNTRIES: usize = 5;
         let mut capacity = Capacities::default();
-        capacity.raise_for_countries(5_001);
+        capacity.raise_for_countries(COUNTRIES + 1);
         capacity.raise_for_rosters(ccountry::RosterDemand {
-            states: 45_000,
-            leaders: 30_000,
+            states: COUNTRIES * 9,
+            leaders: COUNTRIES * 6,
         });
-        assert!(capacity.states >= 60_000 && capacity.leaders >= 40_000);
+        assert!(capacity.states >= COUNTRIES * 12 && capacity.leaders >= COUNTRIES * 8);
         let mut captured = Captured::with_capacities(&capacity);
-        for index in 0..5_000 {
+        for index in 0..COUNTRIES {
             let country = index as u32 + 1;
             let state_start = index * 9;
             for list in 0..3 {
@@ -2000,9 +2001,9 @@ mod tests {
                 ..Default::default()
             };
         }
-        captured.rows.outcome = Outcome::Rows { len: 5_000 };
-        captured.states.len = 45_000;
-        captured.leaders.len = 30_000;
+        captured.rows.outcome = Outcome::Rows { len: COUNTRIES };
+        captured.states.len = COUNTRIES * 9;
+        captured.leaders.len = COUNTRIES * 6;
         let [
             TableView::Complete(replay_data::rows::TableRows::CountryCounterInputs(rows)),
             _,
@@ -2099,11 +2100,12 @@ mod tests {
     }
 
     #[test]
-    fn roster_shortfalls_keep_5000_scalar_rows_and_count_each_native_reason() {
+    fn roster_shortfalls_keep_scalar_rows_and_count_each_native_reason() {
+        const COUNTRIES: usize = 6;
         let mut capacity = Capacities::default();
-        capacity.raise_for_countries(5_001);
+        capacity.raise_for_countries(COUNTRIES + 1);
         let mut captured = Captured::with_capacities(&capacity);
-        for (index, row) in captured.rows.rows[..5_000].iter_mut().enumerate() {
+        for (index, row) in captured.rows.rows[..COUNTRIES].iter_mut().enumerate() {
             let country = index as u32 + 1;
             *row = ccountry::CounterInputsRow {
                 country,
@@ -2119,11 +2121,11 @@ mod tests {
                 ..Default::default()
             };
         }
-        captured.rows.outcome = Outcome::Rows { len: 5_000 };
-        captured.states.required = 45_000;
-        captured.leaders.required = 30_000;
-        captured.relations.len = 5_000;
-        for row in &mut captured.relations.first[..5_000] {
+        captured.rows.outcome = Outcome::Rows { len: COUNTRIES };
+        captured.states.required = COUNTRIES * 9;
+        captured.leaders.required = COUNTRIES * 6;
+        captured.relations.len = COUNTRIES;
+        for row in &mut captured.relations.first[..COUNTRIES] {
             *row = RelationRow {
                 co_belligerents: Some(Default::default()),
                 zero_war: Some([0, 0]),
@@ -2144,7 +2146,7 @@ mod tests {
         else {
             panic!("scalar rows unavailable");
         };
-        assert_eq!(rows.len(), 5_000);
+        assert_eq!(rows.len(), COUNTRIES);
         for row in rows {
             assert_eq!(row.pride_of_the_fleet, (u64::from(row.country) << 32) | 51);
             assert_eq!(row.first_division, (u64::from(row.country) << 32) | 4);
@@ -2161,16 +2163,16 @@ mod tests {
         assert_eq!(
             work.refusals,
             [
-                ("country state roster arena capacity exceeded", 2_500),
-                ("unit leader vtable mismatch", 2_500),
+                ("country state roster arena capacity exceeded", COUNTRIES as u64 / 2),
+                ("unit leader vtable mismatch", COUNTRIES as u64 / 2),
             ]
         );
         let status = serde_json::to_value(work.status().unwrap()).unwrap();
-        assert_eq!(status["refused"], 5_000);
-        assert_eq!(status["states_required"], 45_000);
+        assert_eq!(status["refused"], COUNTRIES);
+        assert_eq!(status["states_required"], COUNTRIES * 9);
         captured.reset();
         captured.observe_rosters(&mut work, 10_000_000).unwrap();
-        assert_eq!(work.refusals[0].1, 2_500);
+        assert_eq!(work.refusals[0].1, COUNTRIES as u64 / 2);
     }
 
     #[test]

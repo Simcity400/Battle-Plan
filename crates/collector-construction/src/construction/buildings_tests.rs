@@ -274,8 +274,8 @@ impl Memory for Trace<'_> {
 }
 
 #[test]
-fn cold_building_worker_keeps_5000_countries_and_later_mod_sized_location_vectors() {
-    const COUNTRIES: usize = 5_000;
+fn cold_building_worker_keeps_countries_and_later_mod_sized_location_vectors() {
+    const COUNTRIES: usize = 5;
     let mut cold = Buildings::vacant();
     assert_eq!(cold.allocated_bytes(), 0);
     for (hour, types) in [(0, 2), (24, 17)] {

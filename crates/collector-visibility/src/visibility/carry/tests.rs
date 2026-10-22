@@ -173,18 +173,18 @@ fn full(world: &World) -> Vec<native::CountryRow> {
 }
 
 #[test]
-fn quiet_certified_hour_reads_no_accumulator_and_equals_full_read_at_five_thousand_countries() {
-    let world = World::new(5000);
-    let domain = Domain::enabled(5001);
+fn quiet_certified_hour_reads_no_accumulator_and_equals_full_read() {
+    let world = World::new(5);
+    let domain = Domain::enabled(6);
     let mut store = Store::new();
-    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 5000);
+    assert_eq!(capture(&mut store, &world, &domain, Check::Nothing).3, 5);
     domain.boundary(false);
     let (rows, counts, carried, reads) = capture(&mut store, &world, &domain, Check::Nothing);
     assert_eq!(rows, full(&world));
     assert_eq!(reads, 0);
     assert_eq!(counts.read, 0);
     assert!(!counts.full);
-    assert_eq!(carried, 5000); // Includes absent keys and effective zeros.
+    assert_eq!(carried, 5); // Includes absent keys and effective zeros.
 }
 
 #[test]

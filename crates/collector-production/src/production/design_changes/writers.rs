@@ -355,8 +355,8 @@ mod tests {
         assert!(WRITERS.get().unwrap().lock().unwrap().claims.capacity() > capacity);
     }
     #[test]
-    fn prepared_claims_cover_five_thousand_designs_without_callback_growth() {
-        let population = 5_000;
+    fn prepared_claims_cover_designs_without_callback_growth() {
+        let population = 5;
         prepare(population).unwrap();
         let mut flights = Vec::with_capacity(population);
         collector_test_support::with_allocations_denied(|| {

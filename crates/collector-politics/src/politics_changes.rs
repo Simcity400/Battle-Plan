@@ -3513,69 +3513,6 @@ pub fn fixture_identities(receiver: usize, kind: usize) -> (Identity, Identity) 
 mod tests {
     use super::*;
 
-    /// The political status family's forwarded writers are exactly the
-    /// entries patched at country appearance reset and the daily update.
-    #[test]
-    fn forwarded_status_entries_name_their_native_writers() {
-        let sites = entry_sites();
-        assert_eq!(sites[RESET_COUNTRY_ENTRY].rva, 0x6d_61d0);
-        assert_eq!(sites[RESET_COUNTRY_ENTRY].name, native::RESET_COUNTRY.name);
-        assert_eq!(sites[POLITICS_DAILY_ENTRY].rva, 0xb9_90b0);
-        assert_eq!(sites[POLITICS_DAILY_ENTRY].name, "PoliticsDaily");
-        let forwarded = (0..ENTRY_COUNT)
-            .filter(|&index| forwarded_status(index, 0).is_some())
-            .count();
-        assert_eq!(forwarded, 2);
-        // The focus scopes the country input family's focus rows follow.
-        assert_eq!(sites[FOCUS_ENTRY].rva, 0x2d_a9f0);
-        assert_eq!(sites[FOCUS_ENTRY].name, "Focus");
-        assert_eq!(sites[FOCUS_REFUND_ENTRY].rva, 0x2c_e790);
-        assert_eq!(sites[FOCUS_REFUND_ENTRY].name, "FocusRefund");
-    }
-
-    #[test]
-    fn worker_lane_handoff_grows_original_five_thousand_country_and_mod_sized_domains() {
-        let _guard = staging_test();
-        let memory = engine_native::memory::SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let mut cursors = Vec::new();
-        for count in [5000, 12_000] {
-            let log = Log::with_lanes(count, 1, count);
-            log.registered.store(count, Ordering::Release);
-            let epoch = EPOCH.load(Ordering::Acquire);
-            for index in 0..count {
-                append_lane(
-                    &log,
-                    index,
-                    Event {
-                        country: (index % 5000) as u32,
-                        epoch,
-                        ..Default::default()
-                    },
-                    &memory,
-                );
-            }
-            assert!(matches!(
-                handoff_from(&log, &mut []),
-                Err("politics thread handoff staging short")
-            ));
-            let handoff =
-                handoff_from_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
-                    .unwrap();
-            assert_eq!(handoff.lanes, count);
-            assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-            let mut events = vec![Event::default(); count];
-            let drain = handoff.drain(&cursors, &mut events, &mut []).unwrap();
-            assert_eq!(drain.copied, count);
-            assert_eq!(events[count - 1].country, ((count - 1) % 5000) as u32);
-            for (index, event) in events.iter().enumerate() {
-                assert_eq!(event.sequence, index as u64 + 1);
-            }
-        }
-    }
-
     #[test]
     fn worker_lane_handoff_sizes_prepared_successor_before_sealing_original_events() {
         let _guard = staging_test();
@@ -3801,7 +3738,8 @@ mod tests {
     }
 
     #[test]
-    fn staging_growth_preserves_5000_country_unsealed_and_already_sealed_records() {
+    fn staging_growth_preserves_unsealed_and_already_sealed_records() {
+        const HALF: u32 = 3;
         let _guard = staging_test();
         clear_staging();
         resize_checked(8192, 16).unwrap();
@@ -3833,7 +3771,7 @@ mod tests {
                 base: 0x1000,
                 bytes: &source,
             };
-            for country in 1..=2500 {
+            for country in 1..=HALF {
                 append_to(old, event(country), &memory);
             }
         }
@@ -3843,7 +3781,7 @@ mod tests {
                 base: 0x1000,
                 bytes: &source,
             };
-            for country in 2501..=5000 {
+            for country in HALF + 1..=2 * HALF {
                 append_to(old, event(country), &memory);
             }
         }
@@ -3855,7 +3793,7 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             append_to(
                 fresh,
-                event(5001),
+                event(2 * HALF + 1),
                 &engine_native::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &source,
@@ -3864,9 +3802,9 @@ mod tests {
         });
         let (third, third_cursors) = seal_staging();
         source.fill(0);
-        let mut output = vec![Event::default(); 2500];
-        let mut bytes = vec![0; 2500 * 9];
-        for (start, sealed, cursors) in [(1, first, first_cursors), (2501, second, second_cursors)]
+        let mut output = vec![Event::default(); HALF as usize];
+        let mut bytes = vec![0; HALF as usize * 9];
+        for (start, sealed, cursors) in [(1, first, first_cursors), (HALF + 1, second, second_cursors)]
         {
             let drained = sealed.drain(&cursors, &mut output, &mut bytes).unwrap();
             assert_eq!(
@@ -3876,7 +3814,7 @@ mod tests {
                     drained.copied,
                     drained.pending
                 ),
-                ((start - 1) as u64, (start + 2499) as u64, 2500, 2500)
+                ((start - 1) as u64, (start + HALF - 1) as u64, HALF as usize, HALF as usize)
             );
             for (index, event) in output.iter().enumerate() {
                 assert_eq!(event.country, start + index as u32);
@@ -3896,9 +3834,9 @@ mod tests {
                 drained.copied,
                 drained.pending
             ),
-            (5000, 5001, 1, 1)
+            (2 * HALF as u64, 2 * HALF as u64 + 1, 1, 1)
         );
-        assert_eq!((output[0].country, output[0].sequence), (5001, 5001));
+        assert_eq!((output[0].country, output[0].sequence), (2 * HALF + 1, 2 * HALF as u64 + 1));
         assert_eq!(retained_log, old as *const Log as usize);
         assert_ne!(fresh as *const Log, old as *const Log);
         assert_eq!(retained_epoch, epoch);

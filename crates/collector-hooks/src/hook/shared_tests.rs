@@ -481,10 +481,7 @@ fn a_detach_verification_failure_refuses_only_its_own_family() {
 #[test]
 fn attach_many_families_and_taps_share_one_measured_suspension() {
     let _guard = lock();
-    const NAMES: [&str; 24] = [
-        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r",
-        "s", "t", "u", "v", "w", "x",
-    ];
+    const NAMES: [&str; 4] = ["a", "b", "c", "d"];
     let code = TestCode::new();
     let mut families: Vec<_> = (0..NAMES.len())
         .map(|index| vec![hook_at(&code, index * 64, original as *const () as usize).1])

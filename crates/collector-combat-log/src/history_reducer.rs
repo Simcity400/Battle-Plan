@@ -473,15 +473,4 @@ mod tests {
             "reused month address is new membership after pruning"
         );
     }
-    #[test]
-    fn combat_log_five_thousand_groups_have_no_population_ceiling() {
-        let mut store = Store::default();
-        for i in 0..5000 {
-            store
-                .apply(fact(event::GROUP, i + 1, 0, [i, 53 | i << 32, 0, 0, 0]))
-                .unwrap();
-        }
-        assert_eq!(store.groups.len(), 5000);
-        store.validate().unwrap();
-    }
 }

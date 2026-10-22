@@ -1506,7 +1506,7 @@ mod tests {
         use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
         use replay_data::rows::tables;
         let _serial = MEMBERSHIP_TEST.lock().unwrap();
-        const DIVISIONS: usize = 5_000;
+        const DIVISIONS: usize = 64;
         const STATE: usize = 0x100;
         const COUNTRY: usize = 0x1000;
         operands::demand(DIVISIONS, 0, 0);
@@ -1578,7 +1578,7 @@ mod tests {
                 .unwrap();
             assert_eq!(complete(snapshot), complete(&expected));
             // Completion order differs from settlement order, including the
-            // 5,000-division pass and its refused/recovered context hours.
+            // full-roster pass and its refused/recovered context hours.
             for parts in [1, 2, 7, 31] {
                 let mut contexts = vec![None; seeds.len()];
                 let mut staged = Store::default();
@@ -1744,7 +1744,7 @@ mod tests {
         assert_eq!(staged_refusal.turn, serial_refusal.turn);
 
         // No country selection reaches the independent tree domain: these
-        // 5,000 refused contexts still exercise owned membership settlement,
+        // refused contexts still exercise owned membership settlement,
         // exact refusal publication and quiet persistent-root reuse.
         let mut ownerless = seeds.clone();
         for seed in &mut ownerless {

@@ -390,13 +390,9 @@ mod tests {
         }
     }
 
-    /// 5,000 countries, each in its own canonical slot under its own
-    /// certificate: every one carries its own answers, only the countries
-    /// whose certificate or header changed are read, and a sampled hour reads
-    /// and compares exactly its slice.
     #[test]
-    fn five_thousand_countries_carry_and_invalidate_independently() {
-        const COUNTRIES: u32 = 5_000;
+    fn countries_carry_and_invalidate_independently() {
+        const COUNTRIES: u32 = 40;
         const BASE: usize = 0x1000_0000;
         const SIZE: usize = 0x1400;
         struct PerCountry(std::cell::RefCell<Vec<u64>>);
@@ -455,10 +451,11 @@ mod tests {
             .count() as u64;
         assert_eq!(pass(Check::Nothing, &eleventh), (all - changed, changed, 0));
         assert_eq!(pass(Check::Nothing, &eleventh), (all, 0, 0));
-        for check in [Check::hourly(5, false), Check::burned_in(5, false)] {
+        for check in [Check::hourly(5, false), Check::burned_in(105, false)] {
             let slice = (1..=COUNTRIES)
                 .filter(|slot| check.covers(u64::from(slot + 100)))
                 .count() as u64;
+            assert!(0 < slice && slice < all, "{check:?}");
             assert_eq!(pass(check, &eleventh), (all - slice, slice, slice));
         }
     }

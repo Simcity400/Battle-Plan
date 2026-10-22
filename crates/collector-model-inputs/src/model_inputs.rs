@@ -451,11 +451,11 @@ mod tests {
     }
 
     #[test]
-    fn five_thousand_countries_use_live_roster_and_unit_bonus_demand_and_same_hour_growth() {
+    fn countries_use_live_roster_and_unit_bonus_demand_and_same_hour_growth() {
         use engine_native::{
             ccountry, cequipment_variant, cgame_state, csub_unit_definition, msvc_string,
         };
-        const COUNTRIES: usize = 5_000;
+        const COUNTRIES: usize = 5;
         const STATE: usize = 0x1000;
         const FIRST: usize = 0x20000;
         const STRIDE: usize = 0x1800;

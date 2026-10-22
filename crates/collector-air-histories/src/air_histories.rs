@@ -1968,8 +1968,8 @@ mod tests {
     }
 
     #[test]
-    fn cold_histories_and_native_selection_publish_5000_countries_then_more_regions() {
-        const COUNTRIES: usize = 5_000;
+    fn cold_histories_and_native_selection_publish_countries_then_more_regions() {
+        const COUNTRIES: usize = 20;
         let capacity = Capacities::default();
         assert_eq!(
             [

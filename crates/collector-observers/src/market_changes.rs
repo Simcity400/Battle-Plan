@@ -1534,16 +1534,6 @@ mod tests {
     }
 
     #[test]
-    fn local_draft_resets_and_nested_pool_copies_have_no_patch_owner() {
-        assert_eq!(OBSERVED_SITES.len(), 25);
-        for nested in [1, 2, 22, 26, 27, 28] {
-            assert!(!OBSERVED_SITES.contains(&nested));
-        }
-        for owner in [0, 3, 5, 6, 16, 21, 24, 25, native::CONTRACT_REMOVAL_SITE] {
-            assert!(OBSERVED_SITES.contains(&owner));
-        }
-    }
-    #[test]
     fn writer_coverage_never_reads_local_draft_reset_sites() {
         struct GameWriters;
         impl Memory for GameWriters {

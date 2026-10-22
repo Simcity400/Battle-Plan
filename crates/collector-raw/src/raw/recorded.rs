@@ -3,7 +3,6 @@
 use super::{RawLog, Span, is_canonical_range};
 use engine_native::Memory;
 use std::cell::RefCell;
-use std::hash::Hasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 // Worker-side index preparation only. No timers or atomic updates are added
@@ -83,39 +82,6 @@ pub(super) struct RecordedIndex {
     capacity_charge: crate::raw_memory::Charge,
 }
 
-/// Process-local integer read keys, not untrusted strings or file identity.
-/// Exact address/length equality still resolves every bucket collision. This
-/// cheaper mixer affects lookup cost only; it is never a correctness witness.
-#[derive(Debug, Default)]
-pub(super) struct ReadAddressHasher(u64);
-
-impl Hasher for ReadAddressHasher {
-    fn finish(&self) -> u64 {
-        let mut value = self.0;
-        value ^= value >> 32;
-        value = value.wrapping_mul(0xd6e8_feb8_6659_fd93);
-        value ^ (value >> 32)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.write_u64(u64::from(byte));
-        }
-    }
-
-    fn write_u64(&mut self, value: u64) {
-        self.0 = (self.0 ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    }
-
-    fn write_usize(&mut self, value: usize) {
-        self.write_u64(value as u64);
-    }
-
-    fn write_u32(&mut self, value: u32) {
-        self.write_u64(u64::from(value));
-    }
-}
-
 impl RecordedIndex {
     #[inline]
     pub(super) fn mark_exact_length(&mut self, len: u32) {
@@ -130,11 +96,15 @@ impl RecordedIndex {
     }
 
     #[inline]
+    /// Process-local integer read keys, not untrusted strings or file identity.
+    /// Exact address/length equality still resolves every bucket collision. This
+    /// cheaper mixer affects lookup cost only; it is never a correctness witness.
     pub(super) fn hash(address: usize, len: u32) -> usize {
-        let mut hash = ReadAddressHasher::default();
-        hash.write_usize(address);
-        hash.write_u32(len);
-        hash.finish() as usize
+        let mix = |state: u64, value: u64| (state ^ value).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut value = mix(mix(0, address as u64), u64::from(len));
+        value ^= value >> 32;
+        value = value.wrapping_mul(0xd6e8_feb8_6659_fd93);
+        (value ^ (value >> 32)) as usize
     }
 
     /// Return the matching bucket or the first empty bucket. No deletions occur

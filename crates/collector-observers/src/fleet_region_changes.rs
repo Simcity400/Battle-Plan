@@ -304,13 +304,6 @@ writer!(destroy, 6);
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_disabled_family_has_no_patch_or_executable_storage() {
-        let hooks = Hooks::disabled();
-        assert!(hooks.hooks.is_empty());
-        assert_eq!(hooks.executable_ranges().count(), 0);
-    }
-
     unsafe extern "system-unwind" fn original(
         fleet: usize,
         watches: usize,

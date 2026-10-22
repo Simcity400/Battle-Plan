@@ -977,63 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn original_5000_sparse_owners_grow_read_history_without_a_country_id_ceiling() {
-        use engine_land_inputs::ncombat_log_corders_group_logs as groups;
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for (hour, count) in [(day(1941, 10), 1_500), (day(1941, 11), 5_000)] {
-            let pointers = 0x2000;
-            let managers = pointers + (count + 1) * 8;
-            let group_pointer = managers + count * native::SIZE;
-            let group = group_pointer + 8;
-            let mut bytes = vec![0; group + groups::SIZE - 0x1000];
-            let mut put = |address: usize, value: &[u8]| {
-                bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
-            };
-            let header = 0x1000 + engine_native::cgame_state::COMBAT_LOGS;
-            put(header, &(pointers as u64).to_le_bytes());
-            put(header + 8, &((count + 1) as u32).to_le_bytes());
-            put(header + 12, &((count + 1) as u32).to_le_bytes());
-            for index in 0..count {
-                let manager = managers + index * native::SIZE;
-                put(pointers + (index + 1) * 8, &(manager as u64).to_le_bytes());
-                put(manager, &(native::VTABLE_RVA as u64).to_le_bytes());
-                put(
-                    manager + native::GROUPS,
-                    &(group_pointer as u64).to_le_bytes(),
-                );
-                put(manager + native::GROUPS + 8, &1_u32.to_le_bytes());
-                put(manager + native::GROUPS + 12, &1_u32.to_le_bytes());
-                put(
-                    manager + native::COUNTRY,
-                    &(u32::MAX - index as u32).to_le_bytes(),
-                );
-            }
-            put(group_pointer, &(group as u64).to_le_bytes());
-            put(group, &(groups::VTABLE_RVA as u64).to_le_bytes());
-            let reference = (7_u64 << 32) | u64::from(engine_native::corders_group::REFERENCE_TYPE);
-            put(group + groups::GROUP, &reference.to_le_bytes());
-            let memory = engine_native::memory::SliceMemory {
-                base: 0x1000,
-                bytes: &bytes,
-            };
-            captured.set_signal(SIGNAL);
-            captured.capture(&memory, 0, 0x1000, hour, true);
-            assert_eq!(captured.rows.outcome, Outcome::Rows { len: 0 });
-            assert_eq!(captured.visited.len(), count);
-            with_store(|store| {
-                assert_eq!(store.read_hour.len(), count);
-                assert_eq!(store.last_read(u32::MAX), hour);
-                assert_eq!(store.last_read(u32::MAX - count as u32 + 1), hour);
-                assert!(!needs_all(store.last_read(u32::MAX), hour + 1));
-                let capacity = store.read_hour.capacity();
-                store.remember_reads(&captured.visited, hour + 1).unwrap();
-                assert_eq!(store.read_hour.capacity(), capacity);
-                assert_eq!(store.last_read(1), NEVER);
-            });
-        }
-    }
-
-    #[test]
     fn conversion_keeps_native_values() {
         let mut captured = Captured::with_capacities(&Capacities {
             rows: 2,

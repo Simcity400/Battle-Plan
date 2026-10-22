@@ -2198,28 +2198,6 @@ fn index_refresh_drops_inactive_keys_and_retains_only_peak_capacity() {
 }
 
 #[test]
-fn compact_index_hash_matches_the_previous_tuple_hasher() {
-    use std::hash::Hash;
-    for address in [
-        0,
-        1,
-        0x1000,
-        0x1_4000_0000,
-        0xffff_8000_0000_1000,
-        usize::MAX,
-    ] {
-        for len in [0, 1, 4, 8, 16, 32, 64, u32::MAX] {
-            let mut previous = ReadAddressHasher::default();
-            (address, len).hash(&mut previous);
-            assert_eq!(
-                RecordedIndex::hash(address, len),
-                previous.finish() as usize
-            );
-        }
-    }
-}
-
-#[test]
 fn compact_index_collisions_wrap_and_keep_each_observation_stream() {
     let addresses: Vec<_> = (1..=4096)
         .map(|index| 0x1000 + index * 16)

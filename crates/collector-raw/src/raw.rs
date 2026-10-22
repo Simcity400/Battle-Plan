@@ -39,8 +39,6 @@ mod recorded;
 use recorded::RecordedIndex;
 pub use recorded::index_diagnostics;
 pub use recorded::{Recorded, RecordedCache};
-#[cfg(test)]
-use {recorded::ReadAddressHasher, std::hash::Hasher};
 
 pub fn read_plan_diagnostics() -> impl serde::Serialize {
     crate::raw_plan::diagnostics()

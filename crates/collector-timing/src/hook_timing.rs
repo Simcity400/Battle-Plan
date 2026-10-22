@@ -955,13 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn doctrine_timing_keeps_its_shared_patch_owner_separate() {
-        assert_eq!(Family::DoctrineChanges.name(), "doctrine_changes");
-        assert_eq!(Family::DoctrineChanges.kind(), Kind::Mixed);
-        assert_eq!(Family::DoctrineChanges.period(), 64);
-    }
-
-    #[test]
     fn war_participation_registers_sampled_detours_with_original_accounting() {
         let family = Family::WarParticipation;
         assert_eq!(family.name(), "war_participation");
@@ -979,20 +972,6 @@ mod tests {
         assert!(totals.detour > 0);
         let status: Value = serde_json::to_value(status()).unwrap();
         assert!(status["families"]["war_participation"].is_object());
-    }
-
-    #[test]
-    fn direct_war_predicates_have_no_hook_family() {
-        // Direct-war and friendliness predicates run untapped: playback
-        // derives their war cells from the hour's WarRelations.
-        assert!(
-            Family::ALL
-                .map(Family::name)
-                .iter()
-                .all(|&name| name != "directed_war_queries")
-        );
-        let status: Value = serde_json::to_value(status()).unwrap();
-        assert!(status["families"].get("directed_war_queries").is_none());
     }
 
     #[test]

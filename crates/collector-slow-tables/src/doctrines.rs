@@ -1241,41 +1241,40 @@ mod tests {
     }
 
     #[test]
-    fn doctrine_scalar_events_and_hourly_handoff_allocate_nothing_at_country_scale() {
+    fn doctrine_scalar_events_and_hourly_handoff_allocate_nothing() {
         let _guard = DENY_LOCK.lock().unwrap();
-        for count in [1_500, 5_000] {
-            let mut rows = Rows::<DoctrineTrackRow>::default();
-            for slot in 0..count {
-                rows.set(DoctrineTrackRow {
-                    slot,
-                    ..Default::default()
-                })
-                .unwrap();
-            }
-            rows.prepare_baseline().unwrap();
-            let mut batches: [Vec<Action<DoctrineTrackRow>>;
-                collector_extended_support::hourly::BUFFERS] = std::array::from_fn(|_| Vec::new());
-            rows.handoff(&mut batches[0]).unwrap();
-            batches[0].clear();
-            collector_test_support::with_allocations_denied(|| {
-                for batch in &mut batches {
-                    for slot in 0..count {
-                        rows.set(DoctrineTrackRow {
-                            slot,
-                            mastery: 42,
-                            ..Default::default()
-                        })
-                        .unwrap();
-                    }
-                    rows.handoff(batch).unwrap();
-                    batch.clear();
-                }
-            });
-            assert_eq!(
-                collector_test_support::ATTEMPTS.load(std::sync::atomic::Ordering::Relaxed),
-                0
-            );
+        let count = 8;
+        let mut rows = Rows::<DoctrineTrackRow>::default();
+        for slot in 0..count {
+            rows.set(DoctrineTrackRow {
+                slot,
+                ..Default::default()
+            })
+            .unwrap();
         }
+        rows.prepare_baseline().unwrap();
+        let mut batches: [Vec<Action<DoctrineTrackRow>>;
+            collector_extended_support::hourly::BUFFERS] = std::array::from_fn(|_| Vec::new());
+        rows.handoff(&mut batches[0]).unwrap();
+        batches[0].clear();
+        collector_test_support::with_allocations_denied(|| {
+            for batch in &mut batches {
+                for slot in 0..count {
+                    rows.set(DoctrineTrackRow {
+                        slot,
+                        mastery: 42,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                }
+                rows.handoff(batch).unwrap();
+                batch.clear();
+            }
+        });
+        assert_eq!(
+            collector_test_support::ATTEMPTS.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]

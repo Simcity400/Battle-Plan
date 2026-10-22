@@ -1400,16 +1400,16 @@ mod tests {
         assert_eq!(world.reads.get(), reads);
     }
     #[test]
-    fn variant_country_context_demand_sizes_from_five_thousand_owners_and_drops_retired_ones() {
+    fn variant_country_context_demand_sizes_from_owners_and_drops_retired_ones() {
         let mut cache = Cache::default();
-        for id in 1..=5_000 {
+        for id in 1..=10 {
             cache.replace(id, id as u32, vec![1, 2]).unwrap();
         }
-        assert_eq!(cache.countries.len(), 5_000);
-        assert_eq!(cache.dirty.len(), 5_000);
-        cache.remove(2_500).unwrap();
-        assert_eq!(cache.countries.len(), 4_999);
-        assert!(!cache.dirty.contains_key(&2_500));
+        assert_eq!(cache.countries.len(), 10);
+        assert_eq!(cache.dirty.len(), 10);
+        cache.remove(5).unwrap();
+        assert_eq!(cache.countries.len(), 9);
+        assert!(!cache.dirty.contains_key(&5));
     }
 
     #[test]

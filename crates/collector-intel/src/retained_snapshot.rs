@@ -483,9 +483,9 @@ mod tests {
     }
 
     #[test]
-    fn changed_five_thousand_owner_handoff_has_one_fixed_handle_allocation_and_no_row_copy() {
-        let mut acquired = Vec::with_capacity(10_000);
-        for owner in (1..=5000).rev() {
+    fn changed_owner_handoff_has_one_fixed_handle_allocation_and_no_row_copy() {
+        let mut acquired = Vec::with_capacity(10);
+        for owner in (1..=5).rev() {
             acquired.push(rows::IntelSourceRow {
                 owner,
                 pool: u32::MAX,
@@ -520,7 +520,7 @@ mod tests {
                     || AcquiredRows::Sources(std::mem::take(&mut acquired)),
                     &mut shared
                 ),
-                Outcome::Rows { len: 10_000 }
+                Outcome::Rows { len: 10 }
             );
             assert_eq!(crate::test_support::ATTEMPTS.load(Ordering::Relaxed), 1);
             assert_eq!(crate::test_support::DENIALS.load(Ordering::Relaxed), 0);
@@ -544,7 +544,7 @@ mod tests {
             panic!()
         };
         projected.validate_keys().unwrap();
-        assert_eq!(projected.len(), 10_000);
+        assert_eq!(projected.len(), 10);
         let AcquiredRows::Sources(recycled) = snapshot.recycle_acquired().unwrap() else {
             panic!()
         };

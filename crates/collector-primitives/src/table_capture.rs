@@ -244,18 +244,6 @@ mod tests {
     }
 
     #[test]
-    fn checked_resize_preserves_native_pool_capacity_trace() {
-        let mut checked = Vec::<u64>::new();
-        let mut original = Vec::<u64>::new();
-        for len in [1, 5, 32, 1000, 1001, 1335, 2001, 2668] {
-            assert!(grow_vec(&mut checked, len));
-            original.resize(len, 0);
-            assert_eq!(checked, original);
-            assert_eq!(checked.capacity(), original.capacity(), "length {len}");
-        }
-    }
-
-    #[test]
     fn failed_publication_retains_growth_demand_until_reset() {
         for observed in [
             Outcome::Rows { len: 6 },

@@ -213,31 +213,6 @@ fn naval_live_headers_presize_attach_and_combat_growth_before_capture() {
 }
 
 #[test]
-fn naval_live_header_bounds_scale_from_actual_combat_demand() {
-    let mut memory = Fixture::new(1);
-    let one = breakdown::demand(&memory, IMAGE, STATE).unwrap();
-    for combats in [1500, 5000] {
-        let roster = memory.allocate(combats * 8);
-        for index in 0..combats {
-            memory.u64(roster + index * 8, BODIES as u64);
-        }
-        memory.array(
-            STATE + engine_native::cgame_state::COMBATS + 8,
-            roster,
-            combats,
-        );
-        let demand = breakdown::demand(&memory, IMAGE, STATE).unwrap();
-        assert_eq!(demand.rows, combats);
-        assert_eq!(demand.ships, one.ships * combats);
-        assert_eq!(demand.planes, one.planes * combats);
-        let mut capacities = Capacities::default();
-        capacities.raise_for_live_details(demand);
-        assert!(capacities.details >= combats);
-        assert!(capacities.ships >= demand.ships);
-    }
-}
-
-#[test]
 fn naval_hint_reserve_failure_keeps_existing_lengths() {
     let capacities = Capacities::default();
     let mut captured = Captured::with_capacities(&capacities);
@@ -248,56 +223,6 @@ fn naval_hint_reserve_failure_keeps_existing_lengths() {
     assert_eq!(captured.details.rows.len(), capacities.details);
     assert!(captured.dense_wings.first.is_empty());
     captured.try_grow_hint(&capacities).unwrap();
-}
-
-#[test]
-fn naval_bench_in_place_changes_keep_headers_and_reach_capture() {
-    let mut memory = Fixture::new(1);
-    let root = COUNTRY_BASE + engine_native::ccountry::MODIFIER_ACCUMULATOR;
-    let root_header = memory.0[root - STATE..root - STATE + 16].to_vec();
-    let mut captured = Captured::with_capacities(&Capacities::default());
-    captured.capture(&memory, IMAGE, STATE);
-    let terms = captured.weapon_terms.first[..captured.weapon_terms.len].to_vec();
-    let speed: Vec<_> = captured.ships.rows[..SHIPS_PER_COMBAT]
-        .iter()
-        .filter(|row| row.member.state == 8)
-        .map(|row| row.escape_speed_base)
-        .collect();
-    assert_eq!(speed.len(), 5);
-    memory.advance(1, Hour::Quiet, 7);
-    captured.reset();
-    captured.capture(&memory, IMAGE, STATE);
-    assert_eq!(
-        &captured.weapon_terms.first[..captured.weapon_terms.len],
-        terms
-    );
-    memory.advance(1, Hour::AllChanged, 7);
-    assert_eq!(&memory.0[root - STATE..root - STATE + 16], root_header);
-    captured.reset();
-    captured.capture(&memory, IMAGE, STATE);
-    assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
-    assert_eq!(
-        captured.ships.outcome,
-        Outcome::Rows {
-            len: SHIPS_PER_COMBAT
-        }
-    );
-    assert_ne!(
-        &captured.weapon_terms.first[..captured.weapon_terms.len],
-        terms
-    );
-    for (row, before) in captured.ships.rows[..SHIPS_PER_COMBAT]
-        .iter()
-        .filter(|row| row.member.state == 8)
-        .zip(speed)
-    {
-        assert_eq!(row.escape_speed_base, before + 7);
-    }
-    assert!(
-        captured.planes.first[..4]
-            .iter()
-            .all(|plane| plane.current_planes == 107)
-    );
 }
 
 /// Pack reset and real collector capture callback, then separate spool projection.

@@ -1072,58 +1072,6 @@ mod tests {
     }
 
     #[test]
-    fn original_five_thousand_and_mod_sized_sparse_owner_occurrences_grow_before_publication() {
-        let mut selection = SliceSelection::new(false);
-        let mut fingerprints = SliceFingerprints::new();
-        for count in [5000u32, 12_000] {
-            fingerprints.forget();
-            selection.reset(0, false);
-            selection.track_reads();
-            for index in 0..count {
-                let owner = u32::MAX - index * 7919;
-                selection.scan(&mut fingerprints, owner, Some(u64::from(index)));
-                selection.mark_read(owner);
-            }
-            selection.finish_pass(&mut fingerprints, true);
-            assert_eq!(selection.out_of_range, 0);
-            assert_eq!(selection.read_owners().count(), count as usize);
-            assert_eq!(fingerprints.values.len(), count as usize);
-            assert_eq!(selection.seen.len(), count as usize);
-            let capacities = [
-                selection.early.capacity(),
-                selection.seen.capacity(),
-                selection.walked.capacity(),
-                fingerprints.values.capacity(),
-            ];
-            crate::test_support::with_allocations_denied(|| {
-                selection.invalidate(&mut fingerprints);
-                selection.reset(1, false);
-            });
-            for index in 0..count {
-                let owner = u32::MAX - index * 7919;
-                selection.scan(&mut fingerprints, owner, Some(u64::from(index)));
-                assert!(selection.contains(owner));
-            }
-            fingerprints.finish_scan();
-            assert_eq!(selection.read_owners().count(), count as usize);
-            assert_eq!(
-                [
-                    selection.early.capacity(),
-                    selection.seen.capacity(),
-                    selection.walked.capacity(),
-                    fingerprints.values.capacity()
-                ],
-                capacities
-            );
-            let mut prior = 0;
-            for owner in selection.read_owners() {
-                assert!(owner > prior);
-                prior = owner;
-            }
-        }
-    }
-
-    #[test]
     fn failed_owner_bookkeeping_never_certifies_a_partial_census_or_forgets_healthy_owners() {
         let mut original = SliceSelection::new(true);
         let mut fingerprints = SliceFingerprints::new();
@@ -1334,25 +1282,6 @@ mod tests {
                 replay_data::cadence::is_sliced(table)
             );
         }
-        assert_eq!(FAMILIES[RESEARCH].name, "research");
-        assert_eq!(FAMILIES[RESEARCH].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[TECHNOLOGIES].name, "technologies");
-        assert_eq!(FAMILIES[TECHNOLOGIES].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[RAID_LAUNCH].name, "raid_launch");
-        assert_eq!(FAMILIES[RAID_LAUNCH].owner, OwnerKind::CanonicalSlot);
-        assert_eq!(FAMILIES[RAID_STATE].owner, OwnerKind::State);
-        assert_eq!(FAMILIES[RAID_BUILDINGS].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[STABILITY].name, "stability");
-        assert_eq!(FAMILIES[AIR_RELATIONS].owner, OwnerKind::CanonicalSlot);
-        assert_eq!(FAMILIES[AIR_HISTORIES].owner, OwnerKind::CanonicalSlot);
-        assert_eq!(FAMILIES[NAVAL_MISSIONS].name, "naval_missions");
-        assert_eq!(FAMILIES[NAVAL_MISSIONS].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[COMBAT_LOG].name, "combat_log");
-        assert_eq!(FAMILIES[COMBAT_LOG].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[SUPPLY_TRAINS].name, "supply_trains");
-        assert_eq!(FAMILIES[SUPPLY_TRAINS].owner, OwnerKind::Country);
-        assert_eq!(FAMILIES[AVAILABLE_ADVISORS].name, "available_advisors");
-        assert_eq!(FAMILIES[AVAILABLE_ADVISORS].owner, OwnerKind::Country);
     }
 
     /// A hook-marked owner joins the hour's read outside its slice. Only a

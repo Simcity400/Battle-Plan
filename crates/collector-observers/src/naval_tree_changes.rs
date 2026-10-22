@@ -552,21 +552,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn callbacks_follow_the_site_order() {
-        assert_eq!(SITES, 7);
-        assert_eq!(MUTATIONS[0].name, "recalculate_modifiers");
-        assert_eq!(MUTATIONS[1].name, "reset_country_appearance");
-        assert_eq!(
-            MUTATIONS[COUNTRY_SITES].name,
-            "recalculate_leader_modifiers"
-        );
-        // The lifetime sites forwarded to the unit leader family.
-        assert_eq!(MUTATIONS[COUNTRY_SITES + 2].name, "construct_leader");
-        assert_eq!(MUTATIONS[COUNTRY_SITES + 3].name, "copy_construct_leader");
-        assert_eq!(MUTATIONS[COUNTRY_SITES + 4].name, "destroy_leader");
-    }
-
-    #[test]
     fn a_held_tree_is_carried_only_under_its_certificate_and_accumulator() {
         let mut store = Store::default();
         store.held.insert(

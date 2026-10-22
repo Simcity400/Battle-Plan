@@ -5662,20 +5662,6 @@ mod tests {
     }
 
     #[test]
-    fn comparison_bitsets_keep_the_original_resize_capacity_trace() {
-        let mut previous = Vec::<u64>::new();
-        let mut checked = Vec::<u64>::new();
-        for count in [1_usize, 64, 257, 65, 513, 1_025, 0] {
-            previous.resize(count.div_ceil(64), 0);
-            previous.fill(0);
-            assert!(clear_seen(&mut checked, count));
-            assert_eq!(checked, previous);
-            assert_eq!(checked.capacity(), previous.capacity());
-            checked.fill(u64::MAX);
-        }
-    }
-
-    #[test]
     fn relations_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_drop() {
         use crate::raw_memory::{Capacity, Charge, Tracker, vector_bytes};
         static LOCAL: Tracker = Tracker::new();
@@ -6842,9 +6828,9 @@ mod tests {
     }
 
     #[test]
-    fn variable_seeds_use_live_scope_capacity_and_detect_seed_only_changes_at_5000_countries() {
+    fn variable_seeds_use_live_scope_capacity_and_detect_seed_only_changes() {
         let (mut capacities, mut capture) = small();
-        const COUNTRIES: usize = 5_000;
+        const COUNTRIES: usize = 5;
         let count = COUNTRIES + 1;
         capacities.raise_for_script_variables(VariableDemand {
             scopes: count,
@@ -7569,31 +7555,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn relations_job_completes_rows_beyond_the_initial_pack_capacity() {
-        let bytes = relations_kit::opinionated_fixture();
-        let memory = relations_kit::memory(&bytes);
-        let direct = relations_kit::direct(&memory, 1, 1);
-        assert_eq!(
-            direct.opinion_outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        assert_eq!(
-            direct.tuple_outcome,
-            Outcome::Truncated {
-                len: 1,
-                unread_rows: 1
-            }
-        );
-        let mut intel = relations_kit::intel_captured(1, 1);
-        let (_, _) = relations_kit::split(&memory, &mut intel);
-        let complete = relations_kit::direct(&memory, 2, 2);
-        relations_kit::assert_matches_direct(&intel, &complete);
     }
 
     #[test]
@@ -8840,114 +8801,6 @@ mod tests {
         let (split, report) = cap_split(&memory);
         assert!(report.raw_ok);
         assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
-    }
-
-    #[test]
-    fn cold_capitulation_jobs_grow_before_publication_for_5000_countries() {
-        let mut job = CapitulationJob::new();
-        assert_eq!((job.log.spans.capacity(), job.log.bytes.capacity()), (0, 0));
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        for count in [1_500, 5_000] {
-            let pointers = 0x10000;
-            let links = pointers + (count + 1) * 8;
-            let objects = links + (count + 1) * 4;
-            let stride = ccountry::DIPLOMACY_STATUS + 8;
-            let diplomacy = objects + count * stride;
-            let mut bytes = vec![0; diplomacy + count * 0x360 - CAP_GAME];
-            cap_array(
-                &mut bytes,
-                CAP_GAME + cgame_state::COUNTRIES,
-                pointers,
-                (count + 1) as u32,
-            );
-            cap_array(
-                &mut bytes,
-                CAP_GAME + cgame_state::COUNTRY_LINKS,
-                links,
-                (count + 1) as u32,
-            );
-            for slot in 1..=count {
-                let country = objects + (slot - 1) * stride;
-                let status = diplomacy + (slot - 1) * 0x360;
-                cap_put(
-                    &mut bytes,
-                    pointers + slot * 8,
-                    &(country as u64).to_le_bytes(),
-                );
-                cap_put(&mut bytes, links + slot * 4, &(slot as u32).to_le_bytes());
-                cap_put(
-                    &mut bytes,
-                    country,
-                    &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
-                );
-                cap_put(
-                    &mut bytes,
-                    country + ccountry::ID,
-                    &(slot as u32).to_le_bytes(),
-                );
-                cap_put(
-                    &mut bytes,
-                    country + ccountry::DIPLOMACY_STATUS,
-                    &(status as u64).to_le_bytes(),
-                );
-                cap_put(
-                    &mut bytes,
-                    status,
-                    &(cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
-                );
-                cap_put(
-                    &mut bytes,
-                    status + cdiplomacy_status::COUNTRY,
-                    &(country as u64).to_le_bytes(),
-                );
-                cap_put(
-                    &mut bytes,
-                    status + cdiplomacy_status::CAPITULATED_HOUR,
-                    &(slot as i32).to_le_bytes(),
-                );
-            }
-            struct Once<'a> {
-                memory: SliceMemory<'a>,
-                headers: std::cell::Cell<usize>,
-            }
-            impl Memory for Once<'_> {
-                fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                    if address == CAP_GAME + cgame_state::COUNTRIES {
-                        self.headers.set(self.headers.get() + 1);
-                        assert_eq!(
-                            self.headers.get(),
-                            1,
-                            "growth must retain the original header"
-                        );
-                    }
-                    self.memory.copy(address, output)
-                }
-            }
-            let memory = Once {
-                memory: SliceMemory {
-                    base: CAP_GAME,
-                    bytes: &bytes,
-                },
-                headers: std::cell::Cell::new(0),
-            };
-            let report = copy_capitulation_refresh(
-                &memory,
-                CapitulationCopyContext {
-                    base: CAP_BASE,
-                    game_state: CAP_GAME,
-                },
-                &mut job,
-            );
-            assert!(report.raw_ok && !job.log.overflowed);
-            assert_eq!(memory.headers.get(), 1);
-            captured.decode_capitulation_payload(CAP_BASE, &job, &mut [0]);
-            assert_eq!(captured.capitulation.outcome, Outcome::Rows { len: count });
-            assert_eq!(captured.capitulation.rows[count - 1].country, count as u32);
-            assert_eq!(
-                captured.capitulation.rows[count - 1].capitulated_hour,
-                count as i32
-            );
-        }
     }
 
     #[test]

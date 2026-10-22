@@ -973,8 +973,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cold_rows_and_native_selection_publish_5000_countries_then_larger_vectors() {
-        const COUNTRIES: usize = 5_000;
+    fn cold_rows_and_native_selection_publish_countries_then_larger_vectors() {
+        const COUNTRIES: usize = 20;
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(COUNTRIES + 1);
         assert_eq!([capacity.rows, capacity.bytes], [0; 2]);

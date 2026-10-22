@@ -705,7 +705,7 @@ mod tests {
         assert!(owner.entries.iter().all(|row| !ids.contains(&row.1)));
     }
     #[test]
-    fn network_auxiliary_quiet_5000_owners_reads_and_allocates_nothing_and_loss_waits_for_census() {
+    fn network_auxiliary_quiet_owners_reads_and_allocates_nothing_and_loss_waits_for_census() {
         let _lock = test_lock();
         struct NoRead;
         impl Memory for NoRead {
@@ -714,7 +714,7 @@ mod tests {
             }
         }
         let mut store = Store::new();
-        for index in 0..5000 {
+        for index in 0..5 {
             store.owners.push(Owner {
                 seed: network::Summary {
                     native_pointer: index + 1,

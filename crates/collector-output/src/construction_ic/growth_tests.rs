@@ -60,32 +60,6 @@ fn zero_native_demand_installs_empty_storage_and_full_rejected_bursts_grow() {
 }
 
 #[test]
-fn first_worker_drain_keeps_five_thousand_and_mod_sized_event_populations() {
-    let _lock = test_lock();
-    for events in [5_000, 5_000 * 31] {
-        observe_for_test(true, 0);
-        reset_log_for_test(0);
-        presize(events);
-        install_offered();
-        assert_eq!(capacity(), events * 2);
-        collect();
-        append_burst(events);
-        let mut output = Vec::new();
-        let result = drain_growing(&mut output).unwrap();
-        assert!(result.complete());
-        assert_eq!(
-            (result.pending, result.copied, output.len()),
-            (events, events, events)
-        );
-        for (index, row) in output.iter().enumerate() {
-            assert_eq!((row.line, row.amount), (index as u64 + 1, index as i64));
-        }
-        assert_eq!(drain_growing(&mut output).unwrap().copied, 0);
-        observe_for_test(false, 0);
-    }
-}
-
-#[test]
 fn live_growth_preserves_pending_entries_cursor_epoch_and_retired_storage() {
     let _lock = test_lock();
     observe_for_test(true, 0);

@@ -2,7 +2,8 @@ use super::*;
 use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
 
 #[test]
-fn variable_scope_updates_keep_frame_bytes_at_five_thousand_scopes() {
+fn variable_scope_updates_keep_frame_bytes() {
+    const SCOPES: usize = 8;
     let frame = |hour| FrameInput {
         branch: 1,
         hour,
@@ -12,13 +13,13 @@ fn variable_scope_updates_keep_frame_bytes_at_five_thousand_scopes() {
     for force in [false, true] {
         let mut capacity = Capacities::default();
         capacity.raise_for_script_variables(VariableDemand {
-            scopes: 5_000,
-            entries: 10_000,
+            scopes: SCOPES,
+            entries: 2 * SCOPES,
             bytes: 8,
         });
         let mut capture = Captured::with_capacities(&capacity);
-        capture.variables.outcome = Outcome::Rows { len: 5_000 };
-        for index in 0..5_000 {
+        capture.variables.outcome = Outcome::Rows { len: SCOPES };
+        for index in 0..SCOPES {
             capture.variables.rows[index] = cvariables::ScopeRow {
                 scope: cvariables::Scope::Country(index as u32 + 1),
                 entries_start: index * 2,
@@ -36,8 +37,8 @@ fn variable_scope_updates_keep_frame_bytes_at_five_thousand_scopes() {
                 value_raw: -(index as i64),
             };
         }
-        capture.variable_entries.len = 10_000;
-        capture.variable_entries.required = 10_000;
+        capture.variable_entries.len = 2 * SCOPES;
+        capture.variable_entries.required = 2 * SCOPES;
         capture.variable_names.first[..6].copy_from_slice(b"zetaA\0");
         capture.variable_names.len = 6;
         capture.variable_names.required = 6;
@@ -46,7 +47,7 @@ fn variable_scope_updates_keep_frame_bytes_at_five_thousand_scopes() {
         let mut scratch = ScriptVariableComparison::default();
         for hour in 0..=10 {
             match hour {
-                2 => capture.variables.rows[..5_000].reverse(),
+                2 => capture.variables.rows[..SCOPES].reverse(),
                 3 => capture.variable_entries.first[0].value_raw = i64::MIN,
                 4 => capture.variables.rows[0].seed = None,
                 5 => capture.variable_names.first[0] = b'Z',
@@ -59,11 +60,11 @@ fn variable_scope_updates_keep_frame_bytes_at_five_thousand_scopes() {
                 8 => {
                     capture.variables.outcome = Outcome::Truncated {
                         len: 3,
-                        unread_rows: 4_997,
+                        unread_rows: SCOPES as u32 - 3,
                     }
                 }
                 9 => {
-                    capture.variables.outcome = Outcome::Rows { len: 5_000 };
+                    capture.variables.outcome = Outcome::Rows { len: SCOPES };
                     capture.variable_names.len = usize::MAX;
                 }
                 10 => {

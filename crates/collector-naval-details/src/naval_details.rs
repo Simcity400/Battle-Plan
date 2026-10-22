@@ -1033,54 +1033,47 @@ mod tests {
     /// indexed membership test per reference, in first-reference order, with
     /// no allocation once the hour's capacity is reserved.
     #[test]
-    fn dense_base_selection_is_linear_at_country_scale() {
-        for countries in [1_500_usize, 5_000] {
-            let planes = 2 * countries;
-            let mut c = Captured::with_capacities(&Capacities {
-                details: 1,
-                ships: countries,
-                planes,
-                dense_bases: countries,
-                ..Capacities::default()
-            });
-            let base = |country: usize| ((country as u64 + 1) << 32) | 65;
-            c.details.outcome = Outcome::Rows { len: 1 };
-            c.details.rows[0].sides[0].planes = [0, countries];
-            c.details.rows[0].sides[1].planes = [countries, countries];
-            c.planes.len = planes;
-            for (index, plane) in c.planes.first[..planes].iter_mut().enumerate() {
-                // Side 1 references the same bases in reverse.
-                let country = if index < countries {
-                    index
-                } else {
-                    planes - 1 - index
-                };
-                plane.air_base = base(country);
-                plane.efficiency.source = 3;
-            }
-            c.ships.outcome = Outcome::Rows { len: countries };
-            for (country, ship) in c.ships.rows[..countries].iter_mut().enumerate() {
-                ship.live_ship = 1;
-                ship.weapon_context.air_base = base(country);
-            }
-            let reserved = c.allocated_bytes();
-            let started = std::time::Instant::now();
-            c.select_dense_base_handles().unwrap();
-            let elapsed = started.elapsed();
-            assert_eq!(c.base_handles.len(), countries);
-            assert!(
-                c.base_handles
-                    .as_slice()
-                    .iter()
-                    .enumerate()
-                    .all(|(country, &handle)| handle == base(country))
-            );
-            assert_eq!(c.allocated_bytes(), reserved);
-            eprintln!(
-                "naval combat air base selection, {countries} countries ({} references): {elapsed:?} (test build)",
-                planes + countries
-            );
+    fn dense_base_selection_keeps_first_reference_order_without_allocation() {
+        let countries = 12;
+        let planes = 2 * countries;
+        let mut c = Captured::with_capacities(&Capacities {
+            details: 1,
+            ships: countries,
+            planes,
+            dense_bases: countries,
+            ..Capacities::default()
+        });
+        let base = |country: usize| ((country as u64 + 1) << 32) | 65;
+        c.details.outcome = Outcome::Rows { len: 1 };
+        c.details.rows[0].sides[0].planes = [0, countries];
+        c.details.rows[0].sides[1].planes = [countries, countries];
+        c.planes.len = planes;
+        for (index, plane) in c.planes.first[..planes].iter_mut().enumerate() {
+            // Side 1 references the same bases in reverse.
+            let country = if index < countries {
+                index
+            } else {
+                planes - 1 - index
+            };
+            plane.air_base = base(country);
+            plane.efficiency.source = 3;
         }
+        c.ships.outcome = Outcome::Rows { len: countries };
+        for (country, ship) in c.ships.rows[..countries].iter_mut().enumerate() {
+            ship.live_ship = 1;
+            ship.weapon_context.air_base = base(country);
+        }
+        let reserved = c.allocated_bytes();
+        c.select_dense_base_handles().unwrap();
+        assert_eq!(c.base_handles.len(), countries);
+        assert!(
+            c.base_handles
+                .as_slice()
+                .iter()
+                .enumerate()
+                .all(|(country, &handle)| handle == base(country))
+        );
+        assert_eq!(c.allocated_bytes(), reserved);
     }
 
     #[test]

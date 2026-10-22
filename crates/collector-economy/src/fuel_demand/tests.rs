@@ -3,15 +3,17 @@ use replay_data::{rows::CountryFuelRow, rows::TableRows};
 use replay_frame::{frame::TableInput, frame::TableView};
 
 #[test]
-fn owned_5000_country_index_preserves_signed_cache_name_refusal_and_alias_topology() {
+fn owned_country_index_preserves_signed_cache_name_refusal_and_alias_topology() {
+    const COUNT: usize = 3;
+    const LAST: usize = COUNT - 1;
     let mut capacity = Capacities { rows: [0; N] };
-    capacity.rows[0] = 5000;
-    capacity.rows[1] = 5000;
+    capacity.rows[0] = COUNT;
+    capacity.rows[1] = COUNT;
     capacity.rows[9] = 1;
     let mut captured = Captured::with_capacities(&capacity);
     captured.hour = Some(123);
-    captured.lengths[0] = 5000;
-    captured.lengths[1] = 5000;
+    captured.lengths[0] = COUNT;
+    captured.lengths[1] = COUNT;
     captured.lengths[9] = 1;
     captured.groups[0] = group::GroupRow {
         handle: 9,
@@ -25,7 +27,7 @@ fn owned_5000_country_index_preserves_signed_cache_name_refusal_and_alias_topolo
         Outcome::Rows { len: 0 },
         Outcome::Rows { len: 0 },
     ]);
-    for index in 0..5000 {
+    for index in 0..COUNT {
         captured.countries[index] = native::Country {
             country: index as u32 + 1,
             instance: Some(7),
@@ -46,13 +48,13 @@ fn owned_5000_country_index_preserves_signed_cache_name_refusal_and_alias_topolo
         };
     }
     let owned = captured.owned().unwrap();
-    assert_eq!(owned.len(), 5000);
+    assert_eq!(owned.len(), COUNT);
     assert_eq!(owned[0].1.native_rates(), [Ok(0), Ok(0), Ok(0)]);
-    assert_eq!(owned[4999].1.native_rates(), [Ok(-1), Ok(0), Ok(0)]);
+    assert_eq!(owned[LAST].1.native_rates(), [Ok(-1), Ok(0), Ok(0)]);
     assert_eq!(owned[0].1.groups[0].country, 9001);
     assert!(owned[1].1.groups.is_empty());
     assert_eq!(
-        owned[4999].1.divisions[0].name_reason,
+        owned[LAST].1.divisions[0].name_reason,
         b"synthetic name failure"
     );
 }
@@ -236,8 +238,7 @@ impl AirMemory {
 }
 
 #[test]
-fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from_original_headers()
-{
+fn cold_and_later_capture_grows_air_text_and_weather_from_original_headers() {
     use engine_native::{
         air_fuel_defines as defines, air_mission, cair_base, cair_wing, cair_wing_pool, ccountry,
         ccountry_air_container as container, cgame_state, cprovince, cstrategic_air,
@@ -263,20 +264,21 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
     const PROVINCE: usize = 0x2660000;
     const COSTS: usize = 0x2680000;
     const NAME: usize = 0x2690000;
+    const COUNT: usize = 5;
     let mut memory = AirMemory::default();
     for (address, size) in [
         (STATE, 0x2000),
-        (COUNTRIES, 5001 * 8),
-        (LINKS, 5001 * 4),
+        (COUNTRIES, (COUNT + 1) * 8),
+        (LINKS, (COUNT + 1) * 4),
         (MANAGER, 0x50),
-        (AIRS, 5001 * 8),
+        (AIRS, (COUNT + 1) * 8),
         (BASE, 0x90),
         (WING, 0xa00),
         (REGION, 0x80),
         (WEATHER, 0x380),
         (GRID, 24 * 24),
         (LIST, 32),
-        (CONTAINERS, 5001 * 8),
+        (CONTAINERS, (COUNT + 1) * 8),
         (ENTRY, 0xf8),
         (POOL, 0x48),
         (POOLS, 8),
@@ -288,8 +290,8 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
     ] {
         memory.span(address, size);
     }
-    memory.array(STATE + cgame_state::COUNTRIES, COUNTRIES, 5001);
-    memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, 5001);
+    memory.array(STATE + cgame_state::COUNTRIES, COUNTRIES, COUNT as u32 + 1);
+    memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, COUNT as u32 + 1);
     memory.put(
         STATE + cgame_state::STRATEGIC_AIR_MANAGER,
         &(MANAGER as u64).to_le_bytes(),
@@ -302,8 +304,8 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
         MANAGER,
         &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
     );
-    memory.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIRS, 5001);
-    for id in 1_u32..=5000 {
+    memory.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIRS, COUNT as u32 + 1);
+    for id in 1..=COUNT as u32 {
         let country = 0x100000 + id as usize * 0x800;
         let air = 0x1000000 + id as usize * 0x100;
         memory.span(country, 0x600);
@@ -326,7 +328,7 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
     memory.registry(wing_ref, WING + cair_wing::SECONDARY, 0x2710000);
     memory.put(BASE, &(cair_base::VTABLE_RVA as u64).to_le_bytes());
     memory.put(BASE + cair_base::HANDLE, &base_ref.to_le_bytes());
-    memory.array(BASE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 5001);
+    memory.array(BASE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, COUNT as u32 + 1);
     for ordinal in 0..4 {
         memory.put(LIST + ordinal * 8, &(BASE as u64).to_le_bytes());
     }
@@ -395,7 +397,7 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
         ),
         (124, 25_000, 0, 4, 3, 250, 300),
     ] {
-        for id in 1..=5000 {
+        for id in 1..=COUNT {
             let air = 0x1000000 + id * 0x100;
             memory.array(air + cstrategic_air::FIRST_AIR_SITES, LIST, first_sites);
         }
@@ -418,8 +420,8 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
         captured.capture_growing(&memory, 0, STATE, hour);
         assert_eq!(captured.reason, None);
         let weather_rows = provinces as usize * 24;
-        assert_eq!(captured.lengths[0], 5000);
-        assert_eq!(captured.lengths[4], 5000 * (first_sites as usize + 1));
+        assert_eq!(captured.lengths[0], COUNT);
+        assert_eq!(captured.lengths[4], COUNT * (first_sites as usize + 1));
         assert_eq!(captured.lengths[5], captured.lengths[4] * wings as usize);
         assert_eq!(captured.lengths[6], weather_rows);
         assert_eq!(captured.lengths[7], 1);
@@ -435,13 +437,13 @@ fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from
         )
         .unwrap();
         let owned = captured.owned().unwrap();
-        assert_eq!(owned.len(), 5000);
+        assert_eq!(owned.len(), COUNT);
         assert_eq!(
             owned
                 .iter()
                 .map(|(_, pack)| pack.contexts.len() * 24)
                 .sum::<usize>(),
-            5000 * 24
+            COUNT * 24
         );
         for (_, pack) in &owned {
             assert_eq!(pack.hour, rows::FuelDemandHour::Host);

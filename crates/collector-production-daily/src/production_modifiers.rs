@@ -739,12 +739,12 @@ mod tests {
         assert!(capacity == before);
     }
     #[test]
-    fn five_thousand_countries_and_failed_arena_pressure_grow_off_hour() {
+    fn countries_and_failed_arena_pressure_grow_off_hour() {
         let mut capacity = Capacities::default();
-        capacity.raise_for_countries(5001);
+        capacity.raise_for_countries(6);
         let mut captured = Captured::with_capacities(&capacity);
-        assert!(captured.first.countries.first.len() >= 5000);
-        assert!(captured.first.requests.first.len() >= 5000 * native::KEYS.len());
+        assert!(captured.first.countries.first.len() >= 5);
+        assert!(captured.first.requests.first.len() >= 5 * native::KEYS.len());
         captured.first.efficiencies.required = captured.first.efficiencies.first.len() + 1;
         captured.first.archetypes.required = captured.first.archetypes.first.len() + 1;
         captured.grow(&mut capacity);

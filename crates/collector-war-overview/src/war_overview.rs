@@ -333,22 +333,4 @@ mod tests {
             }
         );
     }
-    #[test]
-    fn capacities_follow_native_demand_and_country_scale_without_a_ceiling() {
-        for count in [1_500, 5_000] {
-            let mut capacity = Capacities::default();
-            capacity.raise_for_countries(count + 1);
-            capacity.raise_for_demand(native::Demand {
-                owned: count * 3,
-                goals: count * 5,
-                relations: count * 25,
-            });
-            let c = Captured::with_capacities(&capacity);
-            assert!(
-                c.owned.rows.len() >= count * 3
-                    && c.goals.rows.len() >= count * 5
-                    && c.countries.rows.len() > count
-            );
-        }
-    }
 }

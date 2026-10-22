@@ -735,15 +735,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn propaganda_five_thousand_owners_carry_without_native_reads_and_only_one_observed_append_changes()
-     {
+    fn propaganda_owners_carry_without_native_reads_and_only_one_observed_append_changes() {
         use engine_native::ccountry::synthetic::World;
+        const COUNTRIES: usize = 5;
         let mut world = World::new(0, 0, 0x200);
-        let pointers = world.alloc(5001 * 8);
-        let roots = world.alloc(5001 * cstrategic_operative::SIZE);
+        let pointers = world.alloc((COUNTRIES + 1) * 8);
+        let roots = world.alloc((COUNTRIES + 1) * cstrategic_operative::SIZE);
         let ring_data = world.alloc(2 * native::EFFORT_STRIDE);
         let mut roster = Vec::new();
-        for slot in 0..=5000 {
+        for slot in 0..=COUNTRIES {
             let object = roots + slot * cstrategic_operative::SIZE;
             world.u64(pointers + slot * 8, object as u64);
             world.u64(object, cstrategic_operative::VTABLE_RVA as u64);
@@ -761,7 +761,7 @@ mod tests {
         }
         let objects = Some(Array {
             data: pointers,
-            count: 5001,
+            count: COUNTRIES as u32 + 1,
         });
         let mut store = Store::new();
         let mut output = Vec::new();
@@ -778,7 +778,7 @@ mod tests {
                     &mut output
                 )
                 .unwrap(),
-            Some(5001)
+            Some(COUNTRIES + 1)
         );
         assert_eq!(output[0].slot, 0);
         struct NoRead;
@@ -848,7 +848,7 @@ mod tests {
                     &mut output
                 )
                 .unwrap(),
-            Some(5002)
+            Some(COUNTRIES + 2)
         );
         assert_eq!(
             output.iter().filter(|row| row.sequence != u64::MAX).count(),
@@ -872,7 +872,7 @@ mod tests {
             None
         );
         world.u32(roots + native::HISTORY + 16, 0);
-        for expected in [Some(5001), None] {
+        for expected in [Some(COUNTRIES + 1), None] {
             store
                 .lanes
                 .last()

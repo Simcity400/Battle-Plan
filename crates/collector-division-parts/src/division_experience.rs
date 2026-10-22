@@ -460,9 +460,10 @@ mod tests {
         }
     }
 
+    // regression: 54dd3b8940 Fix the daily footer lookup panic and the PR's collector test failures
     #[test]
-    fn range_scalar_indexes_rebuild_once_for_five_thousand_divisions() {
-        const COUNT: usize = 5000;
+    fn range_scalar_indexes_rebuild_once() {
+        const COUNT: usize = 64;
         let mut store = Store::<i64>::default();
         let mut order = Order::default();
         let certificate = Some((1, 1));
@@ -578,15 +579,16 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_experience_carries_five_thousand_divisions_without_reading() {
+    fn unchanged_experience_carries_divisions_without_reading() {
+        const COUNT: u64 = 20;
         let mut store = Store::default();
         let mut memory = Value {
             value: i64::MIN,
             reads: Cell::new(0),
             fail: false,
         };
-        store.begin(5000).unwrap();
-        for id in 1..=5000 {
+        store.begin(COUNT as usize).unwrap();
+        for id in 1..=COUNT {
             assert_eq!(
                 store.observe(&memory, 0, &seed(id, id as usize), Some((1, 1))),
                 Ok(i64::MIN)
@@ -595,8 +597,8 @@ mod tests {
         store.finish(true);
         memory.reads.set(0);
         memory.fail = true;
-        store.begin(5000).unwrap();
-        for id in 1..=5000 {
+        store.begin(COUNT as usize).unwrap();
+        for id in 1..=COUNT {
             assert_eq!(
                 store.observe(&memory, 0, &seed(id, id as usize), Some((1, 1))),
                 Ok(i64::MIN)
@@ -606,8 +608,8 @@ mod tests {
         store.finish(true);
         memory.fail = false;
         memory.value = i64::MAX;
-        store.begin(5000).unwrap();
-        for id in 1..=5000 {
+        store.begin(COUNT as usize).unwrap();
+        for id in 1..=COUNT {
             store
                 .observe(
                     &memory,

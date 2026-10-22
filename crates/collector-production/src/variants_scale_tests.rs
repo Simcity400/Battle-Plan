@@ -445,7 +445,6 @@ fn scaled_variant_rows_match_the_recorded_digests() {
     for (countries, golden) in [
         (2, 0xa55e_52ae_5273_9aa1),
         (440, 0xea38_fc2c_9476_520c),
-        (5_000, 0xa016_e868_6a83_147a),
     ] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);

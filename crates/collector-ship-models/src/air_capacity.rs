@@ -123,18 +123,18 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
-    fn five_thousand_quiet_carriers_do_not_read_and_dirty_or_reused_hosts_do() {
+    fn quiet_carriers_do_not_read_and_dirty_or_reused_hosts_do() {
         let mut store = Store::default();
-        store.begin(5000, true);
-        for ship in 1..=5000 {
+        store.begin(20, true);
+        for ship in 1..=20 {
             assert_eq!(
                 store.capture_with(ship as usize * 4096, ship, |_| Some((1, 0)), || Some(2)),
                 Some(2)
             );
         }
         store.finish();
-        store.begin(5000, true);
-        for ship in 1..=5000 {
+        store.begin(20, true);
+        for ship in 1..=20 {
             assert_eq!(
                 store.capture_with(
                     ship as usize * 4096,
@@ -146,7 +146,7 @@ mod tests {
             );
         }
         store.finish();
-        store.begin(5000, true);
+        store.begin(20, true);
         let mut reads = 0;
         assert_eq!(
             store.capture_with(

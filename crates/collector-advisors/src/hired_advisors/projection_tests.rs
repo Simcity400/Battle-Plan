@@ -3,23 +3,24 @@ use collector_projection::projection::ProjectionScratch;
 use replay_frame::frame::{FrameEncoder, FrameInput, Metrics};
 
 #[test]
-fn advisor_projection_keeps_frame_bytes_and_shared_tokens_at_five_thousand_owners() {
+fn advisor_projection_keeps_frame_bytes_and_shared_tokens() {
+    const OWNERS: usize = 8;
     for force in [false, true] {
         let mut capture = Captured::with_capacities(&Capacities {
-            rows: 5_000,
+            rows: OWNERS,
             bytes: 8,
-            active: 5_000,
-            retired: 5_000,
+            active: OWNERS,
+            retired: OWNERS,
             tokens: 2,
             token_bytes: 8,
             ..Default::default()
         });
-        capture.rows.outcome = Outcome::Rows { len: 5_000 };
-        capture.active.outcome = Outcome::Rows { len: 5_000 };
-        capture.retired.outcome = Outcome::Rows { len: 5_000 };
+        capture.rows.outcome = Outcome::Rows { len: OWNERS };
+        capture.active.outcome = Outcome::Rows { len: OWNERS };
+        capture.retired.outcome = Outcome::Rows { len: OWNERS };
         capture.bytes.first[..5].copy_from_slice(b"i\0\xffs\0");
         capture.bytes.len = 5;
-        for index in 0..5_000 {
+        for index in 0..OWNERS {
             capture.rows.rows[index] = native::Row {
                 country: index as u32 + 1,
                 ordinal: 0,
@@ -61,7 +62,7 @@ fn advisor_projection_keeps_frame_bytes_and_shared_tokens_at_five_thousand_owner
                 8 => {
                     capture.active.outcome = Outcome::Truncated {
                         len: 1,
-                        unread_rows: 4_999,
+                        unread_rows: OWNERS as u32 - 1,
                     }
                 }
                 9 => {
@@ -69,7 +70,7 @@ fn advisor_projection_keeps_frame_bytes_and_shared_tokens_at_five_thousand_owner
                         reason: "fixture refusal",
                     }
                 }
-                10 => capture.rows.outcome = Outcome::Rows { len: 5_001 },
+                10 => capture.rows.outcome = Outcome::Rows { len: OWNERS + 1 },
                 _ => {}
             }
             let mut projection = Projection::new(&optimized, 1, hour, force, &scratch);

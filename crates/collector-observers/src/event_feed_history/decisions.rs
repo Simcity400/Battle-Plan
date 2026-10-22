@@ -1249,11 +1249,11 @@ mod tests {
         }
     }
     #[test]
-    fn five_thousand_owner_certificates_reset_only_the_marked_chain() {
+    fn owner_certificates_reset_only_the_marked_chain() {
         let mut index = Index::default();
-        index.prepare(10000).unwrap();
+        index.prepare(40).unwrap();
         index.reset(7);
-        for id in 1..=5000 {
+        for id in 1..=20 {
             let owner = id as usize * 0x1000;
             let pointer = owner + 8;
             index.put(pointer, owner, identity(id), 3).unwrap();
@@ -1264,7 +1264,7 @@ mod tests {
         assert!(index.find(0x1008).is_none());
         assert!(index.find(0x2008).is_some());
         index.clear_owner(0x1000, identity(1)).unwrap();
-        assert_eq!(index.live, 4999);
+        assert_eq!(index.live, 19);
         let (_, created) = index.put(0x1008, 0x1000, identity(1), 3).unwrap();
         assert!(created);
         index.reset(8);

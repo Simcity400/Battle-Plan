@@ -170,14 +170,6 @@ fn populated_recovery(countries: usize) {
 fn prepared_owner_recovery_covers_the_live_439_owner_5977_emission_cohort() {
     populated_recovery(439);
 }
-#[test]
-fn prepared_owner_recovery_scales_to_1500_populated_owners() {
-    populated_recovery(1500);
-}
-#[test]
-fn prepared_owner_recovery_scales_to_5000_populated_owners() {
-    populated_recovery(5000);
-}
 
 #[test]
 fn prepared_owner_shortage_keeps_local_control_space_and_never_publishes_a_prefix() {

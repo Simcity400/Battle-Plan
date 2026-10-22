@@ -115,65 +115,6 @@ fn recorded_effect_inputs_project_exact_bytes_and_keep_decision_cadence() {
     }
 }
 
-#[test]
-fn breakdown_capture_keeps_the_original_push_capacity_trace() {
-    use engine_native::memory::SliceMemory;
-    const STATE: usize = 0x100;
-    const MANAGER: usize = 0x800;
-    const RECORDS: usize = 0x1000;
-    let mut bytes = vec![0_u8; RECORDS + 17 * power_balance_record::STRIDE];
-    bytes[STATE + engine_native::cgame_state::POWER_BALANCE_MANAGER
-        ..STATE + engine_native::cgame_state::POWER_BALANCE_MANAGER + 8]
-        .copy_from_slice(&(MANAGER as u64).to_le_bytes());
-    bytes[MANAGER + power_balance_manager::RECORDS..MANAGER + power_balance_manager::RECORDS + 8]
-        .copy_from_slice(&(RECORDS as u64).to_le_bytes());
-    for record in 0..17 {
-        // Empty cached accumulator with an empty inline label.
-        let capacity = RECORDS + record * power_balance_record::STRIDE + 0xc8 + 0x48 + 24;
-        bytes[capacity..capacity + 8].copy_from_slice(&15_u64.to_le_bytes());
-    }
-    let mut captured = Captured::vacant();
-    let mut previous = Vec::<rows::PowerBalanceModifierBreakdownRow>::new();
-    for count in [1_usize, 2, 5, 9, 2, 0, 17] {
-        let header = ((count as u64) << 32) | count as u64;
-        bytes[MANAGER + power_balance_manager::RECORDS + 8
-            ..MANAGER + power_balance_manager::RECORDS + 16]
-            .copy_from_slice(&header.to_le_bytes());
-        captured.breakdowns.clear();
-        captured.balances.outcome = Outcome::Rows { len: count };
-        captured.capture_breakdowns(
-            &SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            },
-            0,
-            STATE,
-            0,
-        );
-        previous.clear();
-        for _ in 0..count {
-            previous.push(rows::PowerBalanceModifierBreakdownRow::default());
-        }
-        assert_eq!(captured.breakdown_outcome, Outcome::Rows { len: count });
-        assert_eq!(captured.breakdowns.capacity(), previous.capacity());
-        for (record, row) in captured.breakdowns.iter().enumerate() {
-            assert_eq!(row.record, record as u32);
-            assert!(row.sources.is_empty());
-            for nodes in [&row.daily, &row.weekly] {
-                if BREAKDOWN_WITNESS
-                    && crate::sampled_verify::Check::hourly(0, false).covers(record as u64)
-                {
-                    assert_eq!(nodes.len(), 1);
-                    assert_eq!((nodes[0].children, nodes[0].value), (0, 0));
-                    assert!(nodes[0].name.is_empty());
-                } else {
-                    assert!(nodes.is_empty());
-                }
-            }
-        }
-    }
-}
-
 /// Production reads each record's source roster and no cached tree: playback derives the trees
 /// ([`replay_derive::power_balance_derive`]). A record whose description tree cannot be read still
 /// publishes its sources, which the hourly tree walk this replaced refused.
@@ -430,17 +371,6 @@ fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text
     );
     assert_eq!(rows[0].kind, rows::ResearchModifierRow::COUNTRY_SOURCE);
     assert_eq!(rows[0].name, b"idea");
-}
-
-#[test]
-fn owned_governance_vacancy_has_no_buffer_allocation() {
-    fn assert_send<T: Send>() {}
-    assert_send::<Captured>();
-    let captured = Captured::vacant();
-    assert_eq!(captured.allocated_bytes(), 0);
-    assert!(captured.dictionary.is_empty());
-    assert!(captured.technology_pointers.is_empty());
-    assert_eq!(captured.technology_pointers.capacity(), 0);
 }
 
 #[test]

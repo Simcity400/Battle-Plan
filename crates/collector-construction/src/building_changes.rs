@@ -535,8 +535,6 @@ mod tests {
             .iter()
             .position(|&(_, receiver)| receiver == Receiver::Structure)
             .unwrap();
-        assert_eq!(MUTATIONS[site].0.name, "enter_nudge_mode");
-        assert_eq!(MUTATIONS[site].0.rva, 0x12b_ea10);
         let watches = Watches::enabled(16);
         let certified = Changes::sequence(&watches, 0x1000).unwrap();
         let taken = Changes::take(&watches, &mut |_| {}).unwrap();

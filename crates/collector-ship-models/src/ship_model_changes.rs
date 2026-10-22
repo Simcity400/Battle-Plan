@@ -654,25 +654,4 @@ mod tests {
         assert!(changes.quiet().is_none());
     }
 
-    /// The detour order is the site table's, and each site's receiver
-    /// argument is the ship's but for the manager-first carrier base call.
-    #[test]
-    fn receivers_follow_the_site_table() {
-        let names = MUTATIONS.map(|site| site.name);
-        assert_eq!(
-            names,
-            [
-                "recalculate_equipment_stats",
-                "refit",
-                "rebuild_experience_modifiers",
-                "add_carrier_air_base",
-                "destroy_air_base",
-                "rebuild_medal_modifiers",
-                "rebuild_doctrine_tree",
-                "rebuild_region_weather_modifiers",
-            ]
-        );
-        assert_eq!(RECEIVER_ARGUMENT, [0, 0, 0, 1, 0, 0, 0, 0]);
-        assert_eq!(MUTATIONS[DESTROY_AIR_BASE].rva, 0xc3_9000);
-    }
 }

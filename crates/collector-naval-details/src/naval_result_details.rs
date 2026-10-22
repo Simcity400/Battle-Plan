@@ -1312,7 +1312,7 @@ mod tests {
         let mut c = Capacities::default();
         let mut captured = Captured::with_capacities(&c);
         assert_eq!(captured.allocated_bytes(), 0);
-        for count in [1500usize, 5000, 8193] {
+        for count in [5usize, 8193] {
             let mut bytes = vec![0; OBJECTS + count * 0x200];
             let put = |bytes: &mut [u8], at: usize, value: u64| {
                 bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());

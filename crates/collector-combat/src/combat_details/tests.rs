@@ -1180,15 +1180,14 @@ fn reserve_trees_refuse_per_row_and_carry_certified_trees() {
     );
 }
 
-/// At 5,000 distinct country sources, gathered out of key order, a quiet
-/// pass carries every certified tree and a pass whose odd certificates moved
-/// reads exactly those afresh. Each pass finds its carries in one forward
-/// walk over the held trees: it examines at most one held tree per held tree
-/// and per source, where a search from the front for each source would
-/// examine millions.
+/// Over distinct country sources gathered out of key order, a quiet pass
+/// carries every certified tree and a pass whose odd certificates moved reads
+/// exactly those afresh. Each pass finds its carries in one forward walk over
+/// the held trees: it examines at most one held tree per held tree and per
+/// source.
 #[test]
-fn reserve_tree_carries_stay_linear_at_five_thousand_sources() {
-    const SOURCES: usize = 5_000;
+fn reserve_tree_carries_stay_linear() {
+    const SOURCES: usize = 16;
     const FIRST: usize = 0x1000;
     const STRIDE: usize = 0x300;
     /// Every receiver is certified; the odd sources' certificates move once

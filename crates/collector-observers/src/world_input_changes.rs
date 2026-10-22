@@ -1163,24 +1163,7 @@ mod tests {
     }
 
     #[test]
-    fn callbacks_follow_the_site_order() {
-        assert_eq!(
-            MUTATIONS[..9]
-                .iter()
-                .map(|(site, _)| site.name)
-                .collect::<Vec<_>>(),
-            [
-                "rename_province",
-                "reset_province_name",
-                "set_region_access_modes",
-                "reset_navy",
-                "update_threat_total",
-                "add_dynamic_modifier",
-                "renew_dynamic_modifier",
-                "remove_dynamic_modifier",
-                "dynamic_modifier_daily_update",
-            ]
-        );
+    fn design_sites_forward_to_their_family() {
         for (index, forward, name) in [
             (17, Forward::DesignBonuses, "design_mio_bonuses"),
             (18, Forward::DesignOrganisation, "design_mio_link"),

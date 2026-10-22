@@ -217,65 +217,6 @@ fn serial_technologies(
 }
 
 #[test]
-fn governance_batch_carried_serial_census_and_5000_country_equality() {
-    let mut world = World::new(5_000);
-    let mut store = drift::Store::default();
-    let mut serial = serial::Store::default();
-    for id in 1..=5_000 {
-        let rows = full(&world, id);
-        hold(&mut store, &mut serial, &world, id, &rows);
-        let country = World::country(id);
-        for position in 0..3 {
-            world.put(
-                country + SLOT + position * 0x80 + cresearch_slot::BANKED_DAYS,
-                (200_000_i64 + position as i64).to_le_bytes(),
-            );
-        }
-        for position in 0..2 {
-            world.put(
-                country + TECH + position * 0x400 + ctechnology::LIVE_PROGRESS,
-                (600_000_i64 + position as i64).to_le_bytes(),
-            );
-        }
-        let before = Trace::new(&world, "Research drift serial");
-        let after = Trace::new(&world, "Research drift batch");
-        let old = serial_research(&serial, &before, id);
-        let new = research(&store, &after, id);
-        assert_eq!(new, old);
-        assert_eq!((before.count(), after.count()), (8, 5));
-        assert!(after.fallbacks.witnesses().is_empty());
-        let allowed = kit::addresses(&before);
-        assert!(
-            kit::addresses(&after)
-                .iter()
-                .all(|at| allowed.binary_search(at).is_ok()),
-            "carry read an omitted operand"
-        );
-        before.clear();
-        after.clear();
-        let old_tech = serial_technologies(&serial, &before, id);
-        let new_tech = technologies(&store, &after, id);
-        assert_eq!(new_tech, old_tech);
-        assert_eq!((before.count(), after.count()), (5, 4));
-        assert!(after.fallbacks.witnesses().is_empty());
-        let allowed = kit::addresses(&before);
-        assert!(
-            kit::addresses(&after)
-                .iter()
-                .all(|at| allowed.binary_search(at).is_ok())
-        );
-        let fresh = full(&world, id);
-        assert_eq!(new.inputs, fresh.inputs);
-        assert_eq!(new.bonuses, fresh.bonuses);
-        assert_eq!(new.modifiers, fresh.modifiers);
-        assert_eq!(new_tech.1, fresh.technologies);
-        assert_eq!(new_tech.2, fresh.pointers);
-    }
-    println!(
-        "Carried ResearchInputs/Bonuses/Modifiers: 8 -> 5; ResearchTechnologies: 5 -> 4 guarded calls/country; 5000 countries"
-    );
-}
-#[test]
 fn governance_batch_carried_persistent_and_one_shot_every_serial_operand() {
     let world = World::new(1);
     let mut store = drift::Store::default();

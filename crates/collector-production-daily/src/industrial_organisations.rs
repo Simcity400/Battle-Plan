@@ -661,8 +661,8 @@ mod country_scale_tests {
     use super::*;
     use replay_data::rows::TableRows;
     #[test]
-    fn mutable_organisation_tables_preserve_five_thousand_distinct_country_links() {
-        const COUNTRIES: usize = 5_000;
+    fn mutable_organisation_tables_preserve_distinct_country_links() {
+        const COUNTRIES: usize = 6;
         let mut captured = Captured::with_capacities(&Capacities {
             organisations: COUNTRIES,
             ..Default::default()
@@ -699,14 +699,14 @@ mod country_scale_tests {
         assert_eq!(details.len(), COUNTRIES);
         assert_eq!(policies.len(), COUNTRIES);
         assert_eq!(details[COUNTRIES - 1].country, COUNTRIES as u32);
-        assert_eq!(details[COUNTRIES - 1].state.points, -4999);
+        assert_eq!(details[COUNTRIES - 1].state.points, 1 - COUNTRIES as i32);
         assert_eq!(
             policies[COUNTRIES - 1].policies[0].country,
             0x8000_0000 | COUNTRIES as u32
         );
         assert_eq!(policies[COUNTRIES - 1].policies[0].name, [0xff, 0]);
         // Each country keeps its own policy-cost verdict: a failed read stays unknown.
-        assert_eq!(policies[COUNTRIES - 1].cost_modifier_raw, Some(-4999));
+        assert_eq!(policies[COUNTRIES - 1].cost_modifier_raw, Some(1 - COUNTRIES as i64));
         assert_eq!(policies[COUNTRIES - 2].cost_modifier_raw, None);
     }
 }

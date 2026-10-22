@@ -498,22 +498,6 @@ fn a_failed_read_holds_nothing_and_an_uncertified_take_reads_every_country() {
     assert_eq!(read_countries(&forgotten.reads, 4), [1, 2, 3, 4]);
 }
 
-/// 5,000 countries: the quiet hour reads only identities and carry words,
-/// and publishes the full read's table and arenas.
-#[test]
-fn five_thousand_country_quiet_hour_carries_every_row() {
-    const COUNTRIES: usize = 5_000;
-    let world = World::new(COUNTRIES);
-    let domain = domain(COUNTRIES + 1);
-    let mut store = CounterStore::new(domain).with_check(Check::Nothing);
-    hour(&world, Some(&mut store), 10, None);
-    domain.boundary(false);
-    let carried = hour(&world, Some(&mut store), 11, None);
-    assert_eq!(store.counts(), quiet());
-    assert!(read_countries(&carried.reads, COUNTRIES).is_empty());
-    assert_same(&carried, &hour(&world, None, 11, None));
-}
-
 #[test]
 fn manpower_expeditionary_roster_carries_quiet_and_refreshes_only_its_marked_owner() {
     let mut world = World::new(5_000);

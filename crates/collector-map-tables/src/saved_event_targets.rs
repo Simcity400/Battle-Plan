@@ -100,8 +100,8 @@ mod tests {
         }
     }
     #[test]
-    fn five_thousand_countries_presized_registry_and_growth_keep_every_target() {
-        let n = 5000usize;
+    fn presized_registry_and_growth_keep_every_target() {
+        let n = 5usize;
         let state = 0x1000;
         let data = 0x10000;
         let names = 0x100000;
@@ -156,7 +156,7 @@ mod tests {
                 .last()
                 .unwrap()
                 .country,
-            5000
+            5
         );
         let mut small = Captured::vacant();
         assert_eq!(

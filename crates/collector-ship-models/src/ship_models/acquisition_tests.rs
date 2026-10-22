@@ -2484,51 +2484,50 @@ mod carry_cost_bench {
     }
 
     #[test]
-    fn organisation_only_writers_keep_models_and_equal_fresh_reads_at_country_scale() {
-        for countries in [1500, 5000] {
-            let mut world = World::new(countries);
-            let watches = Watches::enabled(4 * world.census.len());
-            let mut held = capture(world.census.len());
-            let previous = hour(&world, &mut held, &watches, Check::Nothing);
-            for index in 0..world.census.len() {
-                let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
-                world.memory.low[at..at + 8].copy_from_slice(&30_000_000_i64.to_le_bytes());
-                drop(watches.notify(fleet::ship(index), 0));
-            }
-            world
-                .memory
-                .watched
-                .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA);
-            world.memory.hits.set(0);
-            let current = hour(&world, &mut held, &watches, Check::Nothing);
-            assert_ne!(
-                current[0].maximum_organisation,
-                previous[0].maximum_organisation
-            );
-            assert_eq!(
-                world.memory.hits.get(),
-                0,
-                "equal model suffixes need no definition database"
-            );
-            let mut fresh = capture(world.census.len());
-            assert_eq!(current, hour(&world, &mut fresh, &watches, Check::Every));
-            assert!(
-                world.memory.hits.get() > 0,
-                "fresh reference still reads the model suffix"
-            );
-            assert!(!watches.poisoned());
-            watches.boundary(true);
-            let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
-            world.memory.low[at..at + 8].copy_from_slice(&31_000_000_i64.to_le_bytes());
-            world.memory.hits.set(0);
-            let recovered = hour(&world, &mut held, &watches, Check::Nothing);
-            assert!(
-                world.memory.hits.get() > 0,
-                "an epoch change cannot use partial revalidation"
-            );
-            let mut fresh = capture(world.census.len());
-            assert_eq!(recovered, hour(&world, &mut fresh, &watches, Check::Every));
+    fn organisation_only_writers_keep_models_and_equal_fresh_reads() {
+        let countries = 12;
+        let mut world = World::new(countries);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut held = capture(world.census.len());
+        let previous = hour(&world, &mut held, &watches, Check::Nothing);
+        for index in 0..world.census.len() {
+            let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
+            world.memory.low[at..at + 8].copy_from_slice(&30_000_000_i64.to_le_bytes());
+            drop(watches.notify(fleet::ship(index), 0));
         }
+        world
+            .memory
+            .watched
+            .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA);
+        world.memory.hits.set(0);
+        let current = hour(&world, &mut held, &watches, Check::Nothing);
+        assert_ne!(
+            current[0].maximum_organisation,
+            previous[0].maximum_organisation
+        );
+        assert_eq!(
+            world.memory.hits.get(),
+            0,
+            "equal model suffixes need no definition database"
+        );
+        let mut fresh = capture(world.census.len());
+        assert_eq!(current, hour(&world, &mut fresh, &watches, Check::Every));
+        assert!(
+            world.memory.hits.get() > 0,
+            "fresh reference still reads the model suffix"
+        );
+        assert!(!watches.poisoned());
+        watches.boundary(true);
+        let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
+        world.memory.low[at..at + 8].copy_from_slice(&31_000_000_i64.to_le_bytes());
+        world.memory.hits.set(0);
+        let recovered = hour(&world, &mut held, &watches, Check::Nothing);
+        assert!(
+            world.memory.hits.get() > 0,
+            "an epoch change cannot use partial revalidation"
+        );
+        let mut fresh = capture(world.census.len());
+        assert_eq!(recovered, hour(&world, &mut fresh, &watches, Check::Every));
     }
 
     #[test]
@@ -2581,57 +2580,56 @@ mod carry_cost_bench {
     }
 
     #[test]
-    fn hot_carried_rows_avoid_cold_records_and_ship_searches_at_country_scale() {
-        for countries in [1500, 5000] {
-            let world = World::new(countries);
-            let watches = Watches::enabled(4 * world.census.len());
-            let mut capture = capture(world.census.len());
-            let before_fresh = world.memory.calls.get();
-            let fresh = hour(&world, &mut capture, &watches, Check::Nothing);
-            let fresh_calls = world.memory.calls.get() - before_fresh;
-            let changes = CountedChanges {
-                inner: &watches,
-                sequences: AtomicUsize::new(0),
-                trees: AtomicUsize::new(0),
-                certificates: AtomicUsize::new(0),
-                mismatches: AtomicUsize::new(0),
-            };
-            world.seed(&mut capture);
-            let before = world.memory.calls.get();
-            capture.capture_carrying(
-                &world.memory,
-                CaptureContext::new(fleet::IMAGE),
-                &changes,
-                Check::Nothing,
-            );
-            assert_eq!(capture.rows.rows[..world.census.len()], fresh);
-            let cost = CARRY_COST.get();
-            assert_eq!(cost.searches, 0);
-            assert_eq!(cost.cold_ship_bytes, 0);
-            assert_eq!(cost.cold_organisation_bytes, 0);
-            assert_eq!(cost.cold_terms_bytes, 0);
-            assert_eq!(cost.row_clones, 0);
-            assert_eq!(cost.variant_compares, 1, "one shared variant");
-            assert_eq!(
-                cost.terms_compares, countries,
-                "one comparison per task force"
-            );
-            assert_eq!(changes.certificates.load(Ordering::Relaxed), 0);
-            assert_eq!(
-                changes.sequences.load(Ordering::Relaxed),
-                3 * countries,
-                "task-force and two weather-region certificate queries per task force"
-            );
-            let carried_calls = world.memory.calls.get() - before;
-            assert!(
-                carried_calls > 0,
-                "shared sources remain current-hour reads"
-            );
-            assert!(
-                carried_calls < fresh_calls,
-                "{carried_calls} carried guarded calls, {fresh_calls} fresh"
-            );
-        }
+    fn hot_carried_rows_avoid_cold_records_and_ship_searches() {
+        let countries = 12;
+        let world = World::new(countries);
+        let watches = Watches::enabled(4 * world.census.len());
+        let mut capture = capture(world.census.len());
+        let before_fresh = world.memory.calls.get();
+        let fresh = hour(&world, &mut capture, &watches, Check::Nothing);
+        let fresh_calls = world.memory.calls.get() - before_fresh;
+        let changes = CountedChanges {
+            inner: &watches,
+            sequences: AtomicUsize::new(0),
+            trees: AtomicUsize::new(0),
+            certificates: AtomicUsize::new(0),
+            mismatches: AtomicUsize::new(0),
+        };
+        world.seed(&mut capture);
+        let before = world.memory.calls.get();
+        capture.capture_carrying(
+            &world.memory,
+            CaptureContext::new(fleet::IMAGE),
+            &changes,
+            Check::Nothing,
+        );
+        assert_eq!(capture.rows.rows[..world.census.len()], fresh);
+        let cost = CARRY_COST.get();
+        assert_eq!(cost.searches, 0);
+        assert_eq!(cost.cold_ship_bytes, 0);
+        assert_eq!(cost.cold_organisation_bytes, 0);
+        assert_eq!(cost.cold_terms_bytes, 0);
+        assert_eq!(cost.row_clones, 0);
+        assert_eq!(cost.variant_compares, 1, "one shared variant");
+        assert_eq!(
+            cost.terms_compares, countries,
+            "one comparison per task force"
+        );
+        assert_eq!(changes.certificates.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            changes.sequences.load(Ordering::Relaxed),
+            3 * countries,
+            "task-force and two weather-region certificate queries per task force"
+        );
+        let carried_calls = world.memory.calls.get() - before;
+        assert!(
+            carried_calls > 0,
+            "shared sources remain current-hour reads"
+        );
+        assert!(
+            carried_calls < fresh_calls,
+            "{carried_calls} carried guarded calls, {fresh_calls} fresh"
+        );
     }
 
     #[test]

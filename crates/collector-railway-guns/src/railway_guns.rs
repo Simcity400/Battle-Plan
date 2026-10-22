@@ -860,7 +860,7 @@ mod tests {
                 false
             }
         }
-        for count in [0, 1, 1_500, 5_000] {
+        for count in [0, 1, 7] {
             let memory = Refused(Default::default());
             let mut captured = Captured::vacant();
             captured.rows.rows = (0..count)

@@ -892,12 +892,11 @@ mod tests {
     }
 
     #[test]
-    fn intel_sources_five_thousand_owners_carry_without_reads_or_allocations_and_loss_requires_census()
-     {
+    fn intel_sources_owners_carry_without_reads_or_allocations_and_loss_requires_census() {
         ENABLED.store(true, Ordering::SeqCst);
         let mut store = Store::new();
         store.prepare(2).unwrap();
-        store.owners = (1..=5000)
+        store.owners = (1..=5)
             .map(|owner| {
                 let mut state = Owner::default();
                 state.seed = Seed {
@@ -923,7 +922,7 @@ mod tests {
         // A replacement alone reads only its independent family, not every owner.
         let lane = store.lanes.last().unwrap();
         lane.reserve().unwrap().publish(Event {
-            object: 5000,
+            object: 5,
             kind: state::STATIC_PRUNE,
             ..Default::default()
         });

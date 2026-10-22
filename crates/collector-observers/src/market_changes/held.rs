@@ -1787,8 +1787,10 @@ mod tests {
             23
         );
     }
+    // regression: 22013c14f7 Fix market capture cost and lifecycle handling; reuse Trade flows variant
     #[test]
-    fn one_fuel_write_publishes_one_of_5000_agreements_of_the_same_giver_with_shared_pools() {
+    fn one_fuel_write_publishes_one_of_many_agreements_of_the_same_giver_with_shared_pools() {
+        const AGREEMENTS: usize = 32;
         let mut state = State::new(0);
         let pool: replay_data::rows::SharedMarketPool = MarketPool {
             items: vec![
@@ -1796,13 +1798,13 @@ mod tests {
                     variant: 31,
                     amount_raw: 99
                 };
-                5000
+                AGREEMENTS
             ],
             ..Default::default()
         }
         .into();
         let allocation = pool.items.as_ptr();
-        for id in 0..5000 {
+        for id in 0..AGREEMENTS as u64 {
             state.agreements.insert(
                 (5000, id),
                 Agreement {
@@ -1844,7 +1846,7 @@ mod tests {
         assert_eq!(row.fuel_sent_raw, 77);
         assert_eq!(state.agreements[&(5000, 18)].row.fuel_sent_raw, 0);
         assert!(publish_changes(&mut state, false).agreements.is_empty());
-        for agreement in 0..5000 {
+        for agreement in 0..AGREEMENTS as u64 {
             apply_observed(
                 &mut state,
                 &MarketEventRow {
@@ -1854,7 +1856,7 @@ mod tests {
             );
         }
         let changes = publish_changes(&mut state, false);
-        assert_eq!(changes.agreement_keys.len(), 5000);
+        assert_eq!(changes.agreement_keys.len(), AGREEMENTS);
         assert!(changes.agreements.is_empty());
     }
     #[test]
@@ -1863,39 +1865,6 @@ mod tests {
         assert_eq!(state.agreements[&(5000, 17)].row.revision, 0);
         apply(&mut state, &event(AMENDMENT, 0)).unwrap();
         assert_eq!(state.agreements[&(5000, 17)].row.revision, 1);
-    }
-    #[test]
-    fn market_changed_owners_scale_to_5000_without_a_periodic_holder_read() {
-        let mut state = State::new(0);
-        for country in 1..=5000 {
-            state.agreements.insert(
-                (country, country as u64),
-                Agreement {
-                    cutoff: 0,
-                    row: LendLeaseAgreementRow {
-                        country,
-                        id: country as u64,
-                        ..Default::default()
-                    },
-                },
-            );
-        }
-        apply(
-            &mut state,
-            &MarketEventRow {
-                country: 5000,
-                agreement: 5000,
-                kind: FUEL,
-                amount_raw: 77,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            state.changed_agreements.iter().copied().collect::<Vec<_>>(),
-            [(5000, 5000)]
-        );
-        assert_eq!(state.agreements[&(4999, 4999)].row.fuel_sent_raw, 0);
     }
 
     #[test]

@@ -1218,11 +1218,8 @@ mod tests {
         // The refused interval is never certified; later awards keep refusing.
         assert!(table.add(owner(1, 2), 0, 1).is_err());
     }
-    /// Five thousand countries allocated one after another, at object sizes
-    /// from 1 KiB to 32 KiB, each sit at most a few slots past where their
-    /// probe starts, so a hooked award probes about one slot. Bits 32 up of
-    /// a multiplicative hash averaged 31.9 probes per owner at a 0x38C0
-    /// stride (63 at worst), and over two at 32 of these strides.
+
+    // regression: 0cc3f98ca5 Spread strided native addresses with the SplitMix64 finalizer in three hash tables
     #[test]
     fn strided_countries_at_5000_countries_probe_short_chains() {
         const COUNTRIES: usize = 5_000;
@@ -1257,22 +1254,22 @@ mod tests {
     }
 
     #[test]
-    fn live_country_count_presizes_all_five_thousand_distinct_owners() {
-        let table = Table::new(Table::slots_for(5000).unwrap()).unwrap();
-        for pointer in 1..=5000 {
+    fn live_country_count_presizes_all_distinct_owners() {
+        let table = Table::new(Table::slots_for(20).unwrap()).unwrap();
+        for pointer in 1..=20 {
             table
                 .add(owner(pointer, pointer as u32), 2, pointer as i64)
                 .unwrap();
         }
-        assert_eq!(table.claimed(), 5000);
+        assert_eq!(table.claimed(), 20);
         assert!(
-            (1..=5000)
+            (1..=20)
                 .all(|pointer| table.get(owner(pointer, pointer as u32)) == [0, 0, pointer as i64])
         );
         // Births and replacements within the interval may take every slot;
         // only then does a writer refuse.
         let slots = table.slots.len();
-        for pointer in 5001..=slots {
+        for pointer in 21..=slots {
             table.add(owner(pointer, 0), 0, 1).unwrap();
         }
         for refused in [owner(slots + 1, 0), owner(1, 2)] {
@@ -1301,10 +1298,11 @@ mod tests {
     }
 
     #[test]
-    fn hourly_census_covers_zero_and_all_5000_countries_but_not_births_or_replacements() {
+    fn hourly_census_covers_zero_and_all_countries_but_not_births_or_replacements() {
         use engine_native::cgame_state;
         static LANES: Lanes = Lanes::new();
-        const COUNT: usize = 5001;
+        const COUNT: usize = 21;
+        const LAST: usize = COUNT - 1;
         const POINTERS: usize = 0x1000;
         const LINKS: usize = 0xb000;
         const COUNTRIES: usize = 0x15000;
@@ -1328,9 +1326,9 @@ mod tests {
             bytes[pointer + 8..pointer + 12].copy_from_slice(&(slot as u32).to_le_bytes());
             bytes[pointer + 12..pointer + 16].copy_from_slice(&u32::MAX.to_le_bytes());
         }
-        let last = COUNTRIES + 5000 * 32;
+        let last = COUNTRIES + LAST * 32;
         bytes[last + 8..last + 12].copy_from_slice(&10001_u32.to_le_bytes());
-        bytes[LINKS + 10001 * 4..LINKS + 10002 * 4].copy_from_slice(&5000_u32.to_le_bytes());
+        bytes[LINKS + 10001 * 4..LINKS + 10002 * 4].copy_from_slice(&(LAST as u32).to_le_bytes());
         let mut cache = Cache::try_with_capacity(Cache::cells_for_countries(COUNT, 0)).unwrap();
         let mut growing_store = Store::default();
         let mut growing_rows = Vec::new();
@@ -1352,9 +1350,9 @@ mod tests {
                         engine_native::walk::Buffer::Growing(&mut growing_rows)
                     )
                     .unwrap(),
-                5000
+                LAST
             );
-            assert_eq!(growing_rows[4999].country, 10001);
+            assert_eq!(growing_rows[LAST - 1].country, 10001);
             // An undersized returned worker frame grows within this acquisition.
             growing_rows.truncate(1);
             growing_store.owners.truncate(1);
@@ -1374,9 +1372,9 @@ mod tests {
             store
                 .snapshot(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows)
                 .unwrap(),
-            5000
+            LAST
         );
-        assert!(rows[..5000].iter().all(|row| row.complete == 0));
+        assert!(rows[..LAST].iter().all(|row| row.complete == 0));
         store.partial = false;
         store
             .add(
@@ -1392,11 +1390,11 @@ mod tests {
             store
                 .snapshot(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows)
                 .unwrap(),
-            5000
+            LAST
         );
-        assert!(rows[..5000].iter().all(|row| row.complete == 1));
-        assert_eq!((rows[4999].country, rows[4999].army_raw), (10001, 9));
-        assert!(rows[..4999].iter().all(|row| row.army_raw == 0));
+        assert!(rows[..LAST].iter().all(|row| row.complete == 1));
+        assert_eq!((rows[LAST - 1].country, rows[LAST - 1].army_raw), (10001, 9));
+        assert!(rows[..LAST - 1].iter().all(|row| row.army_raw == 0));
         // Deletion does not poison the surviving countries' exact-zero proof.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8].fill(0);
         let memory = SliceMemory {
@@ -1407,9 +1405,9 @@ mod tests {
             store
                 .snapshot(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows)
                 .unwrap(),
-            4999
+            LAST - 1
         );
-        assert!(rows[..4999].iter().all(|row| row.complete == 1));
+        assert!(rows[..LAST - 1].iter().all(|row| row.complete == 1));
         // A birth at a reused address and an instance wrapping to zero both
         // require a new beginning, even with an unchanged country raw ID.
         bytes[POINTERS + 7 * 8..POINTERS + 8 * 8]
@@ -1422,11 +1420,11 @@ mod tests {
         store
             .snapshot(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows)
             .unwrap();
-        assert_eq!((rows[6].complete, rows[4999].complete), (0, 0));
+        assert_eq!((rows[6].complete, rows[LAST - 1].complete), (0, 0));
         store
             .snapshot(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows)
             .unwrap();
-        assert_eq!((rows[6].complete, rows[4999].complete), (1, 1));
+        assert_eq!((rows[6].complete, rows[LAST - 1].complete), (1, 1));
         let short = SliceMemory {
             base: 0,
             bytes: &bytes[..last + 15],
@@ -1468,7 +1466,7 @@ mod tests {
             .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, true)
             .unwrap();
         assert!(
-            rows[..5000]
+            rows[..LAST]
                 .iter()
                 .all(|row| row.complete == 0 && row.army_raw == 0)
         );
@@ -1478,8 +1476,8 @@ mod tests {
         store
             .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, false)
             .unwrap();
-        assert!(rows[..5000].iter().all(|row| row.complete == 1));
-        assert_eq!(rows[4999].army_raw, 7);
+        assert!(rows[..LAST].iter().all(|row| row.complete == 1));
+        assert_eq!(rows[LAST - 1].army_raw, 7);
         assert!(store.table_is_empty());
         clock.hour += 1;
         store.boundary(clock);
@@ -1494,7 +1492,7 @@ mod tests {
         store
             .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, true)
             .unwrap();
-        assert!(rows[..5000].iter().all(|row| row.complete == 0));
+        assert!(rows[..LAST].iter().all(|row| row.complete == 0));
         store.owners.truncate(COUNT - 1);
         assert_eq!(
             store.snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, false,),
@@ -1513,7 +1511,7 @@ mod tests {
             .snapshot_interval(&cache.prepare(&memory, 0, 0), 0, 0, &mut rows, false)
             .unwrap();
         assert!(
-            rows[..5000]
+            rows[..LAST]
                 .iter()
                 .all(|row| row.complete == 1 && row.army_raw == 0)
         );

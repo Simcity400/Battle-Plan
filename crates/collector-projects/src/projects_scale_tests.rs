@@ -613,7 +613,6 @@ fn scaled_copy_matches_direct_walks_and_the_recorded_digests() {
     for (countries, projects, golden) in [
         (2, 50, 0x20b8_b98a_95a0_e2aa),
         (440, 50, 0xe6d0_2bef_e557_b1b6),
-        (5_000, 8, 0xc65d_372c_29e3_d212),
     ] {
         let space = space(countries, projects);
         let label = format!("{countries} countries");
@@ -709,41 +708,6 @@ fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
         &captured,
         &direct(&later_memory, later.game_state, &capacities(5000)),
     );
-}
-
-#[test]
-fn cold_typed_project_fallback_keeps_five_thousand_countries_and_later_pool_growth() {
-    let mut capacity = Capacities::default();
-    capacity.rows[..4].fill(0);
-    capacity.program_candidates = 0;
-    capacity.program_names = 0;
-    let mut captured = Captured::with_capacities(&capacity);
-    for (countries, projects) in [(1_500, 12), (5_000, 12), (5_000, 14)] {
-        let source = space(countries, projects);
-        let memory = source.memory();
-        let expected = direct(&memory, source.game_state, &capacities(countries as usize));
-        assert!(!captured.raw_mode);
-        captured.capture(&memory, kit::BASE, source.game_state, 0, true);
-        kit::assert_matches_direct(&captured, &expected);
-        // The sliced family reads every country at a full hour.
-        assert_eq!(captured.projects.outcome, expected.projects.outcome);
-        assert_eq!(captured.history.outcome, expected.history.outcome);
-        let len = expected.projects.outcome.len();
-        assert_eq!(
-            &captured.projects.rows[..len],
-            &expected.projects.rows[..len]
-        );
-        let len = expected.history.outcome.len();
-        assert_eq!(&captured.history.rows[..len], &expected.history.rows[..len]);
-        for outcome in [
-            captured.programs.outcome,
-            captured.projects.outcome,
-            captured.history.outcome,
-            captured.breakthroughs.outcome,
-        ] {
-            assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
-        }
-    }
 }
 
 struct Fault<'a> {

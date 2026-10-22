@@ -1061,14 +1061,15 @@ mod tests {
         );
     }
     #[test]
-    fn five_thousand_roster_entries_and_long_native_text_are_sampled_without_allocating() {
+    fn roster_entries_and_long_native_text_are_sampled_without_allocating() {
         use engine_dlc::{dlc_content_entry as entry, dlc_content_map_node as content, msvc_map};
-        const COUNT: usize = 5_001;
+        const COUNT: usize = 41;
+        const TEXT: usize = 5_001;
         let mut ids: Vec<String> = (0..COUNT).map(|index| format!("dlc{index:05}")).collect();
-        ids[COUNT - 1] = format!("dlc{}", "x".repeat(COUNT));
+        ids[COUNT - 1] = format!("dlc{}", "x".repeat(TEXT));
         let mut live = Live::new(&ids, 90);
-        let mod_name = "n".repeat(COUNT);
-        let mod_descriptor = format!("mod/{}.mod", "m".repeat(COUNT));
+        let mod_name = "n".repeat(TEXT);
+        let mod_descriptor = format!("mod/{}.mod", "m".repeat(TEXT));
         let requested = format!("C:/content/{mod_descriptor}");
         live.u64(Live::MANAGER + cdlc_manager::REQUESTED_MODS, 0x600000);
         live.u64(
@@ -1097,7 +1098,7 @@ mod tests {
         // Preparation is storage only: the callback reads a later native value.
         live.string(
             node + content::VALUE + entry::NAME,
-            "z".repeat(COUNT).as_bytes(),
+            "z".repeat(TEXT).as_bytes(),
         );
         crate::test_support::with_allocations_denied(|| roster.sample(&live, 0, Some(100)));
         assert_eq!(roster.pass.observation.dlcs, Outcome::Rows { len: COUNT });
@@ -1117,7 +1118,7 @@ mod tests {
         );
         assert_eq!(
             roster.pass.mods[0].name.as_bytes(),
-            "z".repeat(COUNT).as_bytes()
+            "z".repeat(TEXT).as_bytes()
         );
         assert_eq!(
             roster.pass.mods[0].descriptor.as_bytes(),

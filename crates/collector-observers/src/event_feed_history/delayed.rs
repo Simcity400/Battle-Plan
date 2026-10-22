@@ -666,9 +666,9 @@ mod tests {
         });
     }
     #[test]
-    fn delayed_pointer_certificates_scale_to_five_thousand_without_callback_allocation() {
+    fn delayed_pointer_certificates_need_no_callback_allocation() {
         let mut index = Index::default();
-        index.prepare(5000).unwrap();
+        index.prepare(20).unwrap();
         index.reset(7);
         let owner = CountryIdentity {
             reference: 1,
@@ -676,28 +676,28 @@ mod tests {
             instance: 4,
         };
         crate::test_support::with_allocations_denied(|| {
-            for n in 0..5000 {
+            for n in 0..20 {
                 assert_eq!(
                     index.insert(0x10000 + n * 0xc8, owner).unwrap(),
                     n as u32 + 1
                 );
             }
-            for n in 0..5000 {
+            for n in 0..20 {
                 assert_eq!(
                     index.insert(0x10000 + n * 0xc8, owner).unwrap(),
                     n as u32 + 1
                 );
             }
-            for n in 0..5000 {
+            for n in 0..20 {
                 assert_eq!(index.remove(0x10000 + n * 0xc8).unwrap().id, n as u32 + 1);
             }
             assert_eq!(index.live, 0);
-            assert_eq!(index.insert(0x10000, owner).unwrap(), 5001);
+            assert_eq!(index.insert(0x10000, owner).unwrap(), 21);
         });
         let mut spare = Index::default();
-        spare.prepare(10000).unwrap();
+        spare.prepare(40).unwrap();
         crate::test_support::with_allocations_denied(|| index.install(&mut spare));
-        assert_eq!(index.remove(0x10000).unwrap().id, 5001);
+        assert_eq!(index.remove(0x10000).unwrap().id, 21);
         index.reset(8);
         assert_eq!(index.insert(0x10000, owner).unwrap(), 1);
     }

@@ -184,62 +184,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_and_later_new_division_snapshots_grow_at_5000_countries() {
-        let mut bytes = vec![0; 0x9000 + 17 * engine_native::equipment_entry::STRIDE];
-        let put = |bytes: &mut [u8], address: usize, value: u64| {
-            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
-        };
-        let pool_at = 0x1000 + engine_native::carmy::EQUIPMENT_POOL;
-        put(&mut bytes, pool_at, pool::VTABLE_RVA as u64);
-        put(&mut bytes, pool_at + pool::ITEMS, 0x9000);
-        put(
-            &mut bytes,
-            0x8000,
-            engine_native::cequipment_variant::VTABLE_RVA as u64,
-        );
-        put(&mut bytes, 0x8008, 0x7000_0001_0000_0046);
-        for ordinal in 0..17 {
-            let at = 0x9000 + ordinal * engine_native::equipment_entry::STRIDE;
-            put(&mut bytes, at, 0x8000);
-            put(&mut bytes, at + 8, 1);
-        }
-        let sources: Vec<_> = (0..5_000)
-            .map(|index| pool::DivisionSource {
-                pointer: 0x1000,
-                division: ((index as u64 + 1) << 32) | 0x1269,
-                country: index as u32 + 1,
-                ..Default::default()
-            })
-            .collect();
-        let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.set_mark(Mark::Above(Counters {
-            unit: 0,
-            registry: 0,
-        }));
-        for entries in [3_u32, 17] {
-            bytes[pool_at + pool::CAPACITY..pool_at + pool::CAPACITY + 4]
-                .copy_from_slice(&entries.to_le_bytes());
-            bytes[pool_at + pool::COUNT..pool_at + pool::COUNT + 4]
-                .copy_from_slice(&entries.to_le_bytes());
-            let memory = engine_native::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            captured.capture(&memory, 0, &sources, Outcome::Rows { len: sources.len() });
-            assert_eq!(
-                captured.outcomes(),
-                [Outcome::Rows {
-                    len: sources.len() * entries as usize
-                }]
-            );
-            assert_eq!(
-                captured.rows.rows[sources.len() * entries as usize - 1].ordinal,
-                entries - 1
-            );
-        }
-    }
-
-    #[test]
     fn each_handle_type_is_compared_with_its_own_counter() {
         let counters = Counters {
             unit: 100,

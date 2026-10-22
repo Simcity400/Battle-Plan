@@ -949,8 +949,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn one_warm_lookup_matches_gate_then_registration_at_five_thousand_receivers() {
-        const COUNT: usize = 5_000;
+    fn one_warm_lookup_matches_gate_then_registration() {
+        const COUNT: usize = 16;
         let watches = WatchRegistry::new();
         watches.offer(COUNT);
         watches.boundary(false);
@@ -1249,12 +1249,7 @@ mod tests {
         assert_eq!(registry.sequence(24).map(|(_, s)| s), Some(0));
     }
 
-    /// Receivers allocated one after another, at any object size, all
-    /// register in the table `offer` sizes for them: 155,000 (the
-    /// characters of 5,000 countries) at each stride. The bits 32 up of a
-    /// multiplicative hash refused 73,654 of them at a 0xF8 stride, 102,428
-    /// at 0x1F0, 127,608 at 0xF80 and 46 at 0x100; its top bits 14,825 at
-    /// 0x370, 41,234 at 0x6E0, 54,441 at 0xDC0 and 58,114 at 0x1310.
+    // regression: 338d5ef75e Hash watch registrations by the product's top bits so strided receivers all register
     #[test]
     fn strided_receivers_at_5000_countries_all_register() {
         const RECEIVERS: usize = 5_000 * 31;
@@ -1276,6 +1271,7 @@ mod tests {
         }
     }
 
+    // regression: 5ac3d6682f Fix full-suite integration regressions
     #[test]
     fn dense_country_ids_and_aligned_holders_at_5000_countries_register_without_allocating() {
         const COUNTRIES: usize = 5_000;

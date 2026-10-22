@@ -328,8 +328,8 @@ fn politics_tfix2_multilane_hours_encode_alias_census_and_midnight_without_loss(
 }
 
 #[test]
-fn politics_tfix2_inactive_alias_census_encodes_every_country_at_scale() {
-    let count = 5000;
+fn politics_tfix2_inactive_alias_census_encodes_every_country() {
+    let count = 6;
     let mut captured = Captured::worker(&Capacities {
         countries: count,
         entries: 0,

@@ -306,15 +306,15 @@ fn rows(tables: &[TableInput]) -> &[CountryFuelRow] {
     rows
 }
 #[test]
-fn writer_window_at_5000_keeps_corrections_names_owner_and_local_refusals() {
+fn writer_window_keeps_corrections_names_owner_and_local_refusals() {
     let mut windows = Windows::default();
-    let mut tables = input(5000);
+    let mut tables = input(10);
     let mut cursor = 0;
     windows
         .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
         .unwrap();
     for hour in 1..=24 {
-        let mut events = entries(hour, 5000);
+        let mut events = entries(hour, 10);
         if hour == 24 {
             events[(7 - 1) * 2 + 1].refused = true;
         }

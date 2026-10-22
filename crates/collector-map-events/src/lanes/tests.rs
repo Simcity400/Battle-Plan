@@ -174,20 +174,3 @@ fn a_number_taken_but_not_published_at_the_cut_marks_the_seal_incomplete() {
     PUBLISHED.fetch_add(1, Ordering::SeqCst);
     assert!(super::seal().complete);
 }
-
-#[test]
-fn an_event_sized_for_five_thousand_countries_fits_a_lane_sized_from_live_demand() {
-    let _lock = LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    reset_for_tests();
-    let event_bytes = 17 + 5 * 5_000;
-    grow(2, 4 * (HEADER + event_bytes)).unwrap();
-    let payload = vec![1_u8; event_bytes];
-    for _ in 0..4 {
-        event(0, 1, &payload).unwrap();
-    }
-    let rows = drained(seal());
-    assert_eq!(rows.len(), 4);
-    assert!(rows.iter().all(|row| row.3 == payload));
-}

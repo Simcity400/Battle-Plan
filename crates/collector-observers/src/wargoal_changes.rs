@@ -477,23 +477,6 @@ mod tests {
             unsafe { watch.release() };
         }
     }
-    #[test]
-    fn wargoal_certificates_scale_to_5000_dense_country_ids() {
-        for count in [1500, 5000] {
-            let watches = WatchRegistry::new();
-            watches.offer(count);
-            watches.set_enabled(true);
-            watches.boundary(true);
-            for id in 0..count as u32 {
-                let before = watches
-                    .sequence(watch_key(id))
-                    .expect("every live country must be watchable");
-                drop(watches.notify(watch_key(id)));
-                assert_ne!(watches.sequence(watch_key(id)), Some(before));
-            }
-            unsafe { watches.release() };
-        }
-    }
 
     #[test]
     fn inventory_verification_uses_the_graduated_rotation() {

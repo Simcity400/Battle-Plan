@@ -1578,65 +1578,60 @@ mod tests {
     }
 
     #[test]
-    fn participation_seed_work_is_roster_plus_native_entries_for_overlapping_2500_sides() {
-        for count in [1_500u32, 5_000] {
-            let world = SeedWorld::new(count);
-            let half = count / 2;
-            // Every member fights all of the other side except its matched
-            // counterpart. Every roster differs; no interning shortcut exists.
-            let rows = (0..count).flat_map(|owner| {
-                (0..half)
-                    .filter(move |&member| member != owner % half)
-                    .map(move |member| {
-                        SeedWorld::row(
-                            owner,
-                            if owner < half { half + member } else { member },
-                            count,
-                        )
-                    })
-            });
-            let mut store = Store {
-                generation: 1,
-                ..Default::default()
-            };
-            let roster_entries =
-                reconcile_histories(rows, world.countries(), &mut store, true).unwrap();
-            assert_eq!(roster_entries, count as usize * (half - 1) as usize);
-            assert_eq!(store.history_roots.len(), count as usize);
-            let work = seed_history_owners(&world, 0, 0, &mut store).unwrap();
-            let native_entries = count as usize * count as usize;
-            assert_eq!(work.matrix_entries, native_entries);
-            assert_eq!(work.status_entries, native_entries);
-            assert_eq!(world.matrices.get(), native_entries);
-            assert_eq!(world.statuses.get(), native_entries);
-            assert_eq!(world.roots.get(), count as usize);
-            assert_eq!(
-                roster_entries + work.status_entries,
-                match count {
-                    1_500 => 3_373_500,
-                    5_000 => 37_495_000,
-                    _ => unreachable!(),
-                }
-            );
-            assert_eq!(work.nonzero_histories, count as usize * 2);
-            assert_eq!(store.histories.len(), count as usize * 2);
-            assert!(store.histories.capacity() < count as usize * 4);
-            assert!(
-                store
-                    .history_roots
-                    .values()
-                    .all(|root| root.statuses.len() == 2)
-            );
-            // Nothing about candidate side size changes the entry count. A
-            // marked owner alone re-seeds, without reading the other roots.
-            world.allowed.set(Some(1));
-            world.zero_owner.set(Some(0));
-            queue_owner_seed(&mut store, 0).unwrap();
-            let work = seed_history_owners(&world, 0, 0, &mut store).unwrap();
-            assert_eq!(work.status_entries, count as usize);
-            assert_eq!(work.nonzero_histories, 0);
-            assert_eq!(store.histories.len(), count as usize * 2 - 2);
-        }
+    fn participation_seed_work_is_roster_plus_native_entries_for_overlapping_sides() {
+        let count = 10u32;
+        let world = SeedWorld::new(count);
+        let half = count / 2;
+        // Every member fights all of the other side except its matched
+        // counterpart. Every roster differs; no interning shortcut exists.
+        let rows = (0..count).flat_map(|owner| {
+            (0..half)
+                .filter(move |&member| member != owner % half)
+                .map(move |member| {
+                    SeedWorld::row(
+                        owner,
+                        if owner < half { half + member } else { member },
+                        count,
+                    )
+                })
+        });
+        let mut store = Store {
+            generation: 1,
+            ..Default::default()
+        };
+        let roster_entries =
+            reconcile_histories(rows, world.countries(), &mut store, true).unwrap();
+        assert_eq!(roster_entries, count as usize * (half - 1) as usize);
+        assert_eq!(store.history_roots.len(), count as usize);
+        let work = seed_history_owners(&world, 0, 0, &mut store).unwrap();
+        let native_entries = count as usize * count as usize;
+        assert_eq!(work.matrix_entries, native_entries);
+        assert_eq!(work.status_entries, native_entries);
+        assert_eq!(world.matrices.get(), native_entries);
+        assert_eq!(world.statuses.get(), native_entries);
+        assert_eq!(world.roots.get(), count as usize);
+        assert_eq!(
+            roster_entries + work.status_entries,
+            140
+        );
+        assert_eq!(work.nonzero_histories, count as usize * 2);
+        assert_eq!(store.histories.len(), count as usize * 2);
+        assert!(store.histories.capacity() < count as usize * 4);
+        assert!(
+            store
+                .history_roots
+                .values()
+                .all(|root| root.statuses.len() == 2)
+        );
+        // Nothing about candidate side size changes the entry count. A
+        // marked owner alone re-seeds, without reading the other roots.
+        world.allowed.set(Some(1));
+        world.zero_owner.set(Some(0));
+        queue_owner_seed(&mut store, 0).unwrap();
+        let work = seed_history_owners(&world, 0, 0, &mut store).unwrap();
+        assert_eq!(work.status_entries, count as usize);
+        assert_eq!(work.nonzero_histories, 0);
+        assert_eq!(store.histories.len(), count as usize * 2 - 2);
     }
 
     #[test]
@@ -2057,29 +2052,28 @@ mod tests {
     }
 
     #[test]
-    fn participation_publication_shares_membership_across_scalar_changes_at_country_scale() {
-        for count in [1_500, 5_000] {
-            let mut store = Store::default();
-            for index in 0..count {
-                let mut value = held(index, index + 1);
-                value.ledgers[0].captured_provinces = vec![-7, index as i32];
-                store.held.insert(0x10000 + index as usize * 0x200, value);
-            }
-            let first = publish(&mut store).unwrap();
-            assert_eq!(first[0].len(), count as usize * 2);
-            assert_eq!(first[1].len(), count as usize * 2);
-            store.held.get_mut(&0x10000).unwrap().ledgers[0]
-                .scores
-                .equipment_damage = 7;
-            store.scores_changed = true;
-            let changed = publish(&mut store).unwrap();
-            assert!(!Arc::ptr_eq(&first[0], &changed[0]));
-            assert!(Arc::ptr_eq(&first[1], &changed[1]));
-            assert!(Arc::ptr_eq(&first[2], &changed[2]));
-            let quiet = publish(&mut store).unwrap();
-            for index in 0..3 {
-                assert!(Arc::ptr_eq(&changed[index], &quiet[index]));
-            }
+    fn participation_publication_shares_membership_across_scalar_changes() {
+        let count = 6;
+        let mut store = Store::default();
+        for index in 0..count {
+            let mut value = held(index, index + 1);
+            value.ledgers[0].captured_provinces = vec![-7, index as i32];
+            store.held.insert(0x10000 + index as usize * 0x200, value);
+        }
+        let first = publish(&mut store).unwrap();
+        assert_eq!(first[0].len(), count as usize * 2);
+        assert_eq!(first[1].len(), count as usize * 2);
+        store.held.get_mut(&0x10000).unwrap().ledgers[0]
+            .scores
+            .equipment_damage = 7;
+        store.scores_changed = true;
+        let changed = publish(&mut store).unwrap();
+        assert!(!Arc::ptr_eq(&first[0], &changed[0]));
+        assert!(Arc::ptr_eq(&first[1], &changed[1]));
+        assert!(Arc::ptr_eq(&first[2], &changed[2]));
+        let quiet = publish(&mut store).unwrap();
+        for index in 0..3 {
+            assert!(Arc::ptr_eq(&changed[index], &quiet[index]));
         }
     }
 

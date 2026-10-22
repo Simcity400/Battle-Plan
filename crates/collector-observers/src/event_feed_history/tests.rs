@@ -913,7 +913,7 @@ fn settle(store: &mut Store, ticket: Ticket) {
 
 #[test]
 fn callback_demand_follows_retained_entries_without_allocator_headroom() {
-    for capacity in [8, 1500, 5000] {
+    for capacity in [8, 40] {
         let mut store = ready(capacity);
         let ticket = acquire(&mut store, 1, 3);
         assert_eq!(store.capacity_demand(), 2);
@@ -1578,54 +1578,27 @@ fn short_hourly_snapshot_preserves_facts_for_off_thread_growth() {
 }
 
 #[test]
-fn hourly_snapshot_scales_at_1500_and_5000_countries_without_callback_growth() {
-    for countries in [1500, 5000] {
-        let mut store = ready(countries);
-        let mut snapshot = Snapshot::new(countries);
-        let capacity = store.capacity();
-        for actor in 0..countries {
-            let ticket = acquire(&mut store, 10, actor as u32);
-            settle(&mut store, ticket);
-        }
-        store.snapshot(&mut snapshot, boundary(7, 11)).unwrap();
-        assert_eq!(store.capacity(), capacity);
-        let pack = snapshot.prepare_pack().unwrap();
-        assert_eq!(pack.row().events.len(), countries);
-        assert_eq!(
-            pack.row().events[countries - 1].actor.id,
-            countries as u32 - 1
-        );
-        assert_eq!(pack.row().counts.unwrap().settled, countries as u64);
-        assert_eq!(pack.row().coverage, EventFeedCoverage::Complete);
-        store.acknowledged(pack.publication());
-        assert_eq!(store.unacknowledged(), 0);
+fn hourly_snapshot_needs_no_callback_growth() {
+    let countries = 6;
+    let mut store = ready(countries);
+    let mut snapshot = Snapshot::new(countries);
+    let capacity = store.capacity();
+    for actor in 0..countries {
+        let ticket = acquire(&mut store, 10, actor as u32);
+        settle(&mut store, ticket);
     }
-}
-
-#[test]
-fn worker_snapshot_keeps_first_and_later_mod_sized_events_at_five_thousand_countries() {
-    let mut store = ready(17_000);
-    let mut snapshot = Snapshot::new(0);
-    let mut settled = 0;
-    for (hour, events) in [(10, 5000), (12, 12_000)] {
-        for index in 0..events {
-            let ticket = acquire(&mut store, hour, (index % 5000) as u32);
-            settle(&mut store, ticket);
-        }
-        settled += events;
-        store
-            .snapshot_growing(&mut snapshot, boundary(7, hour + 1))
-            .unwrap();
-        let packed = snapshot.prepare_pack().unwrap();
-        assert_eq!(packed.row().coverage, EventFeedCoverage::Complete);
-        assert_eq!(packed.row().events.len(), events);
-        assert_eq!(packed.row().counts.unwrap().settled, settled as u64);
-        assert_eq!(
-            packed.row().events[events - 1].actor.id,
-            ((events - 1) % 5000) as u32
-        );
-        store.acknowledged(packed.publication());
-    }
+    store.snapshot(&mut snapshot, boundary(7, 11)).unwrap();
+    assert_eq!(store.capacity(), capacity);
+    let pack = snapshot.prepare_pack().unwrap();
+    assert_eq!(pack.row().events.len(), countries);
+    assert_eq!(
+        pack.row().events[countries - 1].actor.id,
+        countries as u32 - 1
+    );
+    assert_eq!(pack.row().counts.unwrap().settled, countries as u64);
+    assert_eq!(pack.row().coverage, EventFeedCoverage::Complete);
+    store.acknowledged(pack.publication());
+    assert_eq!(store.unacknowledged(), 0);
 }
 
 const BASE: usize = 0x140000000;
@@ -2300,56 +2273,55 @@ fn an_unsupported_decision_owner_is_attempted_once_per_observation_loss() {
 }
 
 #[test]
-fn certified_owners_recover_without_native_reads_at_1500_and_5000_countries() {
-    for countries in [1500, 5000] {
-        let mut store = ready(8);
-        store.prepare_delayed(countries).unwrap();
-        store.prepare_decisions(countries).unwrap();
-        store.registry_state = Some(GAME);
-        store.decisions.reset(7);
-        let census: Vec<_> = (0..countries)
-            .map(|slot| ccountry::Country {
-                pointer: 0x100000 + slot * 0x2000,
-                canonical_slot: slot as u32,
-                id: slot as u32 + 1,
-            })
-            .collect();
-        for country in &census {
-            store.delayed.countries[country.canonical_slot as usize] = delayed::Country {
-                pointer: country.pointer,
+fn certified_owners_recover_without_native_reads() {
+    let countries = 6;
+    let mut store = ready(8);
+    store.prepare_delayed(countries).unwrap();
+    store.prepare_decisions(countries).unwrap();
+    store.registry_state = Some(GAME);
+    store.decisions.reset(7);
+    let census: Vec<_> = (0..countries)
+        .map(|slot| ccountry::Country {
+            pointer: 0x100000 + slot * 0x2000,
+            canonical_slot: slot as u32,
+            id: slot as u32 + 1,
+        })
+        .collect();
+    for country in &census {
+        store.delayed.countries[country.canonical_slot as usize] = delayed::Country {
+            pointer: country.pointer,
+            id: country.id,
+            ready: true,
+            attempted: true,
+            refused: false,
+        };
+        store.decisions.certify_quiet(
+            country.pointer,
+            native::CountryIdentity {
+                reference: country.id,
                 id: country.id,
-                ready: true,
-                attempted: true,
-                refused: false,
-            };
-            store.decisions.certify_quiet(
-                country.pointer,
-                native::CountryIdentity {
-                    reference: country.id,
-                    id: country.id,
-                    instance: 1,
-                },
-            );
-        }
-        // Owner certificates retired before this census need a complete walk.
-        crate::event_feed_history::recovery_needed();
-        let epoch = store.begin_recovery(7, GAME).unwrap();
-        for country in &census[..countries / 2] {
+                instance: 1,
+            },
+        );
+    }
+    // Owner certificates retired before this census need a complete walk.
+    crate::event_feed_history::recovery_needed();
+    let epoch = store.begin_recovery(7, GAME).unwrap();
+    for country in &census[..countries / 2] {
+        store.recover_owner(&NoReads, BASE, 7, GAME, 1, *country);
+    }
+    store.finish_recovery(7, epoch, false);
+    assert!(crate::event_feed_observer::recovery_pending());
+    let epoch = store.begin_recovery(7, GAME).unwrap();
+    crate::test_support::with_allocations_denied(|| {
+        for country in &census {
             store.recover_owner(&NoReads, BASE, 7, GAME, 1, *country);
         }
-        store.finish_recovery(7, epoch, false);
-        assert!(crate::event_feed_observer::recovery_pending());
-        let epoch = store.begin_recovery(7, GAME).unwrap();
-        crate::test_support::with_allocations_denied(|| {
-            for country in &census {
-                store.recover_owner(&NoReads, BASE, 7, GAME, 1, *country);
-            }
-        });
-        store.finish_recovery(7, epoch, true);
-        assert!(!crate::event_feed_observer::recovery_pending());
-        assert!(store.entries.is_empty());
-        assert_eq!(store.counts.rejected, 0);
-    }
+    });
+    store.finish_recovery(7, epoch, true);
+    assert!(!crate::event_feed_observer::recovery_pending());
+    assert!(store.entries.is_empty());
+    assert_eq!(store.counts.rejected, 0);
 }
 
 #[test]

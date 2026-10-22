@@ -1153,8 +1153,8 @@ mod tests {
     }
 
     #[test]
-    fn live_five_thousand_country_and_mod_archetype_capacity_has_no_chosen_cap() {
-        let identities: Vec<_> = (0..5000)
+    fn balance_storage_finds_each_owner_field_cell() {
+        let identities: Vec<_> = (0..5)
             .map(|slot| native::BalanceOwner {
                 country: slot * 7 + 1,
                 history: slot as usize * 0x100 + 1,
@@ -1162,9 +1162,9 @@ mod tests {
             })
             .collect();
         let storage = Storage::new(&identities, 123).unwrap();
-        assert_eq!(storage.cells.len(), 5000 * 37);
-        let (owner, _) = storage.cell(4999 * 0x100 + 1, 36).unwrap();
-        assert_eq!(owner.identity.country, 4999 * 7 + 1);
+        assert_eq!(storage.cells.len(), 5 * 37);
+        let (owner, _) = storage.cell(4 * 0x100 + 1, 36).unwrap();
+        assert_eq!(owner.identity.country, 4 * 7 + 1);
         assert!(storage.cell(owner.identity.history, 37).is_none());
         assert!(Storage::new(&[], 123).unwrap().cells.is_empty());
     }

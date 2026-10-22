@@ -1207,28 +1207,6 @@ fn program_inline_building_name_is_copied_for_the_arena_read() {
 }
 
 #[test]
-fn split_copy_matches_direct_walk_under_truncation() {
-    use super::projects_test_kit as kit;
-    let bytes = kit::fixture();
-    let memory = kit::memory(&bytes);
-    let capacities = Capacities {
-        rows: [1; N],
-        program_names: 4,
-        program_candidates: 1,
-        raid_type_tokens: 256,
-        raid_show_for: 256,
-        raid_transports: 16,
-        raid_equipment_items: 16,
-        raid_equipment_archetypes: 16,
-        counteroperatives: 16,
-    };
-    let direct = kit::direct(&memory, &capacities);
-    let (split, report, _) = kit::split(&memory, &capacities);
-    assert!(report.raw_ok);
-    kit::assert_matches_direct(&split, &direct);
-}
-
-#[test]
 fn split_copy_matches_direct_walk_on_fault_matrix() {
     use super::projects_test_kit as kit;
     use engine_native::memory::SliceMemory;

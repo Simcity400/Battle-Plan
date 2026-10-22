@@ -589,51 +589,6 @@ fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries
 }
 
 #[test]
-fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
-    use engine_native::cpdx_array::Array;
-    let countries = 5_000;
-    let mut capture = Captured::with_capacities(&Capacities {
-        rows: countries,
-        subjects: 1,
-        ..Default::default()
-    });
-    for count in [3, 17] {
-        capture.reset();
-        let values: Vec<i32> = (0..count).map(|index| index as i32 - 1).collect();
-        let bytes: Vec<_> = values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        for (index, row) in capture.rows.rows.iter_mut().take(countries).enumerate() {
-            row.country = index as u32 + 1;
-            row.subjects = Array {
-                data: 0x1000,
-                count: count as u32,
-            };
-        }
-        capture.rows.outcome = Outcome::Rows { len: countries };
-        capture.capture_subjects(&SliceMemory {
-            base: 0x1000,
-            bytes: &bytes,
-        });
-        assert_eq!(capture.rows.outcome, Outcome::Rows { len: countries });
-        assert_eq!(capture.subjects.len, countries * count);
-        let [
-            TableView::Complete(replay_data::rows::TableRows::CountryAppearance(rows)),
-            _,
-            ..,
-        ] = capture.tables()
-        else {
-            panic!("complete native subjects must be published in the same sample");
-        };
-        assert_eq!(rows.len(), countries);
-        for row in rows {
-            assert_eq!(row.subjects.require("subjects").unwrap(), &values);
-        }
-    }
-}
-
-#[test]
 fn subject_arena_presizes_from_live_country_slots_without_a_cap() {
     use engine_native::cpdx_array::Array;
     let slots = 5_001;

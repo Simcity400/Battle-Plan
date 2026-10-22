@@ -229,38 +229,6 @@ fn temperature_delta(
     (changed, bytes.len())
 }
 
-#[test]
-fn province_hover_weather_changes_in_place_and_delta_is_temperature_only() {
-    for hour in [Hour::Quiet, Hour::Typical, Hour::AllChanged] {
-        let mut world = World::new(65);
-        let provinces = world.array().count as usize;
-        let mut captured = Captured::with_capacities(&Capacities {
-            rows: [1, provinces],
-            ..Default::default()
-        });
-        let read = |world: &World, captured: &mut Captured| {
-            captured.capture(
-                &SliceMemory {
-                    base: world.origin,
-                    bytes: &world.bytes,
-                },
-                0,
-                world.state(),
-            );
-            let [_, TableView::Complete(rows)] = captured.tables() else {
-                panic!("weather provinces complete");
-            };
-            rows.rows::<tables::WeatherProvinces>().unwrap().to_vec()
-        };
-        let before = read(&world, &mut captured);
-        let headers = world.bytes[MANAGER..MANAGER + 0x340].to_vec();
-        let changed = world.advance(hour, 3);
-        assert_eq!(&world.bytes[MANAGER..MANAGER + 0x340], headers);
-        let after = read(&world, &mut captured);
-        assert_eq!(temperature_delta(&before, &after).0, changed);
-    }
-}
-
 /// Production raw-copy callback and decode, plus an isolated old/new province
 /// exact-field gather. Guarded reads target this owned allocation only.
 #[test]

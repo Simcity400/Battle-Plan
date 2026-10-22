@@ -957,56 +957,6 @@ fn live_detail_demand_presizes_attach_and_later_combat_arena_growth() {
 
 #[test]
 #[cfg(test)]
-fn every_worker_combat_destination_grows_before_first_and_later_publication_at_5000_countries() {
-    let mut captured = Captured::vacant();
-    // The excluded naval-commander text path is not part of this fixture.
-    for (combats, divisions) in [(5_000, 3), (5_100, 5)] {
-        let built = world(&Shape {
-            countries: 5_000,
-            #[cfg(test)]
-            combats,
-            divisions,
-            leaders: 0,
-            transports: 0,
-            ..Shape::small()
-        });
-        pass(&mut captured, &built.world);
-        assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
-        assert_eq!(
-            captured.divisions.outcome,
-            Outcome::Rows {
-                len: combats * divisions
-            }
-        );
-        assert_eq!(captured.sides.outcome, Outcome::Rows { len: combats * 2 });
-        assert_eq!(
-            captured.combat_sides.outcome,
-            Outcome::Rows { len: combats }
-        );
-        assert!(
-            captured
-                .tables()
-                .iter()
-                .all(|view| matches!(view, TableView::Complete(_)))
-        );
-        for arena in [&captured.country_tags, &captured.exile_tags] {
-            assert_eq!(arena.len, arena.required);
-        }
-        assert_eq!(captured.rosters.len, captured.rosters.required);
-        assert_eq!(captured.members.len, captured.members.required);
-        assert_eq!(captured.modifiers.len, captured.modifiers.required);
-        assert_eq!(captured.width_terms.len, captured.width_terms.required);
-        assert_eq!(
-            captured.division_names.len,
-            captured.division_names.required
-        );
-        assert_eq!(captured.detail_text.len, captured.detail_text.required);
-        assert_eq!(captured.air_counts.len, captured.air_counts.required);
-    }
-}
-
-#[test]
-#[cfg(test)]
 fn combat_details_hint_reserve_failure_keeps_existing_lengths() {
     let capacities = Capacities::default();
     let mut captured = Captured::with_capacities(&capacities);

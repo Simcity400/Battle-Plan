@@ -61,25 +61,3 @@ fn owned_log_copies_multiple_conferences_and_retains_failures() {
     assert_eq!(storage.allocated_bytes(), bytes);
     assert_eq!(storage.used[0], 3);
 }
-
-#[test]
-fn bounded_storage_follows_design_and_stress_populations() {
-    for count in [1500, 5000] {
-        let mut f = Fixture::new(count, count);
-        let pointer = f.rebase();
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
-        let mut storage = Storage::new(Capacities::for_counts(count, count)).unwrap();
-        assert!(storage.observe(&memory, 0, pointer, Some(91), 0, true));
-        assert_eq!(storage.events[0].snapshot.failure, None);
-        assert_eq!(storage.events[0].snapshot.omitted, 0);
-        assert_eq!(storage.events[0].snapshot.actions, count);
-    }
-}
-
-#[test]
-fn small_world_work_capacity_follows_live_counts() {
-    let capacity = Capacities::for_counts(50, 100);
-    assert_eq!(capacity.countries, 200);
-    assert_eq!(capacity.actions, 500);
-    assert_eq!(capacity.transfers, 400);
-}

@@ -2217,13 +2217,6 @@ mod tests {
     }
 
     #[test]
-    fn prepared_lexical_decode_fixture_grows_both_destinations() {
-        use super::lexical_test_kit as kit;
-        assert!(kit::allocation_failure_decode_exercise(0, 0)());
-        assert!(kit::allocation_failure_decode_exercise(1, 2)());
-    }
-
-    #[test]
     fn complete_lexical_payload_preserves_all_rows_across_destination_capacities() {
         // Zero, undersized, exact-fit and oversized destinations all preserve
         // the complete owned capture, regardless of the
