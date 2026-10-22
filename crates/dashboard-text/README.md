@@ -35,6 +35,8 @@ In an industrial organisation's scope ([triggers/organisations.rs](src/triggers/
 
 An organisation's scope reads its own persistent variable store (`IndustrialOrganisationDetails.variables`), by exact key; a key recorded twice is refused, since the game's store holds each key once. The store's built-in variables (the game documentation's `military_industrial_organization` table) are computed before stored keys and are refused by name, never read through a stored key of the same name. Variable-random seeding never reads an organisation's seed.
 
+`has_country_flag`, `has_state_flag`, `has_global_flag`, `has_character_flag` and `has_mio_flag` share the game's flag test, each on its own scope's manager, ([triggers/flags.rs](src/triggers/flags.rs)): the scope's first record of the flag, whose value must be above zero without a `value` field; `value` compares by its operator, `date` the setting hour strictly, and `days` day starts strictly; `date =` and `days =` add no test, and expiry takes no part.
+
 ## Own refusals
 
 The catalogue's text refusal tally (`Catalogue::refusal_lines`) is shared by
@@ -128,13 +130,13 @@ The shared recorded trigger kit includes Divisions for promoted unit scopes and 
 `effect_description::doctrine_benefits` shares bound prose, unit-stat, modifier
 and effect descriptions with existing technology and effect consumers. Missing
 operands refuse only their fragment and produce counted reasons.
-Project scopes resolve persistent variables and seeds from Projects.runtime. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
+Project scopes resolve persistent variables and seeds from Projects.runtime; the store's built-ins (the game documentation's `special_project` table) are refused by name, never read as stored keys. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
 
 
 `effect_description::doctrine_benefits` shares bound prose, unit-stat, modifier
 and effect descriptions with existing technology and effect consumers. Missing
 operands refuse only their fragment and produce counted reasons.
-Project scopes resolve persistent variables and seeds from Projects.runtime. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
+Project scopes resolve persistent variables and seeds from Projects.runtime; the store's built-ins (the game documentation's `special_project` table) are refused by name, never read as stored keys. Project and pending-choice outputs share one renderer for country, scientist, facility-state, unlock and equipment/unit bonus bodies. Explicit project assignments retain null or unavailable context instead of invoking completion-effect fallback selection.
 `template_facts` shares recorded template display names and plain layout/settings/restriction, country staff/garrison and HQ sections between division hovers and the Army size breakdown. Names and definitions resolve from recorded operands and the supplied content stack. Valid sibling facts remain visible when another field is unavailable; each refused field carries its own diagnostic into the product or hover. Hover callers supply field-level text validation before names and definition spellings join their sections; unsupported text withholds only that fact. Model-read refusals keep category/country operands, and an unreadable HQ front keeps the deployment context and pools.
 Scripted map callbacks share this evaluator's calculated stability and war support,
 war, AI-control, claim, neighbor, home-area, tech-sharing and appointed-advisor/idea

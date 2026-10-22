@@ -9,7 +9,8 @@ use replay_data::{rows::UnitLeaderRow, rows::tables};
 
 use super::{
     Eval, Scope, Scopes,
-    eval::Evaluator,
+    eval::{Evaluator, key_text},
+    flags::FlagTest,
     operands::{compare, trigger_boolean},
     variables::Value,
     world::{LeaderVisibility, NULL_STATE, PartyLeader, table},
@@ -497,61 +498,23 @@ impl Evaluator<'_, '_> {
     }
 
     /// A flag trigger (`has_country_flag`, `has_state_flag`,
-    /// `has_global_flag`, `has_character_flag`): the flag set, or its value
-    /// compared by the `value` operator.
+    /// `has_global_flag`, `has_character_flag`): the shared flag test
+    /// ([`FlagTest`]) on the record of the flag in the scope's own manager
+    /// (`ScriptFlags` by scope kind and id).
     pub(super) fn flag_trigger(
         &self,
         item: &Item,
         kind: u8,
         id: Option<u32>,
     ) -> Result<Eval, Failure> {
-        let (name, test) = match item.value.items() {
-            None => (
-                item.value
-                    .scalar_str()
-                    .ok_or("the flag name is not text")?
-                    .to_owned(),
-                None,
-            ),
-            Some(block) => {
-                let mut name = None;
-                let mut test = None;
-                for entry in block {
-                    match field_name(entry).as_deref() {
-                        Some("flag") => name = entry.value.scalar_str().map(str::to_owned),
-                        Some("value") => {
-                            test = Some((
-                                entry.operator,
-                                entry
-                                    .value
-                                    .scalar_str()
-                                    .and_then(|value| value.parse::<i16>().ok())
-                                    .ok_or("flag value is not an integer")?,
-                            ))
-                        }
-                        _ => {
-                            return Err(format!(
-                                "flag field {} is not supported",
-                                String::from_utf8_lossy(entry.key.as_deref().unwrap_or_default())
-                            )
-                            .into());
-                        }
-                    }
-                }
-                (name.ok_or("flag trigger names no flag")?, test)
-            }
-        };
+        let test = FlagTest::read(item, &key_text(item))?;
         let id = id.ok_or("the flag's scope has no recorded id")?;
-        let value = self.world().flag(kind, id, name.as_bytes())?;
-        Ok(Eval::from_bool(match (value, test) {
-            (None, _) => false,
-            (Some(_), None) => true,
-            (Some(value), Some((comparison, wanted))) => match comparison {
-                Operator::Less => value < wanted,
-                Operator::Greater => value > wanted,
-                Operator::Equals => value == wanted,
-            },
-        }))
+        let world = self.world();
+        Ok(Eval::from_bool(
+            world
+                .flag(kind, id, test.name)?
+                .is_some_and(|(value, set_hour)| test.holds(value, set_hour, || world.clock())),
+        ))
     }
 
     /// A state operand as scoped-variable state-id evaluation reads

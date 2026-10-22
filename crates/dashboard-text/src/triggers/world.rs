@@ -2395,14 +2395,25 @@ impl<'a> World<'a> {
     }
 
     /// A script flag's value, or `None` when it is not set.
-    pub(super) fn flag(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, Failure> {
+    /// A scope's record of a flag: its signed value and the hour it was set.
+    pub(super) fn flag(
+        &self,
+        kind: u8,
+        id: u32,
+        name: &[u8],
+    ) -> Result<Option<(i16, i32)>, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Flag(kind, id, name.to_vec())),
             || self.flag_unrecorded(kind, id, name),
         )
     }
 
-    fn flag_unrecorded(&self, kind: u8, id: u32, name: &[u8]) -> Result<Option<i16>, Failure> {
+    fn flag_unrecorded(
+        &self,
+        kind: u8,
+        id: u32,
+        name: &[u8],
+    ) -> Result<Option<(i16, i32)>, Failure> {
         let Some(token) = self.token_of(name)? else {
             return Ok(None);
         };
@@ -2413,7 +2424,7 @@ impl<'a> World<'a> {
                 (row.scope_kind, row.scope_id, row.token)
             })
             .ok()
-            .map(|at| flags[at].value))
+            .map(|at| (flags[at].value, flags[at].set_hour)))
     }
 
     /// Select the country's dynamic-modifier container.

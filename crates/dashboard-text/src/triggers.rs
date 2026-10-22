@@ -28,6 +28,7 @@ mod coded;
 mod collections;
 pub mod description;
 mod eval;
+mod flags;
 pub(crate) mod event_scopes;
 pub mod inputs;
 pub use event_scopes::EventGraphGuard;

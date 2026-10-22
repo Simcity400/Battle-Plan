@@ -14,6 +14,7 @@ use installed_content_core::{
 use super::{
     Eval, Scopes,
     eval::Evaluator,
+    flags::FlagTest,
     operands::{compare, scope_selector},
 };
 use crate::{scripted_text::EventScopes, state_resources::ONE};
@@ -64,81 +65,6 @@ fn trait_operand<'i>(
         }
     }
     Ok(wanted)
-}
-
-/// A flag's name: its text, quoted or bare, which the lexical registry
-/// interns without case either way.
-fn flag_name(item: &Item) -> Result<&[u8], Failure> {
-    item.value
-        .scalar()
-        .map(installed_content_core::parser::c_string)
-        .ok_or_else(|| "has_mio_flag needs a scalar flag name".into())
-}
-
-/// Signed decimal conversion of a flag's `value` or `days`: decimal digits
-/// after white space and a sign, any other text zero. Past the `i32` range
-/// the conversion is not reproduced.
-fn flag_integer(field: &Item) -> Result<i32, Failure> {
-    let text = field.value.scalar().unwrap_or_default();
-    let value = installed_content_core::fixed5::decimal_i32(text);
-    if value == i32::MIN || value == i32::MAX {
-        return Err(refused(format!(
-            "has_mio_flag {} = {} reaches the end of the 32-bit range, whose conversion is not reproduced",
-            String::from_utf8_lossy(field.key.as_deref().unwrap_or_default()),
-            String::from_utf8_lossy(text)
-        )));
-    }
-    Ok(value)
-}
-
-/// A flag's `date`: year, month and day as decimal numbers, as the hour of
-/// that day's start in the game's 365-day calendar. Any other form's
-/// recovery is not reproduced.
-fn flag_date(field: &Item) -> Result<i32, Failure> {
-    let text = field.value.scalar().unwrap_or_default();
-    let unported = || -> Failure {
-        refused(format!(
-            "has_mio_flag date {} is not a year.month.day date, and how the date reader recovers is not reproduced",
-            String::from_utf8_lossy(text)
-        ))
-    };
-    let parts: Vec<&[u8]> = installed_content_core::parser::c_string(text)
-        .split(|byte| *byte == b'.')
-        .collect();
-    let [year, month, day] = parts.as_slice() else {
-        return Err(unported());
-    };
-    let number = |part: &[u8]| -> Option<i64> {
-        let digits = part.strip_prefix(b"-").unwrap_or(part);
-        if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        let value: i64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-        Some(if digits.len() < part.len() { -value } else { value })
-    };
-    let (Some(year), Some(month), Some(day)) = (number(year), number(month), number(day)) else {
-        return Err(unported());
-    };
-    let lengths = engine_native::cdate::MONTH_LENGTHS;
-    let Some(&length) = usize::try_from(month - 1).ok().and_then(|at| lengths.get(at)) else {
-        return Err(unported());
-    };
-    if day < 1 || day > i64::from(length) {
-        return Err(unported());
-    }
-    let before: i64 = lengths[..(month - 1) as usize]
-        .iter()
-        .map(|&days| i64::from(days))
-        .sum();
-    let hour = i64::from(engine_native::cdate::HOUR_EPOCH)
-        + year * 365 * 24
-        + (before + day - 1) * 24;
-    i32::try_from(hour).map_err(|_| unported())
-}
-
-/// The start of an hour's day in the game's signed calendar arithmetic.
-fn day_start(hour: i32) -> i32 {
-    hour.wrapping_sub(hour.wrapping_sub(engine_native::cdate::HOUR_EPOCH) % 24)
 }
 
 /// Which of an organisation's two conditions.
@@ -584,85 +510,21 @@ impl Evaluator<'_, '_> {
         run().unwrap_or_else(|why| Eval::unknown(why.context(|why| format!("{what}: {why}"))))
     }
 
-    /// `has_mio_flag`: a scalar flag name, or a block of `flag` (lexical
-    /// `none` when absent), `value`, `date` and `days`. The organisation's
-    /// first record of the flag's token decides; without one the trigger is
-    /// false. Every given test must hold, and without `value` the record's
-    /// value must be above zero. `value` compares the signed value by its
-    /// operator; `date` compares the hour the flag was set, strictly; `days`
-    /// compares the start of today's day with the start of the setting day
-    /// plus that many days, strictly. `date =` and `days =` add no test.
-    /// Expiry takes no part.
+    /// `has_mio_flag`: the shared flag test ([`FlagTest`]) on the
+    /// organisation's own flags.
     fn organisation_flag(&self, item: &Item, reference: u64) -> Result<Eval, Failure> {
-        let name = "has_mio_flag";
-        let mut flag: &[u8] = b"none";
-        let (mut value, mut date, mut days) = (None, None, None);
-        match item.value.items() {
-            None => flag = flag_name(item)?,
-            Some(block) => {
-                let mut seen = Vec::new();
-                for field in block {
-                    let key = field
-                        .keyword()
-                        .map(|keyword| keyword.folded())
-                        .unwrap_or_default();
-                    if seen.contains(&key) {
-                        return Err(refused(format!(
-                            "{name} assigns {} more than once, and what the reader keeps is not reproduced",
-                            String::from_utf8_lossy(&key)
-                        )));
-                    }
-                    match key.as_slice() {
-                        b"flag" => flag = flag_name(field)?,
-                        b"value" => value = Some((field.operator, flag_integer(field)?)),
-                        b"date" => date = Some((field.operator, flag_date(field)?)),
-                        b"days" => days = Some((field.operator, flag_integer(field)?)),
-                        _ => {
-                            return Err(refused(format!(
-                                "{name} field {} takes the reader's error path, whose recovery is not reproduced",
-                                String::from_utf8_lossy(field.key.as_deref().unwrap_or_default())
-                            )));
-                        }
-                    }
-                    seen.push(key);
-                }
-            }
-        }
-        if flag.contains(&b'@') {
-            return Err(refused(format!(
-                "{name} {} names its flag through a country or state, which is not reproduced",
-                String::from_utf8_lossy(flag)
-            )));
-        }
+        let test = FlagTest::read(item, "has_mio_flag")?;
         let world = self.world();
-        let Some(token) = world.token_of(flag)? else {
+        let Some(token) = world.token_of(test.name)? else {
             return Ok(Eval::False);
         };
         let flags = world.organisation_flags(reference)?;
-        let Some(record) = flags.iter().find(|record| record.token == token) else {
-            return Ok(Eval::False);
-        };
-        let stored = i32::from(record.value);
-        let mut holds = match value {
-            None => stored > 0,
-            Some((Operator::Greater, wanted)) => stored > wanted,
-            Some((Operator::Less, wanted)) => stored < wanted,
-            Some((Operator::Equals, wanted)) => stored == wanted,
-        };
-        holds &= match date {
-            Some((Operator::Greater, at)) => record.set_hour > at,
-            Some((Operator::Less, at)) => record.set_hour < at,
-            Some((Operator::Equals, _)) | None => true,
-        };
-        if let Some((comparison @ (Operator::Greater | Operator::Less), count)) = days {
-            let now = day_start(world.clock());
-            let threshold = day_start(record.set_hour).wrapping_add(count.wrapping_mul(24));
-            holds &= match comparison {
-                Operator::Greater => now > threshold,
-                _ => now < threshold,
-            };
-        }
-        Ok(Eval::from_bool(holds))
+        Ok(Eval::from_bool(
+            flags
+                .iter()
+                .find(|record| record.token == token)
+                .is_some_and(|record| test.holds(record.value, record.set_hour, || world.clock())),
+        ))
     }
 }
 

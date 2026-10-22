@@ -33,6 +33,10 @@ pub static ORGANISATION: RuntimeTable<&'static [&'static str]> = RuntimeTable::n
         .industrial_organisation
 });
 
+/// Built-ins of a special project's variable store.
+pub static PROJECT: RuntimeTable<&'static [&'static str]> =
+    RuntimeTable::new(|| &engine_executable::executable_tables::get().variables.project);
+
 /// Whether `name` is a built-in of `table` (sorted by bytes).
 pub fn contains(table: &[&str], name: &[u8]) -> bool {
     table
@@ -63,6 +67,7 @@ mod tests {
             &STATE[..],
             &CHARACTER[..],
             &ORGANISATION[..],
+            &PROJECT[..],
         ] {
             assert!(
                 table

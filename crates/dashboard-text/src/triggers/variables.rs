@@ -109,7 +109,7 @@ impl Store {
             Self::State(_) => &variable_builtins::STATE,
             Self::Character(_) => &variable_builtins::CHARACTER,
             Self::IndustrialOrganisation(_) => &variable_builtins::ORGANISATION,
-            Self::Project { .. } => &[],
+            Self::Project { .. } => &variable_builtins::PROJECT,
         }
     }
 }

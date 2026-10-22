@@ -816,3 +816,22 @@ fn organisation_size_inputs_follow_that_organisation_s_size() {
         (false, false, 1)
     );
 }
+
+/// A project store's built-in variables (the game documentation's `special_project` table)
+/// are computed before its stored keys and are refused by name, never read as a stored key.
+#[test]
+fn project_built_in_variables_are_refused() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let f = fixture();
+    with_world(&f, "", Err("none"), |world| {
+        let scope = Scopes::of(Scope::Project { owner: 101, id: 9 });
+        for name in installed_content_core::variable_builtins::PROJECT.iter() {
+            let value = world.evaluate(&items(&format!("check_variable = {{ {name} > 0 }}")), scope);
+            assert!(
+                matches!(&value, Eval::Unknown(_)) && format!("{value:?}").contains("built-in"),
+                "{name}: {value:?}"
+            );
+        }
+    });
+}

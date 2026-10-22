@@ -26,6 +26,9 @@ mod carriers;
 #[path = "organisations/tests.rs"]
 mod organisations;
 
+#[path = "flag_tests.rs"]
+mod flags;
+
 #[path = "collections/tests.rs"]
 mod collections;
 

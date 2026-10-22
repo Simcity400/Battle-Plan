@@ -274,7 +274,7 @@ impl Query {
                 folds(),
                 // Keyed by scope kind, scope id and token.
                 prefixed(
-                    TableRead::fields(T::ScriptFlags, &["value"]),
+                    TableRead::fields(T::ScriptFlags, &["value", "set_hour"]),
                     u128::from(kind) << 32 | u128::from(id),
                     32,
                 ),

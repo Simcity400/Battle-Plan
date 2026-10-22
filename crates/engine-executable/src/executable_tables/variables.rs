@@ -12,6 +12,7 @@ const STATE_DIGEST: &str = "0f68ad3d80b7fb287f8645191600899e3ddd2e5ec10a6d13f5b2
 const UNIT_LEADER_DIGEST: &str = "234247476dc1902370ec71cb263af291c56ddb3d1c16097291a3138d40b8754a";
 const ORGANISATION_DIGEST: &str =
     "3793c302479ab950c505ed3fe798c1141f45201ad724b82c8f51616fc584a0a4";
+const PROJECT_DIGEST: &str = "6d3bcef388838cebd0d362eff5b25279c8c430f0c5f1dab0213449ee38cf9eb7";
 
 /// Exact names in increasing byte order for the supported variable stores.
 #[derive(Debug)]
@@ -23,6 +24,8 @@ pub struct VariableTables {
     /// An industrial organisation's store, documented as
     /// `military_industrial_organization`.
     pub industrial_organisation: Vec<&'static str>,
+    /// A special project's store, documented as `special_project`.
+    pub project: Vec<&'static str>,
 }
 
 impl VariableTables {
@@ -36,6 +39,7 @@ impl VariableTables {
             state: publish_scope(&mut scopes, "state"),
             unit_leader: publish_scope(&mut scopes, "unit_leader"),
             industrial_organisation: publish_scope(&mut scopes, ORGANISATION_SCOPE),
+            project: publish_scope(&mut scopes, "special_project"),
         })
     }
 
@@ -74,6 +78,7 @@ fn validate_documentation(scopes: &BTreeMap<String, Vec<String>>) -> io::Result<
         ("state", STATE_DIGEST),
         ("unit_leader", UNIT_LEADER_DIGEST),
         (ORGANISATION_SCOPE, ORGANISATION_DIGEST),
+        ("special_project", PROJECT_DIGEST),
     ] {
         let names = scopes
             .get(scope)
@@ -334,6 +339,18 @@ mod tests {
             8,
             ORGANISATION_DIGEST,
             "industrial organisation variables",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
+    fn installed_project_variables_match_digest() {
+        let tables = crate::executable_tables::initialize_for_tests().unwrap();
+        assert_scope_digest(
+            &tables.variables.project,
+            3,
+            PROJECT_DIGEST,
+            "special project variables",
         );
     }
 }
