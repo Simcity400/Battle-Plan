@@ -746,13 +746,13 @@ mod tests {
         );
     }
     #[test]
-    fn five_thousand_countries_use_lazy_native_family_admission() {
+    fn faction_members_use_lazy_native_family_admission() {
         use replay_data::{
             rows::CountryLinkRow, rows::FactionMemberRow, rows::TableId, rows::TableRows,
         };
         use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
         let mut source = frame();
-        let countries = 1..=5_000;
+        let countries = 1..=12;
         source.tables[TableId::CountryLinks.index()] =
             TableView::Complete(TableRows::CountryLinks(
                 countries

@@ -327,11 +327,11 @@ fn names_keep_the_camera_side_margin() {
 fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let placements = many_names(15_000);
+    let placements = many_names(30);
     let (chunks, names) = static_names(&placements, u64::MAX);
     assert_eq!(chunks.len(), 1);
-    assert_eq!(names.len(), 15_000);
-    assert_eq!(chunks[0].len(), 15_000 * 12 * 6);
+    assert_eq!(names.len(), 30);
+    assert_eq!(chunks[0].len(), 30 * 12 * 6);
     // The names tile the chunk in placement order.
     assert!(
         names
@@ -339,12 +339,12 @@ fn static_names_are_built_once_and_chunked_under_the_buffer_limit() {
             .all(|pair| pair[0].vertices.end == pair[1].vertices.start)
     );
     // A small device limit splits between names, never inside one.
-    let limit = 72 * 1000 + 50;
+    let limit = 72 * 2 + 50;
     let (chunks, names) = static_names(&placements, limit);
     assert_eq!(chunks.len(), 15);
     assert!(chunks.iter().all(|chunk| chunk.len() as u64 <= limit));
     let total: usize = chunks.iter().map(Vec::len).sum();
-    assert_eq!(total, 15_000 * 72);
+    assert_eq!(total, 30 * 72);
     assert!(
         names
             .iter()

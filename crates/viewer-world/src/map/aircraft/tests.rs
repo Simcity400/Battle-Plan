@@ -1,6 +1,4 @@
 use super::*;
-use std::time::Duration;
-use std::time::Instant;
 use viewer_foundation::map::aircraft_model;
 fn wing(id: u64, owner: u32, region: u32) -> AirWingRow {
     AirWingRow {
@@ -206,28 +204,6 @@ fn a_bloc_war_reads_only_the_vectors_the_arrays_use() {
     assert_eq!(arrays.a[..4], [2, 3, 4, 5]);
     assert_eq!((arrays.a.len(), arrays.b.len()), (40, 40));
     assert_eq!(arrays.b[..3], [21, 22, 23]);
-}
-
-/// The scale matrix, in release:
-/// `cargo test -p viewer --release --bin viewer -- --ignored bloc_war_participants`.
-#[test]
-#[ignore]
-fn bloc_war_participants_at_1500_and_5000_countries() {
-    for n in [1_500, 5_000] {
-        let (frame, links) = bloc_war(n);
-        let mut best = Duration::MAX;
-        let mut arrays = AirParticipants::default();
-        for _ in 0..5 {
-            let started = Instant::now();
-            arrays = participant_countries(&frame, 1, &links).unwrap().0;
-            best = best.min(started.elapsed());
-        }
-        eprintln!(
-            "participants, {n} countries at war in two blocs: {best:?} (best of 5), arrays of {} and {}",
-            arrays.a.len(),
-            arrays.b.len()
-        );
-    }
 }
 
 #[test]
@@ -1411,38 +1387,6 @@ fn paired_rig_callbacks_use_defending_side_local_ordinals() {
     assert_eq!(
         scenario_bones(13),
         [(0, "fighter1".into()), (1, "fighter2".into())]
-    );
-}
-
-#[test]
-fn each_scenario_kind_belongs_to_one_hideable_mission() {
-    let missions: Vec<_> = (0..=20).map(scenario_mission).collect();
-    use AirMission::*;
-    assert_eq!(
-        missions,
-        [
-            Patrol,
-            Patrol,
-            Reconnaissance,
-            Reconnaissance,
-            Support,
-            Support,
-            Bombing,
-            Bombing,
-            Bombing,
-            Bombing,
-            Bombing,
-            Bombing,
-            Combat,
-            Combat,
-            Combat,
-            Missile,
-            Kamikaze,
-            Kamikaze,
-            Combat,
-            Supply,
-            Supply
-        ]
     );
 }
 

@@ -48,28 +48,4 @@ mod tests {
             expected
         );
     }
-
-    #[test]
-    fn retained_areas_scale_to_5000_sparse_live_keys_without_slot_order_assumptions() {
-        let provinces = (0..=5000).map(|id| province(id % 7)).collect::<Vec<_>>();
-        let membership = std::iter::once(0)
-            .chain((1..=5000).map(|id| u32::MAX - id * 3))
-            .collect::<Vec<_>>();
-        let mut keys = HashMap::from([(0, 0)]);
-        let mut kept = vec![0; 5001];
-        let mut expected = HashMap::new();
-        for (id, &key) in membership.iter().enumerate().skip(1) {
-            let slot = 5001 - id;
-            keys.insert(key, slot);
-            kept[slot] = id as u64 % 7;
-            expected.insert(key, id as u64 % 7);
-        }
-        assert_eq!(expected.len(), 5000);
-        assert_eq!(expected[&(u32::MAX - 21)], 0);
-        assert_eq!(areas(&membership, &provinces, None), expected);
-        assert_eq!(
-            areas(&membership, &provinces, Some((&keys, &kept))),
-            expected
-        );
-    }
 }

@@ -40,6 +40,25 @@ impl<'a> CommonCells<'a> {
 const TRANSPORT_RETIRED: &str = "the selected transport preview is retired: transport admission past the naval-base checks, convoys and risk are not recorded";
 
 impl<'w, 'a> Moves<'w, 'a> {
+    /// The hour's runtime scalars, which hold the movement thresholds, when sampled this hour.
+    fn runtime_scalars(&self) -> Fact<&replay_data::rows::PoliticalRuntimeScalars> {
+        let common = self.common.ok_or("selected common frame context missing")?;
+        let [row] = common
+            .frame
+            .complete::<tables::SimulationFeatures>()
+            .map_err(|e| e.to_string())?
+        else {
+            return Err("selected SimulationFeatures singleton missing or duplicated".into());
+        };
+        let values = row
+            .runtime_scalars
+            .require("SimulationFeatures.runtime_scalars")?;
+        if !values.sample_hour.fresh_at(common.frame.hour) {
+            return Err("selected movement threshold sample is stale".into());
+        }
+        Ok(values)
+    }
+
     fn selected_railway(
         &self,
         province: u32,
@@ -844,40 +863,12 @@ impl CommonMoveWorld for Moves<'_, '_> {
         Ok(packet.entries.clone())
     }
     fn move_strength_threshold(&self) -> Fact<i64> {
-        let common = self.common.ok_or("selected common frame context missing")?;
-        let [row] = common
-            .frame
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("selected SimulationFeatures singleton missing or duplicated".into());
-        };
-        let values = row
-            .runtime_scalars
-            .require("SimulationFeatures.runtime_scalars")?;
-        if !values.sample_hour.fresh_at(common.frame.hour) {
-            return Err("selected movement threshold sample is stale".into());
-        }
-        values
+        self.runtime_scalars()?
             .move_strength_threshold
             .ok_or_else(|| "selected move_strength_threshold capture refused".into())
     }
     fn move_organisation_threshold(&self) -> Fact<i64> {
-        let common = self.common.ok_or("selected common frame context missing")?;
-        let [row] = common
-            .frame
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|e| e.to_string())?
-        else {
-            return Err("selected SimulationFeatures singleton missing or duplicated".into());
-        };
-        let values = row
-            .runtime_scalars
-            .require("SimulationFeatures.runtime_scalars")?;
-        if !values.sample_hour.fresh_at(common.frame.hour) {
-            return Err("selected movement threshold sample is stale".into());
-        }
-        values
+        self.runtime_scalars()?
             .move_organisation_threshold
             .ok_or_else(|| "selected move_organisation_threshold capture refused".into())
     }

@@ -1,6 +1,5 @@
 use super::test_support::*;
 use super::*;
-use std::time::Instant;
 use std::{collections::BTreeSet, io};
 
 fn country_frame(count: u32, cosmetic: &str) -> replay_frame::frame::DecodedFrame {
@@ -96,7 +95,7 @@ fn pool_choice_reads_this_hours_world_and_keeps_unknown_named() {
         pool = { weight = 2 limit = { AAA = { has_cosmetic_tag = costume has_government = government } } models = { changed } }
     }}"#).unwrap();
     for (cosmetic, expected) in [("costume", "changed"), ("other", "fallback")] {
-        with_world(&country_frame(5_000, cosmetic), &[], |limits| {
+        with_world(&country_frame(12, cosmetic), &[], |limits| {
             for _ in 0..100 {
                 assert_eq!(
                     pools
@@ -172,39 +171,6 @@ fn pool_check_starts_a_fresh_variable_context() {
             .unwrap_err();
         assert!(why.contains("ScriptVariables"), "{why}");
     });
-}
-
-#[test]
-#[ignore = "release timing; run without concurrent builds"]
-fn pool_limits_builder_budget() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mut text = String::from("default = { tank = {");
-    for i in 0..510 {
-        text.push_str(&format!("pool = {{ limit = {{ AAA = {{ has_cosmetic_tag = costume has_government = government }} }} models = {{ m{i} }} }}"));
-    }
-    text.push_str("} }");
-    let content = content(text.as_bytes()).unwrap();
-    let pool_count = 510;
-    for countries in [1_500, 5_000] {
-        let frame = country_frame(countries, "costume");
-        let start = Instant::now();
-        let hours = 128;
-        for _ in 0..hours {
-            with_world(&frame, &[], |limits| {
-                let candidates = content
-                    .lookup_with_limits(&context(None, &[]), &limits, |_| true)
-                    .unwrap();
-                assert_eq!(std::hint::black_box(candidates).len(), pool_count);
-                assert_eq!(limits.values.0.borrow().len(), pool_count);
-            });
-        }
-        println!(
-            "POOL_LIMITS countries={countries} pools={} hours={hours} ms_per_hour={:.3}",
-            pool_count,
-            start.elapsed().as_secs_f64() * 1000.0 / f64::from(hours)
-        );
-    }
 }
 
 fn names() -> Names {

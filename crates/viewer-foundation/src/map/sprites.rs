@@ -2324,12 +2324,26 @@ mod tests {
     use super::oracle::{render_presented, render_presented_at};
     use super::*;
 
+    /// The sprite pass's draws on one device: opening it is most of each check's cost.
+    #[test]
+    fn sprite_pass_draws() {
+        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+        a_gui_draw_refused_before_the_stream_is_recorded(device.clone(), queue.clone());
+        moving_sprite_upload_matches_original_across_retention_transitions(
+            device.clone(),
+            queue.clone(),
+        );
+        a_fading_icon_blends_in_as_one_image_scaled_about_its_anchor(device.clone(), queue.clone());
+        an_icon_wider_than_a_default_fade_page_still_fades_whole(device.clone(), queue.clone());
+        each_fade_page_draws_this_upload_s_icons_alone(device.clone(), queue.clone());
+        fade_pages_follow_each_upload_s_demand(device.clone(), queue.clone());
+        every_upload_draws_its_own_fading_icons_alone(device.clone(), queue.clone());
+    }
+
     /// A GUI draw refused before it reaches the shader stream (here a quad without a compiled
     /// effect) is recorded in the frame's arena by what was refused, as every other refusal
     /// is, so a map comparing its refusals with and without visual mods sees it.
-    #[test]
-    fn a_gui_draw_refused_before_the_stream_is_recorded() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn a_gui_draw_refused_before_the_stream_is_recorded(device: wgpu::Device, queue: wgpu::Queue) {
         let page = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
             width: 1,
             height: 1,
@@ -2386,9 +2400,10 @@ mod tests {
         assert_eq!(pass.native_refusals.values().sum::<u64>(), 1);
     }
 
-    #[test]
-    fn moving_sprite_upload_matches_original_across_retention_transitions() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn moving_sprite_upload_matches_original_across_retention_transitions(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) {
         let mut batch = Batch::default();
         batch.scaled(
             &SpriteSheet {
@@ -2644,9 +2659,10 @@ mod tests {
         })
     }
 
-    #[test]
-    fn a_fading_icon_blends_in_as_one_image_scaled_about_its_anchor() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn a_fading_icon_blends_in_as_one_image_scaled_about_its_anchor(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) {
         let pages = [solid([255, 0, 0, 255]), solid([0, 255, 0, 255])];
         let pixel = |pixels: &[u8], x: usize, y: usize| -> [u8; 4] {
             pixels[(y * 16 + x) * 4..(y * 16 + x) * 4 + 4]
@@ -2721,9 +2737,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn an_icon_wider_than_a_default_fade_page_still_fades_whole() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn an_icon_wider_than_a_default_fade_page_still_fades_whole(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    ) {
         // A plate as wide as a 2,200-pixel frame, as a mod's layout or a long column may draw,
         // with a red part under a green one, at a quarter opacity.
         let size = [2200, 8];
@@ -2782,9 +2799,7 @@ mod tests {
         shown(texture, rect, layer(10, rank, child), Some(present))
     }
 
-    #[test]
-    fn each_fade_page_draws_this_upload_s_icons_alone() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn each_fade_page_draws_this_upload_s_icons_alone(device: wgpu::Device, queue: wgpu::Queue) {
         let mut pass = red_and_green(&device, &queue);
         // Cells pack within 20 pixels a side: no two of these icons share a page.
         pass.fade.side = 20;
@@ -2877,9 +2892,7 @@ mod tests {
         check(&pixels, &changed);
     }
 
-    #[test]
-    fn fade_pages_follow_each_upload_s_demand() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn fade_pages_follow_each_upload_s_demand(device: wgpu::Device, queue: wgpu::Queue) {
         let mut pass = red_and_green(&device, &queue);
         let arena = shader_pipeline::gpu::Arena::new(&device);
         let sizes = |pass: &mut SpritePass, quads: Vec<Quad>, size: [u32; 2]| {
@@ -2968,9 +2981,7 @@ mod tests {
         assert_eq!(sizes(&mut pass, Vec::new(), [16, 16]).len(), 0);
     }
 
-    #[test]
-    fn every_upload_draws_its_own_fading_icons_alone() {
-        let (_serial, device, queue) = crate::map::test_support::gpu::device();
+    fn every_upload_draws_its_own_fading_icons_alone(device: wgpu::Device, queue: wgpu::Queue) {
         let images = IconTextures::new(&device, &queue, &[solid([0, 255, 0, 255])]).unwrap();
         let mut pass = SpritePass::new(
             &device,

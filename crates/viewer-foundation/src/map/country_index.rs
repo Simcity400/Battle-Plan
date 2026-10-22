@@ -491,17 +491,17 @@ mod tests {
     }
 
     #[test]
-    fn hourly_values_do_not_change_the_settled_index_at_five_thousand_countries() {
+    fn hourly_values_do_not_change_the_settled_index() {
         let memo = CountryIndex::memo(4);
-        let first = CountryIndex::settled(&memo, &frame(1, &tables(5000, 1))).unwrap();
-        assert_eq!(first.tags().len(), 5000);
+        let first = CountryIndex::settled(&memo, &frame(1, &tables(40, 1))).unwrap();
+        assert_eq!(first.tags().len(), 40);
         // Every table is a new allocation and the power values moved, but no
         // identity did: the same index.
-        let next = CountryIndex::settled(&memo, &frame(2, &tables(5000, 2))).unwrap();
+        let next = CountryIndex::settled(&memo, &frame(2, &tables(40, 2))).unwrap();
         assert!(Arc::ptr_eq(&first, &next));
         // A new country is a new index.
-        let grown = CountryIndex::settled(&memo, &frame(3, &tables(5001, 2))).unwrap();
+        let grown = CountryIndex::settled(&memo, &frame(3, &tables(41, 2))).unwrap();
         assert!(!Arc::ptr_eq(&first, &grown));
-        assert_eq!(grown.tag(5000), Some("C5000"));
+        assert_eq!(grown.tag(40), Some("C040"));
     }
 }

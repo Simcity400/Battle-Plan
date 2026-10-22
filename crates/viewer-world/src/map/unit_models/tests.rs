@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 use viewer_foundation::movement_timing::Etas;
 #[test]
 fn raid_units_bypass_the_unit_history_and_move_by_the_playback_fraction() {
@@ -899,86 +898,6 @@ fn an_unreadable_template_leaves_its_stacks_unmodelled_and_counted() {
         Some(&2)
     );
     assert!(report.by_level.is_empty(), "{:?}", report.by_level);
-}
-
-/// The hour builder's selection cost at a large campaign's density:
-/// 6,000 divisions in 3,000 stacks, every one through camouflage.
-/// `cargo test -p viewer --release hour_builder_selection_cost -- --ignored --nocapture`
-#[test]
-#[ignore = "timing bench; run in release with --ignored --nocapture"]
-fn hour_builder_selection_cost() {
-    const PROVINCES: u32 = 3_000;
-    let divisions = (0..2 * PROVINCES)
-        .map(|index| division(u64::from(index) + 1, index % PROVINCES + 1, 50))
-        .collect();
-    let statuses = (1..=2 * u64::from(PROVINCES))
-        .map(|id| status(id, true))
-        .collect();
-    let frame = hour_frame(divisions, statuses, PROVINCES);
-    let assets = camouflaged_assets();
-    prepare(&assets, &frame);
-    let started = Instant::now();
-    let report = prepare(&assets, &frame);
-    let elapsed = started.elapsed();
-    assert_eq!(report.stacks, PROVINCES as usize);
-    println!(
-        "{} stacks of {} divisions selected in {:.2} ms",
-        report.stacks,
-        2 * PROVINCES,
-        elapsed.as_secs_f64() * 1e3
-    );
-}
-
-#[test]
-#[ignore = "release unit scaling benchmark"]
-fn unit_scale_model_selection() {
-    use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
-    use replay_frame::frame::TableView;
-    for count in [50_000u32, 100_000] {
-        let provinces = 10_000;
-        let divisions = (0..count)
-            .map(|i| {
-                let mut row = division(u64::from(i) + 1, i % provinces + 1, 50);
-                row.roster_owner = i % 1_500 + 1;
-                row.logical_owner = row.roster_owner;
-                row
-            })
-            .collect();
-        let statuses = (1..=u64::from(count)).map(|id| status(id, true)).collect();
-        let mut frame = hour_frame(divisions, statuses, provinces);
-        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-            (1..=1_500)
-                .map(|id| CountryRow {
-                    id,
-                    canonical_slot: id,
-                    tag: format!("TEST{id}").into_bytes(),
-                    ..Default::default()
-                })
-                .collect(),
-        ));
-        *frame.tables[TableId::CountryLinks.index()] =
-            TableView::Complete(TableRows::CountryLinks(
-                (1..=1_500)
-                    .map(|id| CountryLinkRow {
-                        id,
-                        canonical_slot: id,
-                    })
-                    .collect(),
-            ));
-        let assets = camouflaged_assets();
-        let mut times = Vec::new();
-        for _ in 0..9 {
-            let start = Instant::now();
-            let report = prepare(&assets, &frame);
-            times.push(start.elapsed().as_secs_f64() * 1e3);
-            assert!(report.stacks > 0);
-        }
-        times.sort_by(f64::total_cmp);
-        println!(
-            "UNIT_SCALE name=ModelSelection divisions={count} countries=1500 p50_ms={:.6} max_ms={:.6}",
-            times[4], times[8]
-        );
-    }
 }
 
 #[test]

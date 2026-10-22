@@ -648,6 +648,7 @@ fn suspension_retains_population_instead_of_inventing_steady_state() {
 
 /// Simulations move in and out of the pass's map on every hour change, so
 /// the large noise table stays behind a box.
+// regression: b8f2e16886 Free weather runtimes off the frame path and box their noise tables
 #[test]
 fn a_simulation_moves_without_its_noise_table() {
     assert!(std::mem::size_of::<Simulation>() < 256);

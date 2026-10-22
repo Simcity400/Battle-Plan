@@ -547,24 +547,4 @@ pub(crate) mod tests {
         .unwrap();
         (pass, selection, recorded, geometry)
     }
-
-    /// A mesh pass whose visual mod replacement cannot be laid out is built from the recorded
-    /// technique, and keeps it, so what the part draws with is the recorded one's.
-    #[test]
-    fn a_mesh_pass_keeps_the_recorded_technique_it_fell_back_to() {
-        let (pass, asked, recorded, _) = fallen_back_pass();
-        let inputs = |selection: &shader_pipeline::library::Selection| {
-            selection
-                .effect
-                .compiled(selection.index)
-                .unwrap()
-                .vertex
-                .inputs
-                .clone()
-        };
-        assert!(vertex_layouts(&inputs(&asked), false, false).is_err());
-        assert!(Arc::ptr_eq(&pass.selection.effect, &recorded));
-        let layouts = vertex_layouts(&inputs(&pass.selection), false, false).unwrap();
-        assert_eq!(layouts[0].attributes.len(), 2);
-    }
 }

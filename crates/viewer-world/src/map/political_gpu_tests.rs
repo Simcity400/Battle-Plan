@@ -10,11 +10,8 @@ use viewer_foundation::map::test_support::serial;
 #[path = "political_gpu/membership_gpu_tests.rs"]
 mod membership_gpu_tests;
 
-#[test]
-fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing() {
-    let Some(harness) = Harness::fallback(64, 32) else {
-        return;
-    };
+fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing(fallback: &Fallback) {
+    let harness = fallback.harness(64, 32);
     let ids: Vec<_> = (0..64 * 32)
         .map(|at| if at % 64 < 32 { 1 } else { 2 })
         .collect();
@@ -208,14 +205,11 @@ fn local_strategic_styles_split_shared_views_and_rejoin_after_clearing() {
     );
 }
 
-#[test]
-fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection() {
+fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(fallback: &Fallback) {
     use std::collections::BTreeMap;
     // The gradient harness reads half of its nominal map extent; province
     // stripes are full-resolution, so read every pixel of this 64 by 32 map.
-    let Some(harness) = Harness::fallback(128, 64) else {
-        return;
-    };
+    let harness = fallback.harness(128, 64);
     for second in [2, 65_537] {
         let ids: Vec<_> = (0..64 * 32)
             .map(|at| if at % 32 < 16 { 1 } else { second })
@@ -264,12 +258,9 @@ fn province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection() {
     }
 }
 
-#[test]
-fn political_gpu_fallback_naval_attributes_change_shared_fill() {
+fn political_gpu_fallback_naval_attributes_change_shared_fill(fallback: &Fallback) {
     let (width, height) = (64, 32);
-    let Some(harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let harness = fallback.harness(width, height);
     let ids = (0..width * height)
         .map(|i| {
             if i % width == 31 {
@@ -393,24 +384,22 @@ struct Harness {
     width: u32,
     rows: u32,
     timer: Option<PassTimer>,
-    /// Held for the harness's life, and dropped after its device (last field).
+    /// Held for the harness's life, and dropped after its device (last field); a harness on
+    /// the shared fallback device leaves it to [`Fallback`].
+    _serial: Option<MutexGuard<'static, ()>>,
+}
+
+/// The fallback adapter's device, opened once for every oracle that runs on it: opening it is
+/// most of their cost.
+struct Fallback {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// Dropped after the device (last field).
     _serial: MutexGuard<'static, ()>,
 }
 
-impl Harness {
-    fn new(width: u32, height: u32) -> Self {
-        let serial = serial();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .unwrap();
-        println!("POLITICAL adapter {:?}", adapter.get_info());
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&device_descriptor(&adapter))).unwrap();
-        Self::with_device(serial, width, height, device, queue)
-    }
-
-    fn fallback(width: u32, height: u32) -> Option<Self> {
+impl Fallback {
+    fn open() -> Option<Self> {
         // Taken first: a skip below drops its device before the guard.
         let serial = serial();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -440,13 +429,53 @@ impl Harness {
             eprintln!("SKIP political fallback oracle: {error}");
             return None;
         }
-        Some(Self::with_device(serial, width, height, device, queue))
+        Some(Self {
+            device,
+            queue,
+            _serial: serial,
+        })
+    }
+
+    fn harness(&self, width: u32, height: u32) -> Harness {
+        Harness::with_device(None, width, height, self.device.clone(), self.queue.clone())
+    }
+}
+
+/// Every byte oracle on the fallback adapter, on one device.
+#[test]
+fn political_gpu_fallback_oracles() {
+    let Some(fallback) = Fallback::open() else {
+        return;
+    };
+    local_strategic_styles_split_shared_views_and_rejoin_after_clearing(&fallback);
+    province_colors_keep_dirty_tiles_until_submission_and_clear_old_selection(&fallback);
+    political_gpu_fallback_naval_attributes_change_shared_fill(&fallback);
+    political_gpu_fallback_exactness(&fallback);
+    political_gpu_fallback_shared_scratch(&fallback);
+    political_gpu_fallback_lockstep(&fallback);
+    political_gpu_fallback_pool_interleavings(&fallback);
+    membership_gpu_tests::retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours(
+        &fallback,
+    );
+}
+
+impl Harness {
+    fn new(width: u32, height: u32) -> Self {
+        let serial = serial();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .unwrap();
+        println!("POLITICAL adapter {:?}", adapter.get_info());
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&device_descriptor(&adapter))).unwrap();
+        Self::with_device(Some(serial), width, height, device, queue)
     }
 
     /// `serial` comes first: parameters drop in reverse order, so a panic here drops the device
     /// before the guard.
     fn with_device(
-        serial: MutexGuard<'static, ()>,
+        serial: Option<MutexGuard<'static, ()>>,
         width: u32,
         height: u32,
         device: wgpu::Device,
@@ -606,12 +635,9 @@ fn compare(cpu: &LayerPlane, gpu: &LayerPlane, label: &str) {
     }
 }
 
-#[test]
-fn political_gpu_fallback_exactness() {
+fn political_gpu_fallback_exactness(fallback: &Fallback) {
     let (width, height) = (258, 130);
-    let Some(mut harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let mut harness = fallback.harness(width, height);
     let ids = (0..width * height)
         .map(|i| {
             if i % width < 130 {
@@ -900,14 +926,11 @@ fn country_tables(country_of: Vec<u32>) -> Arc<Regions> {
 
 /// Two states share one map's dispatch scratch, dispatching in one submission; the second
 /// overwrote the whole output before the first's incremental update, whose rows have gaps.
-#[test]
-fn political_gpu_fallback_shared_scratch() {
+fn political_gpu_fallback_shared_scratch(fallback: &Fallback) {
     // Both countries stay above the area saturation threshold. Two interior
     // three-cell halos leave a column gap and an untouched bottom row.
     let (width, height) = (272, 128);
-    let Some(harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
     let (base, ids, _strategic) = grid_fixture(&harness, width, height, &field);
     let columns = width / GRID_CELL;
@@ -979,13 +1002,10 @@ fn political_gpu_fallback_shared_scratch() {
 
 /// Two maps stepping through hours together: after warm-up, no state is allocated, the pair
 /// alternates between two states, and each update is incremental and exact.
-#[test]
-fn political_gpu_fallback_lockstep() {
+fn political_gpu_fallback_lockstep(fallback: &Fallback) {
     // 200 cells leave two changed seven-cell halos below half the map.
     let (width, height) = (400, 128);
-    let Some(harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
     let (base, ids, _strategic) = grid_fixture(&harness, width, height, &field);
     let columns = width / GRID_CELL;
@@ -1051,13 +1071,10 @@ fn political_gpu_fallback_lockstep() {
 
 /// The two interleavings the pool must exclude, each in both orders, with the registry checked
 /// to be held from another thread at the point where they used to interleave.
-#[test]
-fn political_gpu_fallback_pool_interleavings() {
+fn political_gpu_fallback_pool_interleavings(fallback: &Fallback) {
     // One province suffices: these are registry interleavings, with no pixel oracle.
     let (width, height) = (16, 16);
-    let Some(harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let harness = fallback.harness(width, height);
     let field = FieldDefines::TEST;
     let (base, _ids, strategic) = grid_fixture(&harness, width, height, &field);
     let hour = |key: u32| {

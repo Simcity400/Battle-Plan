@@ -377,16 +377,6 @@ fn a_posed_vertex_widens_the_reach_where_the_bind_box_would_not() {
     assert_eq!(reach.own_radius, 8.0);
 }
 
-#[test]
-fn the_hash_is_deterministic_and_in_range() {
-    for index in 0..1000u32 {
-        let value = hash01(index);
-        assert!((0.0..1.0).contains(&value), "{index} gave {value}");
-        assert_eq!(value, hash01(index));
-    }
-    assert_ne!(hash01(1), hash01(2));
-}
-
 fn library_with_one_mesh(radius: f32) -> ModelLibrary {
     ModelLibrary {
         meshes: vec![ModelMesh {

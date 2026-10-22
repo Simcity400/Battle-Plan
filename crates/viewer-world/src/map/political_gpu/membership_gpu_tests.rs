@@ -3,12 +3,11 @@ use super::*;
 
 type MembershipStep = ([u32; 6], &'static [(u32, u64)]);
 
-#[test]
-fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours() {
+pub(super) fn retained_membership_keeps_exact_bytes_areas_and_refusals_across_hours(
+    fallback: &Fallback,
+) {
     let (width, height) = (64, 32);
-    let Some(harness) = Harness::fallback(width, height) else {
-        return;
-    };
+    let harness = fallback.harness(width, height);
     let ids = (0..width * height)
         .map(|at| {
             if at % width < 24 {

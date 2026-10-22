@@ -1,4 +1,3 @@
-use std::time::Instant;
 use viewer_foundation::map::camera::MapDefines;
 use viewer_foundation::map::camera::MapSize;
 use viewer_foundation::map::camera::Placement;
@@ -194,56 +193,6 @@ fn budget_units(
     let mut units = super::super::unit_history::History::default();
     units.set(targets, Arc::new(bounds), steady);
     units
-}
-
-#[test]
-#[ignore = "release mixed model history measurement"]
-fn mixed_model_budget_cost() {
-    use {
-        super::super::unit_history::Kind, super::super::unit_history::Target,
-        super::super::unit_history::test_support::target,
-    };
-    for count in [1_000u32, 10_000, 50_000] {
-        let targets: Vec<_> = (1..=count)
-            .flat_map(|province| {
-                [
-                    target(province, Kind::Land),
-                    Target {
-                        mesh: 1,
-                        ..target(province, Kind::Ship)
-                    },
-                ]
-            })
-            .collect();
-        let mut units = budget_units(targets, false);
-        let mut buildings = budget_buildings(&(1..=count).map(|id| (id, 1)).collect::<Vec<_>>());
-        // Steady visibility first, then measure the actual live scheduler.
-        units.settle();
-        mixed_frame(&mut units, &mut buildings, 7, 0.0);
-        units.steady_for_test(false);
-        let mut samples = Vec::new();
-        for frame in 0..200 {
-            let start = Instant::now();
-            std::hint::black_box(units.update_models(
-                camera([0.0, 0.0], 50.0),
-                [1024, 768],
-                frame as f32 / 120.0,
-                super::super::unit_history::test_support::GATES,
-                7,
-                &mut buildings,
-                true,
-            ));
-            samples.push(start.elapsed().as_secs_f64() * 1e3);
-        }
-        samples.sort_by(f64::total_cmp);
-        println!(
-            "MIXED_BUDGET provinces={count} models={} frame_p50_ms={:.4} frame_p95_ms={:.4} frame_max_ms={:.4}",
-            count * 3,
-            samples[100],
-            samples[190],
-            samples[199]
-        );
-    }
 }
 
 #[test]

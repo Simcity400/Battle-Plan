@@ -190,11 +190,12 @@ pub struct Rig {
     pub end: usize,
 }
 
-/// The integer mixer for state variants and start offsets, including signed mask.
-#[derive(Clone)]
+/// The game's integer mixer for state variants, start offsets and other presentation draws,
+/// including signed mask.
+#[derive(Clone, Default)]
 pub struct Random {
-    seed: u32,
-    index: u32,
+    pub(crate) seed: u32,
+    pub(crate) index: u32,
 }
 impl Random {
     pub fn new(seed: u32) -> Self {

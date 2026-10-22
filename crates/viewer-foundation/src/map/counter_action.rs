@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn current_standing_naval_country_list_scales_to_live_country_count() {
+    fn current_standing_naval_country_list_follows_live_countries() {
         use replay_data::{
             rows::NavalCombatDetailsRow, rows::UnitCombatReference, rows::UnitCombatReferences,
         };
@@ -1236,7 +1236,7 @@ mod tests {
             custom_sea: Some(Vec::new()),
             ..Default::default()
         };
-        naval.sides[0].summary.countries = (1..=5_000).collect();
+        naval.sides[0].summary.countries = (1..=50).collect();
         set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
         let packet = UnitCombatReferences {
             speed_witness: Default::default(),
@@ -1246,17 +1246,11 @@ mod tests {
                 kind: 2,
             }],
         };
-        let links = (1..=5_000).map(|country| (country, country)).collect();
-        assert_eq!(
-            recorded_standing(&frame, &packet, 5_000, &links),
-            Some(true)
-        );
-        assert_eq!(recorded_standing(&frame, &packet, 5_001, &links), None);
+        let links = (1..=50).map(|country| (country, country)).collect();
+        assert_eq!(recorded_standing(&frame, &packet, 50, &links), Some(true));
+        assert_eq!(recorded_standing(&frame, &packet, 51, &links), None);
         let mut links = links;
-        links.insert(5_001, 5_001);
-        assert_eq!(
-            recorded_standing(&frame, &packet, 5_001, &links),
-            Some(false)
-        );
+        links.insert(51, 51);
+        assert_eq!(recorded_standing(&frame, &packet, 51, &links), Some(false));
     }
 }

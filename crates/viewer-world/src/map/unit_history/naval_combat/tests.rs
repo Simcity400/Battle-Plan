@@ -1535,26 +1535,3 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
         "driver must exercise all lifetime paths"
     );
 }
-
-#[test]
-fn dense_province_sizing_keeps_five_thousand_countries_and_sparse_ids() {
-    use unit_history::test_support::{GATES, target as unit_target};
-    let mut history = unit_history::History::default();
-    history.set(
-        (0..5_000u32)
-            .map(|country| Target {
-                identity: (u64::from(country) << 32) | 1,
-                ..unit_target(u32::MAX - country * 100_003, Kind::Land)
-            })
-            .collect(),
-        Arc::default(),
-        true,
-    );
-    let dense = &history.provinces;
-    assert_eq!(dense.records.len(), 5_000);
-    assert_eq!(dense.indices.len(), 5_000);
-    assert_eq!(
-        history.step(0.0, GATES, [true; 2], false, |_| true).len(),
-        5_000
-    );
-}

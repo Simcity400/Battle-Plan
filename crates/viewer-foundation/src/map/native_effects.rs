@@ -1,7 +1,6 @@
 //! GUI effects loaded from the resolved content stack and compiled when a technique is used.
 //! Missing techniques retain the preceding program and samplers, while their blend state
 //! defaults to off. Tests describe selection and scheduling with explicit fixture metadata.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::Arc;
 

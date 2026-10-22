@@ -24,8 +24,6 @@
 //! parallel, so original completion and RNG order are unavailable; all queued
 //! creations still become visible on one frame.
 
-#[cfg(test)]
-use std::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -670,11 +668,6 @@ impl History {
             self.raid_epoch = self.epoch;
         }
         self.raids = raids;
-    }
-
-    #[cfg(test)]
-    pub fn steady_for_test(&mut self, steady: bool) {
-        self.steady = steady;
     }
 
     pub fn settle(&mut self) {
@@ -1852,41 +1845,6 @@ pub mod tests {
                 .to_string()
                 .contains("SHIP_POPUP_SCALE_DOWN_SPEED")
         );
-    }
-
-    #[test]
-    #[ignore = "release viewer-frame lifecycle measurement"]
-    fn unit_lifetime_cost() {
-        for count in [3_000u32, 10_000, 50_000] {
-            let targets: Vec<_> = (1..=count).map(|id| target(id, Kind::Land)).collect();
-            let mut h = history(targets.clone(), false);
-            near(&mut h, 0.0);
-            near(&mut h, 1.0);
-            let mut frames = Vec::new();
-            let mut builders = Vec::new();
-            for frame in 0..300 {
-                if frame % 30 == 0 {
-                    let start = Instant::now();
-                    h.set(targets.clone(), Arc::default(), false);
-                    builders.push(start.elapsed().as_secs_f64() * 1e3);
-                }
-                let start = Instant::now();
-                std::hint::black_box(h.step(
-                    2.0 + frame as f32 / 120.0,
-                    GATES,
-                    [frame % 120 < 60; 2],
-                    true,
-                    |id| (id + frame / 30) % 3 != 0,
-                ));
-                frames.push(start.elapsed().as_secs_f64() * 1e3);
-            }
-            frames.sort_by(f64::total_cmp);
-            builders.sort_by(f64::total_cmp);
-            println!(
-                "UNIT_LIFETIME count={count} frame_p50_ms={:.4} frame_p95_ms={:.4} frame_max_ms={:.4} target_replace_p50_ms={:.4} target_replace_max_ms={:.4}",
-                frames[150], frames[285], frames[299], builders[5], builders[9]
-            );
-        }
     }
 
     /// The view's units and map icons run on one schedule: a frame whose map icons already

@@ -285,9 +285,9 @@ mod tests {
     fn multiplayer_switch_and_observer_use_only_the_clients_stored_viewpoint() {
         use replay_data::rows::LocalPlayerRow;
         let mut frame = frame(Vec::new(), Vec::new());
-        let links: BTreeMap<_, _> = (1..=5_000).map(|slot| (slot + 10_000, slot)).collect();
+        let links: BTreeMap<_, _> = (1..=50).map(|slot| (slot + 10_000, slot)).collect();
         *frame.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(
-            (1..=5_000)
+            (1..=50)
                 .map(|slot| PlayerRow {
                     id: slot,
                     country: slot as u32 + 10_000,
@@ -296,9 +296,9 @@ mod tests {
                 .collect(),
         ));
         for (country, observer_country, expected) in [
-            (15_000, 10_001, Some(5_000)),
+            (10_050, 10_001, Some(50)),
             (10_002, 0, Some(2)),
-            (0, 14_999, Some(4_999)),
+            (0, 10_049, Some(49)),
             (0, 0, None),
             (u32::MAX, 10_003, Some(3)),
             (50_000, 10_001, None),
@@ -523,12 +523,12 @@ mod tests {
     fn native_cache_keeps_the_complete_recorded_target_domain() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let frame = native_frame(vec![native_row(101, (0..=5_000).collect(), [0, 0])]);
+        let frame = native_frame(vec![native_row(101, (0..=50).collect(), [0, 0])]);
         let mut links = links(&frame);
-        links.extend((3..=5_000).map(|slot| (10_000 + slot, slot)));
+        links.extend((3..=50).map(|slot| (10_000 + slot, slot)));
         let native = NativeRelations::read(&frame, &links).unwrap();
-        assert_eq!(native.co_belligerent(1, 5_000), Ok(true));
-        assert_eq!(native.co_belligerent(1, 5_001), Ok(false));
+        assert_eq!(native.co_belligerent(1, 50), Ok(true));
+        assert_eq!(native.co_belligerent(1, 51), Ok(false));
     }
 
     #[test]

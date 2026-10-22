@@ -717,22 +717,24 @@ fn part_program(
     Ok((compiled, retained))
 }
 
-fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Selection> {
+/// The part's material effect, with the second UV set defined when its geometry has one.
+fn material_effect(
+    library: &mut Library,
+    part: &Part,
+) -> io::Result<Arc<shader_pipeline::library::Effect>> {
     let defines = if part.geometry.uv1 {
         vec!["PDX_MESH_UV1".to_owned()]
     } else {
         Vec::new()
     };
-    let effect = library
-        .load(
-            part.material
-                .shader_file
-                .as_deref()
-                .unwrap_or("gfx/FX/pdxmesh.lua")
-                .as_bytes(),
-            &defines,
-        )
-        .map_err(invalid)?;
+    let file = part.material.shader_file.as_deref();
+    library
+        .load(file.unwrap_or("gfx/FX/pdxmesh.lua").as_bytes(), &defines)
+        .map_err(invalid)
+}
+
+fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Selection> {
+    let effect = material_effect(library, part)?;
     let base = part.material.shader.as_deref().unwrap_or_default();
     let skinned = !part.geometry.skin.is_empty();
     let suffix = match (skinned, caster) {
@@ -760,21 +762,7 @@ fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Select
 /// variant (not PdxMeshColor). Draws use this handle as the alpha variant.
 fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
     let base = select(library, part, false)?;
-    let defines = if part.geometry.uv1 {
-        vec!["PDX_MESH_UV1".to_owned()]
-    } else {
-        Vec::new()
-    };
-    let effect = library
-        .load(
-            part.material
-                .shader_file
-                .as_deref()
-                .unwrap_or("gfx/FX/pdxmesh.lua")
-                .as_bytes(),
-            &defines,
-        )
-        .map_err(invalid)?;
+    let effect = material_effect(library, part)?;
     let name = part.material.shader.as_deref().unwrap_or_default();
     let skin = if part.geometry.skin.is_empty() {
         ""
@@ -1849,8 +1837,19 @@ mod tests {
     /// retained program, never the technique it asked for.
     #[test]
     fn a_part_draws_with_the_technique_its_pass_fell_back_to() {
+        use crate::map::mesh_shader::vertex_layouts;
         let (pass, asked, recorded, geometry) = crate::map::mesh_shader::tests::fallen_back_pass();
         assert!(!Arc::ptr_eq(&asked.effect, &recorded));
+        // The mod's replacement cannot be laid out, so the mesh pass keeps the recorded
+        // technique it fell back to.
+        let inputs = |selection: &shader_pipeline::library::Selection| {
+            let compiled = selection.effect.compiled(selection.index).unwrap();
+            compiled.vertex.inputs.clone()
+        };
+        assert!(vertex_layouts(&inputs(&asked), false, false).is_err());
+        assert!(Arc::ptr_eq(&pass.selection.effect, &recorded));
+        let layouts = vertex_layouts(&inputs(&pass.selection), false, false).unwrap();
+        assert_eq!(layouts[0].attributes.len(), 2);
         let (compiled, retained) = part_program(&pass, &geometry).unwrap();
         assert!(Arc::ptr_eq(&retained.selection().effect, &recorded));
         assert_eq!(compiled.vertex.inputs[1].semantic, "TEXCOORD0");

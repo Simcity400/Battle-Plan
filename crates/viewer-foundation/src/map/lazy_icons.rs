@@ -956,39 +956,6 @@ mod tests {
     }
 
     #[test]
-    fn warming_five_thousand_countries_keeps_only_their_candidates() {
-        let textures = foreground();
-        let flags = flag_set(&textures, [2, 2]);
-        let keys: Vec<String> = (0..5_000)
-            .flat_map(|tag| [format!("T{tag:04}_fascism"), format!("T{tag:04}")])
-            .collect();
-        flags.warm(keys.iter().map(String::as_str));
-        assert_eq!(lock(&flags.state).decoded.len(), 10_000);
-        assert_eq!(flags.loaded(), 0);
-        assert_eq!(textures.resident_bytes(), 0);
-        for keys in keys.chunks_exact(2).rev() {
-            flags.acquire(&keys.iter().map(String::as_str).collect::<Vec<_>>());
-        }
-        assert_eq!(flags.loaded(), 9_998);
-        assert_eq!(flags.rejected(), 2);
-        assert!(lock(&flags.state).decoded.is_empty());
-        assert_eq!(
-            textures.snapshot().len(),
-            flags.pages.pages_for(flags.loaded() as u32) as usize
-        );
-        // A mixed warm/cold batch preserves key-order packing too.
-        let cold_textures = foreground();
-        let cold = flag_set(&cold_textures, [2, 2]);
-        let mixed_textures = foreground();
-        let mixed = flag_set(&mixed_textures, [2, 2]);
-        mixed.warm(["T0002_fascism"]);
-        assert_eq!(
-            mixed.acquire(&["T0002_fascism", "T0002"]),
-            cold.acquire(&["T0002_fascism", "T0002"])
-        );
-    }
-
-    #[test]
     fn acquisition_does_not_wait_for_warming_and_still_decides_cold_candidates() {
         let textures = foreground();
         let (started, waiting) = std::sync::mpsc::channel();

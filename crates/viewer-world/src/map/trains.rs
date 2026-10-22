@@ -59,10 +59,6 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 use std::cell::Cell;
-#[cfg(test)]
-use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -70,6 +66,7 @@ use std::{
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::table_access::TokenNames;
 use {
+    super::entity_animation::Random,
     super::models::{KeyedInstance, ModelField, ModelInstance, ModelLibrary},
     viewer_foundation::map::{
         province_map::HeightField,
@@ -397,31 +394,17 @@ impl CreatorLookup<'_> {
 fn consist_cars(consist: &Consist, defines: &TrainDefines, random: &mut Random) -> Vec<usize> {
     let mut cars: Vec<usize> = consist.fixed().collect();
     let last = usize::from(consist.wagon_last.is_some());
-    let target = defines.cars(random.next()).max((cars.len() + last) as i64) as usize + last;
+    let target = defines
+        .cars(random.next_word())
+        .max((cars.len() + last) as i64) as usize
+        + last;
     if !consist.wagons.is_empty() {
         while cars.len() < target {
-            cars.push(consist.wagons[random.next() as usize % consist.wagons.len()]);
+            cars.push(consist.wagons[random.next_word() as usize % consist.wagons.len()]);
         }
     }
     cars.extend(consist.wagon_last);
     cars
-}
-
-/// Integer presentation RNG, wrapping at every operation.
-#[derive(Clone, Default)]
-struct Random {
-    seed: u32,
-    index: u32,
-}
-impl Random {
-    fn next(&mut self) -> u32 {
-        let mut x = self.seed.wrapping_add(self.index.wrapping_mul(0xb529_7a4d));
-        self.index = self.index.wrapping_add(1);
-        x = (x ^ (x >> 8)).wrapping_add(0x68e3_1da4);
-        x = (x ^ (x << 8)).wrapping_mul(0x1b56_c4e9);
-        x = (x ^ (x >> 8)).wrapping_mul(0x92d6_8ca2);
-        (x ^ (x >> 8)) & 0x7fff_ffff
-    }
 }
 
 #[derive(Clone, Default)]
@@ -856,10 +839,7 @@ impl TrainPlan {
         let time = time.max(0.0);
         if self.last_time.is_none_or(|old| time < old) {
             self.services.clear();
-            self.random = Random {
-                seed: self.routes.iter().fold(SEED, |s, r| s ^ r.seed),
-                index: 0,
-            };
+            self.random = Random::new(self.routes.iter().fold(SEED, |s, r| s ^ r.seed));
             // Warm from an empty fleet farther back than any train's lifetime.
             // This is presentation history, not game state or an inventory estimate.
             let longest = self
@@ -879,7 +859,7 @@ impl TrainPlan {
         while self.next_departure <= f64::from(time) {
             let departed = self.next_departure;
             // The game draws the next interval before testing cap/weights.
-            self.next_departure += defines.interval(self.random.next());
+            self.next_departure += defines.interval(self.random.next_word());
             self.services.retain(|service| {
                 service.departed
                     + f64::from(self.routes[service.route].lifetime(&service.cars, assets)) / speed
@@ -888,12 +868,12 @@ impl TrainPlan {
             if self.services.len() as i64 >= i64::from(self.fleet_cap) {
                 continue;
             }
-            let Some(node) = weighted_node(&self.weights, self.random.next()) else {
+            let Some(node) = weighted_node(&self.weights, self.random.next_word()) else {
                 continue;
             };
             // One chosen node may emit several land portions; native checks the cap once.
             for &route in &self.departures[node] {
-                let variant = selected_variant(&self.allocations, self.random.next());
+                let variant = selected_variant(&self.allocations, self.random.next_word());
                 let Some(Some(consist)) = self.consists.get(&variant) else {
                     if let Some(reason) = self.token_refusals.get(&variant)
                         && !self.refused.contains(reason)
@@ -902,10 +882,7 @@ impl TrainPlan {
                     }
                     continue;
                 };
-                let mut random = Random {
-                    seed: self.routes[route].seed ^ self.random.next(),
-                    index: 0,
-                };
+                let mut random = Random::new(self.routes[route].seed ^ self.random.next_word());
                 let cars = consist_cars(consist, defines, &mut random);
                 if !cars.is_empty() {
                     self.services.push(Service {
@@ -1921,7 +1898,7 @@ pub(crate) mod tests {
     #[test]
     fn last_wagon_is_appended_after_random_fill() {
         let counts: BTreeSet<_> = (0..100)
-            .map(|seed| consist_cars(&consist(), &DEFINES, &mut Random { seed, index: 0 }).len())
+            .map(|seed| consist_cars(&consist(), &DEFINES, &mut Random::new(seed)).len())
             .collect();
         assert_eq!(counts, BTreeSet::from([6, 7, 8, 9]));
         // The draw is min+1..=max+1 whatever order the defines give.
@@ -2303,31 +2280,5 @@ pub(crate) mod tests {
             }
             assert!(!plan.services.is_empty());
         }
-    }
-
-    /// Wall-clock guard for the same bound; load-sensitive, so it runs in
-    /// release like the other timing benches.
-    #[test]
-    #[ignore = "timing bench; run with --release -- --ignored --nocapture"]
-    fn an_hours_train_animation_stays_cheap() {
-        // A long route and a full fleet: one frame's placement is bounded by
-        // the live cars, not by nodes or divisions.
-        let assets = assets();
-        let mut plan = plan();
-        plan.routes[0].points = (0..=4000).map(|i| [i as f32, 10.0, 0.0]).collect();
-        plan.routes[0].distance = (0..=4000).map(|i| i as f32).collect();
-        plan.weights = vec![100000; 2000];
-        plan.departures = vec![vec![0]; 2000];
-        plan.field(&assets, 3600.0);
-        let started = Instant::now();
-        for frame in 1..=60 {
-            plan.field(&assets, 3600.0 + frame as f32 / 60.0);
-        }
-        let per_frame = started.elapsed() / 60;
-        assert!(!plan.services.is_empty());
-        assert!(
-            per_frame < Duration::from_millis(2),
-            "{per_frame:?} per frame"
-        );
     }
 }

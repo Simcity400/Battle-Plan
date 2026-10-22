@@ -189,6 +189,7 @@ fn a_settled_layer_evicts_its_least_recently_used_tables() {
     assert_eq!(count(), 4);
 }
 
+// regression: 9501a84f48 Build Settled on Recent so one hour's tables build once
 #[test]
 fn concurrent_callers_of_one_settled_hour_share_one_build() {
     let (layer, builds) = counting(4);

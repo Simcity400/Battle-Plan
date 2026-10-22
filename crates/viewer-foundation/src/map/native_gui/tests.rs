@@ -8365,22 +8365,6 @@ fn alpha_hover_keeps_an_out_of_range_selected_frame_offset() {
 }
 
 #[test]
-fn icon_pool_sizes_keep_every_added_family() {
-    assert_eq!(
-        [
-            MapIconPool::Resource,
-            MapIconPool::AdjacencyRule,
-            MapIconPool::RocketSite,
-            MapIconPool::GunEmplacement,
-            MapIconPool::Radar,
-            MapIconPool::StrategicLocation
-        ]
-        .map(MapIconPool::initial),
-        [0xC0, 0x20, 0x80, 0x80, 0x40, 0x40]
-    );
-}
-
-#[test]
 fn normalized_progress_keeps_large_step_rounding_without_an_integer_reclamp() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");

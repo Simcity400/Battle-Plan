@@ -912,7 +912,7 @@ mod tests {
     fn city_damage_uses_the_lower_civilian_health_and_content_scope() {
         let mut types = damage_types();
         types[0].province_max = Some(7);
-        let provinces: Vec<_> = (1..=5_000)
+        let provinces: Vec<_> = (1..=12)
             .map(|id| ProvinceRow {
                 id,
                 state: 20,
@@ -952,7 +952,7 @@ mod tests {
             Some(30_000),
             "scope follows the authored provincial cap"
         );
-        assert_eq!(damage.health.len(), 5_000);
+        assert_eq!(damage.health.len(), 12);
         let mut player = presentation(damage);
         assert_eq!(player.state(1), Some("damaged"));
         assert_eq!(

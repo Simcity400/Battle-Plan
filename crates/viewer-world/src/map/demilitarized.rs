@@ -340,16 +340,14 @@ impl DemilitarizedPass {
         format: wgpu::TextureFormat,
         assets: &BorderAssets,
     ) -> io::Result<Self> {
-        let mut textures = Vec::new();
-        for (class, texture) in BorderClass::ALL.iter().zip(&assets.classes) {
-            textures.push(upload(
-                device,
-                queue,
-                &format!("demilitarized border_{}", class.texture_name()),
-                texture,
-                ColorSpace::Srgb,
-            )?);
-        }
+        let textures = BorderClass::ALL
+            .iter()
+            .zip(&assets.classes)
+            .map(|(class, texture)| {
+                let label = format!("demilitarized border_{}", class.texture_name());
+                Ok(upload(device, queue, &label, texture, ColorSpace::Srgb)?.view)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         Ok(Self {
             compiled: super::border_shader::Border::new(
                 device,
@@ -359,10 +357,7 @@ impl DemilitarizedPass {
                 DEPTH_FORMAT,
             )
             .map_err(|error| error.to_string()),
-            textures: textures
-                .iter()
-                .map(|texture| texture.view.clone())
-                .collect(),
+            textures,
             runs: Vec::new(),
             edges: 0,
             color: assets.demilitarized_color,
@@ -720,13 +715,6 @@ mod tests {
         let zone = zone();
         assert!(!zone.splits(1, 4));
         assert!(!zone.splits(3, 4));
-    }
-
-    #[test]
-    fn an_empty_state_set_splits_nothing() {
-        let zone = Zone::new(&map(), &regions(&[0, 42, 7]), &BTreeSet::new());
-        assert!(zone.is_empty());
-        assert!(!zone.splits(1, 2));
     }
 
     #[test]

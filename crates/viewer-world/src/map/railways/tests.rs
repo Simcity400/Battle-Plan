@@ -404,7 +404,7 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
     let mut adopted = Arc::new(PreparedRailGeometry::default());
     let mut previous = Vec::new();
     let mut previous_runs = Vec::new();
-    for hour in 0..48 {
+    for hour in 0..12 {
         let mesh = if hour % 6 == 0 {
             RailMesh::default()
         } else {

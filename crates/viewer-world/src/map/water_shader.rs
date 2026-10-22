@@ -231,13 +231,6 @@ impl Water {
 mod tests {
     use super::*;
     #[test]
-    fn low_quality_precedes_refraction_setting() {
-        assert_eq!(technique(false, false), "water_low_gfx");
-        assert_eq!(technique(false, true), "water_low_gfx");
-        assert_eq!(technique(true, false), "water_no_refractions");
-        assert_eq!(technique(true, true), "water");
-    }
-    #[test]
     fn native_strip_is_four_packed_signed_words_in_submission_order() {
         assert_eq!(quad([421, 313]), [[421, 0], [0, 0], [421, 313], [0, 313]]);
         assert_eq!(

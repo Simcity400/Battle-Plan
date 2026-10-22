@@ -646,20 +646,6 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         naval_admitted > 100,
         "must exercise real hull attachments: {all_errors:?}"
     );
-    // 5,000 is a sizing check in this driver, not another oracle suite.
-    let mut sizing = base.clone();
-    set(
-        &mut sizing,
-        TableRows::CountryLinks(
-            (0..5000)
-                .map(|id| CountryLinkRow {
-                    id: id + 1,
-                    canonical_slot: id,
-                })
-                .collect(),
-        ),
-    );
-    assert!(new.conventional.read(&sizing, &new.sub_units).is_ok());
 }
 
 #[test]

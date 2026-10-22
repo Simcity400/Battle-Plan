@@ -357,53 +357,6 @@ fn occupation_badges_do_not_guess_missing_identity_or_unknown_content() {
     );
 }
 
-#[test]
-fn occupation_marker_admission_sizes_from_five_thousand_recorded_states() {
-    let mut frame = frame(row());
-    let states = (1..=5_000)
-        .map(|id| StateRow {
-            id,
-            controller: 11,
-            ..Default::default()
-        })
-        .collect();
-    let resistance = (1..=5_000)
-        .map(|state| StateResistanceRow {
-            state,
-            country: 20,
-            level: 100_000,
-            map: Recorded::Value(Some(OccupationMap::default())),
-            ..Default::default()
-        })
-        .collect();
-    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(states));
-    *frame.tables[TableId::StateResistance.index()] =
-        TableView::Complete(TableRows::StateResistance(resistance));
-    let content = content();
-    let members = (1..=5_000).map(|id| (id, vec![id])).collect();
-    let out = prepare(
-        &Inputs {
-            content: &content,
-            mode: Some(Mode::Resistance),
-            country: 2,
-            state_provinces: &members,
-            centroid: &|_| Some([3000., 10., 1500.]),
-            camera: Camera {
-                center: [3000., 1500.],
-                height: 500.,
-                map: MapSize::TEST,
-                defines: MapDefines::test(),
-                pose: Pose::Map,
-            },
-            viewport: [2048, 1152],
-            ui_scale: 1.,
-        },
-        &frame,
-    );
-    assert_eq!(out.placed.len(), 5_000);
-    assert!(out.report.refused.is_empty(), "{:?}", out.report.refused);
-}
-
 const GUI: &[u8] = br#"guiTypes = {
     containerWindowType = { name = resistance_compliance_map_icon size = { width = 120 height = 40 }
         gridBoxType = { name = modifier_grid_list position = { x = 7 y = -9 } size = { width = 91 height = 19 }

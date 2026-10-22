@@ -805,16 +805,14 @@ impl BorderPass {
         format: wgpu::TextureFormat,
         assets: &BorderAssets,
     ) -> io::Result<Self> {
-        let mut textures = Vec::new();
-        for (class, texture) in BorderClass::ALL.iter().zip(&assets.classes) {
-            textures.push(upload(
-                device,
-                queue,
-                &format!("border_{}", class.texture_name()),
-                texture,
-                ColorSpace::Srgb,
-            )?);
-        }
+        let textures = BorderClass::ALL
+            .iter()
+            .zip(&assets.classes)
+            .map(|(class, texture)| {
+                let label = format!("border_{}", class.texture_name());
+                Ok(upload(device, queue, &label, texture, ColorSpace::Srgb)?.view)
+            })
+            .collect::<io::Result<Vec<_>>>()?;
         let strait_texture = upload(
             device,
             queue,
@@ -841,10 +839,7 @@ impl BorderPass {
                 DEPTH_FORMAT,
             )
             .map_err(|error| error.to_string()),
-            textures: textures
-                .iter()
-                .map(|texture| texture.view.clone())
-                .collect(),
+            textures,
             compiled_straits,
             vertices: Vec::new(),
             runs: BorderClass::ALL.iter().map(|_| Vec::new()).collect(),

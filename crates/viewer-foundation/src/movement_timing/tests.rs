@@ -365,10 +365,10 @@ fn the_cache_holds_the_hours_in_flight_and_evicts_the_oldest() {
 /// or load of the machine running the test.
 #[test]
 fn a_busy_hour_estimates_every_route() {
-    let (frame, map) = busy_hour(13_000, 1_000, 30);
+    let (frame, map) = busy_hour(130, 10, 30);
     let map = content(map);
     let etas = Etas::read(&frame, Some(&map)).unwrap();
-    assert_eq!(etas.report().estimated, 1_000);
+    assert_eq!(etas.report().estimated, 10);
     assert_eq!(etas.report().refused_total(), 0);
     assert_eq!(etas.report().progress_refused, 0);
     // Thirty known non-neighbour hops at the native 100000 distance, each

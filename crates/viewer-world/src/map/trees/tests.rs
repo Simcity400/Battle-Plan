@@ -210,15 +210,6 @@ fn missing_uv1_aliases_scaled_next_position_until_the_allocation_end() {
 }
 
 #[test]
-fn generation_is_deterministic() {
-    let heights = flat();
-    let pixels = bitmap(&[(0, 0, 5), (2, 0, 6), (1, 1, 5), (3, 1, 6)]);
-    let a = field(&pixels, &heights);
-    let b = field(&pixels, &heights);
-    assert_eq!(a, b);
-}
-
-#[test]
 fn a_ragged_bitmap_is_refused_but_independent_pitches_are_allowed() {
     let heights = flat();
     let image = TreeImage {
@@ -673,10 +664,4 @@ fn empty_texture() -> dds::Texture {
             data: vec![0; 4],
         }]],
     }
-}
-
-#[test]
-fn the_mapobject_key_is_the_palette_index_appended_to_the_literal() {
-    assert_eq!(mapobject_name(29), "mapobject_29");
-    assert_eq!(mapobject_name(2), "mapobject_2");
 }

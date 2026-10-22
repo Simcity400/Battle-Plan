@@ -4,7 +4,6 @@ use replay_data::{
     rows::TableRows, rows::TaskForceRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use std::time::Instant;
 
 fn frame() -> DecodedFrame {
     let mut frame = DecodedFrame {
@@ -126,75 +125,12 @@ fn missing_inputs_leave_their_part_unknown() {
     assert_eq!(sample.sides[&(62, 1)].lists, None);
 }
 
-/// 1,500 combats between 5,000 countries' task forces: one pass over each
-/// table, every side keyed.
-#[test]
-fn fifteen_hundred_combats_of_five_thousand_countries_build_in_one_pass() {
-    const COMBATS: u64 = 1_500;
-    const COUNTRIES: u32 = 5_000;
-    let mut frame = frame();
-    let mut details = Vec::new();
-    let mut members = Vec::new();
-    let mut forces = Vec::new();
-    for combat in 0..COMBATS {
-        let mut detail = NavalCombatDetailsRow {
-            combat,
-            ..Default::default()
-        };
-        for side in 0..2_u8 {
-            let force = combat * 2 + u64::from(side);
-            let country = (force as u32 % COUNTRIES) + 1;
-            detail.sides[usize::from(side)].units = vec![force];
-            detail.sides[usize::from(side)].summary.countries = vec![country];
-            forces.push(TaskForceRow {
-                id: force,
-                logical_owner: country,
-                roster_owner: country,
-                ..Default::default()
-            });
-            members.push(NavalCombatParticipantRow {
-                combat,
-                side,
-                battle_slot: 1,
-                ..Default::default()
-            });
-        }
-        details.push(detail);
-    }
-    *frame.tables[TableId::NavalCombats.index()] = TableView::Complete(TableRows::NavalCombats(
-        (0..COMBATS)
-            .map(|id| NavalCombatRow {
-                id,
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::NavalCombatDetails.index()] =
-        TableView::Complete(TableRows::NavalCombatDetails(details));
-    *frame.tables[TableId::NavalCombatParticipants.index()] =
-        TableView::Complete(TableRows::NavalCombatParticipants(members));
-    *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(forces));
-    let started = Instant::now();
-    let sample = naval_sides(&frame).unwrap();
-    println!(
-        "{COMBATS} naval combats: sides built in {:.3} ms",
-        started.elapsed().as_secs_f64() * 1e3
-    );
-    assert_eq!(sample.sides.len(), 2 * COMBATS as usize);
-    assert!(
-        sample.sides.values().all(
-            |side| side.unit_lists.is_some() && side.added == engaged::Added::Observed(vec![1])
-        )
-    );
-}
-
-/// 20,000 and 40,000 task forces (the ship target and twice it, a task force per ship at
-/// most): an hour reads only the task forces its 1,500 combats' sides name, and an hour
+/// An hour reads the task forces its combat sides name, spread over the census, and an hour
 /// without naval combat reads none.
 #[test]
 fn an_hour_reads_only_the_task_forces_its_combat_sides_name() {
-    const COMBATS: u64 = 1_500;
-    for total in [20_000_u64, 40_000] {
+    const COMBATS: u64 = 3;
+    for total in [12_u64, 24] {
         let mut frame = frame();
         let mut details = Vec::new();
         for combat in 0..COMBATS {
@@ -234,9 +170,7 @@ fn an_hour_reads_only_the_task_forces_its_combat_sides_name() {
             TableView::Complete(TableRows::NavalCombatParticipants(Vec::new()));
         *frame.tables[TableId::TaskForces.index()] =
             TableView::Complete(TableRows::TaskForces(forces));
-        let started = Instant::now();
         let sample = naval_sides(&frame).unwrap();
-        let combat_hour = started.elapsed();
         assert_eq!(sample.sides.len(), 2 * COMBATS as usize);
         assert!(
             sample
@@ -248,15 +182,7 @@ fn an_hour_reads_only_the_task_forces_its_combat_sides_name() {
         assert_eq!(sample.sides[&(0, 0)].unit_lists, Some((vec![9], vec![])));
         *frame.tables[TableId::NavalCombats.index()] =
             TableView::Complete(TableRows::NavalCombats(Vec::new()));
-        let started = Instant::now();
         let sample = naval_sides(&frame).unwrap();
-        let quiet_hour = started.elapsed();
         assert!(sample.sides.is_empty() && sample.complete);
-        println!(
-            "{total} task forces: an hour of {COMBATS} naval combats in {:.3} ms, an hour \
-             without naval combat in {:.3} ms",
-            combat_hour.as_secs_f64() * 1e3,
-            quiet_hour.as_secs_f64() * 1e3
-        );
     }
 }

@@ -10,10 +10,6 @@
 //! page draws at its stored coordinates. The overlay draws independently.
 //! Atlas slots contain each country's current flag from the recording and content.
 
-// The layers above this one bind their windows' flags through this module; until they are
-// stacked on it, only the tests use it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use super::native_gui::Texture;
 
 /// Small atlas keys may fall back to the plain three-byte tag.
