@@ -1205,7 +1205,18 @@ fn build(
     if let Some(reason) = &projects.unavailable {
         builder.unavailable("projectFinished", "Special projects", reason.clone(), None);
     }
-    for event in &projects.events {
+    // Their icons, kept as the choice's operands, drawn as this request shows them.
+    let mut events = projects.events.clone();
+    let failed = special_projects::present_completions(
+        source,
+        &special_projects::ArtSource::new(source, context.content.as_ref()),
+        &mut events,
+    )?;
+    builder
+        .feed
+        .warnings
+        .extend(special_projects::art_warnings(failed));
+    for event in &events {
         project_row(&mut builder, event)?;
     }
     let nukes = country_nukes::scanned_branch(source, branch, cancelled)?;

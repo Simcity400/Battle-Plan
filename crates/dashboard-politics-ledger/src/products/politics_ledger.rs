@@ -9,7 +9,7 @@ use dashboard_core::config::LoadContext;
 use replay_data::rows::*;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-pub use spending::prepared;
+pub use spending::{prepared, present_icons};
 pub use spending::{
     LedgerCommandHold, LedgerCommandHolder, LedgerIdeaTooltips, LedgerSpend, LedgerSpendCategory,
     LedgerSpendChange, LedgerSpendCoverage, LedgerSpendItem,

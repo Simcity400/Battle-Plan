@@ -2,12 +2,14 @@
 //! separate from the three recruitment vectors. Capture is assignment 0,
 //! independent of the capturer link.
 use super::country_name_cache::CountryNameCache;
+use super::operative_content::{OperativeArt, draw_art};
 use super::{
     operative_rows, operative_rows::CountryIdentity, operative_rows::identity,
     operative_rows::tag_at, operative_rows::tag_of,
 };
 use dashboard_base::{
-    products::{Product, validate_countries},
+    catalogue,
+    products::{Product, politics_content, validate_countries},
     source::Source,
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
@@ -382,15 +384,11 @@ fn operative_values(
             })
     });
     let portrait_missing = portrait.as_ref().err().cloned();
-    let icon_missing = assignment
-        .as_ref()
-        .and_then(|info| info.icon_missing.clone());
     for (reason, field) in [
         (name.missing.clone(), "name"),
         (portrait_missing.clone(), "portrait"),
         (experience_missing.clone(), "experience"),
         (assignment_missing.clone(), "assignment"),
-        (icon_missing.clone(), "assignment icon"),
     ] {
         if let Some(reason) = reason {
             let identity = if field == "name" {
@@ -417,7 +415,10 @@ fn operative_values(
         name: name.name,
         unnamed: name.unnamed,
         name_missing: tables.reasons.intern(name.missing, budget)?,
-        portrait: tables.artwork.intern(portrait.ok(), budget)?,
+        // Art is kept as what it is drawn from, and drawn when a reply is served.
+        portrait: tables
+            .artwork
+            .intern(portrait.ok().map(|art| art.key()), budget)?,
         portrait_missing: tables.reasons.intern(portrait_missing, budget)?,
         skill: row.skill,
         experience_raw: row.experience_raw.to_string(),
@@ -431,10 +432,13 @@ fn operative_values(
         assignment_duration: None,
         assignment_progress: None,
         assignment_icon: tables.artwork.intern(
-            assignment.as_ref().and_then(|info| info.icon.clone()),
+            assignment
+                .as_ref()
+                .and_then(|info| info.icon.as_ref())
+                .map(|art| art.key()),
             budget,
         )?,
-        assignment_icon_missing: tables.reasons.intern(icon_missing, budget)?,
+        assignment_icon_missing: None,
         assignment_operation: row.assignment == 4,
         assignment_missing: tables.reasons.intern(assignment_missing, budget)?,
         captured,
@@ -1164,18 +1168,14 @@ impl Scan {
                             None,
                         );
                         held.value.assignment_name = assignment.name;
-                        held.value.assignment_icon =
-                            tables.artwork.intern(assignment.icon, budget)?;
+                        held.value.assignment_icon = tables
+                            .artwork
+                            .intern(assignment.icon.as_ref().map(|art| art.key()), budget)?;
                         held.value.assignment_missing =
                             tables.reasons.intern(assignment.missing.clone(), budget)?;
-                        held.value.assignment_icon_missing = tables
-                            .reasons
-                            .intern(assignment.icon_missing.clone(), budget)?;
+                        held.value.assignment_icon_missing = None;
                         if let Some(reason) = assignment.missing {
                             refused.note(reason, format!("operative {id} assignment"));
-                        }
-                        if let Some(reason) = assignment.icon_missing {
-                            refused.note(reason, format!("operative {id} assignment icon"));
                         }
                     }
                 }
@@ -1294,6 +1294,231 @@ impl Scan {
 
 pub mod prepared;
 
+/// The roster art drawn for one selection, by descriptor; one per kind of catalogue
+/// ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct RosterArt(Option<catalogue::Redrawn<OperativeArt, String>>);
+
+/// Draws a reply's artwork dictionary, which preparation keeps as what each entry is drawn from
+/// ([`OperativeArt`]): every portrait and assignment icon drawn as the request admitted under
+/// `context` shows it ([`catalogue::present`]). When the selection cannot draw one, the
+/// recording's own is drawn and named on every reply that shows it. One neither can draw, or
+/// all of them where the artwork content does not load, is dropped from the dictionary (which
+/// holds only pictures), the runs that show it say why, and the reply's warnings count it;
+/// the rest of the reply is as it was.
+fn present_artwork(
+    source: &Source,
+    context: &LoadContext,
+    reply: &mut OperativeRosterReply,
+) -> io::Result<()> {
+    let failed = draw_artwork(source, context, &mut reply.artwork)?;
+    if failed.is_empty() {
+        return Ok(());
+    }
+    let kept = keep_drawn(&mut reply.artwork, &failed);
+    let mut reasons = Reasons::of(&mut reply.reasons);
+    let mut counted = BTreeMap::<String, u64>::new();
+    for run in reply
+        .countries
+        .iter_mut()
+        .flat_map(|country| &mut country.operatives)
+        .flat_map(|entry| &mut entry.runs)
+    {
+        let value = &mut run.value;
+        for (art, missing) in [
+            (&mut value.portrait, &mut value.portrait_missing),
+            (&mut value.assignment_icon, &mut value.assignment_icon_missing),
+        ] {
+            let Some(index) = *art else {
+                continue;
+            };
+            *art = kept.get(index as usize).copied().flatten();
+            if let Some(reason) = failed.get(&index) {
+                *missing = Some(reasons.index(reason));
+                *counted.entry(reason.clone()).or_default() += 1;
+            }
+        }
+    }
+    reply.warnings.extend(counted_warnings(counted));
+    Ok(())
+}
+
+/// [`present_artwork`] for a serialized roster reply (a day's first view, whose screen cache
+/// keeps the reply with its artwork as descriptors, whatever the presentation).
+pub(crate) fn present_artwork_json(
+    source: &Source,
+    context: &LoadContext,
+    data: &mut serde_json::Value,
+) -> io::Result<()> {
+    let Some(entries) = data.get_mut("artwork").and_then(serde_json::Value::as_array_mut) else {
+        return Ok(());
+    };
+    let mut artwork: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.as_str().unwrap_or_default().to_owned())
+        .collect();
+    let failed = draw_artwork(source, context, &mut artwork)?;
+    let kept = keep_drawn(&mut artwork, &failed);
+    *entries = artwork.into_iter().map(serde_json::Value::String).collect();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    let mut held: Vec<String> = data
+        .get("reasons")
+        .and_then(|reasons| serde_json::from_value(reasons.clone()).ok())
+        .unwrap_or_default();
+    let mut reasons = Reasons::of(&mut held);
+    let mut counted = BTreeMap::<String, u64>::new();
+    let values = data
+        .get_mut("countries")
+        .and_then(serde_json::Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|country| country.get_mut("operatives")?.as_array_mut())
+        .flatten()
+        .filter_map(|entry| entry.get_mut("runs")?.as_array_mut())
+        .flatten()
+        .filter_map(|run| run.get_mut("value"));
+    for value in values {
+        for (art, missing) in [
+            ("portrait", "portraitMissing"),
+            ("assignmentIcon", "assignmentIconMissing"),
+        ] {
+            let Some(index) = value.get(art).and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            let index = index as u32;
+            value[art] = kept
+                .get(index as usize)
+                .copied()
+                .flatten()
+                .map_or(serde_json::Value::Null, Into::into);
+            if let Some(reason) = failed.get(&index) {
+                value[missing] = reasons.index(reason).into();
+                *counted.entry(reason.clone()).or_default() += 1;
+            }
+        }
+    }
+    data["reasons"] = serde_json::to_value(held)?;
+    if let Some(warnings) = data.get_mut("warnings").and_then(serde_json::Value::as_array_mut) {
+        warnings.extend(counted_warnings(counted).map(serde_json::Value::String));
+    }
+    Ok(())
+}
+
+/// Drops the entries of a drawn artwork dictionary that `failed` names, keeping the rest in
+/// order; returns each old index's new one (`None` for a dropped entry).
+fn keep_drawn(artwork: &mut Vec<String>, failed: &BTreeMap<u32, String>) -> Vec<Option<u32>> {
+    let mut next = 0;
+    let kept = (0..artwork.len() as u32)
+        .map(|index| {
+            (!failed.contains_key(&index)).then(|| {
+                next += 1;
+                next - 1
+            })
+        })
+        .collect();
+    let mut index = 0;
+    artwork.retain(|_| {
+        index += 1;
+        !failed.contains_key(&(index - 1))
+    });
+    kept
+}
+
+/// Each reason a reply's art could not be drawn for, with how many of its pictures it left out.
+fn counted_warnings(counted: BTreeMap<String, u64>) -> impl Iterator<Item = String> {
+    counted
+        .into_iter()
+        .map(|(reason, count)| format!("{reason} (count: {count})"))
+}
+
+/// A reply's reason dictionary, adding a reason once.
+struct Reasons<'a> {
+    values: &'a mut Vec<String>,
+    indices: BTreeMap<String, u32>,
+}
+
+impl<'a> Reasons<'a> {
+    fn of(values: &'a mut Vec<String>) -> Self {
+        let indices = values
+            .iter()
+            .enumerate()
+            .map(|(index, reason)| (reason.clone(), index as u32))
+            .collect();
+        Self { values, indices }
+    }
+
+    fn index(&mut self, reason: &str) -> u32 {
+        if let Some(index) = self.indices.get(reason) {
+            return *index;
+        }
+        let index = self.values.len() as u32;
+        self.values.push(reason.to_owned());
+        self.indices.insert(reason.to_owned(), index);
+        index
+    }
+}
+
+/// Draws each descriptor of a roster's artwork dictionary in place, returning why for each
+/// entry that could not be drawn (left empty). Artwork content that does not load leaves every
+/// entry undrawn with why; only cancellation fails.
+fn draw_artwork(
+    source: &Source,
+    context: &LoadContext,
+    artwork: &mut [String],
+) -> io::Result<BTreeMap<u32, String>> {
+    let mut failed = BTreeMap::new();
+    let catalogues = match &context.content {
+        None => Err("Operative artwork needs the recorded content stack".to_owned()),
+        Some(options) => match politics_content::politics_content(source, options).and_then(
+            |admitted| Ok((admitted, politics_content::recorded_politics_content(source, options)?)),
+        ) {
+            Ok(catalogues) => Ok(catalogues),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => Err(format!("Operative artwork is unavailable: {error}")),
+        },
+    };
+    let (admitted, recorded) = match catalogues {
+        Ok(catalogues) => catalogues,
+        Err(reason) => {
+            for (index, entry) in artwork.iter_mut().enumerate() {
+                failed.insert(index as u32, reason.clone());
+                entry.clear();
+            }
+            return Ok(failed);
+        }
+    };
+    let state = source.state::<catalogue::ByCatalogue<RosterArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let drawn = catalogue::Redrawn::bind(
+        &mut state.of(&admitted.catalogue).0,
+        &admitted.catalogue,
+        &recorded.catalogue,
+    );
+    for (index, entry) in artwork.iter_mut().enumerate() {
+        let Some(art) = OperativeArt::of_key(entry) else {
+            continue;
+        };
+        let shown = drawn.get(art.clone(), || art.describe(), |cat| {
+            let politics = if std::ptr::eq(cat, &*admitted.catalogue) {
+                &admitted
+            } else {
+                &recorded
+            };
+            draw_art(cat, politics, &art)
+        });
+        match shown {
+            Ok(image) => *entry = image.clone(),
+            Err(reason) => {
+                failed.insert(index as u32, reason.clone());
+                entry.clear();
+            }
+        }
+    }
+    Ok(failed)
+}
+
 // Character lookup matches the full leader reference; only operative
 // category 3 reaches role 4 portrait selection.
 fn character_links(
@@ -1393,6 +1618,7 @@ impl Product for OperativesRoster {
                 country.identities = recorded.identities.as_ref().clone();
             }
         }
+        present_artwork(source, context, &mut reply)?;
         Budget::measure(&reply, REPLY_BUDGET)?;
         Ok(reply)
     }

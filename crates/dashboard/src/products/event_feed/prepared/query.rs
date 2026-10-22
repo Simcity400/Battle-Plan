@@ -935,6 +935,21 @@ pub(crate) fn query(
         Err(_) => vec![None; completions.len()],
     };
     let mut focus_art = focus_art.into_iter();
+    // Completed projects' icons, kept as their choice's operands, drawn as this request shows them.
+    // Their content is loaded only for a page holding completions; content that does not load
+    // leaves each icon unavailable with why and the rest of the page as it is.
+    let failed = special_projects::present_completions(
+        source,
+        &special_projects::ArtSource::new(source, context.content.as_ref()),
+        rows.values_mut().filter_map(|row| match row {
+            SourceRow::Project(change) => change.completion.as_mut(),
+            _ => None,
+        }),
+    )?;
+    builder
+        .feed
+        .warnings
+        .extend(special_projects::art_warnings(failed));
     for (position, row) in rows {
         check_cancel(cancelled)?;
         if position.kind == EventFeedKind::Peace {

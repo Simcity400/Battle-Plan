@@ -156,10 +156,6 @@ fn refuse<P: Product>(
 /// whose stored art is drawn again at query time from the request's selection are not here.
 pub(crate) fn stored_artwork(product: &str) -> Option<&'static str> {
     Some(match product {
-        "special-projects" | "event-feed" => "special project icons and portraits",
-        "operatives-roster" => "operative portraits and icons",
-        "raids" => "raid icons",
-        "politics-ledger" => "politics ledger icons",
         // The pictures follow the selection; which picture a design shows is still chosen
         // when the scan is prepared.
         "production-lines" => "production line icon choices",

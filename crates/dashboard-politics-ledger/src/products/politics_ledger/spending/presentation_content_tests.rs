@@ -165,6 +165,137 @@ fn item_icon<'a>(reply: &'a PoliticsLedgerReply, item: &'a LedgerSpendItem) -> O
         .or(item.icon.as_deref())
 }
 
+/// A served reply's icon recipes are drawn as its request shows them: the recording's own without
+/// a selection, the selection's with one, each recipe once per source, a second reply hitting
+/// only the memo; one neither can draw says why on its item and among the warnings.
+#[test]
+fn served_ledger_icons_follow_the_selection_once_per_recipe() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    let machine = Machine::new("ledger_art");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+          NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write(
+        "interface/ledger.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_ability textureFile = gfx/ability.png } }",
+    );
+    machine.write("gfx/ability.png", &png(RED));
+    machine.write_mod("art", "gfx/ability.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    let served = || {
+        serde_json::json!({
+            "spendItems": [
+                { "id": "a", "iconArt": serde_json::to_value(LedgerArt::Sprite("GFX_ability".into())).unwrap() },
+                { "id": "b", "iconArt": serde_json::to_value(LedgerArt::Sprite("GFX_ability".into())).unwrap() },
+                { "id": "c", "iconArt": serde_json::to_value(LedgerArt::Sprite("GFX_missing".into())).unwrap() },
+            ],
+            "warnings": [],
+        })
+    };
+    let renders = dashboard_base::catalogue::presented;
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let mut data = served();
+        present_icons(&source, Some(options), &mut data).unwrap();
+        data
+    };
+    select(&source, &mut options, &[]);
+    let before = renders();
+    let data = shown(&options);
+    assert_eq!(renders() - before, 2, "one render per distinct recipe");
+    assert_eq!(first_pixel(data["spendItems"][0]["icon"].as_str().unwrap()), RED);
+    assert!(data["spendItems"][0].get("iconArt").is_none());
+    assert!(data["spendItems"][2]["unknown"].as_str().unwrap().contains("GFX_missing"));
+    assert!(data["warnings"][0].as_str().unwrap().contains("GFX_missing"));
+    let before = renders();
+    shown(&options);
+    assert_eq!(renders() - before, 0, "a second reply only hits the memo");
+    select(&source, &mut options, &["art"]);
+    assert_eq!(first_pixel(shown(&options)["spendItems"][1]["icon"].as_str().unwrap()), BLUE);
+}
+
+/// A holder's recorded portrait the selection cannot draw fails the selection's whole attempt:
+/// the recording's own art, its portrait, is drawn and named, never the idea's generic art in
+/// its place within the selection's attempt.
+#[test]
+fn a_holder_portrait_the_selection_cannot_draw_draws_the_recordings_own() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("ledger_holder_portrait");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 },           NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write(
+        "interface/ledger.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_holder textureFile = gfx/holder.png } }",
+    );
+    machine.write("gfx/holder.png", &png(RED));
+    // The mod's declarations replace the recording's file: its portrait does not load.
+    machine.write_mod(
+        "broken",
+        "interface/ledger.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_holder textureFile = gfx/broken.png } }",
+    );
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let recipe = LedgerArt::Idea {
+        token: "fixture_idea".into(),
+        character: None,
+        tag: "GER".into(),
+        naming: Default::default(),
+        holder: Some((
+            7,
+            dashboard_base::products::character_portraits::RecordedPortrait::Entry {
+                kind: 0,
+                identity: b"GFX_holder".to_vec(),
+            },
+        )),
+    };
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let mut data = serde_json::json!({
+            "spendItems": [{ "id": "a", "iconArt": serde_json::to_value(&recipe).unwrap() }],
+            "warnings": [],
+        });
+        let ((), line) =
+            fallback_line(|| present_icons(&source, Some(&options), &mut data).unwrap());
+        assert_eq!(first_pixel(data["spendItems"][0]["icon"].as_str().unwrap()), RED);
+        assert!(
+            line.as_ref()
+                .is_some_and(|line| line.contains("politics ledger icon (character 7 portrait")),
+            "{line:?}"
+        );
+    }
+}
+
+/// A drawn item's note (a holder's portrait it could not use where the idea's art stands in)
+/// is named on the item and counted in the reply's warnings, once per item showing it, as the
+/// memo replays it.
+#[test]
+fn a_drawn_items_note_is_counted_in_the_warnings() {
+    let recipe = serde_json::to_value(LedgerArt::Sprite("GFX_idea".into())).unwrap();
+    let mut data = serde_json::json!({
+        "spendItems": [
+            { "id": "a", "iconArt": recipe.clone() },
+            { "id": "b", "iconArt": recipe },
+        ],
+        "warnings": [],
+    });
+    let note = "character 7 portrait: not drawn";
+    draw_icons(&mut data, |_| {
+        Ok(Ok((Some("data:image/png;base64,AA==".to_owned()), Some(note.to_owned()))))
+    })
+    .unwrap();
+    for item in data["spendItems"].as_array().unwrap() {
+        assert_eq!(item["icon"], "data:image/png;base64,AA==");
+        assert_eq!(item["unknown"], note);
+    }
+    assert_eq!(data["warnings"], serde_json::json!([format!("{note} (count: 2)")]));
+}
+
 fn expected_png(pixel: [u8; 4]) -> String {
     dashboard_text::catalogue::png_data_url(&installed_content_image::Rgba8Image {
         width: 1,
@@ -301,7 +432,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
     put(&mut first, TableRows::CountryPowerChanges(rows));
     let mut scan = Scanned::default();
     observe_all(&first, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     for (name, pixel) in [
         "Mod law",
         "Mod advisor",
@@ -485,7 +616,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
     repeats.push(other_country);
     put(&mut repeated, TableRows::CountryPowerChanges(repeats));
     observe_all(&repeated, &mut scan, Some(&content)).unwrap();
-    let repeated_reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let repeated_reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let tooltips = repeated_reply.idea_tooltips.as_ref().unwrap();
     assert_eq!(
         tooltips.ideas.len(),
@@ -493,7 +624,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
         "dated identities dedupe across action variants"
     );
     assert_eq!(tooltips.artwork.len(), 2);
-    let other_reply = present(&scan, 1, "C2", Some(&content), &AtomicBool::new(false)).unwrap();
+    let other_reply = drawn(&content, present(&scan, 1, "C2", Some(&content), &AtomicBool::new(false)).unwrap());
     let other_tooltips = other_reply.idea_tooltips.as_ref().unwrap();
     assert_eq!(other_tooltips.ideas.len(), 1);
     assert!(
@@ -535,7 +666,7 @@ fn stacked_mod_law_advisor_decision_ability_and_trait_use_content_names_and_png_
         TableRows::CountryPowerChanges(vec![trait_row, focus_row, static_focus]),
     );
     observe_all(&late, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let row = reply
         .spending
         .iter()
@@ -604,7 +735,7 @@ fn renamed_target_is_named_at_each_spend_hour_and_old_rows_are_not_relabelled() 
         put(&mut frame, TableRows::CountryPowerChanges(vec![row]));
         observe_all(&frame, &mut scan, Some(&content)).unwrap();
     }
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     for (hour, sentence) in [
         (24, "Improve relations: Old target"),
         (25, "Improve relations: New target"),
@@ -714,7 +845,7 @@ fn daily_cost_modifier_and_mios_use_recorded_identity_and_stack_localisation() {
         put(&mut current, TableRows::CountryPowerDailyCosts(costs));
         observe_all(&current, &mut scan, Some(&content)).unwrap();
     }
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     assert_eq!(reply.spending.len(), 6);
     assert_eq!(
         reply.spend_items.len(),
@@ -823,7 +954,7 @@ fn mio_scripted_names_are_frozen_at_the_read_and_missing_identity_is_counted() {
         );
         observe_all(&current, &mut scan, Some(&content)).unwrap();
     }
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     assert_eq!(reply.spending.len(), 3);
     for (hour, expected) in [
         (24, Some("C1 organisation")),
@@ -916,7 +1047,7 @@ fn mio_explicit_name_and_icon_survive_missing_lexical_token() {
         );
         observe_all(&current, &mut scan, Some(&content)).unwrap();
     }
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let item_at = |hour| {
         let row = reply.spending.iter().find(|row| row.hour == hour).unwrap();
         reply
@@ -1043,7 +1174,7 @@ fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
     put(&mut frame, TableRows::CountryPowerChanges(rows));
     let mut scan = Scanned::default();
     observe_all(&frame, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     for (name, pixel) in ["Mod general", "Mod admiral", "Mod scientist"]
         .into_iter()
         .zip(pixels)
@@ -1059,6 +1190,87 @@ fn military_and_scientist_actions_select_native_recorded_portrait_roles() {
             "{name}"
         );
     }
+}
+
+/// Preparation names a holder from recorded facts and keeps its portrait as a recipe, drawing
+/// nothing: a portrait the prepared content cannot draw leaves no note on the prepared item, so
+/// content that supplies it draws it with nothing named, and content that does not names why.
+#[test]
+fn preparation_keeps_a_portrait_it_cannot_draw_as_a_recipe() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let stack = Stack::new();
+    let addon = stack.addon();
+    stack.write(&addon, "localisation/english/people_l_english.yml", "l_english:
+ C1:0 \"Owner\"
+ C2:0 \"Target\"
+ mod_scientist:0 \"Mod scientist\"
+");
+    // The portrait's texture is not there when the ledger is prepared.
+    let prepared_with = stack.content();
+    let mut frame = named_frame(24, "");
+    put(
+        &mut frame,
+        TableRows::Characters(vec![CharacterRow {
+            id: 12,
+            country: 1,
+            token: b"mod_scientist".to_vec(),
+            ..Default::default()
+        }]),
+    );
+    put(
+        &mut frame,
+        TableRows::CharacterPortraits(vec![CharacterPortraitRow {
+            character: 12,
+            portraits: vec![CharacterPortrait {
+                category: 4,
+                size: 1,
+                is_set: 1,
+                kind: 1,
+                identity: b"gfx/scientist.png".to_vec(),
+            }],
+        }]),
+    );
+    let mut row = event(1, PowerCause::ScientistRecruitment, PowerOperation::Subtract, Some(-100_000));
+    row.identity.character = Some(12);
+    put(&mut frame, TableRows::CountryPowerChanges(vec![row]));
+    let mut scan = Scanned::default();
+    observe_all(&frame, &mut scan, Some(&prepared_with)).unwrap();
+    let prepared =
+        present(&scan, 1, "C1", Some(&prepared_with), &AtomicBool::new(false)).unwrap();
+    let item = |reply: &PoliticsLedgerReply| {
+        reply
+            .spend_items
+            .iter()
+            .find(|item| item.name.as_deref() == Some("Mod scientist"))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(item(&prepared).unknown, None, "nothing is drawn, nor named, when prepared");
+    // Content that cannot draw it names why when the reply is served, counted in its warnings.
+    let missing = drawn(&prepared_with, prepared.clone());
+    assert!(
+        item(&missing).unknown.is_some_and(|why| why.contains("character 12 portrait")),
+        "{:?}",
+        item(&missing)
+    );
+    assert!(
+        missing
+            .warnings
+            .iter()
+            .any(|line| line.contains("character 12 portrait") && line.ends_with("(count: 1)")),
+        "{:?}",
+        missing.warnings
+    );
+    // Content that supplies it draws it, with nothing named.
+    let pixel = [200, 9, 80, 255];
+    stack.png(&addon, "gfx/scientist.png", pixel);
+    let supplied = drawn(&stack.content(), prepared);
+    assert_eq!(item(&supplied).unknown, None);
+    assert_eq!(
+        item_icon(&supplied, &item(&supplied)),
+        Some(expected_png(pixel).as_str())
+    );
 }
 
 #[test]
@@ -1123,7 +1335,7 @@ fn decision_icons_use_native_default_links_and_keep_known_art_when_name_is_unkno
         TableRows::CountryPowerChanges(vec![row, no_owner, single_no_owner]),
     );
     observe_all(&missing, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     assert_eq!(reply.spending.len(), 5);
     for item in &reply.spend_items {
         assert_eq!(
@@ -1199,7 +1411,7 @@ fn daily_relation_title_and_missing_direct_charge_do_not_borrow_action_token_bra
     );
     let mut scan = Scanned::default();
     observe_all(&first, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let direct = reply
         .spending
         .iter()
@@ -1266,7 +1478,7 @@ fn decision_scripted_names_use_known_scopes_and_native_random_fast_paths_without
     put(&mut first, TableRows::CountryPowerChanges(rows));
     let mut scan = Scanned::default();
     observe_all(&first, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let item_at = |sequence: &str| {
         let row = reply
             .spending
@@ -1344,7 +1556,7 @@ fn decision_name_from_uses_native_added_trigger_children_and_targets_presence() 
     put(&mut first, TableRows::CountryPowerChanges(rows));
     let mut scan = Scanned::default();
     observe_all(&first, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let item_at = |sequence: &str| {
         let row = reply
             .spending
@@ -1407,7 +1619,7 @@ fn targeted_decision_state_selector_uses_recorded_state_and_fresh_nested_seed() 
     put(&mut first, TableRows::CountryPowerChanges(vec![row]));
     let mut scan = Scanned::default();
     observe_all(&first, &mut scan, Some(&content)).unwrap();
-    let reply = present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap();
+    let reply = drawn(&content, present(&scan, 1, "C1", Some(&content), &AtomicBool::new(false)).unwrap());
     let item = &reply.spend_items[0];
     assert_eq!(
         item.name.as_deref(),

@@ -58,7 +58,9 @@ pub enum RecordedName {
 }
 
 /// A recorded portrait entry: its kind, identity and requested thumbnail edge.
-type PortraitKey = (u32, Vec<u8>, u32);
+/// A portrait by kind, identity and edge, kept apart per artwork mode
+/// ([`installed_content_core::content::ArtworkMode`]).
+type PortraitKey = (u32, Vec<u8>, u32, installed_content_core::content::ArtworkMode);
 
 pub struct PoliticsContent {
     pub catalogue: Arc<Catalogue>,
@@ -732,7 +734,12 @@ impl PoliticsContent {
         if edge == 0 {
             return Err("Portrait thumbnail edge must be positive".to_owned());
         }
-        let key = (kind, identity.to_vec(), edge);
+        let key = (
+            kind,
+            identity.to_vec(),
+            edge,
+            installed_content_core::content::artwork_mode(),
+        );
         // Small mounted-row thumbnails cannot evict Politics' full-size portraits.
         let store = if edge == ICON_EDGE {
             &self.portraits
@@ -817,6 +824,24 @@ impl PoliticsContent {
         self.idea_artwork_for(token, character, Some(country), Some(saved))
     }
 
+    /// The name [`Self::idea_artwork`] gives, without drawing its icon: what preparation keeps
+    /// while the icon is drawn when a reply is served. With why where the content cannot say
+    /// what the token is.
+    pub fn idea_named(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: IdeaCountry<'_>,
+    ) -> (Option<String>, Option<String>) {
+        match (self.idea(token), self.advisor(token)) {
+            (Ok(idea), Ok(role)) => (
+                self.idea_display_name(token, character, Some(country), None, idea, role),
+                None,
+            ),
+            (Err(reason), _) | (_, Err(reason)) => (None, Some(format!("{token}: {reason}"))),
+        }
+    }
+
     pub fn idea_artwork_offline(&self, token: &str) -> (Artwork, Option<String>) {
         self.idea_artwork_for(token, None, None, None)
     }
@@ -828,9 +853,11 @@ impl PoliticsContent {
         country: Option<IdeaCountry<'_>>,
         saved: Option<&str>,
     ) -> (Artwork, Option<String>) {
+        // Kept apart per artwork mode ([`installed_content_core::content::ArtworkMode`]).
         let key = format!(
-            "{token}\u{0}{}\u{0}{country:?}\u{0}{saved:?}",
+            "{token}\u{0}{}\u{0}{country:?}\u{0}{saved:?}\u{0}{:?}",
             character.unwrap_or(""),
+            installed_content_core::content::artwork_mode(),
         );
         if let Some(cached) = self
             .artwork
@@ -885,26 +912,7 @@ impl PoliticsContent {
         role: Option<&AdvisorRole>,
     ) -> (Artwork, Option<String>) {
         let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
-        // One source is selected, then localised: a key content lacks or a
-        // refused text leaves the name unknown, and no other text stands in.
-        let name = match saved.map(|saved| self.recorded_name(saved)) {
-            Some(RecordedName::Named(name)) => Some(name),
-            Some(RecordedName::Unresolved(_)) => None,
-            Some(RecordedName::None) | None => match (idea, advisor) {
-                (Some(_), _) | (None, None) => match country.map_or_else(
-                    || self.idea_name_offline(token),
-                    |country| self.idea_name(token, country),
-                ) {
-                    Ok(IdeaName::Key(key)) => self.localised(&key, View::Scripted),
-                    Ok(IdeaName::Generated(text)) => Some(text),
-                    Err(_) => None,
-                },
-                // An advisor's idea is its character.
-                (None, Some(character)) => {
-                    self.authored_character_name_for(character, country.is_none(), None)
-                }
-            },
-        };
+        let name = self.idea_display_name(token, character, country, saved, idea, role);
         // No defined description key means the
         // game shows nothing. Authored absence is not a product finding.
         let description = self
@@ -958,6 +966,38 @@ impl PoliticsContent {
             icon,
         };
         (art, problem)
+    }
+
+    /// An idea's name: one source is selected, then localised; a key content lacks or a
+    /// refused text leaves the name unknown, and no other text stands in.
+    fn idea_display_name(
+        &self,
+        token: &str,
+        character: Option<&str>,
+        country: Option<IdeaCountry<'_>>,
+        saved: Option<&str>,
+        idea: Option<&Idea>,
+        role: Option<&AdvisorRole>,
+    ) -> Option<String> {
+        let advisor = character.or_else(|| role.map(|role| role.character.as_str()));
+        match saved.map(|saved| self.recorded_name(saved)) {
+            Some(RecordedName::Named(name)) => Some(name),
+            Some(RecordedName::Unresolved(_)) => None,
+            Some(RecordedName::None) | None => match (idea, advisor) {
+                (Some(_), _) | (None, None) => match country.map_or_else(
+                    || self.idea_name_offline(token),
+                    |country| self.idea_name(token, country),
+                ) {
+                    Ok(IdeaName::Key(key)) => self.localised(&key, View::Scripted),
+                    Ok(IdeaName::Generated(text)) => Some(text),
+                    Err(_) => None,
+                },
+                // An advisor's idea is its character.
+                (None, Some(character)) => {
+                    self.authored_character_name_for(character, country.is_none(), None)
+                }
+            },
+        }
     }
 }
 

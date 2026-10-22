@@ -493,6 +493,7 @@ pub(super) fn present_completion(
         name: None,
         icon: None,
         icon_missing: None,
+        icon_choice: None,
     };
     event.item_token = frame
         .complete::<tables::LexicalTokens>()
@@ -522,6 +523,7 @@ pub(super) fn present_completion(
         .map(|_| info.name.clone());
     event.icon = info.icon.clone();
     event.icon_missing = info.icon_missing.clone();
+    event.icon_choice = info.icon_choice.clone();
     if let Some(content) = content.as_ref()
         && let Some((_, names)) = content
             .scoped

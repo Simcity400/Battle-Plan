@@ -35,7 +35,7 @@ use std::{collections::VecDeque, sync::atomic::Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -95,6 +95,15 @@ pub struct RaidArtwork {
     pub missing: Option<String>,
 }
 
+/// The recorded operands of a run's icon: its raid type's base sprite, specialised by the target
+/// building's template when the presentation declares that sprite. The game chooses against the
+/// whole content stack, visual mods included, so the choice is made when a reply is served.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RaidIconChoice {
+    pub template: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RaidDate {
@@ -113,8 +122,13 @@ pub struct RaidRun {
     pub province: Option<u32>,
     pub state: Option<u32>,
     pub target_name: Option<String>,
-    /// Sprite key into RaidsReply.artwork, so each PNG is returned only once.
+    /// Sprite key into RaidsReply.artwork, so each PNG is returned only once; chosen when the
+    /// reply is served, from the request's presentation ([`RaidRun::icon_choice`]).
     pub icon: Option<String>,
+    /// What the icon is chosen from, kept by preparation and taken when a reply is served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub icon_choice: Option<RaidIconChoice>,
     pub icon_missing: Option<String>,
     pub phase: i32,
     pub phase_name: Option<String>,
@@ -247,7 +261,6 @@ pub struct Content {
     names: StateNames,
     types: Vec<RaidTypeInfo>,
     warnings: Vec<String>,
-    icons: Mutex<BTreeMap<String, catalogue::Drawn<Result<String, String>>>>,
 }
 
 fn icon_key(cat: &Catalogue, kind: &RaidType, template: Option<&str>) -> Result<String, String> {
@@ -394,35 +407,100 @@ fn read_content(cat: Arc<Catalogue>) -> io::Result<Content> {
         names,
         types,
         warnings,
-        icons: Mutex::new(BTreeMap::new()),
     })
 }
 
-/// Only the Log's referenced instance sprites need pixels. Catalogue and Tally
-/// neither decode nor return artwork; a sprite shared by runs is returned once.
-fn log_artwork(content: &Content, episodes: &[RaidEpisode]) -> Vec<RaidArtwork> {
-    let keys: BTreeSet<_> = episodes
-        .iter()
-        .flat_map(|episode| &episode.runs)
-        .filter_map(|run| run.icon.as_deref())
-        .collect();
-    let mut icons = content.icons.lock().unwrap_or_else(|e| e.into_inner());
-    keys.into_iter()
-        .map(|key| {
-            let result = icons
-                .entry(key.to_owned())
-                .or_insert_with(|| catalogue::Drawn::new(|| decode_icon(&content.catalogue, key)))
-                .get();
-            if let Err(reason) = result {
-                content.catalogue.refuse(reason, key);
+/// The raid icons drawn for one selection, by raid type and target template, with the sprite
+/// key each chose; one per kind of catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct RaidArt(Option<catalogue::Redrawn<(String, Option<String>), (String, String)>>);
+
+/// Chooses and draws each Log run's icon as the request admitted under `context` shows it, from
+/// the operands preparation kept ([`RaidRun::icon_choice`]): its raid type's base sprite,
+/// specialised by the target building's template when that sprite is declared, the whole choice
+/// made and drawn against the selection as the game makes it against the whole content stack
+/// ([`catalogue::present`]). When the selection cannot, the recording's own choice is drawn and
+/// named on every reply that shows it. Only the Log draws; each sprite is returned once.
+fn present_log(
+    source: &Source,
+    context: &LoadContext,
+    content: Option<&Content>,
+    reply: &mut RaidsReply,
+) -> io::Result<()> {
+    let runs = reply.episodes.iter_mut().flat_map(|episode| &mut episode.runs);
+    let catalogues = match (content, context.content.as_ref()) {
+        (Some(content), Some(options)) => catalogue::catalogue(source, options)
+            .and_then(|admitted| Ok((admitted, catalogue::recorded_catalogue(source, options)?)))
+            .map(|catalogues| (content, catalogues)),
+        _ => Err(io::Error::other("the recorded content stack is not resolved")),
+    };
+    let (content, (admitted, recorded)) = match catalogues {
+        Ok(catalogues) => catalogues,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        // The Log stands; each icon says why it is not drawn, and the warnings count them.
+        Err(error) => {
+            let reason = format!("raid icons are unavailable: {error}");
+            let mut count = 0;
+            for run in runs {
+                if run.icon_choice.take().is_some() {
+                    run.icon_missing = Some(reason.clone());
+                    count += 1;
+                }
             }
-            RaidArtwork {
-                key: key.to_owned(),
-                image: result.as_ref().ok().cloned(),
-                missing: result.as_ref().err().cloned(),
+            if count > 0 {
+                reply.warnings.push(format!("{reason} (count: {count})"));
             }
-        })
-        .collect()
+            return dashboard_base::products::check_reply_budget(&*reply);
+        }
+    };
+    let state = source.state::<catalogue::ByCatalogue<RaidArt>>();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
+    let mut artwork = BTreeMap::new();
+    let mut failed = BTreeMap::<String, u64>::new();
+    for run in runs {
+        let Some(choice) = run.icon_choice.take() else {
+            continue;
+        };
+        let Some((token, kind)) = run
+            .raid_type
+            .as_deref()
+            .and_then(|token| Some((token.to_owned(), content.raids.get(token)?)))
+        else {
+            continue;
+        };
+        let template = choice.template;
+        let shown = drawn.get(
+            (token.clone(), template.clone()),
+            || format!("raid {token} icon"),
+            |cat| {
+                let key = icon_key(cat, kind, template.as_deref())?;
+                decode_icon(cat, &key).map(|image| (key, image))
+            },
+        );
+        match shown {
+            Ok((key, image)) => {
+                run.icon = Some(key.clone());
+                artwork.entry(key.clone()).or_insert_with(|| RaidArtwork {
+                    key: key.clone(),
+                    image: Some(image.clone()),
+                    missing: None,
+                });
+            }
+            Err(reason) => {
+                run.icon_missing = Some(reason.clone());
+                *failed.entry(reason.clone()).or_default() += 1;
+            }
+        }
+    }
+    reply.artwork = artwork.into_values().collect();
+    // Each icon left undrawn says why on its run; the warnings count them.
+    reply.warnings.extend(
+        failed
+            .into_iter()
+            .map(|(reason, count)| format!("{reason} (count: {count})")),
+    );
+    dashboard_base::products::check_reply_budget(&*reply)
 }
 
 fn target_name(
@@ -858,7 +936,9 @@ impl Scan {
             let mut province = None;
             let mut state = None;
             let mut name = None;
-            let mut icon = None;
+            // The icon is chosen when a reply is served ([`RaidRun::icon_choice`]).
+            let icon = None;
+            let mut icon_choice = None;
             let mut icon_missing = None;
             if let Some(target) = target {
                 province = if target.scope.province != 0 {
@@ -895,7 +975,10 @@ impl Scan {
                         Ok(text) => name = Some(text),
                         Err(reason) => self.refusals.note(reason, &id),
                     }
-                    if let Some(kind) = token.as_ref().and_then(|token| content.raids.get(token)) {
+                    if token
+                        .as_ref()
+                        .is_some_and(|token| content.raids.get(token).is_some())
+                    {
                         let template = lexical
                             .and_then(|rows| {
                                 rows.binary_search_by_key(&target.scope.building_type, |r| r.token)
@@ -909,12 +992,9 @@ impl Scan {
                                 target.scope.building_type
                             ));
                         } else {
-                            match icon_key(&content.catalogue, kind, template) {
-                                Ok(key) => {
-                                    icon = Some(key);
-                                }
-                                Err(reason) => icon_missing = Some(reason),
-                            }
+                            icon_choice = Some(RaidIconChoice {
+                                template: template.map(str::to_owned),
+                            });
                         }
                     } else {
                         icon_missing = Some(format!(
@@ -1023,6 +1103,7 @@ impl Scan {
                 state,
                 target_name: name,
                 icon,
+                icon_choice,
                 icon_missing,
                 phase: row.phase,
                 phase_name,
@@ -1177,11 +1258,17 @@ fn scan(
     Ok(scan.finish())
 }
 
+/// The raid content of the recording's catalogue.
+#[derive(Default)]
+struct ContentCache {
+    content: catalogue::CachedResult<Content>,
+    catalogue: Option<Arc<Catalogue>>,
+}
+
+/// Scans the test-support load keeps, by branch and catalogue.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct Cache {
-    content: catalogue::CachedResult<Content>,
-    content_catalogue: Option<Arc<Catalogue>>,
-    #[cfg(any(test, feature = "test-support"))]
     scans: VecDeque<(u64, Option<Arc<Catalogue>>, Arc<ScannedRaids>)>,
 }
 
@@ -1473,11 +1560,13 @@ fn selected_series_with_histories(
     Ok(series)
 }
 
+/// Raid types, names and target texts: recorded facts, read from the recording's own catalogue.
+/// A Log reply's icons are chosen and drawn from the request's selection ([`present_log`]).
 pub fn prepared_content(
     source: &Source,
     context: &LoadContext,
 ) -> io::Result<(Option<Arc<Content>>, Vec<String>)> {
-    let state = source.state::<Cache>();
+    let state = source.state::<ContentCache>();
     let mut cache = state.lock().unwrap_or_else(|e| e.into_inner());
     let cat = context
         .content()
@@ -1486,12 +1575,12 @@ pub fn prepared_content(
     let content = match cat {
         Ok(cat) => {
             if !cache
-                .content_catalogue
+                .catalogue
                 .as_ref()
                 .is_some_and(|c| Arc::ptr_eq(c, &cat))
             {
                 cache.content = catalogue::CachedResult::default();
-                cache.content_catalogue = Some(Arc::clone(&cat));
+                cache.catalogue = Some(Arc::clone(&cat));
             }
             Some(cache.content.get_or_init(|| read_content(cat))?)
         }
@@ -1568,9 +1657,6 @@ fn reply(
         .filter(|_| params.view == RaidsView::Log)
         .map_or(&[][..], |s| s.episodes.as_slice());
     if let Some(content) = content {
-        if params.view == RaidsView::Log {
-            reply.artwork = log_artwork(content, episodes);
-        }
         for warning in content.catalogue.refusal_lines() {
             if !reply.warnings.contains(&warning) {
                 reply.warnings.push(warning);
@@ -1684,7 +1770,7 @@ impl Product for Raids {
         } else {
             None
         };
-        reply(
+        let mut reply = reply(
             params,
             content.as_deref(),
             available,
@@ -1692,7 +1778,9 @@ impl Product for Raids {
             scanned.as_deref(),
             histories.as_deref(),
             cancelled,
-        )
+        )?;
+        present_log(source, context, content.as_deref(), &mut reply)?;
+        Ok(reply)
     }
 }
 

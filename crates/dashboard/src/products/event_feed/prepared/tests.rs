@@ -898,6 +898,7 @@ fn project_change(
             name: Some(format!("Recorded project {id}")),
             icon: None,
             icon_missing: None,
+            icon_choice: None,
         }),
         warnings: Vec::new(),
         refusals: Default::default(),

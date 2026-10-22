@@ -39,9 +39,16 @@ fn compare(
     context: &LoadContext,
 ) -> SpecialProjectsReply {
     let flag = AtomicBool::new(false);
-    let actual = complete_reply(&fixture.store, &fixture.key, params, &flag)
+    let mut actual = complete_reply(&fixture.store, &fixture.key, params, &flag)
         .unwrap()
         .unwrap();
+    // Both draw the art preparation kept as operands, as the request shows it.
+    crate::products::special_projects::present_reply(
+        source,
+        &crate::products::special_projects::ArtSource::new(source, context.content.as_ref()),
+        &mut actual,
+    )
+    .unwrap();
     let expected = SpecialProjects::load(source, params, context, &flag).unwrap();
     assert_eq!(
         serde_json::to_value(&actual).unwrap(),
@@ -2403,9 +2410,16 @@ fn project_lexical_warning_revisions_match_oracle_after_two_commits_resume_and_a
         )
         .unwrap();
     publish(&fixture, &mut prepared);
-    let actual = complete_reply(&fixture.store, &fixture.key, &params("opaque-1"), &flag)
+    let mut actual = complete_reply(&fixture.store, &fixture.key, &params("opaque-1"), &flag)
         .unwrap()
         .unwrap();
+    // Both draw the art preparation kept as operands, as the request shows it.
+    crate::products::special_projects::present_reply(
+        &appended,
+        &crate::products::special_projects::ArtSource::new(&appended, context.content.as_ref()),
+        &mut actual,
+    )
+    .unwrap();
     let expected = SpecialProjects::load(&appended, &params("opaque-1"), &context, &flag).unwrap();
     assert_reply_parity(&actual, &expected).unwrap();
     let mut reader = Reader::new(&fixture.store, &fixture.key, section(1), &flag).unwrap();

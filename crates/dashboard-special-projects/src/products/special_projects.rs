@@ -13,7 +13,7 @@ use dashboard_base::{
     products::LoadContext,
     products::MAX_PRODUCT_REPLY_BYTES,
     products::Product,
-    products::character_portraits::{portrait_png, recorded_portrait},
+    products::character_portraits::{RecordedPortrait, portrait_png, recorded_portrait},
     products::country_groups::HourSpan,
     products::country_history::{self, CountryIdentityRun},
     products::politics_content::{PoliticsContent, politics_content, recorded_politics_content},
@@ -94,8 +94,26 @@ pub struct ProjectPerson {
     pub assigned: Option<bool>,
     pub id: Option<u32>,
     pub name: Option<String>,
+    /// Drawn when a reply is served, from the request's selection ([`Self::portrait_choice`]).
     pub portrait: Option<String>,
     pub missing: Option<String>,
+    /// The dated portrait the recording selected, kept by preparation and drawn when a reply
+    /// is served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub portrait_choice: Option<RecordedPortrait>,
+}
+
+/// The recorded operands of a project's icon: its definition's authored icon, which wins even
+/// when it is missing, else its token's country-prefixed sprite when the presentation declares
+/// it, else the generic one, else the placeholder. The game chooses against the whole content
+/// stack, visual mods included, so the choice is made when a reply is served.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectIconChoice {
+    pub authored: Option<String>,
+    pub token: String,
+    pub tag: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, TS)]
@@ -104,8 +122,13 @@ pub struct ProjectPresentation {
     pub name: String,
     pub specialization: Option<String>,
     pub specialization_name: Option<String>,
+    /// Drawn when a reply is served, from the request's selection ([`Self::icon_choice`]).
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
+    /// What the icon is chosen from, kept by preparation and taken when a reply is served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub icon_choice: Option<ProjectIconChoice>,
     pub scientist: u32,
     /// Completed projects lose their program; this dates the last assignment.
     pub scientist_as_of: Option<i32>,
@@ -257,13 +280,13 @@ fn country_key(catalogue: &Catalogue, tag: &str, key: &str) -> String {
 /// A nonempty authored icon wins even if missing.
 /// The fallback uses the GFX_ prefix.
 fn icon_key(
-    project: &installed_content_core::special_projects::Project,
+    authored: Option<&str>,
     token: &str,
     tag: Option<&str>,
     has: impl Fn(&str) -> Result<bool, String>,
 ) -> Result<String, String> {
-    if let Some(icon) = project.icon.as_ref().filter(|icon| !icon.is_empty()) {
-        return Ok(icon.clone());
+    if let Some(icon) = authored.filter(|icon| !icon.is_empty()) {
+        return Ok(icon.to_owned());
     }
     let prefix = if token.starts_with("GFX_") {
         ""
@@ -295,6 +318,230 @@ fn project_icon(catalogue: &Catalogue, key: &str) -> Result<String, String> {
     let decode = *catalogue.gui_decode.as_ref().map_err(Clone::clone)?;
     catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, 0, 96)
         .map_err(|e| e.to_string())
+}
+
+/// The project icons and scientists' portraits drawn for one selection, by their recorded
+/// operands; one per kind of catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct ProjectArt {
+    icons: Option<catalogue::Redrawn<ProjectIconChoice, String>>,
+    portraits: Option<catalogue::Redrawn<RecordedPortrait, String>>,
+}
+
+/// What a reply's project art is drawn from: the politics content of the request's admitted
+/// catalogue and of the recording's own.
+pub struct ArtSource<'a> {
+    source: &'a Source,
+    content: Option<&'a dashboard_core::config::ContentOptions>,
+    loaded: std::cell::OnceCell<Result<(Arc<PoliticsContent>, Arc<PoliticsContent>), String>>,
+}
+
+impl<'a> ArtSource<'a> {
+    /// For a request admitted under `content`, loaded only when a reply holds art to draw.
+    pub fn new(
+        source: &'a Source,
+        content: Option<&'a dashboard_core::config::ContentOptions>,
+    ) -> Self {
+        Self {
+            source,
+            content,
+            loaded: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The request's admitted politics content and the recording's own, or why there is none
+    /// to draw from (no content, or content that does not load); only cancellation fails.
+    fn contents(&self) -> io::Result<&Result<(Arc<PoliticsContent>, Arc<PoliticsContent>), String>> {
+        if let Some(loaded) = self.loaded.get() {
+            return Ok(loaded);
+        }
+        let loaded = match self.content {
+            None => Err("Content is unavailable.".to_owned()),
+            Some(options) => match politics_content(self.source, options).and_then(|admitted| {
+                Ok((admitted, recorded_politics_content(self.source, options)?))
+            }) {
+                Ok(contents) => Ok(contents),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                Err(error) => Err(format!("Project artwork is unavailable: {error}")),
+            },
+        };
+        Ok(self.loaded.get_or_init(|| loaded))
+    }
+}
+
+/// Draws the art preparation kept as recorded operands ([`ProjectPresentation::icon_choice`],
+/// [`ProjectPerson::portrait_choice`], [`ProjectCompletion::icon_choice`]) as the request shows
+/// it: each project's icon chosen among its candidates and drawn, and each scientist's dated
+/// portrait drawn, against the request's admitted catalogue ([`catalogue::present`]). When the
+/// selection cannot draw one, the recording's own choice is drawn and named on every reply that
+/// shows it. Where there is no content to draw from, or it does not load, each is unavailable
+/// with why and the rest of the reply stands; content is loaded only when there is art to draw.
+/// Returns each reason a piece was left undrawn, or a person preparation could not resolve,
+/// with how many it left out, for the reply's counted warnings.
+pub fn present_art<'a>(
+    source: &Source,
+    art: &ArtSource,
+    icons: impl IntoIterator<Item = (&'a mut Option<ProjectIconChoice>, &'a mut Option<String>, &'a mut Option<String>)>,
+    people: impl IntoIterator<Item = &'a mut ProjectPerson>,
+) -> io::Result<BTreeMap<String, u64>> {
+    let mut failed = BTreeMap::<String, u64>::new();
+    let icons: Vec<_> = icons
+        .into_iter()
+        .filter(|(choice, _, _)| choice.is_some())
+        .collect();
+    let people: Vec<&mut ProjectPerson> = people.into_iter().collect();
+    // A person preparation could not resolve (a recorded reference whose character, program
+    // or tables the recording lacks) is a failure counted with the rest; no scientist
+    // assigned is a normal absence.
+    for person in &people {
+        if person.portrait_choice.is_none()
+            && person.assigned != Some(false)
+            && let Some(reason) = &person.missing
+        {
+            *failed.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    let people: Vec<_> = people
+        .into_iter()
+        .filter(|person| person.portrait_choice.is_some())
+        .collect();
+    if icons.is_empty() && people.is_empty() {
+        return Ok(failed);
+    }
+    let (admitted_content, recorded_content) = match art.contents()? {
+        Ok(contents) => contents,
+        Err(reason) => {
+            let count = icons.len() + people.len();
+            for (choice, _, missing) in icons {
+                *choice = None;
+                *missing = Some(reason.clone());
+            }
+            for person in people {
+                person.portrait_choice = None;
+                person.missing = Some(reason.clone());
+            }
+            failed.insert(reason.clone(), count as u64);
+            return Ok(failed);
+        }
+    };
+    let (admitted, recorded) = (&admitted_content.catalogue, &recorded_content.catalogue);
+    let state = source.state::<catalogue::ByCatalogue<ProjectArt>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let ProjectArt {
+        icons: drawn_icons,
+        portraits,
+    } = state.of(admitted);
+    let drawn_icons = catalogue::Redrawn::bind(drawn_icons, admitted, recorded);
+    for (choice, icon, missing) in icons {
+        let Some(choice) = choice.take() else {
+            continue;
+        };
+        let shown = drawn_icons.get(
+            choice.clone(),
+            || format!("project {} icon", choice.token),
+            |cat| {
+                let key = icon_key(
+                    choice.authored.as_deref(),
+                    &choice.token,
+                    choice.tag.as_deref(),
+                    |key| {
+                        cat.sprites
+                            .find(key)
+                            .map(|sprite| sprite.is_some())
+                            .map_err(|e| format!("Sprite {key}: {e}"))
+                    },
+                )?;
+                project_icon(cat, &key)
+            },
+        );
+        *icon = shown.as_ref().ok().cloned();
+        *missing = shown.as_ref().err().cloned();
+        if let Err(reason) = shown {
+            *failed.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    let portraits = catalogue::Redrawn::bind(portraits, admitted, recorded);
+    for person in people {
+        let Some(portrait) = person.portrait_choice.take() else {
+            continue;
+        };
+        let shown = portraits.get(
+            portrait.clone(),
+            || "scientist portrait".into(),
+            |cat| {
+                let politics = if std::ptr::eq(cat, &**admitted) {
+                    admitted_content
+                } else {
+                    recorded_content
+                };
+                portrait_png(politics, &portrait)
+            },
+        );
+        person.portrait = shown.as_ref().ok().cloned();
+        person.missing = shown.as_ref().err().cloned();
+        if let Err(reason) = shown {
+            *failed.entry(reason.clone()).or_default() += 1;
+        }
+    }
+    Ok(failed)
+}
+
+/// Counted reply warnings of [`present_art`]'s failures.
+pub fn art_warnings(failed: BTreeMap<String, u64>) -> impl Iterator<Item = String> {
+    failed
+        .into_iter()
+        .map(|(reason, count)| format!("{reason} (count: {count})"))
+}
+
+/// [`present_art`] over completed projects' icons.
+pub fn present_completions<'a>(
+    source: &Source,
+    art: &ArtSource,
+    completions: impl IntoIterator<Item = &'a mut ProjectCompletion>,
+) -> io::Result<BTreeMap<String, u64>> {
+    present_art(
+        source,
+        art,
+        completions
+            .into_iter()
+            .map(|event| (&mut event.icon_choice, &mut event.icon, &mut event.icon_missing)),
+        std::iter::empty(),
+    )
+}
+
+/// [`present_art`] over a reply: its presentations and people, its at-hour details' scientists
+/// and assignments, and the reply it is current to, each reply's failures counted among its
+/// warnings.
+pub fn present_reply(
+    source: &Source,
+    art: &ArtSource,
+    reply: &mut SpecialProjectsReply,
+) -> io::Result<()> {
+    let mut people: Vec<&mut ProjectPerson> = reply.people.iter_mut().collect();
+    if let Some(details) = &mut reply.details {
+        people.extend(details.scientists.iter_mut().map(|scientist| &mut scientist.person));
+        people.extend(
+            details
+                .programs
+                .iter_mut()
+                .flat_map(|program| program.assignments.iter_mut().flatten())
+                .map(|assignment| &mut assignment.person),
+        );
+    }
+    let failed = present_art(
+        source,
+        art,
+        reply
+            .presentations
+            .iter_mut()
+            .map(|info| (&mut info.icon_choice, &mut info.icon, &mut info.icon_missing)),
+        people,
+    )?;
+    reply.warnings.extend(art_warnings(failed));
+    if let Some(current) = &mut reply.current {
+        present_reply(source, art, current)?;
+    }
+    Ok(())
 }
 
 struct Content {
@@ -459,7 +706,7 @@ pub fn check_content(
                 ));
             }
         }
-        let key = icon_key(&definition, &token, None, |key| {
+        let key = icon_key(definition.icon.as_deref(), &token, None, |key| {
             content
                 .catalogue
                 .sprites
@@ -634,16 +881,14 @@ fn resolve_person(
             4,
             replay_data::rows::PORTRAIT_LARGE,
         );
-        let art = content.map_or_else(
-            || Err("Content is unavailable.".into()),
-            |content| portrait_png(&content.politics, &portrait),
-        );
+        // Drawn when a reply is served ([`ProjectPerson::portrait_choice`]).
         Ok(ProjectPerson {
             assigned,
             id: Some(id),
             name,
-            portrait: art.as_ref().ok().cloned(),
-            missing: art.err(),
+            portrait: None,
+            missing: content.is_none().then(|| "Content is unavailable.".into()),
+            portrait_choice: content.is_some().then_some(portrait),
         })
     })()
     .unwrap_or_else(|reason| ProjectPerson {
@@ -652,6 +897,7 @@ fn resolve_person(
         name: None,
         portrait: None,
         missing: Some(reason),
+        portrait_choice: None,
     })
 }
 
@@ -693,6 +939,7 @@ fn resolve_definition(
         specialization_name: None,
         icon: None,
         icon_missing: Some("Content is unavailable.".into()),
+        icon_choice: None,
         scientist,
         scientist_as_of,
     };
@@ -737,25 +984,13 @@ fn resolve_definition(
                     ));
                 }
             }
-            let art = icon_key(&definition, &token, Some(tag), |key| {
-                content
-                    .catalogue
-                    .sprites
-                    .find(key)
-                    .map(|sprite| sprite.is_some())
-                    .map_err(|e| format!("Sprite {key}: {e}"))
-            })
-            .and_then(|key| content.icon(&key));
-            match art {
-                Ok(icon) => {
-                    info.icon = Some(icon);
-                    info.icon_missing = None;
-                }
-                Err(reason) => {
-                    warn(reason.clone());
-                    info.icon_missing = Some(reason);
-                }
-            }
+            // Chosen and drawn when a reply is served ([`ProjectPresentation::icon_choice`]).
+            info.icon_missing = None;
+            info.icon_choice = Some(ProjectIconChoice {
+                authored: definition.icon.clone().filter(|icon| !icon.is_empty()),
+                token: token.clone(),
+                tag: Some(tag.to_owned()),
+            });
         } else {
             warn(format!("Project definition {token} is absent from content"));
             info.icon_missing = Some(format!("Definition {token} is absent from content."));
@@ -949,6 +1184,9 @@ pub struct ProjectCompletion {
     pub name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
+    /// What the icon is chosen from ([`ProjectPresentation::icon_choice`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_choice: Option<ProjectIconChoice>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1659,8 +1897,13 @@ impl Product for SpecialProjects {
         roots.sort();
         roots.dedup();
         let key = (country.branch(), params.tag.clone(), roots.clone());
+        // Kept replies hold their art as operands; each reply draws it as its request shows it.
+        let art = ArtSource::new(source, context.content.as_ref());
         if let Some((_, reply)) = cache.replies.iter().find(|(seen, _)| *seen == key) {
-            return Ok(reply.clone());
+            let mut reply = reply.clone();
+            drop(cache);
+            present_reply(source, &art, &mut reply)?;
+            return Ok(reply);
         }
         let histories =
             country_history::branch_histories(source, country.branch(), false, &[], cancelled)?;
@@ -1723,6 +1966,8 @@ impl Product for SpecialProjects {
         while cache.replies.len() > 16 {
             cache.replies.pop_front();
         }
+        drop(cache);
+        present_reply(source, &art, &mut reply)?;
         Ok(reply)
     }
 }
@@ -1731,6 +1976,217 @@ impl Product for SpecialProjects {
 mod bench;
 #[cfg(test)]
 mod history_tests;
+
+#[cfg(test)]
+mod art_tests {
+    use super::*;
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, GREEN, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+
+    fn sprites(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut text = String::from("spriteTypes = { ");
+        for (name, texture) in entries {
+            text.push_str(&format!("spriteType = {{ name = {name} textureFile = {texture} }} "));
+        }
+        text.push('}');
+        text.into_bytes()
+    }
+
+    /// A reply as preparation stores it: a project icon and a scientist's portrait, kept as the
+    /// operands they are chosen and drawn from.
+    fn stored() -> SpecialProjectsReply {
+        let (mut reply, _) = build_reply(
+            Builder::default(),
+            &CountryParams {
+                branch_id: "1".into(),
+                tag: "GER".into(),
+            },
+            false,
+            Vec::new(),
+        );
+        reply.presentations.push(ProjectPresentation {
+            name: "Project".into(),
+            specialization: None,
+            specialization_name: None,
+            icon: None,
+            icon_missing: None,
+            icon_choice: Some(ProjectIconChoice {
+                authored: None,
+                token: "mod_project".into(),
+                tag: Some("GER".into()),
+            }),
+            scientist: 0,
+            scientist_as_of: None,
+        });
+        reply.people.push(ProjectPerson {
+            assigned: Some(true),
+            id: Some(7),
+            name: None,
+            portrait: None,
+            missing: None,
+            portrait_choice: Some(RecordedPortrait::Entry {
+                kind: 0,
+                identity: b"GFX_scientist".to_vec(),
+            }),
+        });
+        reply
+    }
+
+    /// A project's icon and its scientist's portrait, kept as recorded operands, are chosen and
+    /// drawn when the reply is served: the recording's own without a selection, through the same
+    /// path; a selected mod's drawing; the choice made again when a mod declares a sprite the
+    /// recording lacks (the country-prefixed icon); and, where the selection cannot draw them, the
+    /// recording's own choice, named on every reply.
+    #[test]
+    fn project_icons_and_portraits_are_chosen_and_drawn_from_the_selection() {
+        let machine = Machine::new("project_art");
+        machine.write(
+            "common/defines/00_fixture.lua",
+            b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+              NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+        );
+        let recorded = [
+            ("GFX_mod_project", "gfx/project.png"),
+            ("GFX_scientist", "gfx/scientist.png"),
+        ];
+        machine.write("interface/projects.gfx", &sprites(&recorded));
+        machine.write("gfx/project.png", &png(RED));
+        machine.write("gfx/scientist.png", &png(RED));
+        machine.write_mod("art", "gfx/project.png", &png(BLUE));
+        machine.write_mod("art", "gfx/scientist.png", &png(BLUE));
+        machine.write_mod(
+            "country",
+            "interface/country.gfx",
+            &sprites(&[("GFX_GER_mod_project", "gfx/country.png")]),
+        );
+        machine.write_mod("country", "gfx/country.png", &png(GREEN));
+        machine.write_mod(
+            "broken",
+            "interface/projects.gfx",
+            &sprites(&[
+                ("GFX_mod_project", "gfx/broken.png"),
+                ("GFX_scientist", "gfx/broken.png"),
+            ]),
+        );
+        machine.write_mod("broken", "gfx/broken.png", b"not a png");
+        let (source, mut options) = machine.open();
+        let shown = |options: &dashboard_core::config::ContentOptions| {
+            let mut reply = stored();
+            let art = ArtSource::new(&source, Some(options));
+            let ((), line) =
+                fallback_line(|| present_reply(&source, &art, &mut reply).unwrap());
+            assert!(reply.presentations[0].icon_choice.is_none());
+            assert!(reply.people[0].portrait_choice.is_none());
+            (
+                first_pixel(reply.presentations[0].icon.as_deref().unwrap()),
+                first_pixel(reply.people[0].portrait.as_deref().unwrap()),
+                line,
+            )
+        };
+        select(&source, &mut options, &[]);
+        let renders = dashboard_base::catalogue::presented;
+        let before = renders();
+        assert_eq!(shown(&options), (RED, RED, None));
+        assert_eq!(renders() - before, 2, "one render per returned icon and portrait");
+        let before = renders();
+        assert_eq!(shown(&options), (RED, RED, None));
+        assert_eq!(renders() - before, 0, "a second reply only hits the memo");
+        select(&source, &mut options, &["art"]);
+        assert_eq!(shown(&options), (BLUE, BLUE, None));
+        select(&source, &mut options, &["country"]);
+        assert_eq!(shown(&options), (GREEN, RED, None), "the country's own icon is chosen");
+        select(&source, &mut options, &["broken"]);
+        for _ in 0..2 {
+            let (icon, portrait, line) = shown(&options);
+            assert_eq!((icon, portrait), (RED, RED));
+            let line = line.unwrap();
+            assert!(line.contains("project mod_project icon"), "{line}");
+            assert!(line.contains("scientist portrait"), "{line}");
+        }
+        // Without content nothing can be drawn, and each says so.
+        let mut reply = stored();
+        present_reply(&source, &ArtSource::new(&source, None), &mut reply).unwrap();
+        assert!(reply.presentations[0].icon_missing.is_some());
+        assert!(reply.people[0].missing.is_some());
+    }
+
+    /// A person preparation could not resolve is counted among the reply's warnings by its
+    /// reason; a project with no scientist assigned is a normal absence and counts nothing.
+    #[test]
+    fn unresolved_people_are_counted_and_unassigned_ones_are_not() {
+        let machine = Machine::new("project_people_counted");
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &[]);
+        let mut reply = stored();
+        reply.presentations.clear();
+        reply.people = vec![
+            ProjectPerson {
+                assigned: Some(true),
+                id: None,
+                name: None,
+                portrait: None,
+                missing: Some("Character 9 was not recorded.".into()),
+                portrait_choice: None,
+            },
+            ProjectPerson {
+                assigned: Some(false),
+                id: None,
+                name: None,
+                portrait: None,
+                missing: Some("No scientist assigned.".into()),
+                portrait_choice: None,
+            },
+        ];
+        let before = reply.warnings.len();
+        present_reply(&source, &ArtSource::new(&source, Some(&options)), &mut reply).unwrap();
+        assert_eq!(
+            reply.warnings[before..],
+            ["Character 9 was not recorded. (count: 1)".to_owned()]
+        );
+    }
+
+    /// Art content is loaded only for a reply holding art, and content that does not load
+    /// leaves each piece unavailable with why while the rest of the reply stands.
+    #[test]
+    fn art_content_is_loaded_only_when_needed_and_its_failure_keeps_the_reply() {
+        let machine = Machine::new("project_art_lazily");
+        let (source, mut options) = machine.open();
+        select(&source, &mut options, &[]);
+        let art = ArtSource::new(&source, Some(&options));
+        let mut bare = stored();
+        bare.presentations.clear();
+        bare.people.clear();
+        present_reply(&source, &art, &mut bare).unwrap();
+        assert!(art.loaded.get().is_none(), "nothing to draw loads nothing");
+        let failing = ArtSource::new(&source, Some(&options));
+        assert!(failing
+            .loaded
+            .set(Err("Project artwork is unavailable: fixture".into()))
+            .is_ok());
+        let mut reply = stored();
+        let presentations = reply.presentations.len();
+        present_reply(&source, &failing, &mut reply).unwrap();
+        assert_eq!(reply.presentations.len(), presentations);
+        assert_eq!(
+            reply.presentations[0].icon_missing.as_deref(),
+            Some("Project artwork is unavailable: fixture")
+        );
+        assert_eq!(
+            reply.people[0].missing.as_deref(),
+            Some("Project artwork is unavailable: fixture")
+        );
+        assert!(reply.presentations[0].icon_choice.is_none());
+        let pieces = reply.presentations.len() + reply.people.len();
+        assert!(
+            reply.warnings.contains(&format!(
+                "Project artwork is unavailable: fixture (count: {pieces})"
+            )),
+            "{:?}",
+            reply.warnings
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2301,7 +2757,7 @@ mod tests {
         );
         let sprites = installed_content_gfx::gfx::read(&layers).unwrap();
         let key = icon_key(
-            &catalog.projects["base_project"],
+            catalog.projects["base_project"].icon.as_deref(),
             "base_project",
             Some("opaque tag"),
             |key| {
@@ -2426,21 +2882,21 @@ mod tests {
     fn icon_lookup_does_not_mask_a_missing_authored_icon() {
         let mut project = installed_content_core::special_projects::Project::default();
         assert_eq!(
-            icon_key(&project, "mod_project", Some("tag with spaces"), |key| Ok(
+            icon_key(project.icon.as_deref(), "mod_project", Some("tag with spaces"), |key| Ok(
                 key == "GFX_tag with spaces_mod_project"
             ))
             .unwrap(),
             "GFX_tag with spaces_mod_project"
         );
         assert_eq!(
-            icon_key(&project, "mod_project", Some("X"), |key| Ok(
+            icon_key(project.icon.as_deref(), "mod_project", Some("X"), |key| Ok(
                 key == "GFX_mod_project"
             ))
             .unwrap(),
             "GFX_mod_project"
         );
         assert_eq!(
-            icon_key(&project, "mod_project", None, |key| {
+            icon_key(project.icon.as_deref(), "mod_project", None, |key| {
                 assert_eq!(key, "GFX_mod_project");
                 Ok(true)
             })
@@ -2449,7 +2905,7 @@ mod tests {
         );
         project.icon = Some("GFX_missing_mod_icon".into());
         assert_eq!(
-            icon_key(&project, "mod_project", Some("X"), |_| Ok(true)).unwrap(),
+            icon_key(project.icon.as_deref(), "mod_project", Some("X"), |_| Ok(true)).unwrap(),
             "GFX_missing_mod_icon"
         );
     }

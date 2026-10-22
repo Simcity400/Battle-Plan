@@ -589,21 +589,31 @@ fn completion_projection_uses_mod_override_name_and_native_art_path() {
     let event = &feed.events[0];
     assert_eq!(event.name.as_deref(), Some("Mod completion name"));
     assert_eq!(event.name.as_ref(), Some(&country.presentations[0].name));
-    assert_eq!(event.icon, country.presentations[0].icon);
+    // The completion keeps its presentation's icon choice, drawn when a reply is served.
+    assert_eq!(event.icon_choice, country.presentations[0].icon_choice);
+    assert!(event.icon_missing.is_none(), "{:?}", event.icon_missing);
     // The mod replaces the same relative file. A separately named mod.txt
     // would read before test.txt, whose later body restores base art while
     // retaining the narrative.
-    assert!(event.icon_missing.is_none(), "{:?}", event.icon_missing);
-    assert!(
-        event
-            .icon
-            .as_deref()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
-    );
+    let choice = event.icon_choice.as_ref().unwrap();
+    let key = icon_key(
+        choice.authored.as_deref(),
+        &choice.token,
+        choice.tag.as_deref(),
+        |key| {
+            Ok(content
+                .catalogue
+                .sprites
+                .find(key)
+                .map_err(|e| e.to_string())?
+                .is_some())
+        },
+    )
+    .unwrap();
+    let icon = project_icon(&content.catalogue, &key).unwrap();
+    assert!(icon.starts_with("data:image/png;base64,"));
     assert_eq!(
-        dashboard_text::catalogue::texture_tests::from_url(event.icon.as_deref().unwrap()).pixels
-            [0..4],
+        dashboard_text::catalogue::texture_tests::from_url(&icon).pixels[0..4],
         [41, 73, 99, 255]
     );
 }

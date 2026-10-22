@@ -459,7 +459,7 @@ fn display_field(payment: &Payment) -> io::Result<String> {
         &payment.item.group_id,
         &payment.item.tooltip_token,
         &payment.item.action,
-        &payment.item.icon,
+        &payment.item.icon_art,
         &payment.item.unknown,
     ))?)
 }

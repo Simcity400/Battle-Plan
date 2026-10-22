@@ -15,7 +15,83 @@ use installed_content_localisation::localisation::Argument;
 use replay_data::{rows::CharacterPortraitRow, rows::OperativeMembershipRow, rows::PORTRAIT_LARGE};
 use std::{io, sync::Arc};
 
-type IconCache = catalogue::KeyedResults<(bool, String, u32), String>;
+/// Art an operative row shows, kept by preparation as what it is drawn from: the dated portrait
+/// the recording selected, or an assignment's sprite (a mission's text icon strip at its frame,
+/// or an operation's map icon). It is drawn when a reply is served ([`draw_art`]).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum OperativeArt {
+    Portrait(character_portraits::RecordedPortrait),
+    Icon {
+        mission: bool,
+        name: String,
+        frame: u32,
+    },
+}
+
+impl OperativeArt {
+    /// The key a roster's artwork dictionary keeps it by.
+    pub fn key(&self) -> String {
+        serde_json::to_string(self).expect("operative art serialises")
+    }
+
+    pub fn of_key(key: &str) -> Option<Self> {
+        serde_json::from_str(key).ok()
+    }
+
+    /// What a reply names when it draws this from the recording.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Portrait(_) => "operative portrait".into(),
+            Self::Icon { name, .. } => format!("operative icon {name}"),
+        }
+    }
+}
+
+/// `art` drawn through `catalogue`, whose politics content is `politics`.
+pub fn draw_art(
+    catalogue: &Catalogue,
+    politics: &politics_content::PoliticsContent,
+    art: &OperativeArt,
+) -> Result<String, String> {
+    match art {
+        OperativeArt::Portrait(portrait) => character_portraits::portrait_png(politics, portrait),
+        OperativeArt::Icon {
+            mission,
+            name,
+            frame,
+        } => icon_png(catalogue, *mission, name, *frame),
+    }
+}
+
+/// A mission's text icon strip at `frame`, or an operation's map icon, drawn through `catalogue`.
+fn icon_png(catalogue: &Catalogue, mission: bool, name: &str, frame: u32) -> Result<String, String> {
+    let context = if mission {
+        format!("Mission text icon {name}")
+    } else {
+        format!("Operative icon {name}")
+    };
+    let sprite = if mission {
+        catalogue::text_icon_sprite(&catalogue.sprites, name)
+    } else {
+        catalogue::created_gui_sprite(&catalogue.sprites, name)
+    }
+    .map_err(|error| format!("{context}: {error}"))?;
+    let decode = *catalogue
+        .gui_decode
+        .as_ref()
+        .map_err(|why| format!("{context}: {why}"))?;
+    catalogue::sprite_frame_png(&catalogue.content.layers, sprite, decode, frame, 96).map_err(
+        |error| {
+            let context = if mission {
+                format!("{context} frame{}", frame + 1)
+            } else {
+                context
+            };
+            format!("{context}: {error}")
+        },
+    )
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum AssignmentKey {
     Mission(u32),
@@ -46,7 +122,6 @@ pub struct OperativeContent {
     capture_duration_days: Result<i32, String>,
     pub warnings: Vec<String>,
     preparation_findings: Vec<dashboard_core::findings::Finding>,
-    icons: IconCache,
     assignments: catalogue::KeyedResults<AssignmentKey, FixedAssignment>,
 }
 
@@ -54,8 +129,8 @@ pub struct OperativeContent {
 pub struct Assignment {
     pub name: Option<String>,
     pub missing: Option<String>,
-    pub icon: Option<String>,
-    pub icon_missing: Option<String>,
+    /// The assignment's sprite, drawn when a reply is served ([`draw_art`]).
+    pub icon: Option<OperativeArt>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -145,7 +220,6 @@ impl OperativeContent {
             capture_duration_days,
             warnings,
             preparation_findings,
-            icons: IconCache::default(),
             assignments: Default::default(),
         })
     }
@@ -179,10 +253,11 @@ impl OperativeContent {
                 .map(|kind| (format!("cooldown {kind}"), self.cooldown_name(kind))),
         );
         for (subject, assignment) in assignments {
-            for reason in [assignment.missing, assignment.icon_missing]
-                .into_iter()
-                .flatten()
-            {
+            let icon = assignment
+                .icon
+                .as_ref()
+                .and_then(|art| draw_art(&self.catalogue, &self.politics, art).err());
+            for reason in [assignment.missing, icon].into_iter().flatten() {
                 findings.push(Finding::new(Kind::Refused, &subject, reason));
             }
         }
@@ -193,14 +268,20 @@ impl OperativeContent {
     /// Portrait selection uses character role 4, large size 1 for category 3.
     /// Without that link it uses the leader's own portrait, which this
     /// recording does not hold.
+    /// The portrait the recording selected, drawn when a reply is served ([`draw_art`]); why
+    /// none can be drawn when the recording selected none.
     pub fn portrait(
         &self,
         character: u32,
         holders: Option<&[CharacterPortraitRow]>,
-    ) -> Result<String, String> {
-        let selected =
-            character_portraits::recorded_portrait(holders, character, 4, PORTRAIT_LARGE);
-        character_portraits::portrait_png(&self.politics, &selected)
+    ) -> Result<OperativeArt, String> {
+        match character_portraits::recorded_portrait(holders, character, 4, PORTRAIT_LARGE) {
+            selected @ character_portraits::RecordedPortrait::Entry { .. } => {
+                Ok(OperativeArt::Portrait(selected))
+            }
+            other => Err(character_portraits::portrait_png(&self.politics, &other)
+                .expect_err("only a recorded entry is drawn")),
+        }
     }
 
     pub fn experience(&self, skill: Option<i32>, raw: i64) -> Experience {
@@ -446,44 +527,14 @@ impl OperativeContent {
 
     fn present_fixed(&self, fixed: &FixedAssignment) -> Assignment {
         let mut value = fixed.value.clone();
-        if let Some(key) = &fixed.icon {
-            match self.icons.get_or_init(key, |(mission, name, frame)| {
-                let context = if *mission {
-                    format!("Mission text icon {name}")
-                } else {
-                    format!("Operative icon {name}")
-                };
-                let sprite = if *mission {
-                    catalogue::text_icon_sprite(&self.catalogue.sprites, name)
-                } else {
-                    catalogue::created_gui_sprite(&self.catalogue.sprites, name)
-                }
-                .map_err(|error| io::Error::new(error.kind(), format!("{context}: {error}")))?;
-                let decode = *self
-                    .catalogue
-                    .gui_decode
-                    .as_ref()
-                    .map_err(|why| dashboard_core::invalid(format!("{context}: {why}")))?;
-                catalogue::sprite_frame_png(
-                    &self.catalogue.content.layers,
-                    sprite,
-                    decode,
-                    *frame,
-                    96,
-                )
-                .map_err(|error| {
-                    let context = if *mission {
-                        format!("{context} frame{}", *frame + 1)
-                    } else {
-                        context
-                    };
-                    io::Error::new(error.kind(), format!("{context}: {error}"))
-                })
-            }) {
-                Ok(icon) => value.icon = Some(icon.as_ref().clone()),
-                Err(error) => value.icon_missing = Some(error.to_string()),
-            }
-        }
+        value.icon = fixed
+            .icon
+            .clone()
+            .map(|(mission, name, frame)| OperativeArt::Icon {
+                mission,
+                name,
+                frame,
+            });
         value
     }
 }
@@ -660,7 +711,6 @@ pub fn test_content_from_catalogue(catalogue: Arc<Catalogue>) -> Arc<OperativeCo
         capture_duration_days,
         warnings: Vec::new(),
         preparation_findings: Vec::new(),
-        icons: IconCache::default(),
         assignments: Default::default(),
     })
 }

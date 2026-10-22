@@ -381,6 +381,11 @@ pub fn query(
             data.as_object_mut()
                 .expect("screen reply")
                 .remove("sampledFrom");
+            // The screen cache keeps the roster's artwork as descriptors; this request draws
+            // them as its own selection shows them.
+            if product == "operatives-roster" {
+                operatives_roster::present_artwork_json(source, context, data)?;
+            }
         }
     }
     let mut data = data.unwrap_or_else(|| empty(product, branch));

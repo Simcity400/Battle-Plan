@@ -257,6 +257,8 @@ pub fn present<T>(
     recorded: &Catalogue,
     draw: impl Fn(&Catalogue) -> Result<T, String>,
 ) -> Drawn<Result<T, String>> {
+    #[cfg(any(test, feature = "test-support"))]
+    PRESENTED.with(|count| count.set(count.get() + 1));
     Drawn::new(|| {
         if std::ptr::eq(admitted, recorded) {
             return draw(recorded);
@@ -329,6 +331,18 @@ mod present_tests {
         assert_eq!(*drawn.get(), Ok(8));
         assert!(line.is_some_and(|line| line.contains("kept selector note")));
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static PRESENTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many art operations [`present`] has drawn on this thread: what a test counts a reply's
+/// renders by, memo hits drawing none.
+#[cfg(any(test, feature = "test-support"))]
+pub fn presented() -> usize {
+    PRESENTED.with(std::cell::Cell::get)
 }
 
 /// What a family's redraw keeps for one selection: the request's admitted catalogue, the

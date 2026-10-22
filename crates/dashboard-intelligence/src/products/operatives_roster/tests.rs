@@ -1145,6 +1145,146 @@ fn operatives_roster_five_thousand_countries_have_sparse_complete_histories_and_
     assert!(budget.add(&"oversize roster").is_err());
 }
 
+/// The roster's artwork dictionary, kept as descriptors, is drawn when a reply is served: the
+/// recording's own without a selection, the selection's with one, each descriptor once per
+/// source, a second reply hitting only the memo.
+#[test]
+fn roster_artwork_is_drawn_from_the_selection_once_per_descriptor() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    let machine = Machine::new("roster_art");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, \
+          NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write(
+        "interface/operatives.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_operative textureFile = gfx/operative.png } }",
+    );
+    machine.write("gfx/operative.png", &png(RED));
+    machine.write_mod("art", "gfx/operative.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    let portrait = super::super::operative_content::OperativeArt::Portrait(
+        dashboard_base::products::character_portraits::RecordedPortrait::Entry {
+            kind: 0,
+            identity: b"GFX_operative".to_vec(),
+        },
+    );
+    let stored = || OperativeRosterReply {
+        branch_id: "1".into(),
+        countries: Vec::new(),
+        operations: Vec::new(),
+        agency_absent: Vec::new(),
+        artwork: vec![portrait.key()],
+        reasons: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let renders = dashboard_base::catalogue::presented;
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let mut reply = stored();
+        present_artwork(
+            &source,
+            &LoadContext {
+                content: Some(options.clone()),
+            },
+            &mut reply,
+        )
+        .unwrap();
+        first_pixel(&reply.artwork[0])
+    };
+    select(&source, &mut options, &[]);
+    let before = renders();
+    assert_eq!(shown(&options), RED);
+    assert_eq!(renders() - before, 1);
+    let before = renders();
+    assert_eq!(shown(&options), RED);
+    assert_eq!(renders() - before, 0, "a second reply only hits the memo");
+    select(&source, &mut options, &["art"]);
+    assert_eq!(shown(&options), BLUE);
+}
+
+/// A day's first view is kept by its screen cache with the artwork as descriptors, whatever the
+/// presentation: the same kept reply is drawn as each request's selection shows it, and a
+/// descriptor neither catalogue draws leaves the run that shows it without it, with why.
+#[test]
+fn a_kept_first_view_is_drawn_as_each_selection_shows_it() {
+    use dashboard_base::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    use super::super::operative_content::OperativeArt;
+    use dashboard_base::products::character_portraits::RecordedPortrait;
+    let machine = Machine::new("roster_first_view_art");
+    machine.write(
+        "common/defines/00_fixture.lua",
+        b"NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 },           NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"fixture_officers\" } } }",
+    );
+    machine.write(
+        "interface/operatives.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_operative textureFile = gfx/operative.png } }",
+    );
+    machine.write("gfx/operative.png", &png(RED));
+    machine.write_mod("art", "gfx/operative.png", &png(BLUE));
+    let (source, mut options) = machine.open();
+    let portrait = |identity: &[u8]| {
+        OperativeArt::Portrait(RecordedPortrait::Entry {
+            kind: 0,
+            identity: identity.to_vec(),
+        })
+        .key()
+    };
+    let kept = serde_json::json!({
+        "artwork": [portrait(b"GFX_undeclared"), portrait(b"GFX_operative")],
+        "reasons": ["held"],
+        "warnings": [],
+        "countries": [{ "tag": "GER", "operatives": [{ "runs": [
+            { "value": { "portrait": 1, "portraitMissing": null } },
+            { "value": { "portrait": 0, "portraitMissing": null } },
+        ] }] }],
+    });
+    let shown = |context: &LoadContext| {
+        let mut data = kept.clone();
+        present_artwork_json(&source, context, &mut data).unwrap();
+        data
+    };
+    let selected = |options: &dashboard_core::config::ContentOptions| LoadContext {
+        content: Some(options.clone()),
+    };
+    // Every dictionary entry the reply keeps is a picture, and its references still resolve.
+    let pictures = |data: &serde_json::Value| {
+        data["artwork"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.as_str().unwrap().starts_with("data:image/png;base64,"))
+    };
+    select(&source, &mut options, &[]);
+    let data = shown(&selected(&options));
+    assert!(pictures(&data), "{data}");
+    assert_eq!(data["artwork"].as_array().unwrap().len(), 1);
+    let runs = &data["countries"][0]["operatives"][0]["runs"];
+    assert_eq!(runs[0]["value"]["portrait"], 0, "remapped to the kept picture");
+    assert_eq!(first_pixel(data["artwork"][0].as_str().unwrap()), RED);
+    assert!(runs[1]["value"]["portrait"].is_null());
+    let missing = runs[1]["value"]["portraitMissing"].as_u64().unwrap() as usize;
+    assert_eq!(missing, 1, "the held reason keeps its index");
+    assert!(data["reasons"][missing].as_str().unwrap().contains("GFX_undeclared"), "{data}");
+    let warning = data["warnings"][0].as_str().unwrap();
+    assert!(warning.contains("GFX_undeclared") && warning.ends_with("(count: 1)"), "{warning}");
+    select(&source, &mut options, &["art"]);
+    assert_eq!(
+        first_pixel(shown(&selected(&options))["artwork"][0].as_str().unwrap()),
+        BLUE
+    );
+    // Without art content every picture is left out, each run says why and the warnings
+    // count them; the reply still holds only pictures.
+    let data = shown(&LoadContext { content: None });
+    assert!(data["artwork"].as_array().unwrap().is_empty());
+    assert!(pictures(&data));
+    for run in data["countries"][0]["operatives"][0]["runs"].as_array().unwrap() {
+        assert!(run["value"]["portrait"].is_null());
+        assert!(run["value"]["portraitMissing"].is_u64());
+    }
+    assert!(data["warnings"][0].as_str().unwrap().ends_with("(count: 2)"));
+}
+
 #[test]
 fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_reads_merge() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1279,7 +1419,16 @@ fn operatives_roster_cross_block_content_artwork_is_interned_and_equal_daily_rea
             )
     );
     assert!(!reply.artwork.is_empty());
-    assert!(reply.artwork.iter().any(|image| image.len() > 20_000));
+    // The dictionary keeps what each image is drawn from; a reply draws it when served.
+    let art: Vec<_> = reply
+        .artwork
+        .iter()
+        .map(|key| super::super::operative_content::OperativeArt::of_key(key).unwrap())
+        .collect();
+    assert!(art.iter().any(|art| matches!(
+        art,
+        super::super::operative_content::OperativeArt::Portrait(_)
+    )));
     assert!(
         country
             .operatives

@@ -1633,7 +1633,6 @@ fn balance_sentences_resolve_each_spending_item_once_before_upkeep_grouping() {
             &stored.ledger(),
             &stored.facts,
             None,
-            &mut BTreeMap::new(),
             mutation_id(&stored.ledger()),
             None,
         );

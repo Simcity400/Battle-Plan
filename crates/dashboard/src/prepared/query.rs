@@ -1635,7 +1635,10 @@ fn query_data(
             // episodes end at its last hour, and name the hours after pending.
             let prefix =
                 super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
-            let mut data = crate::products::special_projects::prepared::query(
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let mut reply = crate::products::special_projects::prepared::query(
                 request.params.clone(),
                 &store,
                 &key,
@@ -1646,30 +1649,24 @@ fn query_data(
                     !prefix.coverage.complete && hour > prefix.coverage.last_hour
                 })
             {
-                data["current"] = serde_json::to_value(
+                reply.current = Some(Box::new(
                     crate::products::special_projects::prepared::frame_reply(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        &params,
-                        hour,
-                        cancelled,
+                        source, &context, &params, hour, cancelled,
                     )?,
-                )?;
+                ));
             }
             if let Some(hour) = params.hour {
-                data["details"] =
-                    serde_json::to_value(crate::products::special_projects::details_at_hour(
-                        source,
-                        &crate::products::LoadContext {
-                            content: content.cloned(),
-                        },
-                        &params,
-                        hour,
-                        cancelled,
-                    )?)?;
+                reply.details = Some(crate::products::special_projects::details_at_hour(
+                    source, &context, &params, hour, cancelled,
+                )?);
             }
+            // The art preparation kept as operands, drawn as this request shows it.
+            crate::products::special_projects::present_reply(
+                source,
+                &crate::products::special_projects::ArtSource::new(source, content),
+                &mut reply,
+            )?;
+            let mut data = serde_json::to_value(reply)?;
             if let Some(prefix) = prefix {
                 prefix.mark(&mut data)?;
             } else {
@@ -1778,6 +1775,8 @@ fn query_data(
             let mut data = crate::products::politics_ledger::prepared::query(
                 &params, &store, &key, cancelled,
             )?;
+            // The icons preparation kept as recipes, drawn as this request shows them.
+            crate::products::politics_ledger::present_icons(source, content, &mut data)?;
             prefix.mark(&mut data)?;
             data
         }

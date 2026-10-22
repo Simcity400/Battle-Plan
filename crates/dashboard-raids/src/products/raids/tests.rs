@@ -692,7 +692,7 @@ fn raids_shared_driver_binds_success_and_failure_before_observation() {
             let second = prepared_content(&source, &context);
             assert_eq!(second.is_ok(), complete_content);
             let content = binding.ok().and_then(|(content, _)| content);
-            let loads = || source.state::<Cache>().lock().unwrap().content.loads();
+            let loads = || source.state::<ContentCache>().lock().unwrap().content.loads();
             assert_eq!(loads(), 1, "configuration caches the named failure too");
             let mut state = prepared::Prepared::default();
             let format = source.replay_ref().format;
@@ -1005,19 +1005,10 @@ fn raids_modded_types_use_content_names_and_refused_forms_are_named_and_counted(
     assert_eq!(run.raid_type.as_deref(), Some("mod_raid"));
     assert_eq!(run.phase_name.as_deref(), Some("Mod preparing"));
     assert_eq!(run.target_name.as_deref(), Some("Recorded state"));
-    assert_eq!(run.icon.as_deref(), Some("GFX_mod"));
-    assert!(
-        content.icons.lock().unwrap().is_empty(),
-        "scanning never decodes artwork"
-    );
-    let artwork = log_artwork(&content, &result.episodes);
-    assert_eq!(artwork.len(), 1);
-    assert!(
-        artwork[0]
-            .missing
-            .as_deref()
-            .is_some_and(|reason| reason.contains("raid sprite GFX_mod"))
-    );
+    // Preparation keeps what the icon is chosen from; the choice and its pixels are made when a
+    // reply is served, from the request's selection.
+    assert_eq!(run.icon, None);
+    assert_eq!(run.icon_choice, Some(RaidIconChoice { template: None }));
 }
 
 #[test]
@@ -1630,39 +1621,130 @@ fn raids_ended_victim_freezes_at_first_phase_five_read_including_unknown() {
     );
 }
 
+/// A Log reply chooses and draws its runs' icons from the request's selection: the recording's
+/// own without one, a selected mod's drawing, and, where the selection cannot draw the chosen
+/// sprite, the recording's own choice, named on every reply. A sprite shared by runs is returned
+/// once, and only the Log draws.
 #[test]
-fn raids_log_artwork_is_lazy_unique_and_limited_to_used_episode_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (_scratch, content) = mod_content();
-    assert!(content.icons.lock().unwrap().is_empty());
-    let mut scan = Scan::new();
-    scan.observe(
-        &frame(100, vec![raid(1, 2, 0), raid(2, 2, 0)]),
-        Some(&content),
-    )
-    .unwrap();
-    let result = scan.finish();
-    assert!(
-        content.icons.lock().unwrap().is_empty(),
-        "Tally scan never decodes pixels"
+fn raid_log_icons_are_chosen_and_drawn_from_the_selection() {
+    use dashboard_base::test_fixtures::visual_mods::{
+        BLUE, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let machine = Machine::new("raid_icons");
+    machine.write("common/buildings/buildings.txt", b"buildings={mod_factory={}}");
+    machine.write("common/raids/types.txt", b"types={mod_raid={custom_map_icon=GFX_mod}}");
+    machine.write(
+        "interface/raids.gfx",
+        b"spriteTypes={spriteType={name=GFX_mod textureFile=gfx/raid.png}}",
     );
-    {
-        let mut icons = content.icons.lock().unwrap();
-        icons.insert(
-            "GFX_mod".into(),
-            catalogue::Drawn::new(|| Ok("used-image".into())),
-        );
-        icons.insert(
-            "GFX_unused".into(),
-            catalogue::Drawn::new(|| Ok("unused-image".into())),
+    machine.write("gfx/raid.png", &png(RED));
+    machine.write_mod("art", "gfx/raid.png", &png(BLUE));
+    machine.write_mod(
+        "broken",
+        "interface/raids.gfx",
+        b"spriteTypes={spriteType={name=GFX_mod textureFile=gfx/broken.png}}",
+    );
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) =
+        machine.open_frames(vec![frame(100, vec![raid(1, 2, 0), raid(2, 2, 0)])]);
+    let params = |view| RaidsParams {
+        branch_id: "1".into(),
+        view,
+        tags: vec![],
+        top: None,
+    };
+    let log = |options: &dashboard_core::config::ContentOptions| {
+        fallback_line(|| {
+            Raids::load(
+                &source,
+                &params(RaidsView::Log),
+                &LoadContext {
+                    content: Some(options.clone()),
+                },
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+        })
+    };
+    let drawn = |reply: &RaidsReply| {
+        assert_eq!(reply.artwork.len(), 1, "a shared sprite is returned once");
+        let runs: Vec<_> = reply.episodes.iter().flat_map(|e| &e.runs).collect();
+        assert!(runs.iter().all(|run| run.icon.as_deref() == Some("GFX_mod")));
+        assert!(runs.iter().all(|run| run.icon_choice.is_none()));
+        first_pixel(reply.artwork[0].image.as_deref().unwrap())
+    };
+    select(&source, &mut options, &[]);
+    let renders = dashboard_base::catalogue::presented;
+    let before = renders();
+    let (reply, line) = log(&options);
+    assert_eq!(renders() - before, 1, "one render per distinct returned icon");
+    assert_eq!((drawn(&reply), line), (RED, None));
+    let before = renders();
+    log(&options);
+    assert_eq!(renders() - before, 0, "a second reply only hits the memo");
+    select(&source, &mut options, &["art"]);
+    let (reply, line) = log(&options);
+    assert_eq!((drawn(&reply), line), (BLUE, None));
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (reply, line) = log(&options);
+        assert_eq!(drawn(&reply), RED);
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("raid mod_raid icon")),
+            "{line:?}"
         );
     }
-    let art = log_artwork(&content, &result.episodes);
-    assert_eq!(art.len(), 1);
-    assert_eq!(art[0].key, "GFX_mod");
-    assert_eq!(art[0].image.as_deref(), Some("used-image"));
-    assert!(log_artwork(&content, &[]).is_empty());
+    let before = renders();
+    let tally = Raids::load(
+        &source,
+        &params(RaidsView::Tally),
+        &LoadContext {
+            content: Some(options.clone()),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(tally.artwork.is_empty(), "only the Log draws");
+    assert_eq!(renders() - before, 0);
+}
+
+/// A raid icon neither the selection nor the recording can draw says why on each run that
+/// shows it, and the reply's warnings count the runs left without it.
+#[test]
+fn undrawn_raid_icons_are_counted_in_the_warnings() {
+    use dashboard_base::test_fixtures::visual_mods::Machine;
+    let machine = Machine::new("raid_icons_undrawn");
+    machine.write("common/buildings/buildings.txt", b"buildings={mod_factory={}}");
+    machine.write("common/raids/types.txt", b"types={mod_raid={custom_map_icon=GFX_mod}}");
+    machine.write(
+        "interface/raids.gfx",
+        b"spriteTypes={spriteType={name=GFX_mod textureFile=gfx/raid.png}}",
+    );
+    machine.write("gfx/raid.png", b"not a png");
+    let (source, options) =
+        machine.open_frames(vec![frame(100, vec![raid(1, 2, 0), raid(2, 2, 0)])]);
+    let reply = Raids::load(
+        &source,
+        &RaidsParams {
+            branch_id: "1".into(),
+            view: RaidsView::Log,
+            tags: vec![],
+            top: None,
+        },
+        &LoadContext {
+            content: Some(options),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let runs: Vec<_> = reply.episodes.iter().flat_map(|e| &e.runs).collect();
+    assert!(runs.iter().all(|run| run.icon.is_none() && run.icon_missing.is_some()));
+    let reason = runs[0].icon_missing.clone().unwrap();
+    assert!(
+        reply.warnings.contains(&format!("{reason} (count: {})", runs.len())),
+        "{:?}",
+        reply.warnings
+    );
 }
 
 #[test]

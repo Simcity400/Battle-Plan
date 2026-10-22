@@ -2150,17 +2150,18 @@ fn complete_reply(
     Ok(Some(reply))
 }
 
+/// The prepared reply, its art kept as the operands preparation recorded
+/// ([`super::present_reply`] draws it).
 pub fn query(
     params: serde_json::Value,
     store: &store::Store,
     source_key: &store::SourceKey,
     cancelled: &AtomicBool,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<SpecialProjectsReply> {
     let params: SpecialProjectsParams = serde_json::from_value(params)?;
     SpecialProjects::validate(&params).map_err(dashboard_core::invalid)?;
-    let reply = complete_reply(store, source_key, &params, cancelled)?
-        .unwrap_or_else(|| build_reply(Builder::default(), &params.country(), false, Vec::new()).0);
-    serde_json::to_value(reply).map_err(Into::into)
+    Ok(complete_reply(store, source_key, &params, cancelled)?
+        .unwrap_or_else(|| build_reply(Builder::default(), &params.country(), false, Vec::new()).0))
 }
 
 /// Current cards use preparation's observation, presentation and episode

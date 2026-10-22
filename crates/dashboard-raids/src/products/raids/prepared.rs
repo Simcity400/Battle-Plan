@@ -493,7 +493,7 @@ pub fn query(
         prefix.sampled(&[span]);
     }
     check_cancel(cancelled)?;
-    let mut data = serde_json::to_value(reply(
+    let mut reply = reply(
         &params,
         content.as_deref(),
         available,
@@ -501,7 +501,9 @@ pub fn query(
         scanned.as_ref(),
         histories.as_ref(),
         cancelled,
-    )?)?;
+    )?;
+    super::present_log(source, context, content.as_deref(), &mut reply)?;
+    let mut data = serde_json::to_value(reply)?;
     prefix.mark_coverage(&mut data, "coverage")?;
     if let Some(exact) = exact {
         data["warningsComplete"] = serde_json::Value::Bool(false);

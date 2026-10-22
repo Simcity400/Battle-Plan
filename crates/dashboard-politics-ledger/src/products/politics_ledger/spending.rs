@@ -81,7 +81,12 @@ pub struct LedgerSpendItem {
     pub name: Option<String>,
     /// Plain display text, using only the recorded cause/item/target.
     pub action: String,
+    /// Drawn when a reply is served, from the request's selection ([`Self::icon_art`]).
     pub icon: Option<String>,
+    /// What the icon is drawn from, kept by preparation and taken when a reply is served.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub icon_art: Option<LedgerArt>,
     pub tooltip_token: Option<String>,
     pub character: Option<u32>,
     pub target_tag: Option<String>,
@@ -189,9 +194,288 @@ struct NamedCountry {
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct ItemText {
     name: Option<String>,
-    sprite: Option<String>,
+    sprites: Option<SpriteChoice>,
     description: Option<String>,
     unknown: Option<String>,
+}
+
+/// A decision's or focus's icon as preparation leaves it: its dated conditions evaluated at the
+/// event hour (recorded facts), the sprites it can show in the order the game tries them. Which
+/// of them the presentation declares is decided when a reply is served.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SpriteChoice {
+    /// Tried in order: the first the presentation declares is shown.
+    candidates: Vec<String>,
+    /// Shown when none is declared: a sprite the game shows without asking whether it is
+    /// declared, nothing, or why the choice cannot be made.
+    otherwise: Result<Option<String>, String>,
+}
+
+/// What a ledger item's icon is drawn from, kept by preparation in place of the image and drawn
+/// when a reply is served, as the request shows it ([`present_icons`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LedgerArt {
+    /// An idea's or advisor's art for its country at the action hour, superseded by its
+    /// recorded holder's portrait when that draws.
+    Idea {
+        token: String,
+        character: Option<String>,
+        tag: String,
+        naming: NamingCountry,
+        /// The recorded holder and its dated portrait.
+        holder: Option<(u32, dashboard_base::products::character_portraits::RecordedPortrait)>,
+    },
+    /// A character's dated portrait.
+    Portrait {
+        character: u32,
+        portrait: dashboard_base::products::character_portraits::RecordedPortrait,
+    },
+    /// A decision's or focus's icon ([`SpriteChoice`]).
+    Sprites(SpriteChoice),
+    /// The sprite recorded facts name (an ability's, a leader trait's).
+    Sprite(String),
+    /// An organisation's icon, chosen among its recorded icon and its owner's and token's
+    /// fallbacks by what the presentation declares.
+    Organisation {
+        organisation: dashboard_base::products::production_lines::RawOrganisation,
+        token_known: bool,
+    },
+}
+
+/// An item's drawn icon (`None` where the game shows none), with what the item names about it:
+/// a holder's portrait that could not be drawn where the idea's own art stands in.
+type Shown = (Option<String>, Option<String>);
+
+/// `art` drawn through `content`'s catalogue: the whole choice made against what it declares.
+fn draw_art(content: &PoliticsContent, art: &LedgerArt) -> Result<Shown, String> {
+    let sprite = |name: &str| {
+        content
+            .sprite_png(name)
+            .map_err(|error| format!("sprite {name}: {error}"))?
+            .ok_or_else(|| format!("sprite {name} is not declared"))
+    };
+    let declared = |name: &str| {
+        content
+            .catalogue
+            .sprites
+            .find(name)
+            .map(|found| found.is_some())
+            .map_err(|error| format!("sprite {name}: {error}"))
+    };
+    match art {
+        LedgerArt::Idea {
+            token,
+            character,
+            tag,
+            naming,
+            holder,
+        } => {
+            let mut note = None;
+            if let Some((id, portrait)) = holder {
+                match dashboard_base::products::character_portraits::portrait_png(content, portrait)
+                {
+                    Ok(icon) => return Ok((Some(icon), None)),
+                    // A recorded portrait the selection cannot draw fails the selection's
+                    // attempt, so the recording's own art is drawn again (its portrait, as it
+                    // was prepared), never the generic art in its place.
+                    Err(reason)
+                        if installed_content_core::content::is_strict()
+                            && matches!(
+                                portrait,
+                                dashboard_base::products::character_portraits::RecordedPortrait::Entry { .. }
+                            ) =>
+                    {
+                        return Err(format!("character {id} portrait: {reason}"));
+                    }
+                    Err(reason) => note = Some(format!("character {id} portrait: {reason}")),
+                }
+            }
+            let (artwork, problem) =
+                content.idea_artwork(token, character.as_deref(), naming.for_tag(tag));
+            match (artwork.icon, problem) {
+                (Some(icon), _) => Ok((Some(icon), note)),
+                (None, Some(problem)) => Err(note.map_or(problem.clone(), |note| {
+                    format!("{note}; {problem}")
+                })),
+                (None, None) => Ok((None, note)),
+            }
+        }
+        LedgerArt::Portrait {
+            character,
+            portrait,
+        } => dashboard_base::products::character_portraits::portrait_png(content, portrait)
+            .map(|icon| (Some(icon), None))
+            .map_err(|reason| format!("character {character} portrait: {reason}")),
+        LedgerArt::Sprites(choice) => {
+            for candidate in &choice.candidates {
+                if declared(candidate)? {
+                    return sprite(candidate).map(|icon| (Some(icon), None));
+                }
+            }
+            match &choice.otherwise {
+                Ok(Some(name)) => sprite(name).map(|icon| (Some(icon), None)),
+                Ok(None) => Ok((None, None)),
+                Err(reason) => Err(reason.clone()),
+            }
+        }
+        LedgerArt::Sprite(name) => sprite(name).map(|icon| (Some(icon), None)),
+        LedgerArt::Organisation {
+            organisation,
+            token_known,
+        } => {
+            let refused = std::cell::RefCell::new(None);
+            let chosen = dashboard_base::products::production_lines::organisation_icon_with_token(
+                organisation,
+                *token_known,
+                |name| match declared(name) {
+                    Ok(found) => found,
+                    Err(reason) => {
+                        refused.borrow_mut().get_or_insert(reason);
+                        false
+                    }
+                },
+            );
+            if let Some(reason) = refused.into_inner() {
+                return Err(reason);
+            }
+            match chosen.map_err(|reason| format!("organisation {}: {reason}", organisation.token))? {
+                Some(name) => sprite(&name).map(|icon| (Some(icon), None)),
+                None => Ok((None, None)),
+            }
+        }
+    }
+}
+
+/// The ledger art drawn for one selection, by recipe; one per kind of catalogue
+/// ([`dashboard_base::catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct LedgerIcons(Option<dashboard_base::catalogue::Redrawn<String, Shown>>);
+
+/// Draws a served ledger reply's icons, which preparation keeps as their recipes
+/// ([`LedgerArt`]), as the request admitted under `content` shows them: every item's icon and the
+/// idea tooltips' artwork (an item's own art, by its tooltip), the whole choice made and drawn
+/// against the selection ([`dashboard_base::catalogue::present`]). When the selection cannot
+/// draw one, the recording's own choice is drawn and named on every reply that shows it; one
+/// neither can draw says why on its item. Without content, or where it does not load, each
+/// says so and the rest of the reply stands; only cancellation fails.
+pub fn present_icons(
+    source: &Source,
+    content: Option<&dashboard_core::config::ContentOptions>,
+    data: &mut serde_json::Value,
+) -> io::Result<()> {
+    if data.get("spendItems").is_none() {
+        return Ok(());
+    }
+    let Some(options) = content else {
+        return draw_icons(data, |_| Ok(Err("recorded content has not been resolved".into())));
+    };
+    let contents = dashboard_base::products::politics_content::politics_content(source, options)
+        .and_then(|admitted| Ok((admitted, recorded_politics_content(source, options)?)));
+    let (admitted, recorded) = match contents {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+        Err(error) => {
+            let reason = format!("politics ledger icons are unavailable: {error}");
+            return draw_icons(data, |_| Ok(Err(reason.clone())));
+        }
+    };
+    let state = source.state::<dashboard_base::catalogue::ByCatalogue<LedgerIcons>>();
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let drawn = dashboard_base::catalogue::Redrawn::bind(
+        &mut state.of(&admitted.catalogue).0,
+        &admitted.catalogue,
+        &recorded.catalogue,
+    );
+    draw_icons(data, |art| {
+        Ok(drawn
+            .get(serde_json::to_string(art)?, || "politics ledger icon".into(), |cat| {
+                let content = if std::ptr::eq(cat, &*admitted.catalogue) {
+                    &admitted
+                } else {
+                    &recorded
+                };
+                draw_art(content, art)
+            })
+            .clone())
+    })
+}
+
+/// Replaces each item's recipe in a serialized ledger reply with what `draw` draws of it: the
+/// item's icon, or, for an item shown by its idea tooltip, that tooltip's artwork. A recipe
+/// `draw` cannot draw, or draws with a note (a holder's portrait it could not use), says why on
+/// its item and among the reply's counted warnings.
+fn draw_icons(
+    data: &mut serde_json::Value,
+    mut draw: impl FnMut(&LedgerArt) -> io::Result<Result<Shown, String>>,
+) -> io::Result<()> {
+    let Some(items) = data.get_mut("spendItems").and_then(serde_json::Value::as_array_mut) else {
+        return Ok(());
+    };
+    let mut tooltips = BTreeMap::new();
+    let mut failures = BTreeMap::<String, u64>::new();
+    for item in items {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        let Some(recipe) = item.remove("iconArt") else {
+            continue;
+        };
+        let shown = draw(&serde_json::from_value(recipe)?)?;
+        let (icon, note) = match shown {
+            Ok((icon, note)) => (Ok(icon), note),
+            Err(reason) => (Err(()), Some(reason)),
+        };
+        // Every reason an item names, a drawn item's refused portrait included, is counted.
+        if let Some(note) = &note {
+            *failures.entry(note.clone()).or_default() += 1;
+        }
+        if note.is_some() {
+            let mut unknown = item
+                .get("unknown")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            combine_reason(&mut unknown, note);
+            item.insert("unknown".into(), unknown.into());
+        }
+        match item.get("tooltipToken").and_then(serde_json::Value::as_str) {
+            Some(token) => {
+                tooltips.insert(token.to_owned(), icon);
+            }
+            None => {
+                if let Ok(icon) = icon {
+                    item.insert("icon".into(), icon.into());
+                }
+            }
+        }
+    }
+    if let Some(artwork) = data
+        .pointer_mut("/ideaTooltips/artwork")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for art in artwork {
+            let token = art["token"].as_str().map(str::to_owned);
+            if let Some(Ok(icon)) = token.and_then(|token| tooltips.get(&token)) {
+                art["icon"] = icon.clone().into();
+            }
+        }
+    }
+    if let Some(warnings) = data
+        .get_mut("warnings")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for (reason, count) in failures {
+            warnings.push(format!("{reason} (count: {count})").into());
+        }
+    }
+    Ok(())
+}
+
+/// A reply built against `content` with its icons drawn through it, as a served reply's are.
+#[cfg(test)]
+fn drawn(content: &PoliticsContent, reply: PoliticsLedgerReply) -> PoliticsLedgerReply {
+    let mut data = serde_json::to_value(reply).unwrap();
+    draw_icons(&mut data, |art| Ok(draw_art(content, art))).unwrap();
+    serde_json::from_value(data).unwrap()
 }
 /// A country's recorded rows. The cached scan serves every view and tag, so
 /// rows keep their native values and are formatted only where used.
@@ -1992,17 +2276,11 @@ fn event_text<'a>(
                 Ok(name) => found.name = name,
                 Err(reason) => found.unknown = Some(reason),
             };
+            // The game shows the decision's own sprite when it is declared, else the first
+            // declared sprite of the icon its dated conditions select. The conditions are
+            // recorded facts, evaluated here; what is declared is the presentation's, decided
+            // when a reply is served ([`SpriteChoice`]).
             let own_sprite = decision.sprite_candidates(None)?.remove(0);
-            if content
-                .catalogue
-                .sprites
-                .find(&own_sprite)
-                .map_err(|why| why.to_string())?
-                .is_some()
-            {
-                found.sprite = Some(own_sprite);
-                return Ok(());
-            }
             let selected = decision.select_icon(|body| {
                 if body.is_empty() {
                     return Ok(true);
@@ -2040,19 +2318,19 @@ fn event_text<'a>(
                     scopes.unknown.from = scopes.from.is_none();
                 }
                 world.evaluate(body, scopes).decided()
-            })?;
-            for sprite in decision.sprite_candidates(selected)?.into_iter().skip(1) {
-                if content
-                    .catalogue
-                    .sprites
-                    .find(&sprite)
-                    .map_err(|why| why.to_string())?
-                    .is_some()
-                {
-                    found.sprite = Some(sprite);
-                    break;
+            });
+            let mut candidates = vec![own_sprite];
+            let otherwise = match selected {
+                Ok(selected) => {
+                    candidates.extend(decision.sprite_candidates(selected)?.into_iter().skip(1));
+                    Ok(None)
                 }
-            }
+                Err(reason) => Err(format!("decision {token}: {reason}")),
+            };
+            found.sprites = Some(SpriteChoice {
+                candidates,
+                otherwise,
+            });
             Ok(())
         })();
         if let Err(reason) = result {
@@ -2083,32 +2361,29 @@ fn event_text<'a>(
                 Ok(name) => found.name = name,
                 Err(reason) => found.unknown = Some(reason),
             };
-            let art = (|| -> Result<Option<String>, String> {
+            let art = (|| -> Result<SpriteChoice, String> {
                 let own = own.ok_or_else(|| {
                     format!("focus {token} art: country identity unavailable at action hour")
                 })?;
-                // Try country-qualified then token-qualified overrides before
-                // either normal or alternate icon selection.
-                for sprite in focus.sprite_overrides(token, Some(&own.tag)) {
-                    if content
-                        .catalogue
-                        .sprites
-                        .find(&sprite)
-                        .map_err(|why| why.to_string())?
-                        .is_some()
-                    {
-                        return Ok(Some(sprite));
-                    }
-                }
+                // Country-qualified then token-qualified overrides come before either normal
+                // or alternate icon selection; which are declared is decided when a reply is
+                // served ([`SpriteChoice`]).
+                let candidates = focus
+                    .sprite_overrides(token, Some(&own.tag))
+                    .into_iter()
+                    .collect();
                 // The interface-window mode is not recorded.
                 if focus.alternate_icon_present {
-                    return Err(format!(
-                        "focus {token} art: alternate icon mode is not recorded"
-                    ));
+                    return Ok(SpriteChoice {
+                        candidates,
+                        otherwise: Err(format!(
+                            "focus {token} art: alternate icon mode is not recorded"
+                        )),
+                    });
                 }
                 // Evaluate the first null/true ScriptedKey case, including a singleton.
                 // Its caller's fresh owner scope has FROM/PREV self.
-                focus
+                let otherwise = focus
                     .select_normal_icon(|body| {
                         if body.is_empty() {
                             return Ok(true);
@@ -2127,10 +2402,14 @@ fn event_text<'a>(
                         scopes.prev = Some(owner);
                         world.evaluate(body, scopes).decided()
                     })
-                    .map(|sprite| Some(sprite.to_owned()))
+                    .map(|sprite| Some(sprite.to_owned()));
+                Ok(SpriteChoice {
+                    candidates,
+                    otherwise,
+                })
             })();
             match art {
-                Ok(sprite) => found.sprite = sprite,
+                Ok(choice) => found.sprites = Some(choice),
                 Err(reason) => {
                     found.unknown = Some(match found.unknown.take() {
                         Some(previous) => format!("{previous}; {reason}"),
@@ -2175,30 +2454,6 @@ fn event_text<'a>(
     }
     None
 }
-/// A sprite's artwork, decoded once per reply however many rows show it.
-fn sprite_png(
-    content: &PoliticsContent,
-    pngs: &mut BTreeMap<String, Result<Option<String>, String>>,
-    name: &str,
-) -> Result<Option<String>, String> {
-    pngs.entry(name.to_owned())
-        .or_insert_with(|| content.sprite_png(name).map_err(|error| error.to_string()))
-        .clone()
-}
-fn character_art(
-    content: &PoliticsContent,
-    recorded: &facts::CharacterFact,
-) -> (Option<String>, Option<String>, Option<String>) {
-    let name = facts::character_name(recorded, content);
-    match dashboard_base::products::character_portraits::portrait_png(content, &recorded.portrait) {
-        Ok(icon) => (name, Some(icon), None),
-        Err(reason) => (
-            name,
-            None,
-            Some(format!("character {} portrait: {reason}", recorded.id)),
-        ),
-    }
-}
 #[cfg(test)]
 thread_local! {
     static RESOLVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -2208,7 +2463,6 @@ fn resolve_item(
     row: &LedgerMutation,
     facts: &EventFacts,
     content: Option<&PoliticsContent>,
-    pngs: &mut BTreeMap<String, Result<Option<String>, String>>,
     id: String,
     daily_component: Option<&str>,
 ) -> (LedgerSpendItem, Option<IdeaInfo>, (String, String)) {
@@ -2233,6 +2487,7 @@ fn resolve_item(
         name: None,
         action: String::new(),
         icon: None,
+        icon_art: None,
         tooltip_token: None,
         character,
         target_tag: target.map(|target| target.tag.clone()),
@@ -2285,23 +2540,21 @@ fn resolve_item(
                 }
                 if let Some(own) = own {
                     let script = recorded.and_then(|recorded| recorded.script_token.as_deref());
-                    let (art, problem) =
-                        content.idea_artwork(token, script, own.naming.for_tag(&own.tag));
-                    item.name = art.name;
-                    item.icon = art.icon;
+                    // Named from recorded facts; the art is drawn when a reply is served, so
+                    // only a definition the content refuses is named here.
+                    let (name, problem) =
+                        content.idea_named(token, script, own.naming.for_tag(&own.tag));
+                    item.name = name;
                     item.unknown = problem;
+                    item.icon_art = Some(LedgerArt::Idea {
+                        token: token.to_owned(),
+                        character: script.map(str::to_owned),
+                        tag: own.tag.clone(),
+                        naming: own.naming.clone(),
+                        holder: recorded.map(|recorded| (recorded.id, recorded.portrait.clone())),
+                    });
                     if let Some(recorded) = recorded {
-                        let (name, icon, reason) = character_art(content, recorded);
-                        item.name = name;
-                        if icon.is_some() {
-                            item.icon = icon;
-                            // The recorded portrait supersedes missing fallback
-                            // art; an independently refused definition remains.
-                            if content.idea(token).is_ok() && content.advisor(token).is_ok() {
-                                item.unknown = None;
-                            }
-                        }
-                        item.unknown = reason.or(item.unknown);
+                        item.name = facts::character_name(recorded, content);
                     }
                     let built = recorded.map(|recorded| &recorded.template);
                     let localise = |key: &str, view: View| content.localised(key, view);
@@ -2340,14 +2593,7 @@ fn resolve_item(
                                 item.name = content.localised(key, View::Plain);
                             }
                             if let Some(sprite) = power.abilities.static_sprite(token.as_bytes()) {
-                                match sprite_png(content, pngs, sprite) {
-                                    Ok(icon) => item.icon = icon,
-                                    Err(reason) => {
-                                        item.unknown = Some(format!(
-                                            "ability {token} sprite {sprite}: {reason}"
-                                        ))
-                                    }
-                                }
+                                item.icon_art = Some(LedgerArt::Sprite(sprite.to_owned()));
                             }
                         }
                         _ => {}
@@ -2367,10 +2613,13 @@ fn resolve_item(
         ) && let Some(id) = character
         {
             if let Some(recorded) = recorded {
-                let (name, icon, reason) = character_art(content, recorded);
-                item.name = name;
-                item.icon = icon;
-                item.unknown = reason;
+                // Named from recorded facts; the portrait is drawn when a reply is served.
+                item.name = facts::character_name(recorded, content);
+                item.unknown = None;
+                item.icon_art = Some(LedgerArt::Portrait {
+                    character: recorded.id,
+                    portrait: recorded.portrait.clone(),
+                });
             } else {
                 item.unknown = Some(format!(
                     "character {id}: unit-leader portrait role unavailable at action hour"
@@ -2386,11 +2635,8 @@ fn resolve_item(
                 item.name = text.name.clone();
             }
             combine_reason(&mut item.unknown, text.unknown.clone());
-            if let Some(sprite) = text.sprite.as_deref() {
-                match sprite_png(content, pngs, sprite) {
-                    Ok(icon) => item.icon = icon,
-                    Err(reason) => item.unknown = Some(format!("sprite {sprite}: {reason}")),
-                }
+            if let Some(choice) = &text.sprites {
+                item.icon_art = Some(LedgerArt::Sprites(choice.clone()));
             }
         }
         if row.cause == "Diplomacy" {
@@ -2448,13 +2694,7 @@ fn resolve_item(
                         ));
                     }
                     match power.unit_traits.assignment_sprite(token) {
-                        Ok(Some(sprite)) => match sprite_png(content, pngs, &sprite) {
-                            Ok(icon) => item.icon = icon,
-                            Err(reason) => {
-                                item.unknown =
-                                    Some(format!("trait {token} sprite {sprite}: {reason}"))
-                            }
-                        },
+                        Ok(Some(sprite)) => item.icon_art = Some(LedgerArt::Sprite(sprite)),
                         Ok(None) => {
                             item.unknown = Some(format!(
                                 "trait {token} is not registered in recorded content"
@@ -2509,42 +2749,13 @@ fn resolve_item(
             }
             Some("MioResearch" | "MioProduction") => {
                 if let Some(organisation) = facts.organisation.as_deref() {
-                    // The scoped name is frozen by event_text at this read. Only artwork
-                    // is loaded at presentation. Reuse the production kit's recorded
-                    // owner/key precedence and icon fallback.
-                    let sprite =
-                        dashboard_base::products::production_lines::organisation_icon_with_token(
-                            organisation,
-                            facts.organisation_token_known,
-                            |sprite| {
-                                content
-                                    .catalogue
-                                    .sprites
-                                    .find(sprite)
-                                    .ok()
-                                    .flatten()
-                                    .is_some()
-                            },
-                        );
-                    match sprite {
-                        Ok(Some(sprite)) => match sprite_png(content, pngs, &sprite) {
-                            Ok(icon) => item.icon = icon,
-                            Err(reason) => {
-                                item.unknown = Some(format!(
-                                    "organisation {} sprite {sprite}: {reason}",
-                                    organisation.token
-                                ))
-                            }
-                        },
-                        Ok(None) => {}
-                        Err(reason) => combine_reason(
-                            &mut item.unknown,
-                            Some(format!(
-                                "organisation {:?}: {reason}",
-                                row.item.object_reference
-                            )),
-                        ),
-                    }
+                    // The scoped name is frozen by event_text at this read. The artwork is
+                    // chosen and drawn when a reply is served, by the production kit's
+                    // recorded owner/key precedence and icon fallback ([`LedgerArt`]).
+                    item.icon_art = Some(LedgerArt::Organisation {
+                        organisation: organisation.clone(),
+                        token_known: facts.organisation_token_known,
+                    });
                     if item.name.is_none() && item.unknown.is_none() {
                         item.unknown = Some(format!(
                             "organisation {}: recorded name is not localised or needs unavailable scope",
@@ -2661,6 +2872,8 @@ fn resolve_item(
         item.tooltip_token = Some(tooltip);
     }
     item.unknown = item.unknown.map(|reason| undated_reason(&reason));
+    // Only what the art is drawn from is kept; it is drawn when a reply is served ([`LedgerArt`]).
+    item.icon = None;
     (item, info, category)
 }
 fn sum_raw(values: impl Iterator<Item = Option<i128>>) -> io::Result<Option<i128>> {
@@ -2849,7 +3062,6 @@ fn present_fields(
     let mut items = BTreeMap::new();
     let mut item_ids = BTreeSet::new();
     let mut upkeep = BTreeMap::new();
-    let mut pngs = BTreeMap::new();
     // The balance sentence uses the spending resolution before tooltip IDs,
     // icons and grouped upkeep change its presentation.
     let mut balance_items = Vec::with_capacity(if balance { raw.mutations.len() } else { 0 });
@@ -2876,7 +3088,6 @@ fn present_fields(
             row,
             &stored.facts,
             content,
-            &mut pngs,
             id.clone(),
             None,
         );
@@ -2940,6 +3151,7 @@ fn present_fields(
             upkeep.insert(key, reply.spending.len());
             item.name = None;
             item.icon = None;
+            item.icon_art = None;
             item.tooltip_token = None;
             item.character = None;
             item.unknown = None;
@@ -2949,7 +3161,8 @@ fn present_fields(
             &item.group_id,
             &item.tooltip_token,
             &item.action,
-            &item.icon,
+            // The icon is drawn when served: its recipe tells items apart.
+            &item.icon_art,
             &item.unknown,
         ))
         .map_err(io::Error::other)?;
@@ -3051,7 +3264,6 @@ fn present_fields(
             &row,
             &stored.facts,
             content,
-            &mut pngs,
             id.clone(),
             Some(&cost.component),
         );
@@ -3120,7 +3332,8 @@ fn present_fields(
             &item.group_id,
             &item.tooltip_token,
             &item.action,
-            &item.icon,
+            // The icon is drawn when served: its recipe tells items apart.
+            &item.icon_art,
             &item.unknown,
         ))
         .map_err(io::Error::other)?;
@@ -3282,7 +3495,6 @@ fn present_fields(
                             row,
                             &stored.facts,
                             content,
-                            &mut pngs,
                             mutation_id(row),
                             None,
                         );

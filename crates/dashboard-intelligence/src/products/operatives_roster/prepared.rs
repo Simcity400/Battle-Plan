@@ -504,7 +504,11 @@ pub fn query(
     let history = super::super::intelligence_prepared::first_views::histories(
         source, context, store, source_key, branch, cancelled,
     )?;
-    query_history(store, source_key, branch, params, &history, cancelled)
+    let mut reply = query_history(store, source_key, branch, params, &history, cancelled)?;
+    if let Some(reply) = &mut reply {
+        super::present_artwork(source, context, reply)?;
+    }
+    Ok(reply)
 }
 
 fn query_history(
@@ -895,7 +899,10 @@ pub(crate) fn first_view(
                 || params.include_departed && entry.departed_hour.is_some_and(|hour| hour <= last)
         });
     }
-    let mut data = serde_json::to_value(scan.reply(branch, Some(&selected))?)?;
+    // The artwork stays as descriptors: the screen cache keeping this reply is keyed without
+    // the presentation, so it is drawn after the cache answers ([`super::present_artwork_json`]).
+    let reply = scan.reply(branch, Some(&selected))?;
+    let mut data = serde_json::to_value(reply)?;
     for country in data["countries"]
         .as_array_mut()
         .expect("operative countries")

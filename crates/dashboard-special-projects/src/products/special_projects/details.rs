@@ -177,6 +177,7 @@ fn reference_person(
         name: None,
         portrait: None,
         missing: None,
+        portrait_choice: None,
     };
     if reference == 0 {
         return person;
@@ -212,12 +213,10 @@ fn reference_person(
             4,
             replay_data::rows::PORTRAIT_LARGE,
         );
-        match content.map_or_else(
-            || Err("Content is unavailable".into()),
-            |content| portrait_png(&content.politics, &portrait),
-        ) {
-            Ok(image) => person.portrait = Some(image),
-            Err(why) => person.missing = Some(why),
+        // Drawn when the reply is served ([`ProjectPerson::portrait_choice`]).
+        match content {
+            Some(_) => person.portrait_choice = Some(portrait),
+            None => person.missing = Some("Content is unavailable".into()),
         }
     } else {
         person.missing = Some(format!("Character {id} is not recorded"));
