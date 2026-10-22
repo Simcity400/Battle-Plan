@@ -3166,6 +3166,46 @@ fn the_observer_boundary_joins_after_the_hours_preparation_before_any_dispatch()
 }
 
 #[test]
+fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
+    };
+    // SAFETY: the current-thread pseudo-handle needs no close.
+    let current = || unsafe { GetThreadPriority(GetCurrentThread()) };
+    let set = |priority| {
+        // SAFETY: as above; this test owns its process's only test thread.
+        assert_ne!(unsafe { SetThreadPriority(GetCurrentThread(), priority) }, 0);
+    };
+    for game in [THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL] {
+        set(game);
+        {
+            let _raised = CallbackPriority::raise();
+            assert_eq!(current(), THREAD_PRIORITY_HIGHEST);
+        }
+        assert_eq!(current(), game);
+    }
+    // A game thread already at or above highest is left exactly as it was.
+    for game in [THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_TIME_CRITICAL] {
+        set(game);
+        {
+            let raised = CallbackPriority::raise();
+            assert!(raised.0.is_none());
+            assert_eq!(current(), game);
+        }
+        assert_eq!(current(), game);
+    }
+    // A contained acquisition panic still restores the game's priority.
+    set(THREAD_PRIORITY_NORMAL);
+    let result = std::panic::catch_unwind(|| {
+        let _raised = CallbackPriority::raise();
+        panic!("fixture acquisition panic");
+    });
+    assert!(result.is_err());
+    assert_eq!(current(), THREAD_PRIORITY_NORMAL);
+}
+
+#[test]
 fn early_step_timing_counts_continued_handlers_without_charging_join_waits() {
     let shared = Shared::new(0, 0, 1);
     for (index, step) in EarlyStep::ALL.into_iter().enumerate() {
@@ -3298,7 +3338,7 @@ fn the_hourly_job_graph_has_only_its_named_data_dependencies() {
     ordered(
         published,
         &[
-            "self.state.lock()",
+            "lock_callback(&self.state, Site::Inputs)",
             "let hold = Hold(&self.hold_ticks, sampling::qpc())",
             "if state.closed",
             "drop(hold)",

@@ -41,7 +41,7 @@ Presentation preparation ranges acquire context, dirty source trees, pool
 membership, state/terrain values and history scalars with reused local memos.
 They also select daily supply samples from the immutable occurrence baseline;
 missing staging keeps the host's original ordered lookup.
-Already admitted receivers take their registering certificate before resume;
+Already admitted receivers take their quiet certificate before resume;
 held source, membership, state and history slot hints avoid repeat probing.
 A passive gate rejects cold or cleared slots before registration, so parallel
 ranges cannot change limited-table admission winners or refusal counts. Cold,
@@ -72,6 +72,13 @@ in final-status ranges; owned attack publication keeps the captured verification
 slice, carry, witnesses and held-store settlement. Source and certification
 timers read the clock per phase, not per division. Range and journal storage is
 reused across hours.
+
+Preparation uses each warm receiver certificate once; querying a registered
+receiver again does not strengthen its proof. Scalar carries reuse one baseline
+lookup for their verdict and owned value, including reordered censuses. Source
+preparation reuses each held pool/root/state lookup, and a held commander identity
+is not reinserted for every division. Native demand, first failures, cold/full
+admission, sampled verification and FIFO owned settlement are unchanged.
 
 Spool projection borrows one resolved attack row for its scalar and terrain
 fields, and checks witness presence without cloning its terrain payload.

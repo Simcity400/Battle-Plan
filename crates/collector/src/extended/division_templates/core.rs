@@ -89,6 +89,7 @@ pub(super) struct Store {
     live: Vec<u64>,
     pending: Option<(u64, usize, u32, Certificate)>,
     payload_bytes: usize,
+    before: Option<[Stamp; 2]>,
 }
 
 impl Store {
@@ -96,6 +97,22 @@ impl Store {
         self.entries.clear();
         self.pending = None;
         self.payload_bytes = 0;
+        self.before = None;
+    }
+
+    pub fn begin(&mut self, changes: &dyn Changes) {
+        self.before = changes
+            .quiet()
+            .zip(changes.core_dependencies())
+            .map(|(templates, dependencies)| [templates, dependencies]);
+    }
+
+    /// Equal whole-domain tokens since before this walk exclude every writer
+    /// covered by the individual certificates already checked for this core.
+    fn stable(&self, changes: &dyn Changes) -> bool {
+        self.before.is_some_and(|[templates, dependencies]| {
+            changes.quiet() == Some(templates) && changes.core_dependencies() == Some(dependencies)
+        })
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -137,17 +154,22 @@ impl Store {
             .entries
             .binary_search_by_key(&template, |entry| entry.template)
             .ok()?;
-        let entry = &mut self.entries[at];
+        let entry = &self.entries[at];
         if entry.core.row.pointer != pointer
             || entry.core.row.owner != owner
             || entry.certificate != certificate
             || entry.record != record
-            || changes.sequence(entry.core.row.pointer) != Some(certificate[0])
-            || changes.sequence(entry.core.row.owner as usize) != Some(certificate[1])
-            || changes.core_dependencies() != Some(certificate[2])
         {
             return None;
         }
+        if !self.stable(changes)
+            && (changes.sequence(pointer) != Some(certificate[0])
+                || changes.sequence(owner as usize) != Some(certificate[1])
+                || changes.core_dependencies() != Some(certificate[2]))
+        {
+            return None;
+        }
+        let entry = &mut self.entries[at];
         entry.carried = true;
         Some(native::IconCore {
             row: entry.core.row,
@@ -247,9 +269,11 @@ impl Store {
             .binary_search_by_key(&template, |entry| entry.template)
             .ok()?];
         (entry.carried
-            && changes.sequence(entry.core.row.pointer) == Some(entry.certificate[0])
-            && changes.sequence(entry.core.row.owner as usize) == Some(entry.certificate[1])
-            && changes.core_dependencies() == Some(entry.certificate[2]))
+            && (self.stable(changes)
+                || (changes.sequence(entry.core.row.pointer) == Some(entry.certificate[0])
+                    && changes.sequence(entry.core.row.owner as usize)
+                        == Some(entry.certificate[1])
+                    && changes.core_dependencies() == Some(entry.certificate[2]))))
         .then_some(entry.speed.as_deref())
         .flatten()
     }
@@ -300,5 +324,125 @@ impl Store {
             }
             keep
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
+
+    struct Counted {
+        watches: crate::template_changes::Watches,
+        dependencies: AtomicU64,
+        probes: AtomicUsize,
+    }
+
+    impl Changes for Counted {
+        fn quiet(&self) -> Option<Stamp> {
+            self.watches.quiet()
+        }
+        fn sequence(&self, pointer: usize) -> Option<Stamp> {
+            self.probes.fetch_add(1, Relaxed);
+            self.watches.sequence(pointer)
+        }
+        fn core_dependencies(&self) -> Option<Stamp> {
+            Some((1, self.dependencies.load(Relaxed)))
+        }
+        fn mismatch(&self) {
+            self.watches.mismatch();
+        }
+    }
+
+    #[test]
+    fn quiet_template_core_and_speed_proofs_skip_receiver_probes_at_five_thousand_scale() {
+        let changes = Counted {
+            watches: crate::template_changes::Watches::enabled(5001),
+            dependencies: AtomicU64::new(0),
+            probes: AtomicUsize::new(0),
+        };
+        let mut store = Store::default();
+        let owner = changes.sequence(1).unwrap();
+        for index in 0..5000 {
+            let row = native::IconRow {
+                template: ((index as u64 + 1) << 32) | u64::from(native::REFERENCE_TYPE),
+                pointer: 0x10000 + index * 0x400,
+                owner: 1,
+                ..Default::default()
+            };
+            let certificate = [changes.sequence(row.pointer).unwrap(), owner, (1, 0)];
+            store.prepare(row.template, row.pointer, row.owner, Some(certificate));
+            store.remember(&changes, b"fixed", &row, &[], &[], &[]);
+            store.remember_speed(row.template, Some(&[155]), &changes);
+        }
+        assert_eq!(store.entries.len(), 5000);
+        store.begin(&changes);
+        changes.probes.store(0, Relaxed);
+        for index in 0..store.entries.len() {
+            let row = store.entries[index].core.row;
+            let certificate = store.entries[index].certificate;
+            store.prepare(row.template, row.pointer, row.owner, Some(certificate));
+            assert!(store.carry(b"fixed", &changes).is_some());
+            assert_eq!(store.speed(row.template, &changes), Some([155].as_slice()));
+        }
+        assert_eq!(changes.probes.load(Relaxed), 0);
+        let first = store.entries[0].core.row;
+        let certificate = store.entries[0].certificate;
+        // An unrelated writer removes the shortcut, not a valid receiver carry.
+        store.begin(&changes);
+        drop(
+            changes
+                .watches
+                .notify(store.entries[4999].core.row.pointer, 0),
+        );
+        store.prepare(
+            first.template,
+            first.pointer,
+            first.owner,
+            Some(certificate),
+        );
+        assert!(store.carry(b"fixed", &changes).is_some());
+        assert_eq!(
+            store.speed(first.template, &changes),
+            Some([155].as_slice())
+        );
+        assert!(changes.probes.load(Relaxed) > 0);
+        // A later writer must also revoke speed after the core already carried.
+        store.begin(&changes);
+        let writer = changes.watches.notify(first.pointer, 0);
+        assert!(store.speed(first.template, &changes).is_none());
+        drop(writer);
+        // Entry precedes the fixed read; running and completed writers revoke it.
+        store.begin(&changes);
+        store.prepare(
+            first.template,
+            first.pointer,
+            first.owner,
+            Some(certificate),
+        );
+        let writer = changes.watches.notify(first.pointer, 0);
+        assert!(store.carry(b"fixed", &changes).is_none());
+        drop(writer);
+        assert!(store.carry(b"fixed", &changes).is_none());
+        assert_eq!(store.speed(first.template, &changes), None);
+        // Local definition/content changes also revoke the aggregate proof.
+        let certificate = [changes.sequence(first.pointer).unwrap(), owner, (1, 0)];
+        store.prepare(
+            first.template,
+            first.pointer,
+            first.owner,
+            Some(certificate),
+        );
+        store.remember(&changes, b"fixed", &first, &[], &[], &[]);
+        store.remember_speed(first.template, Some(&[155]), &changes);
+        store.begin(&changes);
+        store.prepare(
+            first.template,
+            first.pointer,
+            first.owner,
+            Some(certificate),
+        );
+        changes.dependencies.fetch_add(1, Relaxed);
+        assert!(store.carry(b"fixed", &changes).is_none());
     }
 }

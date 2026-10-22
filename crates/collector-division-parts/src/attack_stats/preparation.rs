@@ -137,32 +137,21 @@ impl PreparationPart {
                     seed,
                 )
             });
-            // Already admitted receivers can register/sample concurrently without
-            // changing limited-table winners. Cold receivers keep ordered admission.
-            let experience_acquired = changes.experience_observed_sequence(seed.pointer).is_some();
-            let progression_acquired = changes
-                .progression_observed_sequence(seed.pointer)
-                .is_some();
+            // These receivers are already registered. The passive query performs
+            // the same epoch/quiet checks without a second, no-op registration.
+            // Cold receivers still reach the original ordered admission.
+            let experience_certificate = changes.experience_observed_sequence(seed.pointer);
+            let progression_certificate = changes.progression_observed_sequence(seed.pointer);
+            let experience_acquired = experience_certificate.is_some();
+            let progression_acquired = progression_certificate.is_some();
             let officer_receiver = seed
                 .pointer
                 .checked_add(engine_native::unit_history::OFFICER);
-            let officer_acquired = officer_receiver
-                .and_then(history_changes::observed_sequence)
-                .is_some();
-            let experience_certificate = experience_acquired
-                .then(|| changes.experience_sequence(seed.pointer))
-                .flatten();
-            let progression_certificate = progression_acquired
-                .then(|| changes.progression_sequence(seed.pointer))
-                .flatten();
-            let officer_certificate = officer_acquired
-                .then(|| officer_receiver.and_then(history_changes::sequence))
-                .flatten();
-            let career_acquired = experience_certificate.is_some()
-                && history_changes::observed_sequence(seed.pointer).is_some();
-            let career_certificate = career_acquired
-                .then(|| history_changes::sequence(seed.pointer))
-                .flatten();
+            let officer_certificate = officer_receiver.and_then(history_changes::observed_sequence);
+            let officer_acquired = officer_certificate.is_some();
+            let career_certificate = experience_certificate
+                .and_then(|_| history_changes::observed_sequence(seed.pointer));
+            let career_acquired = career_certificate.is_some();
             let experience = store.experience.prefetch_value(
                 base,
                 index,
@@ -221,6 +210,103 @@ impl PreparationPart {
                 ],
                 history: store.history.prefetch_certificates(index, seed),
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    struct Warm {
+        present: bool,
+        experience: AtomicUsize,
+        progression: AtomicUsize,
+    }
+    impl Changes for Warm {
+        fn experience_observed_sequence(&self, _: usize) -> Option<(u64, u64)> {
+            self.experience.fetch_add(1, Relaxed);
+            self.present.then_some((1, 1))
+        }
+        fn progression_observed_sequence(&self, _: usize) -> Option<(u64, u64)> {
+            self.progression.fetch_add(1, Relaxed);
+            self.present.then_some((1, 1))
+        }
+        fn experience_sequence(&self, _: usize) -> Option<(u64, u64)> {
+            panic!("range must neither register cold receivers nor re-query warm ones")
+        }
+        fn progression_sequence(&self, _: usize) -> Option<(u64, u64)> {
+            panic!("range must neither register cold receivers nor re-query warm ones")
+        }
+        fn take(&self, _: &mut dyn FnMut(usize)) -> Option<u64> {
+            panic!("range must not consume marks")
+        }
+        fn register(&self, _: usize) -> bool {
+            panic!("range must not admit stat receivers")
+        }
+        fn mismatch(&self) {
+            panic!("range must not decide verification")
+        }
+    }
+
+    #[test]
+    fn preparation_queries_each_warm_scalar_once_and_leaves_cold_admission_ordered() {
+        const COUNT: usize = 5_000;
+        let seeds: Vec<_> = (1..=COUNT)
+            .map(|id| DivisionSeed {
+                division: id as u64,
+                pointer: id * 0x1000,
+                handle: Some(id as u64),
+                class: Some(0),
+                primary_vtable: Some(engine_native::carmy::VTABLE_RVA as u64),
+                secondary_vtable: Some(engine_native::carmy::SECONDARY_VTABLE_RVA as u64),
+                ..Default::default()
+            })
+            .collect();
+        let mut store = ArmyStatStore::default();
+        store.experience.begin(COUNT).unwrap();
+        store.progression.begin(COUNT).unwrap();
+        for seed in &seeds {
+            store.experience
+                .observe_with(0, seed, Some((1, 1)), || Ok(-(seed.division as i64)))
+                .unwrap();
+            store.progression
+                .observe_with(0, seed, Some((1, 1)), || Ok(seed.division + 1))
+                .unwrap();
+        }
+        store.experience.finish(true);
+        store.progression.finish(true);
+        let memory = engine_native::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        for parts in [1, 7] {
+            for present in [false, true] {
+                let changes = Warm {
+                    present,
+                    experience: AtomicUsize::new(0),
+                    progression: AtomicUsize::new(0),
+                };
+                for part in 0..parts {
+                    let range = COUNT * part / parts..COUNT * (part + 1) / parts;
+                    let mut capture = PreparationPart {
+                        range: range.clone(),
+                        ..Default::default()
+                    };
+                    capture.capture(&memory, 0, 0, &seeds, Some(&store), &changes);
+                    for index in range {
+                        let row = capture.get(index).unwrap();
+                        assert_eq!(row.acquired[..2], [present; 2]);
+                        assert_eq!(row.experience_certificate, present.then_some((1, 1)));
+                        assert_eq!(row.progression_certificate, present.then_some((1, 1)));
+                        assert_eq!(row.experience, present.then_some(Ok(-((index + 1) as i64))));
+                        assert_eq!(row.progression, present.then_some(Ok((index + 2) as u64)));
+                    }
+                }
+                assert_eq!(changes.experience.load(Relaxed), COUNT);
+                assert_eq!(changes.progression.load(Relaxed), COUNT);
+            }
         }
     }
 }

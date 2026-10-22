@@ -194,10 +194,9 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
     WATCHES.sequence(receiver)
 }
 
-/// Register before acquisition, using a retained slot only when it still names the receiver.
+/// Certify an already registered receiver; cold admission stays ordered.
 pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
-    let (_, slot) = WATCHES.observed_sequence_at(receiver, slot)?;
-    WATCHES.sequence_at(receiver, slot)
+    WATCHES.observed_sequence_at(receiver, slot)
 }
 
 /// Provisional range lookup; the ordered consumer still registers the receiver.

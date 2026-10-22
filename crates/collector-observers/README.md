@@ -71,6 +71,12 @@ The unit-leader certificate includes residual experience and complete trait-trai
 
 The shared division-history domain accepts notifications from the army patch owner and the existing ship-model medal-rebuild patch. Both must be enabled before it certifies a root. Hooks mark only registered roots, without traversing entries or allocating; loads revoke the domain.
 
+Warm division history, naval-tree source and panel operand queries take one
+passive slot-hinted certificate, rather than probe twice for the same registered
+receiver. Receiver identity, epoch and quiet checks are unchanged. Cleared, cold,
+full, disabled or poisoned slots never gain admission from a parallel query;
+their original ordered registration and refusal accounting remain intact.
+
 Complete commander training includes two independently ordered lists: XP progress and runtime trait-XP-factor overrides. Both retain native ordinals and repeated trait identities under the leader certificate; factor add/remove commands invalidate it. The career product exposes the override list as signed percentage-point modifiers, separately from required-XP progress derived from content.
 
 Template transition certificates are independent from ordinary stored-experience awards.

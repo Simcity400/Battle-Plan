@@ -1,4 +1,4 @@
-//! Range-owned native reads and warm registrations; cold admission and row edits stay ordered.
+//! Range-owned native reads and warm certificates; cold admission and row edits stay ordered.
 use super::*;
 
 #[derive(Default)]
@@ -227,7 +227,8 @@ impl NativeReads {
                 );
             }
         }
-        self.capture_membership(memory, base, store, seed);
+        let pool = store.pools.get(&seed.division);
+        self.capture_membership(memory, base, pool, seed);
         if let Some(&index) = self.membership_indices.get(&seed.division)
             && self.memberships[index].ready
             && self.memberships[index].result.is_ok()
@@ -239,7 +240,7 @@ impl NativeReads {
         } else if *self.variant_refresh.get_or_insert_with(|| {
             let stamp = operands::observed_variant_stamp();
             stamp.is_some() && store.variant_observation != stamp
-        }) && let Some(pool) = store.pools.get(&seed.division)
+        }) && let Some(pool) = pool
         {
             for &(_, handle, pointer) in pool.variants.iter() {
                 self.capture_variant(memory, base, store, handle, pointer, false);
@@ -279,11 +280,9 @@ impl NativeReads {
         }
         self.root_indices.insert(identity, None);
         // Cold/full admissions stay in the original ordered slow path. Warm
-        // receivers register and sample here; a slot hint never trusts a table pointer.
-        let hint = store
-            .roots
-            .get(&identity)
-            .map_or(usize::MAX, |held| held.slot);
+        // receivers are already registered; a slot hint never trusts a table pointer.
+        let held = store.roots.get(&identity);
+        let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = changes::sequence_at(receiver, hint);
         let Some((certificate, slot)) = acquired else {
             self.complete = false;
@@ -292,7 +291,7 @@ impl NativeReads {
         self.root_certificates.insert(identity, certificate);
         self.root_slots.insert(identity, slot);
         let certificate = Some(certificate);
-        if store.roots.get(&identity).is_some_and(|held| {
+        if held.is_some_and(|held| {
             held.receiver == receiver
                 && held.accumulator == accumulator
                 && held.certificate == certificate
@@ -360,7 +359,7 @@ impl NativeReads {
         &mut self,
         memory: &impl Memory,
         base: usize,
-        store: &Store,
+        held: Option<&Pool>,
         seed: &DivisionSeed,
     ) {
         if self.membership_indices.contains_key(&seed.division) {
@@ -374,10 +373,7 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        let hint = store
-            .pools
-            .get(&seed.division)
-            .map_or(usize::MAX, |held| held.slot);
+        let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::sequence_at(pool, hint);
         let Some((certificate, slot)) = acquired else {
             self.complete = false;
@@ -385,10 +381,7 @@ impl NativeReads {
         };
         self.membership_observation = Some((certificate, slot));
         let certificate = Some(certificate);
-        if store
-            .pools
-            .get(&seed.division)
-            .is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
+        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
         {
             return;
         }
@@ -455,10 +448,8 @@ impl NativeReads {
             return;
         }
         self.states.insert((id, country), None);
-        let hint = store
-            .states
-            .get(&(id, country))
-            .map_or(usize::MAX, |held| held.slot);
+        let held = store.states.get(&(id, country));
+        let hint = held.map_or(usize::MAX, |held| held.slot);
         let acquired = operands::state_sequence_at(id, hint);
         let Some((certificate, slot)) = acquired else {
             self.complete = false;
@@ -467,10 +458,7 @@ impl NativeReads {
         self.state_certificates.insert((id, country), certificate);
         self.state_slots.insert((id, country), slot);
         let certificate = Some(certificate);
-        if store
-            .states
-            .get(&(id, country))
-            .is_some_and(|held| held.pointer == pointer && held.certificate == certificate)
+        if held.is_some_and(|held| held.pointer == pointer && held.certificate == certificate)
         {
             return;
         }

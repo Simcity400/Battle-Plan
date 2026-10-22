@@ -831,10 +831,12 @@ impl Default for Digest {
 }
 
 impl Digest {
+    #[inline]
     pub fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 
+    #[inline]
     pub fn bytes(&mut self, bytes: &[u8]) -> &mut Self {
         for &byte in bytes {
             self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
@@ -842,10 +844,12 @@ impl Digest {
         self
     }
 
+    #[inline]
     pub fn u64(&mut self, value: u64) -> &mut Self {
         self.bytes(&value.to_le_bytes())
     }
 
+    #[inline]
     pub fn i64(&mut self, value: i64) -> &mut Self {
         self.bytes(&value.to_le_bytes())
     }
@@ -855,6 +859,7 @@ impl Digest {
         self.u64(text.len() as u64).bytes(text)
     }
 
+    #[inline]
     pub fn finish(&self) -> u64 {
         self.0
     }
@@ -1003,6 +1008,31 @@ pub fn select_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_word_helpers_keep_the_exact_little_endian_byte_stream() {
+        let mut expected = 0xcbf2_9ce4_8422_2325_u64;
+        let mut digest = Digest::new();
+        for value in [0, 1, u64::MAX, i64::MIN as u64, 0x1234_5678_9abc_def0] {
+            digest.u64(value).i64(value as i64);
+            for byte in value.to_le_bytes().into_iter().cycle().take(16) {
+                expected = (expected ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+            assert_eq!(digest.finish(), expected);
+        }
+        let text = b"owned\0bytes";
+        digest.text(text);
+        for byte in (text.len() as u64)
+            .to_le_bytes()
+            .into_iter()
+            .chain(text.iter().copied())
+        {
+            expected = (expected ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+        assert_eq!(digest.finish(), expected);
+        digest.bytes(&[]);
+        assert_eq!(digest.finish(), expected);
+    }
 
     /// A certificate family marks each owner whose certificate changed, so
     /// that only owners whose certificate held are compared with their

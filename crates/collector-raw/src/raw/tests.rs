@@ -2,6 +2,72 @@ use super::*;
 use engine_native::memory::SliceMemory;
 
 #[test]
+fn carried_splice_keeps_order_offsets_aliases_masks_and_bulk_without_read_charges() {
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &[17; 16],
+    };
+    let bytes = [1, 2, 3, 4, 5, 6, 7, 8];
+    let spans = [
+        Span {
+            addr: 0x2000,
+            len: 4,
+            ok: true,
+            mask: 1,
+            start: 4,
+            bulk: false,
+        },
+        Span {
+            addr: 0x3000,
+            len: 8,
+            ok: true,
+            mask: 2,
+            start: 0,
+            bulk: true,
+        },
+        Span {
+            addr: 0x2000,
+            len: 4,
+            ok: true,
+            mask: 3,
+            start: 0,
+            bulk: false,
+        },
+    ];
+    for growth in [false, true] {
+        let mut log = RawLog::<2>::new(1, 4);
+        assert_eq!(log.take(&memory, 0x1000, 4, 1), Some(0));
+        let reads = log.raw_bytes;
+        if growth {
+            log.enable_worker_growth();
+        }
+        let before = log.spans.clone();
+        assert_eq!(log.splice(&spans, &bytes), growth);
+        assert_eq!(log.raw_bytes, reads);
+        if growth {
+            let mut expected = before;
+            expected.extend(spans.into_iter().map(|span| Span {
+                start: 4 + span.start,
+                ..span
+            }));
+            assert_eq!(log.spans, expected);
+            assert_eq!(
+                log.bytes.as_ref(),
+                &[17, 17, 17, 17, 1, 2, 3, 4, 5, 6, 7, 8]
+            );
+            assert!(log.has_bulk);
+            assert!(!log.overflowed);
+            assert_eq!(log.fault, [false; 2]);
+        } else {
+            assert_eq!(log.spans, before);
+            assert_eq!(log.bytes.as_ref(), &[17; 4]);
+            assert!(log.overflowed);
+            assert!(!log.has_bulk);
+        }
+    }
+}
+
+#[test]
 fn worker_growth_preserves_raw_prefixes_and_first_fault_without_retry() {
     struct Once {
         reads: std::cell::RefCell<Vec<usize>>,

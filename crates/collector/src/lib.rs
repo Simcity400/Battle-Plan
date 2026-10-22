@@ -16,6 +16,10 @@ compile_error!("collector requires Windows x64 MSVC");
 #[unsafe(link_section = ".CRT$XCU")]
 static TEST_THREAD_STACK: unsafe extern "C" fn() = crate::test_support::reserve_test_stack;
 
+// Tests retain the allocation-denial allocator and exercise PrivateHeap directly.
+#[cfg_attr(not(test), global_allocator)]
+static ALLOCATOR: private_heap::PrivateHeap = private_heap::PrivateHeap::new();
+
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: crate::test_support::FailingAllocator =
@@ -43,6 +47,7 @@ mod air_base_changes;
 pub(crate) use collector_air_records::air_record_changes;
 pub(crate) use collector_observers::air_losses;
 mod allocation;
+mod private_heap;
 #[cfg(test)]
 mod allocation_failure_tests;
 pub(crate) use collector_construction::building_changes;
@@ -189,8 +194,13 @@ use windows_sys::Win32::{
 };
 
 #[unsafe(no_mangle)]
-unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, _: *mut c_void) -> i32 {
+unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, reserved: *mut c_void) -> i32 {
     if reason == 1 {
+        // Every Rust allocation, including the bootstrap's infallible ones, uses
+        // the private heap: refuse the load, allocation-free, if it cannot exist.
+        if !ALLOCATOR.ready() {
+            return 0;
+        }
         // Loader work is deferred until this thread runs outside the loader lock.
         let thread = unsafe {
             CreateThread(
@@ -209,6 +219,11 @@ unsafe extern "system" fn DllMain(module: HINSTANCE, reason: u32, _: *mut c_void
             CloseHandle(thread);
         }
     }
+    // FreeLibrary is reached only after runtime's joined/quiescent teardown.
+    // Windows has already run this thread's Rust TLS callbacks. Rust statics
+    // have no automatic destructors; the remaining CRT cleanup owns no Rust
+    // blocks. Process termination deliberately leaves reclamation to Windows.
+    unsafe { ALLOCATOR.detach(reason, reserved) };
     1
 }
 

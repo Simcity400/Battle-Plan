@@ -1,6 +1,7 @@
 //! Presentation workers release prepared ranges without waiting for the
 //! callback's next unrelated result installation.
 use super::*;
+use acquisition::callback_parks::{Site, lock_callback};
 use std::sync::Weak;
 mod final_inputs;
 mod inputs;

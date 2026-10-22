@@ -52,7 +52,7 @@ impl PresentationInputs {
         count: usize,
         store: Option<Arc<division_presentation::held_store::Slot>>,
     ) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         assert!(state.closed && state.request.is_none() && state.pending.is_none());
         *state = State {
             remaining: count + 1,
@@ -63,15 +63,15 @@ impl PresentationInputs {
         };
     }
     pub(super) fn store_master(&self, census: Census, report: Result<Report, Failure>) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).master = Some((census, report));
+        lock_callback(&self.state, Site::Inputs).master = Some((census, report));
     }
     pub(super) fn store_part(&self, index: usize, census: Census, report: Result<Report, Failure>) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).parts[index] = Some((census, report));
+        lock_callback(&self.state, Site::Inputs).parts[index] = Some((census, report));
     }
     /// Called only after every input ticket has published. An unnotified
     /// publication or rejected input keeps the original callback admission path.
     pub(crate) fn restore_master(&self, census: &mut Census) -> (bool, Option<&'static str>) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         state.closed = true;
         if let Some((captured, _)) = state.master.take() {
             *census = captured;
@@ -79,23 +79,16 @@ impl PresentationInputs {
         (state.joined, state.failure)
     }
     pub(crate) fn restore_part(&self, index: usize, census: &mut Census) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         if let Some((captured, _)) = state.parts[index].take() {
             *census = captured;
         }
     }
     pub(crate) fn take_request(&self) -> Option<PresentationRequest> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .request
-            .take()
+        lock_callback(&self.state, Site::Inputs).request.take()
     }
     pub(crate) fn store_wait_ticks(&self) -> u64 {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .store_wait_ticks
+        lock_callback(&self.state, Site::Inputs).store_wait_ticks
     }
     pub(crate) fn hold_ticks(&self) -> u64 {
         self.hold_ticks.load(Ordering::Relaxed)
@@ -109,7 +102,7 @@ impl PresentationInputs {
         usize,
         bool,
     )> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         Some((
             state.pending.take()?,
             state
@@ -125,17 +118,12 @@ impl PresentationInputs {
         ))
     }
     pub(crate) fn close(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        lock_callback(&self.state, Site::Inputs).closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pending
-            .take();
+        let pending = lock_callback(&self.state, Site::Inputs).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = State {
+        *lock_callback(&self.state, Site::Inputs) = State {
             closed: true,
             ..Default::default()
         };
@@ -143,13 +131,13 @@ impl PresentationInputs {
 }
 impl acquisition::Publication for PresentationInputs {
     fn failed(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         state.closed = true;
         state.joined = true;
         state.failure = Some("division input continuation panicked");
     }
     fn published(&self, at: i64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Inputs);
         // Measure every publisher's hold, including early returns and unwind,
         // but neither its lock acquisition nor the successor wake.
         struct Hold<'a>(&'a AtomicU64, i64);

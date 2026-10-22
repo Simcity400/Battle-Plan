@@ -34,12 +34,12 @@ impl FinalInputsDispatch {
         }
     }
     pub(in crate::acquisition_jobs) fn open(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         assert!(state.closed && state.request.is_none() && state.pending.is_none());
         *state = State::default();
     }
     pub(super) fn store(&self, part: usize, report: &Result<Report, Failure>) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         if state.closed {
             return;
         }
@@ -54,7 +54,7 @@ impl FinalInputsDispatch {
         required: usize,
         last_publish: i64,
     ) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         assert!(!state.closed && state.request.is_none() && state.pending.is_none());
         state.bytes = request.allocated_bytes();
         state.request = Some(request);
@@ -96,22 +96,17 @@ impl FinalInputsDispatch {
         Option<crate::extended::FinalInputsRequest>,
         u64,
     ) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         state.closed = true;
         (state.pending.take(), state.request.take(), state.bytes)
     }
     pub(crate) fn close(&self) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        lock_callback(&self.state, Site::FinalInputs).closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pending
-            .take();
+        let pending = lock_callback(&self.state, Site::FinalInputs).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = State {
+        *lock_callback(&self.state, Site::FinalInputs) = State {
             closed: true,
             ..Default::default()
         };
@@ -119,11 +114,11 @@ impl FinalInputsDispatch {
 }
 impl acquisition::Publication for FinalInputsDispatch {
     fn failed(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         state.failed = true;
     }
     fn published(&self, at: i64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::FinalInputs);
         if state.closed {
             return;
         }

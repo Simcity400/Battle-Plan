@@ -103,14 +103,12 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 pub fn state_sequence(state: u32) -> Option<(u64, u64)> {
     STATES.sequence(state as usize)
 }
-/// Register before range acquisition; retained slots are checked by receiver.
+/// Certify existing range receivers; retained slots are checked by receiver.
 pub fn sequence_at(receiver: usize, slot: usize) -> Option<((u64, u64), usize)> {
-    let (_, slot) = OPERANDS.observed_sequence_at(receiver, slot)?;
-    OPERANDS.sequence_at(receiver, slot)
+    OPERANDS.observed_sequence_at(receiver, slot)
 }
 pub fn state_sequence_at(state: u32, slot: usize) -> Option<((u64, u64), usize)> {
-    let (_, slot) = STATES.observed_sequence_at(state as usize, slot)?;
-    STATES.sequence_at(state as usize, slot)
+    STATES.observed_sequence_at(state as usize, slot)
 }
 
 /// Passive lookups for range reads, revalidated at ordered admission.

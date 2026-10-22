@@ -187,18 +187,20 @@ impl Preparation {
         let commander = movement
             .and_then(|movement| movement.leader())
             .map(|receiver| {
-                let handle = self
-                    .commanders
-                    .get(&receiver)
-                    .copied()
-                    .map(Ok)
-                    .unwrap_or_else(|| {
-                        read::<u64>(memory, receiver + engine_native::cunit_leader::TYPE)
-                            .ok_or("division source commander identity unreadable")
-                    });
-                if let Ok(handle) = handle {
-                    self.commanders.insert(receiver, handle);
-                }
+                let handle = match self.commanders.entry(receiver) {
+                    std::collections::hash_map::Entry::Occupied(held) => Ok(*held.get()),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        let handle = read::<u64>(
+                            memory,
+                            receiver + engine_native::cunit_leader::TYPE,
+                        )
+                        .ok_or("division source commander identity unreadable");
+                        if let Ok(handle) = handle {
+                            slot.insert(handle);
+                        }
+                        handle
+                    }
+                };
                 (receiver, handle)
             });
         let province =

@@ -1,4 +1,5 @@
 //! One hourly store loan spans acquisition and FIFO owned settlement.
+use crate::acquisition::callback_parks::{self, Site, lock_callback};
 use crate::extended::attack_stats::ArmyStatStore;
 use std::{
     ops::{Deref, DerefMut},
@@ -34,19 +35,18 @@ impl Slot {
         }
     }
     pub(crate) fn take(self: &Arc<Self>) -> Option<Loan> {
-        let mut store = self
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut store = lock_callback(&self.store, Site::StoreMutex);
         while store.is_none() {
             if crate::allocation::failed() || crate::decode::panic_failure().is_some() {
                 return None;
             }
+            let park = callback_parks::Park::new(Site::StoreReturn);
             store = self
                 .returned
                 .wait_timeout(store, std::time::Duration::from_millis(10))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
+            drop(park);
         }
         let mut held = store.take();
         held.as_deref_mut()
@@ -94,11 +94,7 @@ impl Drop for Loan {
     fn drop(&mut self) {
         // Aborted acquisition, dropped frames and decode unwind cannot carry a partial baseline.
         self.prepare_return();
-        let mut slot = self
-            .owner
-            .store
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = lock_callback(&self.owner.store, Site::StoreMutex);
         assert!(slot.is_none(), "one presentation store loan");
         *slot = self.store.take();
         self.owner.returned.notify_one();

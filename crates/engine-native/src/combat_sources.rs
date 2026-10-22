@@ -421,23 +421,42 @@ impl<'a, M: Memory> DivisionImage<'a, M> {
             let row = row?;
             let offset = address.checked_sub(base)?;
             let end = offset.checked_add(len)?;
-            fields
-                .iter()
-                .find(|field| {
-                    field.len != 0
-                        && field.source_offset <= offset
-                        && end <= field.source_offset + field.len
-                })
-                .map(|field| {
-                    let start = field.destination_offset + offset - field.source_offset;
-                    &row[start..start + len]
-                })
+            let index = fields
+                .partition_point(|field| field.source_offset <= offset)
+                .checked_sub(1)?;
+            let field = &fields[index];
+            if end > field.source_offset + field.len {
+                return None;
+            }
+            let start = field.destination_offset + offset - field.source_offset;
+            Some(&row[start..start + len])
         };
         if address == 0 {
             return None;
         }
         within(self.army, self.army_row, &ARMY_FIELDS)
             .or_else(|| within(self.stat, self.stat_row, &STAT_FIELDS))
+    }
+
+    /// Test the all-image gate once, retaining its lookups for the copy.
+    /// A mixed scatter still goes wholly to the source, without modifying
+    /// any destination first.
+    fn copy_served<const N: usize>(
+        &self,
+        addresses: [usize; N],
+        destinations: &mut [&mut [u8]; N],
+    ) -> bool {
+        let mut bytes: [&[u8]; N] = [&[]; N];
+        for (index, slot) in bytes.iter_mut().enumerate() {
+            let Some(observed) = self.served(addresses[index], destinations[index].len()) else {
+                return false;
+            };
+            *slot = observed;
+        }
+        for (destination, bytes) in destinations.iter_mut().zip(bytes) {
+            destination.copy_from_slice(bytes);
+        }
+        true
     }
 }
 
@@ -520,15 +539,7 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
-        if addresses
-            .iter()
-            .zip(destinations.iter())
-            .all(|(&address, destination)| self.served(address, destination.len()).is_some())
-        {
-            for (&address, destination) in addresses.iter().zip(destinations.iter_mut()) {
-                let bytes = self.served(address, destination.len()).unwrap();
-                destination.copy_from_slice(bytes);
-            }
+        if self.copy_served(addresses, destinations) {
             return N;
         }
         self.inner.copy_scattered(addresses, destinations)
@@ -538,12 +549,8 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
-        if addresses
-            .iter()
-            .zip(destinations.iter())
-            .all(|(&address, destination)| self.served(address, destination.len()).is_some())
-        {
-            return self.copy_scattered(addresses, destinations);
+        if self.copy_served(addresses, destinations) {
+            return N;
         }
         self.inner
             .copy_scattered_prefetched(addresses, destinations)

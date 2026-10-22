@@ -2259,11 +2259,13 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             buffer_wait_ns,
             dispatched,
         };
+        let priority = CallbackPriority::raise();
         if unsafe { guarded_acquisition(shared, entry, || acquire(shared, job)) }
             && let Some(index) = index
         {
             shared.callback_tail[index].store(1, Ordering::Release);
         }
+        drop(priority);
         // Include buffer backpressure in the whole game-thread block before the trampoline.
         // Its percentiles are callback_work; this is only the cheap cumulative.
         shared
@@ -2388,10 +2390,42 @@ unsafe fn finish_observer_boundary(
         .restore_observer_boundary_request(request, report.unwrap_or_default(), failure);
 }
 
+/// Pool workers run above normal. While the game thread waits on them it must
+/// take a core back as soon as it is readied, not queue behind a worker's
+/// slice. Raised for the acquisition only; the game's own priority returns
+/// before any native code runs, and nothing is raised if it is already higher.
+struct CallbackPriority(Option<i32>);
+impl CallbackPriority {
+    fn raise() -> Self {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+        };
+        // GetThreadPriority's failure value.
+        const UNKNOWN: i32 = i32::MAX;
+        // SAFETY: the current-thread pseudo-handle needs no close.
+        let previous = unsafe { GetThreadPriority(GetCurrentThread()) };
+        let raised = previous != UNKNOWN
+            && previous < THREAD_PRIORITY_HIGHEST
+            // SAFETY: as above.
+            && unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) } != 0;
+        Self(raised.then_some(previous))
+    }
+}
+impl Drop for CallbackPriority {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+        if let Some(previous) = self.0 {
+            // SAFETY: the current-thread pseudo-handle needs no close.
+            unsafe { SetThreadPriority(GetCurrentThread(), previous) };
+        }
+    }
+}
+
 /// Every live read of the hour that just ended, on the game thread inside the
 /// hook. The trampoline has not run, so the state is the settled end-of-hour
 /// boundary, read exactly as the original collector did.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
+    let _callback_parks = crate::acquisition::callback_parks::Scope::enter();
     let Dispatch {
         world_generation,
         campaign_epoch,

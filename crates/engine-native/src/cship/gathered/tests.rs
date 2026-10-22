@@ -36,6 +36,62 @@ fn at(bytes: &[u8], address: usize, len: usize) -> &[u8] {
 }
 
 #[test]
+fn model_comparison_excludes_only_organisation_inputs_and_requires_complete_observations() {
+    let kept = HeldShip {
+        ship: Object {
+            pointer: SHIP_A,
+            completed: SHIP.len(),
+            ..Object::NONE
+        },
+        heap: Heap::NONE,
+        variants: [Object::NONE; POOL_ENTRIES],
+        naval_variants: [Object::NONE; POOL_ENTRIES],
+    };
+    assert!(kept.same_model(&kept, 0));
+    assert!(
+        !kept.same_model(&kept, 1),
+        "current census class still authenticates"
+    );
+    for (index, &(offset, len)) in SHIP.iter().enumerate() {
+        for byte in 0..len {
+            let mut fresh = kept;
+            fresh.ship.bytes[index][byte] ^= 1;
+            let organisation_only =
+                matches!(offset, WEATHER_FACTOR | MODIFIERS | EXPERIENCE | CRITICALS)
+                    || offset == BASE_ORGANISATION
+                        && byte < super::super::MAXIMUM_STRENGTH - BASE_ORGANISATION;
+            assert_eq!(
+                fresh.same_model(&kept, 0),
+                organisation_only,
+                "field {index}, byte {byte}"
+            );
+        }
+    }
+    let mut fresh = kept;
+    fresh.ship.completed -= 1;
+    assert!(!fresh.same_model(&kept, 0));
+    assert!(!kept.same_model(&fresh, 0));
+    fresh = kept;
+    fresh.heap = Heap {
+        completed: 1,
+        spans: [(IMAGE, 8), (0, 0)],
+        ..Heap::NONE
+    };
+    let mut changed = fresh;
+    changed.heap.pool[0] = 1;
+    assert!(
+        !fresh.same_model(&changed, 0),
+        "pool payloads are model inputs"
+    );
+    changed = fresh;
+    changed.heap.spans[0].0 += 8;
+    assert!(
+        !fresh.same_model(&changed, 0),
+        "pool allocation identity still matches"
+    );
+}
+
+#[test]
 fn every_object_lists_ascending_disjoint_fields_no_wider_than_its_storage() {
     fn check(fields: &[(usize, usize)]) {
         for pair in fields.windows(2) {
@@ -161,6 +217,69 @@ fn gathered_fields_serve_every_read_inside_them_without_the_source() {
     assert!(memory.copy(SHIP_A + TASK_FORCE - 8, &mut across));
     assert_eq!(across, at(&bytes, SHIP_A + TASK_FORCE - 8, 16));
     assert_eq!(census.calls(), 2);
+}
+
+#[test]
+fn indexed_field_lookup_matches_linear_for_all_gather_prefixes_and_boundaries() {
+    fn check<const N: usize>(fields: [(usize, usize); N]) {
+        let mut object = Object::<N> {
+            pointer: IMAGE,
+            ..Object::NONE
+        };
+        for (index, bytes) in object.bytes.iter_mut().enumerate() {
+            bytes.fill(index as u8 + 1);
+        }
+        for completed in 0..=N {
+            object.completed = completed;
+            for offset in 0..=fields.last().map_or(4, |&(at, len)| at + len + 4) {
+                for len in 0..=WIDTH + 1 {
+                    let expected = if len == 0 {
+                        Lookup::Source
+                    } else {
+                        fields
+                            .iter()
+                            .enumerate()
+                            .find_map(|(index, &(start, width))| {
+                                (start <= offset && offset + len <= start + width).then(|| {
+                                    match index.cmp(&completed) {
+                                        Ordering::Less => Lookup::Served(
+                                            &object.bytes[index]
+                                                [offset - start..offset + len - start],
+                                        ),
+                                        Ordering::Equal if offset == start && len == width => {
+                                            Lookup::Failed
+                                        }
+                                        _ => Lookup::Source,
+                                    }
+                                })
+                            })
+                            .unwrap_or(Lookup::Source)
+                    };
+                    let observed = object.lookup(&fields, IMAGE + offset, len);
+                    match (expected, observed) {
+                        (Lookup::Served(old), Lookup::Served(new)) => assert_eq!(old, new),
+                        (Lookup::Failed, Lookup::Failed) | (Lookup::Source, Lookup::Source) => {}
+                        _ => panic!("prefix {completed}, offset {offset}, len {len}"),
+                    }
+                }
+            }
+        }
+        assert!(matches!(
+            object.lookup(&fields, IMAGE - 1, 1),
+            Lookup::Source
+        ));
+        assert!(matches!(
+            object.lookup(&fields, usize::MAX, usize::MAX),
+            Lookup::Source
+        ));
+        object.pointer = 0;
+        assert!(matches!(object.lookup(&fields, IMAGE, 1), Lookup::Source));
+    }
+    check([]);
+    check([(4, 8)]);
+    check(std::array::from_fn::<_, 31, _>(|index| {
+        (4 + index * 40, 1 + index % WIDTH)
+    }));
 }
 
 #[test]

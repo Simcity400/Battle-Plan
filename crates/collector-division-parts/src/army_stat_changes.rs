@@ -201,8 +201,8 @@ pub trait Changes: Sync {
     fn experience_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }
-    /// Passive range lookups never register a new receiver. Ordered admission
-    /// still takes the ordinary sequence and validates the provisional read.
+    /// Quiet certificates of receivers already registered before range reads.
+    /// Missing receivers still take ordinary registration in census order.
     fn experience_observed_sequence(&self, _receiver: usize) -> Option<(u64, u64)> {
         None
     }

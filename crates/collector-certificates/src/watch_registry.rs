@@ -512,8 +512,9 @@ impl WatchRegistry {
     }
 
     /// A registered receiver's certificate without registering, consuming
-    /// marks or changing refusal counters. Range acquisition may use it only
-    /// provisionally; ordered admission must revalidate it before publication.
+    /// marks or changing refusal counters. A parked reader can freeze this
+    /// certificate without registering the same receiver again. Native reads
+    /// still require their ordinary boundary and certificate validation.
     pub fn observed_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
         if !self.observing() {
             return None;
@@ -946,6 +947,65 @@ impl Drop for Notification<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_warm_lookup_matches_gate_then_registration_at_five_thousand_receivers() {
+        const COUNT: usize = 5_000;
+        let watches = WatchRegistry::new();
+        watches.offer(COUNT);
+        watches.boundary(false);
+        watches.set_enabled(true);
+        let held: Vec<_> = (1..=COUNT)
+            .map(|index| watches.sequence_at(index * 8, usize::MAX).unwrap())
+            .collect();
+        let old = |receiver, hint| {
+            let (_, slot) = watches.observed_sequence_at(receiver, hint)?;
+            watches.sequence_at(receiver, slot)
+        };
+        let counts = || (watches.registered(), watches.refused.load(Relaxed));
+        let before = counts();
+        collector_test_support::with_allocations_denied(|| {
+            for (index, &(_, slot)) in held.iter().enumerate() {
+                let receiver = (index + 1) * 8;
+                // A sibling's slot is only a hint, never an identity proof.
+                for hint in [slot, held[(index + 1) % COUNT].1, usize::MAX] {
+                    assert_eq!(
+                        watches.observed_sequence_at(receiver, hint),
+                        old(receiver, hint)
+                    );
+                }
+                assert_eq!(watches.observed_sequence_at(receiver + COUNT * 8, slot), None);
+            }
+        });
+        assert_eq!(counts(), before);
+        let running = watches.notify(8);
+        assert_eq!(
+            watches.observed_sequence_at(8, held[0].1),
+            old(8, held[0].1)
+        );
+        assert_eq!(old(8, held[0].1), None);
+        drop(running);
+        assert_ne!(old(8, held[0].1), Some(held[0]));
+        assert_eq!(
+            watches.observed_sequence_at(8, held[0].1),
+            old(8, held[0].1)
+        );
+        watches.boundary(true);
+        assert_eq!(watches.observed_sequence_at(8, held[0].1), None);
+        assert_eq!(old(8, held[0].1), None);
+        assert_eq!(watches.registered(), 0, "cleared slots remain cold");
+
+        let full = registry(4);
+        for receiver in 1..=4 {
+            full.sequence(receiver).unwrap();
+        }
+        assert_eq!(full.observed_sequence_at(5, usize::MAX), None);
+        assert_eq!(full.refused.load(Relaxed), 0, "the warm gate is passive");
+        assert_eq!(full.sequence(5), None, "ordered admission still refuses");
+        assert_eq!(full.refused.load(Relaxed), 1);
+        full.poison();
+        assert_eq!(full.observed_sequence_at(1, usize::MAX), None);
+    }
 
     #[test]
     fn hinted_passive_lookup_never_admits_cold_or_cleared_receivers() {

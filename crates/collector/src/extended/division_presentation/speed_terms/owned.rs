@@ -1,6 +1,7 @@
 //! Unit-speed observations and the FIFO-owned publication tail. No live-memory
 //! capability reaches settlement; country pointers are identity tokens only.
 use super::*;
+use crate::acquisition::callback_parks::{self, Site, lock_callback};
 use std::{
     ops::{Deref, DerefMut},
     sync::Condvar,
@@ -23,7 +24,7 @@ static SLOT: Slot = Slot {
 };
 
 pub(super) fn forget() {
-    let mut state = SLOT.state.lock().unwrap_or_else(|p| p.into_inner());
+    let mut state = lock_callback(&SLOT.state, Site::StoreMutex);
     SLOT.generation.fetch_add(1, Relaxed);
     if let State::Ready(held) = &mut *state {
         held.clear();
@@ -40,16 +41,18 @@ pub(super) struct Loan {
 }
 impl Loan {
     pub(super) fn take() -> Result<Self, &'static str> {
-        let mut state = SLOT.state.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = lock_callback(&SLOT.state, Site::StoreMutex);
         while matches!(*state, State::Loaned) {
             if crate::allocation::failed() || crate::decode::panic_failure().is_some() {
                 return Err("unit speed preceding settlement unavailable");
             }
+            let park = callback_parks::Park::new(Site::StoreReturn);
             state = SLOT
                 .returned
                 .wait_timeout(state, std::time::Duration::from_millis(10))
                 .unwrap_or_else(|p| p.into_inner())
                 .0;
+            drop(park);
         }
         let value = match std::mem::replace(&mut *state, State::Loaned) {
             State::Vacant => Held::default(),
@@ -96,7 +99,7 @@ impl DerefMut for Loan {
 impl Drop for Loan {
     fn drop(&mut self) {
         if let Some(owner) = self.owner.take() {
-            let mut state = owner.state.lock().unwrap_or_else(|p| p.into_inner());
+            let mut state = lock_callback(&owner.state, Site::StoreMutex);
             if !self.complete || self.generation != owner.generation.load(Relaxed) {
                 self.value.clear();
             }

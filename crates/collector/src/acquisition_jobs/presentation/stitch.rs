@@ -41,12 +41,12 @@ impl PresentationFanIn {
         }
     }
     pub(in crate::acquisition_jobs) fn open(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         assert!(state.closed && state.parent.is_none() && state.pending.is_none());
         state.admission_open = true;
     }
     pub(super) fn arm(&self, count: usize, final_ranges: bool) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         if !state.admission_open {
             return false;
         }
@@ -69,7 +69,7 @@ impl PresentationFanIn {
         request: &mut PresentationRequest,
         report: Result<Report, Failure>,
     ) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         state.failure = report.err();
         state.parent = Some(PresentationRequest {
             countries: Arc::clone(&request.countries),
@@ -93,8 +93,7 @@ impl PresentationFanIn {
         part: Option<division_presentation::StatusWork>,
         report: Result<Report, Failure>,
     ) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).parts[index] =
-            part.map(|part| (part, report));
+        lock_callback(&self.state, Site::Ranges).parts[index] = part.map(|part| (part, report));
     }
     /// All parent/range tickets have been collected here, so a delayed publisher
     /// can no longer race the callback's original ordered fallback.
@@ -105,7 +104,7 @@ impl PresentationFanIn {
         Option<PresentationRequest>,
         Option<Failure>,
     ) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         if state.pending.is_none() {
             Self::restore(&mut state);
         }
@@ -135,19 +134,14 @@ impl PresentationFanIn {
             .restore_preparation_store(parent.army_stats.as_deref_mut());
     }
     pub(crate) fn close(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         state.admission_open = false;
         state.closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pending
-            .take();
+        let pending = lock_callback(&self.state, Site::Ranges).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         for part in &mut state.parts {
             *part = None;
         }
@@ -156,13 +150,13 @@ impl PresentationFanIn {
 }
 impl acquisition::Publication for PresentationFanIn {
     fn failed(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         state.admission_open = false;
         state.closed = true;
         state.failure = Some(Failure::Panicked);
     }
     fn published(&self, at: i64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock_callback(&self.state, Site::Ranges);
         if state.closed {
             return;
         }

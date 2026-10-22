@@ -452,6 +452,7 @@ impl Captured {
         }
         self.country_cache.begin();
         self.held.begin(changes);
+        self.core.begin(changes);
         self.sample_hour = Some(hour);
         // The counter/model inputs, each composition grid's entries and the
         // demanded display-name inputs every hour.

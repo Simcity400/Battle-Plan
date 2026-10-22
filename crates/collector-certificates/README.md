@@ -2,6 +2,10 @@
 
 Writer certificates, dirty marks, owner-slice selection, sampled verification and held research drift. Stores require complete reads, stable epochs, successful publication and valid writer certificates. Native capture orchestration and collector feature defaults belong to the DLL host.
 
+Fixed-width digest helpers inline across component boundaries so hourly
+verification can specialize their eight-byte folds. The FNV byte stream,
+length-prefixed text and signed-word representation remain unchanged.
+
 Watch registries hash complete receiver keys, preserving dense country identities alongside aligned holder pointers.
 
 Non-marking watch registries can transfer prepared growth under an exclusive native quiescent acquisition lease. The transfer preserves registered sequences, epoch and quiet token, allocates nothing, and retires storage for off-lease collection. Notifications, registration, boundaries and release are excluded during the transfer; offers, status and collection can continue. Marking registries retain their boundary protocol.
@@ -31,7 +35,8 @@ complete registration/publication proof.
 Passive watch-sequence lookups certify only already registered receivers and never
 register, drain marks or count refusals. The hinted passive lookup validates its
 receiver against the current table and epoch, falling back to ordinary probing
-without admitting a cold receiver. Presentation ranges use that gate before
-sequence_at: warm registration completes before resume, while cold/full-table
-admission stays ordered. Frozen observations may then settle owned rows on decode
+without admitting a cold receiver. Presentation ranges use that certificate
+directly: an already registered receiver needs no second, no-op registration.
+Cold/full-table admission stays ordered. Frozen observations may then settle owned
+rows on decode
 without registering a receiver late or consuming another hour's marks.

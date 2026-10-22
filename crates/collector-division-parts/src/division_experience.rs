@@ -155,6 +155,7 @@ impl<T: Clone> Store<T> {
     }
     /// Read-only range acquisition. The ordered observer still owns admission,
     /// next-entry order and failure accounting when it consumes this result.
+    #[cfg(test)]
     pub(super) fn prefetch(
         &self,
         base: usize,
@@ -264,12 +265,24 @@ impl<T: Clone> Store<T> {
         order: &mut Order,
         read: impl FnOnce() -> Result<T, &'static str>,
     ) -> Option<Result<T, &'static str>> {
-        self.prefetch(base, index, seed, certificate, order, read)
-            .or_else(|| {
-                let certificate = certificate?;
-                self.prefetch_held(index, seed, certificate, order)
-                    .map(|held| Ok(held.value.clone()))
-            })
+        let certificate = certificate?;
+        // The carry verdict and value use the same lookup. In particular a
+        // reordered census must not binary-search its scalar baseline twice.
+        if let Some(held) = self.prefetch_held(index, seed, certificate, order) {
+            return Some(Ok(held.value.clone()));
+        }
+        if seed.division == 0
+            || seed.handle != Some(seed.division)
+            || seed.class != Some(0)
+            || base.checked_add(carmy::VTABLE_RVA).map(|v| v as u64) != seed.primary_vtable
+            || base
+                .checked_add(carmy::SECONDARY_VTABLE_RVA)
+                .map(|v| v as u64)
+                != seed.secondary_vtable
+        {
+            return None;
+        }
+        Some(read())
     }
 
     pub fn finish(&mut self, complete: bool) {
@@ -384,6 +397,70 @@ mod tests {
     }
 
     #[test]
+    fn one_scalar_lookup_matches_the_two_lookup_path_and_its_refusals() {
+        let mut store = Store::<i64>::default();
+        let certificate = Some((1, 1));
+        store.begin(3).unwrap();
+        for id in 1..=3 {
+            store
+                .observe_with(0, &seed(id, id as usize), certificate, || Ok(-(id as i64)))
+                .unwrap();
+        }
+        store.finish(true);
+        let mut old_order = Order::default();
+        let mut order = Order::default();
+        for denied in [false, true] {
+            for index in 0..5 {
+                for id in 1..=5 {
+                    for certificate in [None, certificate, Some((1, 2)), Some((2, 1))] {
+                        for invalid in [false, true] {
+                            let mut seed = seed(id, id as usize);
+                            if invalid {
+                                seed.class = None;
+                            }
+                            if denied {
+                                old_order = Order::default();
+                                order = Order::default();
+                            } else {
+                                old_order.clear();
+                                order.clear();
+                            }
+                            let compare = || {
+                                let old_reads = Cell::new(0);
+                                let reads = Cell::new(0);
+                                let read = |count: &Cell<usize>| {
+                                    count.set(count.get() + 1);
+                                    Err("fresh scalar fault")
+                                };
+                                let old = store
+                                    .prefetch(0, index, &seed, certificate, &mut old_order, || {
+                                        read(&old_reads)
+                                    })
+                                    .or_else(|| {
+                                        store
+                                            .prefetch_held(index, &seed, certificate?, &mut old_order)
+                                            .map(|held| Ok(held.value))
+                                    });
+                                let actual = store.prefetch_value(
+                                    0, index, &seed, certificate, &mut order, || read(&reads),
+                                );
+                                assert_eq!(actual, old);
+                                assert_eq!(reads.get(), old_reads.get());
+                            };
+                            if denied {
+                                collector_test_support::with_allocations_denied(compare);
+                            } else {
+                                let mut compare = compare;
+                                compare();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn range_scalar_indexes_rebuild_once_for_five_thousand_divisions() {
         const COUNT: usize = 5000;
         let mut store = Store::<i64>::default();
@@ -406,9 +483,9 @@ mod tests {
                 );
             }
             assert_eq!(order.rebuilds - before.0, rebuilds);
-            // Count actual ordinal/search probes, not elapsed time. Both the
-            // carry decision and its owned-value lookup must stay logarithmic.
-            let limit = COUNT * 2 * (COUNT.ilog2() as usize + 4);
+            // One lookup supplies both the carry verdict and owned value.
+            // Count probes rather than timing so a duplicate search fails.
+            let limit = COUNT * (COUNT.ilog2() as usize + 4);
             assert!(order.probes - before.1 <= limit);
         };
 
@@ -433,7 +510,7 @@ mod tests {
             );
         }
         assert_eq!(order.rebuilds, 0);
-        assert_eq!(order.probes, 2 * COUNT);
+        assert_eq!(order.probes, COUNT);
         check(&store, &mut order, 1, 1);
         let bytes = order.allocated_bytes();
         check(&store, &mut order, 1, 0);

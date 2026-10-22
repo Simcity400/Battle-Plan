@@ -174,6 +174,207 @@ struct Copies {
     spans: std::cell::RefCell<Vec<(usize, usize)>>,
     batches: std::cell::Cell<usize>,
 }
+
+#[test]
+fn effective_metadata_is_pass_local_and_keeps_current_values_absence_and_faults() {
+    const ACCUMULATOR: usize = 0xb0000;
+    const ENTRY: usize = 0xb1000;
+    const TABLE: usize = 0xc0000;
+    let key = LOCAL_RESOURCES_FACTOR;
+    let definition = TABLE + key as usize * modifier_definition::STRIDE;
+    let prepare = |memory: &mut Copies, present: bool, selector: u32| {
+        memory.image.array(ACCUMULATOR, ENTRY, u32::from(present));
+        memory.image.put(ENTRY, &[0; 16]);
+        memory.image.u32(ENTRY, key);
+        memory.image.u64(ENTRY + 8, 123_456);
+        memory
+            .image
+            .u64(modifier_definition::TABLE_RVA, TABLE as u64);
+        memory
+            .image
+            .u32(definition + modifier_definition::FEATURE_SELECTOR, selector);
+        memory.image.u32(
+            definition + modifier_definition::FLAGS,
+            modifier_definition::CLAMP_MAXIMUM,
+        );
+        memory
+            .image
+            .u64(modifier_definition::ELIGIBILITY_CALLBACK_RVA, 0);
+    };
+    for failed in [
+        None,
+        Some(modifier_definition::TABLE_RVA),
+        Some(definition + modifier_definition::FEATURE_SELECTOR),
+        Some(definition + modifier_definition::FLAGS),
+    ] {
+        let mut serial = Copies::new(failed);
+        prepare(&mut serial, true, 0);
+        let expected = modifier_accumulator::lookup_effective_at(&serial, 0, ACCUMULATOR, key)
+            .map(|value| value.effective);
+        let mut cached = Copies::new(failed);
+        prepare(&mut cached, true, 0);
+        let metadata = Default::default();
+        assert_eq!(effective(&cached, 0, ACCUMULATOR, key, &metadata), expected);
+        assert_eq!(
+            *cached.spans.borrow(),
+            *serial.spans.borrow(),
+            "first demand {failed:?}"
+        );
+        // Failed metadata is retried at the next original demand, not held as
+        // either a refusal or a successful clamp observation.
+        if failed.is_some() {
+            assert!(metadata.get().is_none());
+            assert_eq!(
+                effective(&cached, 0, ACCUMULATOR, key, &metadata),
+                Ok(100_000)
+            );
+        }
+        assert!(metadata.get().is_some());
+        cached.image.u64(ENTRY + 8, (-7_i64) as u64);
+        cached.spans.borrow_mut().clear();
+        assert_eq!(effective(&cached, 0, ACCUMULATOR, key, &metadata), Ok(0));
+        assert!(
+            !cached
+                .spans
+                .borrow()
+                .iter()
+                .any(|&(address, _)| address == modifier_definition::TABLE_RVA)
+        );
+        // A new pass cannot retain the preceding pass's metadata.
+        cached.image.u32(definition + modifier_definition::FLAGS, 0);
+        assert_eq!(
+            effective(&cached, 0, ACCUMULATOR, key, &Default::default()),
+            Ok(-7)
+        );
+    }
+    for (present, selector) in [(false, 0), (true, 1)] {
+        let mut memory = Copies::new(None);
+        prepare(&mut memory, present, selector);
+        memory
+            .image
+            .bytes
+            .remove(&(definition + modifier_definition::FLAGS));
+        let metadata = Default::default();
+        assert_eq!(effective(&memory, 0, ACCUMULATOR, key, &metadata), Ok(0));
+        assert_eq!(metadata.get().is_some(), present);
+        let spans = memory.spans.borrow();
+        assert!(
+            !spans
+                .iter()
+                .any(|&(address, _)| address == definition + modifier_definition::FLAGS)
+        );
+        if !present {
+            assert!(
+                !spans
+                    .iter()
+                    .any(|&(address, _)| address == modifier_definition::TABLE_RVA)
+            );
+        }
+    }
+}
+
+#[test]
+fn resource_effective_keeps_an_existing_pass_memos_observation() {
+    struct Memoized<'a> {
+        source: &'a Copies,
+        definitions: modifier_definition::PassDefinitions,
+    }
+    impl Memory for Memoized<'_> {
+        fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+            self.source.copy(at, output)
+        }
+        fn modifier_definitions(&self) -> Option<&modifier_definition::PassDefinitions> {
+            Some(&self.definitions)
+        }
+    }
+    let mut source = Copies::new(None);
+    let table = 0xc0000;
+    let key = PRODUCTION_OIL_FACTOR;
+    let accumulator = 0x2000 + ccountry::MODIFIER_ACCUMULATOR;
+    source.image.array(accumulator, 0xb0000, 1);
+    source.image.put(0xb0000, &[0; 16]);
+    source.image.u32(0xb0000, key);
+    source.image.u64(0xb0008, 123_456);
+    source
+        .image
+        .u64(modifier_definition::TABLE_RVA, table as u64);
+    source.image.u32(
+        table + key as usize * modifier_definition::STRIDE + modifier_definition::FEATURE_SELECTOR,
+        0,
+    );
+    source.image.u32(
+        table + key as usize * modifier_definition::STRIDE + modifier_definition::FLAGS,
+        modifier_definition::CLAMP_MAXIMUM,
+    );
+    let memory = Memoized {
+        source: &source,
+        definitions: Default::default(),
+    };
+    assert_eq!(
+        modifier_accumulator::lookup_effective_at(&memory, 0, accumulator, key)
+            .unwrap()
+            .effective,
+        100_000
+    );
+    source.spans.borrow_mut().clear();
+    source.fail.set(Some(modifier_definition::TABLE_RVA));
+    let metadata = Default::default();
+    assert_eq!(
+        effective(&memory, 0, accumulator, key, &metadata),
+        Ok(100_000)
+    );
+    assert_eq!(source.fail.get(), Some(modifier_definition::TABLE_RVA));
+    assert!(metadata.get().is_none());
+}
+
+#[test]
+fn resource_walk_shares_only_metadata_and_resets_it_for_each_walk() {
+    const TABLE: usize = 0xc0000;
+    let mut memory = Copies::new(None);
+    let definition = TABLE + PRODUCTION_OIL_FACTOR as usize * modifier_definition::STRIDE;
+    memory
+        .image
+        .u64(modifier_definition::TABLE_RVA, TABLE as u64);
+    memory
+        .image
+        .u32(definition + modifier_definition::FEATURE_SELECTOR, 0);
+    memory.image.u32(definition + modifier_definition::FLAGS, 0);
+    for (country, entry, value) in [(0x2000, 0xb0000, 31_i64), (0x4000, 0xb1000, -9)] {
+        memory
+            .image
+            .array(country + ccountry::MODIFIER_ACCUMULATOR, entry, 1);
+        memory.image.put(entry, &[0; 16]);
+        memory.image.u32(entry, PRODUCTION_OIL_FACTOR);
+        memory.image.u64(entry + 8, value as u64);
+    }
+    for _ in 0..2 {
+        memory.spans.borrow_mut().clear();
+        let (outcomes, rows) = walk(&memory);
+        assert_eq!(outcomes.oil, Outcome::Rows { len: 2 });
+        assert_eq!(
+            rows.oil,
+            [
+                OilRow {
+                    country: 7,
+                    factor: 31
+                },
+                OilRow {
+                    country: 2,
+                    factor: -9
+                }
+            ]
+        );
+        assert_eq!(
+            memory
+                .spans
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == modifier_definition::TABLE_RVA)
+                .count(),
+            1
+        );
+    }
+}
 impl Copies {
     fn new(fail: Option<usize>) -> Self {
         Self {
@@ -268,6 +469,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
             game_state: GAME_STATE,
             countries: &countries,
             threshold: THRESHOLD,
+            local_resources: Default::default(),
         };
         memory.spans.borrow_mut().clear();
         assert!(
@@ -300,6 +502,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
         game_state: GAME_STATE,
         countries: &countries,
         threshold: THRESHOLD,
+        local_resources: Default::default(),
     };
     let country = ccountry::Country {
         pointer: 0x2000,

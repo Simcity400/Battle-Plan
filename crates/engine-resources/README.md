@@ -12,6 +12,12 @@ Resource origins and resource-right entries retain their native list positions. 
 
 Resource-origin efficiency/route factors and demanded convoy-client efficiency/convoy words use ordered scattered copies of only their existing spans, after the same authentication gates. Failed prefixes retain the serial refusal and demand no later span; standalone bad-route checks still read no convoy counts.
 
+The parked resource-map walk shares successful local-resource and oil modifier
+metadata in separate stack slots for that walk alone. Every accumulator still
+reads its current key presence and raw value; absent keys demand no metadata,
+failed metadata is not retained, and disabled keys read no clamp flags. No
+cross-hour carry or allocation is added.
+
 Market-referenced routes acquire native state endpoints from the authenticated route header independently of naval port provinces, checking both state vtables and state-roster backlinks.
 
 Demanded strategic-resource pools can copy their stored amounts into reusable

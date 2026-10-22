@@ -91,6 +91,7 @@ const SHIP_MEDALS: usize = 14;
 /// The ship fields holding the equipment pool's vtable and array header.
 const SHIP_POOL: usize = 1;
 const SHIP_POOL_ITEMS: usize = 2;
+const SHIP_SUBUNIT: usize = 3;
 
 /// Pool entries gathered ahead of the model reader at most: as many as one
 /// gathered field holds.
@@ -323,17 +324,21 @@ impl<const N: usize> Object<N> {
         {
             return Lookup::Source;
         }
-        for (index, &(start, width)) in fields.iter().enumerate() {
-            if offset < start || end > start + width {
-                continue;
-            }
-            return match index.cmp(&self.completed) {
-                Ordering::Less => Lookup::Served(&self.bytes[index][offset - start..end - start]),
-                Ordering::Equal if offset == start && len == width => Lookup::Failed,
-                _ => Lookup::Source,
-            };
+        let Some(index) = fields
+            .partition_point(|&(start, _)| start <= offset)
+            .checked_sub(1)
+        else {
+            return Lookup::Source;
+        };
+        let (start, width) = fields[index];
+        if end > start + width {
+            return Lookup::Source;
         }
-        Lookup::Source
+        match index.cmp(&self.completed) {
+            Ordering::Less => Lookup::Served(&self.bytes[index][offset - start..end - start]),
+            Ordering::Equal if offset == start && len == width => Lookup::Failed,
+            _ => Lookup::Source,
+        }
     }
 }
 
@@ -553,6 +558,30 @@ impl HeldShip {
         self.revalidation_complete()
             && other.revalidation_complete()
             && self.ship.same(&other.ship, &SHIP)
+            && self.heap.same(&other.heap)
+    }
+
+    /// The model reader's own inputs, independently of maximum organisation.
+    /// Both gathers must be complete; pool/sprite payloads and the census class
+    /// still match. Variants require their separate current-hour comparison.
+    pub fn same_model(&self, other: &Self, class_id: i32) -> bool {
+        let class = super::CLASS_DATABASE_ID - SUBUNIT_DEFINITION;
+        self.revalidation_complete()
+            && other.revalidation_complete()
+            && self.ship.pointer == other.ship.pointer
+            && self.ship.bytes[SHIP_SUBUNIT][class..class + size_of::<i32>()]
+                == class_id.to_le_bytes()
+            && SHIP.iter().enumerate().all(|(index, &(offset, len))| {
+                if matches!(offset, WEATHER_FACTOR | MODIFIERS | EXPERIENCE | CRITICALS) {
+                    return true;
+                }
+                let start = if offset == BASE_ORGANISATION {
+                    super::MAXIMUM_STRENGTH - BASE_ORGANISATION
+                } else {
+                    0
+                };
+                self.ship.bytes[index][start..len] == other.ship.bytes[index][start..len]
+            })
             && self.heap.same(&other.heap)
     }
 

@@ -6,6 +6,12 @@ Native layouts, guarded memory operations, shared containers, authentication and
 
 Reserve-speed observations retain each reached context and term prefix in reusable flat arenas. Their owned computation accepts no Memory capability and preserves the synchronous arithmetic and refusal order.
 
+Combat division images and gathered naval fields binary-search their existing
+ascending, disjoint span lists. All-image combat scatters retain each lookup
+once, including prefetched scatters; a mixed scatter still goes wholly to the
+source before any destination changes. Exact failed-field and partial-span
+fallback semantics are unchanged, with no additional reads or allocation.
+
 Presentation may select whole unit supply footers for daily sampling: omitted units perform no footer scalar/header read, origin traversal or witness. Requested units retain the same complete layouts, ordered origins and independent refusals. Final-status ranges inherit this selection; owned stitching reads only captured bytes. Exercise accepts only current XP supplied by its caller and otherwise performs its ordinary demanded read; no copied header has daily-field holes.
 
 Consumers depend on this library and the native domain libraries they use.
@@ -116,6 +122,8 @@ The wing census forwards its already authenticated country pointer, canonical sl
 The wing census also forwards its already-gathered attached-group pointer as acquisition-only context. Conversion joins non-tactical wings to the same pass's authenticated OrderRoots census; it adds no native reads or serialized pointers.
 
 The ship-model acquisition row forwards the existing organisation observation's critical-array nonempty predicate without a second native read.
+
+Complete fresh ship gathers can compare model inputs independently of organisation-only fields. The comparison retains maximum strength, current census class, identity, pool and sprite payloads; variants still need their separate current-hour comparison. It neither certifies organisation nor acquires extra bytes.
 
 The asynchronous wing visitor can supply independently certified Air grid flags; the synchronous fallback performs no flag reads.
 

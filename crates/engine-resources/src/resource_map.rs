@@ -18,8 +18,39 @@ use crate::{
     cresource_exchange, cstate, cstrategic_resource, modifier_accumulator, read,
     walk::{Buffer, Outcome},
 };
+use engine_native::modifier_definition;
 
 type RouteElementId<M> = fn(&M, usize) -> Result<u32, &'static str>;
+
+/// A present key's successful metadata is shared only within this parked
+/// walk. Values and presence remain current per accumulator; failed metadata
+/// is never retained, and absent keys demand none. Stack storage cannot add
+/// an allocation refusal to the original getter.
+fn effective(
+    memory: &impl Memory,
+    base: usize,
+    accumulator: usize,
+    key: u32,
+    metadata: &std::cell::Cell<Option<modifier_definition::Operands>>,
+) -> Result<i64, &'static str> {
+    let value = modifier_accumulator::lookup_at(memory, accumulator, key)?;
+    if !value.present {
+        return Ok(0);
+    }
+    // An existing pass memo owns its observation and allocation verdicts.
+    if memory.modifier_definitions().is_some() {
+        return modifier_definition::effective(memory, base, key, value.raw);
+    }
+    let operands = match metadata.get() {
+        Some(operands) => operands,
+        None => {
+            let operands = modifier_definition::operands(memory, base, key)?;
+            metadata.set(Some(operands));
+            operands
+        }
+    };
+    Ok(operands.effective(value.raw))
+}
 
 /// The live bad-efficiency threshold define, i64 fixed5.
 pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x331_9500;
@@ -446,6 +477,7 @@ struct Walk<'a, M: Memory> {
     game_state: usize,
     countries: &'a ccountry::Reader<'a, M>,
     threshold: i64,
+    local_resources: std::cell::Cell<Option<modifier_definition::Operands>>,
 }
 
 impl<M: Memory> Walk<'_, M> {
@@ -556,13 +588,13 @@ impl<M: Memory> Walk<'_, M> {
             state_pointer,
             country.id,
         )?;
-        let local_resources_factor = modifier_accumulator::lookup_effective_at(
+        let local_resources_factor = effective(
             memory,
             self.base,
             accumulator,
             LOCAL_RESOURCES_FACTOR,
-        )?
-        .effective;
+            &self.local_resources,
+        )?;
         // A rights-holder origin carries its own route to the holder, as an own origin does.
         let route_address = at(origin, ORIGIN_ROUTE)?;
         self.authenticate_route(route_address)?;
@@ -993,7 +1025,9 @@ pub fn walk_buffer(
         game_state,
         countries: &countries,
         threshold: threshold.unwrap_or_default(),
+        local_resources: Default::default(),
     };
+    let oil_metadata = Default::default();
     // The supply transfers' country systems, which only the clients read.
     let supply_systems = (|| -> Result<usize, &'static str> {
         let supply = pointer(
@@ -1025,13 +1059,13 @@ pub fn walk_buffer(
         };
         found_country = true;
         tables[OIL].run(|table| {
-            let oil = modifier_accumulator::lookup_effective_at(
+            let oil = effective(
                 memory,
                 base,
                 at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
                 PRODUCTION_OIL_FACTOR,
-            )?
-            .effective;
+                &oil_metadata,
+            )?;
             if oil != 0 {
                 table.push(
                     &mut outputs.oil,

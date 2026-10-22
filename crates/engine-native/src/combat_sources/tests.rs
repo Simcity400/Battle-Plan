@@ -1131,6 +1131,141 @@ fn images_resume_after_a_failed_record() {
     assert_eq!(w.copies.get() - before, 1);
 }
 
+#[test]
+fn image_lookup_keeps_linear_boundaries_and_army_before_aliased_stats() {
+    let army: Vec<u8> = (0..ARMY_STRIDE).map(|index| index as u8).collect();
+    let stats: Vec<u8> = (0..STAT_STRIDE)
+        .map(|index| (index as u8).wrapping_add(71))
+        .collect();
+    let source = crate::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    for stat in [0x2000, 0x2080, 0x4000] {
+        let image = DivisionImage {
+            inner: &source,
+            army: 0x2000,
+            army_row: Some(&army),
+            stat,
+            stat_row: Some(&stats),
+        };
+        let linear = |address: usize, len: usize| {
+            [
+                (image.army, &army[..], &ARMY_FIELDS[..]),
+                (stat, &stats[..], &STAT_FIELDS[..]),
+            ]
+            .into_iter()
+            .find_map(|(base, row, fields)| {
+                let offset = address.checked_sub(base)?;
+                let end = offset.checked_add(len)?;
+                fields
+                    .iter()
+                    .find(|field| {
+                        field.len != 0
+                            && field.source_offset <= offset
+                            && end <= field.source_offset + field.len
+                    })
+                    .map(|field| {
+                        let start = field.destination_offset + offset - field.source_offset;
+                        &row[start..start + len]
+                    })
+            })
+        };
+        for base in [image.army, stat] {
+            for offset in 0..0x640 {
+                for len in 0..=40 {
+                    assert_eq!(image.served(base + offset, len), linear(base + offset, len));
+                }
+            }
+        }
+        assert_eq!(image.served(0, 1), None);
+        assert_eq!(image.served(usize::MAX, usize::MAX), None);
+    }
+}
+
+#[test]
+fn image_scatter_keeps_whole_source_fallback_and_untouched_failure_suffix() {
+    struct Source {
+        calls: Cell<[usize; 2]>,
+    }
+    impl Source {
+        fn scatter<const N: usize>(
+            &self,
+            prefetched: usize,
+            addresses: [usize; N],
+            destinations: &mut [&mut [u8]; N],
+        ) -> usize {
+            let mut calls = self.calls.get();
+            calls[prefetched] += 1;
+            self.calls.set(calls);
+            assert!(
+                destinations
+                    .iter()
+                    .all(|bytes| bytes.iter().all(|&byte| byte == 0xa5))
+            );
+            for (index, (address, destination)) in
+                addresses.into_iter().zip(destinations).enumerate()
+            {
+                if address == 0x8000 {
+                    return index;
+                }
+                destination.fill(0x77);
+            }
+            N
+        }
+    }
+    impl Memory for Source {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("scatter must stay batched")
+        }
+        fn copy_scattered<const N: usize>(
+            &self,
+            at: [usize; N],
+            out: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.scatter(0, at, out)
+        }
+        fn copy_scattered_prefetched<const N: usize>(
+            &self,
+            at: [usize; N],
+            out: &mut [&mut [u8]; N],
+        ) -> usize {
+            self.scatter(1, at, out)
+        }
+    }
+    let source = Source {
+        calls: Cell::new([0; 2]),
+    };
+    let army = [0x33; ARMY_STRIDE];
+    let image = DivisionImage {
+        inner: &source,
+        army: 0x2000,
+        army_row: Some(&army),
+        stat: 0,
+        stat_row: None,
+    };
+    for prefetched in [false, true] {
+        for mixed in [false, true] {
+            let addresses = [0x2000, if mixed { 0x8000 } else { 0x2008 }, 0x2010];
+            let mut output = [[0xa5; 8]; 3];
+            let mut spans = output.each_mut().map(|bytes| bytes.as_mut_slice());
+            let copied = if prefetched {
+                image.copy_scattered_prefetched(addresses, &mut spans)
+            } else {
+                image.copy_scattered(addresses, &mut spans)
+            };
+            if mixed {
+                assert_eq!(copied, 1);
+                assert_eq!(output, [[0x77; 8], [0xa5; 8], [0xa5; 8]]);
+            } else {
+                assert_eq!(copied, 3);
+                assert_eq!(output, [[0x33; 8]; 3]);
+            }
+        }
+    }
+    assert_eq!(source.calls.get(), [1, 1]);
+}
+
 /// The batched owned-relation walk answers as the one-by-one walk does,
 /// with its failure: a war at any position, none, a null relation, an
 /// unreadable pointer and an unreadable type. No span is read twice.

@@ -1545,8 +1545,8 @@ fn a_carried_ships_model_part_is_not_read_again() {
 
 /// A ship a hooked writer touched is gathered again; when its own objects
 /// and modifier arrays equal its held read's, it carries again under its new
-/// certificate (its model part is not read again), and when a byte changed
-/// it is read afresh.
+/// certificate. An organisation-only change retains the equal model part;
+/// changing a model input runs its reader again.
 #[test]
 fn a_touched_ship_with_unchanged_bytes_carries_again() {
     use crate::ship_model_changes::Watches;
@@ -1587,8 +1587,14 @@ fn a_touched_ship_with_unchanged_bytes_carries_again() {
     drop(watches.notify(fleet::ship(3), 0));
     let read = hour(&world);
     assert_ne!(read[3].maximum_organisation, fresh[3].maximum_organisation);
-    assert_eq!(read[3].hull_sprite.as_bytes(), b"wull");
+    assert_eq!(read[3].hull_sprite.as_bytes(), b"hull");
     assert_eq!(read[..3], fresh[..3]);
+    let at = fleet::ship(3) + cship::MODEL_NUMBER - fleet::LOW;
+    world.low[at..at + 4].copy_from_slice(&19_i32.to_le_bytes());
+    drop(watches.notify(fleet::ship(3), 0));
+    let read = hour(&world);
+    assert_eq!(read[3].model_number, 19);
+    assert_eq!(read[3].hull_sprite.as_bytes(), b"wull");
 }
 
 /// A carried row the capture's buffer already holds at its position, from
@@ -2475,6 +2481,103 @@ mod carry_cost_bench {
         let added = hour(&world, &mut captured, &watches, Check::Nothing);
         assert_eq!(added, hour(&world, &mut direct, &watches, Check::Every));
         assert_eq!(captured.store.tasks.len(), 4);
+    }
+
+    #[test]
+    fn organisation_only_writers_keep_models_and_equal_fresh_reads_at_country_scale() {
+        for countries in [1500, 5000] {
+            let mut world = World::new(countries);
+            let watches = Watches::enabled(4 * world.census.len());
+            let mut held = capture(world.census.len());
+            let previous = hour(&world, &mut held, &watches, Check::Nothing);
+            for index in 0..world.census.len() {
+                let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
+                world.memory.low[at..at + 8].copy_from_slice(&30_000_000_i64.to_le_bytes());
+                drop(watches.notify(fleet::ship(index), 0));
+            }
+            world
+                .memory
+                .watched
+                .set(fleet::IMAGE + engine_native::cequipment_database::SINGLETON_RVA);
+            world.memory.hits.set(0);
+            let current = hour(&world, &mut held, &watches, Check::Nothing);
+            assert_ne!(
+                current[0].maximum_organisation,
+                previous[0].maximum_organisation
+            );
+            assert_eq!(
+                world.memory.hits.get(),
+                0,
+                "equal model suffixes need no definition database"
+            );
+            let mut fresh = capture(world.census.len());
+            assert_eq!(current, hour(&world, &mut fresh, &watches, Check::Every));
+            assert!(
+                world.memory.hits.get() > 0,
+                "fresh reference still reads the model suffix"
+            );
+            assert!(!watches.poisoned());
+            watches.boundary(true);
+            let at = fleet::ship(0) + cship::BASE_ORGANISATION - fleet::LOW;
+            world.memory.low[at..at + 8].copy_from_slice(&31_000_000_i64.to_le_bytes());
+            world.memory.hits.set(0);
+            let recovered = hour(&world, &mut held, &watches, Check::Nothing);
+            assert!(
+                world.memory.hits.get() > 0,
+                "an epoch change cannot use partial revalidation"
+            );
+            let mut fresh = capture(world.census.len());
+            assert_eq!(recovered, hour(&world, &mut fresh, &watches, Check::Every));
+        }
+    }
+
+    #[test]
+    #[ignore = "ship-model organisation-only revalidation benchmark"]
+    fn organisation_only_model_carry_bench() {
+        let mut expected = None;
+        for model_carry in [false, true] {
+            let mut world = World::new(1500);
+            let ships = world.census.len();
+            let watches = Watches::enabled(4 * ships);
+            let mut held = capture(ships);
+            hour(&world, &mut held, &watches, Check::Nothing);
+            super::MODEL_CARRY_OFF.set(!model_carry);
+            let mut samples = Vec::with_capacity(SAMPLES);
+            let mut calls = 0;
+            for sample in 0..SAMPLES {
+                for index in 0..ships {
+                    let at = fleet::ship(index) + cship::BASE_ORGANISATION - fleet::LOW;
+                    world.memory.low[at..at + 8]
+                        .copy_from_slice(&(30_000_000_i64 + sample as i64).to_le_bytes());
+                    drop(watches.notify(fleet::ship(index), 0));
+                }
+                world.seed(&mut held);
+                let before = world.memory.calls.get();
+                let timer = Instant::now();
+                held.capture_carrying(
+                    &world.memory,
+                    CaptureContext::new(fleet::IMAGE),
+                    &watches,
+                    Check::Nothing,
+                );
+                samples.push(timer.elapsed().as_nanos() as f64 / ships as f64);
+                calls += world.memory.calls.get() - before;
+                assert_eq!(held.outcomes(), [Outcome::Rows { len: ships }]);
+            }
+            super::MODEL_CARRY_OFF.set(false);
+            assert!(!watches.poisoned());
+            let rows = &held.rows.rows[..ships];
+            if let Some(expected) = &expected {
+                assert_eq!(rows, expected);
+            } else {
+                expected = Some(rows.to_vec());
+            }
+            println!(
+                "BENCH organisation-only ship writers, model carry {model_carry}: median {:.0} ns/ship, {:.2} native copies/ship",
+                median(samples),
+                calls as f64 / (ships * SAMPLES) as f64,
+            );
+        }
     }
 
     #[test]

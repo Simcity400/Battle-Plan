@@ -1796,7 +1796,8 @@ impl Captured {
         if let Some(mut moved) = stale.take() {
             fields.visit(memory, pointer);
             visited = true;
-            if fields.held().same(&moved.fields) {
+            let read = fields.held();
+            if read.same(&moved.fields) {
                 let gathered = fields.memory(memory);
                 let mut arena = self.modifiers.borrow_mut();
                 let arrays_held = moved.accumulators.iter().all(|(address, entries)| {
@@ -1811,6 +1812,19 @@ impl Captured {
                 } else {
                     stale = Some(moved);
                 }
+            } else if model_carry_enabled()
+                && certificate.is_some_and(|certificate| {
+                    certificate
+                        .iter()
+                        .zip(moved.certificate)
+                        .all(|(fresh, kept)| fresh.0 == kept.0)
+                })
+                && read.same_model(&moved.fields, row.class_id)
+            {
+                // A changed organisation input does not invalidate equal model
+                // inputs. Only the model may carry: organisation and arrays are
+                // read afresh, and variants still compare below.
+                stale = Some(moved);
             }
         }
         if visited

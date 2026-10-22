@@ -2957,6 +2957,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "input_consumers_ns": load(&shared.presentation.input_consumers_ns),
                 "input_restore_ns": load(&shared.presentation.input_restore_ns),
                 "input_publish_hold_ns": shared.acquisition.get().map_or(0, |pool| shared.ns(pool.presentation_input_hold_ticks() as i64)),
+                "callback_parks": crate::acquisition::callback_parks::snapshot(),
+                "callback_parks_scope": "cumulative acquisition-callback blocking attempts and wall through return, by site; mutexes count failed try_lock followed by blocking lock; readiness/join/drain count address waits, store_return counts condition-variable waits; includes spurious/immediate returns and scheduling delay, not an OS context-switch count; excludes worker/status waits, pre-acquisition clock/buffer backpressure and uninstrumented family locks",
                 "early_steps_ns": map(crate::sampling::EarlyStep::ALL.into_iter()
                     .zip(shared.presentation.early_steps.each_ref())
                     .map(move |(step, stats)| (DebugValue(step), status!({

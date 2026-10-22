@@ -324,6 +324,8 @@ fn readiness_registration_is_removed_on_unwind() {
 
 #[test]
 fn readiness_spin_observes_publication_without_registering_an_address_wait() {
+    let _callback = callback_parks::Scope::enter();
+    let parks_before = callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls;
     let (release, released) = mpsc::channel();
     let released = Mutex::new(released);
     let pool = Pool::start(1, 1, move |job: &mut u8| {
@@ -353,8 +355,56 @@ fn readiness_spin_observes_publication_without_registering_an_address_wait() {
     assert_eq!(calls, 2);
     assert_eq!(pool.calibration().spins, 1);
     assert_eq!(pool.calibration().join_sleeps, 0);
+    assert_eq!(
+        callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls,
+        parks_before
+    );
     assert_eq!(pool.calibration().uncollected, 1);
     assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+}
+
+#[test]
+fn callback_readiness_park_records_its_wait_without_worker_waits() {
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    let pool = Pool::start(1, 1, move |job: &mut u8| {
+        released
+            .lock()
+            .unwrap()
+            .recv_timeout(crate::TEST_HANG_GUARD)
+            .unwrap();
+        *job
+    })
+    .unwrap();
+    let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
+    let before = callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls;
+    let releaser = std::thread::spawn(move || {
+        let until = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+        while callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls == before {
+            assert!(
+                std::time::Instant::now() < until,
+                "callback did not reach its wait"
+            );
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+    });
+    {
+        let _callback = callback_parks::Scope::enter();
+        pool.wait_ready_with_spin(std::time::Duration::ZERO, || {
+            pool.is_complete(ticket).then_some(())
+        });
+    }
+    releaser.join().unwrap();
+    let after = callback_parks::snapshot();
+    assert!(after[callback_parks::Site::Readiness as usize].calls > before);
+    assert!(
+        after[callback_parks::Site::Readiness as usize].ns
+            >= after[callback_parks::Site::Readiness as usize].max_ns
+    );
+    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
+    assert_eq!(pool.calibration().uncollected, 0);
+    assert_eq!(pool.calibration().caller_executed, 0);
 }
 
 /// Parts may publish in reverse order, but the consumer waits for every

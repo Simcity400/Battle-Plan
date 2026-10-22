@@ -927,14 +927,14 @@ impl<const N: usize> RawLog<N> {
             return false;
         }
         self.bytes.extend_from_slice(bytes);
-        for span in spans {
+        self.spans.extend(spans.iter().map(|span| {
             debug_assert!(span.ok && span.start as usize + span.len as usize <= bytes.len());
-            self.spans.push(Span {
+            self.has_bulk |= span.bulk;
+            Span {
                 start: (base + span.start as usize) as u32,
                 ..*span
-            });
-            self.has_bulk |= span.bulk;
-        }
+            }
+        }));
         true
     }
 

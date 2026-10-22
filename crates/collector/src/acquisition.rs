@@ -39,6 +39,7 @@ use std::{
 };
 
 use serde::Serialize;
+pub(crate) mod callback_parks;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThreadId, WaitOnAddress, WakeByAddressAll, WakeByAddressSingle,
 };
@@ -528,7 +529,7 @@ struct Shared<J, R> {
 
 impl<J, R> Shared<J, R> {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|error| error.into_inner())
+        callback_parks::lock_callback(&self.state, callback_parks::Site::Queue)
     }
     fn wait_for_work<'a>(&self, state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
         self.work_ready
@@ -605,6 +606,7 @@ impl<J, R> Shared<J, R> {
             // The same SC Dekker as publication: the zero decrement either
             // precedes this reload or observes settling and wakes all waiters.
             // SAFETY: stable aligned usize and a same-size local comparison.
+            let _park = callback_parks::Park::new(callback_parks::Site::Drain);
             unsafe {
                 WaitOnAddress(
                     self.active.as_ptr().cast(),
@@ -1543,6 +1545,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 } else {
                     (value, observed)
                 };
+                let park = callback_parks::Park::new(callback_parks::Site::Join);
                 unsafe {
                     WaitOnAddress(
                         address.as_ptr().cast(),
@@ -1551,6 +1554,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                         u32::MAX,
                     )
                 };
+                drop(park);
                 // With wakes suppressed, only a fixture's rescue advances the
                 // sequence: absorb legal spurious returns until it does, so
                 // the suppression test cannot collect early.
@@ -1715,6 +1719,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             }
             add(&self.shared.counters.join_sleeps, 1);
             // SAFETY: stable aligned u64 and a same-size local comparison.
+            let _park = callback_parks::Park::new(callback_parks::Site::Readiness);
             unsafe {
                 WaitOnAddress(
                     self.shared.ready_wake.as_ptr().cast(),
