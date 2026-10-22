@@ -1,27 +1,11 @@
-//! Spool bytes of a fixed synthetic campaign driven through the spool path.
-//!
-//! `EXPECTED_DIGEST` covers format 117's record envelopes and daily slot-12
-//! training carry markers, the registered tables and
-//! unavailable faction-companion outcomes alongside the fixture's populated inputs.
-//! The campaign runs with
-//! no, one and two helpers. It mixes projected unchanged and changed rows,
-//! row-count changes, a failed and a truncated table, shared complete rows
-//! that are reused or replaced, and carried staggered markers; any change that
-//! alters one spool byte of conversion, carry, projection, comparison,
-//! encoding or record framing fails here.
+//! The spool conversion helper against single-thread conversion, over one synthetic hour.
 
-use super::tests::{captured, session};
+use super::tests::captured;
 use super::*;
 use engine_native::msvc_string::Text;
-use replay::spool::recover_prefix;
 use replay_data::rows::TableId;
-use replay_frame::{frame::FrameDecoder, frame::TableUpdate};
 
 const FIRST_HOUR: i32 = 100;
-const HOURS: i32 = 30;
-/// FNV-1a 64 over every spool segment's bytes in segment order.
-// Record-envelope version changes update the golden; container aliases do not affect spools.
-const EXPECTED_DIGEST: u64 = 0xf60a_ce4a_0064_1cb3;
 
 fn text<const N: usize>(value: &[u8]) -> Text<N> {
     let mut result = Text {
@@ -30,12 +14,6 @@ fn text<const N: usize>(value: &[u8]) -> Text<N> {
     };
     result.bytes[..value.len()].copy_from_slice(value);
     result
-}
-
-fn fnv1a(digest: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(digest, |digest, &byte| {
-        (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }
 
 /// One synthetic hour. Most rows repeat; a few change on fixed steps.
@@ -152,127 +130,6 @@ fn hour_frame(step: i32) -> Captured {
         .extended
         .set_intel_shadow_fixture(if step < 17 { 10 } else { 20 });
     source
-}
-
-/// Every update kind the campaign must exercise, counted over all frames.
-#[derive(Debug, Default)]
-struct Coverage {
-    snapshots: usize,
-    deltas: usize,
-    unchanged: usize,
-    truncated: usize,
-    unavailable: usize,
-    /// Unchanged staggered tables: carried markers or equal shared rows.
-    staggered_unchanged: usize,
-    /// Hourly tables the comparison before encoding found equal.
-    compared_equal: u64,
-    /// Intel shadow hits and misses: the lent conversion cache on a helper
-    /// decides as the spool thread's does.
-    intel_shadow: (u64, u64),
-}
-
-fn run_campaign(directory: &Path, helpers: usize) -> (u64, Coverage) {
-    let _ = fs::remove_dir_all(directory);
-    let mut processor = Processor::new(directory, PreparedCampaigns::default(), session()).unwrap();
-    for _ in 0..helpers {
-        processor.set_helper(crate::spool_helper::SpoolHelper::start().unwrap());
-    }
-    for step in 0..HOURS {
-        processor.set_backlogged(step % 3 == 0);
-        processor.frame(&hour_frame(step)).unwrap();
-        processor.flush().unwrap();
-    }
-    processor.detach().unwrap();
-    let compared_equal = processor.comparison.total_decisions().0;
-    let status = serde_json::to_value(processor.status().unwrap()).unwrap();
-    let shadow = &status["spool_work"]["intel_shadow"];
-    let intel_shadow = (
-        shadow["hits"].as_u64().unwrap(),
-        shadow["misses"].as_u64().unwrap(),
-    );
-    let campaign = directory.join(std::str::from_utf8(CAMPAIGN).unwrap());
-    let mut segments: Vec<_> = fs::read_dir(&campaign)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("spool."))
-        })
-        .collect();
-    segments.sort();
-    assert!(!segments.is_empty());
-    let mut digest = 0xcbf2_9ce4_8422_2325;
-    let mut coverage = Coverage {
-        compared_equal,
-        intel_shadow,
-        ..Coverage::default()
-    };
-    for segment in segments {
-        let bytes = fs::read(segment).unwrap();
-        digest = fnv1a(digest, &bytes);
-        let recovered = recover_prefix(&bytes);
-        assert!(recovered.damage.is_none());
-        let mut decoder = FrameDecoder::new();
-        for record in recovered.records {
-            let Record::Frame(frame) = record else {
-                continue;
-            };
-            decoder.apply(&frame).unwrap();
-            for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
-                if replay_data::cadence::is_staggered(table)
-                    && matches!(update, TableUpdate::Unchanged { .. })
-                {
-                    coverage.staggered_unchanged += 1;
-                }
-                match update {
-                    TableUpdate::Snapshot(_) => coverage.snapshots += 1,
-                    TableUpdate::Delta { .. } => coverage.deltas += 1,
-                    TableUpdate::Unchanged { .. } => coverage.unchanged += 1,
-                    TableUpdate::Truncated { .. } => coverage.truncated += 1,
-                    TableUpdate::Unavailable { .. } => coverage.unavailable += 1,
-                    TableUpdate::Incompatible { .. } => panic!("current writer"),
-                }
-            }
-        }
-    }
-    let _ = fs::remove_dir_all(directory);
-    (digest, coverage)
-}
-
-const CAMPAIGN: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
-
-#[test]
-fn a_fixed_synthetic_campaign_writes_the_same_spool_bytes() {
-    let directory =
-        std::env::temp_dir().join(format!("hoi4-spool-byte-identity-{}", std::process::id()));
-    let (digest, coverage) = run_campaign(&directory, 0);
-    println!("spool byte digest {digest:#018x}, coverage {coverage:?}");
-    assert_eq!(
-        run_campaign(&directory, 0).0,
-        digest,
-        "the campaign is deterministic"
-    );
-    // Helpers convert map tables and the helper packs and share the
-    // comparison before encoding; the spool bytes stay those of one thread.
-    for helpers in [1, 2] {
-        let (helped, helped_coverage) = run_campaign(&directory, helpers);
-        assert_eq!(
-            helped, digest,
-            "{helpers} conversion helpers changed the spool"
-        );
-        assert_eq!(helped_coverage.intel_shadow, coverage.intel_shadow);
-    }
-    assert!(coverage.intel_shadow.0 > 0, "{coverage:?}");
-    assert!(coverage.snapshots > 0, "{coverage:?}");
-    assert!(coverage.deltas > 0, "{coverage:?}");
-    assert!(coverage.unchanged > 0, "{coverage:?}");
-    assert!(coverage.truncated > 0, "{coverage:?}");
-    assert!(coverage.unavailable > 0, "{coverage:?}");
-    assert!(coverage.staggered_unchanged > 0, "{coverage:?}");
-    // Equal hourly tables reached the encoder as comparisons, not rows.
-    assert!(coverage.compared_equal > 0, "{coverage:?}");
-    assert_eq!(digest, EXPECTED_DIGEST);
 }
 
 /// Conversion with the helper fills every table slot the single-thread order

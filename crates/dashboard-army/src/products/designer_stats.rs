@@ -110,7 +110,9 @@ impl Calculator {
 
 /// Each technology a country has researched with a unit bonus, in technology database order,
 /// its words multiplied by its researched level ([`technology_multiplier`]). (The recorded
-/// applied-bonus word is an activity flag, not a count.)
+/// applied-bonus word is an activity flag, not a count.) A researched technology with a unit
+/// bonus whose recorded level is not positive is refused by name: the game applies a bonus only
+/// at a positive level, and how such an occurrence reaches a rebuild is not established.
 pub fn technology_bonuses(
     frame: &DecodedFrame,
     content: &Content,
@@ -148,21 +150,28 @@ pub fn technology_bonuses(
         if template.unit_bonus.is_empty() {
             continue;
         }
+        let multiplier = technology_multiplier(row.level).ok_or_else(|| {
+            format!(
+                "technology {name} is researched at level {}, which is not reproduced",
+                row.level
+            )
+        })?;
         bonuses.push(definitions::authored_bonus(
             content,
             &template.unit_bonus,
             terrains,
-            technology_multiplier(row.level),
+            multiplier,
             format!("technology {name}"),
         )?);
     }
     Ok(bonuses)
 }
 
-/// The fixed5 multiplier of a researched technology's unit bonus: its recorded level when
-/// positive (a repeatable or multilevel technology's words apply once per level), else one.
-pub fn technology_multiplier(level: i32) -> i64 {
-    if level > 0 { kernel::count(level) } else { ONE }
+/// The fixed5 multiplier of a researched technology's unit bonus: its recorded level, when
+/// positive (a repeatable or multilevel technology's words apply once per level); `None` for a
+/// level that is not.
+pub fn technology_multiplier(level: i32) -> Option<i64> {
+    (level > 0).then(|| kernel::count(level))
 }
 
 /// The source kinds of a recorded persistent bonus, by their stored value.
@@ -406,9 +415,9 @@ pub fn critical_fill(
     pool: &[Held],
     manpower_fill: i64,
     cost: &dyn Fn(usize) -> i64,
-) -> i64 {
+) -> Result<i64, &'static str> {
     if definition.critical.is_empty() {
-        return ONE;
+        return Ok(ONE);
     }
     let (mut held_total, mut required_total) = (0_i64, 0_i64);
     for &archetype in &definition.critical {
@@ -428,11 +437,11 @@ pub fn critical_fill(
         required_total = required_total.wrapping_add(kernel::mul(ic, need));
     }
     let fill = if required_total > 0 {
-        kernel::div(held_total, required_total)
+        kernel::div(held_total, required_total)?
     } else {
         ONE
     };
-    fill.min(manpower_fill)
+    Ok(fill.min(manpower_fill))
 }
 
 /// The designer's preview of a template: its calculated stats, or why the stats that depend on
@@ -503,7 +512,8 @@ pub fn preview(
         )?;
         let groups: Vec<Group<'_>> = groups
             .iter()
-            .map(|(definition, count)| Group {
+            .map(|(definition, count)| {
+                Ok(Group {
                     definition,
                     count: *count,
                     critical: critical_fill(
@@ -515,15 +525,16 @@ pub fn preview(
                             calculator.content.equipment.equipment[archetype].stats
                                 [calculator.slots.build_cost_ic]
                         },
-                    ),
+                    )?,
+                })
             })
-            .collect();
+            .collect::<Result<_, &str>>()?;
         Ok(kernel::calculate(
             &calculator.slots,
             &groups,
             &pool,
             &calculator.operands,
-        ))
+        )?)
     })();
     Ok(Preview {
         block,

@@ -54,6 +54,9 @@ pub const MIO_POLICY_COST_FORMAT: u16 = 118;
 /// from the occurrence before it, and the writer keeps each distinct token
 /// once per pack.
 pub const EVENT_FEED_OCCURRENCE_DELTAS_FORMAT: u16 = 119;
+/// Owner-approved DivisionPanelStats.panel_stats[22]: the stat block's suppression word, the
+/// division designer's witness of its suppression row, read in the panel cache's copy.
+pub const PANEL_SUPPRESSION_FORMAT: u16 = 120;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -3186,10 +3189,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     };
     history[TableId::DivisionPanelStats.index()] = LastChange {
         introduced: EXPERIENCE_FORMAT,
-        ..table(
+        ..appended_at(
             TableId::DivisionPanelStats,
-            EXPERIENCE_FORMAT,
-            "pol/capture-experience",
+            PANEL_SUPPRESSION_FORMAT,
+            "feat/designer-rows",
+            &[AppendedField {
+                index: 22,
+                name: "panel_stats[22]",
+                introduced: PANEL_SUPPRESSION_FORMAT,
+            }],
         )
     };
     history[TableId::DivisionPanelSources.index()] = LastChange {
@@ -4670,10 +4678,11 @@ mod tests {
                 UNIT_BONUSES_FORMAT,
                 MIO_POLICY_COST_FORMAT,
                 EVENT_FEED_OCCURRENCE_DELTAS_FORMAT,
+                PANEL_SUPPRESSION_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117, 118, 119],
+            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120],
         );
-        assert_eq!(FORMAT_VERSION, EVENT_FEED_OCCURRENCE_DELTAS_FORMAT);
+        assert_eq!(FORMAT_VERSION, PANEL_SUPPRESSION_FORMAT);
     }
 
     #[test]

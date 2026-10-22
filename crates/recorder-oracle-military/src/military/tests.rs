@@ -1849,7 +1849,7 @@ fn division_panel_stats_checks_its_own_roster_and_every_operand() {
     save.divisions.retain(|key, _| *key == id);
     let mut row = DivisionPanelStatsRow {
         division: id,
-        panel_stats: [Some(i64::MIN); 22],
+        panel_stats: [Some(i64::MIN); 23],
     };
     set(
         &mut frame,
@@ -1863,12 +1863,24 @@ fn division_panel_stats_checks_its_own_roster_and_every_operand() {
     set(
         &mut frame,
         TableId::DivisionPanelStats,
-        TableRows::DivisionPanelStats(vec![row]),
+        TableRows::DivisionPanelStats(vec![row.clone()]),
     );
     let mut report = Report::default();
     compare_division_panel_stats(&frame, &save, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1);
     assert!(report.differences[0].contains("panel_stats[21]"));
+    // An unread suppression word is a difference too.
+    row.panel_stats[21] = Some(i64::MIN);
+    row.panel_stats[22] = None;
+    set(
+        &mut frame,
+        TableId::DivisionPanelStats,
+        TableRows::DivisionPanelStats(vec![row.clone()]),
+    );
+    let mut report = Report::default();
+    compare_division_panel_stats(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("panel_stats[22]"));
     set(
         &mut frame,
         TableId::DivisionPanelStats,

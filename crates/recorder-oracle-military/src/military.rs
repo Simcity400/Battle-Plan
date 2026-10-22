@@ -375,7 +375,7 @@ pub fn compare_division_panel_stats(
         );
     }
     report.compared("DivisionPanelStats", rows.len());
-    report.limitation("The 22 deployed active-stat cache values are not serialized by the division writer. Save membership and available operands do not certify their numbers; compare every column with the matched-hour native division panel, and use sampled carried-versus-fresh verification across rebuilds.", "DivisionPanelStats.panel_stats[0..22]");
+    report.limitation("The 22 deployed active-stat cache values and the stat block's suppression word are not serialized by the division writer. Save membership and available operands do not certify their numbers; compare every column with the matched-hour native division panel (the suppression word with the division designer's suppression row, which the panel does not show), and use sampled carried-versus-fresh verification across rebuilds.", "DivisionPanelStats.panel_stats[0..23]");
     Ok(())
 }
 

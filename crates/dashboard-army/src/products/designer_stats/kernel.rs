@@ -5,15 +5,21 @@
 //! with nothing after it).
 //!
 //! Arithmetic is the game's fixed5: a product truncates toward zero after a wrapping signed
-//! multiplication ([`mul`]), a quotient is the guarded fixed5 division ([`div`]), and every
-//! stage the game takes is taken, an identity factor included. Each group of identical
-//! definitions contributes in composition order: its equipment terms (each held design's
-//! effective stats times one plus the definition's own coefficient, scaled by the share of the
-//! requirement it fills), then its own base words for the stats that have one. Support
-//! companies' category grants adjust both. Totals are then finished per stat: summed, averaged
-//! over every real cell (or, for hardness, every cell whose type is not support), blended
-//! between the largest group and the average (armour and piercing), or scaled by an
-//! accumulated factor (suppression, supply, fuel). Speed is selected group by group: each group
+//! multiplication ([`mul`]), a quotient is the guarded fixed5 division ([`div`]), sums wrap at
+//! the word, and every stage the game takes is taken, an identity factor included. A quotient
+//! the game's division traps on stops the calculation by name.
+//!
+//! Each group of identical definitions contributes in composition order: its equipment terms
+//! (each held design's effective stats times one plus the definition's own coefficient, scaled
+//! by the share of the requirement it fills), then its own base words for the stats that have
+//! one. Support companies' category grants adjust both; the factor-adjusted equipment terms
+//! merge before the bases. Totals are then finished per stat: summed (recon, trickleback and
+//! capture among them), averaged over every real cell (recovery among them; for hardness,
+//! every cell whose type is not support), blended between the largest group and the average
+//! (armour and piercing), or scaled by an accumulated factor: suppression and supply by one
+//! plus theirs (supply floored at zero after every group), fuel usage by one plus its factor
+//! floored at zero. Raw fuel, the adjusted equipment consumption plus each group's base once,
+//! also builds the fuel capacity when positive. Speed is selected group by group: each group
 //! whose definition affects speed offers its equipment speed per sub-unit, and the slowest offer
 //! wins, floored at the slowest speed after every group.
 //!
@@ -24,20 +30,32 @@ use installed_content_core::equipment::STAT_COUNT;
 /// Fixed5 one.
 pub const ONE: i64 = 100_000;
 
-/// The guarded fixed5 quotient's result when it is undefined (a zero denominator).
+/// The guarded fixed5 quotient's result when it is undefined: a zero denominator, or a
+/// numerator the division does not scale ([`exceptional`]).
 pub const UNDEFINED: i64 = 4_294_967_295;
 
-/// A fixed5 product: the wrapping signed product, truncated toward zero.
+/// Why a calculation stopped: the one quotient the game's fixed5 division traps on.
+pub const TRAP: &str = "the game's fixed5 division traps on one of the calculation's quotients";
+
+/// A fixed5 product: the wrapping signed product, truncated toward zero. Dividing by one never
+/// traps, so a product has no guard.
 pub fn mul(a: i64, b: i64) -> i64 {
     a.wrapping_mul(b) / ONE
 }
 
-/// The guarded fixed5 quotient, truncated toward zero; undefined for a zero denominator.
-pub fn div(a: i64, b: i64) -> i64 {
-    if b == 0 {
-        return UNDEFINED;
+/// The numerators the guarded division does not scale: the largest word and the two smallest.
+pub fn exceptional(value: i64) -> bool {
+    (value as u64).wrapping_add(0x7fff_ffff_ffff_fffe) >= 0xffff_ffff_ffff_fffd
+}
+
+/// The guarded fixed5 quotient: [`UNDEFINED`] for a zero denominator or an [`exceptional`]
+/// numerator; otherwise the numerator times one, wrapped at the word, over the denominator,
+/// truncated toward zero. The one quotient the game traps on is [`TRAP`].
+pub fn div(a: i64, b: i64) -> Result<i64, &'static str> {
+    if b == 0 || exceptional(a) {
+        return Ok(UNDEFINED);
     }
-    (i128::from(a) * i128::from(ONE) / i128::from(b)) as i64
+    a.wrapping_mul(ONE).checked_div(b).ok_or(TRAP)
 }
 
 /// A count of cells as fixed5.
@@ -260,8 +278,10 @@ pub struct Block {
 /// fuel.
 fn fuel_factor(held: &Held, slots: &Slots, operands: &Operands) -> i64 {
     if held.stats[slots.fuel_consumption] > 0 && operands.fuel_fill < ONE {
-        operands.out_of_fuel_equipment
-            + mul(ONE - operands.out_of_fuel_equipment, operands.fuel_fill)
+        operands.out_of_fuel_equipment.wrapping_add(mul(
+            ONE.wrapping_sub(operands.out_of_fuel_equipment),
+            operands.fuel_fill,
+        ))
     } else {
         ONE
     }
@@ -269,7 +289,12 @@ fn fuel_factor(held: &Held, slots: &Slots, operands: &Operands) -> i64 {
 
 /// The calculator over `groups` in composition order and `pool`, the held or chosen designs in
 /// their stored order.
-pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &Operands) -> Block {
+pub fn calculate(
+    slots: &Slots,
+    groups: &[Group<'_>],
+    pool: &[Held],
+    operands: &Operands,
+) -> Result<Block, &'static str> {
     let mut stats = [None; STAT_COUNT];
     let manpower = groups.iter().fold(0_i32, |sum, group| {
         sum.wrapping_add(group.definition.manpower.wrapping_mul(group.count))
@@ -288,12 +313,12 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
         ]) {
             stats[slot] = Some(0);
         }
-        return Block {
+        return Ok(Block {
             stats,
             combat_width: 0,
             manpower,
             training_time,
-        };
+        });
     }
     // The template's requirement of each archetype and the pool's holding of it.
     let mut required = std::collections::BTreeMap::<usize, i64>::new();
@@ -329,11 +354,11 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
             let h_total = held.get(&archetype).copied().unwrap_or(0);
             for design in pool.iter().filter(|design| design.archetype == archetype) {
                 let q = if h_total > 0 && h_total > r {
-                    div(r, h_total)
+                    div(r, h_total)?
                 } else {
                     ONE
                 };
-                let share = mul(div(mul(design.amount, q), r), group.critical);
+                let share = mul(div(mul(design.amount, q), r)?, group.critical);
                 let share = operands.manpower_fill.min(share);
                 let w = mul(count(group.count), share);
                 let f = fuel_factor(design, slots, operands);
@@ -357,7 +382,7 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
                     if slot == slots.hardness && definition.support_type {
                         continue;
                     }
-                    let coefficient = mul(ONE + definition.stats[slot], w);
+                    let coefficient = mul(ONE.wrapping_add(definition.stats[slot]), w);
                     let term = if slot == slots.reliability {
                         mul(coefficient / requirements, value)
                     } else if slot == slots.fuel_capacity {
@@ -372,8 +397,8 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
             }
         }
         // The largest group's armour and piercing, before support grants.
-        armor_max = armor_max.max(div(equipment[slots.armor_value], count(group.count)));
-        pen_max = pen_max.max(div(equipment[slots.ap_attack], count(group.count)));
+        armor_max = armor_max.max(div(equipment[slots.armor_value], count(group.count))?);
+        pen_max = pen_max.max(div(equipment[slots.ap_attack], count(group.count))?);
         // Grants from every distinct support group, whatever its count.
         let mut added = [0_i64; STAT_COUNT];
         let mut factor = [0_i64; STAT_COUNT];
@@ -396,13 +421,16 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
                 }
             }
         }
+        // The factor-adjusted equipment terms, merged before the bases.
+        let adjusted: [i64; STAT_COUNT] =
+            std::array::from_fn(|slot| mul(equipment[slot], ONE.wrapping_add(factor[slot])));
         for slot in 0..STAT_COUNT {
-            total[slot] = total[slot].wrapping_add(mul(equipment[slot], ONE + factor[slot]));
+            total[slot] = total[slot].wrapping_add(adjusted[slot]);
         }
         // The group's speed offer: its equipment speed per sub-unit, after support grants.
         let offer = mul(
-            div(equipment[slots.maximum_speed], count(group.count)),
-            ONE + factor[slots.maximum_speed],
+            div(equipment[slots.maximum_speed], count(group.count))?,
+            ONE.wrapping_add(factor[slots.maximum_speed]),
         );
         if definition.affects_speed {
             speed = if speed == 0 { offer } else { speed.min(offer) };
@@ -411,7 +439,7 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
         let base = |slot: usize| {
             mul(
                 definition.stats[slot].wrapping_add(added[slot]),
-                ONE + factor[slot],
+                ONE.wrapping_add(factor[slot]),
             )
         };
         let k = mul(
@@ -427,8 +455,10 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
         for slot in [slots.fuel_capacity, slots.fuel_consumption_factor] {
             total[slot] = total[slot].wrapping_add(base(slot));
         }
+        // Raw fuel takes the adjusted equipment consumption, as the merged output holds it, and
+        // the group's base once.
         raw_fuel = raw_fuel
-            .wrapping_add(equipment[slots.fuel_consumption])
+            .wrapping_add(adjusted[slots.fuel_consumption])
             .wrapping_add(base(slots.fuel_consumption));
         width = width.wrapping_add(mul(k, definition.combat_width));
         total[slots.reliability] = total[slots.reliability].max(0);
@@ -440,26 +470,26 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
     stats[slots.maximum_speed] = Some(speed);
     stats[slots.suppression] = Some(mul(
         total[slots.suppression],
-        ONE + total[slots.suppression_factor],
+        ONE.wrapping_add(total[slots.suppression_factor]),
     ));
     stats[slots.supply_consumption] = Some(mul(
         total[slots.supply_consumption],
-        ONE + total[slots.supply_consumption_factor],
+        ONE.wrapping_add(total[slots.supply_consumption_factor]),
     ));
     stats[slots.fuel_consumption] = Some(mul(
         raw_fuel,
-        (ONE + total[slots.fuel_consumption_factor]).max(0),
+        ONE.wrapping_add(total[slots.fuel_consumption_factor]).max(0),
     ));
     for slot in slots.means() {
-        stats[slot] = Some(div(total[slot], count(all)));
+        stats[slot] = Some(div(total[slot], count(all))?);
     }
     stats[slots.hardness] = Some(if non_support != 0 {
-        div(total[slots.hardness], count(non_support))
+        div(total[slots.hardness], count(non_support))?
     } else {
         total[slots.hardness]
     });
     let blend = |max: i64, mean: Option<i64>, weight: i64| {
-        mean.map(|mean| mul(max, weight).wrapping_add(mul(mean, ONE - weight)))
+        mean.map(|mean| mul(max, weight).wrapping_add(mul(mean, ONE.wrapping_sub(weight))))
     };
     stats[slots.armor_value] = blend(
         armor_max,
@@ -473,10 +503,10 @@ pub fn calculate(slots: &Slots, groups: &[Group<'_>], pool: &[Held], operands: &
             operands.army_fuel_cost,
         ));
     }
-    Block {
+    Ok(Block {
         stats,
         combat_width: width,
         manpower,
         training_time,
-    }
+    })
 }

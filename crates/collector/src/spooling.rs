@@ -4074,7 +4074,7 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
 }
 
 #[cfg(test)]
-mod byte_identity_tests;
+mod conversion_helper_tests;
 
 #[cfg(test)]
 #[path = "spooling/slice_reads_tests.rs"]

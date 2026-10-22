@@ -81,17 +81,18 @@ pub const ROSTER: [(Grid, Operand, Option<&str>); 27] = [
     (Grid::Equipment, Operand::Stat("fuel_consumption"), None),
 ];
 
-/// The stats whose designer value is shown: each matched the game's recorded caches exactly in
-/// every comparison of a vanilla and a modded recording, with nonzero values among them
-/// ([`super::validation`]): directly where the deployed pass leaves the calculator's value, and
-/// after rebuilding that pass from the recorded country and commander modifiers where it
-/// does not. The other rows' deployed caches either hold terms the recording lacks (weather,
-/// theatre and state terms; a commander's block newer than the cache), were exercised only at
-/// zero, or have no recorded cache, so their designer values are not proven.
-pub const PROVEN: [&str; 20] = [
+/// The stats whose designer value is shown, by the owner's standard: each matched every
+/// deployed-division comparison of a full run against the game's recorded caches, with nonzero
+/// values among them ([`super::validation`]): directly where the deployed pass leaves the
+/// calculator's value, and after rebuilding that pass from the recorded country and commander
+/// modifiers where it does not. Suppression is compared with the stat block's own word, and fuel
+/// capacity with its capacity word. A comparison is not attributed to the operands that built
+/// each cache. The other rows ([`UNPROVEN`]) name why they are not shown.
+pub const PROVEN: [&str; 23] = [
     "maximum_speed",
     "max_strength",
     "max_organisation",
+    "suppression",
     "weight",
     "reliability",
     "reliability_factor",
@@ -109,7 +110,52 @@ pub const PROVEN: [&str; 20] = [
     "combat_width",
     "manpower",
     "training_time",
+    "fuel_capacity",
+    "fuel_consumption",
 ];
+
+/// The roster's stats not in [`PROVEN`], each with why: its full-run comparisons do not all
+/// match, match only at zero, or its deployed pass holds terms no recording has. Their calculator
+/// rules are established; the validation names each one's state.
+pub const UNPROVEN: [(&str, &str); 5] = [
+    (
+        "default_morale",
+        "its deployed caches do not all match (some predate their commander's last change)",
+    ),
+    (
+        "recon",
+        "its deployed caches do not all match (some predate their commander's last change)",
+    ),
+    (
+        "supply_consumption",
+        "its deployed pass's regional weather and faction theatre terms are not recorded",
+    ),
+    (
+        "casualty_trickleback",
+        "its deployed caches have matched it only at zero",
+    ),
+    (
+        "equipment_capture_factor",
+        "its deployed pass's state capture terms are not recorded",
+    ),
+];
+
+/// Why a row's value is unavailable while its operand is not proven.
+fn unproven(operand: Operand) -> String {
+    let lacks = match operand {
+        Operand::Stat(stat) => UNPROVEN
+            .iter()
+            .find(|(unproven, _)| *unproven == stat)
+            .map(|(_, lacks)| *lacks),
+        _ => None,
+    };
+    match lacks {
+        Some(lacks) => {
+            format!("its designer value is not yet proven against the game's own division stats: {lacks}")
+        }
+        None => "its designer value is not yet proven against the game's own division stats".into(),
+    }
+}
 
 /// Whether a row's operand is proven.
 fn proven(operand: Operand) -> bool {
@@ -200,10 +246,7 @@ pub fn rows(
             let value = if empty {
                 localise(localisation, "DESIGNER_NO_STAT", &[])
             } else if !proven(operand) {
-                Err(
-                    "its designer value is not yet proven against the game's own division stats"
-                        .into(),
-                )
+                Err(unproven(operand))
             } else {
                 match operand {
                     Operand::Stat(stat) => block().and_then(|block| {
@@ -390,6 +433,27 @@ mod tests {
             .unwrap();
         assert_eq!(rows[soft].value, Err("a critical type is short".into()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every roster stat is either proven or names what its proof lacks, never both, and an
+    /// unproven row's reason names it.
+    #[test]
+    fn every_unproven_row_names_what_its_proof_lacks() {
+        for (_, operand, _) in ROSTER {
+            let Operand::Stat(stat) = operand else {
+                continue;
+            };
+            let unproven_listed = UNPROVEN.iter().any(|(listed, _)| *listed == stat);
+            assert_ne!(PROVEN.contains(&stat), unproven_listed, "{stat}");
+            if unproven_listed {
+                assert!(unproven(operand).contains(": "), "{stat}");
+            }
+        }
+        assert!(
+            UNPROVEN
+                .iter()
+                .all(|(stat, _)| ROSTER.iter().any(|(_, operand, _)| *operand == Operand::Stat(stat)))
+        );
     }
 
     #[test]

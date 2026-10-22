@@ -1,14 +1,24 @@
 //! Proof of the calculator against the game's own recorded caches:
 //! - for every deployed division of a recording, the calculator over its template, its held
-//!   equipment and its manpower, compared with its recorded panel cache (and its anti-air with
-//!   its movement stats) stat by stat. A stat the deployed modifier pass changes by country or
+//!   equipment and its manpower, compared with its recorded panel cache (its anti-air and fuel
+//!   capacity with its movement stats, its suppression with the stat block's word stored beside
+//!   the panel's) stat by stat. A stat the deployed modifier pass changes by country or
 //!   commander modifiers is compared after that pass ([`post`]), for a medal-free division;
 //! - for every template, the calculator's width, manpower and training time over its effective
 //!   definitions, compared with the template's own recorded base width, manpower and training
-//!   time caches, which the game's template recalculation writes from the same definitions.
+//!   time caches, which the game's template recalculation writes from the same definitions, at
+//!   hours whose unit-bonus lists were read that hour (a template's caches follow a bonus the
+//!   hour it is granted; a carried read of the list can be a day older).
 //! A division or template whose inputs the comparison does not reproduce (an unread table,
 //! equipment short of a requirement, a fuel-using design below full fuel) is counted by reason,
 //! never compared.
+//!
+//! The proof is the owner's chosen standard: a shown row matches every comparison of a full run,
+//! with at least [`MINIMUM_NONZERO`] nonzero values among them and every term of its pass
+//! reproduced; one mismatch fails it. The run asserts that for every shown row and names each
+//! unshown row's state. It does not attribute a deployed cache to the operands that built it (a
+//! recording holds no evidence of them: a cache can predate a pool, bonus or commander change),
+//! so these are full-run comparisons, not attributed ones.
 //!
 //! Run read-only on a recording (it writes nothing beside it):
 //! `BATTLE_PLAN_GAME_DIR=<game> BATTLE_PLAN_DESIGNER_REPLAY=<recording> BATTLE_PLAN_DESIGNER_USER=<user folder>
@@ -50,7 +60,8 @@ const EXPLAINED: [&str; 7] = [
 /// compared for a division whose recorded history holds no awarded medal.
 const MEDAL_ONLY: [&str; 4] = ["soft_attack", "hard_attack", "defense", "entrenchment"];
 
-/// The panel slots the deployed modifier pass leaves as the calculator wrote them.
+/// The panel slots the deployed modifier pass leaves as the calculator wrote them, times one
+/// (suppression is the stat block's word stored beside the panel's).
 const UNMODIFIED: [&str; 7] = [
     "reliability",
     "reliability_factor",
@@ -73,11 +84,23 @@ struct Report {
     levels: BTreeMap<i32, u64>,
     mismatches: BTreeMap<&'static str, Vec<String>>,
     skipped: BTreeMap<String, u64>,
+    /// Nonzero caches of unshown rows a refused division held, by stat and reason: where the
+    /// witnesses a proof still needs were lost.
+    lost: BTreeMap<(&'static str, String), u64>,
 }
 
 impl Report {
     fn skip(&mut self, why: impl Into<String>) {
         *self.skipped.entry(why.into()).or_default() += 1;
+    }
+
+    /// Skips a division whose cache holds nonzero `witnesses` of unshown rows, counting them.
+    fn refuse(&mut self, witnesses: &[&'static str], why: impl Into<String>) {
+        let why = why.into();
+        for &stat in witnesses {
+            *self.lost.entry((stat, why.clone())).or_default() += 1;
+        }
+        self.skip(why);
     }
 
     fn compare(
@@ -460,7 +483,15 @@ fn designer_stats_match_recorded_division_caches() {
                     }
                 }
             }
-            for template in templates_of(&frame) {
+            // Templates compare only where the countries' unit-bonus lists were read at this very
+            // hour: a template's caches follow a bonus the hour it is granted, while a carried
+            // read of the list can be a day older.
+            let bonuses_read =
+                frame.tables[TableId::CountryUnitBonuses.index()].sampled_at() == Some(hour);
+            if !bonuses_read {
+                report.skip("templates: unit bonuses not read at this hour");
+            }
+            for template in templates_of(&frame).iter().filter(|_| bonuses_read) {
                 let Some(settings) = template
                     .settings
                     .require("settings")
@@ -497,10 +528,16 @@ fn designer_stats_match_recorded_division_caches() {
                         critical: kernel::ONE,
                     })
                     .collect();
-                let block = kernel::calculate(slots, &groups, &[], &calculator.operands);
+                let block = match kernel::calculate(slots, &groups, &[], &calculator.operands) {
+                    Ok(block) => block,
+                    Err(why) => {
+                        report.skip(format!("template: {why}"));
+                        continue;
+                    }
+                };
                 let detail = |what: &str, calculated: i64, recorded: i64| {
                     format!(
-                        "template {}: {what} calculated {calculated}, recorded {recorded}",
+                        "template {} at hour {hour}: {what} calculated {calculated}, recorded {recorded}",
                         template.template
                     )
                 };
@@ -580,10 +617,21 @@ fn designer_stats_match_recorded_division_caches() {
                     continue;
                 };
                 let panel = &panels[panel];
+                // The unshown rows this cache holds a nonzero witness of.
+                let witnesses: Vec<&'static str> = super::rows::UNPROVEN
+                    .iter()
+                    .map(|(stat, _)| *stat)
+                    .filter(|stat| {
+                        installed_content_core::equipment::stat_index(stat.as_bytes())
+                            .and_then(DivisionPanelStatsRow::stored)
+                            .and_then(|at| panel.panel_stats[at])
+                            .is_some_and(|value| value != 0)
+                    })
+                    .collect();
                 let Ok(template) =
                     templates.binary_search_by_key(&division.template, |row| row.template)
                 else {
-                    report.skip("its template's composition is not recorded");
+                    report.refuse(&witnesses, "its template's composition is not recorded");
                     continue;
                 };
                 let template = &templates[template];
@@ -591,7 +639,7 @@ fn designer_stats_match_recorded_division_caches() {
                     match definitions(&calculator, &frame, technologies, template, persistent) {
                         Ok(groups) => groups,
                         Err(why) => {
-                            report.skip(why);
+                            report.refuse(&witnesses, why);
                             continue;
                         }
                     };
@@ -605,16 +653,16 @@ fn designer_stats_match_recorded_division_caches() {
                 match status.map(|status| status.strength_factor) {
                     Some(kernel::ONE) => {}
                     Some(_) => {
-                        report.skip("below full strength");
+                        report.refuse(&witnesses, "below full strength");
                         continue;
                     }
                     None => {
-                        report.skip("no recorded status");
+                        report.refuse(&witnesses, "no recorded status");
                         continue;
                     }
                 }
                 let Some(pool) = pools.get_mut(&division.id) else {
-                    report.skip("no recorded equipment pool");
+                    report.refuse(&witnesses, "no recorded equipment pool");
                     continue;
                 };
                 pool.sort_by_key(|(ordinal, ..)| *ordinal);
@@ -651,7 +699,7 @@ fn designer_stats_match_recorded_division_caches() {
                     }
                 }
                 if let Some(why) = refused {
-                    report.skip(why);
+                    report.refuse(&witnesses, why);
                     continue;
                 }
                 let uses_fuel = held
@@ -688,7 +736,7 @@ fn designer_stats_match_recorded_division_caches() {
                         < *need
                 });
                 if short {
-                    report.skip("equipment short of a requirement");
+                    report.refuse(&witnesses, "equipment short of a requirement");
                     continue;
                 }
                 let current = manpower
@@ -702,7 +750,7 @@ fn designer_stats_match_recorded_division_caches() {
                             .sum::<i64>()
                     });
                 let Some(current) = current else {
-                    report.skip("no recorded manpower");
+                    report.refuse(&witnesses, "no recorded manpower");
                     continue;
                 };
                 let Some(settings) = template
@@ -712,17 +760,20 @@ fn designer_stats_match_recorded_division_caches() {
                     .cloned()
                     .flatten()
                 else {
-                    report.skip("the template's settings are not recorded");
+                    report.refuse(&witnesses, "the template's settings are not recorded");
                     continue;
                 };
                 let required_manpower = i64::from(settings.total_manpower);
                 let manpower_fill = if required_manpower <= 0 {
                     kernel::ONE
                 } else {
-                    kernel::ONE.min(kernel::div(
-                        current * kernel::ONE,
-                        required_manpower * kernel::ONE,
-                    ))
+                    match kernel::div(current * kernel::ONE, required_manpower * kernel::ONE) {
+                        Ok(fill) => kernel::ONE.min(fill),
+                        Err(why) => {
+                            report.refuse(&witnesses, why);
+                            continue;
+                        }
+                    }
                 };
                 let operands = kernel::Operands {
                     manpower_fill,
@@ -736,9 +787,25 @@ fn designer_stats_match_recorded_division_caches() {
                         critical: kernel::ONE,
                     })
                     .collect();
-                let block = kernel::calculate(slots, &groups, &held, &operands);
+                let block = match kernel::calculate(slots, &groups, &held, &operands) {
+                    Ok(block) => block,
+                    Err(why) => {
+                        report.refuse(&witnesses, why);
+                        continue;
+                    }
+                };
+                let medal_free = histories
+                    .get(&division.id)
+                    .is_some_and(|&(read, awarded)| read && !awarded);
                 // A fuel-using design's equipment factor reads the division's fuel over its prior
-                // deployed capacity: compared only at full fuel, where the factor is one.
+                // deployed capacity: compared only at full fuel, where the factor is one. The
+                // capacity's pass reads the medal store too, so its medal terms must be none.
+                if uses_fuel && !medal_free {
+                    report.refuse(&witnesses, 
+                        "a held design uses fuel, and the medal terms of its capacity are not known",
+                    );
+                    continue;
+                }
                 if uses_fuel {
                     let fuel = movements
                         .binary_search_by_key(&division.id, |row| row.division)
@@ -751,11 +818,11 @@ fn designer_stats_match_recorded_division_caches() {
                     match (fuel, capacity) {
                         (Some(fuel), Some(capacity)) if fuel >= capacity => {}
                         (Some(_), Some(_)) => {
-                            report.skip("a held design uses fuel, and the division is below full fuel");
+                            report.refuse(&witnesses, "a held design uses fuel, and the division is below full fuel");
                             continue;
                         }
                         _ => {
-                            report.skip(
+                            report.refuse(&witnesses, 
                                 "a held design uses fuel, and the division's fuel or capacity is not recorded",
                             );
                             continue;
@@ -849,7 +916,8 @@ fn designer_stats_match_recorded_division_caches() {
                     }
                     for group in &groups {
                         let alone =
-                            kernel::calculate(slots, std::slice::from_ref(group), &held, &operands);
+                            kernel::calculate(slots, std::slice::from_ref(group), &held, &operands)
+                                .unwrap();
                         println!(
                             "  alone: {} reqs={:?}",
                             EXPLAINED
@@ -911,7 +979,7 @@ fn designer_stats_match_recorded_division_caches() {
                             },
                         );
                     }
-                    None => report.skip("air_attack cache unavailable"),
+                    None => report.refuse(&witnesses, "air_attack cache unavailable"),
                 }
                 // The stat block's maximum speed, read for a division with a route: the
                 // calculator's speed after the deployed pass, which multiplies it by one.
@@ -936,45 +1004,43 @@ fn designer_stats_match_recorded_division_caches() {
                         )
                     });
                 }
-                let medal_free = histories
-                    .get(&division.id)
-                    .is_some_and(|&(read, awarded)| read && !awarded);
                 if !medal_free {
-                    report.skip("medal-dependent stats: the division's history holds medals or was not read");
+                    report.refuse(&witnesses, "medal-dependent stats: the division's history holds medals or was not read");
                 }
                 let medal_only: &[&str] = if medal_free { &MEDAL_ONLY } else { &[] };
                 let passes: &[post::Pass] = match (&sources, medal_free) {
                     (Ok(_), true) => &post::PASSES,
                     (Err(why), true) => {
-                        report.skip(format!("deployed pass: {why}"));
+                        report.refuse(&witnesses, format!("deployed pass: {why}"));
                         &[]
                     }
                     _ => &[],
                 };
                 let recorded = |stat: &str| {
                     let index = installed_content_core::equipment::stat_index(stat.as_bytes()).unwrap();
-                    let at = DivisionPanelStatsRow::PANEL_STAT_SELECTORS
-                        .iter()
-                        .position(|&slot| slot == index)?;
+                    let at = DivisionPanelStatsRow::stored(index)?;
                     Some((index, panel.panel_stats[at]))
                 };
                 let detail = |calculated: Option<i64>, deployed: Option<i64>, recorded: i64| {
                     format!(
-                        "division {} (template {}, owner {}): calculated {calculated:?}, deployed {deployed:?}, recorded {recorded}",
+                        "division {} (template {}, owner {}, hour {hour}): calculated {calculated:?}, deployed {deployed:?}, recorded {recorded}",
                         division.id, division.template, division.roster_owner
                     )
                 };
                 for &stat in UNMODIFIED.iter().chain(medal_only) {
                     let Some((index, value)) = recorded(stat) else {
+                        report.skip(format!("{stat}: the panel cache holds no such word"));
                         continue;
                     };
                     let Some(value) = value else {
                         report.skip(format!("{stat} cache unavailable"));
                         continue;
                     };
+                    // The pass's common stage: the value times one.
                     let calculated = block.stats[index];
-                    report.compare(stat, value, calculated == Some(value), || {
-                        detail(calculated, calculated, value)
+                    let deployed = calculated.map(|value| kernel::mul(value, kernel::ONE));
+                    report.compare(stat, value, deployed == Some(value), || {
+                        detail(calculated, deployed, value)
                     });
                 }
                 if let Ok(sources) = &sources {
@@ -1002,6 +1068,44 @@ fn designer_stats_match_recorded_division_caches() {
                                 sources.describe(pass)
                             )
                         });
+                    }
+                    // The fuel capacity's witness is the stat block's capacity word, after the
+                    // capacity's deployed pass; compared where the other passes are.
+                    if !passes.is_empty() {
+                        let word = status.and_then(|status| {
+                            status
+                                .movement_stats
+                                .require("movement")
+                                .ok()
+                                .cloned()
+                                .flatten()
+                                .map(|movement| movement.fuel_rate)
+                        });
+                        let calculated = block.stats[slots.fuel_capacity];
+                        match (word, calculated.map(|value| sources.fuel_capacity(value))) {
+                            (None, _) => report.skip("fuel_capacity cache unavailable"),
+                            (Some(_), Some(Err(why))) => {
+                                report.skip(format!("fuel_capacity: {why}"));
+                            }
+                            (Some(value), deployed) => {
+                                let deployed = deployed.and_then(Result::ok);
+                                if deployed != calculated {
+                                    *report.passed.entry("fuel_capacity").or_default() += 1;
+                                }
+                                report.compare(
+                                    "fuel_capacity",
+                                    value,
+                                    deployed == Some(value),
+                                    || {
+                                        format!(
+                                            "{}; {}",
+                                            detail(calculated, deployed, value),
+                                            sources.describe(&post::FUEL_CAPACITY)
+                                        )
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1038,12 +1142,71 @@ fn designer_stats_match_recorded_division_caches() {
         report.compared.values().any(|(compared, _)| *compared > 0),
         "nothing was compared"
     );
-    // Every stat the designer shows must have matched every comparison.
+    println!("nonzero caches of rows not shown, on divisions not compared:");
+    for ((stat, why), count) in &report.lost {
+        println!("  {stat}: {why} (count: {count})");
+    }
+    println!("acceptance of the rows not shown (full-run comparisons, not attributed to the operands that built each cache):");
+    for (stat, _) in super::rows::UNPROVEN {
+        println!("  {stat}: {}", report.acceptance(stat));
+    }
+    // The owner's standard: every stat the designer shows matched every full-run comparison, with
+    // at least the minimum of nonzero values among them and no term of its pass left
+    // unreproduced. One mismatch fails it.
     for stat in super::rows::PROVEN {
-        let (compared, matched) = report.compared.get(stat).copied().unwrap_or_default();
-        assert!(
-            compared > 0 && compared == matched,
-            "{stat}: {matched}/{compared} matched"
-        );
+        assert_eq!(report.acceptance(stat), Acceptance::Proven, "{stat}");
+    }
+}
+
+/// The fewest nonzero recorded values a shown row's comparisons must hold: a match only at zero
+/// does not exercise its rule.
+const MINIMUM_NONZERO: u64 = 1;
+
+/// What a stat's comparisons establish about its designer value.
+#[derive(Debug, PartialEq, Eq)]
+enum Acceptance {
+    /// Every comparison matched, nonzero among them, with every term of its pass reproduced.
+    Proven,
+    NotCompared,
+    Mismatched { matched: u64, compared: u64 },
+    OnlyZero,
+    /// Every comparison matched, but its pass holds a term the recording lacks.
+    Unreproduced(&'static str),
+}
+
+impl std::fmt::Display for Acceptance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Proven => write!(f, "every comparison matched, nonzero among them"),
+            Self::NotCompared => write!(f, "never compared"),
+            Self::Mismatched { matched, compared } => write!(f, "{matched}/{compared} matched"),
+            Self::OnlyZero => write!(f, "matched, but with fewer than {MINIMUM_NONZERO} nonzero values"),
+            Self::Unreproduced(term) => {
+                write!(f, "matched, but its pass's {term} is not reproduced")
+            }
+        }
+    }
+}
+
+impl Report {
+    fn acceptance(&self, stat: &str) -> Acceptance {
+        let (compared, matched) = self.compared.get(stat).copied().unwrap_or_default();
+        if compared == 0 {
+            return Acceptance::NotCompared;
+        }
+        if matched != compared {
+            return Acceptance::Mismatched { matched, compared };
+        }
+        if self.nonzero.get(stat).copied().unwrap_or_default() < MINIMUM_NONZERO {
+            return Acceptance::OnlyZero;
+        }
+        match post::PASSES
+            .iter()
+            .find(|pass| pass.stat == stat)
+            .and_then(|pass| pass.unreproduced)
+        {
+            Some(term) => Acceptance::Unreproduced(term),
+            None => Acceptance::Proven,
+        }
     }
 }

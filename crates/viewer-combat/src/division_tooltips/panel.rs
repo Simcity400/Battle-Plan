@@ -323,6 +323,20 @@ mod tests {
         }
     }
 
+    /// The stored suppression word is the designer's witness, not a panel line: the panel's
+    /// selectors never reach it.
+    #[test]
+    fn the_panel_leaves_out_the_stored_suppression_word() {
+        assert!(
+            !DivisionPanelStatsRow::PANEL_STAT_SELECTORS
+                .contains(&DivisionPanelStatsRow::SUPPRESSION_SELECTOR)
+        );
+        assert_eq!(
+            DivisionPanelStatsRow::SUPPRESSION,
+            DivisionPanelStatsRow::PANEL_STAT_SELECTORS.len()
+        );
+    }
+
     #[test]
     fn anti_air_reuses_the_existing_raw_movement_operand_and_preserves_refusal() {
         let mut status = DivisionStatusRow {

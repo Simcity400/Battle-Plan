@@ -2,7 +2,9 @@
 //! its country's and its selected commander's effective modifier values (their recorded source
 //! trees' roots in DivisionPanelSources), with its medal values none (only medal-free divisions
 //! are compared). Each stat's pass is `(calculated + added) * factor`, in fixed5, with the added
-//! and factor terms each stat's own; maximum speed's pass multiplies by one.
+//! and factor terms each stat's own; maximum speed's pass multiplies by one. The fuel capacity's
+//! pass ([`FUEL_CAPACITY`]) is compared with the stat block's capacity word, which the panel
+//! cache does not hold.
 //!
 //! Terms this comparison reproduces beyond the two roots: organisation's keys generated for the
 //! template's priority sub-unit and that definition's categories (the country's only), and the
@@ -44,7 +46,7 @@ pub struct Pass {
 }
 
 /// The passes, one per stat the deployed pass rewrites that the panel caches.
-pub const PASSES: [Pass; 11] = [
+pub const PASSES: [Pass; 12] = [
     Pass {
         stat: "max_strength",
         added: &[],
@@ -124,13 +126,26 @@ pub const PASSES: [Pass; 11] = [
         special: Special::None,
         unreproduced: None,
     },
+    Pass {
+        stat: "fuel_consumption",
+        added: &[],
+        factor: &[("army_fuel_consumption_factor", true)],
+        special: Special::None,
+        unreproduced: None,
+    },
 ];
+
+/// The deployed fuel capacity's pass: one plus the capacity factor.
+pub const FUEL_CAPACITY: Pass = Pass {
+    stat: "fuel_capacity",
+    added: &[],
+    factor: &[("army_fuel_capacity_factor", true)],
+    special: Special::None,
+    unreproduced: None,
+};
 
 /// The recon factor the commander adds only while the division is dug in.
 const RECON_WHILE_ENTRENCHED: &str = "recon_factor_while_entrenched";
-
-/// The factor on the deployed fuel capacity.
-const FUEL_CAPACITY_FACTOR: &str = "army_fuel_capacity_factor";
 
 /// The name of the country organisation factor generated for a sub-unit or category name.
 pub fn organisation_key(name: &str) -> String {
@@ -280,8 +295,7 @@ impl<'a> Sources<'a> {
     /// The deployed fuel capacity of `calculated`, which a fuel-using design's fuel fill
     /// divides the division's fuel by.
     pub fn fuel_capacity(&self, calculated: i64) -> Result<i64, String> {
-        let factor = ONE.wrapping_add(self.sum(&[(FUEL_CAPACITY_FACTOR, true)])?);
-        Ok(mul(calculated, factor))
+        self.apply(&FUEL_CAPACITY, calculated)
     }
 }
 
@@ -318,7 +332,8 @@ mod tests {
 
     /// The pass reads the country's and the commander's roots, adds before its factor and
     /// truncates its product; organisation adds the country's generated keys and skips a name
-    /// the registry lacks; capture adds its base define; speed multiplies by one.
+    /// the registry lacks; capture adds its base define; speed multiplies by one; fuel usage and
+    /// capacity read the commander's factors too.
     #[test]
     fn the_pass_combines_country_and_commander_roots() {
         let names = [
@@ -329,6 +344,8 @@ mod tests {
             "modifier_army_sub_unit_category_light_infantry_max_org_factor",
             "equipment_capture",
             "equipment_capture_factor",
+            "army_fuel_consumption_factor",
+            "army_fuel_capacity_factor",
         ];
         let definitions: Vec<_> = (0..names.len() as u32)
             .map(|index| ModifierDefinitionRow {
@@ -352,7 +369,11 @@ mod tests {
                 7,
                 node(&[(0, 10_000), (1, 5_000), (2, 20_000), (3, 10_000), (4, 5_000)]),
             ),
-            (1, 9, node(&[(0, 5_000), (1, 70_000), (2, 70_000), (5, 1_000)])),
+            (
+                1,
+                9,
+                node(&[(0, 5_000), (1, 70_000), (2, 70_000), (5, 1_000), (7, 40_000), (8, 25_000)]),
+            ),
         ]
         .into_iter()
         .map(|(kind, owner, node)| {
@@ -378,6 +399,9 @@ mod tests {
             13_000
         );
         assert_eq!(sources.apply(pass("maximum_speed"), 412_345).unwrap(), 412_345);
+        // Fuel usage: S * (1 + 0.4 commander), truncated; capacity S * (1 + 0.25 commander).
+        assert_eq!(sources.apply(pass("fuel_consumption"), 123_457).unwrap(), 172_839);
+        assert_eq!(sources.fuel_capacity(1_000_001).unwrap(), 1_250_001);
         let refused = Context {
             morale: Err("out of supply".into()),
             ..context()

@@ -831,6 +831,10 @@ pub const PANEL_CACHE_FIELDS: [(u8, usize); 23] = [
     (0x3e, MAXIMUM_SPEED),
 ];
 
+/// The stat block's suppression word and its stat selector: kept beside the panel's cache as the
+/// division designer's witness of its suppression row. The panel does not show it.
+pub const SUPPRESSION_CACHE_FIELD: (u8, usize) = (0xc, 0x100);
+
 /// A stat block's attack operands: the attack of each terrain adjuster entry in
 /// array order (entry `i` serves terrain database index `i + 1`) and the
 /// scalars, each an exact fixed5 word.
@@ -838,6 +842,8 @@ pub const PANEL_CACHE_FIELDS: [(u8, usize); 23] = [
 pub struct AttackStats {
     /// Deployed panel scalar cache, in PANEL_CACHE_FIELDS order.
     pub panel: [Option<i64>; 23],
+    /// [`SUPPRESSION_CACHE_FIELD`]'s raw word, read in the same copy as the panel's words.
+    pub suppression: Option<i64>,
     pub terrain: Vec<i64>,
     pub river: [i64; 2],
     pub fort: [i64; 2],
@@ -901,9 +907,10 @@ pub fn capture_attack_stats_holding(
         return Err("stat block movement operands unreadable");
     }
     // Reuse the anti-air word already acquired above; acquire only missing
-    // scalar words of this new/dirty cache in one guarded scattered copy.
-    let mut panel_bytes = [[0_u8; 8]; 22];
-    let mut panel_addresses = [0_usize; 22];
+    // scalar words of this new/dirty cache, then the suppression word, in one
+    // guarded scattered copy.
+    let mut panel_bytes = [[0_u8; 8]; 23];
+    let mut panel_addresses = [0_usize; 23];
     let mut next = 0;
     for (index, (_, offset)) in PANEL_CACHE_FIELDS.iter().enumerate() {
         if index != 11 {
@@ -913,6 +920,9 @@ pub fn capture_attack_stats_holding(
             next += 1;
         }
     }
+    panel_addresses[next] = stats
+        .checked_add(SUPPRESSION_CACHE_FIELD.1)
+        .ok_or("stat block address overflow")?;
     let maxima = maxima.filter(|maxima| maxima.pointer == stats);
     let mut destinations = panel_bytes.each_mut().map(|bytes| &mut bytes[..]);
     if maxima.is_some() {
@@ -931,6 +941,7 @@ pub fn capture_attack_stats_holding(
             next += 1;
         }
     }
+    let suppression = (complete == panel_bytes.len()).then(|| i64::from_le_bytes(panel_bytes[22]));
     if let Some(maxima) = maxima {
         panel[0] = Some(maxima.strength);
         panel[1] = Some(maxima.organisation);
@@ -984,6 +995,7 @@ pub fn capture_attack_stats_holding(
         .then(|| MOVEMENT_ADJUSTERS.map(|adjuster| word(adjuster + UNIT_ADJUSTER_MOVEMENT)));
     Ok(AttackStats {
         panel,
+        suppression,
         terrain: std::mem::take(terrain),
         river: [word(ATTACK_RIVER), word(ATTACK_RIVER + 8)],
         fort: [word(ATTACK_FORT), word(ATTACK_FORT + 8)],
@@ -1085,7 +1097,11 @@ mod attack_tests {
     #[test]
     fn deployed_cache_keeps_every_raw_panel_word() {
         let mut bytes = memory(0);
-        for (index, &(_, offset)) in PANEL_CACHE_FIELDS.iter().enumerate() {
+        for (index, &(_, offset)) in PANEL_CACHE_FIELDS
+            .iter()
+            .chain([&SUPPRESSION_CACHE_FIELD])
+            .enumerate()
+        {
             put(
                 &mut bytes,
                 STATS + offset,
@@ -1104,6 +1120,16 @@ mod attack_tests {
                 Some(i64::MIN + index as i64),
                 "panel scalar {index}"
             );
+        }
+        assert_eq!(stats.suppression, Some(i64::MIN + 23));
+    }
+
+    /// Each cached word lies at the stat block's stat array, eight bytes per selector: the
+    /// suppression word beside the panel's own.
+    #[test]
+    fn cached_words_follow_their_selectors() {
+        for &(selector, offset) in PANEL_CACHE_FIELDS.iter().chain([&SUPPRESSION_CACHE_FIELD]) {
+            assert_eq!(offset, 0xa0 + 8 * usize::from(selector), "selector {selector}");
         }
     }
 

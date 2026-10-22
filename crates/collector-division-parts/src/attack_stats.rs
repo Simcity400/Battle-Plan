@@ -50,6 +50,7 @@ pub use preparation::{AttackPart, PreparationPart, PreparedDivision};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
     panel: [Option<i64>; 23],
+    suppression: Option<i64>,
     river: [i64; 2],
     fort: [i64; 2],
     snow: i64,
@@ -63,6 +64,7 @@ impl Scalars {
     fn of(stats: &stats::AttackStats) -> Self {
         Self {
             panel: stats.panel,
+            suppression: stats.suppression,
             river: stats.river,
             fort: stats.fort,
             snow: stats.snow,
@@ -1163,7 +1165,7 @@ impl Captured {
             }
             match fresh {
                 Ok(fresh) => {
-                    if fresh.panel.iter().any(Option::is_none) {
+                    if fresh.panel.iter().any(Option::is_none) || fresh.suppression.is_none() {
                         counts.refused += 1;
                     }
                     let start = self.terrain.len();
@@ -1247,12 +1249,16 @@ impl Captured {
             .ok()
             .and_then(|at| self.selected_sources[at].1)
     }
-    pub fn panel(&self, division: u64) -> [Option<i64>; 22] {
+    /// The stored panel words: the panel's own in its order, then the suppression word.
+    pub fn panel(&self, division: u64) -> [Option<i64>; 23] {
         self.row(division)
             .and_then(|row| row.scalars)
-            .map_or([None; 22], |scalars| {
+            .map_or([None; 23], |scalars| {
                 // Anti-air is already recorded in movement_stats; keep one stored operand.
-                std::array::from_fn(|index| scalars.panel[index + usize::from(index >= 11)])
+                std::array::from_fn(|index| match index {
+                    22 => scalars.suppression,
+                    _ => scalars.panel[index + usize::from(index >= 11)],
+                })
             })
     }
 
@@ -1515,6 +1521,32 @@ mod tests {
         store.forget();
         assert_eq!(store.epoch, None);
         assert!(store.locate(0, 7 << 32).is_none());
+    }
+
+    /// The stored panel words leave out the anti-air word movement_stats already holds and end
+    /// with the suppression word; an uncaptured division stores none.
+    #[test]
+    fn the_stored_panel_ends_with_the_suppression_word() {
+        let mut panel = [None; 23];
+        for (index, word) in panel.iter_mut().enumerate() {
+            *word = Some(index as i64 * 10);
+        }
+        let mut captured = Captured::default();
+        captured.rows = vec![Row {
+            division: 3,
+            scalars: Some(Scalars {
+                panel,
+                suppression: Some(-7),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let stored = captured.panel(3);
+        assert_eq!(stored[10], Some(100));
+        assert_eq!(stored[11], Some(120));
+        assert_eq!(stored[21], Some(220));
+        assert_eq!(stored[22], Some(-7));
+        assert_eq!(captured.panel(9), [None; 23]);
     }
 
     #[test]
