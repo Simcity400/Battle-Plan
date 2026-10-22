@@ -840,6 +840,12 @@ impl Owner {
             } else {
                 std::thread::yield_now();
             }
+            #[cfg(test)]
+            BEFORE_WORKER_RETRY.with(|hook| {
+                if let Some(hook) = hook.take() {
+                    hook();
+                }
+            });
         }
     }
 
@@ -942,6 +948,9 @@ impl Owner {
 #[cfg(test)]
 thread_local! {
     static BEFORE_CANDIDATE_WAIT: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
+    // Initial release sampling and any lost-race accounting are complete;
+    // the next worker iteration has not re-read busy yet.
+    static BEFORE_WORKER_RETRY: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) };
 }
 
 /// Declines recorded in the current interval that no entry has taken: a
@@ -2454,6 +2463,16 @@ mod tests {
 
     #[test]
     fn a_worker_that_lost_a_race_is_owed_the_store_and_callbacks_cannot_starve_it() {
+        static RETRY: Barrier = Barrier::new(2);
+        static RESUME: Barrier = Barrier::new(2);
+        fn pause_retry() {
+            RETRY.wait();
+            RESUME.wait();
+        }
+        fn pause_first_retry() {
+            BEFORE_WORKER_RETRY.with(|hook| hook.set(Some(pause_retry)));
+            pause_retry();
+        }
         let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
         let _restore = RestoreTestGlobals::new();
         assert_eq!(FAULT.load(Ordering::SeqCst), 0);
@@ -2471,60 +2490,58 @@ mod tests {
         owner
             .busy
             .store(u64::from(Role::Script.held()), Ordering::SeqCst);
-        let entered = Arc::new(AtomicBool::new(false));
-        let leave = Arc::new(AtomicBool::new(false));
-        let worker = {
-            let owner = Arc::clone(&owner);
-            let entered = Arc::clone(&entered);
-            let leave = Arc::clone(&leave);
-            std::thread::spawn(move || {
+        let entered = Barrier::new(2);
+        let leave = Barrier::new(2);
+        // Observations are asserted after the scope: a panic inside it would
+        // leave the worker parked on a barrier and the scope's join hung.
+        let (first_waits, owed, lost_after, free, held, worker) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                BEFORE_WORKER_RETRY.with(|hook| hook.set(Some(pause_first_retry)));
                 owner.worker(Role::Census, |_| {
-                    entered.store(true, Ordering::SeqCst);
-                    while !leave.load(Ordering::SeqCst) {
-                        std::thread::yield_now();
-                    }
+                    entered.wait();
+                    leave.wait();
                 })
-            })
-        };
-        while waits.load(Ordering::SeqCst) == waited {
-            std::thread::yield_now();
-        }
-        // That holder releases and another callback takes the store first.
-        owner
-            .busy
-            .store(u64::from(Role::Provenance.held()), Ordering::SeqCst);
-        owner.releases.fetch_add(1, Ordering::SeqCst);
-        while owner.busy.load(Ordering::SeqCst) & WORKER_WAITING == 0 {
-            std::thread::yield_now();
-        }
+            });
+            // The worker has sampled the first holder's release count and
+            // cannot re-read busy until the replacement holder is installed.
+            RETRY.wait();
+            let first_waits = waits.load(Ordering::SeqCst);
+            owner
+                .busy
+                .store(u64::from(Role::Provenance.held()), Ordering::SeqCst);
+            owner.releases.fetch_add(1, Ordering::SeqCst);
+            RESUME.wait();
+            // The next failed entry has finished both the owed claim and
+            // its lost-race counter, not merely published WORKER_WAITING.
+            RETRY.wait();
+            let owed = owner.busy.load(Ordering::SeqCst);
+            let lost_after = WORKER_LOST_RACES[Role::Census as usize].load(Ordering::SeqCst);
+            // Release the second holder with the worker still gated. A
+            // callback must decline even though the store is otherwise free.
+            owner.busy.fetch_and(!HOLDER, Ordering::SeqCst);
+            owner.releases.fetch_add(1, Ordering::SeqCst);
+            let free = owner.observe(Role::Script, |_| ());
+            RESUME.wait();
+            entered.wait();
+            // Held by the worker, the store still declines.
+            let held = owner.observe(Role::Script, |_| ());
+            leave.wait();
+            (first_waits, owed, lost_after, free, held, worker.join())
+        });
+        assert_eq!(first_waits, waited + 1);
+        assert_eq!(owed, u64::from(Role::Provenance.held()) | WORKER_WAITING);
+        assert_eq!(lost_after, lost + 1);
         assert_eq!(
-            WORKER_LOST_RACES[Role::Census as usize].load(Ordering::SeqCst),
-            lost + 1
+            free,
+            Err(OBSERVATION_OVERLAP),
+            "an owed store is never taken"
         );
-        // The second holder releases: from now on every callback attempt is
-        // declined and counted until the owed worker has entered.
-        owner.busy.fetch_and(!HOLDER, Ordering::SeqCst);
-        owner.releases.fetch_add(1, Ordering::SeqCst);
-        let mut attempts = 0;
-        while !entered.load(Ordering::SeqCst) {
-            assert_eq!(
-                owner.observe(Role::Script, |_| panic!("an owed store is never taken")),
-                Err::<(), _>(OBSERVATION_OVERLAP)
-            );
-            attempts += 1;
-        }
-        // Held by the worker, the store still declines.
-        assert!(owner.observe(Role::Script, |_| ()).is_err());
-        attempts += 1;
-        leave.store(true, Ordering::SeqCst);
-        assert_eq!(worker.join().unwrap(), Ok(()));
+        assert_eq!(held, Err(OBSERVATION_OVERLAP));
+        assert_eq!(worker.unwrap(), Ok(()));
         assert_eq!(owner.busy.load(Ordering::SeqCst) & WORKER_WAITING, 0);
-        assert_eq!(
-            waiting.load(Ordering::SeqCst) - for_waiting + held_by_worker.load(Ordering::SeqCst)
-                - held_before,
-            attempts
-        );
-        assert_eq!(total_declines(&owner), attempts);
+        assert_eq!(waiting.load(Ordering::SeqCst) - for_waiting, 1);
+        assert_eq!(held_by_worker.load(Ordering::SeqCst) - held_before, 1);
+        assert_eq!(total_declines(&owner), 2);
     }
 
     #[test]

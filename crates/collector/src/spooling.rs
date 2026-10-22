@@ -3282,8 +3282,6 @@ impl Processor {
             "input_demand_last_error": stats.input_demand_last_error,
             "sampled_buffer_allocation": {
                 "scope": "last consumed native row buffer, before off-thread growth; not the whole pool",
-                "private_heap_committed_bytes": crate::ALLOCATOR.committed_bytes(),
-                "private_heap_scope": "whole collector Rust heap, including allocator slack, not just this buffer; HeapSummary at status construction, null if unavailable; excludes native C allocations",
                 "bytes": stats.sampled_buffer_bytes,
                 "parts": sequence(stats.sampled_buffer_parts.iter().map(|(name, bytes)| {
                     status!({"name": name, "bytes": bytes})

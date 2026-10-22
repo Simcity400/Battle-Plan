@@ -10,13 +10,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::HANDLE,
-    System::{
-        LibraryLoader::{GetModuleHandleA, GetProcAddress},
-        Memory::{
-            HEAP_SUMMARY, HEAP_ZERO_MEMORY, HeapAlloc, HeapCreate, HeapDestroy, HeapFree,
-            HeapReAlloc,
-        },
-    },
+    System::Memory::{HEAP_ZERO_MEMORY, HeapAlloc, HeapCreate, HeapDestroy, HeapFree, HeapReAlloc},
 };
 
 // Collector requires Windows x64; ordinary heap blocks are 16-byte aligned.
@@ -90,38 +84,6 @@ impl PrivateHeap {
     /// load when this fails, so no infallible allocation can meet a null heap.
     pub(super) fn ready(&self) -> bool {
         !self.heap().is_null()
-    }
-
-    /// Cheap, off-thread diagnostic; never initialize the heap to inspect it.
-    pub(super) fn committed_bytes(&self) -> Option<usize> {
-        let heap = self
-            .heap
-            .get()
-            .map_or(0, |heap| heap.load(Ordering::Relaxed));
-        if heap == 0 {
-            return Some(0);
-        }
-        // Resolve once: HeapSummary is not exported by older Windows versions.
-        // The kernel module lives for the process lifetime; no load/ref is needed.
-        type Summary = unsafe extern "system" fn(HANDLE, u32, *mut HEAP_SUMMARY) -> i32;
-        static SUMMARY: OnceLock<Option<Summary>> = OnceLock::new();
-        let summary = (*SUMMARY.get_or_init(|| unsafe {
-            let module = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
-            if module.is_null() {
-                return None;
-            }
-            let function = GetProcAddress(module, c"HeapSummary".as_ptr().cast())?;
-            // SAFETY: the exported function has exactly the Win32 signature above.
-            Some(std::mem::transmute::<
-                unsafe extern "system" fn() -> isize,
-                Summary,
-            >(function))
-        }))?;
-        let mut value = HEAP_SUMMARY {
-            cb: size_of::<HEAP_SUMMARY>() as u32,
-            ..Default::default()
-        };
-        (unsafe { summary(heap as HANDLE, 0, &mut value) } != 0).then_some(value.cbCommitted)
     }
 
     /// # Safety

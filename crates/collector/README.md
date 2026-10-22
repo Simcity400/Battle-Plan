@@ -271,10 +271,9 @@ Over-aligned blocks retain their original heap pointer; reallocation preserves
 the old block on failure. Tests retain the allocation-denial global allocator
 and exercise the private allocator directly.
 
-`sampled_buffer_allocation.private_heap_committed_bytes` reports the whole Rust
-heap's committed bytes, including slack (not just the sampled buffer), through
-an off-thread `HeapSummary` query. It is null if that API/query is unavailable;
-native C allocations are separate. The query does not create the heap.
+Nothing queries the heap's size while recording: `HeapSummary` walks the whole
+heap under its lock (about 80 ms at 2.4 GB), and every worker that allocates
+meanwhile parks behind it, which stretched the pause by about 3 ms per game hour.
 
 Process attach creates the heap before the bootstrap thread starts and refuses the load, allocation-free, if creation fails, so no infallible bootstrap allocation can meet a null heap and abort the game.
 

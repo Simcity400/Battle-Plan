@@ -111,7 +111,6 @@ fn creation_failure_is_cached_without_fallback() {
     // had not cached the failed creation, but still returns null.
     assert_eq!(heap.0.failures.load(Ordering::Relaxed), 0);
     assert!(unsafe { heap.0.alloc_zeroed(layout) }.is_null());
-    assert_eq!(heap.0.committed_bytes(), Some(0));
     assert!(!crate::allocation::failed());
 }
 
@@ -181,16 +180,12 @@ fn process_heaps() -> Vec<HANDLE> {
 #[test]
 fn destroy_runs_only_for_free_library_process_detach() {
     let heap = Heap::new();
-    assert_eq!(heap.0.committed_bytes(), Some(0));
     assert!(heap.0.heap.get().is_none());
     let layout = Layout::from_size_align(1024 * 1024, 64).unwrap();
     let pointer = unsafe { heap.0.alloc_zeroed(layout) };
     assert!(!pointer.is_null());
     let handle = heap.0.heap();
     assert!(process_heaps().contains(&handle));
-    if let Some(committed) = heap.0.committed_bytes() {
-        assert!(committed >= layout.size());
-    }
     for (reason, reserved) in [
         (1, ptr::null_mut()),
         (2, ptr::null_mut()),
@@ -205,7 +200,6 @@ fn destroy_runs_only_for_free_library_process_detach() {
     // Reclaims the intentionally retained block as well as the empty heap.
     assert!(unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
     assert!(!process_heaps().contains(&handle));
-    assert_eq!(heap.0.committed_bytes(), Some(0));
     assert!(!unsafe { heap.0.detach(DLL_PROCESS_DETACH, ptr::null_mut()) });
     // Cached terminal zero prevents allocating into a second heap after destroy.
     assert!(unsafe { heap.0.alloc(layout) }.is_null());
