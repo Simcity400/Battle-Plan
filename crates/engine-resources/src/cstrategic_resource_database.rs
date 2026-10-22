@@ -16,22 +16,12 @@ pub const COUNT: usize = 0x34;
 pub const KEYS: usize = 0x40;
 /// CStrategicResourceDatabase token-key stride.
 pub const KEY_STRIDE: usize = 0x04;
-/// CStrategicResourceDatabase token-key count, i32.
-pub const KEY_COUNT: usize = 0x4c;
 /// Oil descriptor pointer.
 pub const OIL: usize = 0x60;
 /// Fuel descriptor pointer.
 pub const FUEL: usize = 0x68;
-/// Energy descriptor pointer.
-pub const ENERGY: usize = 0x70;
 /// Database constructor initializing item zero with the null object.
 pub const CONSTRUCTOR_RVA: usize = 0xab29f0;
-/// Item lookup admits positive indices below count and otherwise returns item zero.
-pub const GET_ITEM_RVA: usize = 0xab2e20;
-/// Resource loader interning keys and appending parallel item/key arrays.
-pub const LOAD_FILE_RVA: usize = 0xab2ed0;
-/// Well-known-resource lookup falling back to the null object.
-pub const RESOLVE_KNOWN_RESOURCES_RVA: usize = 0xab3500;
 
 /// Item and key arrays load together. Validate descriptor/key correspondence
 /// without resolving the separate dynamically mutable lexer table.

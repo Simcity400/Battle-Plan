@@ -18,10 +18,6 @@ pub use equipment_entry::Row;
 pub const VTABLE_RVA: usize = 0x27330a0;
 /// Equipment-pool archetype-allocation array, initialized before the variant array (`ITEMS`).
 pub const ALLOCATIONS: usize = 0x08;
-/// CEquipmentVariantPool archetype-allocation capacity, i32.
-pub const ALLOCATIONS_CAPACITY: usize = 0x10;
-/// CEquipmentVariantPool archetype-allocation count, i32; native allocation operations use `ALLOCATIONS` with 24-byte entries.
-pub const ALLOCATIONS_COUNT: usize = 0x14;
 /// CEquipmentVariantPool row array pointer.
 pub const ITEMS: usize = 0x20;
 /// CEquipmentVariantPool row capacity, i32.
@@ -32,8 +28,6 @@ pub const COUNT: usize = 0x2c;
 pub const ALLOCATOR: usize = 0x30;
 /// CEquipmentVariantPool allow-zero byte.
 pub const ALLOW_ZERO: usize = 0x38;
-/// CEquipmentVariantPool serializer.
-pub const SERIALIZE_RVA: usize = 0xffdb00;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct StockpileRow {
@@ -94,55 +88,7 @@ pub fn model_selection_observed(
     pool: usize,
     observed_flags: &mut u64,
 ) -> Result<(usize, u64), &'static str> {
-    model_selection_entries(memory, module_base, pool, observed_flags, |_, _, _| {})
-}
-
-/// Transport observes original raw entries and positive flag attempts.
-/// Model selection leaves nonpositive flags unattempted; acquire them once
-/// through the same raw-entry loan before reading amount. Independent
-/// memory admission prevents extra reads from starving model rows.
-pub fn model_selection_transport_observed(
-    memory: &impl Memory,
-    transport_memory: &impl Memory,
-    module_base: usize,
-    pool: usize,
-    transport_flags: &mut Result<u64, &'static str>,
-) -> Result<(usize, u64), &'static str> {
-    let observation = std::cell::Cell::new(Ok(0_u64));
-    let decisive = std::cell::Cell::new(false);
-    let mut reached = 0;
-    let result = model_selection_entries(
-        memory,
-        module_base,
-        pool,
-        &mut reached,
-        |variant, amount, original| {
-            if decisive.get() || observation.get().is_err() {
-                return;
-            }
-            let flags = original
-                .unwrap_or_else(|| transport_variant_flags(transport_memory, module_base, variant));
-            match flags {
-                Ok(flags) => {
-                    if amount > 0 {
-                        let flags = observation.get().unwrap() | flags;
-                        observation.set(Ok(flags));
-                        decisive.set(flags & (1 << 22) != 0);
-                    }
-                }
-                Err(reason) => observation.set(Err(reason)),
-            }
-        },
-    );
-    *transport_flags = if observation.get().is_err() || decisive.get() {
-        observation.get()
-    } else {
-        result
-            .as_ref()
-            .map(|_| observation.get())
-            .unwrap_or_else(|reason| Err(*reason))
-    };
-    result
+    model_selection_entries(memory, module_base, pool, observed_flags)
 }
 
 fn model_selection_entries(
@@ -150,7 +96,6 @@ fn model_selection_entries(
     module_base: usize,
     pool: usize,
     observed_flags: &mut u64,
-    mut observe: impl FnMut(usize, i64, Option<Result<u64, &'static str>>),
 ) -> Result<(usize, u64), &'static str> {
     *observed_flags = 0;
     let expected = module_base
@@ -194,13 +139,9 @@ fn model_selection_entries(
             let amount = i64::from_le_bytes(entry[8..16].try_into().unwrap());
             let variant = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
             if amount > 0 {
-                let flags = transport_variant_flags(memory, module_base, variant);
-                observe(variant, amount, Some(flags));
-                let flags = flags?;
+                let flags = transport_variant_flags(memory, module_base, variant)?;
                 positive_flags |= flags;
                 *observed_flags = positive_flags;
-            } else {
-                observe(variant, amount, None);
             }
             if largest.is_none_or(|previous| amount > previous) {
                 largest = Some(amount);
@@ -214,18 +155,6 @@ fn model_selection_entries(
         first += count as u32;
     }
     Ok((selected, positive_flags))
-}
-
-/// Search flag 22 first, then flag 37, borrowing each positive variant
-/// once. Observed flag 22 returns immediately; a complete no-22 pass has
-/// already lent all flag-37 operands. Storage follows the live header.
-pub fn transport_carrier_flags(
-    memory: &impl Memory,
-    module_base: usize,
-    pool: usize,
-) -> Result<u64, &'static str> {
-    let array = entries(memory, module_base, pool)?;
-    transport_carrier_flags_in(memory, module_base, array)
 }
 
 fn transport_variant_flags(
@@ -248,35 +177,6 @@ fn transport_variant_flags(
         .checked_add(cequipment_variant::CLASSIFIER_FLAGS)
         .ok_or("ship equipment flag address overflow")?;
     read(memory, at).ok_or("ship equipment flags unreadable")
-}
-
-fn transport_carrier_flags_in(
-    memory: &impl Memory,
-    module_base: usize,
-    array: Array,
-) -> Result<u64, &'static str> {
-    let mut flags = 0_u64;
-    for ordinal in 0..array.count {
-        let at = array
-            .element(ordinal, equipment_entry::STRIDE)
-            .ok_or("transport carrier pool address overflow")?;
-        let entry =
-            read::<[u8; 16]>(memory, at).ok_or("transport carrier pool entry unreadable")?;
-        let variant = usize::try_from(u64::from_le_bytes(entry[..8].try_into().unwrap()))
-            .ok()
-            .filter(|pointer| *pointer != 0)
-            .ok_or("transport carrier equipment has null variant")?;
-        let raw = transport_variant_flags(memory, module_base, variant)?;
-        // Acquire flags before the amount predicate, including nonpositive rows.
-        if i64::from_le_bytes(entry[8..].try_into().unwrap()) <= 0 {
-            continue;
-        }
-        flags |= raw;
-        if flags & (1 << 22) != 0 {
-            return Ok(flags);
-        }
-    }
-    Ok(flags)
 }
 
 /// Advisory targets from one owned equipment occurrence. Rejecting a target
@@ -364,20 +264,6 @@ pub fn walk_stockpiles(
         module_base,
         game_state,
         crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_stockpiles_growing(
-    memory: &impl Memory,
-    module_base: usize,
-    game_state: usize,
-    output: &mut Vec<StockpileRow>,
-) -> Outcome {
-    walk_stockpiles_buffer(
-        memory,
-        module_base,
-        game_state,
-        crate::walk::Buffer::Growing(output),
     )
 }
 

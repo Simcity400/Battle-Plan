@@ -20,16 +20,8 @@ pub const SELECTION_FLAG: usize = 0x18;
 pub const CLASSIFICATION_FLAG: usize = 0x19;
 /// First damage vector, channel ordinal zero.
 pub const FIRST_DAMAGE: usize = 0x20;
-/// First damage-vector capacity, i32, compared before growth.
-pub const FIRST_DAMAGE_CAPACITY: usize = 0x28;
-/// First damage-vector count, i32.
-pub const FIRST_DAMAGE_COUNT: usize = 0x2c;
 /// Second damage vector, channel ordinal one.
 pub const SECOND_DAMAGE: usize = 0x38;
-/// Second damage-vector capacity, i32.
-pub const SECOND_DAMAGE_CAPACITY: usize = 0x40;
-/// Second damage-vector count, i32.
-pub const SECOND_DAMAGE_COUNT: usize = 0x44;
 /// Raw attribution-country link, initialized to zero before nonzero plane-count attribution.
 pub const ATTRIBUTED_COUNTRY: usize = 0x50;
 /// Copied flag byte.

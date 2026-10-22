@@ -32,8 +32,6 @@ pub fn id_and_controller(memory: &impl Memory, state: usize) -> Result<(u32, u32
 pub const PROVINCES: usize = 0x18;
 /// CState province-list signed i32 count.
 pub const PROVINCE_COUNT: usize = 0x24;
-/// Highlight byte; plain-click writer unresolved.
-pub const HIGHLIGHT_CANDIDATE: usize = 0x14;
 /// State-template pointer from the second constructor argument.
 pub const TEMPLATE: usize = 0x30;
 /// Primary display-name string selected when nonempty. Scripted naming
@@ -55,8 +53,6 @@ pub const CONTROLLER_GROUP_COUNT: usize = 0x1a4;
 pub const STRATEGIC_LOCATIONS: usize = 0x800;
 /// The size of one [`STRATEGIC_LOCATIONS`] pair.
 pub const STRATEGIC_LOCATION_STRIDE: usize = 8;
-/// Core-country signed count in the inline array header.
-pub const CORE_COUNT: usize = 0xbc;
 /// Embedded building status with its building vector.
 pub const BUILDING_STATUS: usize = 0x120;
 /// Embedded resistance object.
@@ -74,16 +70,13 @@ pub const RESOURCE_MODIFIER_GATE: usize = 0x1b4;
 pub const RESOURCE_POOL: usize = 0x1b8;
 /// Dynamic-modifier container used by state-scope triggers and serialized.
 pub const DYNAMIC_MODIFIERS: usize = 0x788;
-/// Embedded modifier; semantic purpose unresolved.
-pub const MODIFIER_608: usize = 0x608;
-/// Embedded modifier; semantic purpose unresolved.
-pub const MODIFIER_6C8: usize = 0x6c8;
 /// Variable-walk address with unresolved container ownership.
 pub const VARIABLES: usize = 0x7f8;
 /// Demilitarized boolean byte set by the effect and serialized independently
 /// of its adjacent byte.
 pub const DEMILITARIZED: usize = 0x864;
 /// Active border-war byte serialized independently.
+#[cfg(test)]
 pub const BORDER_CONFLICT_ACTIVE: usize = 0x865;
 /// Pointer-ordered border-combat set size.
 pub const BORDER_CONFLICT_SIZE: usize = 0x8a8;
@@ -112,21 +105,11 @@ pub const CATEGORY_VTABLE_RVA: usize = 0x029a_39c0;
 pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.
 pub const CONSTRUCTOR_RVA: usize = 0x009c_2cc0;
-/// Controller setter.
-pub const SET_CONTROLLER_RVA: usize = 0x009d_0bf0;
 /// Owner setter updating the raw country reference before ownership notifications.
 pub const SET_OWNER_RVA: usize = 0x009d_1710;
-/// Display-name selection: nonempty primary, then secondary, then template fallback.
-pub const DISPLAY_NAME_RVA: usize = 0x009c_c380;
-/// Resource-modifier query using the embedded accumulator and resource ID.
-pub const RESOURCE_MODIFIER_AMOUNT_RVA: usize = 0x009c_c430;
-/// Squared wrapped province distance using template bounds and province centroid.
-pub const DISTANCE_SQUARED_TO_PROVINCE_RVA: usize = 0x009c_6950;
 /// Sorted conflict-tree head storing border combats. Predicates inspect
 /// side countries and intersect tree values.
 pub const BORDER_CONFLICT_TREE: usize = 0x8a0;
-/// Conflict predicate testing sorted-tree intersection.
-pub const HAS_SHARED_BORDER_CONFLICT_RVA: usize = 0x009c_6b30;
 /// Country-specific modifier hash data pointer.
 pub const COUNTRY_MODIFIERS: usize = 0x8d0;
 /// Country-modifier bucket stride.
@@ -955,6 +938,7 @@ pub fn read_names(
     )
 }
 
+#[cfg(test)]
 pub fn read_names_growing(
     memory: &impl Memory,
     game_state: usize,

@@ -15,16 +15,10 @@ pub const ENGAGED: usize = 0xba;
 pub const GROUPS: usize = 0xc8;
 /// CNavalCombatant group count i32.
 pub const GROUPS_COUNT: usize = 0xd4;
-/// CNavalCombatant group capacity i32.
-pub const GROUPS_CAPACITY: usize = 0xd0;
 /// CNavalCombatant positioning i64/100000.
 pub const POSITIONING: usize = 0x138;
 /// CNavalCombatant anti-air i64/100000.
 pub const ANTI_AIR: usize = 0x150;
-/// CNavalCombatant positioning denominator.
-pub const POSITIONING_SCALE: i64 = 100_000;
-/// CNavalCombatant engaged-pair predicate.
-pub const ANY_SIDE_ENGAGED_RVA: usize = 0x013c_d880;
 
 /// Current commander pointer shown by the naval window. Null remains no commander without fallback
 /// to the retained last leader after it. Selection keeps the first highest-skill candidate, or null

@@ -6,8 +6,6 @@ use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, read, walk::Outcom
 
 /// CTechnologySharingGroup primary vtable.
 pub const VTABLE_RVA: usize = 0x0270_b720;
-/// Technology-sharing group extent; allocation size is not authenticated here.
-pub const PROFILE_OBJECT_SIZE: usize = 0x50;
 /// CTechnologySharingGroup lexer ordinal u32.
 pub const ID_TOKEN: usize = 0x08;
 /// Raw base bonus, i64 with denominator 100,000.
@@ -18,24 +16,16 @@ pub const MEMBERS: usize = 0x18;
 pub const MEMBER_CAPACITY: usize = 0x20;
 /// CTechnologySharingGroup member count u32.
 pub const MEMBER_COUNT: usize = 0x24;
-/// CTechnologySharingGroup member allocator slot.
-pub const MEMBER_ALLOCATOR: usize = 0x28;
 /// CTechnologySharingGroup dynamic bonus i64 array.
 pub const BONUSES: usize = 0x30;
-/// CTechnologySharingGroup bonus capacity u32.
-pub const BONUS_CAPACITY: usize = 0x38;
 /// CTechnologySharingGroup bonus count u32.
 pub const BONUS_COUNT: usize = 0x3c;
-/// CTechnologySharingGroup bonus allocator slot.
-pub const BONUS_ALLOCATOR: usize = 0x40;
 /// Template pointer; this reader does not authenticate its pointee class.
 pub const TEMPLATE: usize = 0x48;
 /// CTechnologySharingGroup country-handle element width.
 pub const MEMBER_STRIDE: usize = 4;
 /// CTechnologySharingGroup signed bonus element width.
 pub const BONUS_STRIDE: usize = 8;
-/// CTechnologySharingGroup raw bonus denominator.
-pub const BONUS_SCALE: i64 = 100_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Row {

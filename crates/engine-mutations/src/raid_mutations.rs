@@ -785,12 +785,15 @@ pub fn country(memory: &impl crate::Memory, resources: usize) -> Option<u32> {
 }
 
 /// The [`MUTATIONS`] index of the first site list writer.
+#[cfg(test)]
 pub const FIRST_SITE: usize = 12;
 /// The [`MUTATIONS`] index of the first claim writer, after the site list
 /// writers.
+#[cfg(test)]
 pub const FIRST_CLAIM_SITE: usize = 25;
 /// The [`MUTATIONS`] index of the first strategic-location writer, after the
 /// claim writers.
+#[cfg(test)]
 pub const FIRST_STRATEGIC_LOCATION_SITE: usize = 27;
 
 /// The raw country link a site list receiver names, given a site's first

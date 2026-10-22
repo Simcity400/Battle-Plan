@@ -23,14 +23,11 @@ pub const INVALID_ORDERS: usize = 0x24e;
 /// zero through 100000. Both counter and committed-combat strength bars use
 /// this product.
 pub const STRENGTH_FACTOR: usize = 0x468;
-/// Disrupted-supply candidate; only i32 is characterized and full width is unknown.
-pub const DISRUPTED_SUPPLY_CANDIDATE: usize = 0xb0;
 /// Orders-group member backlink, authenticated reciprocally against the group.
 pub const ORDERS_GROUP: usize = 0xc0;
 /// Primary order-instance pointer.
+#[cfg(test)]
 pub const PRIMARY_ORDER: usize = 0xd8;
-/// Maximum-organisation getter virtual byte offset.
-pub const MAXIMUM_ORGANISATION_VTABLE_SLOT: usize = 0x130;
 /// Movement target pointer, tested for presence.
 pub const MOVEMENT_TARGET: usize = 0x1e8;
 /// Source-province pointer requiring province authentication.
@@ -57,16 +54,10 @@ pub const AIR_SUPPLY: usize = 0x58;
 pub const OUT_OF_SUPPLY_DAYS: usize = 0x498;
 /// Deployment handle type, u32.
 pub const DEPLOYMENT_TYPE: usize = 0x32c;
-/// Deployment handle id, u32.
-pub const DEPLOYMENT_ID: usize = 0x330;
 /// Embedded equipment-variant pool.
 pub const EQUIPMENT_POOL: usize = 0x348;
 /// Equipment-bank vector data.
 pub const EQUIPMENT_DATA: usize = 0x368;
-/// Equipment-bank capacity, u32.
-pub const EQUIPMENT_CAPACITY: usize = 0x370;
-/// Equipment-bank count, u32.
-pub const EQUIPMENT_COUNT: usize = 0x374;
 /// Standard referenced-template pointer used by serialization.
 pub const STANDARD_TEMPLATE: usize = 0x3b8;
 /// Previous template retained while a deployed division completes conversion.
@@ -76,8 +67,6 @@ pub const FAKE_INTEL_TEMPLATE: usize = 0x3c8;
 /// Embedded manpower-values object.
 pub const MANPOWER_VALUES: usize = 0x3d8;
 pub const MANPOWER_DATA: usize = MANPOWER_VALUES + crate::carmy_manpower_values::DATA;
-/// Manpower-entry count, i32; reductions preserve wrapping arithmetic.
-pub const MANPOWER_COUNT: usize = MANPOWER_VALUES + crate::carmy_manpower_values::COUNT;
 /// Current hit points, i64 fixed5.
 pub const STRENGTH: usize = 0x420;
 /// Organisation, i64 fixed5.
@@ -111,166 +100,20 @@ pub const RETAINED_VISUAL_VARIANT: usize = 0x4b0;
 pub const ACCLIMATIZATION: usize = 0x4b8;
 /// Signed fixed5 maximum grace hours, serialized unconditionally.
 pub const MAXIMUM_SUPPLY_GRACE: usize = 0x600;
-/// Supply-gain candidate; only u32 is characterized and full width is unknown.
-pub const SUPPLY_GAIN_CANDIDATE: usize = 0x608;
 /// Signed fixed5 remaining grace hours, serialized unconditionally including zero.
 pub const REMAINING_SUPPLY_GRACE: usize = 0x610;
 /// The division's fuel, a signed fixed5 word: the movement speed's fuel ratio divides it
 /// by the stat block's capacity, and the army writer saves it as `fuel`.
 pub const FUEL_CANDIDATE: usize = 0x620;
-/// Current fuel, i64.
-pub const CURRENT_FUEL: usize = 0x628;
 /// Raw counter-separation byte.
 pub const SEPARATE_COUNTER: usize = 0x630;
-/// Cumulative-loss candidate; only i32 is characterized and full width is unknown.
-pub const CUMULATIVE_LOSSES_CANDIDATE: usize = 0x678;
-/// Deployment-handle resolver; both-zero handles short-circuit.
-pub const RESOLVE_DEPLOYMENT_RVA: usize = 0x00be_c560;
-
-// Attrition event-site descriptors do not install hooks.
-/// Attrition entry checkpoint.
-pub const ATTRITION_ENTRY_RVA: usize = 0x00C6_5DC0;
-/// Attrition entry instruction sentinel.
-pub const ATTRITION_ENTRY_SENTINEL: [u8; 7] = [0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08];
-/// Attrition entry continuation; observe before the displaced instruction.
-pub const ATTRITION_ENTRY_CONTINUATION_RVA: usize = 0x00C6_5DC7;
-/// Attrition upkeep checkpoint.
-pub const ATTRITION_UPKEEP_RVA: usize = 0x00C6_5E3C;
-/// Attrition upkeep instruction sentinel.
-pub const ATTRITION_UPKEEP_SENTINEL: [u8; 7] = [0x48, 0x8b, 0x83, 0xb8, 0x00, 0x00, 0x00];
-/// Attrition upkeep continuation; observe before the displaced instruction.
-pub const ATTRITION_UPKEEP_CONTINUATION_RVA: usize = 0x00C6_5E43;
-/// Attrition terrain checkpoint.
-pub const ATTRITION_TERRAIN_RVA: usize = 0x00C6_5ED7;
-/// Attrition terrain instruction sentinel.
-pub const ATTRITION_TERRAIN_SENTINEL: [u8; 8] = [0x48, 0x8b, 0xde, 0x48, 0x89, 0x5c, 0x24, 0x58];
-/// Attrition terrain continuation; observe before the displaced instruction.
-pub const ATTRITION_TERRAIN_CONTINUATION_RVA: usize = 0x00C6_5EDF;
-/// Attrition equipment checkpoint.
-pub const ATTRITION_EQUIPMENT_RVA: usize = 0x00C6_608D;
-/// Attrition equipment instruction sentinel.
-pub const ATTRITION_EQUIPMENT_SENTINEL: [u8; 5] = [0x48, 0x8b, 0x7c, 0x24, 0x60];
-/// Attrition equipment continuation; observe before the displaced instruction.
-pub const ATTRITION_EQUIPMENT_CONTINUATION_RVA: usize = 0x00C6_6092;
-/// Attrition state checkpoint.
-pub const ATTRITION_STATE_RVA: usize = 0x00C6_61D4;
-/// Attrition state instruction sentinel.
-pub const ATTRITION_STATE_SENTINEL: [u8; 6] = [0x48, 0x03, 0xd8, 0x4d, 0x85, 0xe4];
-/// Attrition state continuation; observe after the displaced instruction.
-pub const ATTRITION_STATE_CONTINUATION_RVA: usize = 0x00C6_61DA;
-/// Attrition supply a checkpoint.
-pub const ATTRITION_SUPPLY_A_RVA: usize = 0x00C6_625F;
-/// Attrition supply a instruction sentinel.
-pub const ATTRITION_SUPPLY_A_SENTINEL: [u8; 5] = [0x48, 0x03, 0xda, 0xeb, 0x4f];
-/// Attrition supply a continuation; observe after the displaced instruction.
-pub const ATTRITION_SUPPLY_A_CONTINUATION_RVA: usize = 0x00C6_62B3;
-/// Attrition supply b checkpoint.
-pub const ATTRITION_SUPPLY_B_RVA: usize = 0x00C6_62A0;
-/// Attrition supply b instruction sentinel.
-pub const ATTRITION_SUPPLY_B_SENTINEL: [u8; 6] = [0x48, 0x03, 0xda, 0x4d, 0x85, 0xe4];
-/// Attrition supply b continuation; observe after the displaced instruction.
-pub const ATTRITION_SUPPLY_B_CONTINUATION_RVA: usize = 0x00C6_62A6;
-/// Attrition state modifiers checkpoint.
-pub const ATTRITION_STATE_MODIFIERS_RVA: usize = 0x00C6_67FE;
-/// Attrition state modifiers instruction sentinel.
-pub const ATTRITION_STATE_MODIFIERS_SENTINEL: [u8; 8] =
-    [0x48, 0x03, 0x5d, 0xd8, 0x48, 0x8b, 0x55, 0x08];
-/// Attrition state modifiers continuation; observe after the displaced instruction.
-pub const ATTRITION_STATE_MODIFIERS_CONTINUATION_RVA: usize = 0x00C6_6806;
-/// Attrition weather modifiers checkpoint.
-pub const ATTRITION_WEATHER_MODIFIERS_RVA: usize = 0x00C6_6AA7;
-/// Attrition weather modifiers instruction sentinel.
-pub const ATTRITION_WEATHER_MODIFIERS_SENTINEL: [u8; 11] = [
-    0x48, 0x03, 0x5d, 0xe0, 0x49, 0x8b, 0x8d, 0xc0, 0x00, 0x00, 0x00,
-];
-/// Attrition weather modifiers continuation; observe after the displaced instruction.
-pub const ATTRITION_WEATHER_MODIFIERS_CONTINUATION_RVA: usize = 0x00C6_6AB2;
-/// Attrition derived terms checkpoint.
-pub const ATTRITION_DERIVED_TERMS_RVA: usize = 0x00C6_6F43;
-/// Attrition derived terms instruction sentinel.
-pub const ATTRITION_DERIVED_TERMS_SENTINEL: [u8; 8] =
-    [0x48, 0x03, 0xd8, 0x48, 0x8b, 0x74, 0x24, 0x60];
-/// Attrition derived terms continuation; observe after the displaced instruction.
-pub const ATTRITION_DERIVED_TERMS_CONTINUATION_RVA: usize = 0x00C6_6F4B;
-/// Attrition training checkpoint.
-pub const ATTRITION_TRAINING_RVA: usize = 0x00C6_6F70;
-/// Attrition training instruction sentinel.
-pub const ATTRITION_TRAINING_SENTINEL: [u8; 5] = [0x48, 0x89, 0x5c, 0x24, 0x58];
-/// Attrition training continuation; observe before the displaced instruction.
-pub const ATTRITION_TRAINING_CONTINUATION_RVA: usize = 0x00C6_6F75;
-/// Attrition border war checkpoint.
-pub const ATTRITION_BORDER_WAR_RVA: usize = 0x00C6_7106;
-/// Attrition border war instruction sentinel.
-pub const ATTRITION_BORDER_WAR_SENTINEL: [u8; 5] = [0x48, 0x89, 0x5c, 0x24, 0x58];
-/// Attrition border war continuation; observe before the displaced instruction.
-pub const ATTRITION_BORDER_WAR_CONTINUATION_RVA: usize = 0x00C6_710B;
-/// Attrition final checkpoint.
-pub const ATTRITION_FINAL_RVA: usize = 0x00C6_7307;
-/// Attrition final instruction sentinel.
-pub const ATTRITION_FINAL_SENTINEL: [u8; 5] = [0x48, 0x89, 0x54, 0x24, 0x58];
-/// Attrition final continuation; observe after the displaced instruction.
-pub const ATTRITION_FINAL_CONTINUATION_RVA: usize = 0x00C6_730C;
-/// Attrition cached join checkpoint.
-pub const ATTRITION_CACHED_JOIN_RVA: usize = 0x00C7_95A0;
-/// Attrition cached join instruction sentinel.
-pub const ATTRITION_CACHED_JOIN_SENTINEL: [u8; 7] = [0x48, 0x89, 0x8b, 0x38, 0x04, 0x00, 0x00];
-/// Attrition cached join continuation; observe after the displaced instruction.
-pub const ATTRITION_CACHED_JOIN_CONTINUATION_RVA: usize = 0x00C7_95A7;
-/// Attrition refresh callsite.
-pub const ATTRITION_REFRESH_CALL_RVA: usize = 0x00c7_9598;
-/// Attrition refresh return address.
-pub const ATTRITION_REFRESH_RETURN_RVA: usize = 0x00c7_959d;
-/// Division-width leaf returning i64.
-pub const WIDTH_LEAF_RVA: usize = 0x00c6_e270;
-/// Width-leaf entry sentinel.
-pub const WIDTH_LEAF_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
-];
-/// Width-leaf virtual entry index.
-pub const WIDTH_LEAF_VTABLE_INDEX: usize = 46;
-/// Primary vtable entry count.
-pub const VTABLE_ENTRY_COUNT: usize = 59;
-/// Primary vtable entry selecting the width leaf.
-pub const WIDTH_LEAF_VTABLE_SLOT_RVA: usize = 0x0294_3c40;
-/// Width-leaf unwind metadata.
-pub const WIDTH_LEAF_UNWIND_RVA: usize = 0x0363_7d30;
-/// Candidate active-damage function receiving the division first; its receiver type is unknown.
-pub const ACTIVE_DAMAGE_RVA: usize = 0x00c7_bfc0;
-/// Active-damage entry sentinel.
-pub const ACTIVE_DAMAGE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
-];
-/// Self-returning virtual byte offset.
-pub const SELF_VTABLE_SLOT: usize = 0x38;
-/// Shared self-returning thunk; its address does not identify a unique owner.
-pub const SELF_THUNK_RVA: usize = 0x001f_8640;
-/// Organisation getter virtual byte offset.
-pub const ORGANISATION_VTABLE_SLOT: usize = 0x120;
-/// Organisation getter returning raw i64.
-pub const ORGANISATION_GETTER_RVA: usize = 0x00c7_8810;
-/// Strength fraction from current and maximum hit points, clamped to zero through 100000.
-pub const STRENGTH_FRACTION_GETTER_RVA: usize = 0x00c7_81e0;
-/// Current-strength getter returning i64.
-pub const STRENGTH_GETTER_RVA: usize = 0x00c7_8820;
-/// Maximum-strength getter with minimum one hundred.
-pub const MAXIMUM_STRENGTH_GETTER_RVA: usize = 0x00c7_2eb0;
-/// Standard-template composition getter, returning default composition when null.
-pub const TEMPLATE_COMPOSITION_GETTER_RVA: usize = 0x00c6_f080;
 
 /// Constructor followed by registration of the full handle.
 pub const CONSTRUCTOR_RVA: usize = 0x00c5_dd30;
-/// Secondary-receiver serializer retaining template and i64 hit points and organisation.
-pub const SERIALIZE_RVA: usize = 0x00c8_0e00;
-/// Secondary-receiver loader restoring the same template and i64 fields.
-pub const DESERIALIZE_RVA: usize = 0x00c7_d090;
 /// Synchronous hourly division update.
 pub const HOURLY_UPDATE_RVA: usize = 0x00c7_8a90;
-/// Pre-update run in joined parallel work before serial unit updates.
-pub const PREPARE_HOURLY_UPDATE_RVA: usize = 0x00c7_9330;
 /// Active-stat recalculation in staggered parallel work joined before returning.
 pub const UPDATE_ACTIVE_STATS_RVA: usize = 0x00c7_deb0;
-/// Hit-points setter clamping i64 after stat recalculation.
-pub const SET_HIT_POINTS_RVA: usize = 0x00c7_fa80;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -540,16 +383,6 @@ pub fn walk_with(
     })();
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
-
-/// Scale applied to a naval transport edge speed.
-pub const TRANSPORT_SCALE_RVA: usize = 0x0331_efe0;
-/// Fixed speed of a naval invasion edge.
-pub const INVASION_SPEED_RVA: usize = 0x0331_ead8;
-/// Outer scale of the normal and rail edge speeds.
-pub const OUTER_SCALE_RVA: usize = 0x0331_d688;
-/// River terms of crossing kinds two and three.
-pub const RIVER_CROSSING_TWO_RVA: usize = 0x0331_d820;
-pub const RIVER_CROSSING_THREE_RVA: usize = 0x0331_d8b0;
 
 /// Fixed native fields captured once from the current authenticated division census.
 /// An absent field records its original failed read; consumers never retry it.

@@ -335,35 +335,6 @@ pub fn walk_growing(
     )
 }
 
-/// [`walk_growing`] for the countries `select` admits by native country id:
-/// an unselected country is not read and has no rows; a selected country's
-/// rows equal the whole walk's.
-pub fn walk_selected_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<Row>,
-    bytes: &mut Vec<u8>,
-    select: &dyn Fn(u32) -> bool,
-) -> NameWalk {
-    walk_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
-        APPOINTED_ADVISORS,
-        true,
-        &mut Fresh,
-        select,
-    )
-    .unwrap_or_else(|reason| NameWalk {
-        outcome: Outcome::Unavailable { reason },
-        bytes_len: 0,
-        required_bytes: 0,
-    })
-}
-
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
@@ -466,6 +437,7 @@ pub fn walk_available_carried(
 
 /// Available advisors in native order. Slot bytes are not read: the reached
 /// exact-name search needs only the character and idea operands.
+#[cfg(test)]
 pub fn walk_available(
     memory: &impl Memory,
     base: usize,

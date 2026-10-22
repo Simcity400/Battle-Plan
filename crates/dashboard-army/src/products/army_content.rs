@@ -121,9 +121,6 @@ impl<'a> Countries<'a> {
     pub fn tag(&self, raw: u32) -> Option<String> {
         self.tags.get(&self.slot(raw)?).cloned()
     }
-    pub fn tag_of_slot(&self, slot: u32) -> Option<String> {
-        self.tags.get(&slot).cloned()
-    }
 }
 
 /// A template's in-game name: its literal, else its key localised for its

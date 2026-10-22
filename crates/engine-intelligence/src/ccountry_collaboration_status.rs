@@ -15,13 +15,12 @@ pub const VTABLE_RVA: usize = 0x029a_5d58;
 /// Outgoing CCountryCollaborationData pointer array.
 pub const RELATIONS: usize = 0x28;
 /// Outgoing array count, u32.
+#[cfg(test)]
 pub const RELATION_COUNT: usize = 0x34;
 /// Owning CCountry pointer requiring an exact back-reference match.
 pub const OWNER: usize = 0x40;
 /// Incoming u32 country-link array requiring reciprocal membership.
 pub const INCOMING_COUNTRIES: usize = 0x48;
-/// Incoming country-link count, u32.
-pub const INCOMING_COUNT: usize = 0x54;
 
 #[derive(Clone, Copy)]
 struct Status {

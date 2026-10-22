@@ -2,12 +2,9 @@
 
 /// Power-balance record-array pointer.
 pub const RECORDS: usize = 0x08;
-/// Record-array signed capacity.
-pub const RECORD_CAPACITY: usize = 0x10;
 /// Record-array signed count.
+#[cfg(test)]
 pub const RECORD_COUNT: usize = 0x14;
-/// First matching country selected in stored order.
-pub const FIND_BY_COUNTRY_RVA: usize = 0x00e4_24f0;
 
 use crate::{
     Memory, ccountry, cgame_state, cpdx_array::Array, modifier_accumulator, modifier_definition,

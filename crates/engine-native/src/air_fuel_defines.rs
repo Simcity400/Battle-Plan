@@ -16,8 +16,6 @@ pub const CONTEXT_SCALE_RVA: usize = 0x0309_9db8;
 pub const MISSION_COSTS_RVA: usize = 0x0332_0800;
 /// Capacity i64-threshold table pointer, indexed by mission capacity class.
 pub const CAPACITY_THRESHOLDS_RVA: usize = 0x0332_07b8;
-/// Signed i64 table-element stride.
-pub const TABLE_ELEMENT_STRIDE: usize = 8;
 /// Air fuel fixed-point scale; products retain signed i64 arithmetic.
 pub const FIXED_SCALE: i64 = 100_000;
 /// Training mission cost index for current type zero.

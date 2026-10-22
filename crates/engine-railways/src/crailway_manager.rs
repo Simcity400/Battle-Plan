@@ -18,6 +18,7 @@ pub const VTABLE_RVA: usize = 0x0295_c0b0;
 /// CRailwayManager province-indexed CProvinceRailwayInfo pointer table.
 pub const PROVINCE_INFO_TABLE: usize = 0x08;
 /// Province-info table signed i32 count.
+#[cfg(test)]
 pub const PROVINCE_INFO_COUNT: usize = 0x14;
 /// Cooldown province list data pointer.
 pub const COOLDOWN_PROVINCES: usize = 0x20;
@@ -30,8 +31,6 @@ pub const CONSTRUCTOR_RVA: usize = 0x00e7_d380;
 /// Railway manager scalar deleting destructor (vtable slot 0); destruction
 /// stores the vtable and frees every info object.
 pub const DESTRUCTOR_RVA: usize = 0x00e7_d660;
-/// Railway province-info creation stores `table[id]`.
-pub const GET_OR_CREATE_PROVINCE_INFO_RVA: usize = 0x00e7_d6d0;
 /// Railway token loader can allocate and replace info slots.
 pub const LOAD_TOKEN_RVA: usize = 0x00e8_0320;
 /// Province-cooldown setter writes stored cooldown and notifies supply.
@@ -666,6 +665,7 @@ pub fn walk(
 }
 
 /// Reuse the authenticated info windows; no second province census.
+#[cfg(test)]
 pub fn walk_with_buildings(
     memory: &impl Memory,
     base: usize,
@@ -689,6 +689,7 @@ pub fn walk_with_buildings(
 
 /// Selected operands share this same info identity, cooldown, pair-count and
 /// building pass. No current unit census or attach-time baseline is required.
+#[cfg(test)]
 pub fn walk_with_selection(
     memory: &impl Memory,
     base: usize,

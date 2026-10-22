@@ -1280,19 +1280,14 @@ pub const OWNER: usize = 0x38;
 /// COrderInstance ordered u32 province-id vector.
 pub const PATH_DATA: usize = 0x70;
 /// Path u32 capacity, separate from live count.
+#[cfg(test)]
 pub const PATH_CAPACITY: usize = 0x78;
-/// Path u32 count; validation uses the count rather than capacity.
-pub const PATH_COUNT: usize = 0x7c;
 /// COrderInstance paradrop target u32 province id.
 pub const PARADROP_TARGET: usize = 0xb8;
 /// COrderInstance accumulated preparation i64.
 pub const ACCUMULATED_PREPARATION: usize = 0xd8;
 /// COrderInstance area-defense u32 state-id vector.
 pub const TARGET_STATE_DATA: usize = 0xe0;
-/// Target-state u32 capacity, separate from live count.
-pub const TARGET_STATE_CAPACITY: usize = 0xe8;
-/// Target-state u32 count; validation uses the count rather than capacity.
-pub const TARGET_STATE_COUNT: usize = 0xec;
 /// Signed inclusive section span; both endpoints are serialized.
 pub const SEGMENT_START: usize = 0xa0;
 /// Signed inclusive section end, checked against the section-pair count.
@@ -1309,16 +1304,10 @@ pub const WITHDRAW: usize = 0x119;
 pub const CONDITION_CACHE: usize = 0x11a;
 /// COrderInstance predecessor pointer-vector data.
 pub const PREDECESSOR_DATA: usize = 0x1e0;
-/// COrderInstance predecessor u32 count.
-pub const PREDECESSOR_COUNT: usize = 0x1ec;
 /// Successor pointer-vector data; this graph is gathered for group serialization.
 pub const SUCCESSOR_DATA: usize = 0x1f8;
-/// Successor u32 count, loaded alongside its pointer as a signed word.
-pub const SUCCESSOR_COUNT: usize = 0x204;
 /// Scheduled-member pointer vector stores each unit's embedded member, rather than body pointers.
 pub const ASSIGNED_MEMBER_DATA: usize = 0x210;
-/// COrderInstance scheduled-member u32 count.
-pub const ASSIGNED_MEMBER_COUNT: usize = 0x21c;
 /// COrderInstance u32 engine instance id.
 pub const ID: usize = 0x244;
 /// COrderInstance active byte.
@@ -1332,14 +1321,8 @@ pub const FRONT_BINDING: usize = 0x258;
 pub const FALLBACK: usize = 0x298;
 /// COrderInstance virtual-order byte.
 pub const VIRTUAL: usize = 0x299;
-/// COrderInstance virtual-predecessor pointer-vector data.
-pub const VIRTUAL_PREDECESSOR_DATA: usize = 0x2b8;
-/// COrderInstance virtual-predecessor u32 count.
-pub const VIRTUAL_PREDECESSOR_COUNT: usize = 0x2c4;
 /// Virtual-successor pointer-vector data; this graph is gathered separately.
 pub const VIRTUAL_SUCCESSOR_DATA: usize = 0x2d0;
-/// Virtual-successor u32 count, loaded alongside its pointer as a signed word.
-pub const VIRTUAL_SUCCESSOR_COUNT: usize = 0x2dc;
 /// COrderInstance owner-override pointer, eight bytes.
 pub const OWNER_OVERRIDE: usize = 0x378;
 /// Order-name strings. All are localisation keys except the unique text,
@@ -1356,28 +1339,6 @@ pub const TYPE_INVASION: i32 = 3;
 pub const TYPE_PARADROP: i32 = 4;
 /// Area-defense discriminator, separate from offensive orders.
 pub const TYPE_AREA_DEFENSE: i32 = 5;
-/// Save serializer.
-pub const SERIALIZE_RVA: usize = 0x0103_62c0;
-/// Save loader.
-pub const LOAD_RVA: usize = 0x0102_8e60;
-/// Active-state writer propagating to child orders.
-pub const SET_ACTIVE_RVA: usize = 0x0103_2600;
-/// Move-route producer replacing the stored path.
-pub const REBUILD_MOVE_ROUTE_RVA: usize = 0x0103_2070;
-/// Move-route caller supplying the stored path as output.
-pub const PREPARE_MOVE_ROUTE_RVA: usize = 0x0101_7b00;
-/// Invasion-route mutation.
-pub const MUTATE_INVASION_ROUTE_RVA: usize = 0x0101_5200;
-/// Route erase and repack, including type-4 recalculation.
-pub const REPACK_ROUTE_RVA: usize = 0x0103_0a40;
-/// Paradrop execution predicate reading the first path entry and target.
-pub const CAN_EXECUTE_PARADROP_RVA: usize = 0x0102_2f50;
-/// Paradrop execution checking positive source and target IDs.
-pub const EXECUTE_PARADROP_RVA: usize = 0x0102_1390;
-/// Arrow-style predicate consumer.
-pub const ARROW_STYLE_CONSUMER_RVA: usize = 0x0123_e7e0;
-/// Front-binding consumer using the shared invalid-reference sentinel.
-pub const FRONT_BINDING_CONSUMER_RVA: usize = 0x0124_7220;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

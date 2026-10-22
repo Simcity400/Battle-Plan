@@ -102,7 +102,7 @@ impl Capacities {
         // Countries reads at most two link words and one tag per physical
         // country; CountryLinks reads at most three words per live link.
         // Appearance retains the original scalar, selection and text, then
-        // its optional suffix. Leave room for reserved controls and demands.
+        // its optional suffix. Leave room for reserved controls.
         // The zero-sized worker placeholder must remain allocation-free.
         let active = raw.links != 0 || self.rows != 0;
         raw.occurrences = raw.occurrences.max(
@@ -111,7 +111,6 @@ impl Capacities {
                 .saturating_add(raw.links.saturating_mul(4))
                 .saturating_add(usize::from(active) * 24),
         );
-        raw.demands = raw.demands.max(raw.links);
         raw.bytes = raw.bytes.max(
             self.naming_bytes
                 .saturating_add(self.rows.saturating_mul(16)),
@@ -325,7 +324,6 @@ impl Captured {
         let required = self.raw.required();
         crate::table_capture::grow_capacity(&mut capacity.raw.occurrences, required.occurrences);
         crate::table_capture::grow_capacity(&mut capacity.raw.links, required.links);
-        crate::table_capture::grow_capacity(&mut capacity.raw.demands, required.demands);
         crate::table_capture::grow_capacity(&mut capacity.raw.bytes, required.bytes);
         self.preacquired = None;
         self.rows.grow(&mut capacity.rows);
@@ -374,7 +372,7 @@ impl Captured {
             );
             return [0; N];
         }
-        self.raw.begin(base, state, hour);
+        self.raw.begin(hour);
         let ticks = self.capture_original(memory, base, state, None);
         // No later borrower reads the journal's native controls.
         self.raw.finish_native();

@@ -8,5 +8,3 @@ pub const DISTANCE: usize = 0x04;
 pub const KEY: usize = 0x08;
 /// Signed i64 value.
 pub const VALUE: usize = 0x28;
-/// Fixed-point value divisor.
-pub const VALUE_SCALE: i64 = 100_000;

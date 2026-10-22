@@ -12,8 +12,6 @@ pub const PROVINCE_ID: usize = 0x10;
 pub const HEALTHY_LEVEL: usize = 0x14;
 /// Native signed i32 total port level sum.
 pub const LEVEL: usize = 0x18;
-/// Rebuild cached port levels.
-pub const UPDATE_LEVELS_RVA: usize = 0x00e9_cc60;
 
 /// CNavalBase vtable.
 pub const VTABLE_RVA: usize = 0x0295_c5a0;

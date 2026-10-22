@@ -14,14 +14,7 @@ use crate::{
 
 /// CGameState singleton.
 pub const SINGLETON_RVA: usize = 0x0331_6e90;
-/// Stored OS main-thread id initialized at executable startup.
-/// Thread checks compare it with the current Windows thread id.
-pub const MAIN_THREAD_ID_RVA: usize = 0x035c_ac94;
 
-/// One original callback-entry numerical attempt; no native method is invoked.
-pub fn read_main_thread_id(memory: &impl Memory, base: usize) -> Option<u32> {
-    read(memory, base.checked_add(MAIN_THREAD_ID_RVA)?)
-}
 /// Play-session start Unix seconds.
 pub const PLAY_SESSION_STARTED_AT_RVA: usize = 0x0331_7048;
 /// CGameState current date (`CURRENT_DATE`), its raw i32 hour.
@@ -31,11 +24,11 @@ pub const PLAY_TIME: usize = 0x490;
 /// Dense published variant pointer array, appended and saved in slot order from zero.
 pub const EQUIPMENT_VARIANTS: usize = 0x708;
 /// CGameState equipment-variant capacity, signed i32.
+#[cfg(any(test, feature = "test-support"))]
 pub const EQUIPMENT_VARIANTS_CAPACITY: usize = 0x710;
 /// CGameState equipment-variant count, signed i32.
+#[cfg(test)]
 pub const EQUIPMENT_VARIANTS_COUNT: usize = 0x714;
-/// CGameState equipment-variant allocator.
-pub const EQUIPMENT_VARIANTS_ALLOCATOR: usize = 0x718;
 /// CGameState i32 seed.
 pub const CAMPAIGN_SEED: usize = 0x720;
 /// Stored campaign unique-id MSVC string.
@@ -46,11 +39,6 @@ pub const SPEED: usize = 0x4bc;
 pub const NAVY_ID: usize = 0x74c;
 /// CGameState `land_combat_id` allocation counter, signed i32.
 pub const LAND_COMBAT_ID: usize = 0x748;
-/// Save-header serializer emits twenty-five consecutive fields.
-pub const HEADER_SERIALIZER_RVA: usize = 0x001f_2a20;
-/// Save-header loader restores twelve counter tokens to their matching globals or setters. Token
-/// 0x2d4d instead loads the word after `NEXT_EVENT_INSTANCE`, not the id counter.
-pub const HEADER_LOADER_RVA: usize = 0x001e_5550;
 /// Tick marker, set before date advancement and cleared near return.
 pub const TICK_BUSY: usize = 0x4c0;
 /// CGameState CPdxArray<CCountry*>.
@@ -64,48 +52,36 @@ pub const COUNTRY_TAGS: usize = 0x358;
 /// CGameState CPdxArray<CProvince*>.
 pub const PROVINCES: usize = 0x2b0;
 
-/// Stored u32 save version; save-oracle agreement remains unverified.
-pub const SAVE_VERSION: usize = 0x58;
-/// State MSVC-string candidate; writer and meaning remain unproven.
-pub const SESSION_HEADER_TEXT: usize = 0x70;
 /// CGameState retained save-header player array; the CHuman serializer preserves it separately from live players (`PLAYER_RECORDS`).
 pub const SAVED_PLAYER_RECORDS: usize = 0xa8;
-/// CGameState CIdeologyGroup* candidate.
-pub const SESSION_IDEOLOGY_GROUP: usize = 0xc8;
-/// State u32 candidate; this field does not establish the loaded DLC roster.
-pub const SESSION_DLC_WORD: usize = 0xd4;
 /// CGameState live CHuman pointer array; the world-clock reader and native player serializer distinguish it from saved records (`SAVED_PLAYER_RECORDS`).
 pub const PLAYER_RECORDS: usize = 0xf8;
 /// CGameState embedded CCombatManager.
 pub const COMBATS: usize = 0x260;
 /// CGameState u32 province-vector capacity.
+#[cfg(test)]
 pub const PROVINCES_CAPACITY: usize = 0x2b8;
 /// CGameState u32 province-vector count.
 pub const PROVINCES_COUNT: usize = 0x2bc;
 /// CGameState u32 country-vector capacity; CPdxArray layout and current guarded walker agree.
+#[cfg(any(test, feature = "test-support"))]
 pub const COUNTRIES_CAPACITY: usize = 0x318;
 /// CGameState u32 country-vector count.
 pub const COUNTRIES_COUNT: usize = 0x31c;
-/// CGameState major-country reference vector.
-pub const MAJOR_COUNTRIES: usize = 0x328;
-/// CGameState u32 major-country vector count.
-pub const MAJOR_COUNTRIES_COUNT: usize = 0x334;
 /// CGameState u32 country-link capacity; current guarded CPdxArray reader confirms it.
+#[cfg(any(test, feature = "test-support"))]
 pub const COUNTRY_LINKS_CAPACITY: usize = 0x348;
 /// CGameState u32 country-link count; current guarded CPdxArray reader confirms it.
 pub const COUNTRY_LINKS_COUNT: usize = 0x34c;
-/// CGameState u32 country-tag string vector capacity.
-pub const COUNTRY_TAGS_CAPACITY: usize = 0x360;
 /// CGameState u32 country-tag string vector count.
 pub const COUNTRY_TAGS_COUNT: usize = 0x364;
 /// CGameState human-controller counts, native signed bytes; CHuman controller walk authenticates canonical country slots independently.
 pub const HUMAN_STATUS: usize = 0x388;
-/// CGameState human-status native signed array count; CHuman controller walk checks this separately from country count.
-pub const HUMAN_STATUS_COUNT: usize = 0x394;
 /// Per-canonical-country autonomous-control flags.
 pub const AUTONOMOUS_STATUS: usize = 0x370;
 
 /// Exercise-level AI-control gate, including live-player fallback.
+#[cfg(test)]
 pub fn autonomous_country(
     memory: &impl Memory,
     base: usize,
@@ -286,9 +262,8 @@ impl AiControl {
 }
 /// Embedded technology-sharing vector data, not a manager pointer.
 pub const TECH_SHARING_GROUPS: usize = 0x3a0;
-/// CGameState technology-sharing vector u32 capacity.
-pub const TECH_SHARING_GROUPS_CAPACITY: usize = 0x3a8;
 /// CGameState technology-sharing vector u32 count.
+#[cfg(any(test, feature = "test-support"))]
 pub const TECH_SHARING_GROUPS_COUNT: usize = 0x3ac;
 /// CGameState CSupplySystem*.
 pub const SUPPLY_SYSTEM: usize = 0x3d8;
@@ -302,8 +277,6 @@ pub const RAID_SYSTEM: usize = 0x3f0;
 pub const FACTION_SYSTEM: usize = 0x3f8;
 /// Inline game date with its raw hour eight bytes later.
 pub const CURRENT_DATE: usize = 0x460;
-/// Start-date raw word; full representation remains unproven.
-pub const START_DATE_RAW: usize = 0x4a8;
 /// Tick-progress word, independent of the game-speed field.
 pub const TICK_PROGRESS: usize = 0x4b8;
 /// Sunk-convoy history vector with 0x18-byte rows.
@@ -323,14 +296,6 @@ pub const WORLD_THREAT: usize = 0x6b0;
 /// Player-input eligibility byte, set before load completion.
 /// It does not establish world readiness.
 pub const PLAYER_INPUT_ELIGIBLE: usize = 0xa39;
-/// Game-speed setter; passive capture never calls it.
-pub const SET_SPEED_RVA: usize = 0x001e_dad0;
-/// Exact game-speed setter entry bytes.
-pub const SET_SPEED_SENTINEL: [u8; 16] = [
-    0x40, 0x55, 0x48, 0x83, 0xec, 0x40, 0x4c, 0x89, 0x74, 0x24, 0x30, 0x85, 0xd2, 0x79, 0x04, 0x33,
-];
-/// CGameState generated input-eligibility setter.
-pub const SET_INPUT_ELIGIBLE_RVA: usize = 0x001e_dc70;
 /// Game-state constructor/reset initializes input state.
 pub const RESET_RVA: usize = 0x001e_0190;
 /// Load setup sets eligibility before remaining calls; it does not establish world readiness.
@@ -340,23 +305,19 @@ pub const LOAD_SETUP_RVA: usize = 0x00dc_5310;
 pub const GLOBAL_FLAGS: usize = 0x258;
 /// CGameState state pointer table.
 pub const STATES: usize = 0x2c8;
-/// CGameState state table count i32.
-pub const STATES_COUNT: usize = 0x2d4;
 /// CGameState strategic-region pointer array.
 pub const STRATEGIC_REGIONS: usize = 0x2e0;
-/// CGameState strategic-region array capacity.
-pub const STRATEGIC_REGIONS_CAPACITY: usize = 0x2e8;
 /// CGameState strategic-region native signed count.
+#[cfg(any(test, feature = "test-support"))]
 pub const STRATEGIC_REGIONS_COUNT: usize = 0x2ec;
 /// CGameState power-balance manager pointer.
 pub const POWER_BALANCE_MANAGER: usize = 0x450;
 /// CGameState next event instance u32.
 pub const NEXT_EVENT_INSTANCE: usize = 0x498;
-/// CGameState embedded peace-conference container.
-pub const PEACE_CONFERENCES: usize = 0x4e0;
 /// CGameState peace-conference data pointer.
 pub const PEACE_CONFERENCES_DATA: usize = 0x4e8;
 /// CGameState peace-conference count i32.
+#[cfg(any(test, feature = "test-support"))]
 pub const PEACE_CONFERENCES_COUNT: usize = 0x4f4;
 /// Combat-log manager pointer array indexed by canonical country slot,
 /// with null slot zero. Serialization and combat-log writers use this ordering.
@@ -388,88 +349,37 @@ pub fn local_player(memory: &impl Memory, state: usize) -> Result<[u32; 2], &'st
 pub const FIRED_EVENTS: usize = 0x538;
 /// CGameState pending-event vector.
 pub const PENDING_EVENTS: usize = 0x560;
-/// CGameState pending-event vector capacity u32.
-pub const PENDING_EVENTS_CAPACITY: usize = 0x568;
 /// CGameState pending-event vector count u32.
 pub const PENDING_EVENTS_COUNT: usize = 0x56c;
 /// CGameState sunk-ship history vector.
 pub const SUNK_SHIP_HISTORY: usize = 0x590;
 /// CGameState sunk-convoy history u32 capacity.
+#[cfg(any(test, feature = "test-support"))]
 pub const SUNK_CONVOY_HISTORY_CAPACITY: usize = 0x5b0;
 /// CGameState sunk-convoy history u32 count.
+#[cfg(any(test, feature = "test-support"))]
 pub const SUNK_CONVOY_HISTORY_COUNT: usize = 0x5b4;
 /// CGameState naval combat-result vector.
 pub const NAVAL_COMBAT_RESULTS: usize = 0x5c0;
-/// CGameState naval combat-result u32 count.
-pub const NAVAL_COMBAT_RESULTS_COUNT: usize = 0x5cc;
 /// CGameState global scripted variables object.
 pub const GLOBAL_VARIABLES: usize = 0x980;
-/// Fired-event set accessor.
-pub const FIRED_EVENTS_ACCESSOR_RVA: usize = 0x001e_dac0;
-/// Pending-event registry writer.
-pub const REGISTER_PENDING_EVENT_RVA: usize = 0x001c_ab70;
 
-/// CGameState fleet-id high-water counter u32.
-pub const NEXT_FLEET_ID: usize = 0x74c;
-/// Ship-registration gate byte suppresses counter growth when set;
-/// its full meaning remains unproven.
-pub const SHIP_REGISTRATION_GATE: usize = 0xa35;
-/// Fleet-id minter uses type 61 and increments the fleet counter.
-pub const MINT_FLEET_ID_RVA: usize = 0x001e_4040;
 /// CGameState sunk-ship history capacity u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const SUNK_SHIP_HISTORY_CAPACITY: usize = 0x598;
 /// CGameState sunk-ship history count u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const SUNK_SHIP_HISTORY_COUNT: usize = 0x59c;
-/// CGameState retained naval-result capacity u32.
-pub const NAVAL_COMBAT_RESULTS_CAPACITY: usize = 0x5c8;
-/// CGameState province-keyed retained-result unordered map.
-pub const NAVAL_RESULTS_BY_PROVINCE: usize = 0x5d8;
 /// CGameState retained-result map list-head pointer.
 pub const NAVAL_RESULTS_MAP_LIST_HEAD: usize = 0x5e0;
 /// CGameState retained-result map node count u64 (MSVC list size).
 pub const NAVAL_RESULTS_MAP_LIST_SIZE: usize = 0x5e8;
 /// CGameState retained-result map buckets pointer.
+#[cfg(any(test, feature = "test-support"))]
 pub const NAVAL_RESULTS_MAP_BUCKETS: usize = 0x5f0;
 /// CGameState retained-result map bucket mask.
+#[cfg(any(test, feature = "test-support"))]
 pub const NAVAL_RESULTS_MAP_MASK: usize = 0x608;
-/// Retained naval-result insertion updates both containers.
-pub const INSERT_NAVAL_RESULT_RVA: usize = 0x001c_a9c0;
-/// Retained naval-result retirement sweep.
-pub const SWEEP_NAVAL_RESULTS_RVA: usize = 0x001d_73b0;
-/// Province-keyed retained naval-result lookup.
-pub const FIND_NAVAL_RESULTS_RVA: usize = 0x001d_b500;
-/// Retained naval-result removal updates both containers.
-pub const ERASE_NAVAL_RESULT_RVA: usize = 0x001e_b700;
-/// Attributed sunk-ship record append.
-pub const APPEND_ATTRIBUTED_SUNK_SHIP_RVA: usize = 0x001d_2c90;
-/// Combat-source sunk-ship record append.
-pub const APPEND_COMBAT_SUNK_SHIP_RVA: usize = 0x001d_2d10;
-/// Cause-based sunk-ship record append.
-pub const APPEND_CAUSE_SUNK_SHIP_RVA: usize = 0x001d_2da0;
-/// Entry bytes shared by the three CGameState sunk-ship append functions.
-pub const APPEND_SUNK_SHIP_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
-];
-/// Sunk-convoy aggregate append or increment, keyed by month, killer and owner.
-pub const AGGREGATE_SUNK_CONVOY_RVA: usize = 0x001c_ae90;
-/// Game-state serializer.
-pub const SERIALIZE_RVA: usize = 0x001f_2a20;
-/// Game-state deserializer restores the complete unsigned play time.
-pub const DESERIALIZE_RVA: usize = 0x001e_5550;
-/// Country-control census accessor.
-pub const COUNTRY_CENSUS_RVA: usize = 0x001e_1fe0;
-/// Pending-event lookup.
-pub const FIND_PENDING_EVENT_RVA: usize = 0x001d_a9f0;
-/// Pending-event expiry.
-pub const EXPIRE_PENDING_EVENTS_RVA: usize = 0x001f_0770;
-/// Pending-event removal.
-pub const REMOVE_PENDING_EVENT_RVA: usize = 0x001e_b860;
-/// CGameState tutorial-highlight gate byte.
-pub const TUTORIAL_HIGHLIGHT_GATE: usize = 0xa37;
-/// Custom-highlight group vector with 0x20-byte records.
-pub const CUSTOM_HIGHLIGHT_GROUPS: usize = 0xa10;
-/// CGameState custom-highlight group count i32.
-pub const CUSTOM_HIGHLIGHT_GROUP_COUNT: usize = 0xa1c;
 
 /// Per-hour update boundary. Entry observes settled end-of-hour state:
 /// all commands drained and tick_busy zero, before this tick increments the
@@ -479,12 +389,6 @@ pub const HOURLY_UPDATE_RVA: usize = 0x001d_cef0;
 /// Exact hourly-update entry bytes.
 pub const HOURLY_UPDATE_SENTINEL: [u8; 16] = [
     0x48, 0x8b, 0xc4, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41,
-];
-/// Daily update also runs during initialization; it is not a once-per-hour boundary.
-pub const DAILY_CANDIDATE_RVA: usize = 0x001d_4390;
-/// Exact daily-update entry bytes.
-pub const DAILY_CANDIDATE_SENTINEL: [u8; 16] = [
-    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8d, 0xac,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

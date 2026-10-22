@@ -31,13 +31,12 @@ pub const TOKEN: usize = 0x48;
 pub const COUNTRY: usize = 0x68;
 /// Stored gender enum; pronouns select feminine only for value two.
 pub const GENDER: usize = 0x70;
-/// Getter returning the country-reference address rather than its raw value.
-pub const COUNTRY_REFERENCE_RVA: usize = 0x00a5_bf80;
 /// Embedded portrait container.
 pub const PORTRAITS: usize = 0x78;
 /// Portrait-entry data pointer.
 pub const PORTRAIT_DATA: usize = 0x80;
 /// Portrait-entry count, u32.
+#[cfg(test)]
 pub const PORTRAIT_COUNT: usize = 0x8c;
 /// Ideology-to-CCountryLeader map head.
 pub const LEADER_MAP_HEAD: usize = 0x98;
@@ -70,37 +69,6 @@ pub const VIEW_EXTENT: usize = ADVISOR_MAP_SIZE + 8;
 /// so the character's `TEMPLATE` pointer rides in the same guarded span and
 /// is checked every hour without another read.
 pub const NAME_TOKEN_SPAN: usize = NAME - NAME_TOKEN_ID;
-/// Portrait-map assignment reusing an existing key's string storage.
-pub const SET_PORTRAIT_RVA: usize = 0x0138_9960;
-
-// These excluded mutator sites affect character roles; complete writer coverage is unverified.
-/// Role-tree destructor; its gate hook is excluded.
-pub const ROLE_TREE_DESTRUCTOR_RVA: usize = 0x00F8_A000;
-/// Role-tree destructor entry sentinel for the excluded gate hook.
-pub const ROLE_TREE_DESTRUCTOR_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x1f, 0xde, 0x9d,
-];
-
-/// Role-tree merge function; its gate hook is excluded.
-pub const ROLE_TREE_MERGE_RVA: usize = 0x00F8_BE70;
-/// Role-tree merge entry sentinel for the excluded gate hook.
-pub const ROLE_TREE_MERGE_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
-];
-
-/// Character-definition builder; its gate hook is excluded.
-pub const CHARACTER_DEFINITION_BUILD_RVA: usize = 0x00F8_DF60;
-/// Character-definition builder entry sentinel for the excluded gate hook.
-pub const CHARACTER_DEFINITION_BUILD_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
-];
-
-/// Character-role parser; its gate hook is excluded.
-pub const CHARACTER_ROLE_PARSER_RVA: usize = 0x00F8_FF30;
-/// Character-role parser entry sentinel for the excluded gate hook.
-pub const CHARACTER_ROLE_PARSER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

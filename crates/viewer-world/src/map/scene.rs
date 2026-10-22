@@ -1206,6 +1206,7 @@ impl Scene {
 
     /// Starts impacts that arrive without map events, as an offline scene's
     /// synthetic ones do. A reset clears every province's effect slot first.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_nuclear_impacts<'a>(
         &mut self,
         hours: impl IntoIterator<Item = &'a crate::map::strike_effects::Impacts>,

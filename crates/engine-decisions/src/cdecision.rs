@@ -70,8 +70,6 @@ pub(crate) fn token(
 pub const CANCEL_EFFECT_RVA: usize = 0x0071_b350;
 /// Authored-decision removal-effect entry; observes invocation only.
 pub const REMOVE_EFFECT_RVA: usize = 0x0071_b590;
-/// Authored-decision timeout-effect entry; observes invocation only.
-pub const TIMEOUT_EFFECT_RVA: usize = 0x0071_c490;
 /// Three ordinary terminal-effect entry prefixes.
 pub const TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0, 0x00,
@@ -83,12 +81,6 @@ pub const TARGETED_REMOVE_EFFECT_RVA: usize = 0x0071_be10;
 /// Targeted cancel/removal entry prefixes.
 pub const TARGETED_TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
-];
-/// Authored targeted-decision timeout-effect entry.
-pub const TARGETED_TIMEOUT_EFFECT_RVA: usize = 0x0071_c130;
-/// Exact targeted timeout-effect entry bytes.
-pub const TARGETED_TIMEOUT_EFFECT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55, 0x41, 0x56,
 ];
 /// Targeted decision's execute-effect entry.
 pub const TARGETED_EXECUTE_EFFECT_RVA: usize = 0x0071_baf0;

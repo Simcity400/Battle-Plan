@@ -169,6 +169,7 @@ impl Baseline {
     }
 
     /// Owners currently valid.
+    #[cfg(test)]
     pub fn valid_owners(&self) -> usize {
         self.owners.iter().filter(|owner| owner.valid()).count()
     }

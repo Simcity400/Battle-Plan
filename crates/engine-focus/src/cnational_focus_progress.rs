@@ -19,13 +19,12 @@ pub const PROGRESS: usize = 0x38;
 /// CNationalFocusProgress completed-focus pointer-array data.
 pub const COMPLETED_DATA: usize = 0x40;
 /// CNationalFocusProgress completed-focus signed i32 capacity.
+#[cfg(test)]
 pub const COMPLETED_CAPACITY: usize = 0x48;
 /// CNationalFocusProgress completed-focus signed i32 count.
 pub const COMPLETED_COUNT: usize = 0x4c;
 /// Completed-focus pointer stride for eight-byte elements.
 pub const COMPLETED_STRIDE: usize = 8;
-/// CNationalFocusProgress completed-token lookup.
-pub const HAS_COMPLETED_RVA: usize = 0x002d_6780;
 /// CNationalFocusProgress paused byte.
 pub const PAUSED: usize = 0xb0;
 

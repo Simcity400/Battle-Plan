@@ -8,8 +8,6 @@ pub const VTABLE_RVA: usize = 0x0294_6bf8;
 pub const VTABLE: usize = 0x00;
 /// CFlagManager dense flag-row array pointer.
 pub const ROWS: usize = 0x08;
-/// CFlagManager packed u64 slot/entry counts.
-pub const PACKED_SLOT_ENTRY_COUNT: usize = 0x10;
 /// CFlagManager signed capacity.
 pub const SLOT_COUNT: usize = 0x10;
 /// CFlagManager signed live count.

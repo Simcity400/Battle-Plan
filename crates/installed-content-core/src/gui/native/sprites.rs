@@ -564,6 +564,7 @@ impl Sprites {
 
 /// Reads one `.gfx` file's declarations as the game reads them, with only the static keywords
 /// registered ([`read_sprites_with`] adds the content's dynamic tokens).
+#[cfg(any(test, feature = "test-support"))]
 pub fn read_sprites(bytes: &[u8]) -> Sprites {
     read_sprites_with(bytes, &DynamicTokens::default())
 }

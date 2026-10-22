@@ -4,26 +4,16 @@
 
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0296_ce48;
-/// Type descriptor.
-pub const TYPE_DESCRIPTOR_RVA: usize = 0x0323_2d88;
 /// CRaidInstance u32 reference type.
 pub const REFERENCE_TYPE: usize = 0x08;
 /// Raid-instance reference type identifier.
 pub const REFERENCE_TYPE_VALUE: u32 = 84;
 /// CRaidInstance u32 engine reference id.
 pub const ID: usize = 0x0c;
-/// Auto-launch boolean byte, serialized only when nonzero.
-pub const AUTO_LAUNCH: usize = 0x30;
-/// Auto-launch threshold, i32, with values 0..4 from very low to very high.
-pub const AUTO_LAUNCH_THRESHOLD: usize = 0x34;
 /// Phase enum, i32.
 pub const PHASE: usize = 0x38;
 /// Outcome enum, i32.
 pub const OUTCOME: usize = 0x3c;
-/// Risk enum, i32: low, medium or high.
-pub const RISK: usize = 0x40;
-/// Launchable-day count, i32.
-pub const DAYS_LAUNCHABLE: usize = 0x48;
 /// Preparation hours, i32, incremented and queried in phase 2 and subtracted
 /// from remaining hours. Starting preparation clears it; serialization emits
 /// `prep_time` only when nonzero.
@@ -50,12 +40,8 @@ pub const EQUIPMENT: usize = 0x110;
 pub const NUKES: usize = 0x150;
 /// Detected boolean byte, serialized only when nonzero.
 pub const DETECTED: usize = 0x190;
-/// Optional end-date object serialized only when its presence byte is set.
-pub const END_DATE: usize = 0x1a8;
 /// Show-for country-handle array pointer.
 pub const SHOW_FOR_COUNTRIES: usize = 0x1b8;
-/// Show-for signed count of four-byte country handles.
-pub const SHOW_FOR_COUNTRIES_COUNT: usize = 0x1c4;
 /// Show-for country-handle stride.
 pub const SHOW_FOR_COUNTRY_STRIDE: usize = 4;
 /// CRaidInstance phase 1 is ASSEMBLING.
@@ -70,10 +56,6 @@ pub const PHASE_IN_PROGRESS: i32 = 4;
 pub const PHASE_ENDED: i32 = 5;
 /// Outcome zero is absent and omitted from serialization.
 pub const OUTCOME_NONE: i32 = 0;
-/// CRaidInstance outcome 1 is FAILURE.
-pub const OUTCOME_FAILURE: i32 = 1;
-/// CRaidInstance outcome 2 is LIMITED_SUCCESS.
-pub const OUTCOME_LIMITED_SUCCESS: i32 = 2;
 /// CRaidInstance outcome 3 is SUCCESS.
 pub const OUTCOME_SUCCESS: i32 = 3;
 /// CRaidInstance outcome 4 is CRITICAL_SUCCESS.
@@ -116,13 +98,6 @@ pub const fn outcome_key(outcome: i32) -> &'static str {
         _ => OUTCOME_KEYS[0],
     }
 }
-
-/// Raid-instance serializer.
-pub const SERIALIZER_RVA: usize = 0x00fd_a710;
-/// Raid owner country-handle query.
-pub const OWNER_COUNTRY_GETTER_RVA: usize = 0x00fd_7cf0;
-/// Location-scope query returning the embedded target scope.
-pub const LOCATION_SCOPE_GETTER_RVA: usize = 0x0069_f150;
 
 use crate::{
     Memory, ccountry, ccountry_raid_status, cpdx_array::Array, craid_source, craid_target,

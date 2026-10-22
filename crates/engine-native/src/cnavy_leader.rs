@@ -18,5 +18,3 @@ pub const COORDINATION: usize = 0xf98;
 pub const SIZE: usize = 0xfc8;
 /// Navy-leader constructor installs both vtables and signed skill words.
 pub const CONSTRUCTOR_RVA: usize = 0x00c0_3290;
-/// Navy-leader serializer reads every skill as signed i32.
-pub const SERIALIZE_RVA: usize = 0x00c1_8e90;

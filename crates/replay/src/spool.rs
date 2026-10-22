@@ -512,6 +512,7 @@ pub struct Recovery {
 }
 
 /// Recover only this segment's valid prefix. Never scan past damage for another magic.
+#[cfg(any(test, feature = "test-support"))]
 pub fn recover_prefix(bytes: &[u8]) -> Recovery {
     recover_records(io::Cursor::new(bytes), bytes.len(), Ok, false).unwrap()
 }
@@ -1033,6 +1034,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
 
     /// The caller resets its table encoder and supplies a new keyframe on every restart.
     /// Lost hours must be named in `Gap` records in this context or subsequent appends.
+    #[cfg(test)]
     pub fn start_segment(&mut self, context: &[Record], keyframe: &Frame) -> io::Result<()> {
         self.start_segment_with(
             context,

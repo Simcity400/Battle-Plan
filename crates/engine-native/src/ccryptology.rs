@@ -15,19 +15,16 @@ pub const VTABLE_RVA: usize = 0x029a_6540;
 /// CCryptology inline CCountryDecryptionState array data pointer.
 pub const DECRYPTION_STATES: usize = 0x28;
 /// Decryption-state signed i32 count, incremented after each 0x38-byte inline row.
+#[cfg(test)]
 pub const DECRYPTION_STATE_COUNT: usize = 0x34;
 /// CCryptology decryption-state capacity i32.
+#[cfg(test)]
 pub const DECRYPTION_STATE_CAPACITY: usize = 0x30;
 /// CCryptology owning CCountry pointer.
 pub const OWNER_COUNTRY: usize = 0x08;
 /// CCryptology container Save.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x013e_3d30;
-/// CCryptology container Load.
-pub const LOAD_RVA: usize = 0x013e_3950;
-/// Decryption targets token, emitted only for nonzero state count.
-pub const TOKEN_TARGETS: u32 = 0x3d75;
-/// Intelligence-source token, emitted only when present.
-pub const TOKEN_INTEL_SOURCE: u32 = 0x4b34;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

@@ -57,6 +57,7 @@ pub const DISPLAY_REFRESH_INTERVAL: usize = 0x300;
 pub const DISPLAY_REFRESH_IDENTITY: usize = 0x340;
 /// Current snow/mud grid pointers, sized to the live quarter-map dimensions.
 pub const DISPLAY_GRID_SNOW: usize = 0x388;
+#[cfg(any(test, feature = "test-support"))]
 pub const DISPLAY_GRID_MUD: usize = 0x390;
 /// Pending graphics cells, i32; remains nonzero until threaded rebuilding finishes.
 pub const DISPLAY_WORK_COUNT: usize = 0x3b4;
@@ -73,10 +74,6 @@ pub const INITIAL_MODE: usize = 0x348;
 pub const SUSPEND_FLAGS: usize = 0x349;
 /// CWeatherManager hourly update.
 pub const HOURLY_UPDATE_RVA: usize = 0x00f0_7550;
-/// Display-byte updater; writes a province's snow and mud bytes when weather changes.
-pub const DISPLAY_BYTES_UPDATE_RVA: usize = 0x00f0_a240;
-/// Update passes; joins simulation, publication and regional jobs before writing display bytes.
-pub const UPDATE_PASSES_RVA: usize = 0x00f0_3940;
 
 /// An authenticated manager for one callback. Each table reads its own header,
 /// so failure of one weather array does not make the other table unavailable.
@@ -398,42 +395,7 @@ pub fn movement_modifiers(
     Ok((province_accumulator, region_accumulator))
 }
 
-/// Snow predicate with signed wrapping addition of the extra snow word.
-/// A missing manager or out-of-range province has no snow in this getter.
-pub fn movement_snow(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    province: usize,
-) -> Result<bool, &'static str> {
-    let manager = movement_field::<u64>(memory, state, cgame_state::WEATHER_MANAGER)?;
-    if manager == 0 {
-        return Ok(false);
-    }
-    // The nonnull pointer just read is the one `Reader::new` would read again.
-    let reader = Reader::with_manager(memory, base, manager as usize)?;
-    let id = movement_field::<i32>(memory, province, crate::cprovince::ID)?;
-    let record = reader.movement_record(id, false)?;
-    if record == 0 {
-        return Ok(false);
-    }
-    let [extra, snow] = movement_fields(record, [(0x30, 8), (sweather_per_province::SNOW, 8)]);
-    let [ceiling] = movement_fields(reader.pointer, [(MAX_SNOW, 8)]);
-    let fields = FieldBatch::gather(memory, [extra, snow, ceiling]);
-    let extra = movement_batched::<i64, 3>(memory, &fields, 0, record)?;
-    let snow = movement_batched::<i64, 3>(memory, &fields, 1, record)?;
-    let ceiling = movement_batched::<i64, 3>(memory, &fields, 2, reader.pointer)?;
-    Ok(extra.wrapping_add(snow).min(ceiling) > 0)
-}
-
 impl<M: Memory> Reader<'_, M> {
-    /// Borrow this callback's original regional selector. The native signed-id
-    /// domain is explicit; this wrapper never constructs another manager reader.
-    pub fn region_record(&self, id: u32) -> Result<usize, &'static str> {
-        let id = i32::try_from(id).map_err(|_| "weather region id out of range")?;
-        self.movement_record(id, true)
-    }
-
     /// Authenticate a row within the signed bounds, without walking the dense
     /// array or reading unrelated weather fields.
     pub(crate) fn movement_record(&self, id: i32, region: bool) -> Result<usize, &'static str> {

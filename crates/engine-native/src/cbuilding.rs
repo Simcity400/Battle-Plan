@@ -22,14 +22,6 @@ pub const PARTIAL_HEALTH_PER_LEVEL: i64 = 10_000_000;
 pub const BUILDING_STATUS: usize = 0x1d8;
 /// Template pointer selecting localized names.
 pub const TEMPLATE: usize = 0x1e0;
-/// Health-by-level getter using signed i16 levels and stored accumulators.
-pub const GET_LEVEL_HEALTH_RVA: usize = 0x010c_64d0;
-/// Province getter through the owning status.
-pub const GET_PROVINCE_RVA: usize = 0x010c_6510;
-/// State getter through the owning status.
-pub const GET_STATE_RVA: usize = 0x010c_6520;
-/// State-scope predicate reading its status flag.
-pub const IS_STATE_BUILDING_RVA: usize = 0x010c_69e0;
 /// Signed-short level setter following status and template pointers.
 pub const SET_LEVEL_RVA: usize = 0x010c_71a0;
 

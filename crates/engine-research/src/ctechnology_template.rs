@@ -3,8 +3,6 @@
 
 /// Technology template MSVC id string.
 pub const ID: usize = 0x10;
-/// Technology template id-string capacity, u64.
-pub const ID_CAPACITY: usize = 0x28;
 /// One-based positive i32 database index; the instance slot is this index minus one.
 pub const DATABASE_INDEX: usize = 0x38;
 /// Technology template u32 handle, copied into its instances.
@@ -15,19 +13,6 @@ pub const YEAR: usize = 0x3d8;
 pub const MAX_LEVEL: usize = 0x3dc;
 /// Technology template research cost, i64 fixed5.
 pub const RESEARCH_COST: usize = 0x3e0;
-
-/// Template-first ahead-of-time UI helper.
-pub const UI_YEAR_HELPER_RVA: usize = 0x00ab_eaa0;
-/// Ahead-of-time UI helper entry bytes.
-pub const UI_YEAR_HELPER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x3e,
-];
-/// Template-first effective ahead-of-time value.
-pub const EFFECTIVE_VALUE_PRODUCER_RVA: usize = 0x00ab_e4c0;
-/// Effective ahead-of-time producer entry bytes.
-pub const EFFECTIVE_VALUE_PRODUCER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
-];
 
 use crate::{Memory, msvc_string, read, walk::Outcome};
 

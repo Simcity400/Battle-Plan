@@ -41,32 +41,10 @@ pub const SECOND_CASUALTIES: usize = 0x58;
 pub const FIRST_UNKNOWN_CASUALTIES: usize = 0x60;
 /// CWarRelation second unknown casualties, signed i64 integer.
 pub const SECOND_UNKNOWN_CASUALTIES: usize = 0x68;
-/// First echoed raw country reference, u32.
-pub const ECHO_FIRST_COUNTRY: usize = 0x78;
-/// Second echoed raw country reference, u32.
-pub const ECHO_SECOND_COUNTRY: usize = 0x7c;
 /// Threat, signed i64 with denominator 100,000.
 pub const THREAT: usize = 0x150;
 /// CWarRelation first-was-instigator byte.
 pub const FIRST_WAS_INSTIGATOR: usize = 0x158;
-/// Defender hostility-reason enum, u32.
-pub const DEFENDER_HOSTILITY_REASON: usize = 0x15c;
-/// Instigator hostility-reason enum, u32.
-pub const INSTIGATOR_HOSTILITY_REASON: usize = 0x160;
-/// CWarRelation threat fixed-point denominator.
-pub const THREAT_SCALE: i64 = 100_000;
-/// CWarRelation hostility discriminator for war.
-pub const HOSTILITY_WAR: u32 = 0;
-/// CWarRelation hostility discriminator for puppet.
-pub const HOSTILITY_PUPPET: u32 = 1;
-/// CWarRelation hostility discriminator for ally.
-pub const HOSTILITY_ALLY: u32 = 2;
-/// CWarRelation hostility discriminator for asked-to-join.
-pub const HOSTILITY_ASKED_TO_JOIN: u32 = 3;
-/// CWarRelation hostility discriminator for guarantee.
-pub const HOSTILITY_GUARANTEE: u32 = 4;
-/// CWarRelation hostility discriminator for not-applicable.
-pub const HOSTILITY_NOT_APPLICABLE: u32 = 5;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

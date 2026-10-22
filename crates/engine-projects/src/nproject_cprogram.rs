@@ -25,8 +25,6 @@ pub const ACTIVE_PROJECT_HANDLE: usize = 0x50;
 pub const ACTIVE_FLAG: usize = 0x54;
 /// Scientist character u32 reference type.
 pub const SCIENTIST_REFERENCE_TYPE: usize = 0x58;
-/// Scientist character u32 reference ID.
-pub const SCIENTIST_REFERENCE_ID: usize = 0x5c;
 /// Independent program owner-reference copy.
 pub const OWNER_COPY: usize = 0x170;
 /// Independent program province-reference copy.

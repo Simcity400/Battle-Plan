@@ -238,8 +238,6 @@ pub const DAILY_POLITICAL_RATE: HookSite = HookSite {
 pub const DAILY_PP_CALLER: usize = 0xb993ac;
 pub const TIMED_PP_CALLER: usize = 0xb99633;
 pub const DAILY_CP_CALLER: usize = 0x6dadc7;
-/// Evaluated reduction stays in the stack operand when net is stored.
-pub const DAILY_COST_STACK_OFFSET: isize = -0x38;
 
 /// Daily reduction observation after the cost call. The seven-byte patch span
 /// has no relative operand, interior target or return PC. R13 status, stack cost

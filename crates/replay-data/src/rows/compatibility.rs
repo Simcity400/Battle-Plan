@@ -31,15 +31,18 @@ pub const EVENT_FEED_OWNER_REFUSALS_FORMAT: u16 = 109;
 pub const CONVERSION_PURPOSE_FORMAT: u16 = 110;
 /// Initial exact combat scalar aliases; their row markers were later removed
 /// by PRIVATE_COPY_ALIASES_FORMAT. Historical numbering only, not an old decoder.
+#[cfg(test)]
 pub const SAME_FRAME_ALIASES_FORMAT: u16 = 111;
 /// Initial exact province and factory-efficiency aliases, likewise superseded
 /// by PRIVATE_COPY_ALIASES_FORMAT without retaining their row markers.
+#[cfg(test)]
 pub const SAME_FRAME_OPERAND_ALIASES_FORMAT: u16 = 112;
 /// Grouped-storage alias columns do not change public rows or field masks.
 pub const PRIVATE_ALIASES_FORMAT: u16 = 113;
 /// Combat, province and production alias marks leave native row schemas.
 pub const PRIVATE_COPY_ALIASES_FORMAT: u16 = 114;
 /// Conditional display aliases retain literal values outside recorded exact demand.
+#[cfg(test)]
 pub const PRIVATE_DISPLAY_ALIASES_FORMAT: u16 = 115;
 /// Owner-approved daily commander/observer progress and three division display columns.
 pub const DAILY_PROGRESS_FORMAT: u16 = 116;
@@ -243,6 +246,7 @@ pub const MOVEMENT_TERMS_FORMAT: u16 = 102;
 /// (`opaque_value!(T, restored)`); format-102 captures written before that
 /// retirement hold exact amounts this reader multiplies by the step. No
 /// published build wrote either.
+#[cfg(test)]
 pub const SUPPLY_FOOTER_FORMAT: u16 = 102;
 
 /// Provisional main+1: DivisionStatus.supply ([`super::DivisionSupplyFooter`])

@@ -37,6 +37,7 @@ pub const NAME: usize = 0x20;
 /// no smaller name cap is imposed.
 pub(crate) const NAME_MAX_LENGTH: u64 = 0x7fff_ffff_ffff_ffff;
 /// COperativeLeader duplicate name std::string.
+#[cfg(test)]
 pub const NAME_DUPLICATE: usize = 0x40;
 /// COperativeLeader portrait gfx std::string.
 pub const PORTRAIT_GFX: usize = 0x100;
@@ -61,10 +62,6 @@ pub const COOLDOWN_END_HOUR: usize = 0xea8;
 pub const COOLDOWN_ASSIGNMENT: u32 = 1;
 /// COperativeLeader nationality country-reference u32 vector.
 pub const NATIONALITIES: usize = 0xf68;
-/// COperativeLeader nationality-vector capacity u32.
-pub const NATIONALITY_CAPACITY: usize = 0xf70;
-/// Nationality-vector count read as u32; game signedness unresolved.
-pub const NATIONALITY_COUNT: usize = 0xf74;
 /// The operative's own modifier accumulator, whose effective values its
 /// mission getters (root-out-resistance effectiveness) read.
 pub const MODIFIER_ACCUMULATOR: usize = 0x418;
@@ -85,38 +82,19 @@ pub const CAPTURE_HOUR: usize = 0xfc0;
 pub const ASSIGNMENT: usize = 0x1080;
 /// COperativeLeader inline action/mission value.
 pub const ACTION: usize = 0x1088;
-/// Capture assignment discriminator; not an independent captured-state value.
-pub const CAPTURE_ASSIGNMENT: u32 = 0;
 /// Mission assignment discriminator required before reading mission state.
 pub const MISSION_ASSIGNMENT: u32 = 3;
 /// Operation start resets mission and sets assignment 4; stop clears the
 /// operation reference and restores assignment 3.
 pub const OPERATION_ASSIGNMENT: u32 = 4;
-/// Killed assignment discriminator.
-pub const KILLED_ASSIGNMENT: u32 = 5;
 /// Owner setter used by agency admission on accepted and pooled paths.
 pub const SET_OWNER_RVA: usize = 0x00c1_5f80;
-/// Owner setter virtual-dispatch offset.
-pub const SET_OWNER_VTABLE_SLOT: usize = 0xa8;
 /// Operative element serializer.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c1_8ff0;
-/// Operative element loader.
-pub const LOAD_RVA: usize = 0x00c1_1620;
-/// Nationalities token, emitted for the stored nationality list.
-pub const TOKEN_NATIONALITIES: u32 = 0x3d12;
-/// Capturer token, emitted only when the capturer is nonzero.
-pub const TOKEN_CAPTURER: u32 = 0x3d14;
-/// Capturer-date token, emitted only when the capturer is nonzero.
-pub const TOKEN_CAPTURE_DATE: u32 = 0x4b61;
-/// Token for `CODENAME`, always emitted.
-pub const TOKEN_FD0: u32 = 0x3d17;
 /// Embedded codename member. Serialization retains naming operands while
 /// display reads its generated cache; acquire operands independently.
 pub const CODENAME: usize = 0xfd0;
-/// Action token, emitted only when an action is present.
-pub const TOKEN_ACTION: u32 = 0x2cba;
-/// Token for `OPERATION_REFERENCE`, emitted when either stored word is nonzero.
-pub const TOKEN_F80: u32 = 0x2f1b;
 /// Assignment token, always emitted.
 pub const TOKEN_ASSIGNMENT: u32 = 0x01b7;
 /// Serialized literal for assignment 0.

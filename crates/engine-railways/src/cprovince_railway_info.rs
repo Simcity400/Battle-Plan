@@ -24,18 +24,12 @@ pub const NEIGHBOR_PAIRS: usize = 0x38;
 pub const NEIGHBOR_PAIR_COUNT: usize = 0x44;
 /// Pending-construction vector written by railway-level additions.
 pub const PENDING_CONSTRUCTION: usize = 0x50;
-/// Pending-construction vector u32 count.
-pub const PENDING_CONSTRUCTION_COUNT: usize = 0x5c;
-/// Pending-construction vector element stride.
-pub const PENDING_CONSTRUCTION_STRIDE: usize = 0x10;
 /// Railway cooldown ticks, native i32.
 pub const COOLDOWN_TICKS: usize = 0x68;
 /// Province-railway-info constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00e7_d110;
 /// Railway-level setter updating an existing level or inserting a pair.
 pub const SET_RAILWAY_RVA: usize = 0x00e8_06e0;
-/// Railway-level addition delegates pair mutation to the setter.
-pub const ADD_RAILWAY_LEVEL_RVA: usize = 0x00e7_d750;
 /// Railway token loader rebuilding pairs.
 pub const LOAD_TOKEN_RVA: usize = 0x00e8_0070;
 /// Destructor freeing pairs and clearing pointer/count.

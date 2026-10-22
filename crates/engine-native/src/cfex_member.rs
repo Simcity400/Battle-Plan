@@ -685,57 +685,16 @@ pub fn append_entries<M: Memory, T>(
     Ok(span)
 }
 
-/// CFEXMember convoy client packed handle u64.
-pub const CLIENT_HANDLE: usize = 0xd0;
-/// CFEXMember convoy index u32.
-pub const CONVOY_INDEX: usize = 0xd8;
 /// CFEXMember state u32.
 pub const STATE: usize = 0xe0;
 /// CFEXMember CFEXGroup pointer.
 pub const GROUP: usize = 0xe8;
 /// CFEXMember attribution std::string.
 pub const ATTRIBUTION_NAME: usize = 0xa8;
-/// Engagement weight read as u32; its actual width remains unproven.
-pub const ENGAGEMENT_WEIGHT: usize = 0xf8;
 /// Damage-entry array pointer with 0x20-byte entries.
 pub const DAMAGE_ENTRIES: usize = 0x108;
-/// CFEXMember damage-entry count i32.
-pub const DAMAGE_ENTRIES_COUNT: usize = 0x114;
 /// CFEXMember battle-slot index u32.
 pub const BATTLE_SLOT: usize = 0x120;
-/// CFEXMember empty state mask.
-pub const STATE_UNINITIALIZED: u32 = 0;
-/// CFEXMember waiting bit.
-pub const STATE_WAITING: u32 = 1;
-/// CFEXMember fighting bit.
-pub const STATE_FIGHTING: u32 = 2;
-/// CFEXMember on-the-way bit.
-pub const STATE_ON_THE_WAY: u32 = 4;
-/// CFEXMember escaping bit.
-pub const STATE_ESCAPING: u32 = 8;
-/// CFEXMember run-away bit.
-pub const STATE_RUN_AWAY: u32 = 0x10;
-/// CFEXMember sunk bit.
-pub const STATE_SUNK: u32 = 0x20;
-/// CFEXMember sink writer entry.
-pub const SINK_WRITER_RVA: usize = 0x0196_1dd0;
-/// CFEXMember sink writer bytes.
-pub const SINK_WRITER_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48,
-];
-/// CFEXMember convoy terminal call site.
-pub const CONVOY_TERMINAL_CALL_RVA: usize = 0x0196_2378;
-/// Instruction after the five-byte convoy-terminal call.
-pub const CONVOY_TERMINAL_RESUME_RVA: usize = 0x0196_237d;
-/// CFEXMember terminal call bytes.
-pub const CONVOY_TERMINAL_CALL_SENTINEL: [u8; 5] = [0xe8, 0x13, 0x8b, 0x86, 0xfe];
-/// CFEXMember terminal argument setup start.
-pub const CONVOY_TERMINAL_CONTEXT_RVA: usize = 0x0196_2364;
-/// CFEXMember terminal argument setup and call.
-pub const CONVOY_TERMINAL_CONTEXT_SENTINEL: [u8; 25] = [
-    0x4d, 0x8d, 0x4c, 0x24, 0x20, 0x4d, 0x8b, 0xc7, 0xba, 0x01, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x0d,
-    0x18, 0x4b, 0x9b, 0x01, 0xe8, 0x13, 0x8b, 0x86, 0xfe,
-];
 
 #[cfg(test)]
 mod serial_reference;

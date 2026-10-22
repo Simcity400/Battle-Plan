@@ -30,21 +30,6 @@ pub const RETIRED: usize = 0x49;
 
 /// Base relation constructor installing vtable and passed type.
 pub const CONSTRUCTOR_RVA: usize = 0x00d0_3390;
-/// Base serializer writing endpoints, conditional start/cancel and end dates
-/// before each subclass payload.
-pub const SERIALIZER_RVA: usize = 0x00d1_9260;
-/// Relation-subclass factory selecting each supported type and primary vtable.
-pub const FACTORY_RVA: usize = 0x00d0_a6d0;
-/// First-endpoint key token for its resolved tag.
-pub const FIRST_TOKEN: u32 = 0x28de;
-/// Second-endpoint key token for its resolved tag.
-pub const SECOND_TOKEN: u32 = 0x28df;
-/// Start-date key token emitted only when cancellation is zero.
-pub const START_DATE_TOKEN: u32 = 0x28e0;
-/// Cancellation key token emitted as true instead of start date when nonzero.
-pub const CANCEL_TOKEN: u32 = 0x28e5;
-/// End-date key token emitted only when start hour is less than end hour.
-pub const END_DATE_TOKEN: u32 = 0x28e1;
 
 /// Supported relation subclasses as primary vtable RVA and type-word pairs.
 /// War and subject relations have separate recorded tables but remain admitted

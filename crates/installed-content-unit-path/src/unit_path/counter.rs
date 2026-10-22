@@ -24,22 +24,6 @@ pub struct CounterRequest {
 }
 
 impl<W: MoveWorld + ?Sized> Mover<'_, W> {
-    /// One mode-0 forced-transfer search, with region checks enabled and
-    /// request exile, other flags, counter fallback and interface postfilter
-    /// disabled. The passed source may differ from the actual location.
-    pub fn transport_risk_route(
-        &self,
-        unit: &Army,
-        from: u32,
-        to: u32,
-        class: CounterClass,
-    ) -> Fact<Option<Vec<u32>>> {
-        // The request's exile flag is independent of the unit's stored exile flag.
-        let mut request = unit.clone();
-        request.exiled = false;
-        self.counter_search(&request, from, to, class, false, true)
-    }
-
     /// Counter cache-miss routing. Source excluded, destination included;
     /// empty routes include failed searches and equal-endpoint success.
     /// The request leaves rail-speed cost division disabled.

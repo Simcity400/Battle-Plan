@@ -85,8 +85,6 @@ pub const HANDLE: usize = 0x08;
 pub const INCOMING_WINGS: usize = 0x18;
 /// Country-ordinal container-pointer vector; a nonnull slot grants access.
 pub const COUNTRY_CONTAINERS: usize = 0x30;
-/// Country-container capacity, u32.
-pub const COUNTRY_CONTAINERS_CAPACITY: usize = 0x38;
 /// Country-container count, u32, bounding resolved ordinals.
 pub const COUNTRY_CONTAINERS_COUNT: usize = 0x3c;
 /// Dense registered-container vector data, appended on creation.
@@ -101,22 +99,10 @@ pub const PROVINCE: usize = 0x70;
 pub const CAPACITY: usize = 0x78;
 /// Signed base kind, i32, set by construction; dispatch branches on zero, one and two.
 pub const KIND: usize = 0x7c;
-/// Per-country fuel sum following registered containers and the state veto.
-pub const FUEL_SUM_RVA: usize = 0x00c3_d2d0;
-/// State-base constructor initializing country-container vectors.
-pub const STATE_CONSTRUCTOR_RVA: usize = 0x00c3_8200;
-/// Stateless host-base constructor initializing country-container vectors.
-pub const HOST_CONSTRUCTOR_RVA: usize = 0x00c3_83c0;
 /// Container allocation and indexing path.
 pub const CREATE_COUNTRY_CONTAINER_RVA: usize = 0x00c3_c2b0;
 /// Pool registration resolving the owner ordinal and appending to its container.
 pub const REGISTER_POOL_RVA: usize = 0x00c3_c860;
-/// Indexed country pool-vector getter.
-pub const COUNTRY_POOLS_RVA: usize = 0x00c4_3f70;
-/// Access query testing the country ordinal, count and slot.
-pub const HAS_ACCESS_RVA: usize = 0x00c4_7cc0;
-/// Registered-container repair pass resolving each country handle.
-pub const REPAIR_CONTAINERS_RVA: usize = 0x00c4_9c40;
 /// Pool erasure scanning the country's registered vector.
 pub const ERASE_POOL_RVA: usize = 0x00c5_4220;
 /// Pool batch width for the stored wing vector.

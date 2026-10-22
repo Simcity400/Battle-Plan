@@ -29,10 +29,6 @@ impl Kind {
         matches!(self, Self::CoreResistance | Self::CoreCompliance)
     }
 
-    pub fn is_compliance(self) -> bool {
-        matches!(self, Self::CoreCompliance | Self::StateCompliance)
-    }
-
     fn read(value: &[u8]) -> Option<Self> {
         [
             (b"core_resistance_modifier".as_slice(), Self::CoreResistance),

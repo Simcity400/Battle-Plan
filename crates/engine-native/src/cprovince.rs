@@ -660,12 +660,6 @@ pub const CONTROLLER: usize = 0x188;
 pub const VICTORY_POINTS: usize = 0x38;
 /// Override string serialized only when nonempty and resolved before fallback naming.
 pub const NAME_OVERRIDE: usize = 0x40;
-/// Highlight byte; the plain-click writer is unconfirmed.
-pub const HIGHLIGHT_CANDIDATE: usize = 0x14;
-/// Positive port-level predicate using loaded port templates.
-pub const HAS_PORT_RVA: usize = 0x00e9_9080;
-/// Controller-change notifier, including railway-manager notification.
-pub const NOTIFY_CONTROLLER_CHANGE_RVA: usize = 0x00e6_b8a0;
 /// Province-definition pointer.
 pub const DEFINITION: usize = 0xb8;
 /// Strategic-region pointer.
@@ -676,24 +670,8 @@ pub const CONTROLLER_AREA: usize = 0xd0;
 pub const OCCUPANTS: usize = 0xe0;
 /// Class-1 naval occupant array requiring task-force vtable identity.
 pub const NAVAL_OCCUPANTS: usize = 0xf8;
-/// Class-zero occupant array validating each class word.
-pub const LAND_OCCUPANTS: usize = 0x110;
-/// Class-13 occupant array validating each class word.
-pub const RAILWAY_GUN_OCCUPANTS: usize = 0x128;
-/// Active-combat count, signed i32.
-pub const ACTIVE_COMBAT_COUNT: usize = 0x17c;
 /// Embedded building status containing the active building vector.
 pub const BUILDING_STATUS: usize = 0x190;
-/// Victory-point setter.
-pub const SET_VICTORY_POINTS_RVA: usize = 0x00e6_c7f0;
-/// Province serializer emitting signed victory points only when nonzero.
-pub const SERIALIZER_RVA: usize = 0x00e6_ca90;
-/// Set-victory-points effect applying an evaluated value.
-pub const SET_VICTORY_POINTS_EFFECT_RVA: usize = 0x0034_7120;
-/// Add-victory-points effect applying current value plus delta.
-pub const ADD_VICTORY_POINTS_EFFECT_RVA: usize = 0x0034_7230;
-/// Province-ID/value applier; load-versus-play timing unresolved.
-pub const APPLY_VICTORY_POINTS_RVA: usize = 0x0158_ee10;
 /// Sorted conflict-tree head: a set of border-war combat pointers with node values in its nodes.
 /// Intersection uses those values.
 pub const BORDER_CONFLICT_TREE: usize = 0xa8;
@@ -706,10 +684,6 @@ pub const OWNER_AREA: usize = 0xd8;
 /// Full orders-group handle for a border-war side, resolved and compared
 /// with the army's owning group.
 pub const BORDER_WAR_SIDE_GROUP: usize = 0x4c8;
-/// State-byte query following the province state pointer for border reason 7.
-pub const GET_STATE_BORDER_VETO_RVA: usize = 0x00e6_9f30;
-/// Conflict-set intersection returning a shared value or zero.
-pub const FIND_SHARED_BORDER_CONFLICT_RVA: usize = 0x00e6_64d0;
 
 /// Active building vector summed for movement fort penalty.
 pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS;
@@ -2628,25 +2602,6 @@ impl GeometryPacket {
         Ok((id, index))
     }
 
-    /// Hint a seed-selected identity before its acquisition. Successful identities already held by
-    /// this begin() need no native bytes again. The hourly movement step uses the province id
-    /// (`ID`) for route identities; these hints acquire neither that id nor its vtable and consume
-    /// no guard page.
-    pub fn prefetch_province_id(&self, memory: &impl Memory, pointer: usize) {
-        if pointer == 0
-            || self
-                .indices
-                .get(&pointer)
-                .is_some_and(|&index| self.provinces[index].authenticated_id.is_some())
-        {
-            return;
-        }
-        memory.prefetch(pointer, 8);
-        if let Some(id) = pointer.checked_add(ID) {
-            memory.prefetch(id, 4);
-        }
-    }
-
     /// Null is the native absent-province value; every nonnull pointer retains
     /// its identity and current census backlink.
     pub fn acquire_province_id(
@@ -2703,6 +2658,7 @@ impl GeometryPacket {
             .map(|(id, _)| id)
     }
 
+    #[cfg(test)]
     pub fn acquire_pointer(
         &mut self,
         memory: &impl Memory,
@@ -2717,6 +2673,7 @@ impl GeometryPacket {
 
     /// The movement speed route branch permits a null roster slot and an
     /// authenticated slot zero. ETA's admitted path endpoints remain strict.
+    #[cfg(test)]
     pub fn acquire_route_pointer(
         &mut self,
         memory: &impl Memory,
@@ -2729,6 +2686,7 @@ impl GeometryPacket {
         Ok(pointer)
     }
 
+    #[cfg(test)]
     pub fn acquire_definition(
         &mut self,
         memory: &impl Memory,
@@ -2775,26 +2733,7 @@ impl GeometryPacket {
         Ok((index, definition))
     }
 
-    /// Current-pass exact definition selector, including observed null terrain.
-    pub fn acquire_terrain(
-        &mut self,
-        memory: &impl Memory,
-        id: u32,
-    ) -> Result<usize, &'static str> {
-        let (index, definition) = self.definition(memory, id)?;
-        geometry_memo(
-            &mut self.counters,
-            &mut self.provinces[index].fields.terrain,
-            || {
-                geometry_field::<u64>(memory, definition, crate::province_definition::TERRAIN)
-                    .and_then(|pointer| {
-                        usize::try_from(pointer)
-                            .map_err(|_| "unit geometry terrain pointer overflow")
-                    })
-            },
-        )
-    }
-
+    #[cfg(test)]
     pub fn acquire_flags(&mut self, memory: &impl Memory, id: u32) -> Result<u8, &'static str> {
         let (index, definition) = self.definition(memory, id)?;
         geometry_memo(

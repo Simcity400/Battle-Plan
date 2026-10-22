@@ -187,6 +187,7 @@ impl HeightField<'_> {
     /// Nearest-sample lookup retained for the other map passes' existing placement rules.
     /// Border rails use [`Self::border_height_at_world`], the native bilinear/clamped call.
     /// x wraps with the world and the row clamps at the poles.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn height_at_world(&self, x: f32, z: f32) -> f32 {
         let (column, row) = pixel_from_world(self.height, x, z);
         let column = ((column + 0.5).floor() as i64).rem_euclid(i64::from(self.width)) as usize;

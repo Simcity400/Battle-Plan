@@ -161,20 +161,6 @@ impl StaticGeometry {
         *self.provinces.get(id as usize)?
     }
 
-    /// Fresh LAND capture uses prepared slots and never grows them in-pass.
-    pub fn province_prepared(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        id: u32,
-    ) -> Result<StaticProvince, &'static str> {
-        self.province_count()?;
-        if id as usize >= self.provinces.len() {
-            return Err("static geometry province capacity exhausted");
-        }
-        self.province(memory, base, id)
-    }
-
     /// One province's map data, from the memo or from an authenticated read.
     pub fn province(
         &mut self,

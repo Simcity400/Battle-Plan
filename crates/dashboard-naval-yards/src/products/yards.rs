@@ -581,15 +581,6 @@ pub fn fields(tables: &[TableId]) -> io::Result<Vec<TableFields>> {
         .collect()
 }
 
-pub const NAMING_TABLES: &[TableId] = &[
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::CountryAppearance,
-    TableId::LexicalTokens,
-    TableId::TaskForceCounterInputs,
-    TableId::VariantDefinitions,
-];
-
 /// Whether a name belongs to the requested country (`TAG@slot`, or a tag at any slot).
 pub fn selected(name: &str, tag: &str) -> bool {
     name.split('|')

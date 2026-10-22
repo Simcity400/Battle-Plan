@@ -47,6 +47,7 @@ pub const EQUIPMENT_BANK: usize = 0x1f8;
 /// Embedded CEquipmentVariantPool initialized by wing construction.
 pub const EQUIPMENT_POOL: usize = 0x1d8;
 /// Equipment-bank capacity, u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const EQUIPMENT_BANK_CAPACITY: usize = 0x200;
 /// Equipment-bank count, u32.
 pub const EQUIPMENT_BANK_COUNT: usize = 0x204;
@@ -56,8 +57,6 @@ pub const EXPERIENCE: usize = 0x218;
 pub const MODIFIERS: usize = 0x238;
 /// Night-operations statistic in a cached mission/default stat record.
 pub const NIGHT_OPERATIONS_STAT: usize = 0x4c;
-/// Assigned ace id, u32.
-pub const ASSIGNED_ACE_ID: usize = 0x2ec;
 /// Base override reference resolved before falling back to the pool base.
 pub const BASE_OVERRIDE: usize = 0x48;
 /// Signed fixed5 distance already travelled during relocation.
@@ -85,16 +84,6 @@ pub const ATTACHED_ORDERS_GROUP: usize = 0x9b8;
 pub const NAME: usize = 0x998;
 /// The tactical (CAS) mission bit, the only reader of the attached group here.
 pub const TACTICAL_MISSION: u32 = 1 << 1;
-/// Modified fuel getter returning i64 fixed5.
-pub const FUEL_RVA: usize = 0x00f4_a700;
-/// Capacity divisor selecting pool definition and, when needed, base capacity.
-pub const CAPACITY_DIVISOR_RVA: usize = 0x00f4_9e80;
-/// Air-base accessor.
-pub const AIR_BASE_RVA: usize = 0x00f4_a6b0;
-/// Training tick candidate updating the experience field.
-pub const TRAINING_TICK_RVA: usize = 0x00f4_8450;
-/// Air-base admission gate using pool, country override and access.
-pub const AIR_BASE_ADMISSION_RVA: usize = 0x00f4_7d60;
 
 /// Inline i64 default stat block.
 pub const DEFAULT_STATS: usize = 0x390;
@@ -615,6 +604,7 @@ pub fn walk_shared(
     .shared
 }
 
+#[cfg(test)]
 pub fn walk_with_names(
     memory: &impl Memory,
     base: usize,
@@ -643,32 +633,10 @@ pub fn walk_with_names(
     .map
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn walk_shared_names(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [Row],
-    sources: &mut [Source],
-    naval_limit: usize,
-    names: &mut NameArena<'_>,
-    mut visit: impl FnMut(usize, usize, &Row, Admitted),
-) -> SharedWalk {
-    walk_shared_names_with_operands(
-        memory,
-        base,
-        state,
-        output,
-        sources,
-        naval_limit,
-        names,
-        |pointer, pool, row, admitted| visit(pointer, pool, row, admitted),
-    )
-}
-
 /// The named wing census plus field-local political transport inputs.
 /// Optional reads run only for independently admitted map rows, not naval
 /// or equipment-only leaves. Scratch contains no cross-pass observations.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn walk_shared_names_with_operands(
     memory: &impl Memory,
@@ -735,6 +703,7 @@ pub fn walk_game_score_with_owners(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn walk_shared_game_score_with_owners(
     memory: &impl Memory,
@@ -808,37 +777,6 @@ pub fn walk_shared_game_score_buffers_with_owners(
         score_limit,
         score_visit,
     )
-}
-
-pub fn walk_with_names_and_transport(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    output: &mut [Row],
-    names: &mut NameArena<'_>,
-    scratch: &mut transport_operands::Scratch,
-    mut visit: impl FnMut(usize, usize, &Row),
-) -> Outcome {
-    let mut transport = transport_operands::Pass::new(base, output.len(), scratch);
-    walk_projected(
-        memory,
-        base,
-        state,
-        EVERY_OWNER,
-        Buffer::Fixed(output),
-        None,
-        None,
-        |pointer, pool, row, admitted| {
-            row.name = names.capture(memory, pointer, admitted.name_header);
-            transport.capture(memory, pointer, pool, row);
-            visit(pointer, pool, row);
-        },
-        |_, _| {},
-        None,
-        |_, _| {},
-    )
-    .shared
-    .map
 }
 
 struct Projection {

@@ -76,6 +76,7 @@ pub const MOVEMENT_MODIFIER: usize = 0xb8;
 /// `attackers` in native order. Land, border-war and naval combats share the
 /// side and unit-list layout; the attacking side must point back to its
 /// combat. On a refusal `attackers` keeps only what it held before.
+#[cfg(test)]
 pub fn movement_combat(
     memory: &impl Memory,
     base: usize,
@@ -184,13 +185,6 @@ pub fn movement_combat_word(
         .map(Some)
         .ok_or("movement combat modifier unreadable")
 }
-
-/// CLandCombat progress getter vtable slot.
-pub const PROGRESS_VTABLE_SLOT: usize = 0xc8;
-/// Combat progress getter uses both side organisation sums.
-pub const PROGRESS_RVA: usize = 0x013c_cb10;
-/// Combat province getter returns the stored location pointer.
-pub const PROVINCE_GETTER_RVA: usize = 0x00f1_c390;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

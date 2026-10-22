@@ -31,14 +31,14 @@ pub const SECONDARY_VTABLE_RVA: usize = 0x0294_c660;
 /// Supply-consumer/reference-object secondary base.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Default reference type assigned through fleet-ID minting.
+#[cfg(any(test, feature = "test-support"))]
 pub const DEFAULT_HANDLE_TYPE: u32 = 61;
-/// CTaskForce ship-space reference type also present in engine saves.
-pub const OBSERVED_SHIP_SPACE_HANDLE_TYPE: u32 = 51;
 /// Parent fleet pointer.
 pub const FLEET: usize = 0x340;
 /// Ship-pointer array.
 pub const SHIPS: usize = 0x348;
 /// Ship-array count, u32.
+#[cfg(test)]
 pub const SHIP_COUNT: usize = 0x354;
 /// Mission enum, u32, including the reserve discriminator.
 pub const MISSION: usize = 0x374;
@@ -50,32 +50,16 @@ pub const REPAIR_PARENT: usize = 0x4b0;
 /// Detached mission, i32, saved as `repair_last_mission`, restored on return
 /// and selected while the detached marker is nonzero.
 pub const REPAIR_LAST_MISSION: usize = 0x4f0;
-/// Effective mission query.
-pub const EFFECTIVE_MISSION_RVA: usize = 0x00d5_a660;
-/// Counter-strength dispatch offset; ratio is total current ship strength
-/// over total maximum strength with each maximum floored at 100.
-pub const STRENGTH_BAR_SLOT: usize = 0x118;
-/// Counter-organisation dispatch offset; ratio averages each ship's current
-/// organisation over its effective maximum.
-pub const ORGANISATION_BAR_SLOT: usize = 0x138;
-/// Counter-strength ratio query.
-pub const STRENGTH_RATIO_RVA: usize = 0x00d5_b0e0;
-/// Counter-organisation ratio query.
-pub const ORGANISATION_RATIO_RVA: usize = 0x00d5_a160;
 /// Detached-activity enum, u32.
 pub const DETACHED_ACTIVITY: usize = 0x4b8;
 /// Repair-target province pointer.
 pub const REPAIR_TARGET: usize = 0x4c0;
 /// Current fuel usage, i64, read from fleet-vector task forces.
 pub const CURRENT_FUEL_USAGE: usize = 0x500;
-/// Reserve mission enum value.
-pub const MISSION_RESERVE: u32 = 8;
 /// Constructor installing all task-force interface identities.
 pub const CONSTRUCTOR_RVA: usize = 0x00d4_eaf0;
 /// Destructor restoring the same interface identities.
 pub const DESTRUCTOR_RVA: usize = 0x00d4_edf0;
-/// Task-force creation and fleet-ID assignment.
-pub const CREATE_RVA: usize = 0x00d5_4560;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -440,6 +424,7 @@ pub struct MapMotionWalk {
 
 #[derive(Clone, Copy)]
 enum MissionRiskDemand {
+    #[cfg(test)]
     Observed(Result<bool, &'static str>),
     OriginalCounter(Result<u8, &'static str>),
     OriginalCounterContributor(Result<u8, &'static str>, bool),
@@ -453,6 +438,7 @@ impl MissionRiskDemand {
         count: &mut Option<Result<i32, &'static str>>,
     ) -> Result<bool, &'static str> {
         match self {
+            #[cfg(test)]
             Self::Observed(demand) => demand,
             Self::OriginalCounterContributor(in_regions, _) => {
                 Self::OriginalCounter(in_regions).resolve(memory, pointer, count)
@@ -632,6 +618,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
     /// loan or retry a failed identity/source observation.
     /// This method neither reprobes the loan nor touches motion rows, routes,
     /// capacity accounting or the old census outcome. No pointer is retained.
+    #[cfg(test)]
     pub fn borrow_mission_risk(
         &mut self,
         receiver: Result<(usize, u64), &'static str>,
@@ -641,6 +628,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
         self.borrow_mission_contribution(receiver, demand, false, guard)
     }
 
+    #[cfg(test)]
     pub fn borrow_mission_contribution(
         &mut self,
         receiver: Result<(usize, u64), &'static str>,
@@ -665,6 +653,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
     /// Motion/path/row-capacity failure is retained by the normal census while a valid risk-only
     /// observation remains available. No native pointer is retained. Missing current-hour
     /// authentication is an outer refusal.
+    #[cfg(test)]
     pub fn visit_with_mission_risk(
         &mut self,
         pointer: usize,
@@ -698,6 +687,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
     /// observation. Its combat count shares the old motion header attempt even when vector
     /// validation, paths or capacity refuses motion. A stopped prefix may read the independently
     /// reached word once; a failed original header cannot be retried. Use instead of either visit.
+    #[cfg(test)]
     pub fn visit_with_original_counter_risk(
         &mut self,
         pointer: usize,
@@ -713,6 +703,7 @@ impl<'a, M: Memory> MapMotionCollector<'a, M> {
     /// Also loans original signed count and logical-owner attempts for the
     /// receiver packet. None means the old prefix/native risk demand did not
     /// reach the count, or the old motion prefix never attempted the owner.
+    #[cfg(test)]
     pub fn visit_with_original_counter_risk_observed(
         &mut self,
         pointer: usize,

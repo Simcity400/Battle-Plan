@@ -7,9 +7,8 @@ use crate::{Memory, cgame_state, cpdx_array::Array, cstate, cstate_template, rea
 pub const STRIDE: usize = 0x10;
 /// Signed i64 fixed5 amount, scaled from a signed source integer and stored first.
 pub const AMOUNT: usize = 0x00;
-/// Resource lexer ID, u32.
-pub const RESOURCE_ID: usize = 0x08;
 /// Empty-key sentinel.
+#[cfg(test)]
 pub const NO_RESOURCE_ID: u32 = u32::MAX;
 /// Amount scale for signed source integers.
 pub const FIXED_POINT_SCALE: i64 = 100_000;

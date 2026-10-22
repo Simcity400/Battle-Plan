@@ -48,8 +48,6 @@ pub const ELIGIBILITY_FLAGS_GETTER_RVA: usize = 0x001a_e190;
 pub const COUNTRY_PREFERRED_TACTIC_FACTOR_RVA: usize = 0x0331_d370;
 /// Trade-feature flags u32 global.
 pub const TRADE_FEATURE_FLAGS_RVA: usize = 0x0331_6e78;
-/// Trade-feature-five bit mask.
-pub const TRADE_FEATURE_MASK: u32 = 0x0e;
 
 /// Passive metadata evaluation for a present accumulator key. No category
 /// field participates. The selected callback may be null (feature disabled) or

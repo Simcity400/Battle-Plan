@@ -12,8 +12,6 @@ pub const REFERENCE_TYPE: u32 = 66;
 pub const HANDLE: usize = 8;
 /// Section pointer array used to find the section requested by an order.
 pub const SECTIONS: usize = 0x58;
-/// Signed live section count.
-pub const SECTION_COUNT: usize = 0x64;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {

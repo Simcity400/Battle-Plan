@@ -21,12 +21,8 @@ pub const POLITICAL_POWER: usize = 0xe0;
 pub const PARTIES: usize = 0x20;
 /// Live party count, signed i32.
 pub const PARTY_COUNT: usize = 0x2c;
-/// CPoliticalStatus party-array capacity, signed i32; standard CPdxArray header paired with the native `PARTY_COUNT`.
-pub const PARTY_CAPACITY: usize = 0x28;
 /// Active idea-pointer array.
 pub const IDEAS: usize = 0x50;
-/// Idea-array capacity, u32.
-pub const IDEA_CAPACITY: usize = 0x58;
 /// Idea-array count, u32.
 pub const IDEA_COUNT: usize = 0x5c;
 /// Stored daily entry list; each signed counter is decremented and then
@@ -631,14 +627,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         self.party_leaders_buffer(country, crate::walk::Buffer::Fixed(output))
     }
 
-    pub fn party_leaders_growing(
-        &self,
-        country: u32,
-        output: &mut Vec<cpolitical_party::LeaderRow>,
-    ) -> Outcome {
-        self.party_leaders_buffer(country, crate::walk::Buffer::Growing(output))
-    }
-
     pub fn party_leaders_buffer(
         &self,
         country: u32,
@@ -764,13 +752,6 @@ impl<'a, M: Memory> Reader<'a, M> {
         )
     }
 
-    pub fn ideas_growing(&self, output: &mut Vec<IdeaRow>, tokens: &mut Vec<u8>) -> TokenWalk {
-        self.ideas_buffer(
-            crate::walk::Buffer::Growing(output),
-            crate::walk::Buffer::Growing(tokens),
-        )
-    }
-
     pub fn ideas_buffer(
         &self,
         output: crate::walk::Buffer<'_, IdeaRow>,
@@ -889,19 +870,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             country,
             crate::walk::Buffer::Fixed(output),
             crate::walk::Buffer::Fixed(tokens),
-        )
-    }
-
-    pub fn timed_ideas_growing(
-        &self,
-        country: u32,
-        output: &mut Vec<TimedIdeaRow>,
-        tokens: &mut Vec<u8>,
-    ) -> TokenWalk {
-        self.timed_ideas_buffer(
-            country,
-            crate::walk::Buffer::Growing(output),
-            crate::walk::Buffer::Growing(tokens),
         )
     }
 

@@ -7,6 +7,7 @@ pub const HANDLE: usize = 0x00;
 /// Low u32 reference type shared with operation-instance references.
 pub const REFERENCE_TYPE: u32 = 4_713;
 /// Raw assigned-operative selection word.
+#[cfg(test)]
 pub const SELECTION: usize = 0x08;
 /// Assigned-slot writer omitting both-zero handles, zero selection and null optional values.
 pub const WRITER_RVA: usize = 0x01bd_1cd0;

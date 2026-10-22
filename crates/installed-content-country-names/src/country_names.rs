@@ -444,16 +444,6 @@ fn reserved_zero_row(frame: &DecodedFrame) -> Result<&ReservedCountryNamingRow, 
     }
 }
 
-/// The signed database boundary is compared with the translated canonical
-/// slot. The caller for raw zero passes slot zero.
-pub fn dynamic_slot(frame: &DecodedFrame, slot: u32) -> Result<bool, String> {
-    let boundary = reserved_zero_row(frame)?
-        .dynamic_tag_boundary
-        .require("ReservedCountryNaming.dynamic_tag_boundary")?
-        .ok_or("ReservedCountryNaming.dynamic_tag_boundary capture refused")?;
-    Ok(boundary <= slot as i32)
-}
-
 /// Raw zero's tag comes from the reserved country database row.
 pub fn reserved_zero_tag(frame: &DecodedFrame) -> Result<&str, String> {
     std::str::from_utf8(&reserved_zero_row(frame)?.tag)
@@ -1000,46 +990,6 @@ mod tests {
             selected.name(30),
             Err("Politics is incomplete this hour".into())
         );
-    }
-
-    #[test]
-    fn recorded_dynamic_boundary_uses_signed_slot_comparison_and_keeps_gaps() {
-        use replay_data::rows::Recorded;
-        let mut frame = frame();
-        for (boundary, expected) in [
-            (i32::MIN, [true, true, true, true]),
-            (-1, [true, true, true, true]),
-            (0, [true, true, true, false]),
-            (7, [false, true, true, false]),
-            (i32::MAX, [false, false, true, false]),
-        ] {
-            *frame.tables[TableId::ReservedCountryNaming.index()] =
-                TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                    ReservedCountryNamingRow {
-                        dynamic_tag_boundary: Recorded::Value(Some(boundary)),
-                        ..Default::default()
-                    },
-                ]));
-            for (slot, expected) in [0, 7, i32::MAX as u32, u32::MAX].into_iter().zip(expected) {
-                assert_eq!(
-                    dynamic_slot(&frame, slot),
-                    Ok(expected),
-                    "boundary {boundary}, slot {slot}"
-                );
-            }
-        }
-        for operand in [Recorded::NotRecorded, Recorded::Value(None)] {
-            if let TableView::Complete(TableRows::ReservedCountryNaming(rows)) =
-                &mut *frame.tables[TableId::ReservedCountryNaming.index()]
-            {
-                rows[0].dynamic_tag_boundary = operand;
-            }
-            assert!(
-                dynamic_slot(&frame, 7)
-                    .unwrap_err()
-                    .contains("dynamic_tag_boundary")
-            );
-        }
     }
 
     #[test]

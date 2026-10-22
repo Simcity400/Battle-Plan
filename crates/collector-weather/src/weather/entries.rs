@@ -62,11 +62,6 @@ impl ProvinceModifiers {
         }
     }
 
-    /// Provinces that still fit.
-    pub fn province_room(&self) -> usize {
-        self.spans.capacity() - self.spans.len()
-    }
-
     /// Appends one province: its entries, or its refusal. False when it did not fit, which
     /// appends a refusal when a slot is left.
     pub fn push(&mut self, entries: Option<&[Entry]>, grow: bool) -> bool {

@@ -30,16 +30,8 @@ pub const AMOUNT: usize = 0x48;
 pub const LOCATION: usize = 0x4c;
 /// CMilitaryDeploymentConveyor raw priority, u32.
 pub const PRIORITY: usize = 0x50;
-/// Gated conveyor u32 operand, not recorded.
-pub const GATED_WORD: usize = 0x54;
-/// Gated conveyor typed reference using the same gate, not recorded.
-pub const GATED_REFERENCE: usize = 0x58;
 /// Deployment-line pointer array with its count.
 pub const LINES: usize = 0x78;
-/// CMilitaryDeploymentConveyor line-array capacity, u32; the CPdxArray header places it after the data pointer.
-pub const LINES_CAPACITY: usize = 0x80;
-/// CMilitaryDeploymentConveyor line-array count, i32.
-pub const LINES_COUNT: usize = 0x84;
 /// CMilitaryDeploymentConveyor line-pointer stride.
 pub const LINE_STRIDE: usize = 0x08;
 /// CMilitaryDeploymentConveyor CPdxLexer role token, u32.
@@ -51,12 +43,6 @@ pub const CLOSED: usize = 0x94;
 pub const GATED_COUNTRY: usize = 0x98;
 /// Deployment-conveyor constructor.
 pub const CONSTRUCT_RVA: usize = 0x0141_fb20;
-/// Deployment-conveyor serializer.
-pub const SERIALIZE_RVA: usize = 0x0142_47d0;
-/// Deployment-conveyor deserializer restores the same fields.
-pub const DESERIALIZE_RVA: usize = 0x0142_3a70;
-/// Empty-line sweep erases null deployment pointers and compacts the vector.
-pub const SWEEP_EMPTY_LINES_RVA: usize = 0x0142_1710;
 
 /// One queue entry. `name` indexes the caller's arena; empty names are valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

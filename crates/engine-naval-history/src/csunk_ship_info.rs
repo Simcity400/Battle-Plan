@@ -42,20 +42,9 @@ pub const BATTLE: usize = 0x98;
 pub const CAUSE_RECORD: usize = 0xa0;
 /// Assisted-kill boolean accepting only zero or one.
 pub const ASSISTED_KILL: usize = 0xa1;
-/// Attributed record constructor writing date and province.
-pub const ATTRIBUTED_CONSTRUCTOR_RVA: usize = 0x00c1_de60;
-/// Combat-source constructor writing date and province.
-pub const COMBAT_SOURCE_CONSTRUCTOR_RVA: usize = 0x00c1_df70;
-/// Cause constructor writing date and province.
-pub const CAUSE_CONSTRUCTOR_RVA: usize = 0x00c1_e220;
-/// Default constructor initializing date subobjects.
-pub const DEFAULT_CONSTRUCTOR_RVA: usize = 0x00c1_e5b0;
-/// Field finisher stamping current hour and resolving both class-name pointers.
-pub const FILL_COMMON_RVA: usize = 0x00c1_e960;
-/// Record loader restoring fields and conditionally clearing equipment handles.
-pub const LOAD_FIELD_RVA: usize = 0x00c1_ebc0;
 /// Serializer emitting names, countries, classes, level, date and optional
 /// resolving references.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x00c1_f090;
 
 use crate::{

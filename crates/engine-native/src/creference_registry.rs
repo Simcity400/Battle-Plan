@@ -21,6 +21,7 @@ pub const COUNT: usize = 0x10;
 /// Reference registry u32 bucket mask.
 pub const MASK: usize = 0x14;
 /// Reference registry overflow-distance u8.
+#[cfg(any(test, feature = "test-support"))]
 pub const OVERFLOW_DISTANCE: usize = 0x18;
 /// Reference registry factory allocation size.
 pub const SIZE: usize = 0x20;
@@ -30,14 +31,6 @@ pub const HASH_MULTIPLIER: u64 = 0x4963_1a45;
 pub const MINIMUM_EXPONENT: u32 = 3;
 /// Reference registry maximum growth exponent.
 pub const MAXIMUM_EXPONENT: u32 = 30;
-/// Registry factory initializing empty headers.
-pub const FACTORY_RVA: usize = 0x0220_b090;
-/// Registry growth and repack entry.
-pub const GROW_RVA: usize = 0x0220_a4f0;
-/// Reference resolver selecting the registry and returning its object.
-pub const RESOLVE_RVA: usize = 0x0220_a3d0;
-/// Registry bucket lookup returning the value cell.
-pub const LOOKUP_RVA: usize = 0x0220_83e0;
 
 /// Passive bounded reference lookup. Null root or absent key supplies
 /// `None`; unreadable or invalid headers remain errors.
@@ -366,6 +359,7 @@ fn probe_with(
     Ok(found)
 }
 /// Dynamic reference-type base added to the type counter.
+#[cfg(any(test, feature = "test-support"))]
 pub const DYNAMIC_TYPE_BASE: u32 = 0x1268;
 /// Minted-ID counter, u32, incremented on minting and serialized unsigned
 /// as `debug_current_ref_id`.
@@ -374,10 +368,6 @@ pub const ID_COUNTER_RVA: usize = 0x0343_9180;
 /// objects and fields initialize from it; absent front bindings compare both
 /// words against it. It is not a counter and never advances.
 pub const INVALID_REFERENCE_RVA: usize = 0x0332_4598;
-/// Minted-type counter, u16, zero-extended before adding the dynamic type base.
-pub const TYPE_COUNTER_RVA: usize = 0x0343_9184;
-/// Reference identity minting entry.
-pub const MINT_IDENTITY_RVA: usize = 0x0220_a450;
 
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

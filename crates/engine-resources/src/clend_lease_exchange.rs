@@ -51,14 +51,21 @@ pub const LAST_FUEL_DELIVERED: usize = 0x370;
 /// The pool-addition calls that commit cumulative delivered and sunk amounts.
 /// Only these call sites supply a lend-lease update; additions to other pools
 /// must not acquire lend-lease identities or appear as deliveries.
+#[cfg(test)]
 pub const DELIVERED_POOL_RETURN_RVA: usize = 0x195897a;
+#[cfg(test)]
 pub const SUNK_POOL_RETURN_RVA: usize = 0x195a9af;
+#[cfg(test)]
 pub const POOL_ADDITION_RVA: usize = 0xff7830;
+#[cfg(test)]
 pub const DELIVERED_POOL_CALL_RVA: usize = DELIVERED_POOL_RETURN_RVA - 5;
+#[cfg(test)]
 pub const SUNK_POOL_CALL_RVA: usize = SUNK_POOL_RETURN_RVA - 5;
+#[cfg(test)]
 pub const DELIVERED_POOL_CALL_SENTINEL: [u8; 16] = [
     0xe8, 0xb6, 0xee, 0x69, 0xff, 0x4d, 0x8b, 0xb5, 0xb0, 0x00, 0x00, 0x00, 0x49, 0x8d, 0x4e, 0x20,
 ];
+#[cfg(test)]
 pub const SUNK_POOL_CALL_SENTINEL: [u8; 16] = [
     0xe8, 0x81, 0xce, 0x69, 0xff, 0x44, 0x8b, 0xc6, 0x48, 0x8b, 0xd5, 0x48, 0x8b, 0xcf, 0xe8, 0x43,
 ];

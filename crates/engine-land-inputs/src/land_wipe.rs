@@ -20,12 +20,7 @@ use crate::{
     cprovince, cunit, read,
 };
 
-/// Exact lifecycle CALL: RCX combatant, RDX primary unit; returns void.
-/// Preserve its return address through both tail jumps for shared deletion
-/// cause classification.
-pub const CALL_RVA: usize = 0x13ce9f0;
 pub const RETURN_RVA: usize = 0x13ce9f6;
-pub const CALL_SENTINEL: [u8; 6] = [0xff, 0x90, 0x08, 0x01, 0x00, 0x00];
 /// Base lifecycle after land leader-experience effects. Naval combatants
 /// share this virtual path and their vtable is excluded below.
 pub const LIFECYCLE_RVA: usize = 0x13cc5b0;

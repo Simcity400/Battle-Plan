@@ -12,8 +12,6 @@ pub const PROVINCE: usize = 4;
 pub const KIND: usize = 0x08;
 /// Node flag, u8.
 pub const FLAG: usize = 0x0c;
-/// Locator-arm byte, tested separately from the `FLAG` byte.
-pub const LOCATOR_ARM: usize = 0x0d;
 /// Available supply, i64.
 pub const AVAILABLE: usize = 0x38;
 /// Consumed supply, i64.
@@ -23,10 +21,6 @@ pub const CONSUMED: usize = 0x40;
 pub const ROUTE_VALUE: usize = 0x78;
 /// Node constructor initializing the `KIND`.
 pub const CONSTRUCTOR_RVA: usize = 0x0120_4300;
-/// First locator-arm writer updating `LOCATOR_ARM`.
-pub const UPDATE_LOCATOR_ARM_RVA: usize = 0x0120_cee0;
-/// Second locator-arm writer updating `LOCATOR_ARM`.
-pub const REFRESH_LOCATOR_ARM_RVA: usize = 0x0120_e7c0;
 
 use crate::{
     Memory, cpdx_array::Array, csupply_system, read, supply_companion, supply_parent_map,

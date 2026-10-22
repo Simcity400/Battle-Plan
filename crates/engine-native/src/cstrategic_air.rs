@@ -14,12 +14,8 @@ pub const VTABLE_RVA: usize = 0x0294_1ff8;
 pub const SIZE: usize = 0x1d8;
 /// First air-site pointer vector visited by fuel aggregation.
 pub const FIRST_AIR_SITES: usize = 0x10;
-/// First air-site count, i32.
-pub const FIRST_AIR_SITES_COUNT: usize = 0x1c;
 /// Second independent air-site pointer vector visited by fuel aggregation.
 pub const SECOND_AIR_SITES: usize = 0x28;
-/// Second air-site count, i32.
-pub const SECOND_AIR_SITES_COUNT: usize = 0x34;
 /// Air-wing-pool pointer-vector data.
 pub const POOLS: usize = 0x58;
 /// Pool-vector count, u32.
@@ -39,14 +35,8 @@ pub const ACTIVE_MISSION_REGIONS: usize = 0xc8;
 pub const HISTORY_TABLE: usize = 0x158;
 /// Region-indexed air-region-combat-data pointer table.
 pub const REGION_COMBAT: usize = 0x170;
-/// Region-indexed combat-table signed capacity.
-pub const REGION_COMBAT_CAPACITY: usize = 0x178;
-/// Region-indexed combat-table signed count.
-pub const REGION_COMBAT_COUNT: usize = 0x17c;
 /// Per-country strategic-air constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00c3_8740;
-/// Population of canonical country slots.
-pub const POPULATE_RVA: usize = 0x00c4_a6f0;
 
 /// An authenticated manager slot; the address is transient read context only.
 #[derive(Debug, Clone, Copy)]

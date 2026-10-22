@@ -44,6 +44,7 @@ pub const COUNTRY: usize = 0x20;
 /// The stock series.
 pub const STOCK_SERIES: u32 = 15;
 /// The balance series.
+#[cfg(test)]
 pub const BALANCE_SERIES: u32 = 16;
 /// Stock-series roll-up mode.
 pub const STOCK_ROLL_UP: i32 = 0;

@@ -65,6 +65,7 @@ pub struct Descriptions {
 }
 
 impl Descriptions {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_blocks(blocks: impl IntoIterator<Item = (String, modifiers::Modifiers)>) -> Self {
         Self {
             values: Mutex::new(

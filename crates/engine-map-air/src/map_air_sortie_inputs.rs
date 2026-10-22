@@ -247,6 +247,7 @@ pub fn read_missions(
 
 /// Reuse the wing worker's authenticated current-execution leaves, including
 /// their independent failures. Neither a mask nor its count is read again.
+#[cfg(test)]
 pub fn read_missions_with_execution(
     memory: &impl Memory,
     base: usize,
@@ -739,6 +740,7 @@ pub fn read_modifier_metadata(
 }
 
 /// The console efficiency overrides in native order, as `(slot, raw)`.
+#[cfg(test)]
 pub fn efficiency_overrides(
     memory: &impl Memory,
     base: usize,

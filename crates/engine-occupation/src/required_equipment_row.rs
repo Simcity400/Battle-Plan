@@ -5,6 +5,7 @@
 /// Required-equipment row stride.
 pub const STRIDE: usize = 0x10;
 /// Equipment-type pointer, followed through its archetype link (`cequipment_type::ARCHETYPE`).
+#[cfg(test)]
 pub const EQUIPMENT_TYPE: usize = 0x00;
 /// Signed i64 fixed-point amount.
 pub const AMOUNT: usize = 0x08;

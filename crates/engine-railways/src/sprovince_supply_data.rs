@@ -20,16 +20,6 @@ pub const SUPPLY_NODE_LEVEL: usize = 0x14;
 pub const NAVAL_BASE_LEVEL: usize = 0x15;
 /// Flag byte with independently checksummed bits 0..3.
 pub const FLAGS: usize = 0x18;
-/// Temporary supply-node flag mask.
-pub const HAS_TEMP_NODE: u8 = 1;
-/// Rail-presence flag mask.
-pub const HAS_RAIL: u8 = 1 << 1;
-/// General dirty flag mask.
-pub const PROVINCE_DIRTY: u8 = 1 << 2;
-/// Railway dirty flag mask.
-pub const PROVINCE_DIRTY_RAILWAY: u8 = 1 << 3;
-/// Railway graphics refresh consuming these source predicates.
-pub const RAILWAY_GFX_CONSUMER_RVA: usize = 0x01c5_3520;
 
 /// Only operands consumed by the map are projected from each native slot.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

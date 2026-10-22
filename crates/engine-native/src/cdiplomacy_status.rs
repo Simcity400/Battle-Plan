@@ -10,15 +10,19 @@ pub const CONSTRUCTOR_RVA: usize = 0x00d1_e540;
 /// CDiplomacyStatus CRelationStatus pointer matrix, indexed by resolved country ordinal.
 pub const RELATIONS: usize = 0x08;
 /// Relation-matrix signed-i32 capacity in its array header.
+#[cfg(test)]
 pub const RELATION_CAPACITY: usize = 0x10;
 /// Relation-matrix signed-i32 count, sized from country ordinals
 /// without deduplicating country rows.
+#[cfg(test)]
 pub const RELATION_COUNT: usize = 0x14;
 /// CDiplomacyStatus owned CRelation pointer vector.
 pub const OWNED_RELATIONS: usize = 0x20;
 /// CDiplomacyStatus owned-vector signed-i32 capacity.
+#[cfg(test)]
 pub const OWNED_RELATION_CAPACITY: usize = 0x28;
 /// CDiplomacyStatus owned-vector signed-i32 count.
+#[cfg(test)]
 pub const OWNED_RELATION_COUNT: usize = 0x2c;
 /// Owned war-goal pointer array: the goals the country holds and has not yet
 /// used in a war. The diplomacy map mode tests the selected country's goals'
@@ -46,10 +50,6 @@ pub const FACTION: usize = 0x290;
 pub const CAPITULATED: usize = 0x2e0;
 /// Raw capitulation hour, read as i32.
 pub const CAPITULATED_HOUR: usize = 0x2f0;
-/// CDiplomacyStatus auxiliary vector, distinct from CRelationStatus opinion.
-pub const AUXILIARY_VECTOR: usize = 0x300;
-/// Diplomacy auxiliary vector count; element semantics remain unproven.
-pub const AUXILIARY_VECTOR_COUNT: usize = 0x30c;
 /// CDiplomacyStatus CCurrentAutonomyStatus pointer.
 pub const CURRENT_AUTONOMY_STATUS: usize = 0x350;
 

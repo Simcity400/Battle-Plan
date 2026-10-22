@@ -12,5 +12,3 @@ pub const NAME: usize = 0x18;
 pub const DATABASE_INDEX: usize = 0x88;
 /// Fixed5 combat width.
 pub const COMBAT_WIDTH: usize = 0x68;
-/// Fixed5 additional-direction width.
-pub const ADDITIONAL_COMBAT_WIDTH: usize = 0x70;

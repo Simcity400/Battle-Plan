@@ -8,8 +8,6 @@ pub const DATA: usize = 0x00;
 pub const CAPACITY: usize = 0x08;
 /// Modifier-accumulator count word, interpreted with each reader's signedness.
 pub const COUNT: usize = 0x0c;
-/// Modifier-accumulator effective getter, including metadata flags.
-pub const VALUE_RVA: usize = 0x0055_1820;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Value {

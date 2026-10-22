@@ -322,22 +322,6 @@ pub struct DeliveryHistory {
 
 pub const DELIVERY_FIELDS: [usize; 4] = [0x240, 0x248, 0x250, 0x258];
 
-pub fn read_delivery_history(
-    memory: &impl Memory,
-    status: usize,
-) -> Result<DeliveryHistory, &'static str> {
-    let bytes = status
-        .checked_add(DELIVERY_FIELDS[0])
-        .and_then(|p| read::<[u8; 32]>(memory, p))
-        .ok_or("war lend-lease delivery history unreadable")?;
-    Ok(DeliveryHistory {
-        industry_sent: i64::from_le_bytes(bytes[0..8].try_into().unwrap()),
-        fuel_sent: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
-        industry_received: i64::from_le_bytes(bytes[16..24].try_into().unwrap()),
-        fuel_received: i64::from_le_bytes(bytes[24..32].try_into().unwrap()),
-    })
-}
-
 /// Actual native entries visited while seeding an authenticated owner root.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeliverySeedWork {

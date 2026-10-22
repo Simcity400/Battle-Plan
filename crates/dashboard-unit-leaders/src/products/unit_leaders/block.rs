@@ -704,10 +704,12 @@ pub const COMPARED: &str = "leaders.compared";
 /// Each time the extract reduces the countries' rows of a kept frame anew,
 /// counted in tests: only where their slots, tags, keys or availability
 /// changed since the rows last reduced.
+#[cfg(any(test, feature = "test-support"))]
 pub const REDUCED_COUNTRIES: &str = "leaders.reduced_countries";
 
 /// Each block folded from an extract that read every table leaders may
 /// read, counted in tests.
+#[cfg(any(test, feature = "test-support"))]
 pub const WHOLE_KIT: &str = "leaders.whole_kit";
 
 /// One table of the kept frames reduced: its last reduced view, shared

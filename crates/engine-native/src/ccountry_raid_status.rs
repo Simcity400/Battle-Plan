@@ -4,55 +4,21 @@
 
 /// Raid-status vtable.
 pub const VTABLE_RVA: usize = 0x029b_6198;
-/// Raid-status type descriptor.
-pub const TYPE_DESCRIPTOR_RVA: usize = 0x0325_1480;
 /// Inline raid-status array stride.
 pub const STRIDE: usize = 0xb0;
 /// Country handle, i32, serialized only when positive.
 pub const COUNTRY: usize = 0x08;
-/// Dummy raid pointer whose full reference is serialized.
-pub const DUMMY_RAID: usize = 0x10;
 /// Raid-instance pointer-array data.
 pub const INSTANCES: usize = 0x18;
-/// Instance-array capacity, u32.
-pub const INSTANCES_CAPACITY: usize = 0x20;
-/// Instance count, u32.
-pub const INSTANCES_COUNT: usize = 0x24;
 /// Used-type pointer-array data; serialization resolves definition names.
 pub const USED_TYPES: usize = 0x30;
-/// Used-type count, i32.
-pub const USED_TYPES_COUNT: usize = 0x3c;
 /// Inline target-cooldown array data.
 pub const TARGET_COOLDOWNS: usize = 0x48;
-/// Target-cooldown count, i32.
-pub const TARGET_COOLDOWNS_COUNT: usize = 0x54;
 /// Inline cooldown stride. Offers compare raid type and the first four scope
 /// words; stored days supply tooltip text only.
 pub const TARGET_COOLDOWN_STRIDE: usize = 0x40;
 /// Country-eligible raid-type cache.
 pub const ELIGIBLE_TYPES: usize = 0x68;
-/// Eligible-type capacity, i32.
-pub const ELIGIBLE_TYPES_CAPACITY: usize = 0x70;
-/// Eligible-type count, i32, cleared before filtering definitions.
-pub const ELIGIBLE_TYPES_COUNT: usize = 0x74;
-/// Eligible-type allocator pointer.
-pub const ELIGIBLE_TYPES_ALLOCATOR: usize = 0x78;
-/// Instance cache filtering phases other than five.
-pub const NON_ENDED_INSTANCES: usize = 0x80;
-/// Non-ended capacity, i32.
-pub const NON_ENDED_INSTANCES_CAPACITY: usize = 0x88;
-/// Non-ended count, i32, cleared before rebuilding.
-pub const NON_ENDED_INSTANCES_COUNT: usize = 0x8c;
-/// Non-ended allocator pointer.
-pub const NON_ENDED_INSTANCES_ALLOCATOR: usize = 0x90;
-/// Instance cache filtering phase five.
-pub const ENDED_INSTANCES: usize = 0x98;
-/// Ended capacity, i32.
-pub const ENDED_INSTANCES_CAPACITY: usize = 0xa0;
-/// Ended count, i32, cleared before rebuilding.
-pub const ENDED_INSTANCES_COUNT: usize = 0xa4;
-/// Ended allocator pointer.
-pub const ENDED_INSTANCES_ALLOCATOR: usize = 0xa8;
 /// Target-cooldown vtable.
 pub const COOLDOWN_VTABLE_RVA: usize = 0x029b_6148;
 /// Cooldown entry: raid type pointer.
@@ -63,12 +29,6 @@ pub const COOLDOWN_SCOPE: usize = 0x10;
 pub const COOLDOWN_DAYS: usize = 0x38;
 /// Raid-status constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x014d_6dc0;
-/// Raid-status serializer.
-pub const SERIALIZER_RVA: usize = 0x014d_89e0;
-/// Eligible-type cache rebuild using the parent country.
-pub const REBUILD_ELIGIBLE_TYPES_RVA: usize = 0x014d_82d0;
-/// Ended and non-ended cache rebuild.
-pub const REBUILD_PHASE_CACHES_RVA: usize = 0x014d_86d0;
 
 /// Pointer stride of the instance, used-type and eligible-type arrays.
 pub const POINTER_STRIDE: usize = 8;
@@ -236,6 +196,7 @@ pub struct TypeTokens {
 
 impl TypeTokens {
     /// A table for `definitions` raid types.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn try_with_definitions(definitions: usize) -> std::io::Result<Self> {
         Ok(Self {
             slots: crate::allocation::filled(Self::slots_for(definitions)?, (0, 0))?,

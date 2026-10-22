@@ -252,9 +252,6 @@ impl NativeReferenceMemo {
     pub fn canonical_used(&self) -> usize {
         self.canonical.borrow().used
     }
-    pub fn canonical_required(&self) -> usize {
-        self.canonical.borrow().required
-    }
     pub fn link_capacity(&self) -> usize {
         self.links.borrow().len()
     }

@@ -21,50 +21,18 @@ pub const VTABLE_RVA: usize = 0x0295_fb08;
 pub const TOTAL: usize = 0x08;
 /// CWorldThreat CThreatSource pointer array.
 pub const SOURCES: usize = 0x10;
-/// CWorldThreat source-array capacity i32.
-pub const SOURCES_CAPACITY: usize = 0x18;
-/// CWorldThreat source count i32.
-pub const SOURCES_COUNT: usize = 0x1c;
-/// CWorldThreat source-array allocator.
-pub const SOURCES_ALLOCATOR: usize = 0x20;
 /// CWorldThreat signed i64 country aggregate array.
 pub const COUNTRY_AGGREGATES: usize = 0x28;
-/// CWorldThreat aggregate capacity i32.
-pub const COUNTRY_AGGREGATES_CAPACITY: usize = 0x30;
-/// CWorldThreat aggregate count i32.
-pub const COUNTRY_AGGREGATES_COUNT: usize = 0x34;
-/// CWorldThreat aggregate allocator.
-pub const COUNTRY_AGGREGATES_ALLOCATOR: usize = 0x38;
 /// CWorldThreat aggregate element stride.
 pub const AGGREGATE_STRIDE: usize = 0x08;
 /// CWorldThreat source-pointer stride.
 pub const SOURCE_STRIDE: usize = 0x08;
-/// CWorldThreat aggregate rebuild.
-pub const REBUILD_AGGREGATES_RVA: usize = 0x00ee_ffd0;
 /// CWorldThreat total update.
 pub const UPDATE_TOTAL_RVA: usize = 0x00ee_fc20;
-/// CWorldThreat daily decay pass.
-pub const DAILY_DECAY_RVA: usize = 0x00ee_ff80;
-/// Contribution serializer; omits the total and per-country aggregates.
-pub const SERIALIZE_RVA: usize = 0x00ef_0500;
-/// Source deserializer; appends a fresh contribution to the stored vector.
-pub const DESERIALIZE_RVA: usize = 0x00ee_fb20;
 /// World-tension clamp ceiling.
 pub const CLAMP_CEILING: i64 = 10_000_000;
 /// World-tension scalar divisor.
 pub const SCALAR_DIVISOR: i64 = 100;
-/// Live content-loaded world-tension policy cap, i64 fixed5.
-pub const POLICY_CAP_RVA: usize = 0x0331_8e60;
-/// Live content-loaded monthly time-scale factor, i64 fixed5.
-pub const MONTHLY_DECREASE_RVA: usize = 0x0331_cf88;
-/// Live content-loaded minimum time scale, i64 fixed5.
-pub const MINIMUM_TIME_SCALE_RVA: usize = 0x0331_d010;
-/// Start-date raw i32 hour, interpreted relative to the engine epoch.
-pub const START_DATE_RVA: usize = 0x0307_1570;
-/// Time-scale helper; combines loaded factors and elapsed months without storing a field.
-pub const TIME_SCALE_RVA: usize = 0x00ee_e600;
-/// Country-aggregate getter; clamps the stored slot without scalar division.
-pub const COUNTRY_AGGREGATE_GETTER_RVA: usize = 0x00ee_eca0;
 
 /// The manager's own stored words. Counts are the engine's, not the walker's.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

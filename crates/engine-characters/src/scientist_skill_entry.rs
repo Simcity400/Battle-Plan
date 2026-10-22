@@ -11,13 +11,9 @@ pub const TOKEN: usize = 0x00;
 pub const EXPERIENCE: usize = 0x10;
 /// Signed i32 level; serialized only when positive.
 pub const LEVEL: usize = 0x18;
-/// Skill-level save writer with independent strictly-positive guards.
-pub const SERIALIZE_RVA: usize = 0x0144_e480;
 /// Nuclear specialization token low half, for reporting only.
+#[cfg(test)]
 pub const NUCLEAR_TOKEN_PREFIX: u16 = 0x56c6;
-/// Naval specialization token low half, for reporting only.
-pub const NAVAL_TOKEN_PREFIX: u16 = 0x56c7;
-/// Air specialization token low half, for reporting only.
-pub const AIR_TOKEN_PREFIX: u16 = 0x56c8;
 /// Land specialization token low half, for reporting only.
+#[cfg(test)]
 pub const LAND_TOKEN_PREFIX: u16 = 0x56c9;

@@ -45,10 +45,6 @@ pub const FLAG_A: usize = 0xa8;
 pub const FLAG_B: usize = 0xa9;
 /// Division-name constructor.
 pub const CONSTRUCT_RVA: usize = 0x009b_3070;
-/// Division-name order setter stores -1 for nonpositive arguments; serialization retains it.
-pub const SET_ORDER_RVA: usize = 0x009b_c230;
-/// Division-name serializer follows the omission gates above.
-pub const SERIALIZE_RVA: usize = 0x009b_cc70;
 /// Operative name-database global used for type-two group lookup.
 const NAME_DATABASE_RVA: usize = 0x0331_6ac0;
 
@@ -507,26 +503,6 @@ pub(crate) fn copy_string(
     result
 }
 
-/// Borrow an owned worker arena without converting it to fixed storage.
-pub fn copy_string_with_buffer(
-    memory: &impl Memory,
-    header: &[u8],
-    bytes: crate::walk::Buffer<'_, u8>,
-    len: &mut usize,
-    required: &mut usize,
-    errors: &StringErrors,
-) -> Result<Option<Span>, &'static str> {
-    let mut arena = NameArena {
-        bytes,
-        len: *len,
-        required: *required,
-    };
-    let result = copy_string_buffer(memory, header, &mut arena, errors);
-    *len = arena.len;
-    *required = arena.required;
-    result
-}
-
 pub(crate) fn copy_string_buffer(
     memory: &impl Memory,
     header: &[u8],
@@ -835,29 +811,6 @@ fn copy_fitting_string(
         return Ok(Some((start, len)));
     }
     copy_string_buffer(memory, header, names, errors)
-}
-
-/// Stored-name and group-name selection with fixed or original-header growing
-/// storage.
-#[allow(clippy::too_many_arguments)]
-pub fn inputs_buffer(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    groups: &mut GroupKeys,
-    bytes: crate::walk::Buffer<'_, u8>,
-    len: &mut usize,
-    required: &mut usize,
-) -> Result<Naming, &'static str> {
-    let mut names = NameArena {
-        bytes,
-        len: *len,
-        required: *required,
-    };
-    let result = read_inputs(memory, base, pointer, groups, &mut names, false);
-    *len = names.len;
-    *required = names.required;
-    result
 }
 
 /// An operative codename's operands ([`read_inputs`]); `heap` receives

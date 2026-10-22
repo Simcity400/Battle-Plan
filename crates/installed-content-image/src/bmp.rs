@@ -7,7 +7,9 @@
 
 use std::io;
 
-use super::{IndexedImage, Rgba8Image, invalid, reserved};
+#[cfg(any(test, feature = "test-support"))]
+use super::Rgba8Image;
+use super::{IndexedImage, invalid, reserved};
 
 /// DIB header sizes the game's bitmaps use: BITMAPINFOHEADER through V5.
 const DIB_SIZES: [u32; 5] = [40, 52, 56, 108, 124];
@@ -48,6 +50,7 @@ struct Header {
 }
 
 /// The validated 24-bit bitmap extent without allocating its decoded pixels.
+#[cfg(any(test, feature = "test-support"))]
 pub fn rgb_dimensions(input: &[u8]) -> io::Result<[u32; 2]> {
     rgb_dimensions_prefix(input, input.len() as u64)
 }
@@ -200,6 +203,7 @@ pub fn decode_indexed(input: &[u8]) -> io::Result<IndexedImage> {
 }
 
 /// Decodes a 24-bit BI_RGB BMP into opaque RGBA8 pixels.
+#[cfg(any(test, feature = "test-support"))]
 pub fn decode_rgb(input: &[u8]) -> io::Result<Rgba8Image> {
     let header = header(input, 24)?;
     let mut pixels = reserved(

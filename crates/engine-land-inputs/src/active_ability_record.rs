@@ -10,15 +10,12 @@ pub const COUNTRY: usize = 0x08;
 /// Resolved unit-leader pointer.
 pub const CASTER: usize = 0x10;
 /// Division count at activation, i32.
+#[cfg(test)]
 pub const DIVISION_COUNT: usize = 0x18;
 /// Target strategic-region pointer.
 pub const STRATEGIC_REGION: usize = 0x20;
-/// Embedded activation date.
-pub const ACTIVATION_DATE: usize = 0x28;
 /// Raw activation hour, i32, preserving the game epoch.
 pub const ACTIVATION_HOUR: usize = 0x30;
-/// Running-effect pointer, released and cleared on deactivation.
-pub const RUNNING_EFFECT: usize = 0x40;
 /// Phase byte; zero means active.
 pub const PHASE: usize = 0x48;
 /// Active phase value.
@@ -27,8 +24,6 @@ pub const ACTIVE: u8 = 0;
 pub const COOLDOWN: u8 = 1;
 /// Allocated cost, i64 fixed5; initialized to zero.
 pub const ALLOCATED_COMMAND_POWER: usize = 0x50;
-/// Array-element initializer constructing each embedded date.
-pub const INITIALIZE_RECORDS_RVA: usize = 0x006b_ca90;
 
 use crate::{
     Memory, cability, carmy_leader, cnavy_leader, coperative_leader, cpdx_array::Array,

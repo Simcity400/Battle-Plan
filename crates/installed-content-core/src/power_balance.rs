@@ -78,6 +78,7 @@ impl Database {
             .map(Vec::as_slice)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_parsed(entries: impl IntoIterator<Item = (Definition, Vec<Range>)>) -> Self {
         let mut database = Self::default();
         for (definition, ranges) in entries {

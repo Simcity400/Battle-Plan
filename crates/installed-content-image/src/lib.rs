@@ -40,6 +40,7 @@ pub struct IndexedImage {
 
 impl IndexedImage {
     /// Expands the indices through the palette for inspection and comparison.
+    #[cfg(test)]
     pub fn to_rgba8(&self) -> Rgba8Image {
         let mut pixels = Vec::with_capacity(self.indices.len() * 4);
         for &index in &self.indices {

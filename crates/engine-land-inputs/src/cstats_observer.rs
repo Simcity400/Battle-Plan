@@ -7,16 +7,10 @@
 pub const VTABLE_RVA: usize = 0x0294_6f68;
 /// CStatsObserver cached leader-tally array.
 pub const LEADERS: usize = 0x20;
-/// CStatsObserver leader-tally u32 capacity.
-pub const LEADER_CAPACITY: usize = 0x28;
 /// CStatsObserver leader-tally u32 count.
 pub const LEADER_COUNT: usize = 0x2c;
 /// CStatsObserver contiguous SDamageDone array.
 pub const DAMAGE: usize = 0x38;
-/// CStatsObserver damage-array u32 capacity.
-pub const DAMAGE_CAPACITY: usize = 0x40;
-/// CStatsObserver damage-array u32 count.
-pub const DAMAGE_COUNT: usize = 0x44;
 /// Manpower loss, signed i32, accumulated from removed and remaining
 /// participant manpower.
 pub const MANPOWER_LOSS: usize = 0x60;

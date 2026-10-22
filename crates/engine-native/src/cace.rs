@@ -19,8 +19,6 @@ pub const MODIFIERS: usize = 0x30;
 pub const OWNER_COUNTRY: usize = 0xe0;
 /// Assigned-wing reference first u32; resolution checks both words.
 pub const ASSIGNED_WING_REFERENCE: usize = 0xe8;
-/// Assigned-wing reference second u32.
-pub const ASSIGNED_WING_REFERENCE_SECOND: usize = 0xec;
 /// Name string.
 pub const NAME: usize = 0xf0;
 /// Surname string.
@@ -30,6 +28,7 @@ pub const CALLSIGN: usize = 0x130;
 /// Portrait gender byte; zero selects male, other values female.
 pub const PORTRAIT_GENDER: usize = 0x150;
 /// Portrait-pool index, i32; selection uses signed remainder by pool count.
+#[cfg(any(test, feature = "test-support"))]
 pub const PORTRAIT_POOL_INDEX: usize = 0x154;
 /// Alive byte, accepting zero or one and bracketing death-record reads.
 pub const ALIVE: usize = 0x158;
@@ -37,8 +36,6 @@ pub const ALIVE: usize = 0x158;
 pub const KILL_TYPE: usize = 0x15c;
 /// Full killer reference; serialization retains both type and id words.
 pub const KILLER_ACE_REFERENCE: usize = 0x160;
-/// Killer ace id, u32, read only when alive is zero.
-pub const KILLER_ACE_ID: usize = 0x164;
 /// Killer country link, u32, read only when alive is zero.
 pub const KILLER_COUNTRY: usize = 0x168;
 /// Handled byte, validated independently of the alive byte.
@@ -46,19 +43,6 @@ pub const HANDLED: usize = 0x16c;
 /// Selected type definition pointer; serialization writes its name string.
 pub const TYPE_DEFINITION: usize = 0x170;
 pub const TYPE_NAME: usize = 0x08;
-
-/// Assigned-wing resolver normalizing the reference subobject to its primary wing.
-pub const ASSIGNED_WING_RVA: usize = 0x0060_b510;
-/// Assignment eligibility by alive byte and requested aircraft-type mask.
-pub const CAN_ASSIGN_TYPE_MASK_RVA: usize = 0x0060_b860;
-/// Assignment eligibility by alive byte and selected wing equipment mask.
-pub const CAN_ASSIGN_WING_RVA: usize = 0x0060_b960;
-/// Owner country-tag address getter.
-pub const OWNER_COUNTRY_TAG_RVA: usize = 0x0060_da80;
-/// Modifier getter scaled by assignment and the owner modifier with fixed5 i64 arithmetic.
-pub const SCALED_MODIFIER_RVA: usize = 0x0060_ddf0;
-/// Portrait selector using literal or gender, culture, country and index inputs.
-pub const SELECT_PORTRAIT_RVA: usize = 0x00b3_4a50;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TextRange {

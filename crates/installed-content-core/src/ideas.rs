@@ -1053,6 +1053,7 @@ impl Database {
 }
 
 /// Parses one `common/idea_tags` file, its triggers against `names`.
+#[cfg(any(test, feature = "test-support"))]
 pub fn parse_tags(input: &[u8], names: &KeyNames) -> Vec<IdeaCategory> {
     let mut database = Database::default();
     let read = read_file(
@@ -1082,6 +1083,7 @@ pub struct IdeaFile {
 
 /// Parses one `common/ideas` file on its own, its triggers against `names`.
 /// `officers` is NDefines.NCharacter.OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU.
+#[cfg(any(test, feature = "test-support"))]
 pub fn parse_ideas(input: &[u8], officers: &[String], names: &KeyNames) -> IdeaFile {
     let mut database = Database::default();
     let read = read_file(input, database.groups(Loader::Ideas, officers), names);

@@ -214,6 +214,7 @@ impl<F: Family> BlockFacts<F> {
     }
 
     /// The hours after the tail's the worker stepped, failed or not.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn later_hours(&self) -> usize {
         self.hours.len() + usize::from(self.failed.is_some())
     }

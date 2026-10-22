@@ -25,10 +25,10 @@ pub const REFERENCE_TYPE: u32 = 4_713;
 /// COperationInstance signed i64 fixed-point preparation.
 pub const PREPARATION_CURRENT: usize = 0x30;
 /// COperationInstance signed i64 fixed-point preparation requirement.
+#[cfg(any(test, feature = "test-support"))]
 pub const PREPARATION_REQUIRED: usize = 0x38;
-/// COperationInstance boolean flag.
-pub const FLAG_40: usize = 0x40;
 /// COperationInstance auto-repeat flag.
+#[cfg(any(test, feature = "test-support"))]
 pub const AUTO_REPEAT: usize = 0x41;
 /// Completion sets this byte after applying the selected effect.
 pub const TERMINAL: usize = 0x42;
@@ -60,10 +60,6 @@ pub const BONUS: usize = 0xc0;
 pub const DETECTED: usize = 0xc1;
 /// Assigned-operative record-array data, with 0x38-byte records.
 pub const ASSIGNED_OPERATIVE_DATA: usize = 0xe0;
-/// Signed assigned-slot capacity for storage of 0x38-byte records.
-pub const ASSIGNED_OPERATIVE_CAPACITY: usize = 0xe8;
-/// Signed assigned-slot count, including slots with unassigned handles.
-pub const ASSIGNED_OPERATIVE_COUNT: usize = 0xec;
 /// Selected-phase array data containing the chosen definition pointers, with
 /// its capacity and count after it as a CPdxArray header.
 pub const PHASE_DATA: usize = 0xf8;
@@ -80,9 +76,6 @@ pub const EQUIPMENT_POOL: usize = 0x110;
 /// Requirement-record array pointer, with its capacity and signed count after
 /// it as a CPdxArray header. Preparation checks read it with 0x20-byte records.
 pub const REQUIREMENT_DATA: usize = 0x158;
-/// Requirement-record count, u32. Preparation checks read it before walking optional and required
-/// resources.
-pub const REQUIREMENT_COUNT: usize = 0x164;
 /// Requirement-record stride.
 pub const REQUIREMENT_STRIDE: usize = 0x20;
 /// Requirement amount, signed i64 fixed5.
@@ -95,8 +88,10 @@ pub const REQUIREMENT_EQUIPMENT: usize = 0x10;
 /// Requirement byte: nonzero when the requirement uses preparation time.
 pub const REQUIREMENT_USES_TIME: usize = 0x18;
 /// Operation-instance serializer.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x013e_f710;
 /// Operation-instance loader.
+#[cfg(test)]
 pub const LOADER_RVA: usize = 0x013e_d380;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

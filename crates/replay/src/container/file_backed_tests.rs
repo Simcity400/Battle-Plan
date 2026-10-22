@@ -63,7 +63,6 @@ fn held_grouped_selected_reads_and_seeks_match_resident_readers() {
             );
         }
     }
-    assert!(held.block_bytes_equal(&memory, block).unwrap());
 }
 
 #[test]
@@ -277,20 +276,6 @@ fn held_metadata_open_uses_only_header_and_trailer_bytes() {
                 || offset >= memory.trailer_start as u64
         );
     }
-}
-
-#[test]
-fn held_block_comparison_detects_changed_payload_with_equal_index() {
-    let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
-    let fixture = Fixture::new(memory.bytes());
-    let held = Replay::open_path(&fixture.0).unwrap();
-    let mut changed = memory.bytes().to_vec();
-    let block = &memory.index[0];
-    changed[(block.offset + block.length - 1) as usize] ^= 1;
-    let fixture2 = Fixture::new(&changed);
-    let other = Replay::open_path(&fixture2.0).unwrap();
-    assert_eq!(held.index, other.index);
-    assert!(!held.block_bytes_equal(&other, block).unwrap());
 }
 
 #[test]

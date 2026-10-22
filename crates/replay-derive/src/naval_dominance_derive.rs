@@ -70,29 +70,6 @@ pub fn ship_power(raw: [i64; 5], defines: Defines) -> i64 {
         / SCALE
 }
 
-/// Native mission admission is ordered: empty ships, inactive mission and
-/// inaccessible region return zero without demanding ship power or efficiency.
-pub fn mission_power<E>(
-    ships: i32,
-    active: u8,
-    accessible: bool,
-    kind: u32,
-    current_region_matches: bool,
-    power: impl FnOnce() -> Result<i64, E>,
-    efficiency: impl FnOnce() -> Result<i64, E>,
-) -> Result<i64, E> {
-    if ships == 0 || active == 0 || !accessible {
-        return Ok(0);
-    }
-    let efficiency = match kind {
-        1 if current_region_matches => SCALE,
-        1 => return Ok(0),
-        2..=4 => efficiency()?,
-        _ => return Ok(0),
-    };
-    Ok(power()?.wrapping_mul(efficiency) / SCALE)
-}
-
 /// Strike-force contribution depends on the accessible-list count, including
 /// every stored occurrence; it has no extra lower clamp for modded decay.
 pub fn strike_effect(power: i64, accessible_regions: i32, defines: Defines) -> i64 {
@@ -200,41 +177,6 @@ mod tests {
         assert_eq!(
             ship_power([300_000, 200_000, 100_000, 0, 0], Defines::default()),
             300_000
-        );
-    }
-    #[test]
-    fn rejected_missions_demand_no_design_or_efficiency() {
-        for (ships, active, accessible, kind, region) in [
-            (0, 1, true, 2, true),
-            (1, 0, true, 2, true),
-            (1, 1, false, 2, true),
-            (1, 1, true, 1, false),
-            (1, 1, true, 9, true),
-        ] {
-            assert_eq!(
-                mission_power::<()>(
-                    ships,
-                    active,
-                    accessible,
-                    kind,
-                    region,
-                    || panic!("power"),
-                    || panic!("efficiency")
-                ),
-                Ok(0)
-            );
-        }
-        assert_eq!(
-            mission_power::<()>(
-                1,
-                1,
-                true,
-                1,
-                true,
-                || Ok(10),
-                || panic!("patrol efficiency")
-            ),
-            Ok(10)
         );
     }
     #[test]

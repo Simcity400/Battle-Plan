@@ -20,10 +20,6 @@ pub const CAPTOR_COUNTRY: usize = 0x105c;
 pub const DEPLOYED_HQ: usize = 0x1068;
 /// Allocation extent, independent of array stride.
 pub const SIZE: usize = 0x10b8;
-/// Clone retaining all signed 32-bit skills.
-pub const CLONE_RVA: usize = 0x00c0_2fd0;
-/// Serializer retaining signed 32-bit skills.
-pub const SERIALIZE_RVA: usize = 0x00c1_8ca0;
 
 /// Terrain-adjuster vector data.
 pub const MOVEMENT_TERRAIN_DATA: usize = 0x248;
@@ -957,28 +953,6 @@ pub fn movement_block_prepared(
         }
     }
     movement_selected(leader, alternate).map(|root| root.map(|root| (root, alternate)))
-}
-
-/// Commander-receiver vtable slot 8 returns the army's own identity and null for a railway unit, so
-/// a railway unit never selects a commander. Read keys independently from the same selected unit
-/// modifier block.
-pub fn current_retreat_inputs(
-    memory: &impl crate::Memory,
-    base: usize,
-    seed: &crate::carmy::DivisionSeed,
-) -> (Option<bool>, [Result<i64, &'static str>; 2]) {
-    let selected = movement_accumulator_seeded(memory, base, seed);
-    let values = [
-        CANNOT_RETREAT_WHILE_DEFENDING,
-        CANNOT_RETREAT_WHILE_ATTACKING,
-    ]
-    .map(|key| match selected {
-        Ok(None) => Ok(0),
-        Ok(Some(root)) => crate::modifier_accumulator::lookup_effective_at(memory, base, root, key)
-            .map(|value| value.effective),
-        Err(reason) => Err(reason),
-    });
-    (selected.ok().map(|root| root.is_some()), values)
 }
 
 /// Positive defending-retreat modifier values ban disengagement from the

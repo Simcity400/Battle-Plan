@@ -46,54 +46,9 @@ pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x0331_a118;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terrain {
-    /// The terrain type's name, an MSVC string. Copy separately: label failure preserves values.
-    pub name: Field<usize>,
     pub attrition: Field<i64>,
     /// Original unweighted sum, before the native floor against upkeep+terrain.
     pub equipment: Field<i64>,
-}
-
-/// Copies a terrain's stored label into caller-owned bytes. The descriptor
-/// remains engine-private; its authenticated length is counted even when the
-/// arena is short. A successful span is uncommitted at `names.len`, which the
-/// caller advances only after admitting the label. Empty labels are valid.
-pub fn copy_terrain_name(
-    memory: &impl Memory,
-    address: usize,
-    names: &mut crate::cname_group_member::Names<'_>,
-) -> Field<Option<crate::cname_group_member::Span>> {
-    let name = crate::msvc_string::Descriptor::read(memory, address)?;
-    names.required = names
-        .required
-        .checked_add(name.len)
-        .ok_or("attrition terrain text length overflow")?;
-    let start = names.len;
-    let end = start
-        .checked_add(name.len)
-        .ok_or("attrition terrain text length overflow")?;
-    let Some(output) = names.bytes.get_mut(start..end) else {
-        return Ok(None);
-    };
-    name.copy(memory, output)?;
-    Ok(Some((start, name.len)))
-}
-
-/// The retained terrain label is formatted independently of numeric attrition
-/// operands. Worker storage grows from the original descriptor and acquired
-/// payload without repeating either read.
-pub fn copy_terrain_name_growing(
-    memory: &impl Memory,
-    address: usize,
-    bytes: &mut Vec<u8>,
-    len: usize,
-    required: &mut usize,
-) -> Field<crate::cname_group_member::Span> {
-    let name = crate::msvc_string::Descriptor::read(memory, address)?;
-    *required = required
-        .checked_add(name.len)
-        .ok_or("attrition terrain text length overflow")?;
-    name.copy_buffer(memory, &mut crate::walk::Buffer::Growing(bytes), len)?;
-    Ok((len, name.len))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,10 +100,11 @@ pub const UPKEEP_SOURCE: usize = 0;
 pub const STATE_SOURCE: usize = 1;
 pub const WEATHER_SOURCE: usize = 2;
 pub const HEAT_SOURCE: usize = 3;
+#[cfg(test)]
 pub const HEAT_COUNTRY_SOURCE: usize = 4;
+#[cfg(test)]
 pub const HEAT_LEADER_SOURCE: usize = 5;
 pub const WINTER_SOURCE: usize = 6;
-pub const WINTER_COUNTRY_SOURCE: usize = 7;
 pub const WINTER_LEADER_SOURCE: usize = 8;
 pub const COUNTRY_SOURCE: usize = 9;
 
@@ -221,7 +177,7 @@ impl Inputs {
     }
 
     /// Native ordered arithmetic. Border ratio comes from existing replay operands;
-    /// source and terrain-label availability never participates in the total.
+    /// source availability never participates in the total.
     pub fn evaluate(self, border_ratio: Option<i64>) -> Field<i64> {
         if self.province?.is_none() {
             return Ok(0);
@@ -888,7 +844,6 @@ fn terrain(
         Ok(equipment)
     })();
     Ok(Some(Terrain {
-        name: at(terrain, cterrain_type::NAME),
         attrition: at(terrain, 0xb8).and_then(|root| memo.modifier(memory, base, root, ATTRITION)),
         equipment,
     }))

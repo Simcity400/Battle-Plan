@@ -62,7 +62,6 @@ fn fresh_attrition_order_uses_equipment_floor_supply_and_final_country_multiplie
     inputs.province = Ok(Some(1));
     inputs.upkeep = Ok(100);
     inputs.terrain = Ok(Some(Terrain {
-        name: Err("label unreadable"),
         attrition: Ok(500),
         equipment: Ok(-1_000),
     }));
@@ -267,62 +266,6 @@ fn fresh_attrition_acclimatization_keeps_first_maximum_and_refuses_foreign_embed
         fresh_acclimatization(&fixture, 0, &seed),
         Err("attrition acclimatization identity mismatch")
     );
-}
-
-#[test]
-fn fresh_attrition_terrain_label_shortage_and_faults_keep_uncommitted_span_and_proved_demand() {
-    use crate::cname_group_member::Names;
-    let mut fixture = Fixture::new();
-    fixture.word(0x1000, 0x2000);
-    fixture.word(0x1010, 64);
-    fixture.word(0x1018, 64);
-    fixture.put(0x2000, &[b'x'; 64]);
-    let mut short = [0xa5; 3];
-    let mut names = Names {
-        bytes: &mut short,
-        len: 3,
-        required: 3,
-    };
-    assert_eq!(copy_terrain_name(&fixture, 0x1000, &mut names), Ok(None));
-    assert_eq!((names.len, names.required), (3, 67));
-    assert_eq!(names.bytes, [0xa5; 3]);
-    assert!(!fixture.reads.borrow().contains(&(0x2000, 64)));
-    fixture.blocked = Some(0x2020);
-    let mut bytes = [0xa5; 67];
-    let mut names = Names {
-        bytes: &mut bytes,
-        len: 3,
-        required: 3,
-    };
-    assert_eq!(
-        copy_terrain_name(&fixture, 0x1000, &mut names),
-        Err("string bytes unreadable")
-    );
-    assert_eq!((names.len, names.required), (3, 67));
-    assert_eq!(&names.bytes[..3], [0xa5; 3]);
-    fixture.blocked = None;
-    names.required = 3;
-    assert_eq!(
-        copy_terrain_name(&fixture, 0x1000, &mut names),
-        Ok(Some((3, 64)))
-    );
-    assert_eq!(names.len, 3);
-    assert_eq!(&names.bytes[3..], [b'x'; 64]);
-    fixture.word(0x1018, 63);
-    names.required = 3;
-    assert_eq!(
-        copy_terrain_name(&fixture, 0x1000, &mut names),
-        Err("string header invalid")
-    );
-    assert_eq!((names.len, names.required), (3, 3));
-    fixture.word(0x1000, 0);
-    fixture.word(0x1010, 0);
-    fixture.word(0x1018, 15);
-    assert_eq!(
-        copy_terrain_name(&fixture, 0x1000, &mut names),
-        Ok(Some((3, 0)))
-    );
-    assert_eq!((names.len, names.required), (3, 3));
 }
 
 /// Two divisions of one country in one weather province ask the same keyed

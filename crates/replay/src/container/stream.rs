@@ -76,6 +76,7 @@ impl ReplayStream {
     }
 
     /// Check cancellation during admission and reconstruction, once per payload.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn next_block_with(
         &mut self,
         replay: &Replay,
@@ -127,6 +128,7 @@ impl ReplayStream {
     /// observed hour is released before the next is reconstructed, so every
     /// delta applies to rows no observer still holds, in place.
     /// Decoder state and cursor move only after the whole block succeeds.
+    #[cfg(test)]
     pub fn next_block_parallel_with(
         &mut self,
         replay: &Arc<Replay>,

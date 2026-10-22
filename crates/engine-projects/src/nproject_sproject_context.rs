@@ -22,16 +22,8 @@ pub const SCIENTIST_PRESENT: usize = 0x24;
 pub const STATE_REFERENCE: usize = 0x28;
 /// State-presence u8 flag.
 pub const STATE_PRESENT: usize = 0x2c;
-/// Context serializer omitting absent optional payloads.
-pub const SERIALIZE_RVA: usize = 0x01a2_5240;
-/// Context deserializer setting presence only after parsing a value.
-pub const DESERIALIZE_RVA: usize = 0x01a2_50e0;
 /// Context constructor clearing presence bytes without initializing absent payloads.
 pub const CONSTRUCT_RVA: usize = 0x01a2_4980;
-/// Context writer marking an optional value present.
-pub const SET_PRESENT_RVA: usize = 0x01a2_48a0;
-/// Context writer marking an optional value absent.
-pub const CLEAR_PRESENT_WRITER_RVA: usize = 0x00fc_a360;
 
 use crate::{Memory, read};
 

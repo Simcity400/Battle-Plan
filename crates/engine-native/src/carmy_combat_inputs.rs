@@ -370,6 +370,7 @@ fn copy_tags(memory: &impl Memory, list: Array, tags: &mut [u32]) -> Result<(), 
 /// preallocated; nothing here allocates. `countries` is the pass's country
 /// reader: it resolves the exile country and bounds both lists by the live
 /// country count.
+#[cfg(test)]
 pub fn capture_exile(
     memory: &impl Memory,
     countries: &crate::ccountry::Reader<'_, impl Memory>,
@@ -462,6 +463,7 @@ pub fn capture_exile_buffer(
 
 /// Independent modifier acquisition: no stat-block or commander dependency.
 /// Arena pressure fails before copying any modifier; publication is all or none.
+#[cfg(test)]
 pub fn capture_modifiers(
     memory: &impl Memory,
     base: usize,

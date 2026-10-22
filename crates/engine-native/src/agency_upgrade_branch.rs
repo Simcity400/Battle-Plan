@@ -11,7 +11,3 @@ pub const VALID: usize = 0x10;
 
 /// Member-pointer array with no sentinel.
 pub const UPGRADES: usize = 0x40;
-/// Signed member count; array validation admits its nonnegative range.
-pub const UPGRADE_COUNT: usize = 0x4c;
-/// Definition-pointer stride.
-pub const UPGRADE_STRIDE: usize = 8;

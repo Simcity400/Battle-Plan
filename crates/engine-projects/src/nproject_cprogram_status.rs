@@ -17,18 +17,8 @@ pub const OWNER: usize = 0x10;
 pub const PROJECT_POOL: usize = 0x18;
 /// Program pointer array.
 pub const PROGRAMS: usize = 0x20;
-/// Packed u64 program capacity/count.
-pub const PROGRAMS_PACKED: usize = 0x28;
-/// Program u32 capacity in the low half of the packed header.
-pub const PROGRAMS_CAPACITY: usize = 0x28;
-/// Program signed i32 live count.
-pub const PROGRAMS_COUNT: usize = 0x2c;
 /// Inline breakthrough-progress object.
 pub const BREAKTHROUGH: usize = 0x50;
-/// Program facility-walk entry reading the roster and each program's rewards count.
-pub const UNREAD_REWARDS_WALK_RVA: usize = 0x0187_f220;
-/// Program-vector walk bounded by the signed count.
-pub const PROGRAM_VECTOR_WALK_RVA: usize = 0x0049_fc30;
 
 /// Every country owns a status. Null denotes failed allocation or an
 /// unavailable root; it cannot certify an empty collection. Serialization and

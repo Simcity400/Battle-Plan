@@ -557,20 +557,6 @@ pub trait Memory {
         None
     }
 
-    /// Optional deterministic arithmetic memo, keyed by every raw scalar
-    /// argument. Callers must still acquire/authenticate those arguments on
-    /// every invocation. This
-    /// capability never supplies game-derived inputs or changes lazy reads.
-    /// Observation-recording wrappers must not forward it.
-    fn movement_air_defense_value(
-        &self,
-        _defense: i64,
-        _denominator: i64,
-        _reduction: i64,
-    ) -> Option<Result<i64, &'static str>> {
-        None
-    }
-
     /// Copies fields in order and returns the number fully copied before the first
     /// failure. The failed field may be partial; later destinations are untouched.
     /// Empty fields count as complete without accessing their source address.

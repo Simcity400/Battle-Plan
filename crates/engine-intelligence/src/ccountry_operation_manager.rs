@@ -16,25 +16,11 @@ use crate::{
 /// Owning country pointer.
 pub const OWNER_COUNTRY: usize = 0x08;
 /// Operation-instance pointer-array data.
+#[cfg(test)]
 pub const OPERATION_DATA: usize = 0x10;
-/// Operation capacity, signed; append checks it before writing an entry.
-pub const OPERATION_CAPACITY: usize = 0x18;
 /// Operation count, i32.
+#[cfg(test)]
 pub const OPERATION_COUNT: usize = 0x1c;
-/// Manager update walking operations and owner.
-pub const OWNER_AND_OPERATION_WALK_RVA: usize = 0x0118_b110;
-/// Operation-array walk A.
-pub const OPERATION_ARRAY_WALK_A_RVA: usize = 0x0118_8fc0;
-/// Operation-array walk B.
-pub const OPERATION_ARRAY_WALK_B_RVA: usize = 0x0118_99c0;
-/// Operation-array walk C.
-pub const OPERATION_ARRAY_WALK_C_RVA: usize = 0x0118_c7f0;
-/// Operation-array walk D.
-pub const OPERATION_ARRAY_WALK_D_RVA: usize = 0x0118_c970;
-/// Operation-array walk E.
-pub const OPERATION_ARRAY_WALK_E_RVA: usize = 0x0118_9630;
-/// Insertion appending to the operation array.
-pub const ADD_OPERATION_RVA: usize = 0x0118_9390;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {

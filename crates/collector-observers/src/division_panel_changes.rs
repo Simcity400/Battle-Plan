@@ -115,9 +115,6 @@ pub fn state_sequence_at(state: u32, slot: usize) -> Option<((u64, u64), usize)>
 pub fn observed_sequence(receiver: usize) -> Option<(u64, u64)> {
     OPERANDS.observed_sequence(receiver)
 }
-pub fn observed_state_sequence(state: u32) -> Option<(u64, u64)> {
-    STATES.observed_sequence(state as usize)
-}
 pub fn observed_lifetime_sequence(receiver: usize) -> Option<(u64, u64)> {
     LIFETIMES.observed_sequence(receiver)
 }

@@ -46,22 +46,12 @@ pub const CLASSIFIER_ACTIVE: u32 = 5;
 
 /// CTechnology constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00eb_dc40;
-/// CTechnology propagation writer.
-pub const PROPAGATE_RVA: usize = 0x00ec_19c0;
-/// Propagation-writer entry bytes.
-pub const PROPAGATE_SENTINEL: [u8; 16] = [
-    0x40, 0x55, 0x57, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x44, 0x8b, 0xb9, 0x70, 0x01, 0x00, 0x00,
-];
 /// Technology base-cost debug byte.
 pub const BASE_COST_DEBUG_FLAG_RVA: usize = 0x0331_7291;
 /// Technology base-cost scale i64 fixed5.
 pub const BASE_COST_SCALE_RVA: usize = 0x0331_a548;
 /// Live ahead-of-time penalty factor, i64 fixed5.
 pub const BASE_YEAR_AHEAD_PENALTY_FACTOR_RVA: usize = 0x0331_a4b0;
-/// Technology ahead-of-time day core.
-pub const AHEAD_DAYS_RVA: usize = 0x00ab_ebf0;
-/// Fixed5 half-away-from-zero rounding.
-pub const FIXED_ROUND_RVA: usize = 0x024d_8760;
 
 /// Portable current state; classifier values and fixed-point operands are not narrowed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

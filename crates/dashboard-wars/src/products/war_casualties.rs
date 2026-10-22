@@ -1182,6 +1182,7 @@ pub struct CasualtyMeasure {
 /// A held value with one supplying read, shared by downstream history products.
 /// Gaps and holder changes start a new segment; confirmations remain dated even
 /// when the totals have not changed.
+#[cfg(any(test, feature = "test-support"))]
 pub struct CasualtyMeasureRun {
     pub first_hour: i32,
     pub last_hour: i32,
@@ -1356,6 +1357,7 @@ impl ScannedCasualties {
     /// Walk the same sampled values as `country_at`, without a new replay scan
     /// or expanding the stored history. Only observed coverage is emitted. The caller
     /// can retain compressed totals and construct dates only for returned tags.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn for_each_country_run(
         &self,
         tag: &str,

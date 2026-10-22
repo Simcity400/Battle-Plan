@@ -570,6 +570,7 @@ impl Captured {
         )
     }
 
+    #[cfg(test)]
     pub fn capture_with_hour(
         &mut self,
         memory: &impl Memory,
@@ -594,6 +595,7 @@ impl Captured {
         self.capture_impl(memory, base, state, Some(hour), modifier_guard, true)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn capture_at(
         &mut self,
         memory: &impl Memory,

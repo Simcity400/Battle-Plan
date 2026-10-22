@@ -583,31 +583,6 @@ impl MoveGraph {
         self.ranges[at].map(|(start, end)| &self.edges[start as usize..end as usize])
     }
 
-    /// For selected class 0/13 units, the first matching neighbour's
-    /// stored distance, or fixed5 one when no neighbour matches.
-    pub fn transport_exposure_distance(&self, from: u32, to: u32, embark: i64) -> Fact<i64> {
-        if self.kind(from)? & 3 == 0 && self.kind(to)? & 1 != 0 {
-            return Ok(embark);
-        }
-        let from = self
-            .dense(from)
-            .ok_or("transport exposure source is not defined")?;
-        let to = self
-            .dense(to)
-            .ok_or("transport exposure target is not defined")? as u32;
-        let neighbours = self
-            .neighbours(from)
-            .ok_or("transport exposure original neighbour domain unavailable")?;
-        neighbours
-            .iter()
-            .find(|edge| edge.to == to)
-            .map_or(Ok(100_000), |edge| {
-                edge.distance.ok_or_else(|| {
-                    "transport exposure reached neighbour distance unavailable".into()
-                })
-            })
-    }
-
     fn crossing(&self, from: u32, to: u32) -> Option<&Crossing> {
         self.pairs
             .get(&(from, to))

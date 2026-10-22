@@ -25,8 +25,6 @@ pub const SECONDARY_VTABLE_RVA: usize = 0x29a9d70;
 pub const SECONDARY_VTABLE: usize = 0x18;
 /// Distributable priority, signed i32, initially one; save omits one.
 pub const DISTRIBUTABLE_PRIORITY: usize = 0x08;
-/// CMilitaryDeployment default distributable priority.
-pub const DEFAULT_DISTRIBUTABLE_PRIORITY: i32 = 1;
 /// CMilitaryDeployment embedded CEquipmentVariantPool.
 pub const EQUIPMENT_POOL: usize = 0x20;
 /// CMilitaryDeployment training, i64 fixed5.
@@ -48,16 +46,8 @@ pub const HALTING_REASON: usize = 0xc0;
 pub const HALTING_REASON_PRESENT: usize = 0xc4;
 /// CMilitaryDeployment native training denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Deployment serializer runs on the secondary subobject.
-pub const SERIALIZE_RVA: usize = 0x0142_46f0;
-/// Equipment-wrapper gate requires a nonzero allocation qword.
-pub const EQUIPMENT_WRAPPER_GATE_RVA: usize = 0x00ff_b8f0;
-/// Manpower serializer always opens its wrapper and writes only positive-count entries.
-pub const MANPOWER_SERIALIZE_RVA: usize = 0x00c5_b610;
 /// Deployment constructor.
 pub const CONSTRUCT_RVA: usize = 0x0141_fa60;
-/// Effective maximum-training helper computes a modifier-based cap; it is not stored.
-pub const EFFECTIVE_MAX_TRAINING_RVA: usize = 0x0142_03d0;
 
 /// The manpower container's stored side. `Have` is the first container, `Need` the second.
 pub const SIDE_HAVE: u8 = 0;

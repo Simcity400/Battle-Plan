@@ -24,6 +24,7 @@ const GROUP: usize = 16;
 /// ordinal.
 pub const VIEWER: usize = 0x00;
 /// Decay accumulator, i64, incremented by a per-class rate and reset by upsert.
+#[cfg(test)]
 pub const TIMER: usize = 0x08;
 /// Signed level byte, decremented during decay.
 pub const LEVEL: usize = 0x10;
@@ -88,17 +89,6 @@ pub fn walk_with_divisions(
     divisions: Option<DivisionSources<'_>>,
 ) -> Outcome {
     walk_with_divisions_buffer(memory, base, game_state, Buffer::Fixed(output), divisions)
-}
-
-/// Worker-owned storage grows from the original native headers.
-pub fn walk_with_divisions_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<Row>,
-    divisions: Option<DivisionSources<'_>>,
-) -> Outcome {
-    walk_with_divisions_buffer(memory, base, game_state, Buffer::Growing(output), divisions)
 }
 
 pub fn walk_with_divisions_buffer(

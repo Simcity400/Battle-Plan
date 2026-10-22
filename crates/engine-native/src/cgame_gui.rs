@@ -9,7 +9,3 @@ pub const VTABLE_RVA: usize = 0x0293_4048;
 pub const SECONDARY_VTABLE_RVA: usize = 0x0293_4120;
 /// CGameGui constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00b3_3870;
-/// CGameGui inherited container-factory byte slot.
-pub const CONTAINER_FACTORY_VSLOT: usize = 0x60;
-/// CGameGui inherited object-registration byte slot.
-pub const REGISTER_OBJECT_VSLOT: usize = 0xa0;

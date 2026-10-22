@@ -11,5 +11,3 @@ pub const DATA: usize = 0x08;
 pub const CAPACITY: usize = 0x10;
 /// Garrison equipment-pool count, i32.
 pub const COUNT: usize = 0x14;
-/// Pool accumulation clamp magnitude for signed i64 sums.
-pub const AMOUNT_CLAMP: i64 = 0x53e2_d620_fb40;

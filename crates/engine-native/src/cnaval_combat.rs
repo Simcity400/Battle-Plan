@@ -16,6 +16,7 @@ type GroupSet = HashSet<usize>;
 /// CNavalCombat vtable.
 pub const VTABLE_RVA: usize = 0x029c_6f18;
 /// Observed combat reference type comes from the runtime registry; it is not an admission filter.
+#[cfg(any(test, feature = "test-support"))]
 pub const OBSERVED_REFERENCE_TYPE: u32 = 4713;
 /// CNavalCombat packed (type, id) u64 handle.
 pub const HANDLE: usize = 0x18;
@@ -25,28 +26,12 @@ pub const ATTACKER: usize = 0x28;
 pub const DEFENDER: usize = 0x30;
 /// CNavalCombat CProvince pointer.
 pub const PROVINCE: usize = 0x38;
-/// CNavalCombat type virtual byte offset.
-pub const TYPE_VTABLE_SLOT: usize = 0x58;
-/// CNavalCombat type virtual result.
-pub const COMBAT_KIND: i32 = 2;
 /// CNavalCombat participant transfer handle array.
 pub const PARTICIPANTS: usize = 0xf0;
-/// CNavalCombat participant array capacity u32.
-pub const PARTICIPANTS_CAPACITY: usize = 0xf8;
-/// CNavalCombat participant array count u32.
-pub const PARTICIPANTS_COUNT: usize = 0xfc;
 /// Combat flag byte copied to the retained result's first flag.
 pub const RESULT_FLAG_A: usize = 0x10c;
 /// Combat flag byte copied to the retained result's second flag.
 pub const RESULT_FLAG_B: usize = 0x10d;
-/// CNavalCombat result-emitted byte.
-pub const RESULT_EMITTED: usize = 0x114;
-/// CNavalCombat transfer-membership province test.
-pub const TRANSFER_CONTAINS_PROVINCE_RVA: usize = 0x015b_10a0;
-/// CNavalCombat transfer registration.
-pub const ADD_TRANSFER_RVA: usize = 0x015b_1960;
-/// CNavalCombat retained-result creation/merge.
-pub const CREATE_RESULT_RVA: usize = 0x015b_2790;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

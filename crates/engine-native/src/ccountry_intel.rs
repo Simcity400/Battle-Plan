@@ -10,8 +10,6 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x0294_8678;
 /// Constructor publishing the country-owned intel object.
 pub const CONSTRUCTOR_RVA: usize = 0x00ce_d590;
-/// Row getter using the acquired data, signed count and record stride.
-pub const GET_ROW_RVA: usize = 0x00ce_fe90;
 /// Allocation size.
 pub const SIZE: usize = 0xf0;
 /// Owner raw country id, u32.
@@ -22,15 +20,6 @@ pub const DATA: usize = 0x10;
 pub const CAPACITY: usize = 0x18;
 /// First-vector row count, i32.
 pub const COUNT: usize = 0x1c;
-/// Embedded static-intel-source reference.
-pub const STATIC_INTEL_SOURCE_REFERENCE: usize = 0xd8;
-
-/// Serializer writing the four-lane vector.
-pub const SERIALIZER_RVA: usize = 0x00cf_2ae0;
-/// Positional list writer skipping nonpositive counts and preserving record stride.
-pub const LIST_WRITER_RVA: usize = 0x00ce_c1c0;
-/// Serialized intel-list token.
-pub const LIST_TOKEN: u32 = 0x30ec;
 
 /// Sum every canonical country's intel count, including the independently
 /// authenticated reserved owner. This dense total bounds kept sparse rows.
@@ -241,6 +230,7 @@ pub struct ReservedCapture {
 /// positive walk. CountryMemory reuses the same-pass reserved root or fault.
 /// Serialization visits every physical country occurrence, so a reserved
 /// country alias in a positive physical slot can be saved.
+#[cfg(test)]
 pub fn walk_with_reserved(
     memory: &impl Memory,
     base: usize,
@@ -257,6 +247,7 @@ pub fn walk_with_reserved(
     )
 }
 
+#[cfg(test)]
 pub fn walk_with_reserved_growing(
     memory: &impl Memory,
     base: usize,
@@ -273,6 +264,7 @@ pub fn walk_with_reserved_growing(
     )
 }
 
+#[cfg(test)]
 pub fn walk_with_reserved_buffer(
     memory: &impl Memory,
     base: usize,

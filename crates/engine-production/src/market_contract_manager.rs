@@ -13,12 +13,6 @@ pub const CONTRACT_TABLE_A: usize = 0x30;
 pub const CONTRACT_TABLE_B: usize = 0x48;
 /// Per-country vector stride, indexed by canonical country slot.
 pub const COUNTRY_VECTOR_STRIDE: usize = 0x18;
-/// Market-manager accessor.
-pub const ROOT_CONSUMER_RVA: usize = 0x1503960;
-/// First directional contract-vector selector.
-pub const TABLE_A_ACCESSOR_RVA: usize = 0xdd8390;
-/// Second directional contract-vector selector.
-pub const TABLE_B_ACCESSOR_RVA: usize = 0xdd8350;
 
 pub(crate) struct Contracts {
     pub pointer: usize,

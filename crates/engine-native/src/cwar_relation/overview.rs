@@ -528,6 +528,7 @@ pub fn walk_cached(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_cached_growing(
     memory: &impl Memory,
     base: usize,

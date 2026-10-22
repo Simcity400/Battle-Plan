@@ -59,20 +59,6 @@ pub const COUNTRY: usize = 0xe0;
 pub const QUANTITY_SCALE: i64 = 32_768;
 /// Fuel gain and cost modifier denominator.
 pub const MODIFIER_SCALE: i64 = 100_000;
-/// Oil-demand function dividing by gain per oil.
-pub const OIL_REQUIREMENT_RVA: usize = 0x010e_2140;
-/// Maximum oil-demand function using the same divisor.
-pub const MAXIMUM_OIL_REQUIREMENT_RVA: usize = 0x010e_22e0;
-/// Global land oil-demand factor A, i64, read before maximum-demand folding.
-pub const LAND_FACTOR_A_RVA: usize = 0x0331_9dc8;
-/// Global land oil-demand factor B, i64, read before maximum-demand folding.
-pub const LAND_FACTOR_B_RVA: usize = 0x0331_9b00;
-/// Global land oil-demand factor C, i64 in fixed5.
-pub const LAND_FACTOR_C_RVA: usize = 0x0331_99d8;
-/// Global naval oil-demand factor A, i64 in fixed5.
-pub const NAVAL_FACTOR_A_RVA: usize = 0x0331_bbf0;
-/// Global naval oil-demand factor B, i64 in fixed5.
-pub const NAVAL_FACTOR_B_RVA: usize = 0x0331_bb68;
 
 /// One country's fuel status. The `ring_` fields are exact sums of the raw
 /// values of the 24 history ring entries, which the game writes one per

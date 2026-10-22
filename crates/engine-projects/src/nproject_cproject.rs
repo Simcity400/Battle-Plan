@@ -30,8 +30,6 @@ pub const OWNER: usize = 0x1c;
 pub const STATE_MACHINE: usize = 0x28;
 /// Worked-at program u32 reference type.
 pub const PROGRAM_REFERENCE_TYPE: usize = 0x60;
-/// Worked-at program u32 ID.
-pub const PROGRAM_REFERENCE_ID: usize = 0x64;
 /// Project-history vector data pointer.
 pub const HISTORY: usize = 0x68;
 /// Project-history u32 capacity.
@@ -209,6 +207,7 @@ pub fn walk_with_history(
     )
 }
 
+#[cfg(test)]
 pub fn walk_with_history_growing(
     memory: &impl Memory,
     base: usize,

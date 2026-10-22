@@ -57,10 +57,12 @@ pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x331_9500;
 
 /// A convoy client's handle (u32 type, u32 id) and its two efficiency factors.
 pub const CLIENT_HANDLE_TYPE: usize = 0x08;
+#[cfg(test)]
 pub const CLIENT_HANDLE_ID: usize = 0x0c;
 /// Its assigned and required convoy counts, i32.
 pub const CLIENT_CONVOYS: usize = 0x28;
 pub const CLIENT_EFFICIENCY_A: usize = 0x48;
+#[cfg(test)]
 pub const CLIENT_EFFICIENCY_B: usize = 0x50;
 /// Every convoy client's handle type.
 pub const CLIENT_TYPE: u32 = 4713;
@@ -101,6 +103,7 @@ pub const CONTRACT_CLIENT: usize = 0xf0;
 pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x295_4bd0;
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
 pub const CONTRACT_SELLER: usize = 0x58;
+#[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
 /// Supply-transfer client: the embedded route.
@@ -1417,16 +1420,6 @@ pub fn read_route(
     }
     row.path_len = path.len() - row.path_start;
     Ok(row)
-}
-
-/// The route's sender, receiver and convoy-owner country links, which a hooked route
-/// writer marks.
-pub fn route_links(memory: &impl Memory, route: usize) -> Option<[u32; 3]> {
-    let mut links = [0; 3];
-    for (link, offset) in links.iter_mut().zip(ROUTE_LINKS) {
-        *link = read::<u32>(memory, route.checked_add(offset)?)?;
-    }
-    Some(links)
 }
 
 #[cfg(test)]

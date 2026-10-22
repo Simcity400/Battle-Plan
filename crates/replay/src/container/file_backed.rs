@@ -96,30 +96,6 @@ impl Replay {
         self.file.is_some()
     }
 
-    /// Compare original compressed bytes with bounded scratch space. Metadata
-    /// equality alone cannot prove that a publication preserved existing blocks.
-    pub fn block_bytes_equal(&self, other: &Replay, block: &BlockIndex) -> io::Result<bool> {
-        if self.block_position(block).is_none() || other.block_position(block).is_none() {
-            return Ok(false);
-        }
-        let mut left = [0; 64 * 1024];
-        let mut right = [0; 64 * 1024];
-        let mut offset = block.offset;
-        let end = offset
-            .checked_add(block.length)
-            .ok_or_else(|| invalid("block offset overflow"))?;
-        while offset < end {
-            let count = (end - offset).min(left.len() as u64) as usize;
-            self.read_at(offset, &mut left[..count])?;
-            other.read_at(offset, &mut right[..count])?;
-            if left[..count] != right[..count] {
-                return Ok(false);
-            }
-            offset += count as u64;
-        }
-        Ok(true)
-    }
-
     pub(super) fn held_block_bytes(&self, index: &BlockIndex) -> io::Result<Vec<u8>> {
         let _cpu = crate::cpu::scope("source_read", None);
         let mut bytes = engine_allocation::filled(to_usize(index.length)?, 0)?;

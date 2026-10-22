@@ -6,19 +6,12 @@
 
 /// Owning orders-group pointer; the unit's `carmy::ORDERS_GROUP` is this base's back-pointer.
 pub const GROUP: usize = 0x08;
-/// Cached fallback-order pointer, refreshed first when the dirty byte is set.
-pub const FALLBACK_ORDER: usize = 0x18;
 /// Cached root-order pointer, checked against recomputation of the owning root.
 pub const ROOT_ORDER: usize = 0x20;
 /// Order-cache dirty byte; root and fallback queries refresh before reading it.
 pub const ORDER_CACHE_DIRTY: usize = 0x28;
 /// Root-order resolver used by the grouping predicate.
 pub const ROOT_ORDER_RVA: usize = 0x00be_0480;
-/// Fallback-order query.
-pub const FALLBACK_ORDER_RVA: usize = 0x00bd_fe90;
-/// Grouping predicate: unit group has a parent, order owner is an army group,
-/// and the child-section-management byte is clear.
-pub const PARENT_GROUPING_PREDICATE_RVA: usize = 0x018c_7f40;
 /// Membership-base offset within its host unit.
 pub const HOST_OFFSET: usize = crate::cunit::SCHEDULED_MEMBER;
 /// Virtual-dispatch offset of the membership-base unit accessor.

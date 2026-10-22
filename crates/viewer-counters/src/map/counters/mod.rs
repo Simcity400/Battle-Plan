@@ -349,6 +349,7 @@ impl CounterDefines {
 
     /// A unit-stack column's priority at a camera height in a map mode's priority table: its
     /// group icon's at every grouping level, its own stack icon's below them.
+    #[cfg(test)]
     pub fn stack_priority(&self, height: f32, table: PriorityTable) -> i8 {
         self.level_priority(self.groups.grouping(height), table)
     }
@@ -3246,6 +3247,7 @@ pub fn hour_tables_profiled(
     })
 }
 
+#[cfg(test)]
 pub fn prepare_cached(
     inputs: &CounterInputs<'_>,
     frame: &DecodedFrame,

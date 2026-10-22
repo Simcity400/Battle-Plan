@@ -19,19 +19,17 @@ pub const REQUIRED_CIC: usize = 0x0c;
 pub const OWNER: usize = 0x10;
 /// CEquipmentProductionLicense granting (licensor) raw country reference, u32.
 pub const GIVER: usize = 0x14;
-/// CEquipmentProductionLicense embedded date object.
-pub const START_DATE_OBJECT: usize = 0x18;
 /// CEquipmentProductionLicense raw start-date hour, i32.
 pub const START_DATE: usize = 0x20;
-/// CEquipmentProductionLicense date serialization subobject.
-pub const START_DATE_SERIALIZER_SUBOBJECT: usize = 0x28;
 /// CEquipmentProductionLicense unserialized i64 operand.
 pub const UNSERIALIZED_OPERAND: usize = 0x30;
 /// CEquipmentProductionLicense produced-variant pointer array.
 pub const EQUIPMENT: usize = 0x38;
 /// Produced-variant array capacity, i32; the CPdxArray header at `EQUIPMENT` places it after the data pointer.
+#[cfg(test)]
 pub const EQUIPMENT_CAPACITY: usize = 0x40;
 /// Produced-variant array count, i32.
+#[cfg(test)]
 pub const EQUIPMENT_COUNT: usize = 0x44;
 /// Produced-variant pointer stride.
 pub const EQUIPMENT_STRIDE: usize = 0x08;
@@ -39,12 +37,6 @@ pub const EQUIPMENT_STRIDE: usize = 0x08;
 pub const PARENT: usize = 0x50;
 /// CEquipmentProductionLicense allocation size.
 pub const SIZE: usize = 0x58;
-/// Equipment licence serializer, preserving the field order above.
-pub const SERIALIZE_RVA: usize = 0x0142_9310;
-/// Equipment licence deserializer.
-pub const DESERIALIZE_RVA: usize = 0x0142_88b0;
-/// Equipment licence creation fills owner, giver and start date.
-pub const CREATE_RVA: usize = 0x0142_4d60;
 
 /// One licence relation. `equipment` indexes the caller's handle arena.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

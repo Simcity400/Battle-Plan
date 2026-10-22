@@ -587,11 +587,13 @@ impl Replay {
         .add_recovery_notes(segments)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn append_recovered(&self, segments: &[(u32, Recovery)]) -> io::Result<Self> {
         self.append_recovered_with(segments, |_, _, _| Ok(()))
     }
 
     /// Observe only the new frames; existing compressed blocks are copied intact.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn append_recovered_with(
         &self,
         segments: &[(u32, Recovery)],
@@ -1127,6 +1129,7 @@ impl Replay {
     /// [`Replay::read_block_selected`], decoding a grouped block's tables on
     /// `parallel`'s workers. The same frames and the same first error;
     /// interleaved blocks keep their sequential payload streaming.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn read_block_selected_parallel(
         &self,
         index: &BlockIndex,

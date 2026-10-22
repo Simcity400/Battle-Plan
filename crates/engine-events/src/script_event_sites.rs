@@ -147,15 +147,6 @@ pub const ERASE_FIRED: Site = Site {
     ],
 };
 
-pub const OPTION_EXECUTION: Site = Site {
-    name: "ScriptEventOptionExecution",
-    rva: 0x0116_acd0,
-    sentinel: [
-        0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30,
-        0x49,
-    ],
-};
-
 /// Automatic mission activation after its native append has returned. RBP
 /// owns the decision status, RSI the definition and R12D the admitted days.
 pub const MISSION_APPENDED: Site = Site {
@@ -447,8 +438,6 @@ pub const EXTEND_DECISION_REMOVAL: Site = Site {
         0x30,
     ],
 };
-/// Signed literal day operand retained by the removal-delay effect.
-pub const REMOVAL_EXTENSION_DAYS: usize = 0x78;
 /// Descriptors only, no longer installed: these taps ran before the scalar
 /// add. [`decisions::EXTEND_MISSION_TIMEOUT_CALL`] and
 /// [`decisions::EXTEND_DECISION_REMOVAL_CALL`] enclose it instead.

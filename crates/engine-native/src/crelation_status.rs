@@ -20,25 +20,16 @@ pub const VTABLE_RVA: usize = 0x0294_a020;
 /// Relation-status constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00d0_3410;
 /// Relation-status allocation size.
+#[cfg(test)]
 pub const OBJECT_SIZE: usize = 0x9c0;
 /// Target country reference, separate from the owner.
 pub const TARGET_COUNTRY: usize = 0x50;
-/// CRelationStatus five embedded CGameDate starts.
-pub const DATE_BLOCKS: [usize; 5] = [0x58, 0x70, 0x88, 0xa0, 0xb8];
 /// Subrelation pointer-vector data.
 pub const SUBRELATIONS: usize = 0xd0;
-/// Subrelation pointer-vector capacity read as signed i32.
-pub const SUBRELATION_CAPACITY: usize = 0xd8;
-/// Subrelation pointer-vector count read as signed i32.
-pub const SUBRELATION_COUNT: usize = 0xdc;
-/// CRelationStatus other pointer-vector data offsets.
-pub const OTHER_RELATION_VECTORS: [usize; 3] = [0xe8, 0x100, 0x118];
 /// Serializable relation vector containing relations only for their first endpoint.
 pub const SERIALIZABLE_RELATIONS: usize = 0xe8;
 /// Serializable relation count, signed i32, shrunk on removal and used to bound serialization.
 pub const SERIALIZABLE_RELATION_COUNT: usize = 0xf4;
-/// CRelationStatus corresponding pointer-vector count offsets.
-pub const OTHER_RELATION_COUNTS: [usize; 3] = [0xf4, 0x10c, 0x124];
 /// CRelationStatus embedded CModifier.
 pub const MODIFIER: usize = 0x130;
 /// The embedded modifier's value accumulator, holding the relation's entries
@@ -51,8 +42,6 @@ pub const MODIFIER_ACCUMULATOR: usize = MODIFIER + 0x10;
 pub const DIPLOMACY_STATUS: usize = 0x1f0;
 /// Subject-relation pointer, authenticated before following its fields.
 pub const SUBJECT_RELATION: usize = 0x288;
-/// CRelationStatus foreign-supply access pointer-sized word.
-pub const SUPPLY_ACCESS: usize = 0x2b8;
 /// War-relation pointer, separate from inline visibility fields.
 pub const WAR_RELATION: usize = 0x2e8;
 /// Directed stored co-belligerent byte. Rebuilding assigns zero or one;
@@ -62,23 +51,9 @@ pub const CO_BELLIGERENT: usize = 0x310;
 /// Cached opinion, signed i32, serialized as `cached_sum` only when nonzero.
 pub const OPINION: usize = 0x300;
 
-/// Serializer writing opinion modifiers, conditional cached opinion and dates,
-/// all serializable relations, attitude and friction.
-pub const SERIALIZER_RVA: usize = 0x00d1_9300;
-/// Cached-opinion key token, emitted when the signed dword is nonzero.
-pub const OPINION_TOKEN: u32 = 0x2d4e;
 /// Directional attache link written in the second country's status toward
 /// the first, cleared by removal and tested by fog alliance.
 pub const ATTACHE_LINK: usize = 0x210;
-/// Reciprocal attache link written in the first country's status toward
-/// the second; the attache predicate tests only the opposite field.
-pub const RECIPROCAL_ATTACHE_LINK: usize = 0x208;
-/// Subject first-party predicate validating subject type and cosmetic endpoint equality.
-pub const SUBJECT_FIRST_PARTY_MATCH_RVA: usize = 0x00d1_1030;
-/// Subject second-party predicate validating subject type and cosmetic endpoint equality.
-pub const SUBJECT_SECOND_PARTY_MATCH_RVA: usize = 0x00d1_1080;
-/// Attache predicate testing the directional link for nonzero.
-pub const HAS_ATTACHE_LINK_RVA: usize = 0x00d1_00b0;
 
 /// Air-base access pointer admitting foreign air-base visibility for the viewer.
 pub const AIR_BASE_ACCESS: usize = 0x2c0;
@@ -475,6 +450,7 @@ pub fn links(
 /// Same authenticated diplomacy pass, with complete ordered enemy-vector occurrences for every
 /// authenticated positive receiver and actual reserved receiver. Old set-only callers stay
 /// unchanged.
+#[cfg(test)]
 pub fn links_observed_current(
     memory: &impl Memory,
     base: usize,

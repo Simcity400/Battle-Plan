@@ -65,10 +65,6 @@ pub const WAR_SUPPORT: usize = 0x10d8;
 
 /// Second identity word, u32, independent of canonical country slot.
 pub const ID_INSTANCE: usize = 0xc;
-/// CCountry division-name tracker pointer.
-pub const DIVISION_NAMES_TRACKER: usize = 0x70;
-/// CCountry naval-theatre manager pointer.
-pub const NAVAL_THEATRE_MANAGER: usize = 0x160;
 /// CCountry land-theatre pointer vector.
 pub const THEATRES: usize = 0x168;
 /// CCountry air-theatre pointer vector.
@@ -76,8 +72,6 @@ pub const AIR_THEATRES: usize = 0x180;
 /// Last allocated order-instance id, u32, incremented before construction.
 /// Load, reset and wrapping can decrease it.
 pub const ORDER_INSTANCE_COUNTER: usize = 0x1b0;
-/// Template-lock byte, accepting zero or one.
-pub const TEMPLATES_LOCKED: usize = 0x1b4;
 /// CCountry scripted flag-manager field.
 pub const FLAG_MANAGER: usize = 0x230;
 /// CCountry fleet pointer vector.
@@ -101,8 +95,6 @@ pub const CURRENT_UI_COLOR: usize = 0x390;
 /// provinces. Post-load repairs nonpositive controllers; count queries use
 /// this retained array.
 pub const CONTROLLED_STATES: usize = 0x460;
-/// CCountry signed faction-group index.
-pub const FACTION_GROUP: usize = 0x598;
 /// CCountry inline modifier accumulator.
 pub const MODIFIER_ACCUMULATOR: usize = 0x5b8;
 /// Embedded dynamic-modifier container requiring vtable and country backlink authentication.
@@ -152,8 +144,6 @@ pub const CONVOY_STATE: usize = 0x1200;
 pub const DELAYED_EVENTS: usize = 0x1290;
 /// CCountry ace roster vector.
 pub const ACES: usize = 0x12d8;
-/// CCountry u32 ace roster count.
-pub const ACES_COUNT: usize = 0x12e4;
 /// Full type/id ship reference for pride of the fleet.
 pub const PRIDE_OF_THE_FLEET: usize = 0x250;
 /// Owned-state pointer array maintained by state ownership changes.
@@ -161,20 +151,16 @@ pub const OWNED_STATES: usize = 0x478;
 /// Ordered core-state roster with append and compacting removal.
 pub const CORE_STATES: usize = 0x4a8;
 /// CCountry owned-state array capacity, i32 (`cpdx_array::CAPACITY` of the `OWNED_STATES` array).
+#[cfg(test)]
 pub const OWNED_STATE_CAPACITY: usize = 0x480;
 /// Owned-state count, i32; supply serialization requires a positive count.
 pub const OWNED_STATE_COUNT: usize = 0x484;
-/// Supply-system serializer country loop.
-pub const SUPPLY_SERIALIZER_RVA: usize = 0x00eb_b2c0;
 /// Original raw tag, selected only when positive; otherwise tag queries
 /// use the current tag. Loading can write this on any slot, including reserved.
 pub const ORIGINAL_TAG: usize = 0x130c;
 /// Ship-count candidate, i32; independent writer coverage is unknown.
+#[cfg(test)]
 pub const SHIP_COUNT: usize = 0x1330;
-/// CCountry convoy-destruction counter.
-pub const CONVOYS_DESTROYED: usize = 0x1334;
-/// CCountry total state-worth field.
-pub const TOTAL_STATE_WORTH: usize = 0x1344;
 /// CCountry national-focus tree pointer.
 pub const FOCUS_TREE: usize = 0x1370;
 /// CCountry CNationalFocusProgress*.
@@ -184,12 +170,8 @@ pub const FOCUS_PROGRESS: usize = 0x1380;
 pub const PEACE_CONFERENCE_PARTICIPANT: usize = 0x1458;
 /// CCountry dynamic major-country byte.
 pub const DYNAMIC_MAJOR: usize = 0x145a;
-/// Reserved dynamic-country byte, accepting zero or one.
-pub const RESERVED_DYNAMIC_COUNTRY: usize = 0x145d;
 /// CCountry cosmetic-tag MSVC string.
 pub const COSMETIC_TAG: usize = 0x1488;
-/// Accident-score candidate; i32 access is characterized but full width and scale are unknown.
-pub const ACCIDENTS_SCORE: usize = 0x14e8;
 /// CCountry CCountryFuelStatus*.
 pub const FUEL_STATUS: usize = 0x1580;
 /// CCountry CCountryExperienceStatus*.
@@ -198,8 +180,6 @@ pub const EXPERIENCE_STATUS: usize = 0x1588;
 pub const OPERATION_MANAGER: usize = 0x15a8;
 /// Active-command-ability record vector.
 pub const ACTIVE_COMMAND_ABILITIES: usize = 0x15b8;
-/// CCountry active-command-ability capacity.
-pub const ACTIVE_COMMAND_ABILITIES_CAPACITY: usize = 0x15c0;
 /// CCountry preferred CCombatTactic*.
 pub const PREFERRED_TACTIC: usize = 0x15d0;
 
@@ -209,8 +189,6 @@ pub const LOCK_ALL_TEMPLATES: usize = 0x1b4;
 pub const DIVISION_TEMPLATES: usize = 0x1b8;
 /// CCountry scripted variables object pointer.
 pub const VARIABLES: usize = 0x218;
-/// CCountry CArmyUpgradesStatus*.
-pub const ARMY_UPGRADES_STATUS: usize = 0xf80;
 /// Logistics-state pointer updated daily.
 pub const LOGISTICS_STATUS: usize = 0xf98;
 /// Equipment-market pointer supplying stockpile operands.
@@ -227,57 +205,34 @@ pub const RADARS_POOL_COUNTRY: usize = RADARS_POOL + cradars_pool::COUNTRY;
 pub const RESOURCES: usize = 0x11f8;
 /// CCountry nuke-stockpile array pointer.
 pub const NUKES: usize = 0x1310;
-/// CCountry nuke array capacity i32.
-pub const NUKES_CAPACITY: usize = 0x1318;
-/// CCountry nuke array count i32.
-pub const NUKES_COUNT: usize = 0x131c;
 /// CCountry volunteer-host vector.
 pub const VOLUNTEER_HOSTS: usize = 0x1428;
 /// Volunteer-tally count, u32; writer ownership is unverified.
+#[cfg(any(test, feature = "test-support"))]
 pub const VOLUNTEER_TALLY_COUNT: usize = 0x144c;
 /// Operation-token manager pointer requiring owner-backlink authentication.
 pub const OPERATION_TOKEN_MANAGER: usize = 0x15b0;
-/// Active-command-ability count, i32.
-pub const ACTIVE_COMMAND_ABILITIES_COUNT: usize = 0x15c4;
-/// CCountry delayed-event vector capacity u32.
-pub const DELAYED_EVENTS_CAPACITY: usize = 0x1298;
 /// CCountry delayed-event vector count u32.
 pub const DELAYED_EVENTS_COUNT: usize = 0x129c;
-/// Intelligence-agency unique-pointer accessor.
-pub const INTELLIGENCE_AGENCY_ACCESSOR_RVA: usize = 0x006c_2cb0;
-/// Intel-state pointer accessor.
-pub const INTEL_GETTER_RVA: usize = 0x006e_4af0;
-/// Delayed-event definition cancellation; its hook is excluded from capture.
-pub const CANCEL_DELAYED_DEFINITION_RVA: usize = 0x006d_d7f0;
-/// Cancellation entry sentinel.
-pub const CANCEL_DELAYED_DEFINITION_SENTINEL: [u8; 16] = [
-    0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x89, 0x5c, 0x24, 0x40, 0x48, 0x8b, 0xf9, 0x33, 0xdb,
-];
 
 /// CCountry graphical-culture std::string.
 pub const GRAPHICAL_CULTURE: usize = 0x1028;
-/// Resolved graphical-culture pointer, null for an unknown name.
-pub const RESOLVED_GRAPHICAL_CULTURE: usize = 0x1020;
 /// Graphical-culture resolver joining name and pointer.
 pub const RESOLVE_GRAPHICAL_CULTURE_RVA: usize = 0x0070_5600;
 /// Loaded two-dimensional graphical-culture string used by equipment icon
 /// fallback selection. Saves omit it.
 pub const GRAPHICAL_CULTURE_2D: usize = 0x1050;
 /// CCountry land-theatre vector count u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const THEATRES_COUNT: usize = 0x174;
-/// CCountry air-theatre capacity u32.
-pub const AIR_THEATRES_CAPACITY: usize = 0x188;
-/// CCountry air-theatre count u32.
-pub const AIR_THEATRES_COUNT: usize = 0x18c;
-/// CCountry land-theatre capacity u32.
-pub const THEATRES_CAPACITY: usize = 0x170;
-/// CCountry division-template count i32.
-pub const DIVISION_TEMPLATES_COUNT: usize = 0x1c4;
 /// CCountry fleet capacity u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const FLEETS_CAPACITY: usize = 0x280;
 /// CCountry fleet count u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const FLEETS_COUNT: usize = 0x284;
 /// CCountry division-vector capacity u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const DIVISIONS_CAPACITY: usize = 0x298;
 /// Division count read as u32 by rosters and i32 by score.
 pub const DIVISIONS_COUNT: usize = 0x29c;
@@ -288,106 +243,36 @@ pub const RAILWAY_UNITS_CAPACITY: usize = 0x2b0;
 /// Railway-unit count, i32; negative values are refused.
 pub const RAILWAY_UNITS_COUNT: usize = 0x2b4;
 /// CCountry controlled-state count u32.
+#[cfg(test)]
 pub const CONTROLLED_STATES_COUNT: usize = 0x46c;
 /// CCountry radar-group vector count, the embedded pool's own `cradars_pool::GROUPS_COUNT`.
+#[cfg(any(test, feature = "test-support"))]
 pub const RADAR_GROUPS_COUNT: usize = RADARS_POOL + cradars_pool::GROUPS_COUNT;
-/// CCountry ace roster capacity u32.
-pub const ACES_CAPACITY: usize = 0x12e0;
 /// CCountry volunteer-host count u32.
 pub const VOLUNTEER_HOSTS_COUNT: usize = 0x1434;
 /// Name, adjective and definite-name rebuild using cosmetic-first selection.
 pub const REBUILD_LOCALIZED_NAME_RVA: usize = 0x0070_9950;
-/// Country-name adjective suffix storage.
-pub const ADJECTIVE_SUFFIX_RVA: usize = 0x027d_11cc;
-/// Country-name definite suffix storage.
-pub const DEFINITE_SUFFIX_RVA: usize = 0x027d_11d4;
-/// Localized-name key chooser selecting subtype before party group and retrying suffix case.
-pub const CHOOSE_NAME_KEY_RVA: usize = 0x006e_0440;
-/// Candidate air-disclosure self-pair gate; its complete receiver contract is unknown.
-pub const AIR_SELF_DISCLOSURE_RVA: usize = 0x006f_3a90;
-/// Naval-result country exclusion predicate.
-pub const NAVAL_RESULT_COUNTRY_EXCLUDED_RVA: usize = 0x006f_3120;
-/// Active/cooldown probe receiving ability and scope, with byte and i32 outputs.
-pub const ACTIVE_ABILITY_PROBE_RVA: usize = 0x006f_3370;
-/// Active/cooldown probe entry sentinel.
-pub const ACTIVE_ABILITY_PROBE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
-];
-/// Availability evaluator receiving country, ability, scope and resolved
-/// text; its complete result contract is unknown.
-pub const ABILITY_AVAILABILITY_RVA: usize = 0x006d_0de0;
-/// Availability evaluator entry sentinel.
-pub const ABILITY_AVAILABILITY_SENTINEL: [u8; 16] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x4c, 0x89, 0x48, 0x20, 0x48, 0x89, 0x50, 0x10, 0x48,
-];
-/// Append a persistent ability record from definition and scope.
-pub const ADD_ACTIVE_ABILITY_RVA: usize = 0x006d_d930;
-/// Hourly ability lifecycle updating persistent records independently of the view.
-pub const UPDATE_ACTIVE_ABILITIES_RVA: usize = 0x006e_f9a0;
 /// Persistent ability-record array.
 pub const ACTIVE_ABILITIES: usize = 0x15b8;
-/// Ability-record capacity.
-pub const ACTIVE_ABILITIES_CAPACITY: usize = 0x15c0;
-/// Signed ability-record count bounding hourly lifecycle.
-pub const ACTIVE_ABILITIES_COUNT: usize = 0x15c4;
-/// Cancellation changing phase or removing a record.
-pub const CANCEL_ACTIVE_ABILITY_RVA: usize = 0x006d_31a0;
-/// Ability-array erase helper; its generic receiver type is unknown.
-pub const ERASE_ACTIVE_ABILITY_RECORD_RVA: usize = 0x0070_6700;
-/// Viewer-relation predicate resolving a diplomacy relation and testing its active byte.
-pub const VIEWER_RELATION_RVA: usize = 0x006f_3a00;
-/// Fog-network candidate vector; element identity is unknown.
-pub const FOG_NETWORK_TABLE: usize = 0x478;
 /// Fog-network candidate count; hourly acquisition is unverified.
 pub const FOG_NETWORK_TABLE_COUNT: usize = 0x484;
 /// Controlled-province vector used by controller-keyed border rebuilds.
 pub const CONTROLLED_PROVINCES: usize = 0x428;
 /// Signed province count used by land score.
 pub const CONTROLLED_PROVINCES_COUNT: usize = CONTROLLED_PROVINCES + 0xc;
-/// Controlled-province accessor.
-pub const CONTROLLED_PROVINCES_RVA: usize = 0x006e_0430;
 /// Owned-province vector used by control recovery.
 pub const OWNED_PROVINCES: usize = 0x410;
-/// Owned-province accessor.
-pub const OWNED_PROVINCES_RVA: usize = 0x006e_a280;
-/// Country-owned volunteer-transfer vector.
-pub const VOLUNTEER_TRANSFERS: usize = 0x13b0;
 /// Per-host tallies paired with the volunteer-host vector.
 pub const VOLUNTEER_TALLIES: usize = 0x1440;
-/// Fog ally predicate using diplomacy, faction, subject and directional-attache relations.
-pub const ALLIED_FOR_FOG_RVA: usize = 0x006f_5c10;
-/// Host lookup selecting its paired volunteer tally.
-pub const VOLUNTEER_DIVISIONS_TO_HOST_RVA: usize = 0x006e_ac90;
-/// Volunteer-transfer creator.
-pub const CREATE_VOLUNTEERS_TRANSFER_RVA: usize = 0x006d_a640;
 
-/// Signed command-power addition and clamp.
-pub const ADD_COMMAND_POWER_RVA: usize = 0x006c_3320;
 /// Signed stability addition and clamp.
 pub const ADD_STABILITY_RVA: usize = 0x006c_58b0;
 /// Signed war-support addition and clamp.
 pub const ADD_WAR_SUPPORT_RVA: usize = 0x006c_6a20;
 /// Daily manpower, politics and command-power update.
 pub const DAILY_UPDATE_RVA: usize = 0x006d_aaf0;
-/// Joined parallel daily work.
-pub const PARALLEL_DAILY_UPDATE_RVA: usize = 0x006d_c0c0;
-/// Daily subsystem update including the operation manager.
-pub const DAILY_SUBSYSTEM_UPDATE_RVA: usize = 0x006f_0c90;
 /// Weekly stability update completed before the full tick returns.
 pub const WEEKLY_UPDATE_RVA: usize = 0x0070_c070;
-/// Weekly helper writing signed war support.
-pub const WEEKLY_WAR_SUPPORT_RVA: usize = 0x0070_bdb0;
-/// Convoy getter lazily filling the signed quantity cache.
-pub const CONVOY_CACHE_GETTER_RVA: usize = 0x0070_7540;
-/// Operation-manager construction path.
-pub const CONSTRUCT_OPERATION_MANAGER_RVA: usize = 0x006c_73c0;
-
-/// Single-country delayed-event handler; unsuitable as a world boundary.
-pub const DELAYED_EVENTS_RVA: usize = 0x006e_fe10;
-/// Delayed-event handler entry sentinel.
-pub const DELAYED_EVENTS_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
-];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -1419,21 +1304,6 @@ pub fn read_reserved_naming(
         None,
     )
 }
-pub fn read_reserved_naming_observed(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    names: &mut [u8],
-    journal: &mut crate::raw_country_observations::Journal,
-) -> ReservedNamingWalk {
-    read_reserved_naming_observed_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(names),
-        Some(journal),
-    )
-}
 pub fn read_reserved_naming_observed_growing(
     memory: &impl Memory,
     base: usize,
@@ -1596,6 +1466,7 @@ fn read_reserved_naming_observed_inner<M: Memory>(
 
 /// Reauthenticates a borrowed census entry before reading its appearance.
 /// The caller supplies the current callback's country census.
+#[cfg(test)]
 pub fn read_appearance(
     memory: &impl Memory,
     base: usize,
@@ -1759,25 +1630,6 @@ pub fn capture_appearance_original_tags(
         None,
     )
 }
-pub fn capture_appearance_original_tags_observed(
-    memory: &impl Memory,
-    game_state: usize,
-    rows: &mut [AppearanceRow],
-    names: &mut [u8],
-    used: &mut usize,
-    required: &mut usize,
-    journal: &mut crate::raw_country_observations::Journal,
-) {
-    capture_appearance_original_tags_observed_inner(
-        memory,
-        game_state,
-        rows,
-        crate::walk::Buffer::Fixed(names),
-        used,
-        required,
-        Some(journal),
-    )
-}
 pub fn capture_appearance_original_tags_observed_growing(
     memory: &impl Memory,
     game_state: usize,
@@ -1907,23 +1759,6 @@ pub fn walk_appearance(
         dynamic_boundary,
         crate::walk::Buffer::Fixed(output),
         None,
-    )
-}
-pub fn walk_appearance_observed(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    dynamic_boundary: u32,
-    output: &mut [AppearanceRow],
-    journal: &mut crate::raw_country_observations::Journal,
-) -> Outcome {
-    walk_appearance_observed_inner(
-        memory,
-        base,
-        game_state,
-        dynamic_boundary,
-        crate::walk::Buffer::Fixed(output),
-        Some(journal),
     )
 }
 pub fn walk_appearance_observed_growing(
@@ -2216,6 +2051,7 @@ impl RosterSnapshot {
 
     /// Independent scalar: even a short or unavailable positive census keeps
     /// the actual slot-zero result. Install after positive capture clears us.
+    #[cfg(test)]
     pub fn capture_reserved(
         &mut self,
         base: usize,
@@ -2349,7 +2185,6 @@ pub struct Reader<'a, M: Memory> {
     base: usize,
     game_state: usize,
     reserved: std::cell::Cell<Option<ReservedCountryObservation>>,
-    observed_links: Option<crate::raw_country_observations::LinkObservations<'a>>,
 }
 
 impl<'a, M: Memory> Reader<'a, M> {
@@ -2401,25 +2236,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             base,
             game_state,
             reserved: std::cell::Cell::new(cached_reserved_observation(memory, base, game_state)),
-            observed_links: None,
         })
-    }
-
-    pub fn with_link_observations(
-        memory: &'a M,
-        base: usize,
-        game_state: usize,
-        observations: crate::raw_country_observations::LinkObservations<'a>,
-    ) -> Result<Self, &'static str> {
-        if observations.base != base || observations.state != game_state {
-            return Err("raw country link observation context mismatch");
-        }
-        let arrays = observations
-            .controls
-            .ok_or("raw country selecting link controls unobserved")??;
-        let mut reader = Self::from_arrays(memory, base, game_state, arrays)?;
-        reader.observed_links = Some(observations);
-        Ok(reader)
     }
 
     pub fn reserved(&self) -> Result<Country, &'static str> {
@@ -2524,13 +2341,10 @@ impl<'a, M: Memory> Reader<'a, M> {
             .and_then(|roster| roster.slots.get(raw as usize))
             .and_then(|country| *country)
             .map(|country| country.canonical_slot);
-        let slot = match self.observed_links.and_then(|observed| observed.word(raw)) {
-            Some(result) => result?,
-            None => match known {
-                Some(slot) => slot,
-                None => read::<u32>(self.memory, address)
-                    .ok_or("country link unreadable or outside country table")?,
-            },
+        let slot = match known {
+            Some(slot) => slot,
+            None => read::<u32>(self.memory, address)
+                .ok_or("country link unreadable or outside country table")?,
         };
         if slot == 0 {
             return Ok(None);
@@ -3509,16 +3323,6 @@ pub fn walk_sent_volunteers(
     walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Fixed(output))
 }
 
-/// Worker-owned storage grows from the original native headers.
-pub fn walk_sent_volunteers_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<SentVolunteerRow>,
-) -> Outcome {
-    walk_sent_volunteers_buffer(memory, base, game_state, Buffer::Growing(output))
-}
-
 pub fn walk_sent_volunteers_buffer(
     memory: &impl Memory,
     base: usize,
@@ -3605,16 +3409,6 @@ pub fn walk_volunteer_hosts(
     output: &mut [VolunteerHostRow],
 ) -> Outcome {
     walk_volunteer_hosts_buffer(memory, base, game_state, Buffer::Fixed(output))
-}
-
-/// Worker-owned storage grows from the original native headers.
-pub fn walk_volunteer_hosts_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<VolunteerHostRow>,
-) -> Outcome {
-    walk_volunteer_hosts_buffer(memory, base, game_state, Buffer::Growing(output))
 }
 
 pub fn walk_volunteer_hosts_buffer(
@@ -3986,6 +3780,7 @@ pub fn walk_counter_inputs_with_rosters(
     )
 }
 
+#[cfg(test)]
 pub fn walk_counter_inputs_with_effect_rosters(
     memory: &impl Memory,
     base: usize,
@@ -4002,30 +3797,6 @@ pub fn walk_counter_inputs_with_effect_rosters(
         Some(rosters),
         Some(effects),
         None,
-        None,
-    )
-}
-
-/// Retains the original country-header success or failure for this callback.
-/// No second construction or retry is needed for a reached reverse-zero link.
-/// The caller must drop the borrowed reader before returning its worker loan.
-pub fn walk_counter_inputs_with_effect_rosters_observed<'a, M: Memory>(
-    memory: &'a M,
-    base: usize,
-    game_state: usize,
-    output: &mut [CounterInputsRow],
-    rosters: &mut CounterRosters<'_>,
-    effects: &mut EffectRosters<'_>,
-    observed: &mut Option<Result<Reader<'a, M>, &'static str>>,
-) -> Outcome {
-    walk_counter_inputs_inner(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(output),
-        Some(rosters),
-        Some(effects),
-        Some(observed),
         None,
     )
 }

@@ -37,16 +37,10 @@ pub const HQ_PROVIDER: usize = 0x68;
 pub const LEADER: usize = 0x88;
 /// COrdersGroup primary order pointer-vector data.
 pub const PRIMARY_ORDER_DATA: usize = 0x98;
-/// COrdersGroup primary order u32 count.
-pub const PRIMARY_ORDER_COUNT: usize = 0xa4;
 /// COrdersGroup secondary order pointer-vector data.
 pub const SECONDARY_ORDER_DATA: usize = 0xb0;
-/// COrdersGroup secondary order u32 count.
-pub const SECONDARY_ORDER_COUNT: usize = 0xbc;
 /// COrdersGroup tertiary order pointer-vector data.
 pub const TERTIARY_ORDER_DATA: usize = 0xc8;
-/// COrdersGroup tertiary order u32 count.
-pub const TERTIARY_ORDER_COUNT: usize = 0xd4;
 /// Four raw colour components copied for arrow presentation.
 pub const COLOUR: usize = 0x110;
 /// The group's stored name is free text when renamed by a player and already
@@ -60,12 +54,6 @@ pub const THEATER_GROUP: usize = 0x180;
 pub const TRAINING: usize = 0x19d;
 /// COrdersGroup stop-at-max training byte.
 pub const STOP_AT_MAXIMUM: usize = 0x1a0;
-/// Execution enum, u32: zero careful, one balanced, two aggressive.
-pub const EXECUTION_TYPE: usize = 0x1a4;
-/// Cohesion enum, u32: zero flexible, one balanced, two rigid, three immobile.
-pub const COHESION_TYPE: usize = 0x1a8;
-/// Leader-proximity raw value, u32; meaning beyond the enum is unresolved.
-pub const LEADER_PROXIMITY: usize = 0x1ac;
 /// COrdersGroup border-war 8-byte presence operand.
 pub const BORDER_WAR: usize = 0x1b0;
 /// Withdrawing byte, serialized and used when withdrawing the general
@@ -90,16 +78,6 @@ pub const THEATRE: usize = 0x40;
 pub const SIZE: usize = 0x230;
 /// Group constructor initializing the non-group discriminator.
 pub const CONSTRUCTOR_RVA: usize = 0x00bd_a700;
-/// Order-execution setter applying a boolean to roots and children.
-pub const SET_ORDER_EXECUTION_RVA: usize = 0x0184_1140;
-/// Theatre-group setter, distinct from the theatre pointer.
-pub const SET_THEATER_GROUP_RVA: usize = 0x00be_6db0;
-/// Single-HQ query using the provider accessor when an army leader exists.
-pub const SINGLE_HQ_UNIT_RVA: usize = 0x00bd_fd90;
-/// Group serializer emitting members, leader unit, leader and group properties.
-pub const SERIALIZE_RVA: usize = 0x00be_8100;
-/// HQ-provider clear guarded by the embedded membership pointer.
-pub const CLEAR_HQ_PROVIDER_RVA: usize = 0x00be_4970;
 
 mod counter_tooltips;
 
@@ -916,6 +894,7 @@ pub struct GroupRow {
 
 /// Stored command name populated by generation or player rename and serialized
 /// as text. Demand includes every readable descriptor even when the arena is short.
+#[cfg(test)]
 pub fn copy_name(
     memory: &impl Memory,
     pointer: usize,
@@ -1147,6 +1126,7 @@ impl Count {
 /// before it becomes a row field. Members are resolved by subtracting the embedded
 /// COrdersGroupMember offset and re-authenticating the CUnit host, including its reciprocal
 /// `carmy::ORDERS_GROUP` back-pointer, so no unresolved pointer becomes a row.
+#[cfg(any(test, feature = "test-support"))]
 pub fn walk_order_of_battle(
     memory: &impl Memory,
     base: usize,

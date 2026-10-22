@@ -16,12 +16,6 @@ pub const CAPACITY: usize = 0x10;
 pub const COUNT: usize = 0x14;
 /// Incoming queue owning country guard read u32.
 pub const OWNER: usize = 0x20;
-/// Queue insertion; allocates a wrapper and appends it to the vector.
-pub const INSERT_RVA: usize = 0x0150_1830;
-/// Incoming queue engine AI decision-processing walk.
-pub const PROCESS_RVA: usize = 0x0150_1f50;
-/// Queue serializer; retains decimal original indices for non-null entries.
-pub const SERIALIZE_RVA: usize = 0x0150_2590;
 
 /// One queued incoming diplomatic action, in native queue order.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

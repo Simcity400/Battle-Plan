@@ -28,12 +28,8 @@ pub const NAME: usize = 0x60;
 /// script effects. A nonempty override precedes tag-prefixed and plain script-key
 /// sprite candidates, then the generic fallback.
 pub const ICON: usize = 0x80;
-/// Organisation signed i64 base for modifier 0x26d.
-pub const MODIFIER_26D_BASE: usize = 0xc8;
 /// Organisation production-line entry array.
 pub const PRODUCTION_LINES: usize = 0xd8;
-/// Production-line entry signed i32 count.
-pub const PRODUCTION_LINES_COUNT: usize = 0xe4;
 /// History robin-hood entries keyed by variant handle; serialized in slot order.
 pub const HISTORY: usize = 0xf8;
 /// History signed i32 element count; zero omits history serialization.
@@ -42,14 +38,8 @@ pub const HISTORY_COUNT: usize = 0x100;
 pub const HISTORY_LAST: usize = 0x104;
 /// History-table u8 overflow extent, set to the bucket exponent plus two.
 pub const HISTORY_OVERFLOW: usize = 0x108;
-/// Organisation bonus-equipment database pointer.
-pub const BONUS_EQUIPMENT_DATABASE: usize = 0x110;
 /// Owner country link copied at construction and used for name/icon tag prefixes.
 pub const OWNER: usize = 0x120;
-/// Aggregate-modifier entry receiving an i64 output pointer and baseline.
-pub const AGGREGATE_MODIFIER_RVA: usize = 0x00da_5230;
-/// Neutral fixed5 value for modifiers 0x26e and 0x26f.
-pub const MODIFIER_NEUTRAL: i64 = 100_000;
 
 pub mod details;
 

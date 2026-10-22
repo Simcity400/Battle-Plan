@@ -14,10 +14,6 @@ use crate::{
 pub const IDENTITY_WORD_RVA_CANDIDATE: usize = 0x0306_d170;
 /// Candidate module-container data pointer.
 pub const ENTRIES_CANDIDATE: usize = 0x08;
-/// Candidate module-container u32 capacity.
-pub const ENTRIES_CAPACITY_CANDIDATE: usize = 0x10;
-/// Candidate module-container u32 count.
-pub const ENTRIES_COUNT_CANDIDATE: usize = 0x14;
 
 /// `definition_token` names the module from its authored content key.
 /// The content name is not copied into every row.

@@ -122,6 +122,7 @@ impl<T> Default for RetiredKept<T> {
 
 impl<T> RetiredKept<T> {
     /// An older recording's decoded value.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn older_value(value: T) -> Self {
         Self(Some(value))
     }

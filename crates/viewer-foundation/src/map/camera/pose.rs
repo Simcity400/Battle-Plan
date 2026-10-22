@@ -5,7 +5,9 @@
 //! its own heading, pitch and roll, with its own lens, so a view can look at the horizon, fly or
 //! walk. World axes are the game's: `x` east, `y` up, `z` north, left-handed.
 
-use super::{FAR, FOV_Y, NEAR, WATER_HEIGHT};
+#[cfg(any(test, feature = "test-support"))]
+use super::WATER_HEIGHT;
+use super::{FAR, FOV_Y, NEAR};
 
 /// How the camera looks at the map.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -82,6 +84,7 @@ impl Free {
 
     /// The free pose that sees exactly what the game's camera at `height` with `tilt_lead`
     /// sees, turned to face `yaw`; the eye stands the lead behind its look-at point.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn of_map(yaw: f32, height: f32, tilt_lead: f32) -> Self {
         Self::new(yaw, -(height - WATER_HEIGHT).atan2(tilt_lead), Lens::MAP)
     }

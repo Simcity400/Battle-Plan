@@ -74,6 +74,7 @@ pub const LOCAL_MODIFIERS: usize = 0x668;
 pub const STAT_RAIDING: usize = 0x1f8;
 
 /// Fleet leader reference.
+#[cfg(any(test, feature = "test-support"))]
 pub const FLEET_LEADER: usize = cfleet::LEADER;
 /// Navy-leader modifier accumulator rebuilt from its loaded modifier block.
 pub const LEADER_MODIFIERS: usize = 0x418;
@@ -305,6 +306,7 @@ const TASK_LAYOUT: RecordLayout<'static> =
 
 /// Reads and authenticates the embedded mission of a task force found by [`walk`]. Its headquarters' commander characters go to `headquarters` only when all
 /// of them fit; the row's count gives the demand either way.
+#[cfg(test)]
 pub fn read_task_force(
     memory: &impl Memory,
     base: usize,
@@ -316,6 +318,7 @@ pub fn read_task_force(
 
 /// Shares the original first mission-header gather, including its failure.
 /// Transport consumes this observation rather than probing it a second time.
+#[cfg(test)]
 pub fn read_task_force_observed(
     memory: &impl Memory,
     base: usize,
@@ -348,24 +351,6 @@ pub fn read_task_force_transport_observed(
         base,
         visit,
         crate::walk::Buffer::Fixed(headquarters),
-        original_header,
-        original_owner,
-    )
-}
-
-pub fn read_task_force_transport_observed_growing(
-    memory: &impl Memory,
-    base: usize,
-    visit: cfleet::TaskForceVisit,
-    headquarters: &mut Vec<u64>,
-    original_header: &mut Option<Result<[u8; 16], &'static str>>,
-    original_owner: &mut Option<Result<u32, &'static str>>,
-) -> Result<Operands, &'static str> {
-    read_task_force_transport_observed_buffer(
-        memory,
-        base,
-        visit,
-        crate::walk::Buffer::Growing(headquarters),
         original_header,
         original_owner,
     )
@@ -633,14 +618,6 @@ pub fn navy_hubs(
     out: &mut [u32],
 ) -> Result<usize, &'static str> {
     navy_hubs_buffer(memory, navy, crate::walk::Buffer::Fixed(out))
-}
-
-pub fn navy_hubs_growing(
-    memory: &impl Memory,
-    navy: usize,
-    out: &mut Vec<u32>,
-) -> Result<usize, &'static str> {
-    navy_hubs_buffer(memory, navy, crate::walk::Buffer::Growing(out))
 }
 
 pub fn navy_hubs_buffer(

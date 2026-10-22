@@ -8,8 +8,6 @@ pub const VTABLE_RVA: usize = 0x02a1_52e0;
 pub const TREE_HEADER: usize = 0x08;
 /// Tree u64 size checked against the exact traversed count.
 pub const TREE_SIZE: usize = 0x10;
-/// Ordered breakthrough writer following minimum and successor links.
-pub const ORDERED_WALK_RVA: usize = 0x019f_14f0;
 
 use crate::{
     Memory, ccountry,
@@ -88,38 +86,6 @@ pub fn walk_buffer(
 
 /// The caller authenticates the enclosing status and its owner. This walk
 /// authenticates the embedded progress object and follows its exact tree size.
-pub fn walk_status(
-    memory: &impl Memory,
-    base: usize,
-    status: usize,
-    owner: u32,
-    output: &mut [Row],
-) -> Outcome {
-    walk_status_buffer(
-        memory,
-        base,
-        status,
-        owner,
-        crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_status_growing(
-    memory: &impl Memory,
-    base: usize,
-    status: usize,
-    owner: u32,
-    output: &mut Vec<Row>,
-) -> Outcome {
-    walk_status_buffer(
-        memory,
-        base,
-        status,
-        owner,
-        crate::walk::Buffer::Growing(output),
-    )
-}
-
 pub fn walk_status_buffer(
     memory: &impl Memory,
     base: usize,
@@ -150,22 +116,6 @@ pub fn walk_progress(
         address,
         owner,
         crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn walk_progress_growing(
-    memory: &impl Memory,
-    base: usize,
-    address: usize,
-    owner: u32,
-    output: &mut Vec<Row>,
-) -> Outcome {
-    walk_progress_buffer(
-        memory,
-        base,
-        address,
-        owner,
-        crate::walk::Buffer::Growing(output),
     )
 }
 

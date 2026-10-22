@@ -40,24 +40,12 @@ pub const RETIRE_HOUR: usize = 0x138;
 pub const CATEGORY: usize = 0x148;
 /// CNavalCombatResults admitted country-id u32 array.
 pub const ADMITTED: usize = 0x150;
-/// CNavalCombatResults admitted capacity u32.
-pub const ADMITTED_CAPACITY: usize = 0x158;
-/// CNavalCombatResults admitted count u32.
-pub const ADMITTED_COUNT: usize = 0x15c;
 /// CNavalCombatResults constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00cd_1e90;
-/// CNavalCombatResults winner/subtype/readiness update.
-pub const UPDATE_WINNER_RVA: usize = 0x00cd_3b50;
-/// CNavalCombatResults empty-admitted predicate.
-pub const IS_ADMITTED_EMPTY_RVA: usize = 0x00cd_5830;
 /// CNavalCombatResults merge path.
 pub const MERGE_RVA: usize = 0x00cd_5840;
 /// CNavalCombatResults fill from combat.
 pub const FILL_FROM_COMBAT_RVA: usize = 0x00cd_6600;
-/// CNavalCombatResults visibility predicate.
-pub const COUNTRY_VISIBILITY_RVA: usize = 0x00cd_69b0;
-/// CNavalCombatResults retire-date/category update.
-pub const UPDATE_RETIRE_HOUR_RVA: usize = 0x00cd_6ca0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

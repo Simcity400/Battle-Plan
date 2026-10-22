@@ -7,20 +7,10 @@ pub const STRIDE: usize = 0x38;
 pub const ROLE: usize = 0x00;
 /// Portrait size enum u32.
 pub const SIZE: usize = 0x04;
-/// Portrait entry-set byte.
-pub const IS_SET: usize = 0x08;
 /// Portrait icon-kind enum u32.
 pub const KIND: usize = 0x0c;
 /// Portrait identity MSVC string.
 pub const IDENTITY: usize = 0x10;
-/// Portrait GFX-name kind.
-pub const KIND_GFX: u32 = 0;
-/// Portrait file-path kind.
-pub const KIND_FILE_PATH: u32 = 1;
-/// Portrait role enum to lexer tokens.
-pub const ROLE_TOKEN_IDS: [u32; 6] = [0x4b26, 0x289d, 0x289e, 0x2e96, 0x3d13, 0x4005];
-/// Portrait size enum to lexer tokens.
-pub const SIZE_TOKEN_IDS: [u32; 2] = [0x30d7, 0x4c28];
 
 /// Owned portrait descriptor, with no native pointer or texture-resource cache.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

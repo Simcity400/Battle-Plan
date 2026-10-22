@@ -35,15 +35,7 @@ pub const PRIORITY: usize = 0x20;
 pub const NAME: usize = 0x28;
 /// CTheaterGroup COrdersGroup pointer-vector data.
 pub const ORDERS_GROUP_DATA: usize = 0x48;
-/// CTheaterGroup orders-group u32 capacity.
-pub const ORDERS_GROUP_CAPACITY: usize = 0x50;
-/// CTheaterGroup orders-group u32 count.
-pub const ORDERS_GROUP_COUNT: usize = 0x54;
 /// CTheaterGroup allocation size.
 pub const SIZE: usize = 0x60;
 /// CTheaterGroup constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x0162_7520;
-/// Theater-group reference registration.
-pub const REGISTER_REFERENCE_RVA: usize = 0x0162_7a10;
-/// CTheaterGroup assignment.
-pub const ASSIGN_RVA: usize = 0x0162_7740;

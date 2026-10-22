@@ -23,13 +23,17 @@ use crate::{Memory, cpdx_array::Array, memory::RecordLayout, memory::RecordSourc
 /// Primary CUnit offsets: they lie inside the embedded CSupplyConsumer.
 pub const ASKED: usize = 0x38;
 pub const RECEIVED: usize = 0x50;
+#[cfg(test)]
 pub const AIR_DROPS: usize = 0x58;
 pub const ORIGINS: usize = 0x60;
 pub const FROM_STATE: usize = 0x78;
+#[cfg(test)]
 pub const DIVISION_COUNT: usize = 0x80;
 pub const DIVISION_DEMAND: usize = 0x88;
+#[cfg(test)]
 pub const AIRPLANE_COUNT: usize = 0x90;
 pub const AIRPLANE_DEMAND: usize = 0x98;
+#[cfg(test)]
 pub const SHIP_COUNT: usize = 0xa0;
 pub const SHIP_DEMAND: usize = 0xa8;
 pub const DISRUPTION: usize = 0xb0;
@@ -37,6 +41,7 @@ pub const DISRUPTION: usize = 0xb0;
 /// Stored distributed-supply records, separate from supply-node objects.
 pub const ORIGIN_STRIDE: usize = 0x30;
 pub const ORIGIN_REQUESTED: usize = 0x10;
+#[cfg(any(test, feature = "test-support"))]
 pub const ORIGIN_RECEIVED: usize = 0x18;
 pub const ORIGIN_PROVINCE: usize = 0x28;
 

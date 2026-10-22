@@ -185,6 +185,7 @@ impl Bindings {
     }
 
     /// Same pipeline and texture/sampler groups, independent of uploaded constants.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn same_resources(&self, other: &Self) -> bool {
         let (a, b) = (self.resources.get(), other.resources.get());
         a.pipeline == b.pipeline && a.groups[1..] == b.groups[1..]

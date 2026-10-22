@@ -11,13 +11,10 @@ pub const HANDLE: usize = 0x08;
 pub const ACTION_STATUS: usize = 0x24;
 /// CNavalUnitTransfer unit-handle array.
 pub const UNITS: usize = 0x38;
-/// CNavalUnitTransfer unit capacity u32.
-pub const UNITS_CAPACITY: usize = 0x40;
-/// CNavalUnitTransfer unit count u32.
-pub const UNITS_COUNT: usize = 0x44;
 /// CNavalUnitTransfer target province id u32.
 pub const TARGET_PROVINCE: usize = 0x50;
 /// Source province id u32.
+#[cfg(test)]
 pub const SOURCE_PROVINCE: usize = 0x54;
 /// CNavalUnitTransfer constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00e1_0de0;

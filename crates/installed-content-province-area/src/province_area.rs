@@ -53,6 +53,7 @@ impl ProvinceAreas {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_assets(definitions: &[u8], provinces: &[u8]) -> io::Result<Self> {
         Self::from_assets_checked(definitions, provinces, &mut || Ok(()))
     }

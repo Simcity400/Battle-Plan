@@ -17,22 +17,17 @@ pub const ID: usize = 0x0c;
 pub const REGISTERED: usize = 0x10;
 /// CPurchaseContract handle type 81.
 pub const TYPE: u32 = 81;
-/// Equipment subbuffer pointer; interior amount layout unresolved.
-pub const EQUIPMENT_SUBBUFFER: usize = 0x38;
 /// CPurchaseContract seller raw country link, u32.
 pub const SELLER: usize = 0x58;
 /// CPurchaseContract buyer/delivery raw country link, u32.
 pub const BUYER: usize = 0x5c;
-/// Delivery subbuffer pointer; interior amount layout unresolved.
-pub const DELIVERY_SUBBUFFER: usize = 0x80;
 /// CPurchaseContract speed i32.
 pub const SPEED: usize = 0xc0;
 /// CPurchaseContract assigned convoys i32.
 pub const CONVOYS_ASSIGNED: usize = 0x118;
 /// CPurchaseContract required convoys i32.
+#[cfg(test)]
 pub const CONVOYS_TOTAL: usize = 0x11c;
-/// CPurchaseContract buyer CCountry pointer.
-pub const BUYER_POINTER: usize = 0x128;
 /// CPurchaseContract accumulated route efficiency i64 /100000.
 pub const EFFICIENCY: usize = 0x1c0;
 /// CPurchaseContract route sample days i32.
@@ -42,6 +37,7 @@ pub const FACTORY_PROGRESS: usize = 0x1e0;
 /// CPurchaseContract equipment transfer progress i64 /100000.
 pub const EQUIPMENT_PROGRESS: usize = 0x1e8;
 /// CPurchaseContract collected CIC i64 /100000.
+#[cfg(test)]
 pub const COLLECTED: usize = 0x1f0;
 /// Completed delivery count, i32, separate from a boolean flag.
 pub const COMPLETED: usize = 0x25c;

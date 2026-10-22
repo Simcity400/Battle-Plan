@@ -107,6 +107,7 @@ impl Counting {
 
     /// Serves the country census the collector's jobs are given for
     /// countries in slots 1..=n with identity links, as `countries` builds.
+    #[cfg(test)]
     pub fn with_census(mut self, game_state: usize, objects: &[usize]) -> Self {
         let n = objects.len() as u32;
         let read = |at: usize| crate::cpdx_array::Array {

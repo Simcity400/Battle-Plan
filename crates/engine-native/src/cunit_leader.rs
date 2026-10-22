@@ -35,6 +35,7 @@ pub const TIMED_TRAIT_STRIDE: usize = 0x10;
 /// CUnitLeader trait-experience entry array.
 pub const TRAIT_EXPERIENCE_DATA: usize = 0xdf8;
 /// CUnitLeader trait-experience count i32.
+#[cfg(any(test, feature = "test-support"))]
 pub const TRAIT_EXPERIENCE_COUNT: usize = 0xe04;
 /// Ordered per-trait XP-factor overrides, independent of acquired traits and progress.
 pub const TRAIT_EXPERIENCE_FACTORS: usize = 0xe10;
@@ -58,22 +59,12 @@ pub const TEMPLATE_VISIBILITY: usize = 0xf50;
 pub const CHARACTER_ID: usize = 0xf4c;
 /// CUnitLeader copied character-reference type u32.
 pub const CHARACTER_TYPE: usize = 0xf48;
-/// CUnitLeader experience scale.
-pub const EXPERIENCE_SCALE: i64 = 100_000;
 /// CUnitLeader base constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00bf_ccb0;
 /// CUnitLeader experience update.
 pub const ADD_EXPERIENCE_RVA: usize = 0x00c0_5400;
-/// CUnitLeader experience-ratio getter.
-pub const EXPERIENCE_RATIO_RVA: usize = 0x00c0_a4b0;
-/// CUnitLeader serializer.
-pub const SERIALIZE_RVA: usize = 0x00c0_d920;
 /// CUnitLeader name/token updater.
 pub const SET_NAME_RVA: usize = 0x00c1_6fb0;
-/// CUnitLeader own-trait ability predicate.
-pub const HAS_OWN_TRAIT_ABILITY_RVA: usize = 0x00c0_b0c0;
-/// CUnitLeader ability predicate.
-pub const HAS_ABILITY_RVA: usize = 0x00c0_b040;
 
 /// Raw army-category formation reference used by late-join scaling and communications.
 /// The caller supplies the authenticated kind and category from the established
@@ -537,6 +528,7 @@ pub struct TraitRow {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub struct TraitExperienceRow {
     pub trait_row: TraitRow,
     /// Exact stored native i64 /100000 amount. Missing vector entries are not emitted as zero.
@@ -714,6 +706,7 @@ fn visit_training(
 
 /// Reads the native trait-XP vector independently of the assigned-trait vector
 /// and any selected UI. Definition identity and source order remain explicit.
+#[cfg(test)]
 pub fn walk_trait_experience(
     memory: &impl Memory,
     base: usize,
@@ -1026,8 +1019,6 @@ mod tests;
 
 /// CUnitLeader raw country reference.
 pub const COUNTRY: usize = 0x120;
-/// Portrait-directory inputs: an explicit path, or a country directory and fallback filename.
-pub const PORTRAIT_PATH_RVA: usize = 0x00c0_9910;
 /// Serialization can omit these strings, and portrait fallback can consume
 /// them when character resolution fails. Keep their exact bytes independently.
 pub const PORTRAIT_STRINGS: [usize; 3] = [0xc0, 0xe0, 0x100];

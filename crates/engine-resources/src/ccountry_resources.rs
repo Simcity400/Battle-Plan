@@ -19,34 +19,18 @@ pub const VTABLE_RVA: usize = 0x2945cd0;
 pub const OWNER: usize = 0x20;
 /// Embedded produced CStrategicResourcePool requiring authentication.
 pub const PRODUCED_POOL: usize = 0x28;
-/// Produced-pool values pointer.
-pub const PRODUCED_VALUES: usize = 0x30;
 /// Adjustment-pool container header.
 pub const ADJUSTMENT_POOL: usize = 0xd8;
-/// Adjustment-values pointer to i64 entries.
-pub const ADJUSTMENT_VALUES: usize = 0xe0;
-/// Adjustment count, i32.
-pub const ADJUSTMENT_COUNT: usize = 0xec;
 /// Embedded imported CStrategicResourcePool requiring authentication.
 pub const IMPORTED_POOL: usize = 0x188;
-/// Imported-pool values pointer.
-pub const IMPORTED_VALUES: usize = 0x190;
 /// Embedded used CStrategicResourcePool requiring authentication.
 pub const USED_POOL: usize = 0x238;
 /// Special-used values pointer.
 pub const SPECIAL_USED_VALUES: usize = 0x240;
-/// Special-total values pointer.
-pub const SPECIAL_TOTAL_VALUES: usize = 0x2f0;
-/// Production-line values pointer.
-pub const PRODUCTION_LINE_VALUES: usize = 0x3a0;
 /// Embedded exportable CStrategicResourcePool requiring authentication.
 pub const TO_EXPORT_POOL: usize = 0x450;
-/// Exportable-pool values pointer.
-pub const TO_EXPORT_VALUES: usize = 0x458;
 /// Embedded base-export CStrategicResourcePool requiring authentication.
 pub const BASE_EXPORT_POOL: usize = 0x500;
-/// Base-export values pointer.
-pub const BASE_EXPORT_VALUES: usize = 0x508;
 /// Embedded exported CStrategicResourcePool requiring authentication.
 pub const EXPORTED_POOL: usize = 0x5b0;
 /// Resource-origin array, separate from exchange buckets.
@@ -68,12 +52,8 @@ pub const EXPORT_BUCKETS: usize = 0x728;
 pub const EXPORT_BUCKET_STRIDE: usize = 0x18;
 /// Import exchange pointer vector.
 pub const IMPORT_ROUTES: usize = 0x740;
-/// Import exchange count, i32.
-pub const IMPORT_ROUTE_COUNT: usize = 0x74c;
 /// Delivery-route pointer array selected by exchange queries.
 pub const DELIVERY_ROUTES: usize = 0x788;
-/// Delivery-route count, i32.
-pub const DELIVERY_ROUTE_COUNT: usize = 0x794;
 
 /// Second specialized demand pool.
 pub const SPECIAL_TOTAL_POOL: usize = 0x2e8;

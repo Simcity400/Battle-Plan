@@ -31,13 +31,5 @@ pub const REACHED_PROVINCES_COUNT: usize = 0x44;
 pub const LAST_TARGET_PROVINCE: usize = 0x70;
 /// Training mission bit.
 pub const TRAINING_MASK: u32 = 0x800;
-/// Capacity gate comparing the class threshold with signed wing-count/capacity ratio.
-pub const CAPACITY_GATE_RVA: usize = 0x00f6_b7b0;
-/// Training-base gate using context-mode branches.
-pub const TRAINING_BASE_GATE_RVA: usize = 0x00f6_b8c0;
-/// Mission setter writing enabled mask and current type separately.
-pub const SET_MISSION_RVA: usize = 0x00f7_0120;
-/// Mission context resolver.
-pub const CONTEXT_RVA: usize = 0x006c_2b60;
 /// Mask-to-bit-index helper used for mission fuel costs.
 pub const MISSION_BIT_INDEX_RVA: usize = 0x00ff_ec30;

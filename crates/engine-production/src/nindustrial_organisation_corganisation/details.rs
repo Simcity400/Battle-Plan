@@ -168,6 +168,7 @@ fn tokens(
     }
     Ok(())
 }
+#[cfg(test)]
 pub fn capture_policies(
     memory: &impl Memory,
     base: usize,

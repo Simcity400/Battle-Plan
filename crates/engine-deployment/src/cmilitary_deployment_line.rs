@@ -19,14 +19,10 @@ pub const NAME: usize = 0x20;
 pub const AMOUNT: usize = 0x28;
 /// Owned deployment pointer; null causes line removal.
 pub const DEPLOYMENT: usize = 0x30;
-/// CMilitaryDeploymentLine division-name serialization token.
-pub const SERIALIZE_RVA: usize = 0x0142_4920;
 /// CMilitaryDeploymentLine parent conveyor pointer.
 pub const PARENT: usize = 0x38;
 /// CMilitaryDeploymentLine allocation size.
 pub const SIZE: usize = 0x40;
-/// Deployment-line destructor releases the name and clears amount.
-pub const DESTRUCT_RVA: usize = 0x0142_0010;
 
 /// One line and the fields of the CMilitaryDeployment it owns.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

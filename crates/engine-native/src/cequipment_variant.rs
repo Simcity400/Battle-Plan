@@ -32,6 +32,7 @@ pub const CREATOR_LINK: usize = 0x1c;
 /// CEquipmentVariant origin-country link u32.
 pub const ORIGIN_LINK: usize = 0x20;
 /// CEquipmentVariant raw append-variant-name byte.
+#[cfg(any(test, feature = "test-support"))]
 pub const APPEND_VARIANT_NAME: usize = 0x24;
 /// CEquipmentVariant display-name MSVC string.
 pub const DISPLAY_NAME: usize = 0x28;
@@ -42,17 +43,16 @@ pub const UPGRADES: usize = 0x68;
 /// Embedded variant module collection, with its data pointer and count; its vtable remains
 /// unproven.
 pub const MODULES: usize = 0xb0;
-/// CEquipmentVariant fallback raw i64 for mission group1000/stat23.
-pub const MISSION_1000_STAT_23: usize = 0x218;
-/// CEquipmentVariant fallback raw i64 for mission group2000/stat24.
-pub const MISSION_2000_STAT_24: usize = 0x220;
 /// Equipment-variant map-range stat in its ordered stat array.
 pub const MAP_RANGE_STAT: usize = 0x270;
 /// The variant stat after the map range, the second retained variant-stat lane.
+#[cfg(any(test, feature = "test-support"))]
 pub const STAT_2F: usize = 0x278;
 /// Variant attack cache, signed i64; live consistency and save agreement remain unverified.
+#[cfg(any(test, feature = "test-support"))]
 pub const AIR_ATTACK_CACHE_CANDIDATE: usize = 0x280;
 /// Variant agility cache, signed i64; live consistency and save agreement remain unverified.
+#[cfg(any(test, feature = "test-support"))]
 pub const AGILITY_CACHE_CANDIDATE: usize = 0x288;
 /// Variant maximum-speed cache, signed i64; live consistency and save agreement remain unverified.
 pub const MAXIMUM_SPEED_CACHE_CANDIDATE: usize = 0x2f0;
@@ -61,15 +61,15 @@ pub const RELIABILITY_CACHE_CANDIDATE: usize = 0x308;
 /// Variant defence cache, signed i64; live consistency and save agreement remain unverified.
 pub const AIR_DEFENSE_CACHE_CANDIDATE: usize = 0x318;
 /// Variant thrust cache, signed i64; live consistency and save agreement remain unverified.
+#[cfg(any(test, feature = "test-support"))]
 pub const THRUST_CACHE_CANDIDATE: usize = 0x320;
 /// Variant fuel cache, signed i64; live consistency and save agreement remain unverified.
+#[cfg(any(test, feature = "test-support"))]
 pub const FUEL_CONSUMPTION_CACHE_CANDIDATE: usize = 0x328;
 /// Variant build-cost cache, signed i64; live consistency and save agreement remain unverified.
 pub const BUILD_COST_CACHE_CANDIDATE: usize = 0x368;
 /// CEquipmentVariant mission-group array data.
 pub const MISSION_GROUP_DATA: usize = 0x370;
-/// CEquipmentVariant mission-group i32 count.
-pub const MISSION_GROUP_COUNT: usize = 0x37c;
 /// CEquipmentVariant CEquipmentType definition pointer.
 pub const DEFINITION: usize = 0x3f0;
 /// CEquipmentVariant classifier flags u64.
@@ -112,14 +112,8 @@ pub const ICON_OVERRIDE_TOKEN: usize = 0x458;
 /// contexts. A stable descending weight sort precedes reverse icon iteration
 /// within each pool, retaining the pool's content eligibility rules.
 pub const ICON_ENTRY_RECORDED: usize = 0x28;
-/// CEquipmentVariant range raw scale.
-pub const RANGE_SCALE: i64 = 1_000;
-/// Non-range variant stat scale for complete signed i64 cache values.
-pub const CACHED_STAT_SCALE: i64 = 100_000;
 /// Equipment-variant constructor initializes the vtable and mission storage.
 pub const CONSTRUCTOR_RVA: usize = 0x00bc_1190;
-/// Equipment-variant mission-mask updater leaves non-aircraft unchanged.
-pub const UPDATE_MISSION_MASK_RVA: usize = 0x00bc_ff10;
 
 /// Authenticates the variant and preserves its native low-type/high-id reference.
 pub fn identity(memory: &impl Memory, base: usize, pointer: usize) -> Result<u64, &'static str> {
@@ -747,6 +741,7 @@ fn read_organisation(
 
 /// Uses the same complete supplied variant census as `walk_definitions`. A
 /// worker grows storage from that already-owned census before the first batch.
+#[cfg(test)]
 pub fn walk_stats(
     memory: &impl Memory,
     variants: &[RegistryRow],

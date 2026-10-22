@@ -10,13 +10,10 @@ pub const PERSISTENT_SUBOBJECT: usize = 0x18;
 /// Persistent subobject vtable.
 pub const PERSISTENT_VTABLE_RVA: usize = 0x29bb440;
 /// CArmyUpgradesRequests pointer-array data.
+#[cfg(test)]
 pub const GROUPS_DATA: usize = 0x20;
-/// Group-vector capacity, i32.
-pub const GROUPS_CAPACITY: usize = 0x28;
 /// Group-vector count, i32.
 pub const GROUPS_COUNT: usize = 0x2c;
-/// Group-vector entry width; entries are CArmyUpgradesRequests pointers.
-pub const GROUP_ENTRY_STRIDE: usize = 0x08;
 
 use crate::{
     Memory, army_upgrade_request_row, carmy_upgrades_requests,

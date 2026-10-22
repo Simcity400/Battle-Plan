@@ -330,6 +330,7 @@ pub fn walk_buffer(
 
 /// Same decision census, adding seeds only for targeted rows named by the
 /// active border events' conservative native effect-tree union.
+#[cfg(test)]
 pub fn walk_with_description_demand(
     memory: &impl Memory,
     base: usize,
@@ -346,26 +347,6 @@ pub fn walk_with_description_demand(
         country,
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(tokens),
-        demand,
-    )
-}
-
-pub fn walk_with_description_demand_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    country: usize,
-    output: &mut Vec<Row>,
-    tokens: &mut Vec<u8>,
-    demand: crate::border_effect_demand::Demand<'_>,
-) -> Walk {
-    walk_with_description_demand_buffer(
-        memory,
-        base,
-        game_state,
-        country,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(tokens),
         demand,
     )
 }
@@ -623,24 +604,6 @@ fn description_seed(
     Ok(None)
 }
 
-/// Ordinary decision-taken entry, receiving status and definition pointers.
-pub const ORDINARY_TAKEN_RVA: usize = 0x0072_8bc0;
-/// Exact ordinary decision-taken entry bytes.
-pub const ORDINARY_TAKEN_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf2, 0x48,
-];
-/// Targeted decision-taken entry, retaining an opaque target argument.
-pub const TARGETED_TAKEN_RVA: usize = 0x0072_8ce0;
-/// Exact targeted decision-taken entry bytes.
-pub const TARGETED_TAKEN_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
-/// Timed decision-activation entry, receiving status and definition pointers.
-pub const TIMED_ACTIVATED_RVA: usize = 0x0072_8fb0;
-/// Exact timed decision-activation entry bytes.
-pub const TIMED_ACTIVATED_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
-];
 /// Decision-status hourly update runs after joined country stages.
 pub const HOURLY_UPDATE_RVA: usize = 0x0072_3060;
 

@@ -51,13 +51,6 @@ pub fn doctrine(
 ) -> FactionRuleDetail {
     companions::doctrine(frame, faction, row, cat)
 }
-pub fn programme_name(
-    frame: &DecodedFrame,
-    reference: u64,
-    cat: &catalogue::Catalogue,
-) -> Result<Option<String>, String> {
-    companions::project_name(frame, reference, cat, true)
-}
 pub fn programme(
     frame: &DecodedFrame,
     reference: u64,

@@ -100,6 +100,7 @@ fn vtable(
 /// Shares country authentication, and reads no division, task-force or ship payload.
 /// Visits every authenticated canonical object and inspects the catalogue's
 /// slot zero independently of the positive-reference lookup.
+#[cfg(test)]
 pub fn walk_country_inputs(
     memory: &impl Memory,
     base: usize,
@@ -681,22 +682,6 @@ pub fn read_first_sites(
         canonical_slot,
         entry,
         crate::walk::Buffer::Fixed(output),
-    )
-}
-
-pub fn read_first_sites_growing(
-    memory: &impl Memory,
-    base: usize,
-    canonical_slot: u32,
-    entry: Option<usize>,
-    output: &mut Vec<AirSite>,
-) -> AirRead {
-    read_first_sites_buffer(
-        memory,
-        base,
-        canonical_slot,
-        entry,
-        crate::walk::Buffer::Growing(output),
     )
 }
 

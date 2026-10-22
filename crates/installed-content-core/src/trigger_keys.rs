@@ -557,6 +557,7 @@ pub fn describe(kind: CountKind) -> &'static str {
         CountKind::Equipment => "an equipment category trigger",
     }
 }
+#[cfg(test)]
 pub const SCRIPTED: &str = "a scripted trigger";
 #[derive(Clone, Debug, Default)]
 pub struct TriggerNames {

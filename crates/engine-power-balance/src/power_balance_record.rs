@@ -37,18 +37,6 @@ pub const GFX_OVERRIDES: usize = 0x178;
 pub const GFX_OVERRIDE_CAPACITY: usize = 0x180;
 /// Signed override count.
 pub const GFX_OVERRIDE_COUNT: usize = 0x184;
-/// Null-record singleton pointer returned when no country matches.
-pub const NULL_SINGLETON_RVA: usize = 0x0331_8a18;
-/// Balance-value mutator updating the value and trending side.
-pub const ADD_VALUE_RVA: usize = 0x00e4_0ee0;
-/// Weekly change getter combining seven daily modifiers with weekly modifiers.
-pub const WEEKLY_CHANGE_RVA: usize = 0x00e4_1430;
-/// Change-description getter reading both modifier accumulators.
-pub const CHANGE_DESCRIPTION_RVA: usize = 0x00e4_20b0;
-/// Aggregate modifier-description getter.
-pub const MODIFIER_DESCRIPTION_RVA: usize = 0x00e4_22e0;
-/// Icon getter selecting override, side fallback and localization.
-pub const EFFECTIVE_ICON_RVA: usize = 0x00e4_2780;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

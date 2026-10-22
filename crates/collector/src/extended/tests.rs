@@ -2854,7 +2854,7 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
                 ..Default::default()
             })
             .unwrap();
-        captured.country_appearance.raw.begin(base, state, hour);
+        captured.country_appearance.raw.begin(hour);
         captured
             .country_appearance
             .raw

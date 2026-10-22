@@ -370,6 +370,7 @@ pub fn walk_prepared<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_prepared_growing<T>(
     memory: &impl Memory,
     base: usize,

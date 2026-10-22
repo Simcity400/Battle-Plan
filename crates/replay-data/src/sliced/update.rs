@@ -175,28 +175,6 @@ impl SliceUpdate {
         &self.rows
     }
 
-    /// The distinct owners of the merged table, ascending.
-    pub fn owners_after(&self, previous: &TableRows) -> io::Result<Vec<u32>> {
-        if !self.keys.is_empty() {
-            return super::try_owners(&self.merged(previous)?);
-        }
-        fn merged<R: SlicedRow>(
-            previous: &[R],
-            fresh: &[R],
-            listed: &[u32],
-        ) -> io::Result<Vec<u32>> {
-            merge_owners(previous, fresh, |owner| {
-                listed.binary_search(&owner).is_err()
-            })
-        }
-        sliced_pair!(
-            previous,
-            &self.rows,
-            |old, new, _wrap| merged(old, new, &self.owners),
-            Err(invalid("cannot merge different sliced table types"))
-        )
-    }
-
     /// The merged table, copying every kept row: what
     /// [`merge_slice`](super::merge_slice) returns for the same read.
     pub fn merged(&self, previous: &TableRows) -> io::Result<TableRows> {

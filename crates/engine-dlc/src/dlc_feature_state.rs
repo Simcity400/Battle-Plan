@@ -4,22 +4,11 @@
 
 /// Runtime DLC mask, u32.
 pub const MASK_RVA: usize = 0x0331_6e78;
-/// Mask predicate; every requested bit must be present, with truth in the low byte.
-pub const HAS_MASK_RVA: usize = 0x001a_e870;
-/// Feature predicate; selects requirements by feature ID, with truth in the low byte.
-pub const HAS_FEATURE_RVA: usize = 0x001a_e640;
 /// Feature ID required by equipment-loss bookkeeping.
+#[cfg(test)]
 pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;
 /// Runtime bit tested for equipment-loss bookkeeping.
 pub const EQUIPMENT_LOSSES_MASK: u32 = 0x0000_0002;
-/// Byte-exact compiled-name lookup; unmatched names return a zero mask.
-pub const MASK_FOR_NAME_RVA: usize = 0x001a_dd20;
-/// Deployed-HQ ability feature ID.
-pub const DEPLOYED_HQ_ABILITY_FEATURE: u32 = 0x39;
-/// Related feature ID with an independently unspecified meaning.
-pub const OTHER_THUNDER_FEATURE: u32 = 0x3a;
-/// Feature required by faction goal commands.
-pub const DEEPER_FACTIONS_FEATURE: u32 = 0x32;
 pub const DEEPER_FACTIONS_MASK: u32 = 0x0000_8000;
 /// Runtime bit required by both related feature IDs.
 pub const THUNDER_AT_OUR_GATES: u32 = 0x0002_0000;

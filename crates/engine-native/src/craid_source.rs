@@ -8,8 +8,10 @@ pub const KIND_PRESENT: usize = 0x04;
 /// Province pointer initialized to null and serialized by province ID.
 pub const PROVINCE: usize = 0x08;
 /// Ship reference type, u32, initialized and serialized with the ID word.
+#[cfg(test)]
 pub const SHIP_REFERENCE_TYPE: usize = 0x10;
 /// Ship reference ID, u32.
+#[cfg(test)]
 pub const SHIP_REFERENCE_ID: usize = 0x14;
 /// Country, i32, initialized independently of kind and saved only if positive.
 pub const COUNTRY: usize = 0x18;
@@ -22,10 +24,6 @@ pub const BUILDING_LOCATION: usize = 0x28;
 pub const BUILDING_TYPE: usize = 0x2c;
 /// Building reference i32 country inside the `BUILDING` reference, positive for a country-scoped building.
 pub const BUILDING_COUNTRY: usize = 0x30;
-/// CRaidSource kind 0 is air_base.
-pub const KIND_AIR_BASE: u32 = 0;
-/// CRaidSource kind 1 is rocket_site.
-pub const KIND_ROCKET_SITE: u32 = 1;
 /// CRaidSource kind 2 is naval_base.
 pub const KIND_NAVAL_BASE: u32 = 2;
 /// CRaidSource kind 3 is carrier.
@@ -34,8 +32,6 @@ pub const KIND_CARRIER: u32 = 3;
 pub const KIND_SUBMARINE: u32 = 4;
 /// CRaidSource kind 5 is building.
 pub const KIND_BUILDING: u32 = 5;
-/// Raid-source serializer for the embedded source.
-pub const SERIALIZER_RVA: usize = 0x0158_1e30;
 
 use crate::{Memory, ccountry, ccountry_raid_status, cprovince, read};
 

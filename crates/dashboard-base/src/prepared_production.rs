@@ -1618,6 +1618,7 @@ impl ProductionAccumulator {
         }
     }
     /// The caller validates campaign membership and supplies frames in recorded order.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn ingest(
         &mut self,
         format: FormatVersion,
@@ -3358,6 +3359,7 @@ pub fn endpoint_count(
         .unwrap_or(0))
 }
 
+#[cfg(test)]
 pub fn latest_state(
     store: &store::Store,
     key: &store::SourceKey,

@@ -2956,6 +2956,7 @@ pub fn kept(source: &Source, branch: u64, tag: &str) {
 }
 
 /// Whether a whole scan was read that no preparation kept yet.
+#[cfg(any(test, feature = "test-support"))]
 pub fn has_unkept(source: &Source) -> bool {
     !source
         .state::<Unkept>()

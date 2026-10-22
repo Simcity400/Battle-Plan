@@ -19,52 +19,29 @@ pub const CONSTRUCTOR_RVA: usize = 0x11b_a760;
 pub const LOCAL_NETWORK: usize = 0x10;
 /// Subnetwork array data.
 pub const SUBNETWORKS_DATA: usize = 0x78;
-/// Subnetwork capacity, i32.
-pub const SUBNETWORKS_CAPACITY: usize = 0x80;
 /// Subnetwork count, i32.
+#[cfg(test)]
 pub const SUBNETWORKS_COUNT: usize = 0x84;
-/// Subnetwork allocator pointer.
-pub const SUBNETWORKS_ALLOCATOR: usize = 0x88;
 /// Embedded static-intel-source reference.
 pub const STATIC_SOURCE_REFERENCE: usize = 0xa8;
-/// Subnetwork-cache preparation function.
-pub const PREPARE_SUBNETWORK_CACHE_RVA: usize = 0x11b_c200;
 /// Covered core-state count, signed i32 as serialized.
 pub const COVERED_CORE_STATES: usize = 0xc0;
 /// Covered controlled-state count, signed i32 as serialized.
+#[cfg(test)]
 pub const COVERED_CONTROLLED_STATES: usize = 0xc4;
 /// Covered state worth, signed i32 as serialized.
+#[cfg(test)]
 pub const COVERED_WORTH: usize = 0xc8;
 /// Controlled-state strength sum, signed i64.
 pub const CONTROLLED_STRENGTH_SUM: usize = 0xd0;
 /// Core-state strength sum, signed i64.
+#[cfg(test)]
 pub const CORE_STRENGTH_SUM: usize = 0xd8;
 /// Cached maximum state strength, signed i64, saved independently of the sums.
 pub const MAX_STATE_STRENGTH: usize = 0xe0;
 /// Network serializer.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x011c_1be0;
-/// Network loader.
-pub const LOAD_RVA: usize = 0x011c_0e70;
-/// Always-serialized target token.
-pub const TOKEN_TARGET: u32 = 0x006b;
-/// Always-serialized local-network token.
-pub const TOKEN_LOCAL_NET: u32 = 0x3d1d;
-/// Extra-list token emitted for a nonzero count.
-pub const TOKEN_EXTRA_3D1E: u32 = 0x3d1e;
-/// Subnetwork token emitted for a nonzero count.
-pub const TOKEN_SUBNETWORKS: u32 = 0x4b6d;
-/// Records token emitted for a nonzero count.
-pub const TOKEN_RECORDS: u32 = 0x4c00;
-/// Always-serialized static-source token.
-pub const TOKEN_STATIC_SOURCE: u32 = 0x4b34;
-/// Always-serialized coverage token.
-pub const TOKEN_COVERAGE: u32 = 0x30b5;
-/// Always-serialized controlled-strength sum token.
-pub const TOKEN_CONTROLLED_SUM: u32 = 0x4c03;
-/// Always-serialized core-strength sum token.
-pub const TOKEN_CORE_SUM: u32 = 0x4c04;
-/// Always-serialized maximum-strength token.
-pub const TOKEN_MAX_STRENGTH: u32 = 0x4c6a;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -160,6 +137,7 @@ impl SummaryCache {
 
 /// Worker acquisition shares the established roster and network authentication.
 /// Summary read failures withhold only summaries, never the existing state rows.
+#[cfg(test)]
 pub fn walk_with_summaries_growing(
     memory: &impl Memory,
     base: usize,

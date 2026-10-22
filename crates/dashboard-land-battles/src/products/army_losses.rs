@@ -47,8 +47,9 @@ pub struct ArmyLosses;
 /// The Combat Log's equipment ledgers: its own losses in combat, its three
 /// attrition modes (which partition attrition and add up), what was recovered,
 /// and what the army dealt to its enemies.
+#[cfg(test)]
 pub const COMBAT_LEDGER: u8 = 0;
-pub const ATTRITION_LEDGERS: [u8; 3] = [1, 2, 3];
+#[cfg(test)]
 pub const RECOVERED_LEDGER: u8 = 4;
 pub const ENEMY_LEDGER: u8 = 5;
 

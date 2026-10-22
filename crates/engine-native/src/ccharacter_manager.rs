@@ -6,20 +6,10 @@ pub const VTABLE_RVA: usize = 0x027c_f860;
 pub const HISTORICAL_CHARACTERS: usize = 0x10;
 /// Serialized dynamic character-pointer array.
 pub const DYNAMIC_CHARACTERS: usize = 0x28;
-/// Derived name-token index excluding negative names and retaining the first duplicate.
-pub const NAME_INDEX: usize = 0x40;
 /// Constructor installing the empty-index sentinel.
 pub const CONSTRUCTOR_RVA: usize = 0x006a_7fe0;
-/// Name-index lookup using stored hash-table controls.
-pub const LOOKUP_NAME_RVA: usize = 0x006a_bf10;
 /// Clear operation restoring the empty-index sentinel.
 pub const CLEAR_RVA: usize = 0x006a_d070;
-/// Lossy name-index rebuild.
-pub const REBUILD_NAME_INDEX_RVA: usize = 0x006a_d700;
-/// Character-pointer vector serializer.
-pub const SERIALIZE_VECTOR_RVA: usize = 0x006a_e080;
-/// Manager serializer retaining both character rosters.
-pub const SERIALIZE_RVA: usize = 0x006a_e170;
 
 use crate::{Memory, ccharacter, cgame_state, cpdx_array::Array, read, read_slice};
 

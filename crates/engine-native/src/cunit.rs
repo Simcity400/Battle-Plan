@@ -71,8 +71,6 @@ pub const HANDLE: usize = 0x18;
 pub const TYPE: usize = 0x18;
 /// CUnit handle high u32 id word.
 pub const ID: usize = 0x1c;
-/// CUnit inherited supply cache.
-pub const SUPPLY_CACHE: usize = 0x28;
 /// CSupplyConsumer received-supply ratio, signed fixed5. The railway gun's
 /// low-supply strip reads it (CArmy documents the same base field as
 /// `carmy::COUNTER_SUPPLY_STATUS`).
@@ -83,8 +81,6 @@ pub const SCHEDULED_MEMBER: usize = 0xb8;
 pub const STAT_BLOCK: usize = 0x138;
 /// CUnit combat-reference vector data.
 pub const COMBAT_REFERENCE_DATA: usize = 0x1a8;
-/// CUnit combat-reference vector u32 capacity.
-pub const COMBAT_REFERENCE_CAPACITY: usize = 0x1b0;
 /// CUnit combat-reference vector u32 count.
 pub const COMBAT_REFERENCE_COUNT: usize = 0x1b4;
 /// CUnit roster-owner CCountryTag raw32.
@@ -100,6 +96,7 @@ pub const LOCATION: usize = 0x1f0;
 /// CUnit ordinary-route u32 province-id vector.
 pub const ORDINARY_ROUTE_DATA: usize = 0x200;
 /// CUnit ordinary-route u32 capacity.
+#[cfg(any(test, feature = "test-support"))]
 pub const ORDINARY_ROUTE_CAPACITY: usize = 0x208;
 /// CUnit ordinary-route u32 count.
 pub const ORDINARY_ROUTE_COUNT: usize = 0x20c;
@@ -109,10 +106,6 @@ pub const MOVEMENT_PRIORITY: usize = 0x248;
 pub const EMBARK_MOVEMENT_DISTANCE_RVA: usize = 0x0331_d600;
 /// CUnit alternate-route u32 province-id vector.
 pub const ALTERNATE_ROUTE_DATA: usize = 0x220;
-/// CUnit alternate-route u32 capacity.
-pub const ALTERNATE_ROUTE_CAPACITY: usize = 0x228;
-/// CUnit alternate-route u32 count.
-pub const ALTERNATE_ROUTE_COUNT: usize = 0x22c;
 /// Retreat byte used by action selection.
 pub const RETREAT: usize = 0x24c;
 /// Stored withdrawal byte; serialization retains it, and movement-arrow style
@@ -131,91 +124,19 @@ pub const NAVAL_TRANSFER_MEMBERSHIP: usize = 0x2f8;
 /// CUnit per-viewer level vector data.
 pub const VIEWER_DATA: usize = 0x278;
 /// CUnit per-viewer level u32 count.
+#[cfg(any(test, feature = "test-support"))]
 pub const VIEWER_COUNT: usize = 0x284;
 /// CUnit owned map-entity pointer.
 pub const MAP_ENTITY: usize = 0x298;
-/// CUnit pathfinding UI-cache vector data, distinct from viewer levels.
-pub const PATHFINDING_CACHE_DATA: usize = 0x308;
-/// CUnit pathfinding UI-cache u32 count.
-pub const PATHFINDING_CACHE_COUNT: usize = 0x314;
-/// CUnit viewer-level reader.
-pub const READ_VIEWER_LEVEL_RVA: usize = 0x00be_ea00;
-/// CUnit viewer-level upsert.
-pub const UPSERT_VIEWER_LEVEL_RVA: usize = 0x00bf_2640;
-/// CUnit viewer-level decay/removal.
-pub const DECAY_VIEWER_LEVELS_RVA: usize = 0x00bf_0300;
-/// CUnit pathfinding cache helper.
-pub const PATHFINDING_CACHE_HELPER_RVA: usize = 0x00be_a0b0;
-/// CUnit object-deleted callback.
-pub const OBJECT_DELETED_RVA: usize = 0x00f3_6250;
-/// CUnit coarse strength helper.
-pub const COARSE_STRENGTH_RVA: usize = 0x00be_cad0;
-/// CUnit stack-kind selector.
-pub const MAP_STACK_KIND_RVA: usize = 0x0127_9110;
-/// CUnit combat-presence getter.
-pub const HAS_COMBAT_RVA: usize = 0x00bf_0ad0;
-/// CUnit first-combat attacker-country predicate.
-pub const IS_FIRST_COMBAT_ATTACKER_RVA: usize = 0x00bf_0fc0;
-/// CUnit first-combat lookup.
-pub const FIRST_COMBAT_RVA: usize = 0x00be_cac0;
-/// CUnit fallback target-province getter.
-pub const TARGET_PROVINCE_RVA: usize = 0x00be_dec0;
 
 /// CUnit combat-modifier vector data.
 pub const COMBAT_MODIFIER_DATA: usize = 0x170;
 
-/// CUnit inherited combat-modifier u32 capacity.
-pub const COMBAT_MODIFIER_CAPACITY: usize = 0x178;
-
-/// CUnit combat-modifier count, u32.
-pub const COMBAT_MODIFIER_COUNT: usize = 0x17c;
-
 /// CUnit attack accumulator, i64/100000.
 pub const ATTACK_ACCUMULATOR: usize = 0x188;
 
-/// CUnit defence accumulator, i64/100000.
-pub const DEFENCE_ACCUMULATOR: usize = 0x190;
-
-/// CUnit attack base, i64/100000.
-pub const ATTACK_BASE: usize = 0x198;
-
-/// CUnit defence base, i64/100000.
-pub const DEFENCE_BASE: usize = 0x1a0;
-
 /// CUnit destructor.
 pub const DESTRUCTOR_RVA: usize = 0x00be_99a0;
-
-/// CUnit combat-modifier clear.
-pub const CLEAR_COMBAT_MODIFIERS_RVA: usize = 0x00be_c5d0;
-
-/// CUnit modifier append/fold.
-pub const APPEND_COMBAT_MODIFIER_RVA: usize = 0x00be_a290;
-
-/// CUnit end-of-tick scale clamp.
-pub const CLAMP_COMBAT_SCALE_RVA: usize = 0x00be_c520;
-
-/// CUnit attack-scale getter.
-pub const ATTACK_SCALE_GETTER_RVA: usize = 0x00be_ca30;
-
-/// CUnit defence-scale getter.
-pub const DEFENCE_SCALE_GETTER_RVA: usize = 0x00be_cb50;
-
-/// CUnit modifier-writer tick callers.
-pub const COMBAT_SCALE_WRITER_CALLER_RVAS: [usize; 4] =
-    [0x0129_5a30, 0x0129_9f00, 0x0129_a700, 0x0129_d9f0];
-
-/// CUnit observed additional scale writers.
-pub const OTHER_SCALE_WRITER_RVAS: [usize; 9] = [
-    0x00be_9370,
-    0x00be_9620,
-    0x00be_add0,
-    0x00be_3b90,
-    0x00be_6450,
-    0x00be_6e60,
-    0x00be_72b0,
-    0x00be_8100,
-    0x00be_6dc0,
-];
 
 /// Simulation operands for map routes and stack kinds, independent of the map entity.
 /// The caller first authenticates the unit's class and roster. Routes are copied

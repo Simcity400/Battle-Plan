@@ -518,6 +518,7 @@ pub fn walk(
     )
 }
 
+#[cfg(test)]
 pub fn walk_with_names(
     memory: &impl Memory,
     base: usize,
@@ -541,6 +542,7 @@ pub fn walk_with_names(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_with_tooltip_inputs(
     memory: &impl Memory,
     base: usize,
@@ -565,6 +567,7 @@ pub fn walk_with_tooltip_inputs(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_with_tooltip_and_combat_references(
     memory: &impl Memory,
     base: usize,

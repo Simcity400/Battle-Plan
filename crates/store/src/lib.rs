@@ -367,6 +367,7 @@ impl Store {
     }
 
     /// Opens requested ranges in order with one manifest read.
+    #[cfg(test)]
     pub fn read_many(
         &self,
         key: &SourceKey,

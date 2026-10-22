@@ -34,21 +34,6 @@ pub fn unit_convoys(raw_weight: i64) -> i32 {
     (rounded_raw / ONE) as i32
 }
 
-/// Sum every selected class-0/13 unit in encounter order, including units
-/// whose own admission failed. Unknown weights are not zero.
-pub fn selected_convoys(
-    selection: &[Unit],
-    mut weight: impl FnMut(Unit) -> Fact<i64>,
-) -> Fact<i32> {
-    let mut result = 0_i32;
-    for &unit in selection {
-        if unit.transport_candidate() {
-            result = result.wrapping_add(unit_convoys(weight(unit)?));
-        }
-    }
-    Ok(result)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Transfer {
     /// Raw signed transfer status. Every nonzero value takes the combat arm.

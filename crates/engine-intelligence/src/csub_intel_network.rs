@@ -21,5 +21,3 @@ pub const TARGET_FROM_OPERATIVES: usize = 0x48;
 pub const TARGET_FROM_COUNTERINTELLIGENCE: usize = 0x50;
 /// The subnetwork's own quiet flag, one byte; saved as `sub_network_is_quiet`.
 pub const QUIET: usize = 0x58;
-/// Strength fixed-point denominator.
-pub const STRENGTH_SCALE: i64 = 100_000;

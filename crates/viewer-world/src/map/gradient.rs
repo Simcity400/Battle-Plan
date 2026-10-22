@@ -99,6 +99,7 @@ impl RegionStyle {
 }
 
 /// The field byte after the region's fill factor.
+#[cfg(test)]
 pub fn filled_alpha(alpha: u8, fill: f32) -> u8 {
     if alpha >= 0xef {
         return alpha;

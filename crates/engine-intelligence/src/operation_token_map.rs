@@ -2,8 +2,6 @@
 //! A census includes empty slots through mask plus overflow, stopping before
 //! the separate end sentinel. Slot extent is distinct from live entry count.
 
-/// Inspected operation-token map header span, distinct from full object size.
-pub const HEADER_READ_SIZE: usize = 0x20;
 /// Operation-token slot-array pointer.
 pub const TABLE: usize = 0x08;
 /// Signed i32 live entry count, incremented only for a new target.

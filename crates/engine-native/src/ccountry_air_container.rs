@@ -13,19 +13,16 @@ pub const REFERENCE_CANDIDATE: usize = 0xa8;
 pub const COUNTRY: usize = 0xb0;
 /// Wing-pool membership vector in registration order.
 pub const POOLS: usize = 0xb8;
-/// Pool capacity, u32.
-pub const POOLS_CAPACITY: usize = 0xc0;
 /// Pool count, u32.
 pub const POOLS_COUNT: usize = 0xc4;
 /// Capacity word, i64, initialized to the raw default.
 pub const CAPACITY_RAW: usize = 0xd0;
 /// Initial raw capacity value.
+#[cfg(any(test, feature = "test-support"))]
 pub const INITIAL_CAPACITY_RAW: i64 = 100_000;
 /// Per-base sortie capacity factor, signed fixed5.
 pub const SORTIE_CAPACITY_FACTOR_RAW: usize = 0xd8;
 /// Hourly fuel demand summed from registered wings, supplying the fuel-ratio divisor.
 pub const FUEL_DEMAND_RAW: usize = 0xe0;
-/// Unclassified qword, initially zero.
-pub const RAW_E8_CANDIDATE: usize = 0xe8;
 /// Allocated base/country fuel supplying the fuel-ratio numerator.
 pub const FUEL_ALLOCATED_RAW: usize = 0xf0;

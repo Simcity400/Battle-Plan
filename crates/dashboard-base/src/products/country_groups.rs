@@ -20,11 +20,13 @@
 //! cannot name has no known leader, and that faction's roster is incomplete then.
 
 use super::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_history::CountryIdentityRun};
+#[cfg(any(test, feature = "test-support"))]
+use crate::metadata::validate_campaign;
 use crate::{
     Source, catalogue, content, faction_names,
     metadata::{
         IdentityTrack, LinkTags, TaggedCountry, branch_bounds, check_cancel, link_slots,
-        tagged_countries_indexed, validate_campaign,
+        tagged_countries_indexed,
     },
     transport::json_len,
 };
@@ -32,6 +34,7 @@ use installed_content_core::faction_templates::Catalog;
 use installed_content_localisation::localisation::Localisation;
 use replay::container::Replay;
 use replay_data::rows::tables;
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1532,10 +1535,12 @@ pub fn mark_unobserved(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i3
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     scan_from(replay, branch, cancelled, None)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn scan_from(
     replay: &Replay,
     branch: u64,

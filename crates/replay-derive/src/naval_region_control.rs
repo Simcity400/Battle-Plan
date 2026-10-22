@@ -73,6 +73,7 @@ pub fn regional_rows(frame: &DecodedFrame, region: u32) -> Fact<Vec<&NavalSuprem
 }
 
 /// Control operands remain independent of explanatory-roster failures.
+#[cfg(any(test, feature = "test-support"))]
 pub fn control_sums(
     frame: &DecodedFrame,
     viewer: u32,

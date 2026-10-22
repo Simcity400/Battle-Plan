@@ -91,70 +91,6 @@ pub fn read_owner(
         .ok_or("patrol mission owner unreadable")
 }
 
-/// Reuse the original embedded mission-header observation when available,
-/// including its failure. No native getter or simulation update is executed.
-/// Target-null members demand no progress, chance or reference resolution.
-pub fn read_member(
-    memory: &impl Memory,
-    base: usize,
-    visit: cfleet::TaskForceVisit,
-    original_header: Option<Result<[u8; 16], &'static str>>,
-    resolver: &mut crate::creference_registry::ScopedResolver,
-) -> Operands {
-    read_with(
-        memory,
-        base,
-        visit,
-        original_header,
-        None,
-        false,
-        |reference| resolver.resolve(memory, reference),
-    )
-}
-
-/// Shares the same stat selector when the caller's existing raiding-grid
-/// observation proves a live convoy target. Other members add no convoy reads.
-pub fn read_member_with_convoy(
-    memory: &impl Memory,
-    base: usize,
-    visit: cfleet::TaskForceVisit,
-    original_header: Option<Result<[u8; 16], &'static str>>,
-    convoy_demand: bool,
-    resolver: &mut crate::creference_registry::ScopedResolver,
-) -> Operands {
-    read_with(
-        memory,
-        base,
-        visit,
-        original_header,
-        None,
-        convoy_demand,
-        |reference| resolver.resolve(memory, reference),
-    )
-}
-
-/// Reuses a successful original task-force stat selector as well as the
-/// mission header. None means that the existing census did not select it.
-pub fn read_member_at_stats(
-    memory: &impl Memory,
-    base: usize,
-    visit: cfleet::TaskForceVisit,
-    original_header: Option<Result<[u8; 16], &'static str>>,
-    original_stats: Option<usize>,
-    convoy_demand: bool,
-    resolver: &mut crate::creference_registry::ScopedResolver,
-) -> Operands {
-    read_with(
-        memory,
-        base,
-        visit,
-        original_header,
-        original_stats.map(Ok),
-        convoy_demand,
-        |reference| resolver.resolve(memory, reference),
-    )
-}
-
 /// Carries an original failed stat selector as failure, without retrying it.
 pub fn read_member_observed_stats(
     memory: &impl Memory,
@@ -269,6 +205,7 @@ pub struct Context {
 
 /// Read only the source operands a demanded member's combined detection uses.
 /// A local fault does not suppress headquarters or the location witness.
+#[cfg(test)]
 pub fn read_context(
     memory: &impl Memory,
     base: usize,

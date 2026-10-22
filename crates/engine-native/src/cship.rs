@@ -75,35 +75,15 @@ pub const STRENGTH: usize = 0x6f8;
 pub const ORGANISATION: usize = 0x700;
 /// CShip signed i64 experience.
 pub const EXPERIENCE: usize = 0x708;
-/// CShip signed i64 maximum experience.
-pub const MAXIMUM_EXPERIENCE: usize = 0x710;
 /// CShip CTaskForce pointer.
 pub const TASK_FORCE: usize = 0x728;
-/// Scalar slot width.
-pub const SCALAR_STORAGE_BYTES: usize = 8;
 /// CShip allocation size.
 pub const SIZE: usize = 0x938;
 /// Ship constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00c2_0760;
-/// Scalar-deleting destructor.
-pub const DELETING_DESTRUCTOR_RVA: usize = 0x00c2_1580;
-/// Reference-ID mint/restore routine raising the shared high-water counter.
-pub const REGISTER_ID_RVA: usize = 0x00c2_4b40;
-/// Alternate ID mint/restore routine with an additional game-state gate.
-pub const REGISTER_ID_ALTERNATE_RVA: usize = 0x00bf_0ae0;
 /// Shared type-0x33 unit-ID high-water counter, signed i32, serialized as
 /// `unit` and restored on load. Divisions share this type with ships.
 pub const NEXT_ID_RVA: usize = 0x0306_f268;
-/// Named ship-category values; other category values remain unnamed.
-pub const KNOWN_CATEGORIES: [(u32, &str); 7] = [
-    (2, "submarine"),
-    (3, "destroyer"),
-    (5, "light_cruiser"),
-    (6, "heavy_cruiser"),
-    (8, "battle_cruiser"),
-    (9, "battleship"),
-    (10, "carrier"),
-];
 /// Scalar fixed5 scale for signed i64 serialization.
 pub const FIXED_SCALE: i64 = 100_000;
 
@@ -284,17 +264,6 @@ impl ModelText {
     }
 }
 
-/// Numerical carrier leaves lent by the original model attempt. `None` is
-/// unattempted and `Some(Err)` is an immutable original failure. Flags select
-/// the carrier path and its optional base is independently authenticated.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct TransportModelObservation {
-    pub identity: Option<Result<(), &'static str>>,
-    pub formation_flags: Option<Result<u64, &'static str>>,
-    pub positive_equipment_flags: Option<Result<u64, &'static str>>,
-    pub carrier_air_base: Option<Result<Option<u64>, &'static str>>,
-}
-
 /// Completed equipment-definition observations within one stopped capture.
 /// A fixed reader keeps the last definition; a worker keeps every completed
 /// definition it reached, keyed by its exact (module, definition, token)
@@ -361,11 +330,6 @@ struct ModelHull {
     native_null: bool,
 }
 
-struct ModelObservation<'a> {
-    transport: &'a mut TransportModelObservation,
-    air: &'a mut Option<Result<u64, &'static str>>,
-}
-
 /// Read the model inputs from an existing authenticated ship census. Identity
 /// and the task-force backlink are checked again for this independent table.
 /// The caller owns the current source census and row capacity.
@@ -401,93 +365,16 @@ pub fn read_model_with_selection<M: Memory>(
     source: &Row,
     memo: &mut ModelMemo,
 ) -> Result<(ModelRow, Option<SelectedModelVariant>), &'static str> {
-    read_model_observed_inner(
-        memory,
-        None::<&M>,
-        base,
-        pointer,
-        source,
-        memo,
-        ModelObservation {
-            transport: &mut TransportModelObservation::default(),
-            air: &mut None,
-        },
-    )
-}
-
-/// The ordinary model pass lends original successful and failed carrier leaves.
-/// Unrelated sprite, model-number and maximum-organisation failures cannot
-/// erase an already observed flag or carrier identity.
-pub fn read_model_with_selection_observed(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    source: &Row,
-    memo: &mut ModelMemo,
-    observation: &mut TransportModelObservation,
-) -> Result<(ModelRow, Option<SelectedModelVariant>), &'static str> {
-    read_model_with_selection_transport_observed(
-        memory,
-        memory,
-        base,
-        pointer,
-        source,
-        memo,
-        observation,
-    )
-}
-
-pub fn read_model_with_selection_transport_observed(
-    memory: &impl Memory,
-    transport_memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    source: &Row,
-    memo: &mut ModelMemo,
-    observation: &mut TransportModelObservation,
-) -> Result<(ModelRow, Option<SelectedModelVariant>), &'static str> {
-    let mut air = None;
-    let result = read_model_observed_inner(
-        memory,
-        Some(transport_memory),
-        base,
-        pointer,
-        source,
-        memo,
-        ModelObservation {
-            transport: observation,
-            air: &mut air,
-        },
-    );
-    if observation.identity.is_none() {
-        observation.identity = Some(result.as_ref().map(|_| ()).map_err(|reason| *reason));
-    }
-    if observation.carrier_air_base.is_none()
-        && observation.identity == Some(Ok(()))
-        && let Some(air) = air
-    {
-        // The old counter prefix can fail after its carrier pointer was
-        // copied. Authenticate that loan once, after the old read finishes.
-        observation.carrier_air_base = Some(
-            air.and_then(|air| transport_carrier_base(transport_memory, base, source.id, air)),
-        );
-    }
-    result
+    read_model_observed_inner(memory, base, pointer, source, memo)
 }
 
 fn read_model_observed_inner(
     memory: &impl Memory,
-    transport_memory: Option<&impl Memory>,
     base: usize,
     pointer: usize,
     source: &Row,
     memo: &mut ModelMemo,
-    observation: ModelObservation<'_>,
 ) -> Result<(ModelRow, Option<SelectedModelVariant>), &'static str> {
-    let ModelObservation {
-        transport: observation,
-        air: air_observation,
-    } = observation;
     let at = |offset| {
         pointer
             .checked_add(offset)
@@ -507,25 +394,6 @@ fn read_model_observed_inner(
         &mut [&mut identity, &mut parent, &mut flags, &mut model],
     );
     if completed != 4 {
-        // The first two successful spans are independent of model number.
-        // The source's original SHIPS authentication owns the parent loan;
-        // retain copied flags, and retain a failed flags read as a failure.
-        if completed >= 2 {
-            let header_valid = base.checked_add(VTABLE_RVA).map(|vtable| vtable as u64)
-                == Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
-                && u64::from_le_bytes(identity[8..].try_into().unwrap()) == source.id
-                && u64::from_le_bytes(parent) != 0;
-            observation.identity = Some(if header_valid {
-                Ok(())
-            } else {
-                Err("ship model identity differs from census")
-            });
-            observation.formation_flags = Some(if completed >= 3 {
-                Ok(u64::from_le_bytes(flags))
-            } else {
-                Err("ship model formation flags unreadable")
-            });
-        }
         return Err("ship model fields unreadable");
     }
     let expected = base
@@ -565,30 +433,11 @@ fn read_model_observed_inner(
     {
         return Err("ship model task force differs from census");
     }
-    observation.identity = Some(Ok(()));
-    observation.formation_flags = Some(Ok(u64::from_le_bytes(flags)));
-    let selection = if let Some(transport_memory) =
-        transport_memory.filter(|_| u64::from_le_bytes(flags) & (1 << 22) == 0)
-    {
-        let mut flags = Ok(0);
-        let result = cequipment_variant_pool::model_selection_transport_observed(
-            memory,
-            transport_memory,
-            base,
-            at(EQUIPMENT_POOL)?,
-            &mut flags,
-        );
-        observation.positive_equipment_flags = Some(flags);
-        result
-    } else {
-        let result = cequipment_variant_pool::model_selection(memory, base, at(EQUIPMENT_POOL)?);
-        observation.positive_equipment_flags = Some(result.map(|(_, flags)| flags));
-        result
-    };
-    let (selected, positive_equipment_flags) = selection?;
+    let (selected, positive_equipment_flags) =
+        cequipment_variant_pool::model_selection(memory, base, at(EQUIPMENT_POOL)?)?;
     let fallback_sprite = model_text(memory, at(FALLBACK_SPRITE)?, memo.growing)?;
     let (definition_valid, maximum_strength, air, anti_air_base) =
-        read_model_counters_observed(memory, pointer, air_observation)?;
+        read_model_counters(memory, pointer)?;
     let mut row = ModelRow {
         ship,
         positive_equipment_flags,
@@ -601,9 +450,7 @@ fn read_model_observed_inner(
         anti_air_base,
         ..ModelRow::default()
     };
-    let base_observation = transport_carrier_base(memory, base, ship, air);
-    observation.carrier_air_base = Some(base_observation);
-    row.carrier_air_base = base_observation?.unwrap_or(0);
+    row.carrier_air_base = transport_carrier_base(memory, base, ship, air)?.unwrap_or(0);
     let mut selected_variant = None;
     if selected != 0 {
         let selected_at = |offset| {
@@ -720,18 +567,9 @@ pub fn read_model_subunit_index(
 
 /// Four unconditional counter observations. No value predicate lies between
 /// them; the completed prefix retains each diagnostic.
-#[cfg(test)]
 fn read_model_counters(
     memory: &impl Memory,
     pointer: usize,
-) -> Result<(u8, i64, u64, i64), &'static str> {
-    read_model_counters_observed(memory, pointer, &mut None)
-}
-
-fn read_model_counters_observed(
-    memory: &impl Memory,
-    pointer: usize,
-    observation: &mut Option<Result<u64, &'static str>>,
 ) -> Result<(u8, i64, u64, i64), &'static str> {
     let addresses = [
         DEFINITION_VALID,
@@ -759,12 +597,7 @@ fn read_model_counters_observed(
                 read(memory, at(DEFINITION_VALID)?)
                     .ok_or("ship definition-valid byte unreadable")?,
                 read(memory, at(MAXIMUM_STRENGTH)?).ok_or("ship maximum strength unreadable")?,
-                {
-                    let raw = read(memory, at(CARRIER_AIR_BASE)?)
-                        .ok_or("ship carrier air base unreadable");
-                    *observation = Some(raw);
-                    raw?
-                },
+                read(memory, at(CARRIER_AIR_BASE)?).ok_or("ship carrier air base unreadable")?,
                 read(memory, at(ANTI_AIR_BASE)?).ok_or("ship anti-air base unreadable")?,
             ))
         })();
@@ -778,11 +611,6 @@ fn read_model_counters_observed(
         [valid_at, strength_at, air_at, anti_air_at],
         &mut [&mut valid, &mut strength, &mut air, &mut anti_air],
     );
-    if completed >= 3 {
-        *observation = Some(Ok(u64::from_le_bytes(air)));
-    } else if completed == 2 {
-        *observation = Some(Err("ship carrier air base unreadable"));
-    }
     if completed != 4 {
         return Err([
             "ship definition-valid byte unreadable",
@@ -859,57 +687,6 @@ fn transport_carrier_base(
         return Err("ship carrier air base has null handle");
     }
     Ok(Some(handle))
-}
-
-/// Complete only genuinely unattempted carrier leaves inside the original
-/// authenticated SHIPS loan. Original errors, including pool failures, remain
-/// immutable. The carrier-flag early-out skips the pool.
-pub fn read_transport_model(
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    ship: u64,
-    mut original: TransportModelObservation,
-) -> TransportModelObservation {
-    if original.identity.is_some_and(|identity| identity.is_err()) {
-        return original;
-    }
-    original.identity = Some(Ok(()));
-    let flags = *original.formation_flags.get_or_insert_with(|| {
-        pointer
-            .checked_add(FORMATION_FLAGS)
-            .and_then(|at| read(memory, at))
-            .ok_or("ship transport formation flags unreadable")
-    });
-    let Ok(flags) = flags else {
-        return original;
-    };
-    let carrier = if flags & (1 << 22) != 0 {
-        true
-    } else {
-        let positive = *original.positive_equipment_flags.get_or_insert_with(|| {
-            pointer
-                .checked_add(EQUIPMENT_POOL)
-                .ok_or("ship transport equipment pool overflow")
-                .and_then(|pool| {
-                    cequipment_variant_pool::transport_carrier_flags(memory, base, pool)
-                })
-        });
-        let Ok(positive) = positive else {
-            return original;
-        };
-        positive & (1 << 22) != 0 || (flags | positive) & (1 << 37) != 0
-    };
-    if carrier && original.carrier_air_base.is_none() {
-        original.carrier_air_base = Some(
-            pointer
-                .checked_add(CARRIER_AIR_BASE)
-                .and_then(|at| read::<u64>(memory, at))
-                .ok_or("ship carrier air base unreadable")
-                .and_then(|raw| transport_carrier_base(memory, base, ship, raw)),
-        );
-    }
-    original
 }
 
 /// Cache hints for the census fields [`read_row`] copies from the ship at

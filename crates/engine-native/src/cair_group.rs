@@ -32,7 +32,3 @@ pub const NAME: usize = 0x50;
 pub const THEATRE_HANDLE: usize = 0x70;
 /// Vector of full raw CAirWing references.
 pub const WINGS: usize = 0x78;
-/// Wing-vector capacity, u32.
-pub const WINGS_CAPACITY: usize = 0x80;
-/// Wing-vector count, u32; occurrence order is preserved.
-pub const WINGS_COUNT: usize = 0x84;

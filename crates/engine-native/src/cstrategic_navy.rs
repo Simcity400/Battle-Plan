@@ -315,6 +315,7 @@ pub fn access_modes(
 }
 
 /// Worker-owned storage grows from the original native headers.
+#[cfg(any(test, feature = "test-support"))]
 pub fn access_modes_growing(
     memory: &impl Memory,
     base: usize,

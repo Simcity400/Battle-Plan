@@ -15,20 +15,13 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x0294_2188;
 /// First wing-combat-record vector.
 pub const FIRST_RECORDS: usize = 0x08;
-/// First-vector capacity, i32.
-pub const FIRST_RECORDS_CAPACITY: usize = 0x10;
 /// First-vector count, i32.
+#[cfg(test)]
 pub const FIRST_RECORDS_COUNT: usize = 0x14;
 /// Second wing-combat-record vector, selected by reporting country.
 pub const SECOND_RECORDS: usize = 0x20;
-/// Second-vector capacity, i32.
-pub const SECOND_RECORDS_CAPACITY: usize = 0x28;
-/// Second-vector count, i32.
-pub const SECOND_RECORDS_COUNT: usize = 0x2c;
 /// Raw owner-country link, including zero, copied from strategic air.
 pub const OWNER: usize = 0x38;
-/// Record lookup and creation using the shared vector layout.
-pub const GET_OR_CREATE_RECORD_RVA: usize = 0x0195_0340;
 /// Record update accumulating flags, masks, plane high-water count and damage.
 pub const UPDATE_RECORD_RVA: usize = 0x0194_f590;
 /// Pruning records older than the runtime timeout from both vectors.
@@ -88,163 +81,6 @@ const ROOT_FIELDS: [RecordField; 4] = [
 ];
 const ROOT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&ROOT_FIELDS, ROOT_RECORD_BYTES).expect("valid record layout");
-
-/// Enumerates the complete country/region source directly. Every manager slot
-/// is authenticated and every region-pointer slot is read, including region
-/// zero. Only null native region pointers are absent. A late root failure
-/// invalidates both tables rather than certifying a readable prefix.
-///
-/// Empty allocated holders contribute no rows; this table records retained
-/// entries, not the allocation of an otherwise empty holder. Preserve source
-/// order when grouping records for playback, including duplicate native lookup
-/// coordinates. Damage has no parent-record ordinal, so assigning its entries
-/// among duplicate parent coordinates is explicitly ambiguous.
-pub fn walk_world(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    records: &mut [sair_wing_combat_data::Row],
-    damage: &mut [sdamage_entry::Row],
-) -> Capture {
-    walk_world_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Fixed(records),
-        crate::walk::Buffer::Fixed(damage),
-    )
-}
-
-pub fn walk_world_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    records: &mut Vec<sair_wing_combat_data::Row>,
-    damage: &mut Vec<sdamage_entry::Row>,
-) -> Capture {
-    walk_world_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(records),
-        crate::walk::Buffer::Growing(damage),
-    )
-}
-
-pub fn walk_world_buffer(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    mut records: crate::walk::Buffer<'_, sair_wing_combat_data::Row>,
-    mut damage: crate::walk::Buffer<'_, sdamage_entry::Row>,
-) -> Capture {
-    let mut record_len = 0_usize;
-    let mut record_omitted = 0_u32;
-    let mut damage_len = 0_usize;
-    let mut damage_omitted = 0_u32;
-    let mut damage_error = None;
-    let result = cstrategic_air::visit(memory, base, game_state, |country| {
-        let regions = country
-            .address
-            .checked_add(cstrategic_air::REGION_COMBAT)
-            .and_then(|at| Array::read(memory, at, 8))
-            .ok_or("air combat region roster unreadable or invalid")?;
-        // The region table is a contiguous pointer vector. One guarded round
-        // per batch replaces one read per region, and the live roots of that
-        // batch enter a single walk whose per-root reads are gathered too.
-        // Null slots and the first unreadable slot keep their positions.
-        let mut slots = [0_usize; ROOT_BATCH];
-        let mut slot_bytes = [0_u8; ROOT_BATCH * 8];
-        let mut roots = [Root {
-            country: 0,
-            region: 0,
-            address: 0,
-        }; ROOT_BATCH];
-        let mut first = 0;
-        while first < regions.count {
-            let count = ((regions.count - first) as usize).min(ROOT_BATCH);
-            for (index, slot) in slots[..count].iter_mut().enumerate() {
-                *slot = regions.element(first + index as u32, 8).unwrap_or(0);
-            }
-            let copied = memory.copy_records(
-                RecordSources::Pointers(&slots[..count]),
-                &POINTER_LAYOUT,
-                &mut slot_bytes[..count * 8],
-            );
-            let mut live = 0;
-            let mut unreadable = copied < count;
-            for index in 0..copied.min(count) {
-                let bytes = slot_bytes[index * 8..index * 8 + 8].try_into().unwrap();
-                let Ok(address) = usize::try_from(u64::from_le_bytes(bytes)) else {
-                    unreadable = true;
-                    break;
-                };
-                if address != 0 {
-                    roots[live] = Root {
-                        country: country.country,
-                        region: first + index as u32,
-                        address,
-                    };
-                    live += 1;
-                }
-            }
-            let remaining_damage = if damage_error.is_none() {
-                damage.suffix(damage_len)
-            } else {
-                crate::walk::Buffer::Fixed(&mut [])
-            };
-            let next = walk_buffer(
-                memory,
-                base,
-                &roots[..live],
-                records.suffix(record_len),
-                remaining_damage,
-            );
-            match next.records {
-                Outcome::Rows { len } => record_len += len,
-                Outcome::Truncated { len, unread_rows } => {
-                    record_len += len;
-                    record_omitted = record_omitted
-                        .checked_add(unread_rows)
-                        .ok_or("air combat record count overflow")?;
-                }
-                Outcome::Unavailable { reason } => return Err(reason),
-            }
-            if damage_error.is_none() {
-                match next.damage {
-                    Outcome::Rows { len } => damage_len += len,
-                    Outcome::Truncated { len, unread_rows } => {
-                        damage_len += len;
-                        if let Some(total) = damage_omitted.checked_add(unread_rows) {
-                            damage_omitted = total;
-                        } else {
-                            damage_error = Some("air damage row count overflow");
-                        }
-                    }
-                    Outcome::Unavailable { reason } => damage_error = Some(reason),
-                }
-            }
-            if unreadable {
-                return Err("air combat region pointer unreadable or address overflow");
-            }
-            first += count as u32;
-        }
-        Ok(())
-    });
-    if let Err(reason) = result {
-        return Capture {
-            records: Outcome::Unavailable { reason },
-            damage: Outcome::Unavailable { reason },
-        };
-    }
-    Capture {
-        records: outcome(record_len, record_omitted),
-        damage: match damage_error {
-            Some(reason) => Outcome::Unavailable { reason },
-            None => outcome(damage_len, damage_omitted),
-        },
-    }
-}
 
 /// Reads both physical record vectors and each record's two damage vectors.
 /// The caller supplies the complete root census; an unavailable or truncated
@@ -963,89 +799,6 @@ mod tests {
         );
         put(&mut bytes, REGION_SLOTS, &(REGION as u64).to_le_bytes());
         bytes
-    }
-
-    #[test]
-    fn world_census_preserves_region_zero_owner_alias_and_exact_capacity() {
-        let bytes = world_fixture();
-        let memory = SliceMemory {
-            base: MEMORY_BASE,
-            bytes: &bytes,
-        };
-        let census = crate::read_census::ReadCensus::new(&memory);
-        let mut records = [sair_wing_combat_data::Row::default(); 3];
-        let mut damage = [sdamage_entry::Row::default(); 2];
-        assert_eq!(
-            walk_world(&census, IMAGE_BASE, GAME, &mut records, &mut damage),
-            Capture {
-                records: Outcome::Rows { len: 3 },
-                damage: Outcome::Rows { len: 2 },
-            }
-        );
-        // Deterministic cost proxy. Every country slot costs one shared slot
-        // gather and one identity gather per 64 slots, and every batch of 64
-        // region slots costs one pointer gather plus one root gather, instead
-        // of three reads per country slot and five per region.
-        assert_eq!(census.calls(), 29);
-        let memory = SliceMemory {
-            base: MEMORY_BASE,
-            bytes: &bytes,
-        };
-        assert!(
-            records
-                .iter()
-                .all(|row| row.key.country == 2 && row.key.region == 0)
-        );
-        assert_eq!(
-            walk_world(
-                &memory,
-                IMAGE_BASE,
-                GAME,
-                &mut records[..1],
-                &mut damage[..1]
-            ),
-            Capture {
-                records: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 2
-                },
-                damage: Outcome::Truncated {
-                    len: 1,
-                    unread_rows: 1
-                },
-            }
-        );
-    }
-
-    #[test]
-    fn late_world_root_failure_never_certifies_earlier_rows() {
-        let mut records = [sair_wing_combat_data::Row::default(); 3];
-        let mut damage = [sdamage_entry::Row::default(); 2];
-        // A second live manager slot and a second live region slot both fail
-        // after the first one's rows were already read, and each keeps its own
-        // reason even though its whole batch was gathered before decoding.
-        for (slot, pointer, reason) in [
-            (
-                AIR_COUNTRIES + 16,
-                AIR as u64,
-                "strategic air owner differs from canonical country slot",
-            ),
-            (
-                REGION_SLOTS + 16,
-                u64::MAX,
-                "air combat region vtable mismatch or unreadable",
-            ),
-        ] {
-            let mut bytes = world_fixture();
-            put(&mut bytes, slot, &pointer.to_le_bytes());
-            let memory = SliceMemory {
-                base: MEMORY_BASE,
-                bytes: &bytes,
-            };
-            let result = walk_world(&memory, IMAGE_BASE, GAME, &mut records, &mut damage);
-            assert_eq!(result.records, Outcome::Unavailable { reason });
-            assert_eq!(result.records, result.damage);
-        }
     }
 
     fn capture(

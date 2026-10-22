@@ -23,7 +23,5 @@ pub const COUNTRY: usize = 0x18;
 pub const NAME: usize = 0x20;
 /// Child CAirGroup pointer vector requiring matching parent references.
 pub const GROUPS: usize = 0x40;
-/// Group-vector capacity, u32.
-pub const GROUPS_CAPACITY: usize = 0x48;
 /// Group-vector count, u32; occurrence order is preserved.
 pub const GROUPS_COUNT: usize = 0x4c;

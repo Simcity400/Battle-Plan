@@ -4,22 +4,10 @@
 pub const SIZE: usize = 0xd8;
 /// Run-length pixel-span array.
 pub const PIXEL_SPANS: usize = 0x58;
-/// Signed i32 pixel-span count.
-pub const PIXEL_SPAN_COUNT: usize = 0x64;
 /// Province-neighbour array.
 pub const NEIGHBOURS: usize = 0x70;
 /// Signed i32 neighbour count.
 pub const NEIGHBOUR_COUNT: usize = 0x7c;
-/// Signed i32 x accumulator/mean, divided by pixel count for the centroid.
-pub const PIXEL_MEAN_X: usize = 0xb0;
-/// Signed i32 bitmap-y accumulator/mean, divided for the centroid.
-pub const PIXEL_MEAN_Y: usize = 0xb4;
-/// Signed i32 pixel-centroid x.
-pub const CENTROID_X: usize = 0xb8;
-/// Signed i32 bitmap-y/world-z centroid.
-pub const CENTROID_Y: usize = 0xbc;
-/// Pixel u32 count dividing centroid accumulators.
-pub const PIXEL_COUNT: usize = 0xc0;
 /// Province-definition u32 ID.
 pub const ID: usize = 0xc4;
 /// Province-definition terrain flag byte.
@@ -36,18 +24,8 @@ pub const LAKE_FLAG: u8 = 2;
 pub const PORT_SEA: usize = 0xc8;
 /// Terrain-type pointer reached through the province definition.
 pub const TERRAIN: usize = 0xa8;
-/// Ordered province-neighbour lookup.
-pub const FIND_NEIGHBOUR_RVA: usize = 0x013f_4f30;
 /// ID-taking constructor, clearing centroid fields.
 pub const CONSTRUCTOR_RVA: usize = 0x013f_3100;
-/// Null constructor with the same initialization and no ID argument.
-pub const NULL_CONSTRUCTOR_RVA: usize = 0x013f_3040;
-/// Centroid writer computing integer-truncated means from u16 pixel runs.
-pub const UPDATE_CENTROID_RVA: usize = 0x013f_4fd0;
-/// Coastal setter updating the low terrain-flag bit.
-pub const SET_COASTAL_FLAG_RVA: usize = 0x013f_52b0;
-/// Adjacency-rule area pointer.
-pub const ADJACENCY_RULE_AREA: usize = 0x98;
 
 /// Province IDs in the raster are u16, bounding the oracle census to their
 /// representable range. Refuse a larger count before sizing allocation.

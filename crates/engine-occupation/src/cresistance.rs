@@ -39,8 +39,6 @@ pub const MAX_LEVEL: i64 = 10_000_000;
 pub const CONSTRUCTOR_RVA: usize = 0x00f7_bda0;
 /// Update integrating signed speeds into bounded levels.
 pub const UPDATE_RVA: usize = 0x00f8_2ed0;
-/// Recompute both signed-qword speeds.
-pub const UPDATE_SPEEDS_RVA: usize = 0x00f8_6e10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

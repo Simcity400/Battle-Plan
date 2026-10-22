@@ -12,11 +12,12 @@
 //! family's (`territory_mutations`); they forward their callers here.
 //! Readers authenticate each object they read and copy only owned integers.
 
-use super::{CountryIdentity, at, identity, pointer, state, value, verify_vtable};
-use crate::{
-    Memory, ccountry, cdiplomacy_status, cgame_state, crelation, cstate, cwar_relation,
-    peace_conference,
-};
+#[cfg(test)]
+use super::pointer;
+use super::{CountryIdentity, at, identity, state, value, verify_vtable};
+#[cfg(test)]
+use crate::cdiplomacy_status;
+use crate::{Memory, ccountry, cgame_state, crelation, cstate, cwar_relation, peace_conference};
 
 /// One call site reaching an observed operation: the native return address
 /// its CALL pushes, and the replay route that names it.
@@ -322,6 +323,7 @@ impl<'a, M: Memory> World<'a, M> {
     }
 
     /// The owner of a `CDiplomacyStatus*`.
+    #[cfg(test)]
     pub fn diplomacy_owner(&self, diplomacy: usize) -> Result<CountryIdentity, &'static str> {
         verify_vtable(
             self.memory,

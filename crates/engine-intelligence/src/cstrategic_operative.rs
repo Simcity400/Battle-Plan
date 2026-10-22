@@ -11,14 +11,6 @@ pub const CONSTRUCTOR_RVA: usize = 0x11d_ca80;
 pub const OWNER: usize = 0x08;
 /// Intel-network pointer-vector data.
 pub const NETWORKS_DATA: usize = 0x10;
-/// Pointer-vector signed capacity.
-pub const NETWORKS_CAPACITY: usize = 0x18;
-/// Pointer-vector signed length.
-pub const NETWORKS_COUNT: usize = 0x1c;
-/// Network-vector allocator pointer.
-pub const NETWORKS_ALLOCATOR: usize = 0x20;
-/// Network-pointer width.
-pub const NETWORK_STRIDE: usize = 8;
 /// Control-trade influence map on the target country's object, keyed by the
 /// influencing country (`strategic_operatives::TRADE_*` entries). Saved as
 /// `trade_influence_modifier_of_buyers`.

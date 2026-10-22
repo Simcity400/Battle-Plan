@@ -36,14 +36,6 @@ pub const PROVINCE_FLAG: u32 = 1;
 pub const STATE_FLAG: u32 = 2;
 /// Constructor installing arrays and location controls.
 pub const CONSTRUCTOR_RVA: usize = 0x0115_cd70;
-/// Province resolver checking flags and location id.
-pub const GET_PROVINCE_RVA: usize = 0x0116_2320;
-/// State resolver following province state or the state table directly.
-pub const GET_STATE_RVA: usize = 0x0116_2450;
-/// Template-to-building lookup through the index and pointer arrays.
-pub const LOOKUP_BUILDING_RVA: usize = 0x0116_0cd0;
-/// Level-assignment applier looking up the building before setting its level.
-pub const APPLY_BUILDING_LEVEL_ASSIGNMENT_RVA: usize = 0x0116_42f0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {

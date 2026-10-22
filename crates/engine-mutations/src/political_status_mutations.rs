@@ -220,12 +220,6 @@ pub const MUTATIONS: [(MutationSite, Patch, Domain); 9] = [
 /// structure only when last election changes across the call.
 pub const FORWARDED: [&str; 2] = ["reset_country", "politics_daily"];
 
-/// Daily election-day store: the status's last-election word
-/// (`cpolitical_status::LAST_ELECTION`) takes EBX, with R14 retaining the
-/// status originally passed in RCX. The daily popularity call uses the
-/// clamped setter.
-pub const DAILY_LAST_ELECTION_STORE_RVA: usize = 0xb9_932f;
-
 #[cfg(test)]
 mod tests {
     use super::*;

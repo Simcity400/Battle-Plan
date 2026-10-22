@@ -14,22 +14,8 @@ pub const INLINE_CAPACITY: u64 = 15;
 pub const STRIDE: usize = 32;
 /// MSVC string pointer-union alignment.
 pub const ALIGNMENT: usize = 8;
-/// Byte-append entry receiving destination string, source bytes and length.
-pub const APPEND_BYTES_RVA: usize = 0x0012_9700;
-/// Byte-append entry sentinel.
-pub const APPEND_BYTES_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x49, 0x8b, 0xf0,
-];
-/// String copy/builder entry.
-pub const COPY_CANDIDATE_RVA: usize = 0x0011_db00;
-/// String suffix-builder entry.
-pub const SUFFIX_BUILDER_CANDIDATE_RVA: usize = 0x0011_fb30;
-/// Byte-assignment entry receiving string storage, bytes and length.
-pub const ASSIGN_BYTES_CANDIDATE_RVA: usize = 0x0012_9790;
 /// String constructor used for callback filenames.
 pub const CONSTRUCT_BYTES_CANDIDATE_RVA: usize = 0x0011_d460;
-/// Byte-insertion entry receiving destination, position, prefix and length.
-pub const INSERT_BYTES_CANDIDATE_RVA: usize = 0x001a_d320;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Text<const N: usize> {

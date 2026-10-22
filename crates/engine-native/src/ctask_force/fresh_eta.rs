@@ -1406,6 +1406,7 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     /// An authenticated original demand survives a separate motion refusal.
     /// It reads risk stats and speed once, without range or simulation flags.
+    #[cfg(test)]
     pub(super) fn capture_mission_risk(
         &mut self,
         task: usize,

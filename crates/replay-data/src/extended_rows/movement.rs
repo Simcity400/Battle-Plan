@@ -91,6 +91,7 @@ pub struct ByteRun {
 
 impl SparseBytes {
     /// The canonical sparse form of a dense native array.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_dense(bytes: &[u8]) -> io::Result<Self> {
         let len = u32::try_from(bytes.len())
             .map_err(|_| invalid("sparse byte array length exceeds u32"))?;

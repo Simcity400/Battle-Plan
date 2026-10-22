@@ -21,28 +21,14 @@ pub const REFERENCE_TYPE: u32 = 67;
 pub const HANDLE: usize = 0x08;
 /// CTheatre CControllerArea pointer-vector data.
 pub const CONTROLLER_AREA_DATA: usize = 0x18;
-/// CTheatre controller-area u32 count.
-pub const CONTROLLER_AREA_COUNT: usize = 0x24;
 /// CTheatre stationed-unit vector data.
 pub const STATIONED_UNIT_DATA: usize = 0x68;
-/// CTheatre stationed-unit u32 count.
-pub const STATIONED_UNIT_COUNT: usize = 0x74;
 /// CTheatre regular COrdersGroup vector data.
 pub const ORDERS_GROUP_DATA: usize = 0x80;
 /// CTheatre CArmyGroup vector data.
 pub const ARMY_GROUP_DATA: usize = 0x98;
-/// CTheatre army-group u32 capacity.
-pub const ARMY_GROUP_CAPACITY: usize = 0xa0;
-/// CTheatre army-group u32 count.
-pub const ARMY_GROUP_COUNT: usize = 0xa4;
-/// CTheatre combined orders-group vector data.
-pub const COMBINED_ORDERS_GROUP_DATA: usize = 0xb0;
 /// CTheatre CTheaterGroup pointer-vector data.
 pub const THEATER_GROUP_DATA: usize = 0xc8;
-/// CTheatre theater-group u32 capacity.
-pub const THEATER_GROUP_CAPACITY: usize = 0xd0;
-/// CTheatre theater-group u32 count.
-pub const THEATER_GROUP_COUNT: usize = 0xd4;
 /// CTheatre raw owner country.
 pub const OWNER: usize = 0x48;
 /// CTheatre signed volunteer-country tag.
@@ -51,12 +37,6 @@ pub const VOLUNTEERS_THEATRE: usize = 0x110;
 pub const SIZE: usize = 0x1d0;
 /// CTheatre constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00ed_4cc0;
-/// CTheatre allocation/insertion.
-pub const CREATE_RVA: usize = 0x00ee_5160;
-/// CTheatre loader.
-pub const LOAD_RVA: usize = 0x00ee_9120;
-/// CTheatre controller-area writer.
-pub const REBUILD_CONTROLLER_AREAS_RVA: usize = 0x00ed_6840;
 
 /// The CTheatre spans of one LandTheatres header row, as `(offset, len)`:
 /// identity (vtable and handle), raw owner, and volunteer key. The land walk
@@ -86,6 +66,7 @@ pub struct ReservedLandWalk {
     pub capacity_short: bool,
 }
 
+#[cfg(test)]
 pub fn walk_reserved_land_headers(
     memory: &impl Memory,
     base: usize,

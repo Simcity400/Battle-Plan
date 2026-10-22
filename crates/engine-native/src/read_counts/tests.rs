@@ -781,15 +781,6 @@ fn cached_capabilities_forward_arguments_and_failures_without_source_charges() {
         ) -> Option<Result<usize, &'static str>> {
             ((base, member) == (5, 6)).then_some(Err("source root unavailable"))
         }
-
-        fn movement_air_defense_value(
-            &self,
-            defense: i64,
-            denominator: i64,
-            reduction: i64,
-        ) -> Option<Result<i64, &'static str>> {
-            ((defense, denominator, reduction) == (i64::MIN, 0, i64::MAX)).then_some(Ok(-7))
-        }
     }
 
     ReadCounts::take_current();
@@ -821,14 +812,6 @@ fn cached_capabilities_forward_arguments_and_failures_without_source_charges() {
         Some(Err("source root unavailable"))
     );
     assert_eq!(memory.movement_primary_root(6, 5), None);
-    assert_eq!(
-        memory.movement_air_defense_value(i64::MIN, 0, i64::MAX),
-        Some(Ok(-7))
-    );
-    assert_eq!(
-        memory.movement_air_defense_value(i64::MIN, 1, i64::MAX),
-        None
-    );
     assert_eq!(ReadCounts::take_current(), ReadCounts::ZERO);
 }
 

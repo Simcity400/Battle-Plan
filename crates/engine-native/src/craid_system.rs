@@ -3,18 +3,11 @@
 
 /// Primary vtable.
 pub const VTABLE_RVA: usize = 0x0295_b3e8;
-/// Type descriptor.
-pub const TYPE_DESCRIPTOR_RVA: usize = 0x0322_7b38;
 /// Country-raid-status array pointer.
 pub const COUNTRY_STATUSES: usize = 0xd8;
 /// Country-status array capacity, u32.
+#[cfg(test)]
 pub const COUNTRY_STATUSES_CAPACITY: usize = 0xe0;
-/// Country-raid-status array count, u32, one entry per canonical slot.
-pub const COUNTRY_STATUSES_COUNT: usize = 0xe4;
-/// Per-country raid-status array constructor.
-pub const INITIALIZE_COUNTRY_STATUSES_RVA: usize = 0x00e6_ee70;
-/// Country-status lookup indexed by canonical slot and row stride.
-pub const COUNTRY_STATUS_LOOKUP_RVA: usize = 0x00e7_05c0;
 
 use crate::{
     Memory, ccountry, ccountry_raid_status, cgame_state, cpdx_array::Array, craid_instance,

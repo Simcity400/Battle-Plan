@@ -279,16 +279,6 @@ impl<M: Memory> Memory for CountedMemory<M> {
     ) -> Option<Result<usize, &'static str>> {
         self.0.movement_primary_root(base, member)
     }
-
-    fn movement_air_defense_value(
-        &self,
-        defense: i64,
-        denominator: i64,
-        reduction: i64,
-    ) -> Option<Result<i64, &'static str>> {
-        self.0
-            .movement_air_defense_value(defense, denominator, reduction)
-    }
 }
 
 #[inline]

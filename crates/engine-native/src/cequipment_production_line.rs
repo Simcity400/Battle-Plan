@@ -7,10 +7,6 @@ use crate::{
     read_slice,
 };
 
-/// CEquipmentProductionLine resource-demand entry array; compact_market_trade_oil_production_need reads it.
-pub const RESOURCE_DEMANDS: usize = 0x58;
-/// CEquipmentProductionLine resource-demand count i32; compact_market_trade_oil_production_need reads it.
-pub const RESOURCE_DEMANDS_COUNT: usize = 0x64;
 /// CEquipmentProductionLine CEquipmentVariant pointer.
 pub const EQUIPMENT_VARIANT: usize = 0x88;
 /// CEquipmentProductionLine industrial organisation CID (type u32 then id u32).
@@ -28,16 +24,6 @@ pub const REQUESTED_FACTORIES: usize = 0xe8;
 /// can exceed active factories. The ordinary census records the average;
 /// `production_modifiers` retains the complete ordered array.
 pub const FACTORY_EFFICIENCIES: usize = 0xc0;
-/// CEquipmentProductionLine per-factory efficiency count, i32.
-pub const FACTORY_EFFICIENCIES_COUNT: usize = 0xcc;
-/// Current efficiency uses [`efficiency_average`] with the active factory
-/// count. The production view rounds its Q15 result to a whole percent.
-pub const EFFICIENCY_CURRENT_RVA: usize = 0x0192_0d20;
-/// Efficiency averager; [`efficiency_average`] describes its arithmetic.
-pub const EFFICIENCY_AVERAGE_RVA: usize = 0x0192_0bb0;
-/// Efficiency cap in fixed5, computed from modifiers and converted to Q15
-/// for refresh. The cap is not recorded.
-pub const EFFICIENCY_CAP_RVA: usize = 0x0192_2a00;
 
 /// Maximum-factory dispatch slot, used to clamp the efficiency count.
 /// Military lines select their type's optional limit, then its archetype's,

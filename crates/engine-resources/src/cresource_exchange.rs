@@ -39,8 +39,6 @@ pub const NO_TRADE_INFLUENCE: usize = 0xe8;
 pub const NO_RESOURCES: usize = 0xe9;
 /// Resource-exchange constructor.
 pub const CONSTRUCTOR_RVA: usize = 0xc96c20;
-/// Route lookup using exporter resources and resolved importer country link.
-pub const GET_ROUTE_RVA: usize = 0xc96ad0;
 
 /// Full reference-object handle containing both type and ID words.
 pub const REFERENCE: usize = 0x08;

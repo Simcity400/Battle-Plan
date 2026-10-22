@@ -6,8 +6,6 @@ use crate::{Memory, cpdx_array::Array, nproject_cprogram_status, nproject_cproje
 pub const VTABLE_RVA: usize = 0x029b_0238;
 /// First project pointer in the contiguous pool.
 pub const PROJECTS: usize = 0x10;
-/// Packed u64 project capacity/count.
-pub const PACKED_CAPACITY_COUNT: usize = 0x18;
 /// Project u32 capacity in the low half of the header.
 pub const CAPACITY: usize = 0x18;
 /// Project u32 count in the high half of the header.

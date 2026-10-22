@@ -18,6 +18,7 @@ pub const END: u8 = 0xff;
 /// Disrupted-supply key u32 province id.
 pub const PROVINCE: usize = 0x08;
 /// Disrupted-supply key u32 node type.
+#[cfg(test)]
 pub const NODE_TYPE: usize = 0x0c;
 /// Disrupted-supply signed i64 fixed5 value.
 pub const VALUE: usize = 0x10;

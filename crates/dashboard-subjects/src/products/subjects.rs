@@ -38,19 +38,22 @@ use dashboard_base::{
     products::Product,
     products::country_groups::{HourRun, HourSpan, extend, mark_unobserved},
 };
-use dashboard_text::metadata::{LinkTags, branch_bounds, validate_campaign};
+#[cfg(any(test, feature = "test-support"))]
+use dashboard_text::metadata::validate_campaign;
+use dashboard_text::metadata::{LinkTags, branch_bounds};
 use installed_content_core::autonomy::AutonomyStates;
 use replay::container::Replay;
 use replay_data::{rows::SubjectRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
+#[cfg(any(test, feature = "test-support"))]
+use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
@@ -1195,6 +1198,7 @@ impl Scan {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
     let selected = [
         TableId::Campaign,

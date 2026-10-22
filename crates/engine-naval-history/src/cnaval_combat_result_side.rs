@@ -188,20 +188,15 @@ pub const VTABLE_RVA: usize = 0x0294_7540;
 pub const SIZE: usize = 0x70;
 /// CNavalCombatResultSide member pointer array.
 pub const MEMBERS: usize = 0x20;
-/// CNavalCombatResultSide member capacity u32.
-pub const MEMBERS_CAPACITY: usize = 0x28;
-/// CNavalCombatResultSide member count u32.
-pub const MEMBERS_COUNT: usize = 0x2c;
 /// CNavalCombatResultSide country-id u32 array.
 pub const COUNTRIES: usize = 0x38;
 /// CNavalCombatResultSide country capacity u32.
+#[cfg(test)]
 pub const COUNTRIES_CAPACITY: usize = 0x40;
 /// CNavalCombatResultSide country count u32.
 pub const COUNTRIES_COUNT: usize = 0x44;
 /// CNavalCombatResultSide constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00cd_1d70;
-/// CNavalCombatResultSide member tally.
-pub const COUNT_PRESENT_MEMBERS_RVA: usize = 0x00cd_6c50;
 
 pub(crate) fn authenticate(
     memory: &impl Memory,

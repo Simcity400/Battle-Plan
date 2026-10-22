@@ -13,9 +13,8 @@ pub const FACTIONS: usize = 0x20;
 /// Independent system-wide extracted-resource pool.
 pub const EXTRACTED_RESOURCES: usize = 0x38;
 /// CFactionSystem signed live count.
+#[cfg(test)]
 pub const FACTION_COUNT: usize = 0x2c;
-/// CFactionSystem signed capacity.
-pub const FACTION_CAPACITY: usize = 0x28;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MemberRow {

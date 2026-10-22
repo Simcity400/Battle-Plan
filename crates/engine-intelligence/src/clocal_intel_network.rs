@@ -11,5 +11,3 @@ pub const GRAPH: usize = 0x08;
 /// selector (saved as the local `sub_network_is_quiet` list). A selector
 /// outside the list is not quiet.
 pub const QUIET_DATA: usize = 0x18;
-/// Local-intelligence node lookup searches by state id, then reads its graph row.
-pub const READ_NODE_DESCRIPTOR_RVA: usize = 0x11a_cdd0;

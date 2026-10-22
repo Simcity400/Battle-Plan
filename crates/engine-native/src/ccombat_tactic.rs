@@ -121,22 +121,6 @@ pub fn preferred(
     )
 }
 
-pub fn preferred_growing(
-    memory: &impl Memory,
-    base: usize,
-    country: usize,
-    country_id: u32,
-    token: &mut Vec<u8>,
-) -> Preferred {
-    preferred_buffer(
-        memory,
-        base,
-        country,
-        country_id,
-        crate::walk::Buffer::Growing(token),
-    )
-}
-
 pub fn preferred_buffer(
     memory: &impl Memory,
     base: usize,

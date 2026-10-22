@@ -43,10 +43,6 @@ pub const VTABLE_RVA: usize = 0x0295_9b60;
 
 /// Production-line pointer-array data.
 pub const LINES: usize = 0x58;
-/// Production-line pointer-array capacity, u32.
-pub const LINES_CAPACITY: usize = 0x60;
-/// Production-line pointer-array count, u32.
-pub const LINES_COUNT: usize = 0x64;
 /// Production-line pointer width.
 pub const LINE_POINTER_STRIDE: usize = 0x08;
 /// Organisation pointer array with data, capacity and count. New-game setup
@@ -66,37 +62,21 @@ pub const CONSTRUCTION_LINES_CAPACITY: usize = 0x78;
 pub const CONSTRUCTION_LINES_COUNT: usize = 0x7c;
 /// Construction-line pointer width.
 pub const CONSTRUCTION_POINTER_STRIDE: usize = 0x08;
-/// Embedded licensed-variant container object, serialized and loaded as a whole.
-pub const LICENSES_CONTAINER: usize = 0x190;
 /// Licensed equipment-variant pointer array in the container's available list.
 pub const LICENSES: usize = 0x198;
 /// Owned-licence object array appended on registration and serialized in order.
 pub const LICENSE_RECORDS: usize = 0x1c8;
-/// Owned-licence signed capacity, grown when count reaches capacity.
-pub const LICENSE_RECORDS_CAPACITY: usize = 0x1d0;
 /// Owned-licence signed count bounding traversal.
+#[cfg(test)]
 pub const LICENSE_RECORDS_COUNT: usize = 0x1d4;
-/// Granted-licence object array indexing the giver's relations. It is a reverse
-/// index, never serialized and not recorded.
-pub const GRANTED_LICENSE_RECORDS: usize = 0x1e0;
-/// Granted-licence signed count.
-pub const GRANTED_LICENSE_RECORDS_COUNT: usize = 0x1ec;
 /// Licence-object pointer stride.
 pub const LICENSE_RECORD_STRIDE: usize = clicensed_production_status::POINTER_STRIDE;
-/// License pointer-array capacity, u32.
-pub const LICENSES_CAPACITY: usize = 0x1a0;
-/// License pointer-array count, u32.
-pub const LICENSES_COUNT: usize = 0x1a4;
 /// License pointer width.
 pub const LICENSE_POINTER_STRIDE: usize = 0x08;
 /// Embedded equipment-variant pool.
 pub const STOCKPILE_POOL: usize = 0x200;
 /// Stockpile entry-array data.
 pub const STOCKPILE: usize = 0x220;
-/// Stockpile entry-array capacity, u32.
-pub const STOCKPILE_CAPACITY: usize = 0x228;
-/// Stockpile entry-array count, u32.
-pub const STOCKPILE_COUNT: usize = 0x22c;
 /// CProductionStatus owning CCountry pointer; trade factory-header reader validates this backlink.
 pub const COUNTRY: usize = 0x290;
 /// Military factory group ([`factory_group`]), populated from military-production
@@ -107,10 +87,6 @@ pub const NAVAL_FACTORIES: usize = 0x310;
 /// Civilian factory group populated from general-production buildings for
 /// civilian consumers and construction.
 pub const CIVILIAN_FACTORIES: usize = 0x370;
-/// Stored i32 factory-group heads reset on reassignment and summed for
-/// controlled factory counts, separately from fixed5 totals.
-pub const CONTROLLED_FACTORY_COUNTS: [usize; 3] =
-    [MILITARY_FACTORIES, NAVAL_FACTORIES, CIVILIAN_FACTORIES];
 /// Embedded consumer-goods object ([`civ_factory_consumer`]).
 pub const CONSUMER_GOODS: usize = 0x430;
 /// National projects consumer.
@@ -124,23 +100,6 @@ pub const CONTRACT_PAYMENTS: usize = 0x490;
 /// Bytes from the military group to the end of the last consumer: one span
 /// covers every factory field the reader takes.
 pub const FACTORY_SPAN: usize = CONTRACT_PAYMENTS + civ_factory_consumer::SIZE - MILITARY_FACTORIES;
-/// Civilian total, fixed5.
-pub const FACTORY_TOTAL: usize = CIVILIAN_FACTORIES + factory_group::TOTAL;
-/// Civilian damage, fixed5.
-pub const FACTORY_AVAILABLE_SUBTRACTION: usize = CIVILIAN_FACTORIES + factory_group::DAMAGED;
-/// Civilian withheld count, i32.
-pub const FACTORY_AVAILABLE_SUBTRACTION_COUNT: usize =
-    CIVILIAN_FACTORIES + factory_group::UNAVAILABLE;
-/// Civilian subject contribution, i32.
-pub const FACTORY_TOTAL_SUBTRACTION_0: usize = CIVILIAN_FACTORIES + factory_group::FROM_SUBJECTS;
-/// Civilian overlord contribution, i32.
-pub const FACTORY_TOTAL_SUBTRACTION_1: usize = CIVILIAN_FACTORIES + factory_group::TO_OVERLORD;
-/// Civilian other-country contribution in, i32.
-pub const FACTORY_TOTAL_SUBTRACTION_2: usize = CIVILIAN_FACTORIES + factory_group::FROM_OTHERS;
-/// Civilian other-country contribution out, i32.
-pub const FACTORY_TOTAL_SUBTRACTION_3: usize = CIVILIAN_FACTORIES + factory_group::TO_OTHERS;
-/// Consumer-goods allocated count, i32.
-pub const FACTORIES_USED: usize = CONSUMER_GOODS + civ_factory_consumer::ALLOCATED;
 
 /// Authenticates the manager reached from a previously authenticated country.
 pub fn manager(
@@ -747,20 +706,6 @@ pub fn walk_lines(
     walk_lines_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
 }
 
-pub fn walk_lines_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<LineRow>,
-) -> Outcome {
-    walk_lines_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(output),
-    )
-}
-
 pub fn walk_lines_buffer(
     memory: &impl Memory,
     base: usize,
@@ -832,20 +777,6 @@ pub fn walk_licenses(
     output: &mut [LicenseRow],
 ) -> Outcome {
     walk_licenses_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
-}
-
-pub fn walk_licenses_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<LicenseRow>,
-) -> Outcome {
-    walk_licenses_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(output),
-    )
 }
 
 pub fn walk_licenses_buffer(
@@ -930,22 +861,6 @@ pub fn walk_license_records(
         game_state,
         crate::walk::Buffer::Fixed(output),
         crate::walk::Buffer::Fixed(handles),
-    )
-}
-
-pub fn walk_license_records_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    output: &mut Vec<LicenseRecordRow>,
-    handles: &mut Vec<u64>,
-) -> LicenseRecordOutcome {
-    walk_license_records_buffer(
-        memory,
-        base,
-        game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(handles),
     )
 }
 

@@ -16,17 +16,5 @@ pub const ORDINAL: usize = 0x8a4;
 pub const CATEGORY_MASK: usize = 0x8ac;
 /// CUnitLeaderTrait kind u32.
 pub const KIND: usize = 0x920;
-/// CUnitLeaderTrait ability-unlock string array data.
-pub const ABILITY_DATA: usize = 0x960;
-/// CUnitLeaderTrait ability-unlock string count i32.
-pub const ABILITY_COUNT: usize = 0x96c;
-/// CUnitLeaderTrait ability-unlock string stride.
-pub const ABILITY_STRIDE: usize = 0x20;
-/// CUnitLeaderTrait experience-bearing kind 2.
-pub const EXPERIENCE_KIND_2: u32 = 2;
-/// CUnitLeaderTrait experience-bearing kind 3.
-pub const EXPERIENCE_KIND_3: u32 = 3;
 /// CUnitLeaderTrait constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x00ad_4ba0;
-/// CUnitLeaderTrait ability predicate.
-pub const HAS_ABILITY_RVA: usize = 0x00ad_7d40;

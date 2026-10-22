@@ -504,7 +504,6 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
             bytes: &bytes,
         };
         assert_eq!(movement_modifiers(&memory, 0, 0x1000, province), Ok((0, 0)));
-        assert_eq!(movement_snow(&memory, 0, 0x1000, province), Ok(false));
         if id == 3 {
             // Both ids are past their counts: neither data pointer is read.
             let traced = Traced {
@@ -538,7 +537,7 @@ fn movement_weather_uses_authored_region_id_and_native_absence() {
 }
 
 #[test]
-fn movement_snow_keeps_extra_word_signed_ceiling_and_wrapping() {
+fn movement_modifiers_refuse_a_missing_weather_manager() {
     let mut bytes = fixture();
     let province = 0x5900;
     put(
@@ -546,29 +545,6 @@ fn movement_snow_keeps_extra_word_signed_ceiling_and_wrapping() {
         province + crate::cprovince::ID,
         &1_i32.to_le_bytes(),
     );
-    for (extra, snow, ceiling, expected) in [
-        (1_i64, 0_i64, 5_i64, true),
-        (1, 4, 0, false),
-        (5, -5, 100, false),
-        (i64::MAX, 1, 100, false),
-        (i64::MIN, -1, 100, true),
-    ] {
-        put(&mut bytes, 0x3180 + 0x30, &extra.to_le_bytes());
-        put(&mut bytes, 0x3180 + 0x40, &snow.to_le_bytes());
-        put(&mut bytes, 0x2000 + MAX_SNOW, &ceiling.to_le_bytes());
-        assert_eq!(
-            movement_snow(
-                &SliceMemory {
-                    base: 0x1000,
-                    bytes: &bytes
-                },
-                0,
-                0x1000,
-                province
-            ),
-            Ok(expected)
-        );
-    }
     put(
         &mut bytes,
         0x1000 + cgame_state::WEATHER_MANAGER,
@@ -578,7 +554,6 @@ fn movement_snow_keeps_extra_word_signed_ceiling_and_wrapping() {
         base: 0x1000,
         bytes: &bytes,
     };
-    assert_eq!(movement_snow(&memory, 0, 0x1000, 0), Ok(false));
     assert!(movement_modifiers(&memory, 0, 0x1000, province).is_err());
 }
 
@@ -600,13 +575,11 @@ fn movement_weather_does_not_convert_faults_or_identity_errors_to_absence() {
         base: 0x1000,
         bytes: &bytes,
     };
-    assert!(movement_snow(&memory, 0, 0x1000, province).is_err());
     assert!(movement_modifiers(&memory, 0, 0x1000, province).is_err());
     let memory = SliceMemory {
         base: 0x1000,
         bytes: &bytes[..0x49a7],
     };
-    assert!(movement_snow(&memory, 0, 0x1000, province).is_err());
     assert!(movement_modifiers(&memory, 0, 0x1000, province).is_err());
 }
 

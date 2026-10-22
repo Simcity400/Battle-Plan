@@ -1,45 +1,6 @@
 use super::*;
 
 #[test]
-fn individually_rounded_mixed_selection_does_not_round_aggregate_weight() {
-    let selected = [Unit::Army(11), Unit::Other, Unit::RailwayGun(22)];
-    let mut seen = Vec::new();
-    let result = selected_convoys(&selected, |unit| {
-        seen.push(unit);
-        Ok(1)
-    });
-    assert_eq!(result, Ok(2));
-    assert_eq!(seen, vec![Unit::Army(11), Unit::RailwayGun(22)]);
-    assert_eq!(unit_convoys(2), 1);
-    assert_eq!(unit_convoys(-100_001), -1);
-}
-
-#[test]
-fn selected_demand_wraps_i32_and_never_converts_unknown_to_zero() {
-    let selected = [Unit::Army(1), Unit::RailwayGun(2)];
-    assert_eq!(
-        selected_convoys(&selected, |unit| {
-            Ok(if unit == selected[0] {
-                i64::from(i32::MAX) * ONE
-            } else {
-                ONE
-            })
-        }),
-        Ok(i32::MIN)
-    );
-    assert_eq!(
-        selected_convoys(&selected, |unit| {
-            if unit == selected[0] {
-                Ok(ONE)
-            } else {
-                Err("gun weight unreadable")
-            }
-        }),
-        Err("gun weight unreadable")
-    );
-}
-
-#[test]
 fn extreme_cached_weight_preserves_i64_rounding_wrap_before_narrowing() {
     // Rounded fixed5 multiplication wraps at positive MAX. A plain
     // ceil(raw/ONE) as i32 would incorrectly return -702313052 here.

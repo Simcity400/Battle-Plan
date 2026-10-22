@@ -931,56 +931,6 @@ impl Characters {
         self.unconditional_startup.contains(character)
     }
 
-    /// Roles of the recorded character's held template when alternatives
-    /// differ. Uses the same file, line, and folded-tag identity as
-    /// [`Self::held_advisor`].
-    pub fn held_leader_roles(
-        &self,
-        character: &str,
-        built: Result<&BuiltTemplate, &str>,
-    ) -> Result<Option<&Vec<LeaderRole>>, String> {
-        if !self.ambiguous_leader_sets.contains(character) {
-            return self.leader_roles(character);
-        }
-        if let Some(gap) = self.character_coverage.unknown(character) {
-            return Err(gap.to_string());
-        }
-        let prefix =
-            format!("character {character}: its country-leader roles require the held template");
-        let built = built.map_err(|why| format!("{prefix}: {why}"))?;
-        if built.generated {
-            return Err(format!(
-                "{prefix}: generate_character template is not authored content"
-            ));
-        }
-        if !built.tag.eq_ignore_ascii_case(character) {
-            return Err(format!(
-                "{prefix}: held template {} is a different character",
-                built.tag
-            ));
-        }
-        let file = String::from_utf8_lossy(&built.file).into_owned();
-        let candidates = u32::try_from(built.line)
-            .ok()
-            .and_then(|line| self.built.get(&(file.clone(), line)))
-            .into_iter()
-            .flatten()
-            .filter(|roles| roles.tag.eq_ignore_ascii_case(&built.tag))
-            .collect::<Vec<_>>();
-        match candidates.as_slice() {
-            [roles] => Ok(Some(&roles.leaders)),
-            _ => Err(format!(
-                "{prefix}: {} content templates match {} at {file}:{}{}",
-                candidates.len(),
-                built.tag,
-                built.line,
-                self.unplaced
-                    .get(&file)
-                    .map_or(String::new(), |why| format!("; {why}"))
-            )),
-        }
-    }
-
     /// A character's name key, as far as every alternative agrees.
     pub fn name(&self, character: &str) -> Lookup<'_, Authored> {
         match self.character_coverage.unknown(character) {
@@ -1008,7 +958,6 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Characters> {
 struct TaggedRoles {
     tag: String,
     advisors: Vec<AdvisorRole>,
-    leaders: Vec<LeaderRole>,
 }
 
 /// Each character the file reads before any stop, with each alternative's
@@ -1165,7 +1114,6 @@ fn parse_file(
             alternative_roles.push(TaggedRoles {
                 tag: token.to_owned(),
                 advisors: template_roles,
-                leaders: template_leaders.clone(),
             });
             for role in template_leaders {
                 if role.ideology.is_empty() {
@@ -2027,60 +1975,6 @@ add_scientist_role={scientist={
             &KeyNames::default(),
         ).unwrap());
         assert!(characters.template_has_unconditional_startup("conditional"));
-    }
-
-    #[test]
-    fn recorded_country_leader_template_decides_disagreeing_instances() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let root = std::env::temp_dir().join(format!(
-            "installed-content-held-country-leader-{}",
-            std::process::id()
-        ));
-        let path = root.join("common/characters/a.txt");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "characters = {\n c = {\n instance = {\n allowed = { always = yes }\n country_leader = { ideology = left traits = { a } }\n }\n instance = {\n allowed = { always = yes }\n country_leader = { ideology = right traits = { b } }\n }\n }\n }\n").unwrap();
-        let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let (characters, notes) = read(&layers, Characters::default()).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
-        let mut built = BuiltTemplate {
-            tag: "C".into(),
-            file: b"common/characters/a.txt".to_vec(),
-            line: 4,
-            generated: false,
-        };
-        assert_eq!(
-            characters
-                .held_leader_roles("c", Ok(&built))
-                .unwrap()
-                .unwrap()[0]
-                .traits,
-            ["a"]
-        );
-        built.line = 8;
-        assert_eq!(
-            characters
-                .held_leader_roles("c", Ok(&built))
-                .unwrap()
-                .unwrap()[0]
-                .traits,
-            ["b"]
-        );
-        built.line = 7;
-        assert!(
-            characters
-                .held_leader_roles("c", Ok(&built))
-                .unwrap_err()
-                .contains("0 content templates")
-        );
-        built.generated = true;
-        assert!(
-            characters
-                .held_leader_roles("c", Ok(&built))
-                .unwrap_err()
-                .contains("generate_character")
-        );
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub const WIDGETS: &str = include_str!("readiness/widgets.json");
 
 /// Products the desktop client routes through prepared queries rather than
 /// product loads (the frontend's prepared routing list).
+#[cfg(test)]
 pub const UI_PREPARED_ROUTES: &[&str] = &[
     "land-battles",
     "land-battles-manifest",

@@ -357,40 +357,10 @@ pub(crate) fn category_of(bytes: &[u8; CATEGORY_LEN]) -> i32 {
         }
     }
 }
-/// CSubUnitDefinition first air-bucket enabled byte.
-pub const AIR_BUCKET_1_ENABLED: usize = 0x5b4;
-/// Airbase-type-0 value, 32-bit, read unsigned but consumed signed; scale unresolved.
-pub const AIRBASE_TYPE_0_VALUE: usize = 0x600;
-/// Airbase-type-1 value, 32-bit, read unsigned but consumed signed by pool capacity.
-pub const AIRBASE_TYPE_1_VALUE: usize = 0x604;
-/// Airbase-type-2 value, 32-bit, read unsigned but consumed signed by pool capacity.
-pub const AIRBASE_TYPE_2_VALUE: usize = 0x608;
-/// Airbase-type-3 value, 32-bit, read unsigned but consumed signed by pool capacity.
-pub const AIRBASE_TYPE_3_VALUE: usize = 0x60c;
-/// Airbase-capacity stride between signed 32-bit operands.
-pub const AIRBASE_TYPE_STRIDE: usize = 4;
-/// Airbase-capacity operand count.
-pub const AIRBASE_TYPE_COUNT: usize = 4;
-/// Air-equipment query following the first equipment requirement after the air gate.
-pub const GET_AIR_EQUIPMENT_RVA: usize = 0x015a_4db0;
-/// Airbase-type query returning a signed value to its caller.
-pub const AIRBASE_TYPE_VALUE_RVA: usize = 0x0100_5dd0;
-/// CSubUnitDefinition common-air flag mask.
-pub const COMMON_AIR_MASK: u64 = 0x1f00_37fc00;
-/// CSubUnitDefinition excluded-air flag mask.
-pub const EXCLUDED_AIR_MASK: u64 = 0x1c00_010000;
-/// CSubUnitDefinition excluded bit33.
-pub const EXCLUDED_BIT_33: u64 = 1 << 33;
-/// CSubUnitDefinition enable_ability string-vector data.
-pub const ENABLED_ABILITY_DATA: usize = 0x658;
-/// Enabled-ability string count, u32, with 0x20-byte string records.
-pub const ENABLED_ABILITY_COUNT: usize = 0x664;
 /// Subunit-definition constructor, also used for the null subtype.
 pub const CONSTRUCTOR_RVA: usize = 0x0100_3cb0;
 /// Null-subtype singleton pointer.
 pub const NULL_OBJECT_RVA: usize = 0x0332_12a0;
-/// CSubUnitDefinition null-subtype allocation size.
-pub const NULL_OBJECT_SIZE: usize = 0x678;
 /// Null-singleton getter used by default air-wing pools.
 pub const GET_NULL_OBJECT_RVA: usize = 0x00b8_f770;
 /// Null-subtype primary vtable.
@@ -419,18 +389,6 @@ fn movement_identity(
     } else {
         Ok(())
     }
-}
-
-fn movement_leaf<T: crate::memory::Raw>(
-    memory: &impl crate::Memory,
-    pointer: usize,
-    offset: usize,
-) -> Result<T, &'static str> {
-    pointer
-        .checked_add(offset)
-        .filter(|_| pointer != 0)
-        .and_then(|address| crate::read(memory, address))
-        .ok_or("movement stat operand unreadable")
 }
 
 /// Passive movement component including the terrain static adjuster. Stat
@@ -563,124 +521,9 @@ pub fn movement_air_defense_value(
     Ok(ratio.wrapping_mul(reduction) / crate::fixed5::SCALE)
 }
 
-/// Passive anti-air integer power series without floating point.
-pub fn movement_air_defense(
-    memory: &impl crate::Memory,
-    base: usize,
-    stats: usize,
-) -> Result<i64, &'static str> {
-    movement_identity(memory, base, stats)?;
-    let defense = movement_leaf(memory, stats, MOVEMENT_AIR_DEFENSE)?;
-    if defense == 0 {
-        return Ok(0);
-    }
-    let denominator = movement_leaf(memory, base, AIR_DEFENSE_DENOMINATOR_RVA)?;
-    let reduction = movement_leaf(memory, base, AIR_DEFENSE_REDUCTION_RVA)?;
-    if let Some(result) = memory.movement_air_defense_value(defense, denominator, reduction) {
-        return result;
-    }
-    movement_air_defense_value(defense, denominator, reduction)
-}
-
 #[cfg(test)]
 mod movement_tests {
     use super::*;
-
-    #[test]
-    fn pure_air_memo_keeps_every_source_read_and_the_zero_defense_gate() {
-        use std::cell::{Cell, RefCell};
-        const BASE: usize = 0x140_000_000;
-        const STATS: usize = 0x1000;
-        struct Source {
-            arguments: Cell<[i64; 3]>,
-            fault: Cell<Option<usize>>,
-            reads: RefCell<Vec<usize>>,
-            hook_calls: RefCell<Vec<[i64; 3]>>,
-            hook_result: Option<Result<i64, &'static str>>,
-        }
-        impl crate::Memory for Source {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                self.reads.borrow_mut().push(address);
-                if self.fault.get() == Some(address) {
-                    return false;
-                }
-                let arguments = self.arguments.get();
-                let value = if address == STATS {
-                    (BASE + VTABLE_RVA) as i64
-                } else if address == STATS + MOVEMENT_AIR_DEFENSE {
-                    arguments[0]
-                } else if address == BASE + AIR_DEFENSE_DENOMINATOR_RVA {
-                    arguments[1]
-                } else if address == BASE + AIR_DEFENSE_REDUCTION_RVA {
-                    arguments[2]
-                } else {
-                    return false;
-                };
-                output.copy_from_slice(&value.to_le_bytes());
-                true
-            }
-            fn movement_air_defense_value(
-                &self,
-                defense: i64,
-                denominator: i64,
-                reduction: i64,
-            ) -> Option<Result<i64, &'static str>> {
-                self.hook_calls
-                    .borrow_mut()
-                    .push([defense, denominator, reduction]);
-                self.hook_result
-            }
-        }
-        let addresses = [
-            STATS,
-            STATS + MOVEMENT_AIR_DEFENSE,
-            BASE + AIR_DEFENSE_DENOMINATOR_RVA,
-            BASE + AIR_DEFENSE_REDUCTION_RVA,
-        ];
-        for hook_result in [None, Some(Ok(123)), Some(Err("pure calculation failure"))] {
-            let source = Source {
-                arguments: Cell::new([100_000, 100_000, 50_000]),
-                fault: Cell::new(None),
-                reads: RefCell::new(Vec::new()),
-                hook_calls: RefCell::new(Vec::new()),
-                hook_result,
-            };
-            for arguments in [
-                [100_000, 100_000, 50_000],
-                [-100_000, 100_000, 50_000],
-                [100_000, -100_000, 50_000],
-                [100_000, 100_000, -50_000],
-            ] {
-                source.arguments.set(arguments);
-                source.reads.borrow_mut().clear();
-                assert_eq!(
-                    movement_air_defense(&source, BASE, STATS),
-                    hook_result.unwrap_or_else(|| movement_air_defense_value(
-                        arguments[0],
-                        arguments[1],
-                        arguments[2]
-                    ))
-                );
-                assert_eq!(&*source.reads.borrow(), &addresses);
-                assert_eq!(source.hook_calls.borrow().last(), Some(&arguments));
-            }
-            source.arguments.set([0, i64::MIN, i64::MAX]);
-            source.fault.set(Some(BASE + AIR_DEFENSE_DENOMINATOR_RVA));
-            source.reads.borrow_mut().clear();
-            let hook_calls = source.hook_calls.borrow().len();
-            assert_eq!(movement_air_defense(&source, BASE, STATS), Ok(0));
-            assert_eq!(&*source.reads.borrow(), &addresses[..2]);
-            assert_eq!(source.hook_calls.borrow().len(), hook_calls);
-            source.arguments.set([100_000, 100_000, 50_000]);
-            for (index, address) in addresses.into_iter().enumerate() {
-                source.fault.set(Some(address));
-                source.reads.borrow_mut().clear();
-                assert!(movement_air_defense(&source, BASE, STATS).is_err());
-                assert_eq!(&*source.reads.borrow(), &addresses[..=index]);
-                assert_eq!(source.hook_calls.borrow().len(), hook_calls);
-            }
-        }
-    }
 
     #[test]
     fn integer_series_exact_identity_and_zero() {
@@ -760,7 +603,6 @@ mod movement_tests {
             movement_terrain(&memory, base, stats, terrain),
             Ok(i64::MIN)
         );
-        assert_eq!(movement_air_defense(&memory, base, stats), Ok(0));
         bytes[terrain + 0x88..terrain + 0x8c].copy_from_slice(&0_i32.to_le_bytes());
         let memory = SliceMemory {
             base: 0,

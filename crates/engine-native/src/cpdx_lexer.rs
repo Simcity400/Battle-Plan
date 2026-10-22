@@ -30,8 +30,6 @@ pub const DYNAMIC_TOKENS_RVA: usize = 0x35c8b60;
 pub const DYNAMIC_CAPACITY_RVA: usize = 0x35c8b68;
 /// Dynamic count, incremented before reverse-name assignment or rebuild.
 pub const DYNAMIC_COUNT_RVA: usize = 0x35c8b6c;
-/// Token lookup read lock.
-pub const READ_LOCK_RVA: usize = 0x35c8b78;
 /// Exclusive flag set atomically and decremented on release.
 pub const WRITER_FLAG_RVA: usize = 0x35c8b7c;
 /// Token-name table pointer.
@@ -42,12 +40,8 @@ pub const TOKEN_ALLOCATION_RVA: usize = 0x35c8b88;
 pub const TOKEN_CAPACITY_RVA: usize = 0x35c8b8c;
 /// MSVC string entry stride for token-name lookup.
 pub const TOKEN_NAME_STRIDE: usize = 0x20;
-/// Token-string lookup using the inclusive ID bound and string address.
-pub const GET_TOKEN_STRING_RVA: usize = 0x24a7300;
 /// Dynamic-token wrapper used during strategic-resource loading.
 pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x24a6500;
-/// Dynamic-token insertion implementation.
-pub const ADD_DYNAMIC_TOKEN_IMPL_RVA: usize = 0x24a65a0;
 /// Static long-fixed token formatted as fixed15 numeric text instead of its
 /// spelling; saves never serialize the name.
 pub const FIXED15_TOKEN: u32 = 0x167;

@@ -8,8 +8,6 @@ pub const VTABLE_RVA: usize = 0x0296_dcb0;
 pub const SIZE: usize = 0x108;
 /// CStateGarrisonData child pointer vector.
 pub const CHILDREN: usize = 0x30;
-/// CStateGarrisonData child vector count, i32 read.
-pub const CHILD_COUNT: usize = 0x3c;
 /// Owning state pointer.
 pub const STATE: usize = 0x50;
 /// Owning occupation-data pointer authenticated against containing table.
@@ -18,11 +16,6 @@ pub const OCCUPATION_DATA: usize = 0x58;
 pub const SERIALIZED_FLAG_CANDIDATE: usize = 0x60;
 /// Embedded assigned-manpower container.
 pub const ASSIGNED_MANPOWER: usize = 0x68;
-/// Assigned-manpower entry pointer. First row stores source country, u32;
-/// aggregate manpower sums all row amounts.
-pub const ASSIGNED_MANPOWER_DATA: usize = 0x70;
-/// Assigned-manpower signed live count, checked before serialization.
-pub const ASSIGNED_MANPOWER_COUNT: usize = 0x7c;
 /// Required manpower, signed i32.
 pub const REQUIRED_MANPOWER: usize = 0x88;
 /// CStateGarrisonData local equipment allocation pool.
@@ -35,12 +28,6 @@ pub const STRENGTH_RATIO: usize = 0xf0;
 pub const GARRISON_REQUIRED: usize = 0xf8;
 /// Fixed-point denominator for both scalar qwords.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Serializer using qword fixed-point scalars and i32 manpower.
-pub const SERIALIZE_RVA: usize = 0x00fe_b450;
-/// Deserializer restoring the same stored fields.
-pub const DESERIALIZE_RVA: usize = 0x00fe_7170;
-/// Deleting destructor.
-pub const DELETING_DESTRUCTOR_RVA: usize = 0x00fd_e3d0;
 
 use crate::{
     Memory, ccountry_occupation_data, ccountry_occupation_status::Rows, cpdx_array::Array,

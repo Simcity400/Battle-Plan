@@ -34,8 +34,6 @@ pub const REFERENCE: usize = 0x08;
 pub const CURRENT_TURN: usize = 0xd8;
 /// Finalized byte set before history destruction and roster removal.
 pub const FINALIZED: usize = 0xdd;
-/// Sole scored winner participant pointer, independent of completion storage.
-pub const SOLE_SCORED_WINNER: usize = 0x170;
 
 /// Raw country arrays used during settlement.
 pub const WINNERS: usize = 0x60;

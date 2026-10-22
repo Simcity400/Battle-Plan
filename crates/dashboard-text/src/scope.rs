@@ -1059,6 +1059,7 @@ impl RecordedScopes {
     /// Parses `text` as the game's event target reader does
     /// ([`installed_content_core::scope::parse`]) with this hour's countries and
     /// characters, and resolves it in `context`.
+    #[cfg(test)]
     pub fn resolve_text(
         &self,
         text: &str,

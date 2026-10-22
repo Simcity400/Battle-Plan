@@ -101,70 +101,6 @@ pub struct SkillDefinition {
     pub category: i32,
 }
 
-/// Direct division-commander tooltip operands, independent of the side's
-/// selected leader and its portrait, learning and parent state.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct DivisionCommanderRow {
-    pub handle: u64,
-    pub skill: i32,
-    /// The raw saved name (`cunit_leader::TOKEN`), a span of the caller's commander name arena; the
-    /// viewer localises it.
-    pub name_token: crate::cname_group_member::Span,
-    pub traits: Vec<CommanderTrait>,
-    pub traits_len: usize,
-    pub trait_text: Vec<u8>,
-    pub trait_text_len: usize,
-}
-
-const DIVISION_COMMANDER_NAME: crate::cname_group_member::StringErrors = [
-    "division commander name header invalid",
-    "division commander name pointer unreadable or null",
-    "division commander name bytes unreadable",
-    "division commander name terminator unreadable or invalid",
-];
-
-/// Reads one division commander. Its name token goes to `names` at
-/// `names.len`, uncommitted: the caller commits it by advancing `len` when it
-/// keeps the row. The token's length is the game's own allocation, proved
-/// readable before it counts as demand; `Ok(None)` means it did not fit the
-/// arena and was counted into `names.required` for the next hour's growth.
-pub fn capture_division_commander(
-    memory: &impl Memory,
-    base: usize,
-    handle: u64,
-    names: &mut crate::cname_group_member::Names<'_>,
-) -> Result<Option<DivisionCommanderRow>, &'static str> {
-    if handle == 0 {
-        return Ok(Some(DivisionCommanderRow::default()));
-    }
-    let r = Reader { memory, base };
-    let p = crate::creference_registry::resolve(memory, base, handle)?
-        .ok_or("division commander reference unresolved")?;
-    r.vtable(p, crate::carmy_leader::VTABLE_RVA)?;
-    if r.leader(p)? != handle {
-        return Err("division commander identity mismatch");
-    }
-    let skill = r.pointer(p, cunit_leader::SKILL)?;
-    r.vtable(skill, cunit_leader_skill::VTABLE_RVA)?;
-    let mut row = DivisionCommanderRow {
-        handle,
-        skill: r.field(skill, cunit_leader_skill::LEVEL)?,
-        ..DivisionCommanderRow::default()
-    };
-    let header: [u8; 32] = r.field(
-        p.checked_add(cunit_leader::TOKEN)
-            .ok_or("commander text overflow")?,
-        0,
-    )?;
-    match crate::cname_group_member::copy_string(memory, &header, names, &DIVISION_COMMANDER_NAME)?
-    {
-        Some(span) => row.name_token = span,
-        None => return Ok(None),
-    }
-    (row.traits_len, row.trait_text_len) = r.traits(p, &mut row.traits, &mut row.trait_text)?;
-    Ok(Some(row))
-}
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Row {
     pub commander: u64,
@@ -1058,38 +994,6 @@ mod tests {
             Err("commander array invalid")
         );
         assert_eq!(len, 0);
-    }
-
-    #[test]
-    fn division_commander_preserves_primary_rows_and_source_reads() {
-        let mut f = fixture();
-        f.u64(LEADER, crate::carmy_leader::VTABLE_RVA as u64);
-        f.text(LEADER + cunit_leader::TOKEN, b"GER_leader");
-        let mut bytes = [0; 64];
-        let mut names = crate::cname_group_member::Names {
-            bytes: &mut bytes,
-            len: 0,
-            required: 0,
-        };
-        let row = capture_division_commander(&f, 0, HANDLE, &mut names)
-            .unwrap()
-            .unwrap();
-        assert_eq!((row.handle, row.skill), (HANDLE, 4));
-        // The raw saved name, not the client's localised copy (`cunit_leader::NAME`).
-        assert_eq!(row.name_token, (0, 10));
-        assert_eq!(names.required, 10);
-        assert_eq!(&bytes[..10], b"GER_leader");
-        assert_eq!(row.traits_len, 1);
-        assert_eq!(&row.trait_text[..row.trait_text_len], b"navy_trait");
-        let reads = f.reads.borrow();
-        for address in [
-            crate::creference_registry::HIGH_ROOT_RVA,
-            LEADER + cunit_leader::TYPE,
-            LEADER + cunit_leader::SKILL,
-            LEADER + cunit_leader::TRAIT_DATA,
-        ] {
-            assert_eq!(reads.iter().filter(|read| read.0 == address).count(), 1);
-        }
     }
 
     #[test]

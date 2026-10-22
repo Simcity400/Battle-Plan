@@ -16,8 +16,6 @@ pub const SCOPE_COUNTRY: usize = 0x08;
 pub const SCOPE_STATE: usize = 0x0c;
 /// Timed modifier remaining daily ticks i32.
 pub const DAYS_REMAINING: usize = 0x10;
-/// Permanent-duration sentinel; distinct from zero remaining ticks.
-pub const PERMANENT_DAYS: i32 = -1;
 /// Timed modifier CDynamicModifier definition pointer.
 pub const DEFINITION: usize = 0x18;
 /// Enabled byte; accepts only zero or one.
@@ -30,25 +28,9 @@ pub const VALUES_CAPACITY: usize = 0x30;
 pub const VALUES_COUNT: usize = 0x34;
 /// Timed modifier value-array element stride.
 pub const VALUE_STRIDE: usize = 8;
-/// Timed modifier signed fixed-point divisor.
-pub const VALUE_SCALE: i64 = 100_000;
 
 /// Timed entry construction/layout.
 pub const CONSTRUCT_RVA: usize = 0x0054_5ca0;
-/// Timed entry vector erase/move.
-pub const ERASE_RANGE_RVA: usize = 0x0060_4d30;
-/// Vector-movement entry bytes.
-pub const ERASE_RANGE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b,
-];
-/// Timed entry serializer.
-pub const SERIALIZE_RVA: usize = 0x0060_5c80;
-/// Timed entry deserializer field dispatcher.
-pub const DESERIALIZE_RVA: usize = 0x0060_3db0;
-/// Timed entry definition-sized value-vector materializer.
-pub const MATERIALIZE_VALUES_RVA: usize = 0x005f_fd00;
-/// Timed entry i64 value-vector deserializer.
-pub const DESERIALIZE_VALUES_RVA: usize = 0x0060_4600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {

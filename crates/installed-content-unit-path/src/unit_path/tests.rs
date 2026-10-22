@@ -16,48 +16,6 @@ use super::*;
 use crate::province_graph::Crossing as Authored;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[test]
-fn transport_exposure_uses_first_distance_non_neighbour_unity_and_embark_define() {
-    let graph = MoveGraph {
-        index: vec![NONE, 0, 1, 2],
-        ids: vec![1, 2, 3],
-        kinds: vec![Some(0), Some(0), Some(1)],
-        ranges: vec![Some((0, 2)), Some((2, 2)), Some((2, 2))],
-        edges: vec![
-            Edge {
-                to: 1,
-                distance: Some(-31),
-                cost: Cost::Moving,
-                crossing: NONE,
-            },
-            Edge {
-                to: 1,
-                distance: Some(99),
-                cost: Cost::Moving,
-                crossing: NONE,
-            },
-        ],
-        ..Default::default()
-    };
-    assert_eq!(graph.transport_exposure_distance(1, 2, 700_000), Ok(-31));
-    assert_eq!(
-        graph.transport_exposure_distance(2, 1, 700_000),
-        Ok(100_000)
-    );
-    assert_eq!(
-        graph.transport_exposure_distance(1, 3, 700_000),
-        Ok(700_000)
-    );
-    assert_eq!(
-        graph.transport_exposure_distance(3, 1, 700_000),
-        Ok(100_000)
-    );
-    assert!(graph.transport_exposure_distance(4, 1, 700_000).is_err());
-    let mut refused = graph;
-    refused.edges[0].distance = None;
-    assert!(refused.transport_exposure_distance(1, 2, 700_000).is_err());
-}
-
 #[derive(Default)]
 struct World {
     cost_friendly: BTreeSet<(Country, Country)>,
@@ -488,50 +446,6 @@ fn counter_route_excludes_source_and_retains_equal_endpoint_success() {
     assert_eq!(
         mover.counter_route(&army(), 1, 1, CounterRequest::default()),
         Ok(vec![])
-    );
-}
-
-#[test]
-fn transport_risk_route_uses_one_forced_search_without_counter_fallback() {
-    let (graph, geometry) = map();
-    let moves = MoveGraph::new(&graph, &geometry);
-    let mut world = world();
-    world.ports.extend([(1, 5), (3, 5)]);
-    let mover = Mover {
-        graph: &moves,
-        world: &world,
-    };
-    // The ordinary counter route succeeds on land. The forced-transfer
-    // risk route cannot use land-to-land edges or retry as an ordinary route.
-    assert_eq!(
-        mover.counter_route(&army(), 1, 4, CounterRequest::default()),
-        Ok(vec![2, 3, 4])
-    );
-    assert_eq!(
-        mover.transport_risk_route(&army(), 1, 4, CounterClass::Army),
-        Ok(None)
-    );
-    assert_eq!(
-        mover.transport_risk_route(&army(), 1, 3, CounterClass::Army),
-        Ok(Some(vec![5, 3]))
-    );
-    assert_eq!(
-        mover.transport_risk_route(&army(), 1, 1, CounterClass::Army),
-        Ok(Some(vec![]))
-    );
-    // A planned source is legal here, independently of actual task-force access location.
-    assert_eq!(
-        mover.transport_risk_route(&army(), 3, 1, CounterClass::Railway(7)),
-        Ok(Some(vec![5, 1]))
-    );
-    // The transfer request disables exile even for a stored exiled unit.
-    let exiled = Army {
-        exiled: true,
-        ..army()
-    };
-    assert_eq!(
-        mover.transport_risk_route(&exiled, 1, 3, CounterClass::Army),
-        Ok(Some(vec![5, 3]))
     );
 }
 

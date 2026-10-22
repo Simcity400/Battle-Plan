@@ -366,16 +366,6 @@ impl Captured {
         self.capture_at(memory, base, game_state, None, false)
     }
 
-    pub fn capture_with_hour(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-    ) -> [u64; N] {
-        self.capture_at(memory, base, game_state, Some(hour), false)
-    }
-
     pub fn acquire_with_hour(
         &mut self,
         memory: &impl Memory,

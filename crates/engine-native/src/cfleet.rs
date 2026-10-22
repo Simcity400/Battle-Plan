@@ -24,6 +24,7 @@ pub const NAME: usize = 0xe0;
 /// CFleet task-force pointer array.
 pub const TASK_FORCES: usize = 0xb8;
 /// CFleet task-force array capacity, u32.
+#[cfg(any(test, feature = "test-support"))]
 pub const TASK_FORCE_CAPACITY: usize = 0xc0;
 /// CFleet task-force array count, u32.
 pub const TASK_FORCE_COUNT: usize = 0xc4;
@@ -37,12 +38,6 @@ pub const MISSION_REGION_COUNT: usize = 0x54;
 pub const COLOR: usize = 0x110;
 /// RGBA f32 components inside the colour, copied into the port counter.
 pub const COLOR_COMPONENTS: usize = 0x120;
-/// Fleet serializer writes leader, name, colour, icon and ordered task-force entries.
-pub const SERIALIZE_RVA: usize = 0x00d4_a390;
-/// Fleet reserve classifier tests its first task force's state against 8.
-pub const IS_RESERVE_RVA: usize = 0x00d4_3440;
-/// CFleet strip-eligibility helper.
-pub const STRIP_ELIGIBILITY_RVA: usize = 0x00d4_5e00;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -210,6 +205,7 @@ pub fn walk_timed_with(
 /// The caller holds the game thread while this shared graph walk reads it.
 /// Growth copies only bytes observed successfully, never a chosen name limit.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn walk_timed_with_names(
     memory: &impl Memory,
     base: usize,
@@ -1252,6 +1248,7 @@ pub fn walk_counter_inputs_with_port_observed<M: Memory>(
 /// Worker-only counters grow rows and ordered rosters from the original
 /// array header without a population cap.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_counter_inputs_with_port_observed_growing<M: Memory>(
     memory: &M,
     base: usize,

@@ -4,10 +4,6 @@
 pub const VTABLE_RVA: usize = 0x02a2_09a0;
 /// CIncomingDiplomaticAction constructor.
 pub const CONSTRUCTOR_RVA: usize = 0x01a9_3750;
-/// CIncomingDiplomaticAction body accessor.
-pub const BODY_ACCESSOR_RVA: usize = 0x01a9_3890;
-/// CIncomingDiplomaticAction allocation size.
-pub const OBJECT_SIZE: usize = 0x20;
 // Construction first copies the default invalid reference into its reference slot, then mints the
 // real identity from `creference_registry::ID_COUNTER_RVA`. The invalid identity is
 // `creference_registry::INVALID_REFERENCE_RVA`.

@@ -29,8 +29,6 @@ pub const ALLOCATED_TRAINS: usize = 0x120;
 /// Allocated trucks, signed i32. Add, return and distribution paths update
 /// this cache; post-load roster counts add without first clearing it.
 pub const ALLOCATED_TRUCKS: usize = 0x138;
-/// CCountrySupplySystem disrupted-supply table subobject.
-pub const DISRUPTED_TABLE: usize = 0x88;
 /// CCountrySupplySystem disrupted-supply bucket pointer.
 pub const DISRUPTED_BUCKETS: usize = 0x90;
 /// CCountrySupplySystem disrupted-supply occupied u32 count.
@@ -41,20 +39,12 @@ pub const DISRUPTED_MASK: usize = 0x9c;
 pub const DISRUPTED_MAX_DISTANCE: usize = 0xa0;
 /// Hub-setting array pointer, with 0x28-byte records.
 pub const HUB_SETTINGS_DATA: usize = 0x188;
-/// Hub-setting u32 capacity; the count is separately `HUB_SETTINGS_COUNT`.
-pub const HUB_SETTINGS_CAPACITY: usize = 0x190;
 /// CCountrySupplySystem hub-settings u32 count.
 pub const HUB_SETTINGS_COUNT: usize = 0x194;
 /// CCountrySupplySystem foreign-homebase record array pointer.
 pub const FOREIGN_HOMEBASE_DATA: usize = 0x1e0;
-/// CCountrySupplySystem foreign-homebase u32 capacity.
-pub const FOREIGN_HOMEBASE_CAPACITY: usize = 0x1e8;
 /// CCountrySupplySystem foreign-homebase u32 count.
 pub const FOREIGN_HOMEBASE_COUNT: usize = 0x1ec;
-/// Foreign-homebase allocator pointer, not semantic row data.
-pub const FOREIGN_HOMEBASE_ALLOCATOR: usize = 0x1f0;
-/// CCountrySupplySystem disrupted-table serializer.
-pub const SERIALIZE_DISRUPTED_SUPPLY_RVA: usize = 0x0121_c6d0;
 
 /// Ordered temporary-supply deployments. Floating-harbour lookup
 /// returns the first province match in this array.
@@ -450,6 +440,7 @@ fn sparse_access(
 /// census. Arena or row pressure omits whole countries, reports `Truncated` and
 /// keeps the exact demand so the collector grows its buffers off-thread; an
 /// omitted country's access array is still read to measure that demand.
+#[cfg(test)]
 pub fn walk_trains(
     memory: &impl Memory,
     base: usize,

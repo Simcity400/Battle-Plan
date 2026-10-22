@@ -2174,6 +2174,7 @@ struct Measurement<'a> {
 
 /// Compare the serial and production streams with every production observer.
 /// A time box finishes at a common manifest commit, preserving the accepted prefix.
+#[cfg(test)]
 pub fn run_measured(
     source: &Source,
     content: Option<&ContentOptions>,

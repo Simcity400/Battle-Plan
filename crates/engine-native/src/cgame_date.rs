@@ -42,18 +42,3 @@ pub fn read_raw(
 }
 /// CGameDate null raw hour i32.
 pub const NULL_RAW_HOUR: i32 = 43_808_760;
-/// CGameDate hour-index getter.
-pub const HOUR_INDEX_RVA: usize = 0x0052_70c0;
-/// CGameDate deserializer.
-pub const DESERIALIZE_RVA: usize = 0x0052_70d0;
-/// CGameDate text parser.
-pub const PARSE_RVA: usize = 0x0052_7450;
-/// Date year setter.
-pub const SET_YEAR_RVA: usize = 0x001a_8580;
-/// Date text formatter.
-pub const FORMAT_RVA: usize = 0x0225_4180;
-/// Month-name formatter reads a signed raw hour; its receiver type is
-/// not distinguished between game and Gregorian dates.
-pub const FORMAT_WITH_MONTH_NAME_RVA: usize = 0x0052_6b50;
-/// Unsupported game-date vtable candidate.
-pub const REJECTED_LEGACY_VTABLE_RVA: usize = 0x026f_2398;

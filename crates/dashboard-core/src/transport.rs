@@ -48,6 +48,7 @@ pub const TRANSIENT_ERRORS: [&str; TRANSIENT_ERROR_NAMES.len()] = {
 
 /// Whether an error only says there was no room, so the request may be tried again:
 /// it starts with one of [`TRANSIENT_ERRORS`]. The frontend classifies the same way.
+#[cfg(any(test, feature = "test-support"))]
 pub fn transient_error(message: &str) -> bool {
     TRANSIENT_ERRORS
         .iter()

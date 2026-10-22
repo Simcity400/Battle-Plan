@@ -92,10 +92,6 @@ fn slice_updates_encode_and_commit_the_merged_complete_table() {
             Arc::new(crate::sliced::merge_slice(&held, fresh.clone(), read, live).unwrap());
         let update = SliceUpdate::new(&held, fresh, read, live).unwrap();
         assert_eq!(update.merged(&held).unwrap(), *merged);
-        assert_eq!(
-            update.owners_after(&held).unwrap(),
-            crate::sliced::owners(&merged)
-        );
         let expected = merged_encoder
             .encode_bytes(
                 frame(hour, TableInput::SharedComplete(Arc::clone(&merged))),

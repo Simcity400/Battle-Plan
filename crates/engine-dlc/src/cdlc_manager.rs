@@ -19,10 +19,6 @@ use crate::{
 
 /// CDLCManager singleton pointer.
 pub const SINGLETON_RVA: usize = 0x0343_1608;
-/// CDLCManager singleton getter.
-pub const GETTER_RVA: usize = 0x0206_0f10;
-/// Active DLC enumerator; this crate reads its maps without calling it.
-pub const ENUMERATE_ACTIVE_DLCS_RVA: usize = 0x0206_3660;
 /// Cached successful mount-path pointer array, refreshed after mounts
 /// in highest-priority-first order.
 pub const SEARCH_PATH_RVA: usize = 0x035c_af10;

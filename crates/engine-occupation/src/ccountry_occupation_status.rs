@@ -13,8 +13,6 @@ pub const OCCUPATION_DATA_TABLE: usize = 0x48;
 /// Effect and serialization pointer vector; both preserve its occurrence
 /// order and use each group's country scope.
 pub const OCCUPATION_DATA_ROWS: usize = 0x60;
-/// Occupation-data vector count, read as i32.
-pub const OCCUPATION_DATA_COUNT: usize = 0x6c;
 /// CReferencedDivisionTemplate pointer requiring reference-type and vtable authentication.
 pub const GARRISON_TEMPLATE: usize = 0x78;
 /// Retained distributable garrison reinforcement priority.
@@ -481,6 +479,7 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffe
     walk_inner(memory, base, game_state, buffers.into(), None)
 }
 
+#[cfg(test)]
 pub fn walk_with_occupied(
     memory: &impl Memory,
     base: usize,
@@ -495,26 +494,6 @@ pub fn walk_with_occupied(
         buffers.into(),
         Some(Occupied {
             rows: crate::walk::Buffer::Fixed(occupied),
-            len: 0,
-            required: 0,
-        }),
-    )
-}
-
-pub fn walk_with_occupied_growing(
-    memory: &impl Memory,
-    base: usize,
-    game_state: usize,
-    buffers: GrowingBuffers<'_>,
-    occupied: &mut Vec<u32>,
-) -> Walk {
-    walk_inner(
-        memory,
-        base,
-        game_state,
-        buffers.into(),
-        Some(Occupied {
-            rows: crate::walk::Buffer::Growing(occupied),
             len: 0,
             required: 0,
         }),

@@ -407,43 +407,6 @@ impl<M: crate::Memory> crate::Memory for MapView<'_, M> {
     }
 }
 
-// Factories allocate a new advisor and assign its idea and slot strings,
-// so replacement changes the role pointer. Parsing can instead modify
-// those members in an existing object. Pointer identity alone cannot
-// certify unchanged definition bytes. A change-driven cache must cover
-// parsing, construction, replacement, destruction and address reuse before
-// suppressing current reads.
-//
-// These excluded mutator sites affect advisor roles; their receiver types
-// are not established by the gate.
-/// Advisor erase-effect function; its gate hook is excluded.
-pub const ADVISOR_ERASE_EFFECT_RVA: usize = 0x0035_C330;
-/// Advisor erase-effect entry sentinel for the excluded gate hook.
-pub const ADVISOR_ERASE_EFFECT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
-];
-
-/// Advisor replacement-effect function; its gate hook is excluded.
-pub const ADVISOR_REPLACE_EFFECT_RVA: usize = 0x0034_7DF0;
-/// Advisor replacement-effect entry sentinel for the excluded gate hook.
-pub const ADVISOR_REPLACE_EFFECT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-];
-
-/// Advisor bulk-copy function; its gate hook is excluded.
-pub const ADVISOR_BULK_COPY_RVA: usize = 0x00F8_B8A0;
-/// Advisor bulk-copy entry sentinel for the excluded gate hook.
-pub const ADVISOR_BULK_COPY_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
-];
-
-/// Advisor insertion function; its gate hook is excluded.
-pub const ADVISOR_INSERT_RVA: usize = 0x00F8_D380;
-/// Advisor insertion entry sentinel for the excluded gate hook.
-pub const ADVISOR_INSERT_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x44, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08, 0x55,
-];
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     /// Authenticated current CAdvisor; used only within the stopped callback.
@@ -557,17 +520,6 @@ pub fn walk_prefix_entry(
     bytes: &mut [u8],
 ) -> crate::ccharacter::NameWalk {
     walk_entry_inner(memory, base, entry, output, bytes, true)
-}
-
-/// Mutation-certified definitions omit the independently fresh accumulator.
-pub fn walk_definitions_entry(
-    memory: &impl crate::Memory,
-    base: usize,
-    entry: crate::ccharacter_manager::Entry,
-    output: &mut [Row],
-    bytes: &mut [u8],
-) -> crate::ccharacter::NameWalk {
-    walk_entry_inner(memory, base, entry, output, bytes, false)
 }
 
 /// Worker-only storage from each acquired role-map and string header.

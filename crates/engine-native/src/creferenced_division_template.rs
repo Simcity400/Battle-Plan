@@ -20,26 +20,16 @@ pub const NAME_KEY: usize = COMPOSITION + 0x28;
 pub const GRID_DIMENSIONS: usize = 0x60;
 /// CReferencedDivisionTemplate regiment CSubUnitDefinition pointer-vector data.
 pub const REGIMENT_DATA: usize = 0x68;
-/// CReferencedDivisionTemplate regiment u32 count.
-pub const REGIMENT_COUNT: usize = 0x74;
 /// CReferencedDivisionTemplate support CSubUnitDefinition pointer-vector data.
 pub const SUPPORT_DATA: usize = 0x88;
-/// CReferencedDivisionTemplate support u32 count.
-pub const SUPPORT_COUNT: usize = 0x94;
 /// CReferencedDivisionTemplate regimental-support definition pointer-vector data.
 pub const REGIMENTAL_SUPPORT_DATA: usize = 0xa8;
-/// CReferencedDivisionTemplate regimental-support u32 count.
-pub const REGIMENTAL_SUPPORT_COUNT: usize = 0xb4;
 /// The three composition grids' pointer-vector headers, in the order
 /// [`IconRow::grids`] keeps them: regiments, support, regimental support. A
 /// cell holds a definition pointer; a null pointer is an empty cell.
 pub const GRIDS: [usize; 3] = [REGIMENT_DATA, SUPPORT_DATA, REGIMENTAL_SUPPORT_DATA];
 /// Excluded equipment-variant pointer-array data.
 pub const EXCLUDED_VARIANT_DATA: usize = 0x140;
-/// Excluded variant-array capacity, u32.
-pub const EXCLUDED_VARIANT_CAPACITY: usize = 0x148;
-/// Excluded variant-array count, u32.
-pub const EXCLUDED_VARIANT_COUNT: usize = 0x14c;
 /// CReferencedDivisionTemplate u32 priority.
 pub const PRIORITY: usize = 0x1a4;
 /// Raw headquarters-template byte retained without boolean collapse.
@@ -1288,6 +1278,7 @@ pub fn walk_icons(
 /// refuses only the optional name, never counter/model facts. The caller grows
 /// the separate name arena off-thread from observed demand.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_icons_with_names(
     memory: &impl Memory,
     base: usize,
@@ -1338,37 +1329,6 @@ pub fn walk_icons_with_names_growing(
         slots,
         Some(Buffer::Growing(names)),
         None,
-        None,
-    )
-}
-
-/// The named walk's same authenticated census, visiting countries even when
-/// their template roster is empty. The caller owns each additional field's
-/// failure domain and no second country census is performed.
-#[allow(clippy::too_many_arguments)]
-pub fn walk_icons_with_countries_growing(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    rows: &mut Vec<IconRow>,
-    bytes: &mut Vec<u8>,
-    counts: &mut Vec<SubunitCount>,
-    variants: &mut Vec<u64>,
-    slots: DefinitionSlots<'_>,
-    names: &mut Vec<u8>,
-    countries: &mut dyn FnMut(ccountry::Country),
-) -> IconWalk {
-    walk_icons_inner(
-        memory,
-        base,
-        state,
-        Buffer::Growing(rows),
-        Buffer::Growing(bytes),
-        Buffer::Growing(counts),
-        Buffer::Growing(variants),
-        slots,
-        Some(Buffer::Growing(names)),
-        Some(countries),
         None,
     )
 }

@@ -412,6 +412,7 @@ impl Content {
     }
 
     /// Authored texts through the same native reader as files, for fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn from_texts(texts: &[&[u8]], names: &Names) -> io::Result<Self> {
         let mut content = Self::default();
         let key_names = KeyNames {

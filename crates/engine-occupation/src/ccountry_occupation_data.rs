@@ -15,18 +15,10 @@ pub const GROUP_LAW: usize = 0xa0;
 pub const LAW_TABLE: usize = 0xb0;
 /// State-id to CStateGarrisonData robin-hood table; only live buckets establish membership.
 pub const GARRISON_TABLE: usize = 0xd8;
-/// Garrison-table live count, u32.
-pub const GARRISON_COUNT: usize = 0xe0;
 /// Garrison-table span parameter, u32, used as a capacity or mask by
 /// its consumer; traversal includes this value plus maximum probe distance
 /// plus one buckets.
 pub const GARRISON_CAPACITY_OR_MASK: usize = 0xe4;
-/// Garrison-table maximum probe distance, u8.
-pub const GARRISON_MAX_DISTANCE: usize = 0xe8;
-/// Occupied-bucket iterator and serializer.
-pub const SERIALIZE_RVA: usize = 0x00fe_a660;
-/// Paired occupation-table loader.
-pub const DESERIALIZE_RVA: usize = 0x00fe_5070;
 
 use crate::ccountry_occupation_status::Rows;
 use crate::{

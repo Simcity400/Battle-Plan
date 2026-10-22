@@ -9,26 +9,14 @@ pub const COUNTRY: usize = 8;
 pub const MOBILIZATION: usize = 0x10;
 /// Daily mobilization and exile growth using the embedded object.
 pub const DAILY_UPDATE_RVA: usize = 0x00ce_78c0;
-/// Candidate pool getter summing signed state values and residual; exact pool/cache meaning is unknown.
-pub const POOL_GETTER_RVA: usize = 0x00ce_7bd0;
-/// Mobilization tooltip reading the ratio; excluded from capture.
-pub const MOBILIZATION_TOOLTIP_RVA: usize = 0x00ce_83e0;
-/// Alternative state-pool sum plus residual; validity and writer scope are unknown.
-pub const ALTERNATE_POOL_GETTER_RVA: usize = 0x00ce_98a0;
-/// Mobilization adjustment using effective modifier targets.
-pub const ADJUST_MOBILIZATION_RVA: usize = 0x00ce_9930;
-/// Companion adjustment using the same modifier targets.
-pub const ADJUST_MOBILIZATION_TARGET_RVA: usize = 0x00ce_9cf0;
 
 use crate::{Memory, ccountry, read};
 
 /// Exile pool and its stored admission cap, signed people.
 pub const EXILE_POOL: usize = 0x18;
-pub const EXILE_CAP: usize = 0x1c;
 /// Diplomacy's signed host reference; positive means the country is in exile.
 pub const HOST: usize = 0x1a8;
 pub const LEGITIMACY: usize = 0x1b0;
-pub const EXILE_LEADERS: usize = 0x1b8;
 
 /// Daily-sliced operands. A missing scalar is its own refusal. Exile-only
 /// resources are absent for a known non-exile, without touching their memory.

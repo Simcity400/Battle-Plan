@@ -18,28 +18,16 @@ pub const CURRENT: usize = 0x10;
 pub const FINAL: usize = 0x18;
 /// CThreatSource daily change i64.
 pub const DAILY: usize = 0x20;
-/// CThreatSource embedded date object.
-pub const DATE_OBJECT: usize = 0x28;
 /// CThreatSource raw date hour i32.
 pub const DATE: usize = 0x30;
-/// CThreatSource date serialization subobject.
-pub const DATE_SERIALIZER_SUBOBJECT: usize = 0x38;
 /// CThreatSource reason std::string.
 pub const REASON: usize = 0x40;
 /// CThreatSource allocation size.
 pub const SIZE: usize = 0x60;
 /// CThreatSource native fixed-point denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Live daily tension-decay step, fixed5.
-pub const DECAY_DAILY_RVA: usize = 0x0331_d358;
 /// CThreatSource daily ramp/decay update.
 pub const DAILY_UPDATE_RVA: usize = 0x00ee_fd50;
-/// Source serializer; writes contributions, both country references, date and reason.
-pub const SERIALIZE_RVA: usize = 0x00ef_0450;
-/// Source deserializer.
-pub const DESERIALIZE_RVA: usize = 0x00ee_fa80;
-/// Source creation; clamps the requested amount before storing the final contribution.
-pub const CREATE_RVA: usize = 0x00ee_e3c0;
 /// Matching-source update; replaces final, current and daily contribution.
 pub const UPDATE_RVA: usize = 0x00ef_01f0;
 

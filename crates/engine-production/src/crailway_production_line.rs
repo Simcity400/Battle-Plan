@@ -15,9 +15,8 @@ pub const TARGET_LEVEL: usize = 0x74;
 pub const COMPLETION_FLAG: usize = 0x78;
 /// Route province-ID array data.
 pub const ROUTE: usize = 0x80;
-/// Route array capacity, u32.
-pub const ROUTE_CAPACITY: usize = 0x88;
 /// Route array count, u32.
+#[cfg(test)]
 pub const ROUTE_COUNT: usize = 0x8c;
 /// Route entries are u32 province IDs.
 pub const ROUTE_PROVINCE_STRIDE: usize = 0x04;

@@ -85,10 +85,6 @@ pub fn tables() -> &'static [TableId] {
 /// removed, delivery, payment and a delivery whose amount is unavailable.
 pub const LEDGER_KINDS: [u8; 6] = [10, 11, 12, 20, 21, 34];
 
-/// Native pool positions of an agreement: monthly, production share, once,
-/// delivered and lost.
-pub const LEASE_POOLS: u8 = 5;
-
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Field {
     /// 1 while the table at this position of the state tables is complete.

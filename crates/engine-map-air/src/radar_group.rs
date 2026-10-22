@@ -12,25 +12,16 @@ use crate::{
 /// Province-ID array pointer.
 pub const PROVINCES: usize = 0;
 /// Province-ID array u32 capacity.
+#[cfg(test)]
 pub const PROVINCES_CAPACITY: usize = 0x08;
 /// Province-ID array u32 count.
 pub const PROVINCES_COUNT: usize = 0x0c;
-/// Auxiliary pointer array; pointee meaning is unknown.
-pub const AUXILIARY_ARRAY_18: usize = 0x18;
-/// Auxiliary pointer-array signed i32 count.
-pub const AUXILIARY_ARRAY_18_COUNT: usize = 0x24;
-/// Auxiliary signed i32 array of associated-object coverage counts.
-pub const AUXILIARY_ARRAY_30: usize = 0x30;
-/// Auxiliary integer-array signed i32 count.
-pub const AUXILIARY_ARRAY_30_COUNT: usize = 0x3c;
 /// Host state pointer selected from controlled states.
 pub const STATE: usize = 0x48;
 /// Signed raw i64 scalar using fixed-point scale 100000.
 pub const SCALAR_50: usize = 0x50;
 /// Cached fixed5 radius used by the range symbol.
 pub const COVERAGE_RADIUS: usize = SCALAR_50;
-/// Signed i32 aggregate of signed i16 state operands; semantic label is unknown.
-pub const AGGREGATE_58: usize = 0x58;
 /// Owning radar-pool pointer.
 pub const PARENT: usize = 0x60;
 /// Radar-group allocation size.
@@ -39,14 +30,6 @@ pub const SIZE: usize = 0x70;
 pub const UPDATE_RVA: usize = 0x0108_ec70;
 /// Supported executable's update-entry fingerprint, using FNV-1a over 16 bytes.
 pub const UPDATE_PREFIX_HASH: u64 = 0x348d_1fd7_4174_e813;
-/// Group creation per radar-carrying controlled state.
-pub const CREATE_RVA: usize = 0x0109_3140;
-/// Building-change producer creating or reusing a group before updating coverage.
-pub const BUILDING_CHANGE_RVA: usize = 0x0109_3790;
-/// Province-controller-change producer selecting by state and swap-removing groups.
-pub const CONTROLLER_CHANGE_RVA: usize = 0x0109_3ac0;
-/// Fog consumer of radar coverage.
-pub const FOG_CONSUMER_RVA: usize = 0x0160_6390;
 
 /// One country's radar group in vector order. Its ordinal is a position,
 /// not an identity: swap-removal can move coverage between hours. Host state

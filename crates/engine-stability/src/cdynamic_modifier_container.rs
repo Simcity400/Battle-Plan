@@ -18,8 +18,10 @@ pub const STATE: usize = 0x18;
 /// Timed-modifier entry array with 0x40-byte entries.
 pub const ENTRIES: usize = 0x28;
 /// CDynamicModifierContainer entry capacity u32.
+#[cfg(test)]
 pub const ENTRIES_CAPACITY: usize = 0x30;
 /// CDynamicModifierContainer entry count u32.
+#[cfg(test)]
 pub const ENTRIES_COUNT: usize = 0x34;
 
 /// Timed-modifier add/value/duration entry.

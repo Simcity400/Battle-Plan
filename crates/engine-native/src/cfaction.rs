@@ -17,8 +17,6 @@ pub const REFERENCE: usize = 0x08;
 pub const REFERENCE_TYPE: u32 = 88;
 /// CFaction own MSVC name string.
 pub const NAME: usize = 0x18;
-/// CFaction resolved display-text cache, not internal identity.
-pub const DISPLAY_NAME_CACHE: usize = 0x38;
 /// Faction member pointer-vector data; first member is leader.
 pub const MEMBERS: usize = 0x58;
 /// CFaction signed member capacity.
@@ -47,11 +45,7 @@ pub const COLOR_OVERRIDDEN: usize = 0x9c0;
 pub const ICON: usize = 0x548;
 /// CFaction embedded `CFactionTheaterManager`.
 pub const THEATER_MANAGER: usize = 0x9f8;
-/// CFaction display-name resolver.
-pub const DISPLAY_NAME_RVA: usize = 0x00d7_7360;
 
-/// Faction membership predicate scans member ids or cosmetic identities.
-pub const CONTAINS_COUNTRY_RVA: usize = 0x00d7_8160;
 /// Embedded faction upgrade-status object.
 pub const UPGRADE_STATUS: usize = 0x838;
 /// Upgrade-status advisor-slot array: a signed count and 0x1A8-byte slots. Each slot starts with a
@@ -62,8 +56,6 @@ pub const ADVISOR_SLOTS: usize = UPGRADE_STATUS + 0x98;
 /// Advisor slot stride.
 pub const ADVISOR_SLOT_STRIDE: usize = 0x1a8;
 
-/// Independent effect accumulator included in the faction's power projection.
-pub const POWER_PROJECTION_FROM_EFFECTS: usize = 0x828;
 /// Retained totals used by the faction screen, refreshed by their own writers.
 pub const POWER_PROJECTION_TOTAL: usize = 0x818;
 pub const INFLUENCE_TOTAL: usize = 0x820;
@@ -73,6 +65,7 @@ pub const VARIABLES: usize = 0xa40;
 pub const MANPOWER_POOL: usize = 0x8f0;
 /// Faction research and manpower feature unlock bytes.
 pub const RESEARCH_UNLOCKED: usize = 0xa38;
+#[cfg(any(test, feature = "test-support"))]
 pub const MANPOWER_UNLOCKED: usize = 0xa39;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

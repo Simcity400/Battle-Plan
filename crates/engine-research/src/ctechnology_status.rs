@@ -5,16 +5,8 @@
 pub const VTABLE_RVA: usize = 0x0295_e378;
 /// CTechnologyStatus researched CTechnology* vector.
 pub const RESEARCHED_DATA: usize = 0x40;
-/// Researched vector u32 capacity; must cover the stored count.
-pub const RESEARCHED_CAPACITY: usize = 0x48;
-/// CTechnologyStatus researched vector u32 count.
-pub const RESEARCHED_COUNT: usize = 0x4c;
 /// CTechnologyStatus all-technology pointer vector.
 pub const TECHNOLOGIES_DATA: usize = 0x88;
-/// All-technology vector u32 capacity.
-pub const TECHNOLOGIES_CAPACITY: usize = 0x90;
-/// All-technology vector u32 count.
-pub const TECHNOLOGIES_COUNT: usize = 0x94;
 /// CTechnologyStatus research-slot pointer vector.
 pub const RESEARCH_SLOTS_DATA: usize = 0xa0;
 /// Research-slot vector u32 capacity; must cover the stored count.
@@ -41,18 +33,6 @@ pub const FRESH_INIT_RVA: usize = 0x00ec_e9e0;
 pub const FRESH_INIT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
 ];
-/// Post-load initialization.
-pub const INIT_POST_READ_RVA: usize = 0x00ec_b270;
-/// Post-load initialization entry bytes.
-pub const INIT_POST_READ_SENTINEL: [u8; 16] = [
-    0x41, 0x54, 0x41, 0x57, 0x48, 0x83, 0xec, 0x38, 0x4c, 0x63, 0xa1, 0x94, 0x00, 0x00, 0x00, 0x4c,
-];
-/// CTechnologyStatus classify sweep.
-pub const CLASSIFY_SWEEP_RVA: usize = 0x00ec_b170;
-/// Classification-sweep entry bytes.
-pub const CLASSIFY_SWEEP_SENTINEL: [u8; 16] = [
-    0x40, 0x55, 0x41, 0x55, 0x48, 0x83, 0xec, 0x28, 0x33, 0xed, 0x4c, 0x8b, 0xe9, 0x39, 0xa9, 0x94,
-];
 /// CTechnologyStatus completion handler.
 pub const RESEARCH_COMPLETED_RVA: usize = 0x00ec_ece0;
 /// Completion-handler entry bytes.
@@ -63,8 +43,6 @@ pub const RESEARCH_COMPLETED_SENTINEL: [u8; 16] = [
 pub const REBUILD_OR_TRANSFER_A_RVA: usize = 0x00ec_d160;
 /// CTechnologyStatus rebuild/transfer path B.
 pub const REBUILD_OR_TRANSFER_B_RVA: usize = 0x00ec_ae20;
-/// CTechnologyStatus researched-vector insertion.
-pub const INSERT_RESEARCHED_RVA: usize = 0x00ec_07a0;
 
 use crate::{
     Memory, ccountry, cpdx_array::Array, cresearch_slot, ctechnology, ctechnology_template, read,

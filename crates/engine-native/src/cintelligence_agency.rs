@@ -34,9 +34,8 @@ pub const CREATED: usize = 0xc0;
 pub const UPGRADE_PROGRESS: usize = 0xc8;
 /// CIntelligenceAgency COperativeLeader pointer-vector data.
 pub const OPERATIVES: usize = 0xd8;
-/// CIntelligenceAgency active-vector u32 capacity.
-pub const OPERATIVE_CAPACITY: usize = 0xe0;
 /// CIntelligenceAgency active-vector i32 size.
+#[cfg(test)]
 pub const OPERATIVE_COUNT: usize = 0xe4;
 /// Unidentified agency dword initialized with `OPERATIVE_ADMISSION_CEILING`, read as u32. It does
 /// not establish available operative slots.
@@ -45,29 +44,14 @@ pub const UNKNOWN_F0: usize = 0xf0;
 pub const OPERATIVE_ADMISSION_CEILING: usize = 0xf4;
 /// CIntelligenceAgency CCapturedOperativeReference inline-array data.
 pub const CAPTURED_OPERATIVE_REFERENCES: usize = 0x108;
-/// Signed CPdxArray count.
-pub const CAPTURED_OPERATIVE_REFERENCE_COUNT: usize = 0x114;
 /// CIntelligenceAgency CCryptology pointer.
 pub const CRYPTOLOGY: usize = 0x120;
 /// CIntelligenceAgency signed i64 defense /100000.
 pub const DEFENSE: usize = 0x128;
 /// CIntelligenceAgency constructor RVA.
 pub const CONSTRUCTOR_RVA: usize = 0x00fc_1d70;
-/// CIntelligenceAgency AddOperative RVA.
-pub const ADD_OPERATIVE_RVA: usize = 0x00fc_21d0;
-/// Agency operative removal erases active membership.
-pub const REMOVE_OPERATIVE_RVA: usize = 0x00fc_9120;
-/// Agency operative capture appends a captured reference without
-/// removing active or recruitment membership.
-pub const CAPTURE_OPERATIVE_RVA: usize = 0x00fc_5830;
 /// Operative-admission override byte; nonzero permits count above ceiling.
 pub const ADMISSION_OVERRIDE_RVA: usize = 0x0331_725e;
-/// CIntelligenceAgency container loader.
-pub const CONTAINER_LOADER_RVA: usize = 0x00fc_8750;
-/// CIntelligenceAgency operative construct helper.
-pub const OPERATIVE_CONSTRUCT_RVA: usize = 0x00bf_c8d0;
-/// CIntelligenceAgency operative token.
-pub const TOKEN_OPERATIVE: u32 = 0x3d13;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -110,6 +94,7 @@ pub struct UpgradeWalk {
 
 /// Entries and scalar rows share one country census and authenticated
 /// agency root. The created byte filters neither table.
+#[cfg(any(test, feature = "test-support"))]
 pub fn walk_with_upgrades(
     memory: &impl Memory,
     base: usize,

@@ -129,6 +129,7 @@ impl RecordedFrame {
         })
     }
     /// Materialize an owned wire frame only for callers that require ownership.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn to_owned_frame(&self) -> io::Result<Frame> {
         Ok(Frame {
             branch: self.branch,

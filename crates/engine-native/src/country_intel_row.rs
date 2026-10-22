@@ -18,14 +18,6 @@ pub const AIR: usize = 0x18;
 
 /// Record serializer emitting conditional lane keys in this file's order.
 pub const WRITER_RVA: usize = 0x0108_5bf0;
-/// Serialized `civilian` key token for lane 0, emitted when the raw amount is nonzero.
-pub const CIVILIAN_TOKEN: u32 = 0x4b26;
-/// Serialized `army` key token for lane 1, emitted when the raw amount is nonzero.
-pub const ARMY_TOKEN: u32 = 0x289d;
-/// Serialized `navy` key token for lane 2, emitted when the raw amount is nonzero.
-pub const NAVY_TOKEN: u32 = 0x289e;
-/// Serialized `airforce` key token for lane 3, emitted when the raw amount is nonzero.
-pub const AIRFORCE_TOKEN: u32 = 0x4b27;
 /// Lane denominator used by the signed fixed5 formatter.
 pub const LANE_DENOMINATOR: i64 = 100_000;
 

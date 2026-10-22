@@ -12,28 +12,16 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x0270_ad88;
 /// CHuman constructor; the exact-build export names CHuman and writes the country tag and player key separately.
 pub const CONSTRUCTOR_RVA: usize = 0x00ba_d3e0;
-/// CHuman copy constructor.
-pub const COPY_CONSTRUCTOR_RVA: usize = 0x001c_0920;
 /// CHuman array stride.
 pub const STRIDE: usize = 0xa0;
-/// Human array data pointer; element meaning remains unproven.
-pub const AUXILIARY_ARRAY: usize = 0x08;
-/// CHuman auxiliary array capacity u32.
-pub const AUXILIARY_ARRAY_CAPACITY: usize = 0x10;
-/// CHuman auxiliary array count u32.
-pub const AUXILIARY_ARRAY_COUNT: usize = 0x14;
 /// Exact stored human user string, saved and loaded without transformation.
 pub const FIRST_STRING: usize = 0x20;
 /// CHuman display-name std::string.
 pub const NAME: usize = 0x40;
-/// CHuman embedded SProfileBadge.
-pub const PROFILE_BADGE: usize = 0x60;
 /// CHuman raw country Tag/link i32.
 pub const COUNTRY_TAG: usize = 0x70;
 /// CHuman embedded CGameDate.
 pub const DATE: usize = 0x78;
-/// Raw human dword after the date, initially zero; meaning remains unproven.
-pub const UNKNOWN_DWORD_90: usize = 0x90;
 /// Human raw flags; save retains bit zero as country-leader state.
 /// Other bits remain uninterpreted.
 pub const FLAGS: usize = 0x94;

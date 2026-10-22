@@ -27,25 +27,8 @@ pub const SUBJECT_COUNTRY: usize = 0x50;
 /// Last-modified raw date word read as u32; signedness remains unproven.
 pub const LAST_MODIFIED_HOUR: usize = 0x60;
 /// CCurrentAutonomyStatus writer Save.
+#[cfg(test)]
 pub const SAVE_RVA: usize = 0x0066_def0;
-/// CCurrentAutonomyStatus loader Load.
-pub const LOAD_RVA: usize = 0x0066_c680;
-/// CCurrentAutonomyStatus score token.
-pub const TOKEN_SCORE: u32 = 0x2b05;
-/// CCurrentAutonomyStatus state token.
-pub const TOKEN_STATE: u32 = 0x36eb;
-/// Previous-autonomy-state token, emitted only for a nonnull previous state.
-pub const TOKEN_PREVIOUS: u32 = 0x36ec;
-/// Next-autonomy-state token, emitted only for a nonnull next state.
-pub const TOKEN_NEXT: u32 = 0x01d8;
-/// CCurrentAutonomyStatus vector token.
-pub const TOKEN_VECTOR: u32 = 0x0174;
-/// The CCurrentAutonomyStatus token after `LAST_MODIFIED_HOUR`.
-pub const TOKEN_431D: u32 = 0x431d;
-/// CCurrentAutonomyStatus record token.
-pub const TOKEN_RECORD: u32 = 0x0059;
-/// CCurrentAutonomyStatus name lookup.
-pub const NAME_LOOKUP_RVA: usize = 0x0066_9480;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

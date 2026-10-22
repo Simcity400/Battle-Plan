@@ -105,13 +105,6 @@ pub const TOTALS: usize = 8;
 /// converts to fixed5 with five decimals truncated toward zero
 /// (`replay_data::fixed_point::q15_to_saved_fixed5`).
 pub const PROPAGANDA_STABILITY_PENALTY: usize = 0x14c0;
-/// Q15 being-bombed war-support penalty, consumed by displayed war support
-/// and written under the being_bombed_support_penalty token (0x3c50).
-pub const BEING_BOMBED_PENALTY: usize = 0x14c8;
-/// Q15 heroes-killed penalty (`heroes_dying_war_support_penalty`, 0x3c51).
-pub const HEROES_PENALTY: usize = 0x14d0;
-/// Q15 convoys-raided penalty (`convoy_raiding_war_support_penalty`, 0x3c4f).
-pub const CONVOYS_PENALTY: usize = 0x14d8;
 /// Q15 propaganda war support penalty (`propaganda_war_support_penalty`, 0x4b47).
 pub const PROPAGANDA_WAR_SUPPORT_PENALTY: usize = 0x14e0;
 /// Fixed5 coastal-protection stability term written daily, added to displayed
@@ -709,6 +702,7 @@ pub fn walk_country_growing<M: Memory>(
 /// Worker append with shared static observations of this hour only.
 /// Reset `memo` before a new hour's Context, even when its globals compare equal.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn walk_country_growing_memo<M: Memory>(
     memory: &M,
     base: usize,

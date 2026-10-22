@@ -13,8 +13,6 @@ pub const TRAIT_CAPACITY: usize = 0x38;
 pub const TRAIT_COUNT: usize = 0x3c;
 /// Specialization-record vector data, stride 0x20.
 pub const SKILLS: usize = 0x110;
-/// Specialization-vector capacity, u32.
-pub const SKILL_CAPACITY: usize = 0x118;
 /// Specialization-vector signed count used by copying.
 pub const SKILL_COUNT: usize = 0x11c;
 /// Scientist-trait primary vtable.
@@ -150,8 +148,6 @@ pub const ACTIVE: usize = 0x130;
 pub const INJURY_DAYS: usize = 0x134;
 /// Scientist allocation size.
 pub const SIZE: usize = 0x138;
-/// Copy constructor preserving both vector counts and specialization stride.
-pub const COPY_CONSTRUCTOR_RVA: usize = 0x013f_6010;
 
 #[cfg(test)]
 mod tests {

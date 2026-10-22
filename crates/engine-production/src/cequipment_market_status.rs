@@ -6,8 +6,6 @@ use crate::{Memory, ccountry, read};
 pub const STOCKPILE: usize = 0x00;
 /// Market-manager pointer, authenticated against `cgame_state::MARKET_MANAGER`.
 pub const MANAGER: usize = 0x70;
-/// CEquipmentMarketStatus stockpile accessor.
-pub const STOCKPILE_ACCESSOR_RVA: usize = 0xddf930;
 
 pub(crate) fn verify_manager(
     memory: &impl Memory,

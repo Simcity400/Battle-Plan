@@ -523,15 +523,6 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
     ) -> Option<Result<usize, &'static str>> {
         self.inner.movement_primary_root(base, member)
     }
-    fn movement_air_defense_value(
-        &self,
-        defense: i64,
-        denominator: i64,
-        reduction: i64,
-    ) -> Option<Result<i64, &'static str>> {
-        self.inner
-            .movement_air_defense_value(defense, denominator, reduction)
-    }
     /// All lanes from the image, or the whole scatter from the source: one
     /// guarded call either way, and the same bytes.
     fn copy_scattered<const N: usize>(

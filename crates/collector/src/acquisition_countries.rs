@@ -141,7 +141,7 @@ impl Request {
         let game_state = self.links.game_state;
         let begin = crate::sampling::qpc();
         if let Some(naming) = &mut self.naming {
-            naming.appearance.raw.begin(base, game_state, naming.hour);
+            naming.appearance.raw.begin(naming.hour);
             // The original shared authentication seed may have failed before
             // Countries began. Its later transparent fallback is still an
             // original family operation, but cannot heal that first control
