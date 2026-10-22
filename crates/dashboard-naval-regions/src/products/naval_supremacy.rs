@@ -15,7 +15,8 @@ use dashboard_keyed::daily::DAY_HOURS;
 use dashboard_keyed::{
     Observer, Values,
     countries::Countries,
-    query::{KeyedWindow, Query},
+    daily::{Day, Days},
+    query::{KeyedWindow, Opened, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
@@ -23,7 +24,7 @@ use replay_data::{
     rows::{self, TableId, TableRows, tables},
 };
 use replay_derive::naval_region_control;
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -220,22 +221,49 @@ fn current_name(name: &str) -> Option<(u32, u32)> {
     };
     (parts.next().is_none()).then_some((region, raw))
 }
-pub(crate) fn restore(
-    branch: u64,
-    hour: i32,
+/// What one saved table's operands restore: its view, None where it is not known,
+/// and the most words a row of it declares.
+type Restored = (Option<SharedView>, usize);
+
+/// Restores one saved table from its values, each row's words bounded by the hour's
+/// number of values ([`operands::rows`]).
+type Input = fn(&BTreeMap<&str, i128>, usize) -> io::Result<Restored>;
+
+/// The saved tables, in restore order.
+const INPUTS: &[(TableId, Input)] = &[
+    (TableId::CountryLinks, input::<tables::CountryLinks>),
+    (TableId::Countries, input::<tables::Countries>),
+    (TableId::FactionMembers, input::<tables::FactionMembers>),
+    (TableId::Subjects, input::<tables::Subjects>),
+    (TableId::WarRelations, input::<tables::WarRelations>),
+    (
+        TableId::AirCountryRelations,
+        input::<tables::AirCountryRelations>,
+    ),
+    (TableId::RelationTuples, input::<tables::RelationTuples>),
+    (
+        TableId::CountryCounterInputs,
+        input::<tables::CountryCounterInputs>,
+    ),
+    (
+        TableId::ReservedCountryNaming,
+        input::<tables::ReservedCountryNaming>,
+    ),
+];
+
+fn input<T: rows::TableSchema>(
     values: &BTreeMap<&str, i128>,
-    sample: i32,
-) -> io::Result<DecodedFrame> {
-    let mut frame = operands::blank(branch, hour);
-    operands::restore::<tables::CountryLinks>(&mut frame, values)?;
-    operands::restore::<tables::Countries>(&mut frame, values)?;
-    operands::restore::<tables::FactionMembers>(&mut frame, values)?;
-    operands::restore::<tables::Subjects>(&mut frame, values)?;
-    operands::restore::<tables::WarRelations>(&mut frame, values)?;
-    operands::restore::<tables::AirCountryRelations>(&mut frame, values)?;
-    operands::restore::<tables::RelationTuples>(&mut frame, values)?;
-    operands::restore::<tables::CountryCounterInputs>(&mut frame, values)?;
-    operands::restore::<tables::ReservedCountryNaming>(&mut frame, values)?;
+    bound: usize,
+) -> io::Result<Restored> {
+    let rows = operands::rows::<T>(values, bound)?;
+    Ok((
+        rows.map(|rows| TableView::Complete(T::wrap(rows)).into()),
+        operands::most_words::<T>(values),
+    ))
+}
+
+/// The regions' current rows `values` names, each with its region's runtime slot.
+fn currents(values: &BTreeMap<&str, i128>) -> io::Result<Vec<rows::NavalSupremacyRow>> {
     let mut currents = Vec::new();
     for (&name, &current) in values {
         if let Some((region, country)) = current_name(name) {
@@ -253,9 +281,25 @@ pub(crate) fn restore(
         }
     }
     currents.sort_by_key(|r| (r.region, r.country));
-    frame.tables[TableId::NavalSupremacy.index()] = replay_frame::frame::SharedView::from(
-        TableView::Complete(TableRows::NavalSupremacy(currents)),
-    )
+    Ok(currents)
+}
+
+#[cfg(test)]
+pub(crate) fn restore(
+    branch: u64,
+    hour: i32,
+    values: &BTreeMap<&str, i128>,
+    sample: i32,
+) -> io::Result<DecodedFrame> {
+    let mut frame = operands::blank(branch, hour);
+    for (table, input) in INPUTS {
+        if let (Some(view), _) = input(values, values.len())? {
+            frame.tables[table.index()] = view;
+        }
+    }
+    frame.tables[TableId::NavalSupremacy.index()] = SharedView::from(TableView::Complete(
+        TableRows::NavalSupremacy(currents(values)?),
+    ))
     .with_sampled_at(Some(sample));
     Ok(frame)
 }
@@ -365,6 +409,239 @@ pub(crate) fn project(
     result
 }
 pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+    reply(q, sweep)
+}
+
+/// Projects each requested day's restored operands into the reply.
+pub(crate) struct Projection<'a> {
+    tag: &'a str,
+    ids: &'a BTreeSet<u32>,
+    labels: &'a Result<Arc<Labels>, String>,
+    notes: &'a mut Refusals,
+    viewer_slots: BTreeSet<u32>,
+    days: dashboard_keyed::daily::Builder,
+}
+
+impl Projection<'_> {
+    /// The day's supplying read, from its read marker and epoch; None, noted, where
+    /// the epoch does not witness the day.
+    fn read(&mut self, day: &Day, marker: Option<i128>, epoch: Option<i128>) -> Option<i32> {
+        let epoch = epoch.and_then(|v| i32::try_from(v).ok());
+        // Equal fresh reads live in READ even when the rows and epoch marker
+        // did not change during the pre-pass's quiet hours.
+        let read = epoch.map(|epoch| {
+            marker
+                .and_then(|v| i32::try_from(v).ok())
+                .map_or(epoch, |read| read.max(epoch))
+        });
+        let read = read.filter(|h| {
+            *h <= day.hour && h.div_euclid(DAY_HOURS) == day.hour.div_euclid(DAY_HOURS)
+        });
+        if read.is_none() {
+            self.notes.note(
+                "NavalSupremacy is outside its witnessed midnight cache epoch",
+                day.hour.to_string(),
+            );
+        }
+        read
+    }
+
+    fn push(&mut self, day: &Day, read: i32, frame: &DecodedFrame) {
+        self.viewer_slots.extend(shared::viewer_slots(
+            frame,
+            Countries::read(frame).as_ref(),
+            self.tag,
+        ));
+        let values = project(frame, self.tag, self.ids, self.labels, self.notes);
+        self.days.push(day, read, values);
+    }
+}
+
+/// Walks the requested days of a window with the series of the names given.
+pub(crate) type Walk = fn(
+    &Query<'_>,
+    &mut Opened<'_, NavalSupremacyObserver>,
+    &[(String, u64)],
+    (i32, i32),
+    &mut Projection<'_>,
+) -> io::Result<()>;
+
+/// Each day's values as one lookup of every series, restored whole.
+#[cfg(test)]
+pub(crate) fn lookup(
+    q: &Query<'_>,
+    opened: &mut Opened<'_, NavalSupremacyObserver>,
+    named: &[(String, u64)],
+    (first, last): (i32, i32),
+    out: &mut Projection<'_>,
+) -> io::Result<()> {
+    let mut keys = vec![dashboard_keyed::KNOWN, dashboard_keyed::READ];
+    keys.extend(named.iter().map(|(_, k)| *k));
+    for day in Days::requested(q, first, last).iter() {
+        dashboard_text::metadata::check_cancel(q.cancelled)?;
+        let raw = opened.values_at(&keys, day.hour)?;
+        if raw[0] != Some(1) {
+            continue;
+        }
+        let values: BTreeMap<_, _> = named
+            .iter()
+            .zip(raw.iter().skip(2))
+            .filter_map(|((n, _), v)| v.map(|v| (n.as_str(), v)))
+            .collect();
+        let Some(read) = out.read(day, raw[1], values.get("epoch").copied()) else {
+            continue;
+        };
+        let frame = restore(q.branch, day.hour, &values, read)?;
+        out.push(day, read, &frame);
+    }
+    Ok(())
+}
+
+/// The values of the names one restored table reads.
+struct Group<'a> {
+    values: BTreeMap<&'a str, i128>,
+    /// Whether a value changed since `view` was restored.
+    changed: bool,
+    view: Option<SharedView>,
+    /// The most words a row of `view` declares.
+    words: usize,
+}
+
+/// Each series read once over the requested days and swept day by day, applying only
+/// its changes; a table is restored again only on a day one of its values changed.
+/// The days project exactly as [`lookup`]'s.
+fn sweep(
+    q: &Query<'_>,
+    opened: &mut Opened<'_, NavalSupremacyObserver>,
+    named: &[(String, u64)],
+    (first, last): (i32, i32),
+    out: &mut Projection<'_>,
+) -> io::Result<()> {
+    let days = Days::requested(q, first, last);
+    let days: Vec<&Day> = days.iter().collect();
+    let hours: Vec<i32> = days.iter().map(|day| day.hour).collect();
+    let mut keys = vec![dashboard_keyed::KNOWN, dashboard_keyed::READ];
+    keys.extend(named.iter().map(|(_, k)| *k));
+    let mut changes: Vec<(usize, usize, Option<i128>)> = opened
+        .changes_at(&keys, &hours)?
+        .into_iter()
+        .enumerate()
+        .flat_map(|(key, changes)| {
+            changes
+                .into_iter()
+                .map(move |(day, value)| (day, key, value))
+        })
+        .collect();
+    changes.sort_unstable_by_key(|&(day, key, _)| (day, key));
+    // Each name once, with the keys naming it (its value is the last of theirs that
+    // holds one, as a map collected in key order keeps) and the groups reading it.
+    let mut names: Vec<&str> = Vec::new();
+    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    let mut name_of = Vec::with_capacity(named.len());
+    for (at, (name, _)) in named.iter().enumerate() {
+        let held = *index.entry(name.as_str()).or_insert_with(|| {
+            names.push(name.as_str());
+            members.push(Vec::new());
+            names.len() - 1
+        });
+        members[held].push(at);
+        name_of.push(held);
+    }
+    let prefixes: Vec<String> = INPUTS
+        .iter()
+        .map(|(table, _)| operands::prefix(*table))
+        .collect();
+    let current_group = INPUTS.len();
+    let groups_of: Vec<Vec<usize>> = names
+        .iter()
+        .map(|name| {
+            let mut groups: Vec<usize> = prefixes
+                .iter()
+                .enumerate()
+                .filter(|(_, prefix)| name.starts_with(prefix.as_str()))
+                .map(|(group, _)| group)
+                .collect();
+            if current_name(name).is_some() || name.starts_with("region|") {
+                groups.push(current_group);
+            }
+            groups
+        })
+        .collect();
+    let epoch = index.get("epoch").copied();
+    let mut groups: Vec<Group> = (0..=current_group)
+        .map(|_| Group {
+            values: BTreeMap::new(),
+            changed: true,
+            view: None,
+            words: 0,
+        })
+        .collect();
+    let mut held: Vec<Option<i128>> = vec![None; keys.len()];
+    let mut values: Vec<Option<i128>> = vec![None; names.len()];
+    // The names holding a value: the size of the hour's whole map.
+    let mut present = 0_usize;
+    let mut changes = changes.into_iter().peekable();
+    for (at, day) in days.iter().enumerate() {
+        dashboard_text::metadata::check_cancel(q.cancelled)?;
+        while let Some((_, key, value)) = changes.next_if(|change| change.0 == at) {
+            held[key] = value;
+            let Some(key) = key.checked_sub(2) else {
+                continue;
+            };
+            let name = name_of[key];
+            let value = members[name].iter().rev().find_map(|&key| held[key + 2]);
+            match (values[name], value) {
+                (None, None) => continue,
+                (Some(before), Some(now)) if before == now => continue,
+                (None, Some(_)) => present += 1,
+                (Some(_), None) => present -= 1,
+                _ => {}
+            }
+            values[name] = value;
+            for &group in &groups_of[name] {
+                let group = &mut groups[group];
+                match value {
+                    Some(value) => group.values.insert(names[name], value),
+                    None => group.values.remove(names[name]),
+                };
+                group.changed = true;
+            }
+        }
+        if held[0] != Some(1) {
+            continue;
+        }
+        let Some(read) = out.read(day, held[1], epoch.and_then(|name| values[name])) else {
+            continue;
+        };
+        let mut frame = operands::blank(q.branch, day.hour);
+        for ((table, input), group) in INPUTS.iter().zip(&mut groups) {
+            // Rows that outgrow fewer values refuse as their restore would.
+            if group.changed || group.words > present {
+                (group.view, group.words) = input(&group.values, present)?;
+                group.changed = false;
+            }
+            if let Some(view) = &group.view {
+                frame.tables[table.index()] = view.clone();
+            }
+        }
+        let group = &mut groups[current_group];
+        if group.changed {
+            group.view = Some(SharedView::from(TableView::Complete(
+                TableRows::NavalSupremacy(currents(&group.values)?),
+            )));
+            group.changed = false;
+        }
+        if let Some(view) = &group.view {
+            frame.tables[TableId::NavalSupremacy.index()] =
+                view.clone().with_sampled_at(Some(read));
+        }
+        out.push(day, read, &frame);
+    }
+    Ok(())
+}
+
+pub(crate) fn reply(q: &Query<'_>, walk: Walk) -> io::Result<serde_json::Value> {
     let p = shared::params::<NavalSupremacy>(q)?;
     let (first, last) = q.window()?;
     let labels = shared::labels(q);
@@ -373,21 +650,21 @@ pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
         .map_or_else(|_| Vec::new(), |l| l.warnings.clone());
     let mut notes = Refusals::default();
     let mut ids = BTreeSet::new();
+    let opened = q.open::<NavalSupremacyObserver>()?;
     if let Ok(l) = &labels
         && let Ok(sea) = &l.sea_regions
     {
         ids.extend(sea);
     }
-    let mut days = dashboard_keyed::daily::Builder::default();
-    let mut viewer_slots = BTreeSet::new();
-    if let Some(mut opened) = q.open::<NavalSupremacyObserver>()? {
+    let mut named = Vec::new();
+    if let Some(opened) = &opened {
         warnings.extend(shared::warnings(&opened.scan.observer.refusals));
         for name in opened.scan.names() {
             if let Some((region, _)) = current_name(name) {
                 ids.insert(region);
             }
         }
-        let named: Vec<_> = opened
+        named = opened
             .scan
             .keyed()
             .filter(|(n, _)| {
@@ -398,50 +675,21 @@ pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
             })
             .map(|(n, k)| (n.to_owned(), k))
             .collect();
-        let mut keys = vec![dashboard_keyed::KNOWN, dashboard_keyed::READ];
-        keys.extend(named.iter().map(|(_, k)| *k));
-        for day in dashboard_keyed::daily::Days::requested(q, first, last).iter() {
-            dashboard_text::metadata::check_cancel(q.cancelled)?;
-            let raw = opened.values_at(&keys, day.hour)?;
-            if raw[0] != Some(1) {
-                continue;
-            }
-            let values: BTreeMap<_, _> = named
-                .iter()
-                .zip(raw.iter().skip(2))
-                .filter_map(|((n, _), v)| v.map(|v| (n.as_str(), v)))
-                .collect();
-            let epoch = values
-                .get("epoch")
-                .copied()
-                .and_then(|v| i32::try_from(v).ok());
-            // Equal fresh reads live in READ even when the rows and epoch marker
-            // did not change during the pre-pass's quiet hours.
-            let read = epoch.map(|epoch| {
-                raw[1]
-                    .and_then(|v| i32::try_from(v).ok())
-                    .map_or(epoch, |read| read.max(epoch))
-            });
-            let Some(read) = read.filter(|h| {
-                *h <= day.hour
-                    && h.div_euclid(DAY_HOURS) == day.hour.div_euclid(DAY_HOURS)
-            }) else {
-                notes.note(
-                    "NavalSupremacy is outside its witnessed midnight cache epoch",
-                    day.hour.to_string(),
-                );
-                continue;
-            };
-            let frame = restore(q.branch, day.hour, &values, read)?;
-            viewer_slots.extend(shared::viewer_slots(
-                &frame,
-                Countries::read(&frame).as_ref(),
-                &p.tag,
-            ));
-            let values = project(&frame, &p.tag, &ids, &labels, &mut notes);
-            days.push(day, read, values);
-        }
     }
+    let mut out = Projection {
+        tag: &p.tag,
+        ids: &ids,
+        labels: &labels,
+        notes: &mut notes,
+        viewer_slots: BTreeSet::new(),
+        days: dashboard_keyed::daily::Builder::default(),
+    };
+    if let Some(mut opened) = opened {
+        walk(q, &mut opened, &named, (first, last), &mut out)?;
+    }
+    let Projection {
+        viewer_slots, days, ..
+    } = out;
     let mut window = days.finish(first, last);
     if viewer_slots.len() > 1 {
         window.series.clear();

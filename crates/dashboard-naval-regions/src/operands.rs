@@ -2,7 +2,7 @@
 //! codec's changed fields from an empty baseline, packed into numeric words.
 //! No frame, row strings or historical packets grow the observer catalogue.
 use dashboard_keyed::Values;
-use replay_data::rows::{DeltaRow, RowCodec, TableSchema};
+use replay_data::rows::{DeltaRow, RowCodec, TableId, TableSchema};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{collections::BTreeMap, io};
 
@@ -34,13 +34,20 @@ pub fn save<T: TableSchema>(
     Ok(())
 }
 
-pub fn restore<T: TableSchema>(
-    frame: &mut DecodedFrame,
+/// The names of `table`'s operands all begin with this.
+pub fn prefix(table: TableId) -> String {
+    format!("input|{}|", table.index())
+}
+
+/// The rows of `T` that `values` holds, None where the table is not known. `bound`
+/// limits each row's words: the number of values the hour holds of every table.
+pub fn rows<T: TableSchema>(
     values: &BTreeMap<&str, i128>,
-) -> io::Result<()> {
-    let prefix = format!("input|{}|", T::ID.index());
+    bound: usize,
+) -> io::Result<Option<Vec<T::Row>>> {
+    let prefix = prefix(T::ID);
     if values.get(format!("{prefix}known").as_str()) != Some(&1) {
-        return Ok(());
+        return Ok(None);
     }
     let mut rows = Vec::new();
     for (&name, &length) in values {
@@ -60,7 +67,7 @@ pub fn restore<T: TableSchema>(
                 .ok_or_else(|| io::Error::other("Incomplete prepared naval operand"))
         };
         // The series catalogue, not an untrusted declared length, bounds allocation.
-        if length.div_ceil(8) > values.len() {
+        if words(length) > bound {
             return Err(io::Error::other("Invalid prepared naval operand length"));
         }
         let mut bytes = Vec::new();
@@ -80,8 +87,31 @@ pub fn restore<T: TableSchema>(
         rows.push(T::Row::apply_delta(&delta, None)?);
     }
     rows.sort_by_key(RowCodec::key);
-    frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows)).into();
-    Ok(())
+    Ok(Some(rows))
+}
+
+/// The words a row of `length` bytes is saved in.
+fn words(length: usize) -> usize {
+    length.div_ceil(8)
+}
+
+/// The most words any row of `T` in `values` declares; zero where the table is not
+/// known, as [`rows`] then reads none.
+pub fn most_words<T: TableSchema>(values: &BTreeMap<&str, i128>) -> usize {
+    let prefix = prefix(T::ID);
+    if values.get(format!("{prefix}known").as_str()) != Some(&1) {
+        return 0;
+    }
+    values
+        .iter()
+        .filter(|(name, _)| {
+            name.strip_prefix(&prefix)
+                .is_some_and(|rest| rest.ends_with("|length"))
+        })
+        .filter_map(|(_, &length)| usize::try_from(length).ok())
+        .map(words)
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn blank(branch: u64, hour: i32) -> DecodedFrame {

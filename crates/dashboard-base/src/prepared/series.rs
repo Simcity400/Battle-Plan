@@ -2615,6 +2615,74 @@ impl<'a> Reader<'a> {
             })
             .collect()
     }
+    /// What [`Self::values_at`] reads of each of `keys` at the ascending `hours`, as
+    /// each key's changes: the index of each hour whose value differs from the hour
+    /// before's (the first hour's when it holds one) and its value. Each of a key's
+    /// batches is decoded once, whatever the number of hours or keys.
+    pub fn changes_at(
+        &mut self,
+        keys: &[u64],
+        hours: &[i32],
+    ) -> io::Result<Vec<Vec<(usize, Option<i128>)>>> {
+        check_cancel(self.cancelled)?;
+        if hours.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(invalid("requested hours must be distinct and ascending"));
+        }
+        // The hours each batch answers, found as `values_at` finds them.
+        let mut spans: Vec<(u64, std::ops::Range<usize>)> = Vec::new();
+        for (at, &hour) in hours.iter().enumerate() {
+            let Some(batch) = self.batches(hour, hour)?.next() else {
+                continue;
+            };
+            match spans.last_mut() {
+                Some((held, range)) if *held == batch && range.end == at => range.end = at + 1,
+                _ => spans.push((batch, at..at + 1)),
+            }
+        }
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(keys.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        for &key in keys {
+            check_cancel(self.cancelled)?;
+            let mut changes = Vec::new();
+            let mut current = None;
+            // Each hour from `from` holds `value`, up to the next segment.
+            let mut segment = |from: usize, to: usize, value: Option<i128>| {
+                if from < to && current != value {
+                    changes.push((from, value));
+                    current = value;
+                }
+            };
+            let mut settled = 0;
+            for (batch, range) in &spans {
+                segment(settled, range.start, None);
+                let span = &hours[range.clone()];
+                // The index of the first of the span's hours from `hour`, or after it.
+                let from_hour = |hour: i32| range.start + span.partition_point(|&h| h < hour);
+                let after_hour = |hour: i32| range.start + span.partition_point(|&h| h <= hour);
+                let rows = &self.data(*batch, key)?.runs;
+                // An hour takes the last run starting by then while that run lasts.
+                let mut from = range.start;
+                for (index, run) in rows.iter().enumerate() {
+                    let start = from_hour(run.first_hour);
+                    segment(from, start, None);
+                    let until = rows
+                        .get(index + 1)
+                        .map_or(range.end, |next| from_hour(next.first_hour));
+                    let held = after_hour(run.last_hour).clamp(start, until.max(start));
+                    segment(start, held, Some(run.value));
+                    segment(held, until, None);
+                    from = from.max(until);
+                }
+                segment(from, range.end, None);
+                settled = range.end;
+            }
+            segment(settled, hours.len(), None);
+            result.push(changes);
+        }
+        Ok(result)
+    }
     pub fn value_at(&mut self, key: u64, hour: i32) -> io::Result<Option<Run>> {
         let Some(batch) = self.batches(hour, hour)?.next() else {
             return Ok(None);

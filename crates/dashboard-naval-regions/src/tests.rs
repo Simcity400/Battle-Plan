@@ -1275,3 +1275,123 @@ fn a_selected_country_query_keeps_owners_that_could_not_be_named() {
         .collect();
     assert_eq!(names, ["?|refused"]);
 }
+
+/// `frames` published in batches ending at each of `cuts`, as preparation commits.
+fn publish_in<O: Observer>(
+    frames: &[DecodedFrame],
+    cuts: &[usize],
+) -> dashboard_base::prepared::series::tests::Fixture {
+    let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut scan = Scan::<O>::default();
+    let mut start = 0;
+    for &end in cuts.iter().chain([frames.len()].iter()) {
+        let mut writer = fixture.writer();
+        for f in &frames[start..end] {
+            scan.prepare(
+                FormatVersion::CURRENT,
+                f,
+                f.tables[O::READ.index()].sampled_at() == Some(f.hour),
+            )
+            .unwrap();
+        }
+        scan.flush(&mut writer, 1, &flag).unwrap();
+        writer.commit().unwrap();
+        start = end;
+    }
+    fixture
+}
+
+#[test]
+fn swept_days_reply_exactly_as_each_day_restored_whole() {
+    // Five days of hourly frames, each day read at midnight but the fourth, which keeps
+    // the third's read: currents change, a country leaves and returns, a war starts
+    // on the third day and an air relation joins on the fifth.
+    let frames: Vec<DecodedFrame> = (0..5 * 24)
+        .map(|hour| {
+            let day = hour / 24;
+            let raws: &[(u32, i64)] = match day {
+                0 => &[(11, 100_000)],
+                1 => &[(11, 200_000), (21, 50_000)],
+                2 | 3 => &[(21, 50_000)],
+                _ => &[(11, 300_000), (21, 70_000)],
+            };
+            let read = 24 * if day == 3 { 2 } else { day };
+            let mut f = supremacy(hour, Some(read), raws);
+            if day >= 2 {
+                put(
+                    &mut f,
+                    TableId::WarRelations,
+                    TableRows::WarRelations(vec![rows::WarRelationRow {
+                        first_country: 21,
+                        second_country: 11,
+                        ..Default::default()
+                    }]),
+                );
+            }
+            if day == 4 {
+                put(
+                    &mut f,
+                    TableId::AirCountryRelations,
+                    TableRows::AirCountryRelations(vec![rows::AirCountryRelationRow {
+                        country: 7,
+                        kind: 1,
+                        ordinal: 0,
+                        other: 21,
+                    }]),
+                );
+            }
+            if hour == 24 + 5 {
+                f.tables[TableId::NavalSupremacy.index()] = TableView::Unavailable {
+                    reason: "fixture".into(),
+                }
+                .into();
+            }
+            f
+        })
+        .collect();
+    // Batches end within days, so a day's values are read across them.
+    let fixture = publish_in::<NavalSupremacyObserver>(&frames, &[30, 75]);
+    let source = source_for_queries(frames);
+    let flag = AtomicBool::new(false);
+    for (through, params) in [
+        (119, json!({"branchId":"1","tag":"GER","daily":true})),
+        (
+            119,
+            json!({"branchId":"1","tag":"GER","daily":true,"firstHour":40,"lastHour":100}),
+        ),
+        (90, json!({"branchId":"1","tag":"GER","daily":true})),
+    ] {
+        let prefix = Prefix::new(
+            &source,
+            1,
+            Coverage {
+                schema: 1,
+                first_hour: 0,
+                last_hour: through,
+                complete: through == 119,
+            },
+            None,
+        );
+        let q = Query {
+            source: &source,
+            params: &params,
+            content: None,
+            store: &fixture.store,
+            key: &fixture.key,
+            branch: 1,
+            prefix: &prefix,
+            cancelled: &flag,
+        };
+        let swept = naval_supremacy::query(&q).unwrap();
+        let whole = naval_supremacy::reply(&q, naval_supremacy::lookup).unwrap();
+        assert_eq!(swept, whole);
+        let own = swept["window"]["series"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "73|own")
+            .unwrap();
+        assert!(own["runs"].as_array().unwrap().len() > 1, "{own}");
+    }
+}

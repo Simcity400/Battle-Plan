@@ -137,6 +137,16 @@ impl<O: Observer> Opened<'_, O> {
     pub fn values_at(&mut self, keys: &[u64], hour: i32) -> io::Result<Vec<Option<i128>>> {
         self.reader.values_at(keys, hour)
     }
+
+    /// [`Self::values_at`] of `keys` at each of the ascending `hours`, as each key's
+    /// changes (see [`Reader::changes_at`]).
+    pub fn changes_at(
+        &mut self,
+        keys: &[u64],
+        hours: &[i32],
+    ) -> io::Result<Vec<Vec<(usize, Option<i128>)>>> {
+        self.reader.changes_at(keys, hours)
+    }
 }
 
 /// What a keyed product's query is given: the request, the recording and its
