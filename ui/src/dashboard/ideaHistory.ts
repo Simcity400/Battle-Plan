@@ -1,6 +1,7 @@
 import { defaultCountryTag } from './countrySelection';
+import type { DashboardClient } from './client';
 import type { WidgetRuntime } from './definitions';
-import { resolveWindow, type WidgetSpec } from './model';
+import { resolveWindow, type BoundTrack, type WidgetSpec } from './model';
 import { useEffect, useState } from 'react';
 import { useContentRevision } from './contentRevision';
 import { preparedSeriesQuery } from './preparedSeries';
@@ -12,11 +13,14 @@ import { validateIdeaHistoryReply } from './ideaHistoryReply';
 export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
-  const { client } = runtime;
-  const content = useContentRevision(client);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const through = window && Math.floor(window.lastHour);
-  const held = widget.kind === 'national-spirits';
+  const through = window ? Math.floor(window.lastHour) : undefined;
+  return { track, tag, ...usePreparedIdeaHistory(runtime.client, track, tag, through, widget.kind === 'national-spirits', active) };
+}
+
+/** One country's prepared idea history through an hour: lanes, or the held set at that hour. */
+export function usePreparedIdeaHistory(client: DashboardClient, track: BoundTrack | undefined, tag: string | undefined, through: number | undefined, held: boolean, active: boolean) {
+  const content = useContentRevision(client);
   const key = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag, through, held, content]) : '';
   const [state, setState] = useState<{ client: typeof client; key: string; data?: IdeaHistoryFirstView; error?: string }>();
   const [attempt, setAttempt] = useState(0);
@@ -38,5 +42,5 @@ export function useIdeaHistory(widget: WidgetSpec, runtime: WidgetRuntime, activ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, client, key, attempt]);
   const current = key && state?.client === client && state.key === key ? state : undefined;
-  return { track, tag, data: current?.data, error: current?.error, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
+  return { data: current?.data, error: current?.error, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
 }

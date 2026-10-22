@@ -5,6 +5,7 @@ import { factionNameAt, UNNAMED_FACTION } from '../../dashboard/factionNames.ts'
 import type { FactionName } from '../../dashboard/factionNames';
 import { provisionalGroupEvent } from '../../dashboard/countryCapitulations.ts';
 import { partyBadges } from '../ruling-party/partyData.ts';
+import type { IdeaHistoryFirstView } from '../../dashboard/ideaHistoryReply.ts';
 
 /** The event markers along the top of Stability & War support:
  * ⚔ wars and capitulations, ⚑ faction changes, ⚙
@@ -29,7 +30,7 @@ export interface MarkerSources {
   groups?: CountryGroupReply;
   /** Campaign display names can replace the game's dated faction name. */
   factionName?: (faction: FactionGroup, hour: number) => FactionName;
-  ideas?: IdeaHistoryReply;
+  ideas?: IdeaHistoryFirstView;
   parties?: PartyHistoryReply;
   focus?: FocusReply;
   /** Scoped titles resolved at each completion's recorded observation hour. */
@@ -44,9 +45,9 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
   const within = (hour: number) => hour >= extent[0] && hour <= extent[1] && (sources.member?.(hour) ?? true);
   const badges: EventBadge[] = [];
   // A label is built only for an event shown, so only those ask for names.
-  const push = (kind: MarkerKind, hour: number, label: string | (() => string)) => {
+  const push = (kind: MarkerKind, hour: number, label: string | (() => string), estimated = false) => {
     if (kinds.has(kind) && within(hour)) badges.push({ hour, glyph: MARKER_GLYPHS[kind], label: typeof label === 'string' ? label : label(),
-      ...(kind === 'wars' && provisionalGroupEvent(sources.groups, hour) ? { approximate: true } : {}) });
+      ...(estimated || kind === 'wars' && provisionalGroupEvent(sources.groups, hour) ? { approximate: true } : {}) });
   };
   const groups = sources.groups;
   if (groups && kinds.has('wars')) {
@@ -139,13 +140,15 @@ export function stabilityMarkers(sources: MarkerSources, kinds: ReadonlySet<Mark
       // identity, of a holder's details or of its role) is no change: a law kept,
       // the same character in the same seat.
       if (endings.has(holding(span, span.firstHour))) continue;
+      // Beyond prepared coverage, lanes are sampled from keyframes, so the hour is only an estimate.
+      const estimated = inSpans(ideas.approximate ?? [], span.firstHour);
       // Ideas are read at intervals, so the hour is the first read that saw the change: a bound.
-      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable')} (taken on by then)`);
+      if (infos.get(span.token)?.law === true || laws.has(span.token)) push('government', span.firstHour, `Law: ${contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable')} (taken on by then)`, estimated);
       else if (slot && seats.has(slot)) {
         // A holder the recording could not identify stays unidentified.
         const name = span.character ? holders.get(holder(span.token, span.character.id, span.character.token, span.character.name)) ?? 'holder not recorded'
           : contentTitle(names.get(span.token)?.name, span.token, 'Idea name unavailable');
-        push('government', span.firstHour, `Advisor: ${name} (appointed by then)`);
+        push('government', span.firstHour, `Advisor: ${name} (appointed by then)`, estimated);
       }
     }
   }

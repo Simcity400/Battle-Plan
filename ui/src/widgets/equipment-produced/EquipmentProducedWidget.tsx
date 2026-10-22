@@ -36,7 +36,7 @@ import './equipmentProduced.css';
 import PreparedEquipmentProducedWidget from './PreparedEquipmentProducedWidget';
 import { hasPreparedProduction, usePreparedProduction } from './usePreparedProduction.ts';
 import { mostDeliveredPrefix } from './preparedProducedData.ts';
-import { approximateAt, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
+import { approximateAt, finalPreparedReply, preparedPrefix } from '../../dashboard/preparedPrefix.ts';
 import { usePreparedProducedView } from './preparedProducedView';
 import { historyProductionParity, preparedProductionParity } from './productionParity';
 import { useParityRows } from '../../dashboard/parityRows';
@@ -88,19 +88,30 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
 
   // In units, until a type is chosen, the type the countries shown delivered most.
   const pickingDefault = count === 'units' && !included.length;
-  const defaults = useProduct<EquipmentProducedReply>(runtime.client,
-    productRequest(pickingDefault && track ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits) : null), active, validateProducedReply);
+  const defaultParams = track && pickingDefault ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits) : null;
+  const prefixDefault = usePreparedProduction(runtime.client, track?.source, defaultParams && track && props.prepared ? {
+    hour: track.branch.lastHour, selection: defaultParams, offset: '0', limit: 0, ranked: false,
+  } : null, active);
+  // Prepared totals choose the type; the history product only where they cannot.
+  const preparedDefault = props.prepared === true && !prefixDefault.unavailable;
+  const defaults = useProduct<EquipmentProducedReply>(runtime.client, productRequest(preparedDefault ? null : defaultParams), active, validateProducedReply);
   // Kept while a refresh of the same countries is pending, so the race stays drawn.
   const retainedDefaults = useMemo(() => new NumericReply<EquipmentProducedReply>(), [runtime.client]);
   const defaultScope = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, refits, pickingDefault]);
   const defaultNumbers = retainedDefaults.update(defaultScope, defaults.data, producedDrillNumbers);
-  const defaultReply = defaults.data ?? defaultNumbers;
-  const defaultParams = track && pickingDefault && props.prepared ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits) : null;
-  const prefixDefault = usePreparedProduction(runtime.client, track?.source, defaultParams && track ? {
-    hour: track.branch.lastHour, selection: defaultParams, offset: '0', limit: 0, ranked: false,
-  } : null, active && !defaultReply);
-  const mostType = useMemo(() => defaultReply ? mostDelivered(producedModel(defaultReply)) : mostDeliveredPrefix(prefixDefault.data), [defaultReply, prefixDefault.data]);
-  const provisionalChoice = pickingDefault && !defaultReply && !!mostType;
+  const defaultReply = preparedDefault ? undefined : defaults.data ?? defaultNumbers;
+  // Totals through the branch end choose for good; a prepared prefix only provisionally.
+  // The last choice stays for the same countries while their page is asked again.
+  const retainedChoice = useMemo(() => ({ current: null as { scope: string; type: string | null; final: boolean } | null }), [runtime.client]);
+  const freshChoice = preparedDefault && prefixDefault.data
+    ? { scope: defaultScope, type: mostDeliveredPrefix(prefixDefault.data), final: finalPreparedReply(prefixDefault.data) } : null;
+  if (freshChoice) retainedChoice.current = freshChoice;
+  const preparedChoice = !preparedDefault ? null : freshChoice ?? (retainedChoice.current?.scope === defaultScope ? retainedChoice.current : null);
+  const mostType = useMemo(() => defaultReply ? mostDelivered(producedModel(defaultReply)) : preparedChoice?.type ?? null,
+    [defaultReply, preparedChoice?.type]); // eslint-disable-line react-hooks/exhaustive-deps
+  const defaultFinal = preparedDefault ? preparedChoice?.final === true : !!defaultReply;
+  const defaultError = preparedDefault ? prefixDefault.error : defaults.error;
+  const provisionalChoice = pickingDefault && !defaultFinal && !!mostType;
   const shownTypes = useMemo(() => pickingDefault ? mostType ? [mostType] : [] : included, [pickingDefault, mostType, included]);
   // A type's own models name its tooltip rows; all equipment in IC is split by type.
   const grouping = count === 'ic' && !shownTypes.length ? 'type' : 'variant';
@@ -165,10 +176,8 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   const equipment = !shownTypes.length ? count === 'ic' ? 'All equipment' : 'Equipment'
     : shownTypes.length === 1 ? typeName(shownTypes[0]) : `${shownTypes.length.toLocaleString()} types`;
   const measureLabel = (MEASURES.find(item => item.value === measure) ?? MEASURES[0]).label;
-  const captionRead = useProduct<EquipmentProducedReply>(runtime.client, track && preparedView && measure === 'total'
-    ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced',
-      params: requestParams(producedRequest(track.branch.id, { tags: [] }, 'total', 'type', [], true)) } : null, active, validateProducedReply);
-  const since = captionRead.data ? countedSince(captionRead.data, moment) : shownReply ? countedSince(shownReply, moment) : null;
+  const since = preparedView && measure === 'total' && endpoint.page ? endpoint.page.observation
+    : shownReply ? countedSince(shownReply, moment) : null;
   // Before preparation reaches the moment asked, the race shows its prepared
   // prefix's last hour; the caption says the later days are being prepared.
   const preparing = preparedView && !!endpoint.page?.pending?.length && moment < wantedMoment;
@@ -194,16 +203,16 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (error && olderBridge(error) && count === 'ic') return <WidgetState kind="unavailable" message="Counting in IC needs the updated dashboard bridge." />;
     if (error && !(olderBridge(error) && measure === 'day')) return <WidgetState kind="error" detail={error} onRetry={retry} />;
-    if (defaults.error && !mostType) return <WidgetState kind="error" detail={defaults.error} onRetry={defaults.retry} />;
+    if (defaultError && !mostType) return <WidgetState kind="error" detail={defaultError} onRetry={preparedDefault ? prefixDefault.retry : defaults.retry} />;
     if (grouped && groupReply.error) return <WidgetState kind="error" detail={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
     // A group with no member found yet asks for nothing, so no reply will come.
     if (none) return <NoMembersState reason={none.reason} icon="layers" />;
     // A group's members at hours still being prepared are not known yet: no data is not proof of none.
     const branchKnown = resolved.known(track.branch.firstHour, track.branch.lastHour);
-    if (pickingDefault && defaultReply && !mostType) return branchKnown ? <WidgetState kind="unavailable" message="No production data for these countries." />
+    if (pickingDefault && defaultFinal && !mostType) return branchKnown ? <WidgetState kind="unavailable" message="No production data for these countries." />
       : <WidgetState kind="loading" label={MEMBERSHIP_PREPARING} />;
-    if (pickingDefault && prefixDefault.data && !mostType) return <WidgetState kind="loading" label="Most delivered type is still being prepared." />;
+    if (pickingDefault && preparedChoice && !mostType) return <WidgetState kind="loading" label="Most delivered type is still being prepared." />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
     if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
     if (!shownReply.reads.length && !preparedView) return <WidgetState kind="unavailable" message="Production data is not in this recording." />;
@@ -247,6 +256,7 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
     title="Equipment types" measure={measureLabel} positiveGeometry warnings={warnings} state={state}
     resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, count, included, refits, widget.countries])}
     details={({ tag, hour, tagAt, key }) => track && <ProducedDrillTable runtime={runtime} track={track} active={active} tag={tag} hour={hour} tagAt={tagAt} narrow={narrowTableOf(options)}
+      prepared={props.prepared === true}
       measure={measure} refits={refits} count={count} chartType={chartSpec.type} chartKey={key}
       chartTitle={chartSpec.type == null ? `IC put into equipment ${measureLabel.toLowerCase()}, by type`
         : `${typeName(chartSpec.type)}: ${count === 'ic' ? 'IC put in' : 'units delivered'} ${measureLabel.toLowerCase()}, by model`}

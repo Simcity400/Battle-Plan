@@ -457,7 +457,11 @@ offset: string, valueMin: string, valueMax: string, countries: Array<PreparedPro
  * Totals by type before paging, for the automatic units choice. Only a
  * total-by-type units selection supplies them; unknown amounts add nothing.
  */
-typeTotals: Array<[string, string]> | null, warnings: Array<string>, };
+typeTotals: Array<[string, string]> | null,
+/**
+ * The hour every running total at this page began counting, whichever countries are selected.
+ */
+observation: number | null, warnings: Array<string>, };
 export type DiplomacyParams = { "view": "opinions", branchId: string, hour: number, tags: Array<string>, } | { "view": "pair", branchId: string, first: string, second: string, hour: number, } | { "view": "pacts", branchId: string, tags: Array<string> | null, } | { "view": "proposals", branchId: string, tags: Array<string> | null, };
 export type DiplomacyReply = DiplomacyOpinionsReply | DiplomacyPairReply | DiplomacyPactsReply | DiplomacyProposalsReply;
 export type DiplomacyCountry = { tag: string, slot: number, countryId: number, };
@@ -2053,7 +2057,8 @@ export type RaidArtwork = { key: string, image: string | null, missing: string |
 export type RaidDate = { hour: number, };
 export type RaidRun = { firstHour: number, lastHour: number, raider: string | null, victim: string | null, type: string | null, province: number | null, state: number | null, targetName: string | null,
 /**
- * Sprite key into RaidsReply.artwork, so each PNG is returned only once.
+ * Sprite key into RaidsReply.artwork, so each PNG is returned only once; chosen when the
+ * reply is served, from the request's presentation ([`RaidRun::icon_choice`]).
  */
 icon: string | null, iconMissing: string | null, phase: number, phaseName: string | null, outcome: number, outcomeName: string | null,
 /**
@@ -2664,7 +2669,11 @@ groupId: string, name: string | null,
 /**
  * Plain display text, using only the recorded cause/item/target.
  */
-action: string, icon: string | null, tooltipToken: string | null, character: number | null, targetTag: string | null, targetName: string | null, unknown: string | null, };
+action: string,
+/**
+ * Drawn when a reply is served, from the request's selection ([`Self::icon_art`]).
+ */
+icon: string | null, tooltipToken: string | null, character: number | null, targetTag: string | null, targetName: string | null, unknown: string | null, };
 export type LedgerSpendCategory = { id: string, name: string, identified: boolean, };
 export type LedgerSpendCoverage = { readHour: number, sinceHour: number | null, throughHour: number | null, political: boolean, command: boolean, reason: string | null, };
 export type LedgerIdeaTooltips = { ideas: Array<IdeaInfo>, artwork: Array<Artwork>, modifiers: Array<ModifierFormat>, texts: Array<LocalisedText>, };
@@ -4032,8 +4041,16 @@ export type ProjectPerson = {
 /**
  * None when the recorded reference cannot establish an assignment.
  */
-assigned: boolean | null, id: number | null, name: string | null, portrait: string | null, missing: string | null, };
-export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null, icon: string | null, iconMissing: string | null, scientist: number,
+assigned: boolean | null, id: number | null, name: string | null,
+/**
+ * Drawn when a reply is served, from the request's selection ([`Self::portrait_choice`]).
+ */
+portrait: string | null, missing: string | null, };
+export type ProjectPresentation = { name: string, specialization: string | null, specializationName: string | null,
+/**
+ * Drawn when a reply is served, from the request's selection ([`Self::icon_choice`]).
+ */
+icon: string | null, iconMissing: string | null, scientist: number,
 /**
  * Completed projects lose their program; this dates the last assignment.
  */

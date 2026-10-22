@@ -10,7 +10,7 @@ const request: ProductionSelectionRequest = { hour: 12, offset: '0', limit: 5000
 const key = (key: string, name: string | null) => ({ key, name, typeKey: null, domain: 'land' as const, names: [] });
 const country = (tag: string, total: string | null): ProductionCountry => ({ tag, slot: 1, countryId: 2, segment: '1', readHour: 0, observation: 0,
   total, equipmentTotal: total, values: [{ key: 'one', amount: total, equipmentAmount: total }, { key: 'two', amount: '0', equipmentAmount: '0' }] });
-const page = (): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true,
+const page = (): ProductionSelection => ({ schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true, observation: 0,
   keys: [key('one', ''), key('two', 'Two')], types: [], totalCountries: 2,
   offset: '0', valueMin: '0', valueMax: '9007199254740993',
   countries: [country('B', '9007199254740993'), country('A', '9007199254740992')], warnings: [] });

@@ -1,4 +1,7 @@
 import { useMemo } from 'react';
+import { productionEndpointReply } from './preparedProducedView';
+import { usePreparedProduction } from './usePreparedProduction';
+import { approximateAt, finalPreparedReply, preparedPrefix } from '../../dashboard/preparedPrefix';
 import type { NarrowTable } from '../../charts/table/options';
 import ArtFallback from '../../components/ArtFallback';
 import Legend from '../../charts/Legend';
@@ -19,24 +22,43 @@ import type { Count, TypeRow } from './producedView';
 /** Two lines a row: the type, and its models. */
 const ROW_HEIGHT = 40;
 
+/** One country's production by model at an hour: the prepared page of its tag
+ * then (`alias`), or the history product of the country's drill tag. */
+function useProducedAt(runtime: WidgetRuntime, track: BoundTrack, tag: string, alias: string | null, at: number, measure: Measure, refits: boolean, counted: Count, prepared: boolean, active: boolean) {
+  const hour = Math.floor(at);
+  const params = useMemo(() => producedRequest(track.branch.id, { tags: [tag] }, measure, 'variant', [], refits, counted), [track.branch.id, tag, measure, refits, counted]);
+  const selection = useMemo(() => alias ? { ...params, tags: [alias] } : null, [params, alias]);
+  const page = usePreparedProduction(runtime.client, track.source, prepared && selection ? { hour, selection, offset: '0', limit: 1, ranked: false } : null, active);
+  // A page answers only its own hour, exactly: not an earlier prefix hour, not
+  // values preparation may still revise, and not an unknown amount, which names
+  // every variant where history names only the country's own.
+  const answered = !!page.data && page.hour === hour && (finalPreparedReply(page.data) || !approximateAt(preparedPrefix(page.data), hour))
+    && !(page.data.totalCountries === 0 && !page.data.known) && page.data.countries.every(row => row.values.every(value => value.amount !== null));
+  const history = alias !== null && (!prepared || page.unavailable === true || !!page.data && !page.pending && !answered);
+  const read = useProduct<EquipmentProducedReply>(runtime.client, history ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'equipment-produced', params: requestParams(params) } : null, active, validateProducedReply);
+  const endpoint = useMemo(() => answered && page.data && selection ? productionEndpointReply(page.data, selection) : undefined, [answered, page.data, selection]);
+  return history ? read : { data: endpoint, error: page.error };
+}
+
 /** Every type a country made in the window shown, with its models: units delivered
  * and IC put in. Only IC is one currency, so only it has bars, shares and a total;
  * units of different types are never added up. A row picks the type the chart below
  * stacks by model. */
-export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow }: {
+export default function ProducedDrillTable({ runtime, track, active, tag, hour, tagAt, measure, refits, count, chartType, chartTitle, chartKey, onChart, narrow, prepared = false }: {
   runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; hour: number; tagAt: (hour: number) => string | null; narrow: NarrowTable;
+  /** Read the hour from prepared pages, falling back to the history product where they cannot answer it. */
+  prepared?: boolean;
   measure: Measure; refits: boolean; count: Count; chartType: string | null; onChart: (type: string) => void;
   /** The chart below: what it stacks, and its parts with their colours and exact values. */
   chartTitle: string; chartKey: readonly { id: string; label: string; color?: string; value: number | null }[];
 }) {
-  const request = (counted: Count) => ({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced',
-    params: requestParams(producedRequest(track.branch.id, { tags: [tag] }, measure, 'variant', [], refits, counted)) });
-  const units = useProduct<EquipmentProducedReply>(runtime.client, request('units'), active, validateProducedReply);
-  const ic = useProduct<EquipmentProducedReply>(runtime.client, request('ic'), active, validateProducedReply);
+  const alias = tagAt(hour);
+  const units = useProducedAt(runtime, track, tag, alias, hour, measure, refits, 'units', prepared, active);
+  const ic = useProducedAt(runtime, track, tag, alias, hour, measure, refits, 'ic', prepared, active);
   const unitsModel = useMemo(() => units.data ? producedModel(units.data) : null, [units.data]);
   const icModel = useMemo(() => ic.data ? producedModel(ic.data) : null, [ic.data]);
   const icDecimals = countDecimals('ic', ic.data);
-  const alias = tagAt(hour);
   const icTotal = icModel && alias ? producedAt(icModel, alias, hour)?.total ?? null : null;
   const rows = useMemo(() => alias ? typeRows(unitsModel, icModel, alias, hour, icTotal) : null, [unitsModel, icModel, alias, hour, icTotal]);
   const read = unitsModel ? readAt(unitsModel.reply.reads, hour) : null;
@@ -67,9 +89,9 @@ export default function ProducedDrillTable({ runtime, track, active, tag, hour, 
   </>;
   const window = producedWindow(measure, dayLabel(hour), since == null ? null : dayLabel(since));
   // The chart's key stays while the table's own replies load or refresh.
-  const table = units.error ? <p className="drill-empty">{units.error}</p>
-    : !unitsModel ? <p className="drill-empty">Loading what this country made…</p>
-      : !alias ? <p className="drill-empty">Country unavailable at this time.</p>
+  const table = !alias ? <p className="drill-empty">Country unavailable at this time.</p>
+    : units.error ? <p className="drill-empty">{units.error}</p>
+      : !unitsModel ? <p className="drill-empty">Loading what this country made…</p>
         : <>
           <p className="drill-empty">Units delivered{icModel ? ' and IC put in' : ''} {window}, by type
             {icModel && icTotal != null && <> · All equipment <b>{formatRaw(icTotal, icDecimals)}</b> IC</>}</p>

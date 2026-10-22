@@ -185,6 +185,9 @@ pub struct ProductionAccumulator {
     rocket_origin: Option<i32>,
     rocket_restart: Option<i32>,
     variant_refusals: crate::catalogue::Refusals,
+    /// Every equipment observation's counting start, as history lists them;
+    /// `result` keeps only the latest between batches.
+    observation_starts: Vec<i32>,
 }
 
 /// A holder's numeric spending projection. Track versions change whenever
@@ -734,6 +737,15 @@ impl ProductionAccumulator {
             last_frame: first_hour.checked_sub(1),
             ..Self::default()
         }
+    }
+    fn observation_starts(&self) -> Vec<i32> {
+        let mut starts = self.observation_starts.clone();
+        for since in &self.result.observations {
+            if starts.last() != Some(since) {
+                starts.push(*since);
+            }
+        }
+        starts
     }
     pub fn gap(&mut self, first_hour: i32) {
         self.seal_holders();
@@ -2010,6 +2022,7 @@ impl ProductionAccumulator {
         }
         retain_last(&mut self.result.reads);
         retain_last(&mut self.result.rocket.reads);
+        self.observation_starts = self.observation_starts();
         retain_last(&mut self.result.observations);
         retain_last(&mut self.result.rocket.observations);
         self.seal_holders();
@@ -2225,6 +2238,8 @@ pub struct SelectionPage {
     /// Totals by type before paging, for the automatic units choice. Only a
     /// total-by-type units selection supplies them; unknown amounts add nothing.
     pub type_totals: Option<Vec<(String, String)>>,
+    /// The hour every running total at this page began counting, whichever countries are selected.
+    pub observation: Option<i32>,
     pub warnings: Vec<String>,
 }
 
@@ -2623,6 +2638,7 @@ fn select_ordered(
         .collect::<io::Result<_>>()?;
     Ok(SelectionPage {
         type_totals,
+        observation: None,
         schema: 1,
         branch_id: params.branch_id.clone(),
         first_hour: current.first_hour,
@@ -2705,6 +2721,16 @@ pub(crate) struct ProductionCatalogue {
     pub(crate) purpose_keys: BTreeMap<String, u64>,
     pub(crate) spending: SpendingDiagnostics,
     pub(crate) variant_warnings: Vec<String>,
+    /// Every equipment observation's counting start, ascending.
+    pub(crate) observations: Vec<i32>,
+}
+
+impl ProductionCatalogue {
+    /// Where running totals at `hour` began counting, as history's latest observation then.
+    fn observation_at(&self, hour: i32) -> Option<i32> {
+        let reached = self.observations.partition_point(|since| *since <= hour);
+        reached.checked_sub(1).map(|index| self.observations[index])
+    }
 }
 
 /// Only refusal/read provenance; no production quantities or retained rows.
@@ -3016,6 +3042,7 @@ pub fn write_catalogue(
         variant_warnings: state
             .variant_refusals
             .diagnostic_lines("equipment variants with unknown text/design operands"),
+        observations: state.observation_starts(),
     })?;
     writer.write_at(&section(CATALOGUE, state.branch), 0, bytes.as_slice())
 }
@@ -3501,6 +3528,7 @@ fn select_at_ordered(
         let Some(catalogue) = read_catalogue(store, key, branch)? else {
             return Ok(None);
         };
+        let observation = catalogue.observation_at(hour);
         let current = EndpointPage {
             schema: 1,
             branch_id: branch.to_string(),
@@ -3523,6 +3551,7 @@ fn select_at_ordered(
             &current, None, None, params, offset, limit, ranked, cancelled,
         )?;
         selection.keys.clear();
+        selection.observation = observation;
         return Ok(Some(selection));
     }
     let count = endpoint_count(store, key, branch)?;
@@ -3531,7 +3560,9 @@ fn select_at_ordered(
         return Ok(None);
     };
     bind_equipment_rockets(&mut endpoints, &mut current)?;
+    let mut observation = None;
     if let Some(catalogue) = endpoints.catalogue()? {
+        observation = catalogue.observation_at(hour);
         for (&variant, kind) in &catalogue.classifications {
             let mut kind = kind.clone();
             // Type identity is stable; recorded naming stays at this endpoint's read.
@@ -3557,7 +3588,7 @@ fn select_at_ordered(
     if let Some(page) = &mut rocket_before {
         bind_equipment_rockets(&mut endpoints, page)?;
     }
-    select_ordered(
+    let mut selection = select_ordered(
         &current,
         equipment_before.as_ref(),
         rocket_before.as_ref(),
@@ -3566,8 +3597,9 @@ fn select_at_ordered(
         limit,
         ranked,
         cancelled,
-    )
-    .map(Some)
+    )?;
+    selection.observation = observation;
+    Ok(Some(selection))
 }
 
 #[cfg(test)]

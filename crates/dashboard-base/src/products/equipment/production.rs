@@ -756,9 +756,91 @@ pub(crate) fn variant_types_for(
     (types, untyped, unresolved_count)
 }
 
-#[derive(Default)]
-struct Cache {
-    entries: VecDeque<(u64, Arc<ScannedProduced>)>,
+/// How often a request waiting for another's scan of its branch checks whether it was cancelled.
+const SCAN_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Scanned branches, and the branches a request is scanning now. The lock is
+/// never held while scanning; a request missing a branch another is scanning
+/// waits for that scan instead of starting its own.
+struct Cache<T> {
+    entries: VecDeque<(u64, Arc<T>)>,
+    scanning: BTreeSet<u64>,
+    finished: Arc<std::sync::Condvar>,
+    #[cfg(test)]
+    waiting: usize,
+}
+
+impl<T> Default for Cache<T> {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            scanning: BTreeSet::new(),
+            finished: Arc::default(),
+            #[cfg(test)]
+            waiting: 0,
+        }
+    }
+}
+
+/// Frees a branch's scan when its scan ends in any way, so a waiter can take over.
+struct Scanning<'a, T> {
+    cache: &'a std::sync::Mutex<Cache<T>>,
+    branch: u64,
+}
+
+impl<T> Drop for Scanning<'_, T> {
+    fn drop(&mut self) {
+        let mut cache = self.cache.lock().unwrap_or_else(|error| error.into_inner());
+        cache.scanning.remove(&self.branch);
+        cache.finished.notify_all();
+    }
+}
+
+fn shared_scan<T>(
+    cache: &std::sync::Mutex<Cache<T>>,
+    branch: u64,
+    cancelled: &AtomicBool,
+    scan: impl FnOnce() -> io::Result<T>,
+) -> io::Result<Arc<T>> {
+    let mut held = cache.lock().unwrap_or_else(|error| error.into_inner());
+    loop {
+        if let Some((_, scanned)) = held.entries.iter().find(|(cached, _)| *cached == branch) {
+            return Ok(Arc::clone(scanned));
+        }
+        if held.scanning.insert(branch) {
+            break;
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Equipment produced request cancelled",
+            ));
+        }
+        let finished = Arc::clone(&held.finished);
+        #[cfg(test)]
+        {
+            held.waiting += 1;
+        }
+        held = finished
+            .wait_timeout(held, SCAN_WAIT)
+            .unwrap_or_else(|error| error.into_inner())
+            .0;
+        #[cfg(test)]
+        {
+            held.waiting -= 1;
+        }
+    }
+    drop(held);
+    let scanning = Scanning { cache, branch };
+    let scanned = Arc::new(scan()?);
+    let mut held = cache.lock().unwrap_or_else(|error| error.into_inner());
+    held.entries.push_back((branch, Arc::clone(&scanned)));
+    while held.entries.len() > CACHED_BRANCHES {
+        held.entries.pop_front();
+    }
+    drop(held);
+    drop(scanning);
+    Ok(scanned)
 }
 
 pub fn scanned(
@@ -766,17 +848,101 @@ pub fn scanned(
     branch: u64,
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<ScannedProduced>> {
-    let state = source.state::<Cache>();
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some((_, scanned)) = cache.entries.iter().find(|(cached, _)| *cached == branch) {
-        return Ok(Arc::clone(scanned));
+    let state = source.state::<Cache<ScannedProduced>>();
+    shared_scan(&state, branch, cancelled, || {
+        scan(&source.replay(), branch, cancelled)
+    })
+}
+
+#[cfg(test)]
+mod scan_sharing_tests {
+    use super::*;
+    use std::sync::{Mutex, atomic::AtomicUsize, mpsc};
+
+    fn waiting(cache: &Mutex<Cache<u32>>) -> usize {
+        cache.lock().unwrap().waiting
     }
-    let scanned = Arc::new(scan(&source.replay(), branch, cancelled)?);
-    cache.entries.push_back((branch, Arc::clone(&scanned)));
-    while cache.entries.len() > CACHED_BRANCHES {
-        cache.entries.pop_front();
+
+    #[test]
+    fn concurrent_misses_share_one_scan() {
+        let cache = Mutex::new(Cache::<u32>::default());
+        let scans = AtomicUsize::new(0);
+        let (release, released) = mpsc::channel::<()>();
+        let never = AtomicBool::new(false);
+        let (cache, scans, never) = (&cache, &scans, &never);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                shared_scan(cache, 1, never, || {
+                    scans.fetch_add(1, Ordering::SeqCst);
+                    released.recv().unwrap();
+                    Ok(7)
+                })
+            });
+            while !cache.lock().unwrap().scanning.contains(&1) {
+                std::thread::yield_now();
+            }
+            let second = scope.spawn(move || {
+                shared_scan(cache, 1, never, || {
+                    scans.fetch_add(1, Ordering::SeqCst);
+                    Ok(8)
+                })
+            });
+            while waiting(cache) == 0 {
+                std::thread::yield_now();
+            }
+            release.send(()).unwrap();
+            assert_eq!(*first.join().unwrap().unwrap(), 7);
+            assert_eq!(
+                *second.join().unwrap().unwrap(),
+                7,
+                "the waiter reuses the first scan"
+            );
+        });
+        assert_eq!(scans.load(Ordering::SeqCst), 1);
+        assert!(cache.lock().unwrap().scanning.is_empty());
     }
-    Ok(scanned)
+
+    #[test]
+    fn a_cancelled_scan_frees_its_branch_for_a_waiter() {
+        let cache = Mutex::new(Cache::<u32>::default());
+        let (release, released) = mpsc::channel::<()>();
+        let never = AtomicBool::new(false);
+        let (shared, never) = (&cache, &never);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || {
+                shared_scan(shared, 1, never, || {
+                    released.recv().unwrap();
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+                })
+            });
+            while !cache.lock().unwrap().scanning.contains(&1) {
+                std::thread::yield_now();
+            }
+            let second = scope.spawn(move || shared_scan(shared, 1, never, || Ok(8)));
+            while waiting(shared) == 0 {
+                std::thread::yield_now();
+            }
+            release.send(()).unwrap();
+            assert_eq!(
+                first.join().unwrap().unwrap_err().kind(),
+                io::ErrorKind::Interrupted
+            );
+            assert_eq!(
+                *second.join().unwrap().unwrap(),
+                8,
+                "the waiter takes the scan over"
+            );
+        });
+        // A cancelled waiter stops waiting while another request scans.
+        cache.lock().unwrap().scanning.insert(2);
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            shared_scan(&cache, 2, &cancelled, || Ok(9))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+    }
 }
 
 pub(crate) fn content(

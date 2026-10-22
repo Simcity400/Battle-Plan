@@ -1075,6 +1075,57 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
 }
 
 #[test]
+fn pages_before_the_first_supply_count_from_the_observation_history_lists() {
+    let campaign = uuid::Uuid::new_v4();
+    let scratch = std::env::temp_dir().join(format!("prepared-production-{campaign}"));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let recording = scratch.join("synthetic-recording");
+    std::fs::write(&recording, b"synthetic source metadata").unwrap();
+    let key = store::SourceKey::capture(&recording, &[]).unwrap();
+    let store = store::Store::local(campaign).unwrap();
+    let mut writer = store.replace(key.clone()).unwrap();
+    // The first publications carry no output; the first supply, read later,
+    // dates its counting from the branch start.
+    let mut early = page(0, Vec::new());
+    early.countries.clear();
+    early.equipment_origin = None;
+    let later = page(24, vec![amount(1, 7, true, Purpose::New)]);
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
+    publish_endpoint(&mut writer, &mut state, &early).unwrap();
+    publish_endpoint(&mut writer, &mut state, &later).unwrap();
+    state.result.observations = vec![0];
+    write_state(&mut writer, &mut state).unwrap();
+    writer.commit().unwrap();
+    let flag = AtomicBool::new(false);
+    let mut top = params();
+    top.tags.clear();
+    top.top = Some(5);
+    for (hour, selection) in [(12, params()), (12, top.clone()), (30, params()), (30, top)] {
+        let page = select_at(&store, &key, hour, &selection, 0, 5, &flag)
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.observation, Some(0), "hour {hour}, top {:?}", selection.top);
+    }
+    // A restart is dated from its own counting start onwards.
+    let mut writer = store.replace(key.clone()).unwrap();
+    let mut state = ProductionAccumulator::new(replay_data::FORMAT_VERSION, 1, 0);
+    publish_endpoint(&mut writer, &mut state, &early).unwrap();
+    publish_endpoint(&mut writer, &mut state, &later).unwrap();
+    state.result.observations = vec![0];
+    state.observation_starts = state.observation_starts();
+    state.result.observations = vec![0, 20];
+    write_state(&mut writer, &mut state).unwrap();
+    writer.commit().unwrap();
+    for (hour, since) in [(12, 0), (30, 20)] {
+        let page = select_at(&store, &key, hour, &params(), 0, 5, &flag)
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.observation, Some(since), "hour {hour}");
+    }
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+#[test]
 fn persisted_pages_and_resume_states_isolate_overlapping_branch_hours() {
     let campaign = uuid::Uuid::new_v4();
     let scratch = std::env::temp_dir().join(format!("prepared-production-{campaign}"));

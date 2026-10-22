@@ -53,8 +53,7 @@ import { nameKey, useCountryNamesAt } from '../../dashboard/countryNamesAt';
 import type { NameAt } from '../../dashboard/countryNamesAt';
 import type { MarkerKind } from './markers';
 import type { FocusReply, PartyHistoryReply } from '../../generated/dashboard';
-import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
-import type { IdeaHistoryReply } from '../../generated/dashboard';
+import { usePreparedIdeaHistory } from '../../dashboard/ideaHistory';
 import { validatePartyHistoryReply, partyBadges } from '../ruling-party/partyData';
 import { contentTitle } from '../../dashboard/contentTitles';
 import PartyEventList from '../ruling-party/PartyEventList';
@@ -220,7 +219,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const partyReachedBadges = partyEvents(preparedParties.reached?.reply).map(badge=>({...badge,glyph:'\u2699'}));
   const markerFocus = useProduct<FocusReply>(runtime.client, kinds.has('focus') ? markerRequest('national-focus') : null, active, validateFocusReply);
   // The idea history of the marker country itself (a group may resolve to another country).
-  const markerIdeas = useProduct<IdeaHistoryReply>(runtime.client, kinds.has('government') ? markerRequest('idea-history') : null, active, validateIdeaHistoryReply);
+  const markerIdeas = usePreparedIdeaHistory(runtime.client, track, kinds.has('government') ? markerTag ?? undefined : undefined, track?.branch.lastHour, false, active);
   const factionOverrides = campaignSettings.campaigns[track?.source.metadata.campaignKey ?? '']?.factions;
   const markerSources = useMemo(() => !track || !markerTag ? null : {
     tag: markerTag, extent, branch: [track.branch.firstHour, track.branch.lastHour] as const,

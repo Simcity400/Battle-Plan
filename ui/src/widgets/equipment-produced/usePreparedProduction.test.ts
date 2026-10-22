@@ -39,7 +39,7 @@ test('range loading carries its own numeric page and displayed hour while the ne
     const source = { id: 'source', revision: 'revision' } as DashboardSource;
     const selection = { branchId: '1', tags: [], top: 5000, measure: 'total', count: 'units', grouping: 'type', included: [], refits: false };
     const request = { hour: 12, selection, offset: '0', limit: 1, ranked: true } as ProductionSelectionRequest;
-    const page: ProductionSelection = { schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true,
+    const page: ProductionSelection = { schema: 1, branchId: '1', firstHour: 0, lastHour: 23, known: true, observation: null,
       totalCountries: 5000, offset: '0', valueMin: '-7', valueMax: '9', keys: [], types: [], countries: [], warnings: [] };
     let finish!: (page: ProductionSelection) => void;
     let calls = 0;

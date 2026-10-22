@@ -58,6 +58,10 @@ test('laws and advisors taken on while recorded are government changes; focuses 
     [500, '⚙', 'Law: War Economy (taken on by then)'],
     [700, '⚙', 'Advisor: Albert Speer (appointed by then)'],
   ]);
+  assert.ok(badges.every(badge => !badge.approximate), 'exact idea spans give exact markers');
+  // Lanes sampled beyond prepared coverage date their changes only approximately.
+  const sampled = stabilityMarkers({ ...base, ideas: { ...ideas, approximate: [{ firstHour: 650, lastHour: 1000 }] } }, ALL);
+  assert.deepEqual(sampled.map(badge => [badge.hour, badge.approximate === true]), [[500, false], [700, true]]);
 });
 
 test('a continuing advisor, a shared founding and a repeated focus are read honestly', () => {
