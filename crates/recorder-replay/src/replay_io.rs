@@ -141,7 +141,8 @@ fn open_held(path: &Path) -> std::io::Result<fs::File> {
 /// A session's spool recovered and its blocks written while it records, for finalization to take over.
 #[derive(Default)]
 pub struct Ahead {
-    campaigns: BTreeMap<PathBuf, CampaignAhead>,
+    /// Boxed with its summary: inline, map nodes and moves overflow the main thread's stack.
+    campaigns: BTreeMap<PathBuf, Box<CampaignAhead>>,
     /// The game speed index the last frame read recorded.
     speed: Option<i32>,
 }
@@ -150,7 +151,7 @@ pub struct Ahead {
 struct CampaignAhead {
     tails: BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
     clock: Option<FrameDecoder>,
-    written: Option<(replay::container::Ahead, Summary)>,
+    written: Option<(replay::container::Ahead, Box<Summary>)>,
     /// It could not go on; finalization writes every block.
     stopped: bool,
 }
@@ -263,7 +264,7 @@ impl Ahead {
                 };
                 let ahead = replay::container::Ahead::new(existing)
                     .map_err(|error| failure(&destination, error))?;
-                campaign.written = Some((ahead, Summary::default()));
+                campaign.written = Some((ahead, Box::default()));
             }
             let frames = FinalizationFrames {
                 segments: campaign
@@ -1062,7 +1063,7 @@ fn finalize_campaign(
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
-    ahead: Option<CampaignAhead>,
+    ahead: Option<Box<CampaignAhead>>,
 ) -> Result<CampaignOutcome> {
     finalize_campaign_with_publisher(
         campaign_dir,
@@ -1086,7 +1087,7 @@ fn finalize_campaign_with_publisher(
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
-    ahead: Option<CampaignAhead>,
+    ahead: Option<Box<CampaignAhead>>,
     publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
 ) -> Result<CampaignOutcome> {
     let (mut tails, written) =
@@ -1326,7 +1327,7 @@ fn finalize_campaign_with_publisher(
         {
             (Some(ahead), summary)
         }
-        _ => (None, Summary::default()),
+        _ => (None, Box::default()),
     };
     let mut unchanged = false;
     let frames = FinalizationFrames::new(held, &segments);
@@ -1381,7 +1382,7 @@ fn finalize_campaign_with_publisher(
         .flat_map(|(_, recovered)| &recovered.records)
         .collect();
     if unchanged {
-        summary = Summary::default();
+        summary = Box::default();
         for (number, recovery) in &segments {
             for record in &recovery.records {
                 if let Recovered::Frame(frame) = record {
