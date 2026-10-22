@@ -87,7 +87,7 @@ impl<'a> Delta<'a> {
         for field in 0..self.fields {
             if mask & (1 << field) != 0 {
                 let span = self.table.change_span(field, &mut input)?;
-                observe_shadow(self.table, DELTA, key, field, span, self.shadow);
+                observe_shadow(self.table, DELTA, key, field, span, self.shadow)?;
             }
         }
         input.finish()?;

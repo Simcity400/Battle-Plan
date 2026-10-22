@@ -72,6 +72,8 @@ use std::{
 };
 
 #[cfg(test)]
+mod allocation_tests;
+#[cfg(test)]
 #[path = "decoded_section_tests.rs"]
 mod decoded_section_tests;
 mod direct;
@@ -424,7 +426,9 @@ fn advance_shadow(
     let (head, list) = advance_pair(table).unzip();
     let mut key = 0;
     let mut counts = 0;
-    table.walk_update(plain, format, &mut |token, bytes| match token {
+    let mut allocation_failure = None;
+    let walked = table.walk_update(plain, format, &mut |token, bytes| match token {
+        _ if allocation_failure.is_some() => {}
         Token::Count => counts += 1,
         Token::Key(value) => {
             key = value;
@@ -438,6 +442,10 @@ fn advance_shadow(
             let fields = shadow.entry(key).or_default();
             match head_value(status, bytes, fields.get(&field)) {
                 Ok(value) => fields.insert(field, value.to_le_bytes().to_vec()),
+                Err(error) if engine_allocation::is_allocation_error(&error) => {
+                    allocation_failure = Some(error);
+                    None
+                }
                 Err(_) => fields.remove(&field),
             };
         }
@@ -465,7 +473,10 @@ fn advance_shadow(
             }
         }
         _ => {}
-    })
+    });
+    // A failed diagnostic is not an invalid head. Keep that first allocation
+    // failure even if the remaining wire framing also refuses the update.
+    allocation_failure.map_or(walked, Err)
 }
 
 /// Observe an already validated field after its entire row has been recovered
@@ -479,7 +490,7 @@ fn observe_shadow(
     field: usize,
     bytes: &[u8],
     shadow: &mut Shadow,
-) {
+) -> io::Result<()> {
     let (head, list) = advance_pair(table).unzip();
     match field {
         field if Some(field) == head => {
@@ -488,6 +499,7 @@ fn observe_shadow(
             let fields = shadow.entry(key).or_default();
             match head_value(status, bytes, fields.get(&field)) {
                 Ok(value) => fields.insert(field, value.to_le_bytes().to_vec()),
+                Err(error) if engine_allocation::is_allocation_error(&error) => return Err(error),
                 Err(_) => fields.remove(&field),
             };
         }
@@ -516,6 +528,7 @@ fn observe_shadow(
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Start a block's advance state from its keyframe's rows, on writer and
@@ -1301,6 +1314,16 @@ impl Default for Anchors {
     }
 }
 
+/// An unreadable optional anchor is not a candidate; allocation failures are
+/// terminal, including native resource/commit exhaustion reported by I/O.
+fn anchor_candidate<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if engine_allocation::is_allocation_error(&error) => Err(error),
+        Err(_) => Ok(None),
+    }
+}
+
 impl Anchors {
     /// No candidates yet; the next block is at `position` in the file.
     pub(crate) fn at(position: usize) -> Self {
@@ -1322,11 +1345,13 @@ impl Anchors {
         let Some(index) = replay.index.last() else {
             return Ok(anchors);
         };
-        let Ok(block) = replay.block_bytes(index) else {
+        let Some(block) = anchor_candidate(replay.block_bytes(index))? else {
             return Ok(anchors);
         };
-        let Some(Ok(directory)) = is_grouped(&block).then(|| Directory::parse(&block, index))
-        else {
+        if !is_grouped(&block) {
+            return Ok(anchors);
+        }
+        let Some(directory) = anchor_candidate(Directory::parse(&block, index))? else {
             return Ok(anchors);
         };
         let from = From {
@@ -1335,14 +1360,11 @@ impl Anchors {
             layout: directory.layout,
         };
         for table in TableId::ALL {
-            match seed_table(replay, &block, &directory, &from, table) {
-                Ok(Some((snapshot, latest))) => {
-                    anchors.snapshots[table.index()] = snapshot;
-                    anchors.latest[table.index()] = Some(latest);
-                }
-                Ok(None) => {}
-                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => return Err(error),
-                Err(_) => {}
+            if let Some(Some((snapshot, latest))) =
+                anchor_candidate(seed_table(replay, &block, &directory, &from, table))?
+            {
+                anchors.snapshots[table.index()] = snapshot;
+                anchors.latest[table.index()] = Some(latest);
             }
         }
         Ok(anchors)
