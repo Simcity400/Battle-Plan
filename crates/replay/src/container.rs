@@ -95,10 +95,12 @@ pub struct Observed {
 }
 
 impl Observed {
+    /// `previous`, the hour observed before on this branch, lends its gaps to each table unchanged since.
     pub fn new(
         frame: &Frame,
         decoded: &DecodedFrame,
         sizes: [usize; TABLE_COUNT],
+        previous: Option<&Observed>,
     ) -> io::Result<Self> {
         let mut incomplete = Vec::new();
         let mut field_gaps = Vec::new();
@@ -106,6 +108,15 @@ impl Observed {
             if FormatVersion::CURRENT.table_refusal(table).is_some() {
                 continue;
             }
+            // The decoder holds an unchanged table's baseline rows, so they have its gaps.
+            let baseline = match (&frame.tables[table.index()], previous) {
+                (crate::frame::TableUpdate::Unchanged { baseline }, Some(previous))
+                    if previous.branch == frame.branch && previous.hour == *baseline =>
+                {
+                    Some(previous)
+                }
+                _ => None,
+            };
             let rows = match &*decoded.tables[table.index()] {
                 TableView::Complete(rows) => rows,
                 TableView::Truncated { rows, missing } => {
@@ -124,6 +135,13 @@ impl Observed {
                     continue;
                 }
             };
+            if let Some(previous) = baseline {
+                for gap in previous.field_gaps.iter().filter(|(id, ..)| *id == table) {
+                    engine_allocation::reserve(&mut field_gaps, 1)?;
+                    field_gaps.push(*gap);
+                }
+                continue;
+            }
             for (field, count) in rows.field_gaps() {
                 engine_allocation::reserve(&mut field_gaps, 1)?;
                 field_gaps.push((table, field, count));
@@ -2093,6 +2111,7 @@ fn collect<R: SpoolRecord>(
             }
         }
     }
+    let mut previous: Option<Observed> = None;
     let mut observe = |frame: &Frame, decoded: &DecodedFrame, sizes: [usize; TABLE_COUNT]| {
         if let Some(whole) = whole.as_deref_mut() {
             return whole(frame, decoded, sizes);
@@ -2102,9 +2121,13 @@ fn collect<R: SpoolRecord>(
         };
         if reported > 0 {
             reported -= 1;
+            previous = None;
             return Ok(());
         }
-        hours(&Observed::new(frame, decoded, sizes)?)
+        let hour = Observed::new(frame, decoded, sizes, previous.as_ref())?;
+        hours(&hour)?;
+        previous = Some(hour);
+        Ok(())
     };
     let (mut pending, blocks) = pack::blocks(
         threads,

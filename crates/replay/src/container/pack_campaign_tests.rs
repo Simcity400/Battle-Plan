@@ -665,3 +665,313 @@ fn parallel_blocks_held_from_admission_to_packing_stay_within_the_sequential_wri
         );
     }
 }
+
+/// An hour of [`scaled`] on `branch` whose first `missing` of six division supply footers are not
+/// recorded, the one gap a current recording keeps.
+fn with_supply_gaps(branch: u64, hour: i32, missing: u64) -> DecodedFrame {
+    let mut frame = scaled(hour, 20);
+    frame.branch = branch;
+    *frame.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::DivisionStatus(
+            (0..6_u64)
+                .map(|id| crate::rows::DivisionStatusRow {
+                    division: id << 32 | 1,
+                    supply: if id < missing {
+                        crate::rows::Recorded::NotRecorded
+                    } else {
+                        Default::default()
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    frame
+}
+
+/// Two sessions: a branch whose gaps change, stay unchanged after a change, after a keyframe and
+/// across a gap, a reload onto an earlier hour, then a restart.
+fn supply_gap_segments() -> [Vec<Record>; 2] {
+    let mut encoder = FrameEncoder::new();
+    let mut frame = |branch, hour, missing, keyframe| {
+        let decoded = with_supply_gaps(branch, hour, missing);
+        Record::Frame(encoder.encode(decoded, keyframe).unwrap())
+    };
+    let mut first = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(branch(1, 1)),
+    ];
+    for (hour, missing) in [(1, 2), (2, 2), (3, 3), (4, 3), (5, 3), (6, 0)] {
+        first.push(frame(1, hour, missing, hour % 4 == 1));
+    }
+    first.push(Record::Gap(Gap {
+        branch: 1,
+        first_hour: 7,
+        last_hour: 7,
+        reason: "queue full".into(),
+    }));
+    for (hour, missing) in [(8, 0), (9, 1), (10, 1), (11, 4)] {
+        first.push(frame(1, hour, missing, hour % 4 == 1));
+    }
+    first.push(Record::BranchStart(BranchStart {
+        id: 2,
+        session: 1,
+        loaded_hour: Some(3),
+        first_hour: 4,
+        parent: Parentage::Unknown,
+        reason: BranchReason::LoadSignal,
+    }));
+    for (hour, missing) in [(4, 5), (5, 5), (6, 1), (7, 1)] {
+        first.push(frame(2, hour, missing, hour == 4));
+    }
+    let mut second = vec![
+        Record::SessionStart(session(2)),
+        Record::BranchStart(BranchStart {
+            id: 3,
+            session: 2,
+            loaded_hour: Some(19),
+            first_hour: 20,
+            parent: Parentage::Unknown,
+            reason: BranchReason::SessionStart,
+        }),
+    ];
+    for (hour, missing) in [(20, 6), (21, 6), (22, 2), (23, 2), (24, 2), (25, 2)] {
+        second.push(frame(3, hour, missing, hour % 4 == 0));
+    }
+    [first, second]
+}
+
+/// What a hour's observation says beyond its sizes, which writers measure.
+type Seen = (
+    BranchId,
+    Hour,
+    [UpdateKind; TABLE_COUNT],
+    Vec<(TableId, Incomplete)>,
+    Vec<(TableId, &'static str, usize)>,
+);
+
+fn seen(hour: &Observed) -> Seen {
+    (
+        hour.branch,
+        hour.hour,
+        hour.updates,
+        hour.incomplete.clone(),
+        hour.field_gaps.clone(),
+    )
+}
+
+/// Every frame of `segments` observed with each table's gaps counted afresh.
+fn scanned(segments: &[&[Record]]) -> Vec<Seen> {
+    let mut decoder = FrameDecoder::new();
+    segments
+        .iter()
+        .flat_map(|segment| segment.iter())
+        .filter_map(|record| match record {
+            Record::Frame(frame) => Some(frame),
+            _ => None,
+        })
+        .map(|frame| {
+            let decoded = decoder.advance(frame).unwrap();
+            seen(&Observed::new(frame, decoded, [0; TABLE_COUNT], None).unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn an_unchanged_table_keeps_the_gaps_a_full_scan_counts() {
+    let hour = |branch, hour, missing| {
+        let decoded = with_supply_gaps(branch, hour, missing);
+        let frame = FrameEncoder::new().encode(decoded.clone(), true).unwrap();
+        (frame, decoded)
+    };
+    let (mut frame, decoded) = hour(1, 5, 2);
+    let scan = Observed::new(&frame, &decoded, [0; TABLE_COUNT], None).unwrap();
+    let supply = (TableId::DivisionStatus, "supply", 2);
+    assert!(scan.field_gaps.contains(&supply));
+    frame.tables[TableId::DivisionStatus.index()] = TableUpdate::Unchanged { baseline: 4 };
+    // Only the baseline hour on the same branch lends its gaps.
+    let mut previous = scan.clone();
+    previous.field_gaps = vec![(TableId::DivisionStatus, "supply", 9)];
+    for (branch, at) in [(1, 3), (2, 4)] {
+        (previous.branch, previous.hour) = (branch, at);
+        let observed = Observed::new(&frame, &decoded, [0; TABLE_COUNT], Some(&previous)).unwrap();
+        assert_eq!(observed.field_gaps, scan.field_gaps, "{branch} {at}");
+    }
+    (previous.branch, previous.hour) = (1, 4);
+    let observed = Observed::new(&frame, &decoded, [0; TABLE_COUNT], Some(&previous)).unwrap();
+    assert_eq!(
+        observed.field_gaps,
+        [(TableId::DivisionStatus, "supply", 9)]
+    );
+}
+
+#[test]
+fn hours_observed_by_every_writer_match_a_full_scan() {
+    let [first, second] = supply_gap_segments();
+    let expected = scanned(&[&first, &second]);
+    // The fixture exercises the copy: gaps on hours whose division table is unchanged.
+    let at = TableId::DivisionStatus.index();
+    assert!(
+        expected
+            .iter()
+            .any(|hour| hour.2[at] == UpdateKind::Unchanged
+                && hour.4.iter().any(|gap| gap.0 == TableId::DivisionStatus))
+    );
+    assert!(expected.iter().any(|hour| hour.2[at] == UpdateKind::Delta));
+    let whole = Replay::from_records(CAMPAIGN.into(), &[first.clone(), second.clone()]).unwrap();
+    for workers in [1, 2, 3, 8] {
+        let mut hours = Vec::new();
+        pack::WORKERS.set(Some(workers));
+        let replay = Replay::from_record_slices(
+            CAMPAIGN.into(),
+            &[&first, &second],
+            Observer::Hours(&mut |hour| {
+                hours.push(seen(hour));
+                Ok(())
+            }),
+            Frames::Kept,
+            MAX_BLOCK_RAW_BYTES,
+            None,
+        );
+        pack::WORKERS.set(None);
+        assert!(
+            replay.unwrap().bytes() == whole.bytes(),
+            "{workers} workers"
+        );
+        assert_eq!(hours, expected, "{workers} workers");
+    }
+    // A block split by size stops the parallel writer, and the sequential one repeats the run,
+    // observing only the hours not yet reported; a split's keyframe records every table afresh.
+    let mut split = first.clone();
+    for (hour, byte) in [(9, 1_u8), (10, 2)] {
+        let frame = split
+            .iter_mut()
+            .find_map(|record| match record {
+                Record::Frame(frame) if frame.hour == hour => Some(frame),
+                _ => None,
+            })
+            .unwrap();
+        frame.tables[TableId::LexicalTokens.index()] =
+            TableUpdate::Snapshot(TableRows::LexicalTokens(vec![
+                crate::rows::LexicalTokenRow {
+                    token: 0,
+                    literal: vec![byte; 200 * 1024],
+                },
+            ]));
+    }
+    let gaps = |hours: Vec<Seen>| -> Vec<_> {
+        hours
+            .into_iter()
+            .map(|(branch, hour, _, incomplete, gaps)| (branch, hour, incomplete, gaps))
+            .collect()
+    };
+    let expected = gaps(scanned(&[&split, &second]));
+    for workers in [1, 3, 8] {
+        let mut hours = Vec::new();
+        pack::WORKERS.set(Some(workers));
+        let replay = Replay::from_record_slices(
+            CAMPAIGN.into(),
+            &[&split, &second],
+            Observer::Hours(&mut |hour| {
+                hours.push(seen(hour));
+                Ok(())
+            }),
+            Frames::Kept,
+            300 * 1024,
+            None,
+        )
+        .unwrap();
+        pack::WORKERS.set(None);
+        assert_eq!(
+            replay.index.len(),
+            whole.index.len() + 1,
+            "{workers} workers"
+        );
+        assert_eq!(gaps(hours), expected, "split, {workers} workers");
+    }
+    // Appending the restart observes its hours as a full scan of them does.
+    let existing = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&first)).unwrap();
+    let whole = existing.append(std::slice::from_ref(&second)).unwrap();
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: second.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    for workers in [1, 3] {
+        pack::WORKERS.set(Some(workers));
+        let mut hours = Vec::new();
+        let appended = existing
+            .append_recovered_with_reader(
+                &kept(&segments),
+                |number, frame| restore(&segments, number, frame),
+                || Ok(()),
+                |hour| {
+                    hours.push(seen(hour));
+                    Ok(())
+                },
+                None,
+            )
+            .unwrap();
+        pack::WORKERS.set(None);
+        assert!(appended.bytes() == whole.bytes(), "{workers} workers");
+        assert_eq!(hours, scanned(&[&second]), "{workers} workers");
+    }
+}
+
+#[test]
+fn hours_observed_ahead_and_after_match_a_full_scan() {
+    let [first, _] = supply_gap_segments();
+    let expected = scanned(&[&first]);
+    let segments = [(
+        0,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: first.clone(),
+            valid_bytes: 0,
+            damage: None,
+        },
+    )];
+    let kept = kept(&segments);
+    let read = |number, frame: &crate::spool::FrameMetadata| restore(&segments, number, frame);
+    // Mid-block, at a block end and past the reload.
+    for steps in [&[5][..], &[9, 12], &[14, first.len()]] {
+        for workers in [1, 3] {
+            let mut hours = Vec::new();
+            let mut ahead = Ahead::new(None).unwrap();
+            for &step in steps {
+                assert!(
+                    ahead
+                        .advance(
+                            CAMPAIGN,
+                            &[(0, &kept[0].1.records[..step])],
+                            read,
+                            |hour| {
+                                hours.push(seen(hour));
+                                Ok(())
+                            },
+                            &|| false,
+                        )
+                        .unwrap()
+                );
+            }
+            pack::WORKERS.set(Some(workers));
+            Replay::from_recovered_with_reader(
+                CAMPAIGN.into(),
+                &kept,
+                read,
+                || Ok(()),
+                |hour| {
+                    hours.push(seen(hour));
+                    Ok(())
+                },
+                Some(ahead),
+            )
+            .unwrap();
+            pack::WORKERS.set(None);
+            assert_eq!(hours, expected, "{steps:?} {workers} workers");
+        }
+    }
+}

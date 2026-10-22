@@ -341,7 +341,8 @@ impl Ahead {
         let observation =
             |observed: &mut Vec<Observed>, frame: &Frame, decoded: &DecodedFrame, sizes| {
                 engine_allocation::reserve(observed, 1)?;
-                observed.push(Observed::new(frame, decoded, sizes)?);
+                let hour = Observed::new(frame, decoded, sizes, observed.last())?;
+                observed.push(hour);
                 Ok(())
             };
         loop {
@@ -578,7 +579,8 @@ pub(super) fn write<R: SpoolRecord>(
           -> io::Result<()> {
         if reporting {
             engine_allocation::reserve(observed, 1)?;
-            observed.push(Observed::new(frame, decoded, sizes)?);
+            let hour = Observed::new(frame, decoded, sizes, observed.last())?;
+            observed.push(hour);
         }
         Ok(())
     };

@@ -2324,6 +2324,8 @@ struct Summary {
     max_dropped: u64,
     hours: BTreeMap<BranchId, BTreeSet<Hour>>,
     issues: [Vec<Issue>; TABLE_COUNT],
+    /// The hour [`Summary::observe`] observed last.
+    previous: Option<Observed>,
 }
 
 impl Default for Summary {
@@ -2339,6 +2341,7 @@ impl Default for Summary {
             max_dropped: 0,
             hours: BTreeMap::new(),
             issues: std::array::from_fn(|_| Vec::new()),
+            previous: None,
         }
     }
 }
@@ -2352,8 +2355,11 @@ impl Summary {
         let sizes = frame
             .table_encoded_sizes()
             .map_err(|error| error.to_string())?;
-        let hour = Observed::new(frame, &decoded, sizes).map_err(|error| error.to_string())?;
-        self.observe_hour(&hour)
+        let hour = Observed::new(frame, &decoded, sizes, self.previous.as_ref())
+            .map_err(|error| error.to_string())?;
+        self.observe_hour(&hour)?;
+        self.previous = Some(hour);
+        Ok(())
     }
 
     fn observe_hour(&mut self, hour: &Observed) -> Result<()> {
@@ -3279,6 +3285,61 @@ mod tests {
         );
         // Nothing past the session start before its first load is admitted.
         assert_eq!(count(Some(&BTreeSet::new())), 1);
+    }
+
+    #[test]
+    fn the_summary_observes_the_gaps_a_full_scan_counts() {
+        use replay_data::rows::{ClockRow, DivisionStatusRow, Recorded};
+        use replay_frame::frame::FrameEncoder;
+        let records = crate::test_support::allocation_records();
+        let Record::Frame(first) = &records[2] else {
+            unreachable!()
+        };
+        let template = FrameDecoder::new().apply(first).unwrap();
+        let mut encoder = FrameEncoder::new();
+        let (mut summary, mut decoder) = (Summary::default(), FrameDecoder::new());
+        let mut unchanged = 0;
+        // Changed, unchanged after a change and after the keyframe, and across a missing hour.
+        for (hour, missing) in [(2, 2), (3, 2), (4, 3), (5, 3), (7, 3), (8, 0), (9, 0)] {
+            let mut decoded = template.clone();
+            decoded.hour = hour;
+            *decoded.tables[TableId::Clock.index()] =
+                TableView::Complete(TableRows::Clock(vec![ClockRow {
+                    hour,
+                    ..Default::default()
+                }]));
+            *decoded.tables[TableId::DivisionStatus.index()] =
+                TableView::Complete(TableRows::DivisionStatus(
+                    (0..4_u64)
+                        .map(|id| DivisionStatusRow {
+                            division: id << 32 | 1,
+                            supply: if id < missing {
+                                Recorded::NotRecorded
+                            } else {
+                                Default::default()
+                            },
+                            ..Default::default()
+                        })
+                        .collect(),
+                ));
+            let frame = encoder.encode(decoded, hour == 2).unwrap();
+            unchanged += usize::from(matches!(
+                frame.tables[TableId::DivisionStatus.index()],
+                TableUpdate::Unchanged { .. }
+            ));
+            let scan = Observed::new(
+                &frame,
+                decoder.advance(&frame).unwrap(),
+                [0; TABLE_COUNT],
+                None,
+            )
+            .unwrap();
+            summary.observe(&frame).unwrap();
+            let observed = summary.previous.as_ref().unwrap();
+            assert_eq!(observed.field_gaps, scan.field_gaps, "hour {hour}");
+            assert_eq!(observed.field_gaps.is_empty(), missing == 0, "hour {hour}");
+        }
+        assert_eq!(unchanged, 4);
     }
 
     #[test]
