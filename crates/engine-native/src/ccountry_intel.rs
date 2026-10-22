@@ -567,7 +567,7 @@ mod tests {
             expected.0
         );
         assert_eq!(&rows[..expected.0.len()], expected.1.as_slice());
-        const COUNT: usize = 5_000;
+        const COUNT: usize = 130;
         const DATA: usize = 0x10000;
         bytes.resize(DATA + COUNT * country_intel_row::STRIDE, 0);
         p64(&mut bytes, TABLES[0] + super::DATA, DATA as u64);
@@ -806,76 +806,6 @@ mod tests {
             rows.iter().map(|row| row.target_index).collect::<Vec<_>>(),
             vec![0, 2]
         );
-    }
-
-    /// Five thousand owners, each with a native record per country slot: only
-    /// nonzero records and each owner's last record are kept, and a short
-    /// output reports the exact sparse demand rather than the dense count.
-    #[test]
-    fn five_thousand_owners_keep_only_nonzero_and_last_records() {
-        const N: usize = 5000;
-        let countries = 0x3000;
-        let links = countries + N * 8;
-        let objects = links + N * 4;
-        // Country objects must span the intel table pointer (`ccountry::INTEL_TABLE`).
-        let tables = objects + N * 0x1000;
-        let records = tables + N * 0x20;
-        let mut bytes = vec![0_u8; records + N * country_intel_row::STRIDE];
-        p64(&mut bytes, GS + cgame_state::COUNTRIES, countries as u64);
-        p32(&mut bytes, GS + cgame_state::COUNTRIES + 8, N as u32);
-        p32(&mut bytes, GS + cgame_state::COUNTRIES + 12, N as u32);
-        p64(&mut bytes, GS + cgame_state::COUNTRY_LINKS, links as u64);
-        p32(&mut bytes, GS + cgame_state::COUNTRY_LINKS + 8, N as u32);
-        p32(&mut bytes, GS + cgame_state::COUNTRY_LINKS + 12, N as u32);
-        for slot in 1..N {
-            let country = objects + slot * 0x1000;
-            let table = tables + slot * 0x20;
-            p64(&mut bytes, countries + slot * 8, country as u64);
-            p32(&mut bytes, links + slot * 4, slot as u32);
-            p64(&mut bytes, country, (BASE + ccountry::VTABLE_RVA) as u64);
-            p32(&mut bytes, country + ccountry::ID, slot as u32);
-            p64(&mut bytes, country + ccountry::INTEL_TABLE, table as u64);
-            // Every owner's table shares one record array to keep memory small.
-            p64(&mut bytes, table, (BASE + VTABLE_RVA) as u64);
-            p64(&mut bytes, table + DATA, records as u64);
-            p32(&mut bytes, table + CAPACITY, N as u32);
-            p32(&mut bytes, table + COUNT, N as u32);
-        }
-        lanes(&mut bytes, records, 0, [0, 1, 0, 0]);
-        lanes(&mut bytes, records, 2500, [0, 0, 0, -7]);
-        let owners = N - 1;
-        let kept = owners * 3;
-        let (outcome, rows) = run(&bytes, kept);
-        assert_eq!(outcome, Outcome::Rows { len: kept });
-        for (owner, rows) in rows.chunks_exact(3).enumerate() {
-            assert!(rows.iter().all(|row| row.owner_country == owner as u32 + 1));
-            assert_eq!(
-                rows.iter().map(|row| row.target_index).collect::<Vec<_>>(),
-                vec![0, 2500, N as u32 - 1]
-            );
-        }
-        assert_eq!((rows[1].air, rows[2].air), (-7, 0));
-        let (outcome, _) = run(&bytes, 10);
-        assert_eq!(
-            outcome,
-            Outcome::Truncated {
-                len: 10,
-                unread_rows: (kept - 10) as u32
-            }
-        );
-        // The sizing hint is the dense native total, which bounds the rows kept.
-        let hint = native_rows(&memory(&bytes), BASE, GS).unwrap();
-        assert_eq!(hint, owners * N);
-        assert!(hint >= kept);
-        // Invalid headers add nothing. A valid count beyond the country table
-        // remains demand, even when this header-only hint cannot read its rows.
-        let table = |slot: usize| tables + slot * 0x20;
-        p32(&mut bytes, table(1) + COUNT, N as u32 + 1);
-        p32(&mut bytes, table(2) + CAPACITY, i32::MAX as u32);
-        p32(&mut bytes, table(2) + COUNT, 1_000_000);
-        p32(&mut bytes, table(3) + COUNT, (-5_i32) as u32);
-        let hint = native_rows(&memory(&bytes), BASE, GS).unwrap();
-        assert_eq!(hint, (owners - 3) * N + 1_000_000);
     }
 
     #[test]

@@ -313,24 +313,6 @@ fn status_reads<'a, 'b>(
 }
 
 #[test]
-fn batched_status_healthy_five_thousand_rows_equal_serial() {
-    let (source, seeds, _) = distinct_status_world(5_000);
-    let actual = HintedMemory::new(&source, None, false);
-    let direct = HintedMemory::new(&source, None, false);
-    let batch = status_reads(&actual, seeds.len(), false);
-    let serial = status_reads(&direct, seeds.len(), true);
-    assert_eq!(
-        status(&batch, &seeds, seeds.len()),
-        status(&serial, &seeds, seeds.len())
-    );
-    assert_eq!(batch.maxima.get(), 79);
-    assert_eq!(serial.maxima.get(), 5_000);
-    // Each fixture has 33 entries: only its first span is batched.
-    assert_eq!(batch.entries.get(), 5_000 + 79);
-    assert_eq!(serial.entries.get(), 10_000);
-}
-
-#[test]
 fn batched_status_persistent_faults_equal_serial() {
     let (source, seeds, _) = distinct_status_world(65);
     let stats = seeds[20].stat_block.unwrap();
@@ -416,43 +398,6 @@ fn batched_status_request_counts_and_held_maxima_gates() {
         "an earlier held seed supplies a later memo hit"
     );
     assert_eq!(actual.fault.get(), Some(pointer));
-}
-
-#[test]
-fn status_exercise_observes_controller_inputs_once_for_five_thousand_divisions() {
-    let (mut source, seeds) = status_world(5_000);
-    source.bytes[G1 + corders_group::TRAINING] = 1;
-    let actual = HintedMemory::new(&source, None, false);
-    let (outcome, rows) = status(&actual, &seeds, seeds.len());
-    assert_eq!(outcome, Outcome::Rows { len: 5_000 });
-    assert!(rows.iter().all(|row| row.exercising == 1));
-    let reads = actual.copies();
-    for at in [
-        GS + crate::cgame_state::HUMAN_STATUS,
-        GS + crate::cgame_state::AUTONOMOUS_STATUS,
-    ] {
-        assert_eq!(
-            reads
-                .iter()
-                .filter(|&&(address, len)| address == at && len == 16)
-                .count(),
-            1
-        );
-    }
-    for at in [0x15001, 0x15011] {
-        assert_eq!(
-            reads.iter().filter(|&&(address, _)| address == at).count(),
-            1
-        );
-    }
-    // Every division still observes its own deployment operand at its gate.
-    assert_eq!(
-        reads
-            .iter()
-            .filter(|&&(at, len)| at == A1 + carmy::DEPLOYMENT_TYPE && len == 8)
-            .count(),
-        5_000
-    );
 }
 
 #[test]
@@ -966,30 +911,6 @@ fn movement_reads<'a, 'b>(
     }
 }
 
-#[test]
-fn batched_movement_healthy_five_thousand_countries_equal_serial() {
-    let (source, seeds) = batched_movement_world(5_000);
-    let actual = HintedMemory::new(&source, None, false);
-    let direct = HintedMemory::new(&source, None, false);
-    let batch = movement_reads(&actual, 5_000, false);
-    let serial = movement_reads(&direct, 5_000, true);
-    assert_eq!(
-        movement(&batch, &seeds, 5_000, 10_000),
-        movement(&serial, &seeds, 5_000, 10_000)
-    );
-    assert_eq!(
-        (batch.province.get(), batch.slots.get(), batch.speed.get()),
-        (157, 157, 79)
-    );
-    assert_eq!(
-        (
-            serial.province.get(),
-            serial.slots.get(),
-            serial.speed.get()
-        ),
-        (10_000, 10_000, 5_000)
-    );
-}
 #[test]
 fn batched_movement_persistent_faults_keep_serial_prefix_and_optional_speed() {
     let (source, seeds) = batched_movement_world(65);

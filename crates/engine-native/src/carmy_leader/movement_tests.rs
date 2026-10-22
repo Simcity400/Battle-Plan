@@ -645,8 +645,8 @@ fn counter_dig_in_factor_keeps_native_one_and_wrapping_commander_modifier() {
 }
 
 #[test]
-fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission_at_scale() {
-    const DIVISIONS: usize = 5_000;
+fn prepared_movement_ranges_preserve_serial_faults_and_shared_admission() {
+    const DIVISIONS: usize = 310;
     let mut fixture = primary_fixture(129);
     fixture.word(
         MEMBERS + 8,

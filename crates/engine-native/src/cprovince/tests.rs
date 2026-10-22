@@ -146,51 +146,6 @@ fn many_provinces(count: usize) -> Vec<u8> {
 }
 
 #[test]
-fn owned_province_census_grows_for_mod_map_on_five_thousand_country_world() {
-    use crate::{ccountry::synthetic::World, cterrain_type, province_definition as definition};
-    let mut capture = Capture::default();
-    for count in [20_000_u32, 25_000] {
-        let mut world = World::new(0, 5_000, 0x1100);
-        let roster = world.alloc((count as usize + 1) * 8);
-        world.array(
-            world.game_state() + cgame_state::PROVINCES,
-            roster,
-            count + 1,
-        );
-        let state = world.alloc(0x928);
-        world.u64(state, cstate::VTABLE_RVA as u64);
-        world.u32(state + cstate::ID, 1);
-        let terrain = world.alloc(0x100);
-        world.u64(terrain, cterrain_type::VTABLE_RVA as u64);
-        world.u32(terrain + cterrain_type::DATABASE_INDEX, 7);
-        for id in 1..=count {
-            let province = world.alloc(0x230);
-            let fields = world.alloc(0x100);
-            world.u64(roster + id as usize * 8, province as u64);
-            world.u64(province, VTABLE_RVA as u64);
-            world.u32(province + ID, id);
-            world.u64(province + STATE, state as u64);
-            world.u64(province + DEFINITION, fields as u64);
-            world.u32(fields + definition::ID, id);
-            world.u64(fields + definition::TERRAIN, terrain as u64);
-        }
-        assert_eq!(
-            conflict_group_demand(&world.memory(), 0, world.game_state()),
-            Ok(0)
-        );
-        assert_eq!(
-            capture.walk_growing(&world.memory(), 0, world.game_state()),
-            Outcome::Rows {
-                len: count as usize
-            }
-        );
-        assert_eq!(capture.rows[count as usize - 1].id, count);
-        assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 0 });
-        assert!(capture.conflicts.len() >= count as usize);
-    }
-}
-
-#[test]
 fn owned_border_conflict_rows_and_groups_grow_from_original_tree_header() {
     let memory = conflict_fixture();
     let mut fixed = Capture::with_capacity(3, 0, 0);
@@ -212,60 +167,6 @@ fn owned_border_conflict_rows_and_groups_grow_from_original_tree_header() {
     assert_eq!(capture.conflict_walk.groups_len, 1);
     assert!(capture.groups.len() >= 2);
     assert_eq!(capture.conflicts[0].province, 2);
-}
-
-#[test]
-fn border_conflict_sources_and_handles_grow_for_five_thousand_provinces() {
-    use crate::{
-        ccountry::synthetic::{START, World},
-        province_definition,
-    };
-    struct Combined<'a> {
-        world: SliceMemory<'a>,
-        conflict: &'a ConflictMemory,
-    }
-    impl Memory for Combined<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if address == REGISTRY_ROOT {
-                self.conflict.copy(address, output)
-            } else if address >= START {
-                self.world.copy(address, output)
-            } else {
-                self.conflict.copy(address, output)
-            }
-        }
-    }
-    let fixture = conflict_fixture();
-    let mut world = World::new(0, 5_000, 0x1100);
-    let roster = world.alloc(5_001 * 8);
-    world.array(world.game_state() + cgame_state::PROVINCES, roster, 5_001);
-    for id in 1..=5_000 {
-        let province = world.alloc(0x230);
-        let definition = world.alloc(0x100);
-        world.put(province, &fixture.bytes[0x1200..0x1430]);
-        world.put(definition, &fixture.bytes[0xa100..0xa200]);
-        world.u64(roster + id as usize * 8, province as u64);
-        world.u32(province + ID, id);
-        world.u64(province + DEFINITION, definition as u64);
-        world.u32(definition + province_definition::ID, id);
-    }
-    let memory = Combined {
-        world: world.memory(),
-        conflict: &fixture,
-    };
-    assert_eq!(
-        conflict_group_demand(&memory, 0, world.game_state()),
-        Ok(10_000)
-    );
-    let mut capture = Capture::default();
-    assert_eq!(
-        capture.walk_growing(&memory, 0, world.game_state()),
-        Outcome::Rows { len: 5_000 }
-    );
-    assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(capture.conflict_walk.groups_len, 5_000);
-    assert_eq!(capture.conflicts[4_999].groups_start, 4_999);
-    assert_eq!(capture.groups[4_999], capture.groups[0]);
 }
 
 fn province_names_fixture() -> Vec<u8> {

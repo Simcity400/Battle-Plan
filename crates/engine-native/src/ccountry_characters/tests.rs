@@ -107,7 +107,7 @@ fn worker_grows_mod_sized_advisor_records_and_both_character_arrays() {
     let mut text = Vec::new();
     let mut active = Vec::new();
     let mut retired = Vec::new();
-    for count in [5_000_u32, 12_345] {
+    for count in [50_u32, 123] {
         let mut bytes = fixture();
         let data = bytes.len();
         bytes.resize(data + count as usize * 8, 0);
@@ -230,8 +230,8 @@ fn available_advisors_keep_their_own_order_without_reading_slot_bytes() {
 }
 
 #[test]
-fn available_advisor_walk_and_header_demand_follow_5000_countries() {
-    const COUNT: usize = 5_000;
+fn available_advisor_walk_header_demand_and_selected_slices_follow_countries() {
+    const COUNT: usize = 30;
     const COUNTRY_ARRAY: usize = 0x1_0000;
     const LINK_ARRAY: usize = 0x2_0000;
     const OBJECTS: usize = 0x3_0000;

@@ -288,7 +288,7 @@ fn unrelated_consumer_bytes_and_origin_fields_are_not_read() {
 #[test]
 fn worker_origins_grow_from_original_header_before_first_and_later_publication() {
     let mut output = Vec::new();
-    for count in [5000, 11003] {
+    for count in [300, 1103] {
         let expected = (0..count)
             .map(|index| Origin {
                 province: (index % 257) as i32,

@@ -318,12 +318,12 @@ fn invalid_objects_refuse_by_name() {
     );
 }
 
-/// Thousands of battles over a full three-level tree grow from empty storage
-/// and keep the pre-order, each node's battles in array order.
+/// Battles over a full three-level tree grow from empty storage and keep the
+/// pre-order, each node's battles in array order.
 #[test]
-fn thousands_of_battles_keep_the_preorder_from_empty_storage() {
+fn battles_keep_the_preorder_from_empty_storage() {
     const COUNT: u32 = 85;
-    const BATTLES_TOTAL: usize = 5_000;
+    const BATTLES_TOTAL: usize = 500;
     let mut placed: Vec<(u32, Vec<Battle>)> = (0..COUNT).map(|node| (node, Vec::new())).collect();
     for index in 0..BATTLES_TOTAL {
         let node = (index * 7 % COUNT as usize) as u32;

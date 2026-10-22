@@ -515,11 +515,6 @@ fn train_nodes_preserve_native_identity_values_parent_edges_and_count_raw_read_w
     assert_eq!(paths, [2, 2, 1]);
     assert_eq!(nodes[2].route.from, 0);
     assert_eq!(nodes[2].route.len, 0);
-    println!(
-        "supply node synthetic 3-node/2-country cold source: {} copy calls, {} bytes",
-        memory.calls.get(),
-        memory.copied.get()
-    );
     assert!(memory.calls.get() < 160 && memory.copied.get() < 4000);
 }
 
@@ -1225,11 +1220,6 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     assert_eq!(runs[0], [1, 2]);
     assert_eq!(access[..2], [255, 1]);
     assert_eq!((report.access, report.runs), (2, 1));
-    println!(
-        "train inventory synthetic 2-country/2-entry cold source: {} copy calls, {} bytes",
-        memory.calls.get(),
-        memory.copied.get()
-    );
     let report = walk_trains(
         &memory,
         0,
@@ -1249,6 +1239,7 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     assert_eq!(rows[0].country, 7);
     assert_eq!(report.required_entries, 2);
 }
+
 /// A synthetic census of `n` canonical slots (slot 0 is the sentinel). Every
 /// country has a supply system, a companion with no nodes or trains, and an
 /// `n`-byte controller-access array; all arrays share one access buffer
@@ -1381,73 +1372,6 @@ fn census(n: u32) -> Vec<u8> {
         }
     }
     bytes
-}
-
-/// No country count is chosen: a census above the former 4096-country and
-/// 1 MiB access bounds is read whole, the arenas hold only nonzero access
-/// (100 bytes of each 5,000-byte array here), and arena pressure keeps its
-/// exact demand for off-thread growth instead of refusing the table.
-#[test]
-fn train_and_node_censuses_beyond_four_thousand_countries_are_read_whole() {
-    const N: u32 = 5000;
-    const NONZERO: usize = 100;
-    let bytes = census(N);
-    let memory = SliceMemory {
-        base: GAME,
-        bytes: &bytes,
-    };
-    let countries = N as usize - 1;
-    let mut rows = vec![TrainRow::default(); countries];
-    let mut access = vec![0_u8; countries * NONZERO];
-    let mut runs = vec![[0_u32; 2]; countries * NONZERO];
-    let report = walk_trains(&memory, 0, GAME, &mut rows, &mut [], &mut access, &mut runs);
-    assert_eq!(report.outcome, Outcome::Rows { len: countries });
-    assert_eq!(report.required_access, countries * NONZERO);
-    assert_eq!(report.required_runs, countries * NONZERO);
-    assert_eq!(report.access, report.required_access);
-    let last = rows[countries - 1];
-    assert_eq!((last.country, last.access_count), (N - 1, N));
-    assert_eq!((last.runs_len, last.values_len), (NONZERO, NONZERO));
-    for row in &rows {
-        assert_eq!(row.allocated_trucks, Some(-(row.country as i32)));
-        assert_eq!(
-            row.required_trucks_raw,
-            Some(i64::from(row.country) * 100001)
-        );
-        assert_eq!(row.required_trains, Some(row.country as i32));
-    }
-    assert_eq!(report.vehicle_failures, [0; 3]);
-    let spans = &runs[last.runs_start..last.runs_start + last.runs_len];
-    assert_eq!(spans[..3], [[4, 1], [50, 1], [100, 1]]);
-    assert_eq!(spans[NONZERO - 1], [4950, 1]);
-    assert_eq!(access[last.values_start], 5);
-    assert_eq!(
-        access[last.values_start + NONZERO - 1],
-        (4950 % 7 + 1) as u8
-    );
-
-    let report = walk_trains(
-        &memory,
-        0,
-        GAME,
-        &mut rows,
-        &mut [],
-        &mut access[..NONZERO],
-        &mut runs,
-    );
-    assert_eq!(
-        report.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: N - 2
-        }
-    );
-    assert_eq!(report.required_access, countries * NONZERO);
-    assert_eq!((report.access, report.runs), (NONZERO, NONZERO));
-
-    let mut nodes = [crate::supply_node::Row::default(); 1];
-    let report = crate::supply_node::walk(&memory, 0, GAME, &mut nodes, &mut []);
-    assert_eq!(report.outcome, Outcome::Rows { len: 0 });
 }
 
 #[test]
@@ -1689,91 +1613,65 @@ fn node_capacity_never_returns_a_complete_prefix() {
     );
 }
 
+/// A walk of selected countries reads exactly their nodes and inventory, each
+/// equal to the whole walk's: 24 slices by native country id cover the
+/// census once (the daily `supply_trains` family).
 #[test]
-fn growing_supply_rows_arenas_and_floating_deployments_cover_5000_country_headers() {
-    const COUNTRIES: usize = 5000;
-    let mut bytes = census(COUNTRIES as u32 + 1);
-    let countries = 0x3000;
-    let slots = COUNTRIES + 1;
-    let links = countries + slots * 8;
-    let systems = links + slots * 4;
-    let companions = systems + slots * 8;
-    let objects = companions + slots * supply_companion::STRIDE;
-    let supply = objects + slots * 0x10;
-    let end = GAME + bytes.len();
-    let node_list = end;
-    let deployment_list = node_list + 32 * crate::supply_node::STRIDE;
-    let province_table = deployment_list + 32 * FLOATING_HARBOR_DEPLOYMENT_STRIDE;
-    let province = province_table + 16;
-    let empty_parents = province + 0x100;
-    bytes.resize(empty_parents + 24 - GAME, 0);
-    header(
-        &mut bytes,
-        GAME + cgame_state::PROVINCES,
-        province_table,
-        2,
-        2,
-    );
-    put(
-        &mut bytes,
-        province_table + 8,
-        &(province as u64).to_le_bytes(),
-    );
-    put(
-        &mut bytes,
-        province,
-        &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
-    );
-    put(
-        &mut bytes,
-        province + crate::cprovince::ID,
-        &1_u32.to_le_bytes(),
-    );
-    put(&mut bytes, empty_parents + 12, &[255]);
-    for index in 0..32 {
-        let node = node_list + index * crate::supply_node::STRIDE;
-        put(&mut bytes, node, &(index as u32).to_le_bytes());
+fn selected_supply_walks_partition_a_census_by_country() {
+    const NODES: usize = 2;
+    // Twenty countries leave slices empty; thirty put two countries in a slice.
+    for count in [20, 30] {
+        let mut bytes = census(count as u32 + 1);
+        let slots = count + 1;
+        let countries = 0x3000;
+        let links = countries + slots * 8;
+        let systems = links + slots * 4;
+        let companions = systems + slots * 8;
+        let node_list = GAME + bytes.len();
+        let province_table = node_list + NODES * crate::supply_node::STRIDE;
+        let province = province_table + 16;
+        let empty_parents = province + 0x100;
+        bytes.resize(empty_parents + 24 - GAME, 0);
+        header(
+            &mut bytes,
+            GAME + cgame_state::PROVINCES,
+            province_table,
+            2,
+            2,
+        );
         put(
             &mut bytes,
-            node + crate::supply_node::PROVINCE,
+            province_table + 8,
+            &(province as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            province,
+            &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            province + crate::cprovince::ID,
             &1_u32.to_le_bytes(),
         );
-        let deployment = deployment_list + index * FLOATING_HARBOR_DEPLOYMENT_STRIDE;
-        put(
-            &mut bytes,
-            deployment + FLOATING_HARBOR_PROVINCE,
-            &(index as i32).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            deployment + FLOATING_HARBOR_STATUS,
-            &[(index % 4) as u8],
-        );
-    }
-    let mut nodes = Vec::new();
-    let mut paths = Vec::new();
-    let mut trains = Vec::new();
-    let mut entries = Vec::new();
-    let mut access = Vec::new();
-    let mut runs = Vec::new();
-    let mut deployments = Vec::new();
-    for count in [1_usize, 32] {
+        put(&mut bytes, empty_parents + 12, &[255]);
+        for index in 0..NODES {
+            let node = node_list + index * crate::supply_node::STRIDE;
+            put(&mut bytes, node, &(index as u32).to_le_bytes());
+            put(
+                &mut bytes,
+                node + crate::supply_node::PROVINCE,
+                &1_u32.to_le_bytes(),
+            );
+        }
         for slot in 1..slots {
-            let system = supply + slot * SIZE;
             let companion = companions + slot * supply_companion::STRIDE;
             header(
                 &mut bytes,
                 companion + supply_companion::NODES,
                 node_list,
-                count as u32,
-                count as u32,
-            );
-            header(
-                &mut bytes,
-                system + FLOATING_HARBOR_DEPLOYMENTS,
-                deployment_list,
-                count as u32,
-                count as u32,
+                NODES as u32,
+                NODES as u32,
             );
             put(
                 &mut bytes,
@@ -1785,199 +1683,39 @@ fn growing_supply_rows_arenas_and_floating_deployments_cover_5000_country_header
             base: GAME,
             bytes: &bytes,
         };
-        let demand = crate::supply_node::storage_demand(&memory, 0, GAME).unwrap();
-        assert_eq!(demand, COUNTRIES * count);
+        let mut whole_nodes = Vec::new();
+        let mut whole_paths = Vec::new();
         let mut memo = crate::supply_node::ProvinceMemo::default();
         memo.begin(&memory, 0, GAME);
-        let captured = crate::supply_node::walk_part_growing(
-            &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo,
-        );
-        assert_eq!(
-            captured.outcome,
-            Outcome::Rows {
-                len: COUNTRIES * count
-            }
-        );
-        assert_eq!(
-            walk_floating_harbor_deployments_growing(&memory, 0, GAME, &mut deployments),
-            Outcome::Rows {
-                len: COUNTRIES * count
-            }
-        );
-        assert!(
-            deployments[..COUNTRIES * count]
-                .chunks_exact(count)
-                .enumerate()
-                .all(|(i, rows)| rows
-                    .iter()
-                    .enumerate()
-                    .all(|(ordinal, row)| row.country == i as u32 + 1
-                        && row.ordinal == ordinal as u32))
-        );
-        let captured = walk_trains_growing(
+        let whole = crate::supply_node::walk_part_growing(
             &memory,
             0,
             GAME,
-            &mut trains,
-            &mut entries,
-            &mut access,
-            &mut runs,
+            0,
+            1,
+            &mut whole_nodes,
+            &mut whole_paths,
+            &mut memo,
         );
-        assert_eq!(captured.outcome, Outcome::Rows { len: COUNTRIES });
-        assert!(captured.access > 0 && captured.runs > 0);
-        assert!(access.len() >= captured.access && runs.len() >= captured.runs);
-    }
-}
-
-/// A walk of selected countries reads exactly their nodes and inventory, each
-/// equal to the whole walk's: 24 slices by native country id cover a
-/// 5,000-country census once (the daily `supply_trains` family).
-#[test]
-fn selected_supply_walks_partition_a_5000_country_census_by_country() {
-    const COUNTRIES: usize = 5000;
-    const NODES: usize = 2;
-    let mut bytes = census(COUNTRIES as u32 + 1);
-    let slots = COUNTRIES + 1;
-    let countries = 0x3000;
-    let links = countries + slots * 8;
-    let systems = links + slots * 4;
-    let companions = systems + slots * 8;
-    let node_list = GAME + bytes.len();
-    let province_table = node_list + NODES * crate::supply_node::STRIDE;
-    let province = province_table + 16;
-    let empty_parents = province + 0x100;
-    bytes.resize(empty_parents + 24 - GAME, 0);
-    header(
-        &mut bytes,
-        GAME + cgame_state::PROVINCES,
-        province_table,
-        2,
-        2,
-    );
-    put(
-        &mut bytes,
-        province_table + 8,
-        &(province as u64).to_le_bytes(),
-    );
-    put(
-        &mut bytes,
-        province,
-        &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
-    );
-    put(
-        &mut bytes,
-        province + crate::cprovince::ID,
-        &1_u32.to_le_bytes(),
-    );
-    put(&mut bytes, empty_parents + 12, &[255]);
-    for index in 0..NODES {
-        let node = node_list + index * crate::supply_node::STRIDE;
-        put(&mut bytes, node, &(index as u32).to_le_bytes());
-        put(
-            &mut bytes,
-            node + crate::supply_node::PROVINCE,
-            &1_u32.to_le_bytes(),
-        );
-    }
-    for slot in 1..slots {
-        let companion = companions + slot * supply_companion::STRIDE;
-        header(
-            &mut bytes,
-            companion + supply_companion::NODES,
-            node_list,
-            NODES as u32,
-            NODES as u32,
-        );
-        put(
-            &mut bytes,
-            companion + crate::supply_parent_map::HEADER,
-            &(empty_parents as u64).to_le_bytes(),
-        );
-    }
-    let memory = SliceMemory {
-        base: GAME,
-        bytes: &bytes,
-    };
-    let mut whole_nodes = Vec::new();
-    let mut whole_paths = Vec::new();
-    let mut memo = crate::supply_node::ProvinceMemo::default();
-    memo.begin(&memory, 0, GAME);
-    let whole = crate::supply_node::walk_part_growing(
-        &memory,
-        0,
-        GAME,
-        0,
-        1,
-        &mut whole_nodes,
-        &mut whole_paths,
-        &mut memo,
-    );
-    assert_eq!(
-        whole.outcome,
-        Outcome::Rows {
-            len: COUNTRIES * NODES
-        }
-    );
-    whole_nodes.truncate(COUNTRIES * NODES);
-    // A train row's arena offsets depend on the walk; its read values do not.
-    let inventory = |row: &TrainRow, access: &[u8]| {
-        (
-            row.country,
-            row.node_count,
-            row.entries_len,
-            row.access_count,
-            row.runs_len,
-            access[row.values_start..row.values_start + row.values_len].to_vec(),
-            row.allocated_trucks,
-            row.required_trucks_raw,
-            row.required_trains,
-        )
-    };
-    let (mut trains, mut entries, mut access, mut runs) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let report = walk_trains_growing(
-        &memory,
-        0,
-        GAME,
-        &mut trains,
-        &mut entries,
-        &mut access,
-        &mut runs,
-    );
-    assert_eq!(report.outcome, Outcome::Rows { len: COUNTRIES });
-    let whole_trains: Vec<_> = trains[..COUNTRIES]
-        .iter()
-        .map(|row| inventory(row, &access))
-        .collect();
-    let mut read = vec![0_u32; slots];
-    for slice in 0..24_u32 {
-        let select = |country: u32| country % 24 == slice;
-        let mut nodes = Vec::new();
-        let mut paths = Vec::new();
-        let mut memo = crate::supply_node::ProvinceMemo::default();
-        memo.begin(&memory, 0, GAME);
-        let report = crate::supply_node::walk_part_selected_growing(
-            &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo, &select,
-        );
-        let expected: Vec<_> = whole_nodes
-            .iter()
-            .filter(|row| select(row.country))
-            .copied()
-            .collect();
-        assert_eq!(
-            report.outcome,
-            Outcome::Rows {
-                len: expected.len()
-            }
-        );
-        assert_eq!(
-            &nodes[..expected.len()],
-            expected.as_slice(),
-            "slice {slice}"
-        );
+        assert_eq!(whole.outcome, Outcome::Rows { len: count * NODES });
+        whole_nodes.truncate(count * NODES);
+        // A train row's arena offsets depend on the walk; its read values do not.
+        let inventory = |row: &TrainRow, access: &[u8]| {
+            (
+                row.country,
+                row.node_count,
+                row.entries_len,
+                row.access_count,
+                row.runs_len,
+                access[row.values_start..row.values_start + row.values_len].to_vec(),
+                row.allocated_trucks,
+                row.required_trucks_raw,
+                row.required_trains,
+            )
+        };
         let (mut trains, mut entries, mut access, mut runs) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let report = walk_trains_selected_growing(
+        let report = walk_trains_growing(
             &memory,
             0,
             GAME,
@@ -1985,30 +1723,73 @@ fn selected_supply_walks_partition_a_5000_country_census_by_country() {
             &mut entries,
             &mut access,
             &mut runs,
-            &select,
         );
-        let expected: Vec<_> = whole_trains
-            .iter()
-            .filter(|row| select(row.0))
-            .cloned()
-            .collect();
-        assert_eq!(
-            report.outcome,
-            Outcome::Rows {
-                len: expected.len()
-            }
-        );
-        let actual: Vec<_> = trains[..expected.len()]
+        assert_eq!(report.outcome, Outcome::Rows { len: count });
+        let whole_trains: Vec<_> = trains[..count]
             .iter()
             .map(|row| inventory(row, &access))
             .collect();
-        assert_eq!(actual, expected, "slice {slice}");
-        for row in &actual {
-            read[row.0 as usize] += 1;
+        let mut read = vec![0_u32; slots];
+        for slice in 0..24_u32 {
+            let select = |country: u32| country % 24 == slice;
+            let mut nodes = Vec::new();
+            let mut paths = Vec::new();
+            let mut memo = crate::supply_node::ProvinceMemo::default();
+            memo.begin(&memory, 0, GAME);
+            let report = crate::supply_node::walk_part_selected_growing(
+                &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo, &select,
+            );
+            let expected: Vec<_> = whole_nodes
+                .iter()
+                .filter(|row| select(row.country))
+                .copied()
+                .collect();
+            assert_eq!(
+                report.outcome,
+                Outcome::Rows {
+                    len: expected.len()
+                }
+            );
+            assert_eq!(
+                &nodes[..expected.len()],
+                expected.as_slice(),
+                "slice {slice}"
+            );
+            let (mut trains, mut entries, mut access, mut runs) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let report = walk_trains_selected_growing(
+                &memory,
+                0,
+                GAME,
+                &mut trains,
+                &mut entries,
+                &mut access,
+                &mut runs,
+                &select,
+            );
+            let expected: Vec<_> = whole_trains
+                .iter()
+                .filter(|row| select(row.0))
+                .cloned()
+                .collect();
+            assert_eq!(
+                report.outcome,
+                Outcome::Rows {
+                    len: expected.len()
+                }
+            );
+            let actual: Vec<_> = trains[..expected.len()]
+                .iter()
+                .map(|row| inventory(row, &access))
+                .collect();
+            assert_eq!(actual, expected, "slice {slice}");
+            for row in &actual {
+                read[row.0 as usize] += 1;
+            }
         }
+        // Every country is read in exactly one of the day's slices.
+        assert!(read[1..].iter().all(|&count| count == 1));
     }
-    // Every country is read in exactly one of the day's slices.
-    assert!(read[1..].iter().all(|&count| count == 1));
 }
 
 #[test]

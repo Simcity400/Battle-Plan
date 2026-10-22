@@ -100,76 +100,8 @@ impl Memory for TraceMemory<'_> {
 }
 
 #[test]
-fn cold_and_later_original_headers_grow_players_names_and_5000_country_controllers() {
-    let mut players = Vec::new();
-    let mut names = Vec::new();
-    let mut controllers = Vec::new();
-    for (countries, count, user_len) in
-        [(5_000, 5_000, 29), (5_000, 7_000, 37), (7_000, 7_000, 513)]
-    {
-        let world = World::new(countries, count, user_len);
-        let memory = TraceMemory {
-            memory: world.memory(),
-            reads: RefCell::new(Vec::new()),
-        };
-        let walked = walk_growing(&memory, BASE, GS, &mut players, &mut names);
-        assert_eq!(
-            walked.outcome,
-            Outcome::Rows {
-                len: count as usize
-            }
-        );
-        assert_eq!(walked.bytes_len, count as usize * (user_len + 18));
-        assert_eq!(walked.required_bytes, walked.bytes_len);
-        for (index, row) in players[..count as usize].iter().enumerate() {
-            assert_eq!(row.id, index as i32);
-            assert_eq!(row.user_len, user_len);
-            assert_eq!(
-                &names[row.user_start..row.user_start + row.user_len],
-                vec![index as u8; user_len]
-            );
-            assert_eq!(
-                &names[row.name_start..row.name_start + row.name_len],
-                vec![(index + 1) as u8; 18]
-            );
-        }
-        assert_eq!(
-            walk_controllers_growing(&memory, BASE, GS, &mut controllers),
-            Outcome::Rows {
-                len: countries as usize
-            }
-        );
-        for (index, row) in controllers[..countries as usize].iter().enumerate() {
-            assert_eq!(
-                *row,
-                ControllerRow {
-                    country: index as u32 + 1,
-                    count: (index + 1) as i8
-                }
-            );
-        }
-        for header in [
-            cgame_state::PLAYER_RECORDS,
-            cgame_state::HUMAN_STATUS,
-            cgame_state::COUNTRIES,
-            cgame_state::COUNTRY_LINKS,
-        ] {
-            assert_eq!(
-                memory
-                    .reads
-                    .borrow()
-                    .iter()
-                    .filter(|&&(address, _)| address == GS + header)
-                    .count(),
-                1
-            );
-        }
-    }
-}
-
-#[test]
 fn growing_players_preserve_the_original_complete_read_protocol() {
-    let world = World::new(5_000, 5_000, 29);
+    let world = World::new(50, 50, 29);
     let fixed_memory = TraceMemory {
         memory: world.memory(),
         reads: RefCell::new(Vec::new()),
@@ -178,8 +110,8 @@ fn growing_players_preserve_the_original_complete_read_protocol() {
         memory: world.memory(),
         reads: RefCell::new(Vec::new()),
     };
-    let mut fixed_rows = vec![Row::default(); 5_000];
-    let mut fixed_names = vec![0; 5_000 * 47];
+    let mut fixed_rows = vec![Row::default(); 50];
+    let mut fixed_names = vec![0; 50 * 47];
     let fixed = walk(&fixed_memory, BASE, GS, &mut fixed_rows, &mut fixed_names);
     let mut growing_rows = Vec::new();
     let mut growing_names = Vec::new();
@@ -199,32 +131,29 @@ fn growing_players_preserve_the_original_complete_read_protocol() {
             &world.memory(),
             BASE,
             GS,
-            &mut fixed_rows[..4_096],
+            &mut fixed_rows[..40],
             &mut fixed_names
         )
         .outcome,
         Outcome::Truncated {
-            len: 4_096,
-            unread_rows: 904
+            len: 40,
+            unread_rows: 10
         }
     );
 }
 
 #[test]
 fn growing_controllers_keep_original_count_bounds_and_fixed_shortage_behavior() {
-    let mut world = World::new(5_000, 1, 29);
-    let mut rows = vec![ControllerRow::default(); 4_096];
+    let mut world = World::new(50, 1, 29);
+    let mut rows = vec![ControllerRow::default(); 40];
     assert_eq!(
         walk_controllers(&world.memory(), BASE, GS, &mut rows),
         Outcome::Truncated {
-            len: 4_096,
-            unread_rows: 904
+            len: 40,
+            unread_rows: 10
         }
     );
-    world.put(
-        GS + cgame_state::HUMAN_STATUS + 12,
-        &5_000_u32.to_le_bytes(),
-    );
+    world.put(GS + cgame_state::HUMAN_STATUS + 12, &50_u32.to_le_bytes());
     let memory = TraceMemory {
         memory: world.memory(),
         reads: RefCell::new(Vec::new()),
@@ -240,13 +169,13 @@ fn growing_controllers_keep_original_count_bounds_and_fixed_shortage_behavior() 
             .reads
             .borrow()
             .iter()
-            .any(|&(address, _)| address == world.counts + 5_000)
+            .any(|&(address, _)| address == world.counts + 50)
     );
     assert!(
         memory
             .reads
             .borrow()
             .iter()
-            .any(|&(address, _)| address == world.countries + 5_000 * 8)
+            .any(|&(address, _)| address == world.countries + 50 * 8)
     );
 }

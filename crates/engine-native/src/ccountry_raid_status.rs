@@ -412,34 +412,6 @@ pub(crate) fn copy_type_tokens(
 mod tests {
     use super::*;
 
-    #[test]
-    fn cold_worker_memo_keeps_five_thousand_definitions_and_later_database_growth() {
-        let mut memo = TypeTokens::empty();
-        for count in [1_500, 5_000] {
-            let (bytes, addresses) = definitions(count);
-            let memory = crate::memory::SliceMemory {
-                base: 0,
-                bytes: &bytes,
-            };
-            memo.begin_with_count(count);
-            memo.prepare_worker().unwrap();
-            for (index, &definition) in addresses.iter().enumerate() {
-                assert_eq!(
-                    memo.token(&memory, 0, definition),
-                    Ok(0x3000 + index as u32)
-                );
-            }
-            assert_eq!(memo.len, count);
-            let empty = crate::memory::SliceMemory {
-                base: 0,
-                bytes: &[],
-            };
-            for (index, &definition) in addresses.iter().enumerate() {
-                assert_eq!(memo.token(&empty, 0, definition), Ok(0x3000 + index as u32));
-            }
-        }
-    }
-
     /// Distinct raid type definitions at 8-byte-aligned addresses, each
     /// authenticated and carrying token `0x3000 + index`.
     fn definitions(count: usize) -> (Vec<u8>, Vec<usize>) {

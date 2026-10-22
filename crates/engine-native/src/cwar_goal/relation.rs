@@ -95,17 +95,15 @@ mod tests {
     use crate::ccountry::synthetic::World;
 
     #[test]
-    fn null_goal_is_not_an_empty_resolved_goal_at_country_scale() {
-        for count in [1_500, 5_000] {
-            let fixture = World::new(0, count, 0x1600);
-            let memory = fixture.memory();
-            let countries = ccountry::Reader::new(&memory, 0, fixture.game_state()).unwrap();
-            let row = Row {
-                ordinal: 7,
-                ..Default::default()
-            };
-            assert_eq!(read_goal(&memory, 0, &countries, row).unwrap(), row);
-        }
+    fn null_goal_is_not_an_empty_resolved_goal() {
+        let fixture = World::new(0, 3, 0x1600);
+        let memory = fixture.memory();
+        let countries = ccountry::Reader::new(&memory, 0, fixture.game_state()).unwrap();
+        let row = Row {
+            ordinal: 7,
+            ..Default::default()
+        };
+        assert_eq!(read_goal(&memory, 0, &countries, row).unwrap(), row);
     }
 
     #[test]

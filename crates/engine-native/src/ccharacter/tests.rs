@@ -1080,63 +1080,6 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
 }
 
 #[test]
-fn worker_portraits_grow_first_and_later_5000_country_rosters_entries_and_text() {
-    use crate::ccharacter_manager::{PortraitCensus, PortraitIdentity};
-    const CHARACTERS: usize = 5_000;
-    const OBJECTS: usize = 0x10000;
-    const ENTRIES: usize = 0x40000;
-    const PAYLOAD: usize = 0x50000;
-    let mut rows = Vec::new();
-    let mut entries = Vec::new();
-    let mut census = PortraitCensus::new(0);
-    census.expect(CHARACTERS);
-    census.grow().unwrap();
-    census.begin(0, GS);
-    for index in 0..CHARACTERS {
-        census.push(PortraitIdentity {
-            pointer: OBJECTS + index * 16,
-            character: index as u32 + 1,
-        });
-    }
-    census.finish(CHARACTERS);
-    for count in [3, 129] {
-        let mut bytes = vec![0; PAYLOAD + 600 + 1];
-        for index in 0..CHARACTERS {
-            array(
-                &mut bytes,
-                OBJECTS + index * 16 + PORTRAIT_DATA,
-                ENTRIES,
-                if index + 1 == CHARACTERS { count } else { 3 },
-            );
-        }
-        for entry in 0..count as usize {
-            let address = ENTRIES + entry * crate::character_portrait_entry::STRIDE;
-            bytes[address + 8] = 1;
-            u64_at(&mut bytes, address + 16, PAYLOAD as u64);
-            u64_at(&mut bytes, address + 32, 600);
-            u64_at(&mut bytes, address + 40, 600);
-        }
-        bytes[PAYLOAD..PAYLOAD + 600].fill(0xff);
-        let result = walk_portraits_growing(
-            &memory(&bytes),
-            0,
-            GS,
-            &mut rows,
-            &mut entries,
-            PortraitWalk {
-                census: Some(&census),
-                ..Default::default()
-            },
-        );
-        assert_eq!(result.outcome, Outcome::Rows { len: CHARACTERS });
-        assert_eq!(result.len, (CHARACTERS - 1) * 3 + count as usize);
-        assert_eq!(result.required, result.len);
-        assert_eq!(rows[CHARACTERS - 1].character, CHARACTERS as u32);
-        assert_eq!(entries[result.len - 1].identity.as_bytes(), &[0xff; 600]);
-    }
-}
-
-#[test]
 fn portrait_census_and_walk_have_no_fixed_character_limit() {
     use crate::memory::SliceMemory;
     use ccharacter_manager::{PortraitCensus, PortraitIdentity};

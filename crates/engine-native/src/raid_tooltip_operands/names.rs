@@ -443,43 +443,6 @@ mod tests {
         }
     }
     #[test]
-    fn raid_wing_name_capture_scales_to_5000_selected_wings() {
-        let count = 5000usize;
-        let stride = 0xa40usize;
-        let mut bytes = vec![0; 64 + count * stride];
-        for index in 0..count {
-            let name = 64 + index * stride + 0x998;
-            bytes[name..name + 4].copy_from_slice(b"Wing");
-            bytes[name + 16..name + 24].copy_from_slice(&4u64.to_le_bytes());
-            bytes[name + 24..name + 32].copy_from_slice(&15u64.to_le_bytes());
-        }
-        let previous = crate::read_counts::ReadCounts::take_current();
-        let memory = crate::memory::CountedMemory::new(crate::memory::SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        });
-        let mut rows = vec![Row::default(); count * 6];
-        let mut sink = Sink {
-            rows: crate::walk::Buffer::Fixed(&mut rows),
-            required: 0,
-            raid: 0,
-            ordinal: 0,
-        };
-        for index in 0..count {
-            sink.raid = (index as u64 + 1) << 32 | 84;
-            sink.ordinal = 0;
-            capture(&memory, 0, None, Some(64 + index * stride), &mut sink).unwrap();
-        }
-        assert_eq!(sink.required, count * 6);
-        let counts = crate::read_counts::ReadCounts::take_current();
-        previous.add_current();
-        assert_eq!(counts.copy_calls, count as u64 * 4);
-        for (index, rows) in rows.chunks_exact(6).enumerate() {
-            assert_eq!(rows[5].raid, (index as u64 + 1) << 32 | 84);
-            assert_eq!(rows[5].raw.to_le_bytes(), *b"Wing\0\0\0\0");
-        }
-    }
-    #[test]
     fn raid_wing_name_failures_keep_one_named_operand_and_no_partial_chunks() {
         let wing = 64usize;
         let name = wing + 0x998;

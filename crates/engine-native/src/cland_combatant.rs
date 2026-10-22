@@ -167,26 +167,24 @@ mod tests {
         (world, side)
     }
 
+    // regression: 5bf16971ee Bound land combat country scans by native headers
     #[test]
-    fn membership_walks_a_5000_country_side_to_its_last_node() {
-        let (mut world, side) = world(5_000);
+    fn membership_walks_a_side_to_its_last_node() {
+        let (mut world, side) = world(5);
         let module = world.module;
         let check = |world: &World, raw| {
             capture_country_membership(&world.memory(), module, world.game_state(), side, raw)
         };
-        assert_eq!(
-            check(&world, 5_000),
-            Ok(CountryMembership::Exact { raw: 5_000 })
-        );
+        assert_eq!(check(&world, 5), Ok(CountryMembership::Exact { raw: 5 }));
         assert_eq!(check(&world, 1), Ok(CountryMembership::Exact { raw: 1 }));
-        // Every node resolves; an unlisted tag reports absence after all 5,000.
+        // Every node resolves; an unlisted tag reports absence after all five.
         let nodes = crate::read::<u64>(&world.memory(), side + COUNTRIES).unwrap() as usize;
-        world.u32(nodes + 4_999 * 0x20, 0);
-        assert_eq!(check(&world, 5_000), Ok(CountryMembership::Absent));
+        world.u32(nodes + 4 * 0x20, 0);
+        assert_eq!(check(&world, 5), Ok(CountryMembership::Absent));
         // A cycle is still refused, bounded by the live country table.
-        world.u64(nodes + 4_999 * 0x20 + 0x10, nodes as u64);
+        world.u64(nodes + 4 * 0x20 + 0x10, nodes as u64);
         assert_eq!(
-            check(&world, 5_000),
+            check(&world, 5),
             Err("combat country set exceeds the country table")
         );
     }

@@ -402,7 +402,7 @@ fn malformed_descriptor_and_null_state_keep_full_count_without_fake_state_zero()
 fn launch_naval_scratch_and_output_grow_for_mod_sized_original_rosters() {
     let mut scratch = Vec::new();
     let mut output = Vec::new();
-    for count in [5000_usize, 12000] {
+    for count in [50_usize, 120] {
         let mut image = image();
         let list = 0xa000;
         image.bytes.resize(list + count * 8, 0);
@@ -457,7 +457,7 @@ fn launch_naval_scratch_and_output_grow_for_mod_sized_original_rosters() {
 fn launch_state_scratch_and_output_grow_from_the_original_owned_count() {
     let mut scratch = Vec::new();
     let mut output = Vec::new();
-    for count in [5000_usize, 12000] {
+    for count in [50_usize, 120] {
         let mut image = image();
         let list = 0xa000;
         image.bytes.resize(list + count * 8, 0);

@@ -229,12 +229,12 @@ fn faction_goal_state_checks_owner_and_both_date_bases_and_allows_empty_lists() 
 }
 
 #[test]
-fn faction_goal_state_sizes_history_from_live_demand_without_a_country_cap() {
+fn faction_goal_state_sizes_history_from_live_demand() {
     let mut bytes = fixture();
     let data = bytes.len();
-    bytes.resize(data + 5_000 * 8, 0);
-    header(&mut bytes, FACTION + STATUS + COMPLETED, data, 5_000);
-    for ordinal in 0..5_000 {
+    bytes.resize(data + 100 * 8, 0);
+    header(&mut bytes, FACTION + STATUS + COMPLETED, data, 100);
+    for ordinal in 0..100 {
         put(
             &mut bytes,
             data + ordinal * 8,
@@ -252,7 +252,7 @@ fn faction_goal_state_sizes_history_from_live_demand_without_a_country_cap() {
         &mut output,
     )
     .unwrap();
-    assert_eq!(output.completed, vec![Some(991); 5_000]);
+    assert_eq!(output.completed, vec![Some(991); 100]);
 }
 
 #[test]

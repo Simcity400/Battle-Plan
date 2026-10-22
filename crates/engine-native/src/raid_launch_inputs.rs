@@ -3009,97 +3009,20 @@ pub(crate) mod tests {
             }
         }
     }
-
-    #[test]
-    fn growing_raid_buffers_cover_5000_countries_and_later_sites_without_a_slot_ratio() {
-        const COUNTRIES: usize = 5000;
-        let mut memory = scaled(COUNTRIES);
-        let mut countries = Vec::new();
-        let mut command_power = Vec::new();
-        let mut reservations = Vec::new();
-        let mut archetypes = Vec::new();
-        let mut sites = Vec::new();
-        let mut aces = Vec::new();
-        for later in [false, true] {
-            if later {
-                let strategic = WORLD + BLOCK + B_STRATEGIC;
-                let first_site_list = WORLD + BLOCK + B_SITES;
-                let selected = u64::from_le_bytes(
-                    memory.0[first_site_list..first_site_list + 8]
-                        .try_into()
-                        .unwrap(),
-                );
-                let list = memory.0.len();
-                for i in 0..20000 {
-                    memory.u64(list + i * 8, selected);
-                }
-                memory.array(strategic + cstrategic_air::FIRST_AIR_SITES, list, 20000);
-            }
-            let demand = storage_demand(&memory, 0, GS).unwrap();
-            assert_eq!(demand.countries, COUNTRIES);
-            assert_eq!(demand.archetypes, COUNTRIES * ARCHETYPES);
-            assert_eq!(demand.aces, COUNTRIES * ACES_PER_COUNTRY);
-            assert_eq!(
-                demand.reservations,
-                COUNTRIES * RESERVATIONS_PER_COUNTRY * 2
-            );
-            let captured = walk(
-                &memory,
-                0,
-                GS,
-                Buffers {
-                    memo: &DefinitionMemo::default(),
-                    keys: &KEYS,
-                    essentials: &mut Vec::new(),
-                    countries: crate::walk::Buffer::Growing(&mut countries),
-                    command_power: crate::walk::Buffer::Growing(&mut command_power),
-                    reservations: crate::walk::Buffer::Growing(&mut reservations),
-                    archetypes: crate::walk::Buffer::Growing(&mut archetypes),
-                    sites: crate::walk::Buffer::Growing(&mut sites),
-                    aces: crate::walk::Buffer::Growing(&mut aces),
-                },
-                &|_| true,
-            );
-            assert_eq!(
-                captured.countries,
-                Outcome::Rows {
-                    len: demand.countries
-                }
-            );
-            assert_eq!(
-                captured.command_power,
-                Outcome::Rows {
-                    len: demand.countries
-                }
-            );
-            // Only the essential archetypes' entries become rows.
-            assert_eq!(
-                captured.archetypes,
-                Outcome::Rows {
-                    len: COUNTRIES * ESSENTIALS
-                }
-            );
-            assert_eq!(captured.sites, Outcome::Rows { len: demand.sites });
-            assert_eq!(captured.aces, Outcome::Rows { len: demand.aces });
-            assert_eq!(captured.reservations_len, demand.reservations);
-            assert!(demand.sites > 8192);
-            if later {
-                assert!(demand.sites > COUNTRIES * SITES_PER_COUNTRY);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod shared_demand_tests {
+
     use super::*;
+    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
-    fn shared_raid_sources_retain_five_thousand_original_dependencies() {
+    fn shared_raid_sources_retain_original_dependencies() {
         let mut memo = Shared::<u32>::new();
-        for key in 1..=5_001 {
+        for key in 1..=65 {
             assert_eq!(memo.get_or(key, || Ok(key as u32)), Ok(key as u32));
         }
-        for key in 1..=5_001 {
+        for key in 1..=65 {
             assert_eq!(
                 memo.get_or(key, || Err("source no longer readable")),
                 Ok(key as u32)

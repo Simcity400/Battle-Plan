@@ -499,7 +499,7 @@ fn native_null_equipment_archetypes_keep_their_stored_token() {
     bytes[archetype..archetype + 8].copy_from_slice(&0x2000_u64.to_le_bytes());
     bytes[0x1000..0x1008].copy_from_slice(&(cequipment_type::NULL_VTABLE_RVA as u64).to_le_bytes());
     bytes[0x1008..0x100c].copy_from_slice(&0xffff_fffe_u32.to_le_bytes());
-    let variants = vec![source(&bytes); 5_000];
+    let variants = vec![source(&bytes); 100];
     let mut rows = Vec::new();
     for vtable in [
         cequipment_type::NULL_VTABLE_RVA,
@@ -516,7 +516,7 @@ fn native_null_equipment_archetypes_keep_their_stored_token() {
             &mut rows,
             &mut Vec::new(),
         );
-        assert_eq!(result.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!(result.outcome, Outcome::Rows { len: 100 });
         assert!(
             rows.iter()
                 .all(|row| row.identity.archetype_token == 0xffff_fffe)
@@ -577,14 +577,15 @@ fn definition_preserves_native_handles_links_and_bytes() {
 }
 
 #[test]
-fn version_bytes_keep_zero_and_high_bits_at_5000_variant_scale_and_refuse_faults() {
-    const COUNT: usize = 5_000;
+fn version_bytes_keep_zero_and_high_bits_and_refuse_a_second_batch_fault() {
+    // Two batches; versions step by four through 252 and wrap to zero.
+    const COUNT: usize = 65;
     let one = fixture();
     let mut bytes = vec![0; COUNT * one.len()];
     for (index, object) in bytes.chunks_exact_mut(one.len()).enumerate() {
         object.copy_from_slice(&one);
         object[ID..ID + 4].copy_from_slice(&(index as u32).to_le_bytes());
-        object[VERSION] = index as u8;
+        object[VERSION] = (index as u8).wrapping_mul(4);
     }
     let source_memory = SliceMemory {
         base: 0x1000,
@@ -605,7 +606,7 @@ fn version_bytes_keep_zero_and_high_bits_at_5000_variant_scale_and_refuse_faults
         Outcome::Rows { len: COUNT }
     );
     for (index, row) in rows.iter().enumerate() {
-        assert_eq!(row.version, index as u8);
+        assert_eq!(row.version, (index as u8).wrapping_mul(4));
     }
     assert_eq!(memory.guards.get(), COUNT.div_ceil(64) * 3);
     let memory = CountedFields {

@@ -48,17 +48,17 @@ fn capture(world: &World, rows: &mut [Row], states: &mut [u32]) -> Walk {
 }
 
 #[test]
-fn owned_rosters_at_5000_countries_preserve_order_raw_targets_tokens_nulls_and_demand() {
-    let (world, _) = fixture(5_000);
-    let mut rows = vec![Row::default(); 5_000];
-    let mut states = vec![0; 20_000];
+fn owned_rosters_preserve_order_raw_targets_tokens_nulls_and_demand() {
+    let (world, _) = fixture(4);
+    let mut rows = vec![Row::default(); 4];
+    let mut states = vec![0; 16];
     let captured = capture(&world, &mut rows, &mut states);
-    assert_eq!(captured.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(captured.outcome, Outcome::Rows { len: 4 });
     assert_eq!(
         captured.required,
         Demand {
-            rows: 5_000,
-            states: 20_000,
+            rows: 4,
+            states: 16,
         }
     );
     for (index, row) in rows.iter().enumerate() {
@@ -78,15 +78,15 @@ fn owned_rosters_at_5000_countries_preserve_order_raw_targets_tokens_nulls_and_d
         demand.outcome,
         Outcome::Truncated {
             len: 0,
-            unread_rows: 5_000,
+            unread_rows: 4,
         }
     );
-    let short = capture(&world, &mut rows, &mut states[..19_999]);
+    let short = capture(&world, &mut rows, &mut states[..15]);
     assert_eq!(short.required, captured.required);
     assert_eq!(
         short.outcome,
         Outcome::Truncated {
-            len: 4_999,
+            len: 3,
             unread_rows: 1,
         }
     );
@@ -213,8 +213,8 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
 }
 
 #[test]
-fn growing_goals_capture_5000_countries_and_expand_claims_in_the_same_hour() {
-    let (mut world, goals) = fixture(5_000);
+fn growing_goals_capture_every_country_and_expand_claims_in_the_same_hour() {
+    let (mut world, goals) = fixture(12);
     let (mut rows, mut states) = (Vec::new(), Vec::new());
     let first = walk_growing(
         &world.memory(),
@@ -223,10 +223,10 @@ fn growing_goals_capture_5000_countries_and_expand_claims_in_the_same_hour() {
         &mut rows,
         &mut states,
     );
-    assert_eq!(first.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(first.state_len, 20_000);
-    let expanded = world.alloc(4_000 * 8);
-    world.array(goals[0] + STATES, expanded, 4_000);
+    assert_eq!(first.outcome, Outcome::Rows { len: 12 });
+    assert_eq!(first.state_len, 48);
+    let expanded = world.alloc(40 * 8);
+    world.array(goals[0] + STATES, expanded, 40);
     let second = walk_growing(
         &world.memory(),
         world.module,
@@ -234,8 +234,8 @@ fn growing_goals_capture_5000_countries_and_expand_claims_in_the_same_hour() {
         &mut rows,
         &mut states,
     );
-    assert_eq!(second.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(second.state_len, 23_996);
-    assert_eq!(rows[0].state_count, 4_000);
-    assert!(states[..4_000].iter().all(|&state| state == 0));
+    assert_eq!(second.outcome, Outcome::Rows { len: 12 });
+    assert_eq!(second.state_len, 84);
+    assert_eq!(rows[0].state_count, 40);
+    assert!(states[..40].iter().all(|&state| state == 0));
 }

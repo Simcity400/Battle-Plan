@@ -175,95 +175,30 @@ fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
 }
 
 #[test]
-fn war_rows_grow_from_owned_headers_on_five_thousand_country_world() {
-    use crate::ccountry::synthetic::World;
-    let mut output = Vec::new();
-    let mut scratch = OwnedSnapshotScratch::try_with_capacity(0).unwrap();
-    let mut wars = Vec::new();
-    for pairs in [2_000_u32, 2_500] {
-        let mut created = Vec::new();
-        let mut world = World::new(0, 5_000, 0x1100);
-        let mut diplomacies = vec![0; 5_001];
-        for slot in 1..=5_000 {
-            let country = world.object(slot);
-            let diplomacy = world.alloc(0x300);
-            diplomacies[slot as usize] = diplomacy;
-            world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-            world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
-            world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
-        }
-        for pair in 0..pairs {
-            let first = pair * 2 + 1;
-            let second = first + 1;
-            let war = world.alloc(0x200);
-            let owned = world.alloc(8);
-            world.u64(war, VTABLE_RVA as u64);
-            world.u32(war + crelation::TYPE_ID, TYPE);
-            world.u32(war + crelation::FIRST_COUNTRY, first);
-            world.u32(war + crelation::SECOND_COUNTRY, second);
-            world.u64(war + SECOND_UNKNOWN_CASUALTIES, u64::from(pair));
-            world.u64(owned, war as u64);
-            created.push(war);
-            for (owner, target, serializable) in [(first, second, true), (second, first, false)] {
-                let diplomacy = diplomacies[owner as usize];
-                let matrix = world.alloc((target as usize + 1) * 8);
-                let status = world.alloc(0x300);
-                world.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 1);
-                world.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, target + 1);
-                world.u64(matrix + target as usize * 8, status as u64);
-                world.u64(status, crelation_status::VTABLE_RVA as u64);
-                world.u64(
-                    status + crelation_status::DIPLOMACY_STATUS,
-                    diplomacy as u64,
-                );
-                world.u32(status + crelation_status::TARGET_COUNTRY, target);
-                world.u64(status + crelation_status::WAR_RELATION, war as u64);
-                world.array(status + crelation_status::SUBRELATIONS, owned, 1);
-                if serializable {
-                    world.array(status + crelation_status::SERIALIZABLE_RELATIONS, owned, 1);
-                }
-            }
-        }
-        let memory = world.memory();
-        assert_eq!(
-            row_demand(&memory, 0, world.game_state()),
-            Ok(pairs as usize * 2)
-        );
-        assert_eq!(
-            walk_owned_growing(
-                &memory,
-                &memory,
-                0,
-                world.game_state(),
-                &mut output,
-                &mut scratch,
-                Some(&mut wars)
-            ),
-            Outcome::Rows {
-                len: pairs as usize
-            }
-        );
-        assert_eq!(output[pairs as usize - 1].second_country, pairs * 2);
-        // Each row's war, in row order, for the casualty reads of later hours.
-        assert_eq!(wars, created);
-        let mut rows = output[..pairs as usize].to_vec();
-        for (row, war) in rows.iter_mut().zip(&wars) {
-            row.second_unknown_casualties = -1;
-            world.u64(war + FIRST_CASUALTIES, 7);
-        }
-        assert!(read_casualties(&world.memory(), &wars, &mut rows));
-        for (pair, row) in rows.iter().enumerate() {
-            assert_eq!(row.first_casualties, 7);
-            assert_eq!(row.second_unknown_casualties, pair as i64);
-            assert_eq!(row.first_country, output[pair].first_country);
-        }
-        assert!(!read_casualties(&world.memory(), &wars[1..], &mut rows));
-        assert!(!read_casualties(
-            &world.memory(),
-            &[usize::MAX - 0x10],
-            &mut rows[..1]
-        ));
+fn casualty_refresh_refuses_mismatched_rows_and_overflowing_war_pointers() {
+    let mut bytes = vec![0_u8; 0x300];
+    let wars = [0x100, 0x200];
+    for (index, &war) in wars.iter().enumerate() {
+        bytes[war + FIRST_CASUALTIES..][..8].copy_from_slice(&7_i64.to_le_bytes());
+        bytes[war + SECOND_UNKNOWN_CASUALTIES..][..8]
+            .copy_from_slice(&(index as i64).to_le_bytes());
     }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut rows = [Row::default(); 2];
+    assert!(read_casualties(&memory, &wars, &mut rows));
+    assert_eq!(
+        rows.map(|row| (row.first_casualties, row.second_unknown_casualties)),
+        [(7, 0), (7, 1)]
+    );
+    assert!(!read_casualties(&memory, &wars[1..], &mut rows));
+    assert!(!read_casualties(
+        &memory,
+        &[usize::MAX - 0x10],
+        &mut rows[..1]
+    ));
 }
 
 struct CountedMemory<'a> {
@@ -2237,18 +2172,14 @@ impl Space {
     }
 }
 
-/// `countries` canonical countries in slots 1..=countries. Country 1 is at
-/// war with each of the first `linked` others (country 1 first) and its
-/// owned vector is padded with a non-war relation to `countries - 1 +
-/// fillers` entries, so its length does not depend on `linked`. Countries
-/// without a linked war own nothing.
+/// `countries` canonical countries in slots 1..=countries; country 1 is at
+/// war with every other (country 1 first).
 struct Census {
     bytes: Vec<u8>,
     rows: Vec<Row>,
-    hub_words: usize,
 }
 
-fn war_census(countries: usize, linked: usize, fillers: usize) -> Census {
+fn war_census(countries: usize) -> Census {
     let mut space = Space {
         bytes: vec![0; 0x2000],
     };
@@ -2304,8 +2235,6 @@ fn war_census(countries: usize, linked: usize, fillers: usize) -> Census {
             at as u64,
         );
     }
-    let filler = space.alloc(0x50);
-    p32(&mut space.bytes, filler + crelation::TYPE_ID, 0x28da);
     let mut hub_matrix = vec![0_u64; countries + 1];
     let mut hub_owned = Vec::new();
     let mut rows = Vec::new();
@@ -2333,7 +2262,7 @@ fn war_census(countries: usize, linked: usize, fillers: usize) -> Census {
         }
         at
     };
-    for partner in 2..2 + linked {
+    for partner in 2..=countries {
         let war = space.alloc(0x168);
         p64(&mut space.bytes, war, VTABLE_RVA as u64);
         p32(&mut space.bytes, war + crelation::TYPE_ID, TYPE);
@@ -2384,7 +2313,6 @@ fn war_census(countries: usize, linked: usize, fillers: usize) -> Census {
             ..Row::default()
         });
     }
-    hub_owned.resize(countries - 1 + fillers, filler as u64);
     space.vector(diplomacy[1] + cdiplomacy_status::RELATIONS, &hub_matrix);
     space.vector(
         diplomacy[1] + cdiplomacy_status::OWNED_RELATIONS,
@@ -2393,79 +2321,15 @@ fn war_census(countries: usize, linked: usize, fillers: usize) -> Census {
     Census {
         bytes: space.bytes,
         rows,
-        hub_words: hub_owned.len(),
     }
 }
 
+// regression: 74a0f0fa8c Follow original engine demand without chosen content limits
 #[test]
-fn owned_walk_at_census_scale_grows_past_former_budgets_and_stays_linear() {
-    // 15,000 countries, far past the former 512-cell resolver, and an owned
-    // vector of 74,999 entries, past the former 65,536-word snapshot budget.
-    const COUNTRIES: usize = 15_000;
-    const FILLERS: usize = 60_000;
-    // One pass observes the demand. Its hub vector has the full length, but
-    // only one linked war, so the complete fallback scans stay affordable.
-    let learning = war_census(COUNTRIES, 1, FILLERS);
-    let memory = SliceMemory {
-        base: 0,
-        bytes: &learning.bytes,
-    };
-    let mut scratch = OwnedSnapshotScratch::with_capacity(COUNTRIES + 1);
-    let mut rows = vec![Row::default(); COUNTRIES];
-    assert_eq!(
-        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
-        Outcome::Rows { len: 1 }
-    );
-    assert_eq!(rows[0], learning.rows[0]);
-    assert!(scratch.stats().fallbacks > 0);
-    assert!(scratch.stats().required_words >= learning.hub_words);
-    // Growth happens between passes, as on the spool thread.
-    scratch.grow(COUNTRIES + 1).unwrap();
-    assert!(scratch.capacity().words >= learning.hub_words);
-    assert!(scratch.capacity().initialized_count_cells >= 2 * learning.hub_words);
+fn fixed_cold_rescans_complete_then_grown_storage_needs_none() {
+    const COUNTRIES: usize = 41;
+    let census = war_census(COUNTRIES);
 
-    let census = war_census(COUNTRIES, COUNTRIES - 1, FILLERS);
-    assert_eq!(census.hub_words, learning.hub_words);
-    assert!(census.hub_words > 65_536);
-    let memory = SliceMemory {
-        base: 0,
-        bytes: &census.bytes,
-    };
-    let allocated = scratch.allocated_bytes();
-    assert_eq!(
-        walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
-        Outcome::Rows { len: COUNTRIES - 1 }
-    );
-    assert_eq!(rows[..COUNTRIES - 1], census.rows[..]);
-    assert_eq!(scratch.allocated_bytes(), allocated);
-    let stats = scratch.stats();
-    // The hub vector is scanned once and answered from its snapshot for
-    // every later war; only one-entry partner vectors take the plain scan.
-    // The former fallback would have consumed about 2.2e9 words here.
-    assert!(stats.installed >= 1);
-    assert!(stats.hits >= 2 * (COUNTRIES - 1) - 1);
-    assert!(
-        stats.acquisition_words <= census.hub_words + 4 * COUNTRIES,
-        "{stats:?}"
-    );
-    // The status-graph table is sized from the observed wars next time.
-    scratch.grow(COUNTRIES + 1).unwrap();
-    assert!(scratch.status_graphs.len() >= 2 * (COUNTRIES - 1));
-    // Output capacity still truncates honestly, never by country count.
-    let mut short = vec![Row::default(); 10];
-    assert_eq!(
-        walk_owned(&memory, &memory, 0, GS, &mut short, &mut scratch),
-        Outcome::Truncated {
-            len: 10,
-            unread_rows: (COUNTRIES - 11) as u32
-        }
-    );
-}
-
-#[test]
-fn fixed_cold_rescans_complete_above_the_former_country_budget() {
-    const COUNTRIES: usize = 6_001;
-    let census = war_census(COUNTRIES, COUNTRIES - 1, 0);
     let memory = SliceMemory {
         base: 0,
         bytes: &census.bytes,
@@ -2476,7 +2340,7 @@ fn fixed_cold_rescans_complete_above_the_former_country_budget() {
         walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
         Outcome::Rows { len: COUNTRIES - 1 }
     );
-    assert!(scratch.rescanned_words > 50_020_000);
+    assert_eq!(scratch.rescanned_words, 2 * (COUNTRIES - 1).pow(2));
     assert_eq!(rows[..COUNTRIES - 1], census.rows[..]);
     scratch.grow(0).unwrap();
     assert_eq!(

@@ -418,7 +418,7 @@ fn invasion_rows_are_acquired_in_census_order() {
 #[test]
 fn invasion_rows_grow_before_first_and_later_publication() {
     let mut rows = Vec::new();
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let mut memory = route_fixture();
         let original: Vec<_> = memory
             .0

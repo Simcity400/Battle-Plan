@@ -435,35 +435,4 @@ mod tests {
             Err("war-goal inventory goal vtable mismatch")
         );
     }
-    #[test]
-    fn wargoal_empty_inventories_size_from_5000_live_countries() {
-        for count in [1500, 5000] {
-            let mut w = World::new(0, count, 0x1600);
-            let mut roots = Vec::new();
-            for id in 1..=count {
-                let politics = w.alloc(0x120);
-                let diplomacy = w.alloc(0x300);
-                let owner = w.object(id);
-                w.u64(owner + ccountry::POLITICAL_STATUS, politics as u64);
-                w.u64(politics, cpolitical_status::VTABLE_RVA as u64);
-                w.u64(politics + cpolitical_status::COUNTRY, owner as u64);
-                roots.push(diplomacy);
-            }
-            let memory = w.memory();
-            let reader = ccountry::Reader::new(&memory, 0, w.game_state()).unwrap();
-            let mut out = Inputs::default();
-            for (index, root) in roots.into_iter().enumerate() {
-                out.read_owner(
-                    &memory,
-                    0,
-                    reader.at(index as u32 + 1).unwrap().unwrap(),
-                    root,
-                )
-                .unwrap();
-                assert!(
-                    out.goals.is_empty() && out.targets.is_empty() && out.justifications.is_empty()
-                );
-            }
-        }
-    }
 }

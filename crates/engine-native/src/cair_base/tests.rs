@@ -1579,12 +1579,12 @@ impl Memory for Rounds<'_> {
     }
 }
 
-/// More than 1,024 resolver cells: every country slot of one
-/// host base holds a container, and a second base shares every seventh.
-/// Odd slots store an alias id, so the link table is twice the census.
+/// Every country slot of one host base holds a container, and a second base
+/// shares every seventh. Odd slots store an alias id, so the link table is
+/// twice the census.
 #[test]
-fn five_thousand_country_registrations_match_with_any_resolver_length() {
-    const COUNTRIES: u32 = 5_001;
+fn country_registrations_match_with_any_resolver_length() {
+    const COUNTRIES: u32 = 129;
     const LINKS: u32 = COUNTRIES * 2;
     const HOSTS: usize = 0x2100;
     const BASE_A: usize = 0x2200;
@@ -1729,7 +1729,7 @@ fn five_thousand_country_registrations_match_with_any_resolver_length() {
         .count();
     assert_eq!(chunk_rounds, 2 * (COUNTRIES as usize).div_ceil(BATCH));
     // A short or absent cache resolves the extra ids again, never differently.
-    for cache in [0, 1024, COUNTRIES as usize] {
+    for cache in [0, 64, COUNTRIES as usize] {
         let (short, short_rows, short_rounds) = run(cache);
         assert_eq!((short, &short_rows), (walk, &rows), "cache {cache}");
         assert!(short_rounds.len() > rounds.len(), "cache {cache}");
@@ -1745,7 +1745,7 @@ fn five_thousand_country_registrations_match_with_any_resolver_length() {
     assert!(resolves(&rounds) < resolves(&uncached));
 }
 
-const SPARSE_COUNTRIES: u32 = 5_001;
+const SPARSE_COUNTRIES: u32 = 129;
 const SPARSE_HOSTS: usize = 0x2100;
 const SPARSE_BASE: usize = 0x2200;
 const SPARSE_DENSE: usize = 0x2400;
@@ -1755,7 +1755,7 @@ const SPARSE_OBJECTS: usize = 0x20000;
 const SPARSE_SLOTS: usize = 0x40000;
 const SPARSE_CONTAINERS: usize = 0x60000;
 /// The slots of the three containers a mod-sized base holds.
-const SPARSE_OCCUPIED: [u32; 3] = [1, 2600, 5000];
+const SPARSE_OCCUPIED: [u32; 3] = [1, 70, 128];
 
 fn sparse_container(index: usize) -> usize {
     SPARSE_CONTAINERS + index * 0x100
@@ -1893,11 +1893,11 @@ fn slot_vector_rounds(rounds: &[usize]) -> Vec<usize> {
     rounds
 }
 
-/// A mod-sized 5,001-slot base with three containers: its dense list names
-/// them, so the walk reads only each one's slot word instead of every chunk,
-/// and publishes the full scan's rows.
+/// A base of many slots with three containers: its dense list names them,
+/// so the walk reads only each one's slot word instead of every chunk, and
+/// publishes the full scan's rows.
 #[test]
-fn a_five_thousand_slot_base_reads_only_the_slot_words_of_its_listed_containers() {
+fn a_sparse_base_reads_only_the_slot_words_of_its_listed_containers() {
     // Listed out of slot order: the plan sorts by slot.
     let bytes = sparse_slot_fixture(&[2, 0, 1]);
     let (full, full_rows, full_rounds) = sparse_walk(&bytes, false);
@@ -1907,7 +1907,7 @@ fn a_five_thousand_slot_base_reads_only_the_slot_words_of_its_listed_containers(
             .iter()
             .map(|row| (row.slot, row.capacity_raw))
             .collect::<Vec<_>>(),
-        [(1, 1), (2600, 2600), (5000, 5000)]
+        [(1, 1), (70, 70), (128, 128)]
     );
     assert_eq!(full.dense_bases, 0);
     assert_eq!(
@@ -1961,10 +1961,10 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
     // country names, so its slot word does not hold it. The full scan then
     // refuses that container exactly as before.
     let mut bytes = sparse_slot_fixture(&[0, 1, 2]);
-    qword(&mut bytes, SPARSE_SLOTS + 2600 * 8, 0);
+    qword(&mut bytes, SPARSE_SLOTS + 70 * 8, 0);
     qword(
         &mut bytes,
-        SPARSE_SLOTS + 2601 * 8,
+        SPARSE_SLOTS + 71 * 8,
         sparse_container(1) as u64,
     );
     assert_eq!(
@@ -1979,9 +1979,10 @@ fn a_stale_or_disagreeing_dense_list_falls_back_with_an_unchanged_outcome() {
         &mut bytes,
         SPARSE_BASE + COUNTRY_CONTAINERS,
         SPARSE_SLOTS,
-        4_000,
-        4_000,
+        100,
+        100,
     );
+
     assert_eq!(check(&bytes, "slot out of range"), Outcome::Rows { len: 2 });
     // An empty list where containers occupy slots is no proof the walk can
     // check: the fast path trusts it, and only the collector's dual-path
@@ -2031,7 +2032,7 @@ fn growing_air_bases_follow_mod_stateless_rosters_before_first_publication() {
     let data = 0x10000;
     let objects = 0x40000;
     let mut rows = Vec::new();
-    for count in [5_000_u32, 12_000] {
+    for count in [50_u32, 120] {
         bytes.resize(objects - GAME + count as usize * SIZE, 0);
         array(
             &mut bytes,

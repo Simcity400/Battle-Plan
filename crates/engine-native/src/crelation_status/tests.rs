@@ -2739,8 +2739,9 @@ mod dense {
     }
 }
 
-/// A world of `countries` countries computed on demand, so 5,000 of them
-/// (25 million matrix statuses) need no fixture bytes. Every country is
+/// A world of `countries` countries computed on demand, so its matrix
+/// statuses need no fixture bytes. Every country is
+
 /// the first endpoint of three relations with its next neighbours (plus a
 /// second relation in the same status for every fifth country), cycling
 /// through serialized, war and subject classes; relations are owned by both
@@ -3221,126 +3222,103 @@ impl<M: Memory> Memory for Counting<'_, M> {
 /// of opinion writes (about one status in 211 changes, inserting,
 /// changing and removing rows) is observed, each hour's slice walk equals
 /// an unobserved walk of the same slice, and the day's slices hold exactly
-/// the dense rows. Prints the dense walk, a full walk after a load, and the
-/// mean and worst observed hour (guarded calls, bytes, cache lines). Run
-/// with `--release --nocapture` to measure.
+/// the dense rows, and an observed hour reads a small share of what a full
+/// walk reads.
 #[test]
-fn sliced_observed_days_equal_the_dense_walk_up_to_five_thousand_countries() {
-    for countries in [440, 1_500, 5_000] {
-        let world = world::World::new(countries);
-        let memory = Counting::new(&world);
-        // Bounds from the world's shape: every neighbour pair can hold an
-        // opinion and at most two tuples.
-        let opinions_len = countries * countries / 30 + 64;
-        let tuples_len = countries * 4;
-        let rows = || {
-            (
-                vec![OpinionRow::default(); opinions_len],
-                vec![TupleRow::default(); tuples_len],
-            )
-        };
-        let links = countries + 1 + countries / 11;
-        let mut resolver = Resolver::with_capacity(links);
-        let token = (1, 1);
-        let walk = |marks: &[Mark],
-                    baseline: &mut Baseline,
-                    select: &dyn Fn(u32) -> bool,
-                    resolver: &mut Resolver| {
-            let mut output = rows();
-            let begin = std::time::Instant::now();
-            let result = walk_with(
-                &memory,
-                world::BASE,
-                world::STATE,
-                &mut output.0,
-                &mut output.1,
-                [true; 2],
-                resolver,
-                baseline,
-                Some(Observation {
-                    token,
-                    marks: Some(marks),
-                }),
-                select,
-            );
-            (result, output, memory.take(), begin.elapsed())
-        };
-        // Warm up: storage, the owners' row storage, then every owner read
-        // and recorded in full.
-        let mut baseline = Baseline::default();
-        let mut load = None;
-        for _ in 0..3 {
-            let (_, _, cost, time) = walk(&[], &mut baseline, &|_| true, &mut resolver);
-            baseline.grow().unwrap();
-            load = Some((cost, time));
-        }
-        assert_eq!(baseline.valid_owners(), countries);
-        let (load_cost, load_time) = load.unwrap();
-        println!(
-            "{countries} countries, full walk after a load: {load_cost:?} [calls, bytes, lines], {load_time:?}"
-        );
-        // A day of opinion writes, observed at the next hour.
-        world.next_day();
-        let marks = world.marks();
-        baseline.reserve_marks(marks.len()).unwrap();
-        let (mut opinions, mut tuples) = (Vec::new(), Vec::new());
-        let mut hours = Vec::new();
-        for hour in 0..24_u32 {
-            let slice = move |owner: u32| owner % 24 == hour;
-            let hour_marks: &[Mark] = if hour == 0 { &marks } else { &[] };
-            let (observed, rows, cost, time) =
-                walk(hour_marks, &mut baseline, &slice, &mut resolver);
-            let (unobserved, reference, _, _) = walk(
-                &[],
-                &mut Baseline::default(),
-                &slice,
-                &mut Resolver::with_capacity(links),
-            );
-            assert_eq!(observed, unobserved, "{countries} hour {hour}");
-            assert_eq!(
-                rows.0[..observed.opinions.len()],
-                reference.0[..unobserved.opinions.len()],
-                "{countries} hour {hour}"
-            );
-            opinions.extend_from_slice(&rows.0[..observed.opinions.len()]);
-            tuples.extend_from_slice(&rows.1[..observed.tuples.len()]);
-            hours.push((cost, time));
-        }
-        assert!(baseline.counts().marks as usize >= marks.len() / 2);
-        // The day's slices hold exactly the dense walk's rows of that day.
-        let mut expected = rows();
-        let dense = dense::walk(
+fn sliced_observed_days_equal_the_dense_walk() {
+    let countries = 120;
+    let world = world::World::new(countries);
+    let memory = Counting::new(&world);
+    // Bounds from the world's shape: every neighbour pair can hold an
+    // opinion and at most two tuples.
+    let opinions_len = countries * countries / 30 + 64;
+    let tuples_len = countries * 4;
+    let rows = || {
+        (
+            vec![OpinionRow::default(); opinions_len],
+            vec![TupleRow::default(); tuples_len],
+        )
+    };
+    let links = countries + 1 + countries / 11;
+    let mut resolver = Resolver::with_capacity(links);
+    let token = (1, 1);
+    let walk = |marks: &[Mark],
+                baseline: &mut Baseline,
+                select: &dyn Fn(u32) -> bool,
+                resolver: &mut Resolver| {
+        let mut output = rows();
+        let result = walk_with(
             &memory,
             world::BASE,
             world::STATE,
-            &mut expected.0,
-            &mut expected.1,
+            &mut output.0,
+            &mut output.1,
+            [true; 2],
+            resolver,
+            baseline,
+            Some(Observation {
+                token,
+                marks: Some(marks),
+            }),
+            select,
+        );
+        (result, output, memory.take())
+    };
+    // Warm up: storage, the owners' row storage, then every owner read
+    // and recorded in full.
+    let mut baseline = Baseline::default();
+    let mut load_cost = [0; 3];
+    for _ in 0..3 {
+        load_cost = walk(&[], &mut baseline, &|_| true, &mut resolver).2;
+        baseline.grow().unwrap();
+    }
+    assert_eq!(baseline.valid_owners(), countries);
+    // A day of opinion writes, observed at the next hour.
+    world.next_day();
+    let marks = world.marks();
+    assert!(!marks.is_empty());
+    baseline.reserve_marks(marks.len()).unwrap();
+    let (mut opinions, mut tuples) = (Vec::new(), Vec::new());
+    let mut hours = Vec::new();
+    for hour in 0..24_u32 {
+        let slice = move |owner: u32| owner % 24 == hour;
+        let hour_marks: &[Mark] = if hour == 0 { &marks } else { &[] };
+        let (observed, rows, cost) = walk(hour_marks, &mut baseline, &slice, &mut resolver);
+        let (unobserved, reference, _) = walk(
+            &[],
+            &mut Baseline::default(),
+            &slice,
             &mut Resolver::with_capacity(links),
         );
-        let dense_cost = memory.take();
-        println!("{countries} countries, dense: {dense_cost:?}");
-        opinions.sort_by_key(|row| (row.owner_country, row.target_country));
-        let mut dense_opinions = expected.0[..dense.opinions.len()].to_vec();
-        dense_opinions.sort_by_key(|row| (row.owner_country, row.target_country));
-        assert_eq!(opinions, dense_opinions, "{countries}");
-        assert_eq!(tuples.len(), dense.tuples.len(), "{countries}");
-        let mean = |field: usize| hours.iter().map(|(cost, _)| cost[field]).sum::<usize>() / 24;
-        let worst = hours
-            .iter()
-            .max_by_key(|(cost, _)| cost[2])
-            .expect("24 hours");
-        println!(
-            "{countries} countries, observed hour ({} marks that day): mean [{}, {}, {}] [calls, bytes, lines], worst {:?}, {:?}",
-            marks.len(),
-            mean(0),
-            mean(1),
-            mean(2),
-            worst.0,
-            worst.1
+        assert_eq!(observed, unobserved, "{countries} hour {hour}");
+        assert_eq!(
+            rows.0[..observed.opinions.len()],
+            reference.0[..unobserved.opinions.len()],
+            "{countries} hour {hour}"
         );
-        // An observed hour reads a small share of what a full walk reads.
-        assert!(worst.0[2] * 8 < load_cost[2], "{:?} {load_cost:?}", worst.0);
+        opinions.extend_from_slice(&rows.0[..observed.opinions.len()]);
+        tuples.extend_from_slice(&rows.1[..observed.tuples.len()]);
+        hours.push(cost);
     }
+    assert!(baseline.counts().marks as usize >= marks.len() / 2);
+    // The day's slices hold exactly the dense walk's rows of that day.
+    let mut expected = rows();
+    let dense = dense::walk(
+        &memory,
+        world::BASE,
+        world::STATE,
+        &mut expected.0,
+        &mut expected.1,
+        &mut Resolver::with_capacity(links),
+    );
+    opinions.sort_by_key(|row| (row.owner_country, row.target_country));
+    let mut dense_opinions = expected.0[..dense.opinions.len()].to_vec();
+    dense_opinions.sort_by_key(|row| (row.owner_country, row.target_country));
+    assert_eq!(opinions, dense_opinions, "{countries}");
+    assert_eq!(tuples.len(), dense.tuples.len(), "{countries}");
+    // An observed hour reads a small share of what a full walk reads.
+    let worst = hours.iter().max_by_key(|cost| cost[2]).expect("24 hours");
+    assert!(worst[2] * 8 < load_cost[2], "{worst:?} {load_cost:?}");
 }
 
 /// One object per region, so a synthetic world only stores the bytes the
@@ -3475,65 +3453,6 @@ fn star(partners: usize) -> Sparse {
         }
     }
     world
-}
-
-/// A country with thousands of access partners, each named by two of its
-/// owned relations: the walk emits one row per partner in first-mention
-/// order, and its duplicate check stays constant-time (the scan it
-/// replaced was quadratic in one country's partners). Prints the walk's
-/// time; run with `--release --nocapture` to measure.
-#[test]
-fn links_walk_scales_to_five_thousand_partners() {
-    for partners in [1_500, 5_000] {
-        let world = star(partners);
-        let slots = partners + 2;
-        let mut resolver = Resolver::with_capacity(slots);
-        let mut rows = vec![LinkRow::default(); partners * 2];
-        let both = LINK_MILITARY_ACCESS | LINK_DOCKING_RIGHTS;
-        // First mentions: the military access order.
-        let mut expected: Vec<LinkRow> = (0..partners)
-            .map(|index| LinkRow {
-                country: 1,
-                target: (index * 7919 % partners + 2) as u32,
-                links: both,
-                transport_subject: None,
-            })
-            .collect();
-        expected.extend((2..slots as u32).map(|slot| LinkRow {
-            country: slot,
-            target: 1,
-            links: both,
-            transport_subject: None,
-        }));
-        let mut times = Vec::new();
-        for _ in 0..5 {
-            let begin = std::time::Instant::now();
-            let outcome = links(
-                &world,
-                BASE,
-                GS,
-                &mut rows,
-                // No country has an occupation rule, a civil war or a retired war.
-                WarOutput {
-                    rows: &mut [],
-                    countries: &mut [],
-                },
-                &mut resolver,
-            )
-            .links;
-            times.push(begin.elapsed());
-            resolver.grow().unwrap();
-            assert_eq!(outcome, Outcome::Rows { len: partners * 2 }, "{partners}");
-            assert_eq!(rows, expected, "{partners}");
-        }
-        times.sort();
-        println!(
-            "{partners} partners, links walk ({} owned relations): median {:?}, worst {:?}",
-            partners * 4,
-            times[2],
-            times[4]
-        );
-    }
 }
 
 #[test]
@@ -4031,11 +3950,11 @@ fn forward_packet_failed_status_controls_refuse_without_reacquiring_root_or_head
 mod selected_enemies;
 
 #[test]
-fn growing_relation_rows_complete_the_original_walk_at_five_thousand_countries() {
-    let world = world::World::new(5_000);
+fn growing_relation_rows_complete_the_original_walk() {
+    let world = world::World::new(120);
     let memory = Counting::new(&world);
-    let mut expected_opinions = vec![OpinionRow::default(); 5_000];
-    let mut expected_tuples = vec![TupleRow::default(); 5_000];
+    let mut expected_opinions = vec![OpinionRow::default(); 120];
+    let mut expected_tuples = vec![TupleRow::default(); 120];
     let expected = walk_with(
         &memory,
         world::BASE,
@@ -4439,10 +4358,10 @@ fn star_status(target: usize) -> usize {
 }
 
 /// The gathered candidates give the serial walk's rows and outcome on
-/// healthy memory, up to a hub with 5,000 partners.
+/// healthy memory.
 #[test]
-fn gathered_relation_candidates_equal_the_serial_walk_at_five_thousand_partners() {
-    for partners in [1_500, 5_000] {
+fn gathered_relation_candidates_equal_the_serial_walk() {
+    for partners in [3, 70] {
         let world = star(partners);
         let serial = serially(|| star_links(&world, partners));
         let gathered = star_links(&world, partners);

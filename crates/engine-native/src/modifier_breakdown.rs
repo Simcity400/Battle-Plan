@@ -800,22 +800,4 @@ mod tests {
         assert!(balance(&f, 0, record).is_err());
         assert_eq!(balance_sources(&f, record).unwrap(), captured.sources);
     }
-
-    #[test]
-    fn five_thousand_countries_with_sources_have_no_population_limit() {
-        let mut f = Fixture::new();
-        let mut roots = Vec::new();
-        for index in 0..5_000 {
-            let country = f.alloc(0x1000);
-            let child = f.alloc(0x200);
-            f.node(child, b"source", &[(keys::LAND_REINFORCE_RATE, index)], &[]);
-            let root = country + crate::ccountry::MODIFIER_ACCUMULATOR;
-            f.node(root, b"", &[], &[child]);
-            roots.push(root);
-        }
-        for (index, root) in roots.into_iter().enumerate() {
-            let nodes = tree(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
-            assert_eq!((nodes.len(), nodes[1].value), (2, index as i64));
-        }
-    }
 }

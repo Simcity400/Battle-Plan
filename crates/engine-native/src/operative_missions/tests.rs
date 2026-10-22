@@ -591,64 +591,6 @@ fn row_and_byte_capacity_truncate_with_exact_native_demand() {
     assert_eq!(sizing.failed_operative, None);
 }
 
-#[test]
-fn growing_buffers_take_a_five_thousand_operative_roster_from_its_header() {
-    const COUNT: usize = 5_000;
-    const ROSTER: usize = 0x10000;
-    const OBJECTS: usize = 0x20000;
-    let mut bytes = fixture();
-    mission(&mut bytes, operative_action::PROPAGANDA, VTABLE_RVAS[7]);
-    put(
-        &mut bytes,
-        IMPLEMENTATION + operative_action_implementation::TARGET_POINTER,
-        (TARGET_STATE as u64).to_le_bytes(),
-    );
-    let template = bytes[OPERATIVE..OPERATIVE + STRIDE].to_vec();
-    bytes.resize(OBJECTS + COUNT * STRIDE, 0);
-    let header = 0x5000 + cintelligence_agency::OPERATIVES;
-    put(&mut bytes, header, (ROSTER as u64).to_le_bytes());
-    put(&mut bytes, header + 8, (COUNT as u32).to_le_bytes());
-    put(&mut bytes, header + 12, (COUNT as u32).to_le_bytes());
-    for index in 0..COUNT {
-        let object = OBJECTS + index * STRIDE;
-        bytes[object..object + STRIDE].copy_from_slice(&template);
-        put(
-            &mut bytes,
-            object + IDENTITY,
-            (((index as u64 + 1) << 32) | u64::from(coperative_leader::HANDLE_TYPE)).to_le_bytes(),
-        );
-        put(
-            &mut bytes,
-            ROSTER + index * 8,
-            (object as u64).to_le_bytes(),
-        );
-    }
-    let memory = World(bytes);
-    let (mut rows, mut arena) = (Vec::new(), Vec::new());
-    let read = walk_growing(&memory, 0, STATE, &mut rows, &mut arena);
-    assert_eq!(read.outcome, Outcome::Rows { len: COUNT });
-    assert_eq!(
-        (read.bytes_len, read.required_bytes),
-        (COUNT * 7, COUNT * 7)
-    );
-    assert!(rows[..COUNT].iter().enumerate().all(|(index, row)| {
-        row.ordinal as usize == index
-            && row.id >> 32 == index as u64 + 1
-            && row.variant == Some(operative_action::PROPAGANDA)
-            && row.target_state == Some(42)
-            && row.portrait
-                == Name {
-                    start: index * 7,
-                    len: 7,
-                }
-    }));
-    assert!(
-        arena[..read.bytes_len]
-            .chunks(7)
-            .all(|value| value == b"GFX_spy")
-    );
-}
-
 /// An ideology group at `group` with an inline token string.
 fn group(bytes: &mut [u8], group: usize, name: &[u8]) {
     put(

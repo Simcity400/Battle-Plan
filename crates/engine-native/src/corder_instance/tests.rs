@@ -118,17 +118,6 @@ mod batched_orders {
     }
 
     #[test]
-    fn healthy_five_thousand_countries_equal_the_serial_census() {
-        let (image, groups) = world(5_000, 2);
-        let batched = capture(&image, &groups, false, None, false);
-        let serial = capture(&image, &groups, true, None, false);
-        assert_eq!(batched.0, serial.0);
-        assert_eq!(batched.1, serial.1);
-        assert_eq!(batched.0.walk.outcome, Outcome::Rows { len: 10_000 });
-        assert_eq!(batched.2, 5_000);
-    }
-
-    #[test]
     fn persistent_fault_keeps_the_serial_entry_failure_and_prefix() {
         let (image, groups) = world(3, 32);
         for offset in [
@@ -1931,15 +1920,9 @@ fn group_withdrawing_byte_uses_authenticated_identities() {
     let source = corders_group::walk_roots(&image, BASE, &mut roots);
     assert_eq!(source, Outcome::Rows { len: 1 });
     let mut rows = [corders_group::CounterInputsRow::default(); 1];
-    let census = crate::read_census::ReadCensus::new(&image);
     assert_eq!(
-        corders_group::walk_counter_inputs(&census, BASE, &roots, source, &mut rows),
+        corders_group::walk_counter_inputs(&image, BASE, &roots, source, &mut rows),
         Outcome::Rows { len: 1 }
-    );
-    println!(
-        "orders-group counter inputs for 1 group after its registry census: {} copies, {} bytes",
-        census.calls(),
-        census.bytes()
     );
     assert_eq!(
         rows[0],

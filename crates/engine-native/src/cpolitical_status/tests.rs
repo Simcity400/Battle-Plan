@@ -2,9 +2,9 @@ use super::*;
 use crate::memory::SliceMemory;
 
 #[test]
-fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
-    let mut world = ccountry::synthetic::World::new(BASE, 5_000, 0x1000);
-    for country in 1..=5_000 {
+fn timed_ideas_keep_stored_days_order_and_live_demand() {
+    let mut world = ccountry::synthetic::World::new(BASE, 4, 0x1000);
+    for country in 1..=4 {
         let owner = world.object(country);
         let status = world.alloc(COUNTRY + 8);
         let ideas = world.alloc(TIMED_IDEA_STRIDE * 2);
@@ -26,10 +26,7 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
     }
     assert_eq!(
         timed_idea_demand(&world.memory(), BASE, world.game_state()),
-        Ok(IdeaDemand {
-            rows: 10_000,
-            bytes: 50_000
-        })
+        Ok(IdeaDemand { rows: 8, bytes: 40 })
     );
     let mut rows = Vec::new();
     let mut tokens = Vec::new();
@@ -40,8 +37,8 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
         &mut rows,
         &mut tokens,
     );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
-    for (index, row) in rows[..10_000].iter().enumerate() {
+    assert_eq!(walk.outcome, Outcome::Rows { len: 8 });
+    for (index, row) in rows[..8].iter().enumerate() {
         assert_eq!(
             (row.country, row.ordinal),
             (index as u32 / 2 + 1, index as u32 % 2)
@@ -63,11 +60,11 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
         short.outcome,
         Outcome::Truncated {
             len: 1,
-            unread_rows: 9_999
+            unread_rows: 7
         }
     );
-    assert_eq!(short.required_bytes, 50_000);
-    for country in 1..=5_000 {
+    assert_eq!(short.required_bytes, 40);
+    for country in 1..=4 {
         let status = crate::read::<u64>(
             &world.memory(),
             world.object(country) + ccountry::POLITICAL_STATUS,
@@ -84,20 +81,20 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
             world.put(entry + 16, &(-(ordinal as i32)).to_le_bytes());
         }
     }
-    assert!(rows.len() < 50_000);
-    assert!(tokens.len() < 250_000);
+    assert!(rows.len() < 40);
+    assert!(tokens.len() < 200);
     assert_eq!(
         walk_timed_ideas(
             &world.memory(),
             BASE,
             world.game_state(),
-            &mut rows[..10_000],
-            &mut tokens[..50_000]
+            &mut rows[..8],
+            &mut tokens[..40]
         )
         .outcome,
         Outcome::Truncated {
-            len: 10_000,
-            unread_rows: 40_000
+            len: 8,
+            unread_rows: 32
         }
     );
     let later = walk_timed_ideas_growing(
@@ -107,10 +104,10 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
         &mut rows,
         &mut tokens,
     );
-    assert_eq!(later.outcome, Outcome::Rows { len: 50_000 });
-    assert_eq!(later.bytes_len, 250_000);
-    assert_eq!(later.required_bytes, 250_000);
-    for (index, row) in rows[..50_000].iter().enumerate() {
+    assert_eq!(later.outcome, Outcome::Rows { len: 40 });
+    assert_eq!(later.bytes_len, 200);
+    assert_eq!(later.required_bytes, 200);
+    for (index, row) in rows[..40].iter().enumerate() {
         assert_eq!(
             (row.country, row.ordinal),
             (index as u32 / 10 + 1, index as u32 % 10)

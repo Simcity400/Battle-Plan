@@ -1465,11 +1465,6 @@ fn derives_country_ship_experience_and_per_entry_critical_terms_with_fixed5_clam
     }
     // Each 1*0.5 truncates to0; summing before scaling would incorrectly add1.
     assert_eq!(maximum_organisation(&f, IMAGE, SHIP), Ok(13_130_006));
-    println!(
-        "ShipModels synthetic organisation graph: {} reads / {} copied bytes across two complete derivations",
-        f.calls.get(),
-        f.copied.get()
-    );
     f.word(SHIP + BASE_ORGANISATION, (-200000i64) as u64);
     assert_eq!(maximum_organisation(&f, IMAGE, SHIP), Ok(100));
     f.dword(SHIP + 0x924, 4097);

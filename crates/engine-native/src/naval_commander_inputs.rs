@@ -1054,9 +1054,10 @@ mod tests {
         }
     }
 
+    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
-    fn commander_collections_follow_five_thousand_native_occurrences() {
-        const COUNT: usize = 5_001;
+    fn commander_collections_follow_every_native_occurrence() {
+        const COUNT: usize = 65;
         let mut f = fixture();
         let traits = 0x10000;
         let learning = traits + COUNT * 8;

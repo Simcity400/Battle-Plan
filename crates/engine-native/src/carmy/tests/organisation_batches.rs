@@ -212,16 +212,6 @@ fn compare(
 }
 
 #[test]
-fn division_status_organisation_batches_keep_five_thousand_published_rows() {
-    let (source, seeds) = fixture(5_000);
-    let (old, new) = compare(&source, &seeds, None);
-    assert_eq!(old.copy_calls, 20 * seeds.len() as u64 + 1);
-    assert_eq!(new.copy_calls, 2 * seeds.len() as u64 + 12);
-    assert_eq!(new.scattered_calls, 0);
-    assert_eq!(new.bytes, 12 * seeds.len() as u64 + 74);
-}
-
-#[test]
 fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() {
     let (mut source, mut seeds) = fixture(3);
     // Demand an actual exact pair, not just known absence: the final

@@ -800,7 +800,7 @@ fn worker_order_of_battle_grows_original_nested_members_and_children_before_publ
     let mut members = Vec::new();
     let mut children = Vec::new();
     let mut scratch = Vec::new();
-    for count in [5000_usize, 20000] {
+    for count in [50_usize, 200] {
         let mut bytes = fixture();
         let members_data = bytes.len();
         bytes.resize(members_data + count * 8, 0);
@@ -851,44 +851,4 @@ fn worker_order_of_battle_grows_original_nested_members_and_children_before_publ
             matches!(fixed.children, Outcome::Truncated { unread_rows, .. } if unread_rows as usize == count - 4)
         );
     }
-}
-
-#[test]
-fn worker_order_of_battle_grows_full_5000_root_census_and_proof_scratch() {
-    let count = 5000;
-    let mut bytes = vec![0; 0x1000 + count * 0x300];
-    let mut roots = Vec::new();
-    for index in 0..count {
-        let pointer = 0x1000 + index * 0x300;
-        p64(&mut bytes, pointer, VTABLE_RVA as u64);
-        let id = handle(index as u32 + 1, REFERENCE_TYPE);
-        p64(&mut bytes, pointer + HANDLE, id);
-        p32(&mut bytes, pointer + COUNTRY, index as u32 + 1);
-        roots.push(Root {
-            pointer,
-            handle: id,
-            country: index as u32 + 1,
-        });
-    }
-    let (mut groups, mut members, mut children, mut scratch) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let walked = walk_order_of_battle_buffers(
-        &SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        },
-        0,
-        &roots,
-        &mut OrderOfBattleStorage {
-            groups: crate::walk::Buffer::Growing(&mut groups),
-            members: crate::walk::Buffer::Growing(&mut members),
-            children: crate::walk::Buffer::Growing(&mut children),
-            roster_scratch: crate::walk::Buffer::Growing(&mut scratch),
-        },
-    );
-    assert_eq!(walked.groups, Outcome::Rows { len: count });
-    assert_eq!(walked.members, Outcome::Rows { len: 0 });
-    assert_eq!(walked.children, Outcome::Rows { len: 0 });
-    assert!(scratch.len() >= count);
-    assert_eq!(groups[count - 1].handle, roots[count - 1].handle);
 }

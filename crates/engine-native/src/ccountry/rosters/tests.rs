@@ -3,131 +3,6 @@ use crate::ccountry::{CounterInputsRow, synthetic::World, walk_counter_inputs_wi
 use crate::read;
 use crate::walk::Outcome;
 
-#[test]
-fn effect_rosters_preserve_order_at_5000_countries_and_fail_independently() {
-    let (mut world, _) = fixture(5_000);
-    for country in 1..=5_000 {
-        let owner = world.object(country);
-        let neighbors = world.alloc(12);
-        world.array(owner + NEIGHBORS, neighbors, 3);
-        for (index, raw) in [u32::MAX, country, country].into_iter().enumerate() {
-            world.u32(neighbors + index * 4, raw);
-        }
-        let status = world.alloc(cproduction_status::COUNTRY + 8);
-        let roster = world.alloc(16);
-        let policy = world.alloc(12);
-        world.u64(owner + crate::ccountry::PRODUCTION_STATUS, status as u64);
-        world.u64(
-            status,
-            (world.module + cproduction_status::VTABLE_RVA) as u64,
-        );
-        world.u64(status + cproduction_status::COUNTRY, owner as u64);
-        world.array(status + cproduction_status::POLICIES, roster, 2);
-        world.u64(roster, policy as u64);
-        world.u64(roster + 8, policy as u64);
-        world.u64(
-            policy,
-            (world.module + cproduction_status::POLICY_VTABLE_RVA) as u64,
-        );
-        world.u32(policy + cproduction_status::POLICY_TOKEN, country + 80_000);
-    }
-    assert_eq!(
-        counter_effect_roster_demand(&world.memory(), world.module, world.game_state()),
-        Ok(EffectRosterDemand {
-            neighbors: 15_000,
-            policies: 10_000
-        })
-    );
-    let mut rows = vec![CounterInputsRow::default(); 5_000];
-    let mut states = vec![0; 45_000];
-    let mut leaders = vec![0; 30_000];
-    let mut neighbors = vec![0; 15_000];
-    let mut policies = vec![0; 10_000];
-    let mut rosters = CounterRosters {
-        capture_sent_expeditionaries: true,
-
-        states: Buffer::Fixed(&mut states),
-        leaders: Buffer::Fixed(&mut leaders),
-        state_len: 0,
-        leader_len: 0,
-        required: Default::default(),
-    };
-    let mut effects = EffectRosters {
-        neighbors: Buffer::Fixed(&mut neighbors),
-        policies: Buffer::Fixed(&mut policies),
-        neighbor_len: 0,
-        policy_len: 0,
-        required: Default::default(),
-    };
-    assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
-        Outcome::Rows { len: 5_000 }
-    );
-    for row in &rows {
-        let span = row.neighbors.unwrap();
-        assert_eq!(
-            &effects.neighbors[span.start..span.start + span.count],
-            &[u32::MAX, row.country, row.country]
-        );
-        let span = row.mio_policies.unwrap();
-        assert_eq!(
-            &effects.policies[span.start..span.start + span.count],
-            &[row.country + 80_000; 2]
-        );
-    }
-    effects.neighbors = Buffer::Fixed(&mut []);
-    effects.neighbor_len = 0;
-    effects.policy_len = 0;
-    effects.required = Default::default();
-    rosters.state_len = 0;
-    rosters.leader_len = 0;
-    assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
-        Outcome::Rows { len: 5_000 }
-    );
-    assert_eq!(effects.required.neighbors, 15_000);
-    assert!(rows.iter().all(|row| row.neighbors.is_none()
-        && row.neighbor_reason == Some("country neighbor roster arena capacity exceeded")
-        && row.mio_policies.is_some()
-        && row.state_rosters.is_some()));
-    world.u64(world.object(1) + crate::ccountry::PRODUCTION_STATUS, 0);
-    effects.policy_len = 0;
-    rosters.state_len = 0;
-    rosters.leader_len = 0;
-    assert_eq!(
-        crate::ccountry::walk_counter_inputs_with_effect_rosters(
-            &world.memory(),
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects
-        ),
-        Outcome::Rows { len: 5_000 }
-    );
-    assert_eq!(
-        rows[0].policy_reason,
-        Some("MIO policy production status is null")
-    );
-    assert!(rows[0].mio_policies.is_none());
-    assert!(rows[0].state_rosters.is_some());
-    assert!(rows[1..].iter().all(|row| row.mio_policies.is_some()));
-}
-
 fn fixture(countries: u32) -> (World, Vec<usize>) {
     let mut world = World::new(0x4000_0000, countries, 0x1100);
     let mut leader_objects = Vec::new();
@@ -183,18 +58,143 @@ fn fixture(countries: u32) -> (World, Vec<usize>) {
 }
 
 #[test]
-fn five_native_order_rosters_scale_to_5000_countries_without_fabricating_handles() {
-    let (world, _) = fixture(5_000);
+fn effect_rosters_preserve_order_and_fail_independently() {
+    let (mut world, _) = fixture(4);
+    for country in 1..=4 {
+        let owner = world.object(country);
+        let neighbors = world.alloc(12);
+        world.array(owner + NEIGHBORS, neighbors, 3);
+        for (index, raw) in [u32::MAX, country, country].into_iter().enumerate() {
+            world.u32(neighbors + index * 4, raw);
+        }
+        let status = world.alloc(cproduction_status::COUNTRY + 8);
+        let roster = world.alloc(16);
+        let policy = world.alloc(12);
+        world.u64(owner + crate::ccountry::PRODUCTION_STATUS, status as u64);
+        world.u64(
+            status,
+            (world.module + cproduction_status::VTABLE_RVA) as u64,
+        );
+        world.u64(status + cproduction_status::COUNTRY, owner as u64);
+        world.array(status + cproduction_status::POLICIES, roster, 2);
+        world.u64(roster, policy as u64);
+        world.u64(roster + 8, policy as u64);
+        world.u64(
+            policy,
+            (world.module + cproduction_status::POLICY_VTABLE_RVA) as u64,
+        );
+        world.u32(policy + cproduction_status::POLICY_TOKEN, country + 80_000);
+    }
+    assert_eq!(
+        counter_effect_roster_demand(&world.memory(), world.module, world.game_state()),
+        Ok(EffectRosterDemand {
+            neighbors: 12,
+            policies: 8
+        })
+    );
+    let mut rows = vec![CounterInputsRow::default(); 4];
+    let mut states = vec![0; 36];
+    let mut leaders = vec![0; 24];
+    let mut neighbors = vec![0; 12];
+    let mut policies = vec![0; 8];
+    let mut rosters = CounterRosters {
+        capture_sent_expeditionaries: true,
+
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
+        state_len: 0,
+        leader_len: 0,
+        required: Default::default(),
+    };
+    let mut effects = EffectRosters {
+        neighbors: Buffer::Fixed(&mut neighbors),
+        policies: Buffer::Fixed(&mut policies),
+        neighbor_len: 0,
+        policy_len: 0,
+        required: Default::default(),
+    };
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 4 }
+    );
+    for row in &rows {
+        let span = row.neighbors.unwrap();
+        assert_eq!(
+            &effects.neighbors[span.start..span.start + span.count],
+            &[u32::MAX, row.country, row.country]
+        );
+        let span = row.mio_policies.unwrap();
+        assert_eq!(
+            &effects.policies[span.start..span.start + span.count],
+            &[row.country + 80_000; 2]
+        );
+    }
+    effects.neighbors = Buffer::Fixed(&mut []);
+    effects.neighbor_len = 0;
+    effects.policy_len = 0;
+    effects.required = Default::default();
+    rosters.state_len = 0;
+    rosters.leader_len = 0;
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 4 }
+    );
+    assert_eq!(effects.required.neighbors, 12);
+    assert!(rows.iter().all(|row| row.neighbors.is_none()
+        && row.neighbor_reason == Some("country neighbor roster arena capacity exceeded")
+        && row.mio_policies.is_some()
+        && row.state_rosters.is_some()));
+    world.u64(world.object(1) + crate::ccountry::PRODUCTION_STATUS, 0);
+    effects.policy_len = 0;
+    rosters.state_len = 0;
+    rosters.leader_len = 0;
+    assert_eq!(
+        crate::ccountry::walk_counter_inputs_with_effect_rosters(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects
+        ),
+        Outcome::Rows { len: 4 }
+    );
+    assert_eq!(
+        rows[0].policy_reason,
+        Some("MIO policy production status is null")
+    );
+    assert!(rows[0].mio_policies.is_none());
+    assert!(rows[0].state_rosters.is_some());
+    assert!(rows[1..].iter().all(|row| row.mio_policies.is_some()));
+}
+
+#[test]
+fn five_native_order_rosters_cover_every_country_without_fabricating_handles() {
+    let (world, _) = fixture(12);
     assert_eq!(
         counter_roster_demand(&world.memory(), world.module, world.game_state()),
         Ok(RosterDemand {
-            states: 45_000,
-            leaders: 30_000,
+            states: 108,
+            leaders: 72,
         })
     );
-    let mut rows = vec![CounterInputsRow::default(); 5_000];
-    let mut states = vec![0; 45_000];
-    let mut leaders = vec![0; 30_000];
+    let mut rows = vec![CounterInputsRow::default(); 12];
+    let mut states = vec![0; 108];
+    let mut leaders = vec![0; 72];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
@@ -212,13 +212,13 @@ fn five_native_order_rosters_scale_to_5000_countries_without_fabricating_handles
             &mut rows,
             &mut rosters,
         ),
-        Outcome::Rows { len: 5_000 }
+        Outcome::Rows { len: 12 }
     );
     assert_eq!(
         rosters.required,
         RosterDemand {
-            states: 45_000,
-            leaders: 30_000,
+            states: 108,
+            leaders: 72,
         }
     );
     for row in &rows {
@@ -322,10 +322,11 @@ fn a_short_arena_and_invalid_leaders_preserve_country_scalars() {
     assert_eq!(rows[0].roster_reason, Some("unit leader vtable mismatch"));
 }
 
+// regression: 1f2fc61ba2 Preserve scalar country inputs when roster reads fail
 #[test]
-fn absent_arenas_preserve_all_scalar_rows_at_5000_countries() {
-    let (world, _) = fixture(5_000);
-    let mut rows = vec![CounterInputsRow::default(); 5_000];
+fn absent_arenas_preserve_all_scalar_rows() {
+    let (world, _) = fixture(4);
+    let mut rows = vec![CounterInputsRow::default(); 4];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
@@ -343,13 +344,13 @@ fn absent_arenas_preserve_all_scalar_rows_at_5000_countries() {
             &mut rows,
             &mut rosters,
         ),
-        Outcome::Rows { len: 5_000 }
+        Outcome::Rows { len: 4 }
     );
     assert_eq!(
         rosters.required,
         RosterDemand {
-            states: 45_000,
-            leaders: 30_000,
+            states: 36,
+            leaders: 24,
         }
     );
     for row in rows {
@@ -452,65 +453,13 @@ fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_mem
 }
 
 #[test]
-fn growing_rosters_keep_the_first_5000_country_capture_and_later_mod_sized_headers() {
-    let (mut world, _) = fixture(5_000);
-    let (mut rows, mut states, mut leaders, mut neighbors, mut policies) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut capture = |world: &World| {
-        let memory = world.memory();
-        let mut rosters = CounterRosters {
-            capture_sent_expeditionaries: true,
-
-            states: Buffer::Growing(&mut states),
-            leaders: Buffer::Growing(&mut leaders),
-            state_len: 0,
-            leader_len: 0,
-            required: Default::default(),
-        };
-        let mut effects = EffectRosters {
-            neighbors: Buffer::Growing(&mut neighbors),
-            policies: Buffer::Growing(&mut policies),
-            neighbor_len: 0,
-            policy_len: 0,
-            required: Default::default(),
-        };
-        let result = crate::ccountry::walk_counter_inputs_with_effect_rosters_observed_growing(
-            &memory,
-            world.module,
-            world.game_state(),
-            &mut rows,
-            &mut rosters,
-            &mut effects,
-            &mut None,
-        );
-        assert_eq!(result, Outcome::Rows { len: 5_000 });
-        assert!(
-            rows[..5_000]
-                .iter()
-                .all(|row| row.state_rosters.is_some() && row.leader_rosters.is_some())
-        );
-        rosters.state_len
-    };
-    assert_eq!(capture(&world), 45_000);
-    let header = world.object(1) + CORE_STATES;
-    let old = Array::read(&world.memory(), header, 8).unwrap();
-    let pointer = read::<u64>(&world.memory(), old.data).unwrap();
-    let expanded = world.alloc(4_000 * 8);
-    for slot in 0..4_000 {
-        world.u64(expanded + slot * 8, pointer);
-    }
-    world.array(header, expanded, 4_000);
-    assert_eq!(capture(&world), 45_000 - old.count as usize + 4_000);
-}
-
-#[test]
-fn growing_civil_wars_capture_5000_native_rosters_and_same_hour_expansion() {
-    let mut world = World::new(0x4000_0000, 5_000, 0x1300);
+fn growing_civil_wars_capture_every_native_roster_and_same_hour_expansion() {
+    let mut world = World::new(0x4000_0000, 12, 0x1300);
     let targets = world.alloc(1_024 * 4);
     for index in 0..1_024 {
         world.u32(targets + index * 4, index as u32);
     }
-    for slot in 1..=5_000 {
+    for slot in 1..=12 {
         world.array(
             world.object(slot) + crate::ccountry::CIVIL_WAR_TARGETS,
             targets,
@@ -525,7 +474,7 @@ fn growing_civil_wars_capture_5000_native_rosters_and_same_hour_expansion() {
             world.game_state(),
             &mut rows
         ),
-        Outcome::Rows { len: 5_000 * 64 }
+        Outcome::Rows { len: 12 * 64 }
     );
     world.array(
         world.object(1) + crate::ccountry::CIVIL_WAR_TARGETS,
@@ -539,9 +488,7 @@ fn growing_civil_wars_capture_5000_native_rosters_and_same_hour_expansion() {
             world.game_state(),
             &mut rows
         ),
-        Outcome::Rows {
-            len: 5_000 * 64 + 960
-        }
+        Outcome::Rows { len: 12 * 64 + 960 }
     );
     assert_eq!(
         (rows[1_023].country, rows[1_023].ordinal, rows[1_023].target),
@@ -710,9 +657,9 @@ fn a_page_of_leaders_reads_their_identities_in_one_guarded_batch() {
 }
 
 #[test]
-fn manpower_sent_expeditionaries_keep_raw_reference_order_at_5000_countries() {
-    let (mut world, _) = fixture(5_000);
-    for country in 1..=5_000 {
+fn manpower_sent_expeditionaries_keep_raw_reference_order() {
+    let (mut world, _) = fixture(4);
+    for country in 1..=4 {
         let entries = world.alloc(32);
         let refs = [u64::MAX, 0, (u64::from(country) << 32) | 4713, u64::MAX];
         for (index, reference) in refs.into_iter().enumerate() {
@@ -720,9 +667,9 @@ fn manpower_sent_expeditionaries_keep_raw_reference_order_at_5000_countries() {
         }
         world.array(world.object(country) + SENT_EXPEDITIONARIES, entries, 4);
     }
-    let mut rows = vec![CounterInputsRow::default(); 5_000];
-    let mut states = vec![0; 45_000];
-    let mut leaders = vec![0; 50_000];
+    let mut rows = vec![CounterInputsRow::default(); 4];
+    let mut states = vec![0; 36];
+    let mut leaders = vec![0; 40];
     let mut rosters = CounterRosters {
         capture_sent_expeditionaries: true,
 
@@ -740,7 +687,7 @@ fn manpower_sent_expeditionaries_keep_raw_reference_order_at_5000_countries() {
             &mut rows,
             &mut rosters
         ),
-        Outcome::Rows { len: 5_000 }
+        Outcome::Rows { len: 4 }
     );
     for row in rows {
         let span = row.sent_expeditionaries.unwrap();

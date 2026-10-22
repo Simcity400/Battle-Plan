@@ -610,14 +610,15 @@ fn incomplete_membership_and_empty_forecast_capacity_refuse_whole_numeric_query(
 }
 
 #[test]
-fn growing_memo_preserves_5000_failed_and_successful_observations() {
+fn growing_memo_preserves_failed_and_successful_observations() {
+    const KEYS: u64 = 12;
     let mut aces = Vec::new();
     let mut slots = Buffer::Growing(&mut aces);
-    grow_memo(&mut slots, 10_000, |slot: AceSlot| {
+    grow_memo(&mut slots, 2 * KEYS as usize, |slot: AceSlot| {
         slot.value.map(|_| ace_hash(slot.reference))
     })
     .unwrap();
-    for reference in 1..=5_000u64 {
+    for reference in 1..=KEYS {
         let mut index = ace_hash(reference) % slots.len();
         while slots[index].value.is_some() {
             index = (index + 1) % slots.len();
@@ -631,11 +632,11 @@ fn growing_memo_preserves_5000_failed_and_successful_observations() {
             }),
         };
     }
-    grow_memo(&mut slots, 30_000, |slot| {
+    grow_memo(&mut slots, 6 * KEYS as usize, |slot| {
         slot.value.map(|_| ace_hash(slot.reference))
     })
     .unwrap();
-    for reference in 1..=5_000u64 {
+    for reference in 1..=KEYS {
         let mut index = ace_hash(reference) % slots.len();
         while slots[index].reference != reference {
             index = (index + 1) % slots.len();
@@ -651,6 +652,6 @@ fn growing_memo_preserves_5000_failed_and_successful_observations() {
     }
     assert_eq!(
         slots.iter().filter(|slot| slot.value.is_some()).count(),
-        5_000
+        KEYS as usize
     );
 }

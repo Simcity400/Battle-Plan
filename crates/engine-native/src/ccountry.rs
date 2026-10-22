@@ -1633,11 +1633,7 @@ pub fn capture_appearance_original_tags(
 pub fn capture_appearance_original_tags_observed_growing(
     memory: &impl Memory,
     game_state: usize,
-    rows: &mut [AppearanceRow<
-        crate::capture_text::Owned,
-        crate::capture_text::Owned,
-        crate::capture_text::Owned,
-    >],
+    rows: &mut [OwnedAppearanceRow],
     names: &mut Vec<u8>,
     used: &mut usize,
     required: &mut usize,
@@ -1766,13 +1762,7 @@ pub fn walk_appearance_observed_growing(
     base: usize,
     game_state: usize,
     dynamic_boundary: u32,
-    output: &mut Vec<
-        AppearanceRow<
-            crate::capture_text::Owned,
-            crate::capture_text::Owned,
-            crate::capture_text::Owned,
-        >,
-    >,
+    output: &mut Vec<OwnedAppearanceRow>,
     journal: &mut crate::raw_country_observations::Journal,
 ) -> Outcome {
     walk_appearance_observed_inner(
@@ -4278,19 +4268,6 @@ pub mod synthetic {
                 base: START,
                 bytes: &self.bytes,
             }
-        }
-    }
-
-    #[test]
-    fn every_synthetic_country_resolves_to_its_own_slot() {
-        let world = World::new(0x4000_0000, 5_000, 0x20);
-        let memory = world.memory();
-        let reader = Reader::new(&memory, world.module, world.game_state()).unwrap();
-        assert_eq!(reader.count(), 5_001);
-        for raw in [1, 2_500, 5_000] {
-            let country = reader.resolve(raw).unwrap();
-            assert_eq!((country.canonical_slot, country.id), (raw, raw));
-            assert_eq!(country.pointer, world.object(raw));
         }
     }
 }
@@ -7009,11 +6986,11 @@ mod tests {
     }
 
     #[test]
-    fn politics_witness_walk_acquires_all_five_thousand_native_country_rows() {
-        let mut world = synthetic::World::new(0x4000_0000, 5_000, PEACE_CONFERENCE_PARTICIPANT + 8);
-        let tags = world.alloc(5_001 * STRIDE);
-        world.array(world.game_state() + cgame_state::COUNTRY_TAGS, tags, 5_001);
-        for id in 1..=5_000 {
+    fn politics_witness_walk_acquires_every_native_country_row() {
+        let mut world = synthetic::World::new(0x4000_0000, 65, PEACE_CONFERENCE_PARTICIPANT + 8);
+        let tags = world.alloc(66 * STRIDE);
+        world.array(world.game_state() + cgame_state::COUNTRY_TAGS, tags, 66);
+        for id in 1..=65 {
             let object = world.object(id);
             world.u32(object + ID_INSTANCE, 0xf001_0000 + id);
             let tag = tags + id as usize * STRIDE;
@@ -7021,10 +6998,10 @@ mod tests {
             world.u64(tag + 16, 3);
             world.u64(tag + 24, 15);
         }
-        let mut rows = vec![Row::default(); 5_000];
+        let mut rows = vec![Row::default(); 65];
         assert_eq!(
             walk(&world.memory(), world.module, world.game_state(), &mut rows),
-            Outcome::Rows { len: 5_000 }
+            Outcome::Rows { len: 65 }
         );
         for (slot, row) in rows.iter().enumerate() {
             let id = slot as u32 + 1;

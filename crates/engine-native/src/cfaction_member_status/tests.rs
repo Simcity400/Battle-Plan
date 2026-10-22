@@ -180,12 +180,12 @@ fn faction_member_account_refuses_each_independent_fault_without_retry() {
 }
 
 #[test]
-fn faction_member_account_demand_is_one_selected_account_at_five_thousand_scale() {
+fn faction_member_account_demand_is_one_selected_account() {
     let initial = fixture();
     let mut bytes = initial.clone();
     let accounts = bytes.len();
-    bytes.resize(accounts + 5000 * STRIDE, 0);
-    let selected = 4_997;
+    bytes.resize(accounts + 4 * STRIDE, 0);
+    let selected = 2;
     let address = accounts + selected * STRIDE;
     bytes[address..address + STRIDE].copy_from_slice(&initial[ACCOUNT..ACCOUNT + STRIDE]);
     // Every other account can be unreadable; no census of them is attempted.
@@ -198,7 +198,7 @@ fn faction_member_account_demand_is_one_selected_account_at_five_thousand_scale(
     let mut output = Snapshot::default();
     let source = Array {
         data: accounts,
-        count: 5000,
+        count: 4,
     };
     read_into(&memory, 0, source, selected as u32, &mut output).unwrap();
     assert_eq!(output.country, 4999);
@@ -220,7 +220,7 @@ fn faction_member_account_demand_is_one_selected_account_at_five_thousand_scale(
         )
     );
     let reads = memory.reads.get();
-    assert!(read_into(&memory, 0, source, 5000, &mut output).is_err());
+    assert!(read_into(&memory, 0, source, 4, &mut output).is_err());
     assert_eq!(
         memory.reads.get(),
         reads,

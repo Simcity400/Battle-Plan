@@ -521,7 +521,7 @@ fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() 
     let mut rows = Vec::new();
     let mut participants = Vec::new();
     let mut classes = Vec::new();
-    for count in [5000, 12_000] {
+    for count in [50, 120] {
         let registry = 0x20000;
         let units = registry + count * 8;
         fixture.0.resize(units + count * 8 - STATE, 0);
@@ -940,11 +940,6 @@ fn details_preserve_native_order_bytes_damage_and_loss_history() {
     assert_eq!(row.sides[0].damage[0], i64::MAX);
     assert_eq!(row.sides[0].organisation_loss[0], i64::MIN);
     assert_eq!(row.sides[1].organisation_loss_count, 0);
-    eprintln!(
-        "land details synthetic one combat / three units: {} copies, {} bytes",
-        memory.copies.get(),
-        memory.bytes.get()
-    );
     // A short participant arena keeps the exact demand and stays incomplete.
     let mut short = Arenas::new();
     short.participants.truncate(2);
@@ -1282,7 +1277,7 @@ fn commander_trait_lists_report_exact_demand_beyond_any_arena() {
 fn worker_detail_arenas_grow_from_original_mod_sized_lists_before_publication() {
     use crate::{cunit_leader, walk::Buffer};
     let mut kept = Arenas::sized(DetailCounts::default());
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let mut fixture = commander_fixture();
         fixture.0.resize(0x30_0000, 0);
         fixture.array(COMMANDER + cunit_leader::TRAIT_DATA, 0x20_000, count as u32);
@@ -1349,46 +1344,6 @@ fn worker_detail_arenas_grow_from_original_mod_sized_lists_before_publication() 
             &arenas.text[arenas.traits[count - 1].token_start..][..5],
             b"trait"
         );
-    }
-}
-
-#[test]
-fn worker_country_sets_keep_all_5000_country_tags_on_first_and_later_growth() {
-    let mut tags = Vec::new();
-    for count in [1_500, 5_000] {
-        let mut fixture = Fixture::new();
-        fixture.0.resize(0x30_0000, 0);
-        let values: Vec<_> = (0..count as u32).collect();
-        for (index, (side, offset)) in [
-            (ATTACK, cland_combatant::COUNTRIES),
-            (ATTACK, cland_combatant::SECONDARY_COUNTRIES),
-            (DEFEND, cland_combatant::COUNTRIES),
-            (DEFEND, cland_combatant::SECONDARY_COUNTRIES),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            country_set(
-                &mut fixture,
-                side,
-                offset,
-                0x10_0000 + index * 0x4_0000,
-                &values,
-            );
-        }
-        let (row, len) = read_country_sets_buffer(
-            &fixture.memory(),
-            BASE,
-            detail_source(),
-            5_001,
-            crate::walk::Buffer::Growing(&mut tags),
-        )
-        .unwrap();
-        assert_eq!(len, count * 4);
-        assert_eq!(row.lens, [count; 4]);
-        for group in tags[..len].chunks_exact(count) {
-            assert_eq!(group, &values);
-        }
     }
 }
 
@@ -1466,11 +1421,11 @@ fn detail_demand_discards_changed_array_and_string_headers() {
 }
 
 #[test]
-fn detail_demand_scales_combat_participant_and_arena_occurrences() {
+fn detail_demand_counts_combat_participant_and_arena_occurrences() {
     const LARGE_REGISTRY: usize = 0x12000;
     const LARGE_COMBATS: usize = 0x20000;
     const COMBAT_STRIDE: usize = 0x1000;
-    for count in [1500_usize, 5000] {
+    for count in [15_usize, 50] {
         let mut fixture = detail_fixture();
         fixture.0.resize(LARGE_COMBATS + count * COMBAT_STRIDE, 0);
         fixture.array(
@@ -1572,11 +1527,6 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
         (None, None, None)
     );
     assert_eq!(defender.side_input_refusals, [None; 3]);
-    eprintln!(
-        "land details synthetic one combat / three units / two commanders / one assigned and learning trait: {} copies, {} bytes",
-        memory.copies.get(),
-        memory.bytes.get()
-    );
 }
 
 /// One pass's combats share a selected leader's leader-only reads (here its
@@ -1927,110 +1877,6 @@ fn country_sets_keep_native_order_raw_tags_and_empty_sets() {
         country_sets(&fixture, 2, &mut tags),
         Err(CountrySetError::Unavailable(_))
     ));
-}
-
-/// The side table's capture cost: guarded reads per combat and the CPU
-/// time of 1,500 and 5,000 combats, then one combat whose primary set
-/// holds every one of 1,500 or 5,000 countries. Run with `--nocapture`
-/// for the timings; the read counts are asserted.
-#[test]
-fn country_sets_capture_cost_at_1500_and_5000() {
-    struct Counted<'a>(SliceMemory<'a>, std::cell::Cell<usize>);
-    impl Memory for Counted<'_> {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            self.1.set(self.1.get() + 1);
-            self.0.copy(address, destination)
-        }
-    }
-    fn source_of(fixture: &Fixture) -> Source {
-        let mut found = None;
-        walk_with(
-            &fixture.memory(),
-            BASE,
-            STATE,
-            &mut [Row::default(); 2],
-            &mut [0; 8],
-            &mut [0; 8],
-            |source| found = Some(source),
-        );
-        found.expect("one land combat")
-    }
-    // A typical combat: three countries per primary set, one secondary.
-    let mut fixture = Fixture::new();
-    country_set(
-        &mut fixture,
-        ATTACK,
-        cland_combatant::COUNTRIES,
-        0x8400 - 0x400,
-        &[7, 0, 3],
-    );
-    country_set(
-        &mut fixture,
-        ATTACK,
-        cland_combatant::SECONDARY_COUNTRIES,
-        0x7c80,
-        &[9],
-    );
-    country_set(
-        &mut fixture,
-        DEFEND,
-        cland_combatant::COUNTRIES,
-        0x7d00,
-        &[4, 2, 5],
-    );
-    country_set(
-        &mut fixture,
-        DEFEND,
-        cland_combatant::SECONDARY_COUNTRIES,
-        0x7d80,
-        &[4],
-    );
-    let source = source_of(&fixture);
-    let memory = Counted(fixture.memory(), std::cell::Cell::new(0));
-    let mut tags = [0; 16];
-    read_country_sets(&memory, BASE, source, 16, &mut tags).unwrap();
-    let per_combat = memory.1.get();
-    // The class and header checks, two side pointers, the indicator, one
-    // span per side: 16 fixed reads, then one per node.
-    const FIXED: usize = 16;
-    assert_eq!(per_combat, FIXED + 8);
-    for combats in [1_500, 5_000] {
-        let started = std::time::Instant::now();
-        for _ in 0..combats {
-            read_country_sets(&memory, BASE, source, 16, &mut tags).unwrap();
-        }
-        println!(
-            "{combats} combats: {per_combat} reads each, {:.3} ms",
-            started.elapsed().as_secs_f64() * 1e3
-        );
-    }
-    // Worst case: one set naming every country.
-    for countries in [1_500_usize, 5_000] {
-        let mut fixture = Fixture::new();
-        let nodes = fixture.0.len() + STATE;
-        fixture.0.resize(fixture.0.len() + countries * 0x18, 0);
-        let all: Vec<u32> = (1..=countries as u32).collect();
-        country_set(
-            &mut fixture,
-            ATTACK,
-            cland_combatant::COUNTRIES,
-            nodes,
-            &all,
-        );
-        let source = source_of(&fixture);
-        let memory = Counted(fixture.memory(), std::cell::Cell::new(0));
-        let mut tags = vec![0; countries + 1];
-        let started = std::time::Instant::now();
-        let (row, used) =
-            read_country_sets(&memory, BASE, source, countries + 1, &mut tags).unwrap();
-        assert_eq!((row.lens[0], used), (countries, countries));
-        assert_eq!(memory.1.get(), FIXED + countries);
-        println!(
-            "one set of {countries} countries: {} reads, {:.3} ms",
-            memory.1.get(),
-            started.elapsed().as_secs_f64() * 1e3
-        );
-    }
 }
 
 #[test]

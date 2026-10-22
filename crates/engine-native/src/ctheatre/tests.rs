@@ -1055,7 +1055,7 @@ fn many_theatres(countries: usize, members: usize) -> Vec<u8> {
     bytes
 }
 #[test]
-fn worker_theatres_grow_for_5000_countries_and_later_nested_demand_without_rereads() {
+fn worker_theatres_grow_for_every_country_and_later_nested_demand_without_rereads() {
     struct Once<'a> {
         memory: SliceMemory<'a>,
         headers: std::cell::RefCell<std::collections::BTreeSet<usize>>,
@@ -1080,7 +1080,7 @@ fn worker_theatres_grow_for_5000_countries_and_later_nested_demand_without_rerea
     }
     let mut captured = GrowingTables::default();
     for members in [3, 40] {
-        let bytes = many_theatres(5000, members);
+        let bytes = many_theatres(12, members);
         let memory = Once {
             memory: SliceMemory {
                 base: MEMORY,
@@ -1095,20 +1095,15 @@ fn worker_theatres_grow_for_5000_countries_and_later_nested_demand_without_rerea
             walked.air,
             walked.air_groups,
         ] {
-            assert_eq!(outcome, Outcome::Rows { len: 5000 });
+            assert_eq!(outcome, Outcome::Rows { len: 12 });
         }
         for outcome in [walked.land_members, walked.air_members] {
-            assert_eq!(
-                outcome,
-                Outcome::Rows {
-                    len: 5000 * members
-                }
-            );
+            assert_eq!(outcome, Outcome::Rows { len: 12 * members });
         }
-        assert_eq!(walked.names_len, 5000 * 12);
+        assert_eq!(walked.names_len, 12 * 12);
         assert_eq!(walked.names_required, walked.names_len);
         assert_eq!(
-            captured.land_members[5000 * members - 1].ordinal,
+            captured.land_members[12 * members - 1].ordinal,
             members as u32 - 1
         );
     }

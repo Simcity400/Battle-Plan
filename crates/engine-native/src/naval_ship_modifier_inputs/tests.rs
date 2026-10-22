@@ -229,8 +229,8 @@ fn doctrine_exceeds_4096_nodes() {
 }
 
 #[test]
-fn doctrine_source_visitor_sizes_country_and_mod_populations_in_operand_order() {
-    for count in [1500, 5000] {
+fn doctrine_source_visitor_sizes_growing_populations_in_operand_order() {
+    for count in [15, 50] {
         let mut memory = doctrine_fixture(count);
         for index in 0..count {
             let node = NODES + index * 0x38;

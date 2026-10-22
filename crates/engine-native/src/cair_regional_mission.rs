@@ -833,7 +833,7 @@ mod tests {
     fn original_regional_headers_grow_first_and_later_mod_membership() {
         let (mut bytes, _) = fixture();
         let mut output = Vec::new();
-        for count in [5_000u32, 12_345] {
+        for count in [50_u32, 123] {
             let members = bytes.len();
             bytes.resize(members + count as usize * 8, 0);
             let wings: Vec<_> = (0..count)

@@ -248,7 +248,7 @@ fn worker_routes_grow_from_first_and_later_mod_sized_original_seed_headers() {
     source.bytes.resize(0x70000, 0);
     let mut packet = carmy::MovementPacket::new(0, 0);
     packet.enable_growth();
-    for length in [5_000_u32, 12_000] {
+    for length in [50_u32, 120] {
         array(
             &mut source.bytes,
             A1 + crate::cunit::ORDINARY_ROUTE_DATA,

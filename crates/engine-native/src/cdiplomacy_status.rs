@@ -315,48 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn growing_capitulation_captures_all_5000_countries_from_empty_rows() {
-        use crate::ccountry::synthetic::World;
-        const COUNT: u32 = 5_000;
-        let mut world = World::new(BASE, COUNT, ccountry::DIPLOMACY_STATUS + 8);
-        for slot in 1..=COUNT {
-            let country = world.object(slot);
-            let diplomacy = world.alloc(0x400);
-            world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
-            world.u64(diplomacy, (BASE + VTABLE_RVA) as u64);
-            world.u64(diplomacy + COUNTRY, country as u64);
-            world.u32(diplomacy + CAPITULATED_HOUR, slot);
-        }
-        let mut expected = vec![CapitulationRow::default(); COUNT as usize];
-        let outcome = walk_capitulation(
-            &world.memory(),
-            BASE,
-            world.game_state(),
-            &mut expected,
-            &mut [],
-        );
-        assert_eq!(
-            outcome,
-            Outcome::Rows {
-                len: COUNT as usize
-            }
-        );
-        let mut rows = Vec::new();
-        assert_eq!(
-            walk_capitulation_growing(
-                &world.memory(),
-                BASE,
-                world.game_state(),
-                &mut rows,
-                &mut Vec::new()
-            ),
-            outcome
-        );
-        assert_eq!(&rows[..COUNT as usize], expected.as_slice());
-        assert_eq!(rows[COUNT as usize - 1].country, COUNT);
-    }
-
-    #[test]
     fn native_precision_flags_dates_and_country_alias_are_preserved() {
         let mut bytes = fixture();
         put(

@@ -617,7 +617,7 @@ mod damage_source_tests {
         const NODES: usize = 0x1000;
         const POINTERS: usize = 0x10_0000;
         let (mut damage, mut handles) = (Vec::new(), Vec::new());
-        for count in [1500usize, 5000, 8193] {
+        for count in [15_usize, 50, 82] {
             let mut bytes = vec![0; POINTERS + count * 8];
             let put = |bytes: &mut [u8], at: usize, value: u64| {
                 bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());

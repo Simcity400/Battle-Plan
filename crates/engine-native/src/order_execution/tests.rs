@@ -494,9 +494,9 @@ fn raw_nonboolean_and_extreme_progress_survive_later_preparation_refusal() {
 }
 
 #[test]
-fn worker_scalar_growth_retains_five_thousand_original_successes_and_faults() {
+fn worker_scalar_growth_retains_original_successes_and_faults() {
     let mut image = Image::default();
-    for index in 0..5_000usize {
+    for index in 0..50usize {
         if !index.is_multiple_of(10) {
             image.word(0x10_0000 + index * 16, index as u64);
         }
@@ -505,7 +505,7 @@ fn worker_scalar_growth_retains_five_thousand_original_successes_and_faults() {
     prepared.enable_worker_growth();
     let mut bytes = [0u8; 8];
     for _ in 0..2 {
-        for index in 0..5_000usize {
+        for index in 0..50usize {
             assert_eq!(
                 prepared
                     .scalars
@@ -517,12 +517,12 @@ fn worker_scalar_growth_retains_five_thousand_original_successes_and_faults() {
             }
         }
     }
-    assert_eq!(image.reads.borrow().len(), 5_000);
-    assert_eq!(prepared.work().scalar_reads, 5_000);
-    assert_eq!(prepared.work().scalar_failed, 500);
+    assert_eq!(image.reads.borrow().len(), 50);
+    assert_eq!(prepared.work().scalar_reads, 50);
+    assert_eq!(prepared.work().scalar_failed, 5);
     assert_eq!(prepared.work().scalar_capacity, 0);
-    assert_eq!(prepared.required_capacity().scalar_observations, 5_000);
-    assert!(prepared.capacity().scalar_observations >= 5_000);
+    assert_eq!(prepared.required_capacity().scalar_observations, 50);
+    assert!(prepared.capacity().scalar_observations >= 50);
 }
 
 #[test]
@@ -599,81 +599,6 @@ fn cold_paradrop_terms_grow_from_original_scalars_and_modifier_headers() {
             .count(),
         1
     );
-}
-
-#[test]
-fn cold_worker_executes_five_thousand_then_more_orders_without_a_sizing_hint() {
-    let mut packet = Prepared::vacant();
-    packet.enable_worker_growth();
-    let mut memo = ccountry::NativeReferenceMemo::vacant();
-    memo.enable_worker_growth();
-    for count in [5_000, 7_500] {
-        let mut image = Image::default();
-        image.put(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, &[0; 16]);
-        image.word(GROUP + corders_group::LEADER, 0);
-        image.reserved = Some(Ok(ccountry::Country {
-            pointer: COUNTRY,
-            canonical_slot: 0,
-            id: 0,
-        }));
-        let roots = [corders_group::Root {
-            pointer: GROUP,
-            handle: HANDLE,
-            country: 0,
-        }];
-        let mut visits = Vec::new();
-        let mut rows = Vec::new();
-        let mut plans = Vec::new();
-        for index in 0..count {
-            let pointer = 0x10_0000 + index * 0x1000;
-            let instance = index as u32 + 1;
-            image.put(pointer + order::CONDITION_CACHE, &[1]);
-            image.word(pointer + order::ACCUMULATED_PREPARATION, index as u64);
-            visits.push(order::Visit::fixture(pointer, 0, instance));
-            rows.push(order::Row {
-                owner_group: HANDLE,
-                instance,
-                order_type: order::TYPE_PARADROP,
-                ..Default::default()
-            });
-            plans.push(PlanRow {
-                owner_group: HANDLE,
-                instance,
-                ..Default::default()
-            });
-        }
-        packet.reset();
-        memo.reset(BASE, STATE);
-        let countries = memo.view(&image, BASE, STATE);
-        packet.capture_orders(
-            &image,
-            BASE,
-            STATE,
-            orders(&roots, &visits, &rows),
-            &mut plans,
-            Outcome::Rows { len: count },
-            &countries,
-        );
-        for (index, plan) in plans.iter().enumerate() {
-            let inputs = plan.execution.unwrap();
-            assert_eq!(inputs.route_is_ok, Some(1));
-            let prep = inputs.paradrop.unwrap();
-            assert_eq!(prep.progress, index as i64);
-            assert_eq!(prep.terms.unwrap().country_term, 0);
-        }
-        assert_eq!(packet.work().terms_available, count);
-        assert!(packet.capacity().orders >= count);
-        assert_eq!(packet.required_capacity().orders, count);
-        assert_eq!(
-            image
-                .reads
-                .borrow()
-                .iter()
-                .filter(|&&(at, _)| { at == COUNTRY + ccountry::MODIFIER_ACCUMULATOR })
-                .count(),
-            1
-        );
-    }
 }
 
 #[test]

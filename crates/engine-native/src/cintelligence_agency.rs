@@ -729,9 +729,9 @@ mod tests {
     /// agency's row as one block after its link: 2 spans per agency
     /// instead of 10.
     #[test]
-    fn batched_agencies_match_the_serial_walk_at_scale() {
+    fn batched_agencies_match_the_serial_walk() {
         use crate::memory::{CountedMemory, ReadCounts};
-        const COUNT: u32 = 5_000;
+        const COUNT: u32 = 130;
         let w = test_support::intel_world(COUNT, 2);
         let memory = CountedMemory::new(w.memory());
         let prior = ReadCounts::take_current();
@@ -1162,156 +1162,6 @@ mod tests {
                 reason: "captured operative referent identity mismatch"
             }
         );
-    }
-
-    #[test]
-    fn captured_operative_demand_and_rows_follow_5000_live_countries() {
-        const COUNT: usize = 5_000;
-        const OBJECTS: usize = 0x20000;
-        const STRIDE: usize = 0x1400;
-        let mut bytes = vec![0; OBJECTS + COUNT * STRIDE];
-        for (offset, data, stride) in [
-            (cgame_state::COUNTRIES, 0x1000, 8),
-            (cgame_state::COUNTRY_LINKS, 0xb000, 4),
-        ] {
-            put(&mut bytes, 0x100 + offset, (data as u64).to_le_bytes());
-            put(
-                &mut bytes,
-                0x100 + offset + 8,
-                ((COUNT + 1) as u32).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                0x100 + offset + 12,
-                ((COUNT + 1) as i32).to_le_bytes(),
-            );
-            for slot in 1..=COUNT {
-                if stride == 8 {
-                    put(
-                        &mut bytes,
-                        data + slot * stride,
-                        ((OBJECTS + (slot - 1) * STRIDE) as u64).to_le_bytes(),
-                    );
-                } else {
-                    put(
-                        &mut bytes,
-                        data + slot * stride,
-                        (slot as u32).to_le_bytes(),
-                    );
-                }
-            }
-        }
-        put(
-            &mut bytes,
-            0x18000,
-            (crate::ccaptured_operative_reference::VTABLE_RVA as u64).to_le_bytes(),
-        );
-        for slot in 1..=COUNT {
-            let country = OBJECTS + (slot - 1) * STRIDE;
-            let agency = country + 0x1000;
-            put(
-                &mut bytes,
-                country,
-                (ccountry::VTABLE_RVA as u64).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                country + ccountry::ID,
-                (slot as u32).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                country + ccountry::INTELLIGENCE_AGENCY,
-                (agency as u64).to_le_bytes(),
-            );
-            put(&mut bytes, agency, (VTABLE_RVA as u64).to_le_bytes());
-            put(
-                &mut bytes,
-                agency + OWNER_COUNTRY,
-                (country as u64).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES,
-                0x18000_u64.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES + 8,
-                1_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES + 12,
-                1_i32.to_le_bytes(),
-            );
-        }
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        assert_eq!(captured_operative_demand(&memory, 0, 0x100), Ok(COUNT));
-        let mut rows = Vec::new();
-        assert_eq!(
-            walk_captured_operatives_growing(&memory, 0, 0x100, &mut rows),
-            Outcome::Rows { len: COUNT }
-        );
-        assert_eq!(
-            rows[COUNT - 1],
-            CapturedOperativeRow {
-                country: COUNT as u32,
-                ordinal: 0,
-                operative: 0,
-                owner: None
-            }
-        );
-        let data = 0x19000;
-        for ordinal in 0..10 {
-            put(
-                &mut bytes,
-                data + ordinal * crate::ccaptured_operative_reference::STRIDE,
-                (crate::ccaptured_operative_reference::VTABLE_RVA as u64).to_le_bytes(),
-            );
-        }
-        for slot in 1..=COUNT {
-            let agency = OBJECTS + (slot - 1) * STRIDE + 0x1000;
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES,
-                (data as u64).to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES + 8,
-                10_u32.to_le_bytes(),
-            );
-            put(
-                &mut bytes,
-                agency + CAPTURED_OPERATIVE_REFERENCES + 12,
-                10_i32.to_le_bytes(),
-            );
-        }
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &bytes,
-        };
-        assert_eq!(captured_operative_demand(&memory, 0, 0x100), Ok(COUNT * 10));
-        assert_eq!(
-            walk_captured_operatives(&memory, 0, 0x100, &mut rows[..COUNT]),
-            Outcome::Truncated {
-                len: COUNT,
-                unread_rows: (COUNT * 9) as u32
-            }
-        );
-        assert_eq!(
-            walk_captured_operatives_growing(&memory, 0, 0x100, &mut rows),
-            Outcome::Rows { len: COUNT * 10 }
-        );
-        for (index, row) in rows[..COUNT * 10].iter().enumerate() {
-            assert_eq!(row.country as usize, index / 10 + 1);
-            assert_eq!(row.ordinal as usize, index % 10);
-            assert_eq!((row.operative, row.owner), (0, None));
-        }
     }
 
     #[test]

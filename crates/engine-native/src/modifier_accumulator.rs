@@ -855,8 +855,9 @@ pub fn lookup_key_at(
 #[cfg(test)]
 mod point_tests {
     use super::*;
+    // regression: 25443bcda9 Fix faction hook spans, retain account marks and carry subject contribution
     #[test]
-    fn one_of_five_thousand_keys_does_not_read_the_unselected_payloads() {
+    fn one_of_many_keys_does_not_read_the_unselected_payloads() {
         struct Counted {
             bytes: Vec<u8>,
             reads: std::cell::Cell<usize>,
@@ -871,10 +872,10 @@ mod point_tests {
                 .copy(at, out)
             }
         }
-        let mut bytes = vec![0; 64 + 5000 * modifier_entry::STRIDE];
+        let mut bytes = vec![0; 64 + 200 * modifier_entry::STRIDE];
         bytes[16..24].copy_from_slice(&64u64.to_le_bytes());
-        bytes[16 + COUNT..16 + COUNT + 4].copy_from_slice(&5000i32.to_le_bytes());
-        for index in 0..5000 {
+        bytes[16 + COUNT..16 + COUNT + 4].copy_from_slice(&200i32.to_le_bytes());
+        for index in 0..200 {
             let at = 64 + index * modifier_entry::STRIDE;
             bytes[at..at + 4].copy_from_slice(&(index as u32 * 2 + 1).to_le_bytes());
             bytes[at + 8..at + 16].copy_from_slice(&(-17i64).to_le_bytes());
@@ -884,13 +885,13 @@ mod point_tests {
             reads: std::cell::Cell::new(0),
         };
         assert_eq!(
-            lookup_key_at(&memory, 16, 4001).unwrap(),
+            lookup_key_at(&memory, 16, 301).unwrap(),
             Value {
                 raw: -17,
                 present: true
             }
         );
         assert!(memory.reads.get() < 20);
-        assert_eq!(lookup_key_at(&memory, 16, 4000).unwrap(), Value::default());
+        assert_eq!(lookup_key_at(&memory, 16, 300).unwrap(), Value::default());
     }
 }

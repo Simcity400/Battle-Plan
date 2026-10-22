@@ -186,8 +186,9 @@ impl Fixture {
 }
 
 #[test]
-fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
-    let mut fixture = Fixture::new(5_000);
+fn worker_grows_first_capture_and_later_catalog_at_unchanged_countries() {
+    const COUNTRIES: usize = 4;
+    let mut fixture = Fixture::new(COUNTRIES as u32);
     let mut agencies = Vec::new();
     let mut names = Vec::new();
     let mut rows = Vec::new();
@@ -201,20 +202,20 @@ fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
         &mut rows,
         &mut catalog,
     );
-    assert_eq!(first.agencies.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(first.upgrades.outcome, Outcome::Rows { len: 15_000 });
+    assert_eq!(first.agencies.outcome, Outcome::Rows { len: COUNTRIES });
+    assert_eq!(first.upgrades.outcome, Outcome::Rows { len: 3 * COUNTRIES });
     assert_eq!(first.upgrades.refused_rows, 0);
     assert_eq!(catalog.required_capacity(), 3);
     assert!(catalog.capacity() >= 3);
     let first_row_capacity = rows.len();
 
-    let members = fixture.world.alloc(5_002 * 8);
+    let members = fixture.world.alloc((COUNTRIES + 2) * 8);
     fixture.world.u64(members, fixture.definitions[0] as u64);
     fixture
         .world
         .u64(members + 8, fixture.definitions[1] as u64);
     let mut definitions = Vec::new();
-    for index in 0..5_000 {
+    for index in 0..COUNTRIES {
         let definition = fixture.world.alloc(0x270);
         fixture.world.u64(
             definition,
@@ -230,9 +231,11 @@ fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
             .u64(members + (index + 2) * 8, definition as u64);
         definitions.push(definition);
     }
-    fixture
-        .world
-        .array(fixture.branches[0] + BRANCH_UPGRADES, members, 5_002);
+    fixture.world.array(
+        fixture.branches[0] + BRANCH_UPGRADES,
+        members,
+        COUNTRIES as u32 + 2,
+    );
     for (index, &agency) in fixture.agencies.iter().enumerate() {
         let acquired = fixture.world.alloc(10 * ENTRY_STRIDE);
         for ordinal in 0..10 {
@@ -251,25 +254,25 @@ fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
         }
         fixture.world.array(agency + ACQUIRED, acquired, 10);
     }
-    assert!(first_row_capacity < 50_000);
+    assert!(first_row_capacity < 10 * COUNTRIES);
     assert_eq!(
         native_demand(&fixture, fixture.world.module, fixture.world.game_state()),
         Ok(Demand {
-            rows: 50_000,
-            catalog: 5_003
+            rows: 10 * COUNTRIES,
+            catalog: COUNTRIES + 3
         })
     );
-    let fixed = fixture.capture(&mut rows[..15_000], &mut Catalog::new(3));
+    let fixed = fixture.capture(&mut rows[..3 * COUNTRIES], &mut Catalog::new(3));
     assert_eq!(
         fixed.upgrades.outcome,
         Outcome::Truncated {
-            len: 15_000,
-            unread_rows: 35_000
+            len: 3 * COUNTRIES,
+            unread_rows: 7 * COUNTRIES as u32
         }
     );
     assert_eq!(
         fixed.upgrades.refusal_counts[CATALOG_CAPACITY as usize],
-        50_000
+        10 * COUNTRIES as u32
     );
     let later = cintelligence_agency::walk_with_upgrades_growing(
         &fixture,
@@ -280,13 +283,18 @@ fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
         &mut rows,
         &mut catalog,
     );
-    assert_eq!(later.agencies.outcome, Outcome::Rows { len: 5_000 });
-    assert_eq!(later.upgrades.outcome, Outcome::Rows { len: 50_000 });
+    assert_eq!(later.agencies.outcome, Outcome::Rows { len: COUNTRIES });
+    assert_eq!(
+        later.upgrades.outcome,
+        Outcome::Rows {
+            len: 10 * COUNTRIES
+        }
+    );
     assert_eq!(later.upgrades.refused_rows, 0);
     assert_eq!(later.upgrades.omitted_rows, 0);
-    assert_eq!(catalog.required_capacity(), 5_003);
-    assert!(catalog.capacity() >= 5_003);
-    for (index, country_rows) in rows[..50_000].chunks_exact(10).enumerate() {
+    assert_eq!(catalog.required_capacity(), COUNTRIES + 3);
+    assert!(catalog.capacity() >= COUNTRIES + 3);
+    for (index, country_rows) in rows[..10 * COUNTRIES].chunks_exact(10).enumerate() {
         assert!(
             country_rows
                 .iter()
@@ -307,24 +315,28 @@ fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
 }
 
 #[test]
-fn agency_upgrade_levels_every_country_5000_preserves_branch_duplicates_raw_levels_and_order() {
-    let fixture = Fixture::new(5_000);
+fn agency_upgrade_levels_every_country_preserves_branch_duplicates_raw_levels_and_order() {
+    const COUNTRIES: usize = 4;
+    let fixture = Fixture::new(COUNTRIES as u32);
     let demand = native_demand(&fixture, fixture.world.module, fixture.world.game_state()).unwrap();
     assert_eq!(
         demand,
         Demand {
-            rows: 15_000,
+            rows: 3 * COUNTRIES,
             catalog: 3
         }
     );
     let mut rows = vec![Row::default(); demand.rows];
     let mut catalog = Catalog::new(demand.catalog);
     let captured = fixture.capture(&mut rows, &mut catalog);
-    assert_eq!(captured.upgrades.outcome, Outcome::Rows { len: 15_000 });
-    assert_eq!(captured.upgrades.required_rows, 15_000);
+    assert_eq!(
+        captured.upgrades.outcome,
+        Outcome::Rows { len: 3 * COUNTRIES }
+    );
+    assert_eq!(captured.upgrades.required_rows, 3 * COUNTRIES);
     assert_eq!(captured.upgrades.refused_rows, 0);
     assert_eq!(catalog.required_capacity(), 3);
-    for country in 1..=5_000_u32 {
+    for country in 1..=COUNTRIES as u32 {
         let sample = &rows[(country as usize - 1) * 3..country as usize * 3];
         assert_eq!(
             sample

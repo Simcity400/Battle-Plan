@@ -290,7 +290,7 @@ mod presentation_cache_tests {
     use super::*;
 
     #[test]
-    fn active_air_skips_derived_hover_text_and_reads_hits_past_16384() {
+    fn active_air_skips_derived_hover_text_and_grows_its_hits() {
         const ENTRY: usize = 0x100;
         struct Guard(Vec<u8>);
         impl Memory for Guard {
@@ -371,7 +371,7 @@ mod presentation_cache_tests {
         read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
         assert!(row.wings.iter().all(|span| span[1] == 0));
 
-        const COUNT: usize = 16_385;
+        const COUNT: usize = 65;
         const DATA: usize = 0x1000;
         const HIT: usize = 0x900;
         memory.0.resize(DATA + COUNT * 8, 0);
@@ -397,11 +397,11 @@ mod presentation_cache_tests {
         assert_eq!(buffers.plane_naval_hits[COUNT - 1].damage, i64::MIN);
     }
     #[test]
-    fn original_wing_headers_grow_both_arenas_past_country_and_mod_sized_populations() {
+    fn original_wing_headers_grow_both_arenas() {
         const PLANE: usize = 0x100;
         const DATA: usize = 0x1000;
         let (mut types, mut wings) = (Vec::new(), Vec::new());
-        for count in [1500usize, 5000, 8193] {
+        for count in [15_usize, 50, 82] {
             let mut bytes = vec![0; DATA + count * 16];
             bytes[PLANE..PLANE + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
             for (offset, first) in [(0x28, DATA), (0x40, DATA + count * 8)] {

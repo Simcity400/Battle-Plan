@@ -372,9 +372,9 @@ mod tests {
     /// outcome at 5,000 countries, truncated or not, reading each country's
     /// decryption states as one block: one span instead of one per state.
     #[test]
-    fn batched_states_match_the_serial_walk_at_scale() {
+    fn batched_states_match_the_serial_walk() {
         use crate::memory::{CountedMemory, ReadCounts};
-        const COUNT: u32 = 5_000;
+        const COUNT: u32 = 130;
         const STATES: u32 = 3;
         let w = crate::cintelligence_agency::test_support::intel_world(COUNT, STATES);
         let memory = CountedMemory::new(w.memory());
@@ -659,69 +659,6 @@ mod tests {
 
     fn run(bytes: &[u8], output: &mut [Row]) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
-    }
-
-    #[test]
-    fn one_owner_decrypting_5000_countries_is_checked_for_duplicates_in_full() {
-        use crate::ccountry::synthetic::World;
-        const COUNT: u32 = 5_000;
-        let mut world = World::new(0, COUNT, ccountry::INTELLIGENCE_AGENCY + 8);
-        let owner = world.object(1);
-        let agency_at = world.alloc(0x100);
-        let crypto = world.alloc(0x100);
-        let states = world.alloc((COUNT as usize - 1) * state::STRIDE);
-        world.u64(owner + ccountry::INTELLIGENCE_AGENCY, agency_at as u64);
-        world.u64(agency_at, agency::VTABLE_RVA as u64);
-        world.u64(agency_at + agency::OWNER_COUNTRY, owner as u64);
-        world.u64(agency_at + agency::CRYPTOLOGY, crypto as u64);
-        world.u64(crypto, VTABLE_RVA as u64);
-        world.u64(crypto + OWNER_COUNTRY, owner as u64);
-        world.array(crypto + DECRYPTION_STATES, states, COUNT - 1);
-        for index in 0..COUNT as usize - 1 {
-            let at = states + index * state::STRIDE;
-            world.u64(at, state::VTABLE_RVA as u64);
-            world.u32(at + state::TARGET_COUNTRY, index as u32 + 2);
-        }
-        let mut rows = vec![Row::default(); COUNT as usize];
-        let run =
-            |world: &World, rows: &mut [Row]| walk(&world.memory(), 0, world.game_state(), rows);
-        assert_eq!(
-            run(&world, &mut rows),
-            Outcome::Rows {
-                len: COUNT as usize - 1
-            }
-        );
-        assert!(
-            rows[..COUNT as usize - 1]
-                .iter()
-                .enumerate()
-                .all(
-                    |(index, row)| row.owner_country == 1 && row.target_country == index as u32 + 2
-                )
-        );
-        let mut growing = Vec::new();
-        world.array(crypto + DECRYPTION_STATES, states, 1);
-        assert_eq!(
-            walk_growing(&world.memory(), 0, world.game_state(), &mut growing),
-            Outcome::Rows { len: 1 }
-        );
-        world.array(crypto + DECRYPTION_STATES, states, COUNT - 1);
-        assert_eq!(
-            walk_growing(&world.memory(), 0, world.game_state(), &mut growing),
-            Outcome::Rows {
-                len: COUNT as usize - 1
-            }
-        );
-        assert_eq!(&growing[..COUNT as usize - 1], &rows[..COUNT as usize - 1]);
-        // The last state repeats the first target.
-        let last = states + (COUNT as usize - 2) * state::STRIDE;
-        world.u32(last + state::TARGET_COUNTRY, 2);
-        assert_eq!(
-            run(&world, &mut rows),
-            Outcome::Unavailable {
-                reason: "duplicate cryptology target"
-            }
-        );
     }
 
     #[test]

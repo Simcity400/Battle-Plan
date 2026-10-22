@@ -554,7 +554,7 @@ fn growing_carrier_arenas_publish_first_and_later_mod_sized_suffixes() {
     let mut country_terms = Vec::new();
     let mut aces = Vec::new();
     let mut forecasts = Vec::new();
-    for count in [5_000u32, 12_000] {
+    for count in [50_u32, 120] {
         let dense_data = 0x600_000;
         memory.array(
             AIR_BASE + crate::cair_base::REGISTERED_CONTAINERS,

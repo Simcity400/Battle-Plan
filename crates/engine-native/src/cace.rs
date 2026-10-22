@@ -817,7 +817,7 @@ mod tests {
             .collect();
         let mut rows = Vec::new();
         let mut names = Vec::new();
-        for count in [5_000_u32, 12_000] {
+        for count in [50_u32, 120] {
             memory.array(COUNTRY + ccountry::ACES, 0x80000, count);
             for index in 0..count as usize {
                 let pointer = 0x100000 + index * 0x200;

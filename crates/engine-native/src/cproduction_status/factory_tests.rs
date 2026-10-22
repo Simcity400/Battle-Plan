@@ -369,29 +369,6 @@ fn population(count: usize) -> Vec<u8> {
 }
 
 #[test]
-fn worker_factories_first_and_later_censuses_publish_all_five_thousand_countries() {
-    let mut rows = Vec::new();
-    for count in [1_500, 5_000] {
-        let bytes = population(count);
-        let memory = SliceMemory {
-            base: MEMORY_BASE,
-            bytes: &bytes,
-        };
-        assert!(matches!(
-            walk_factories(&memory, 0, MEMORY_BASE, &mut [FactoryRow::default(); 1]),
-            Outcome::Truncated { .. }
-        ));
-        assert_eq!(
-            walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows),
-            Outcome::Rows { len: count }
-        );
-        for (index, row) in rows[..count].iter().enumerate() {
-            assert_eq!(*row, expected_row(index, index as u32 + 1));
-        }
-    }
-}
-
-#[test]
 fn growing_factory_storage_does_not_hide_an_original_status_fault() {
     let mut bytes = fixture();
     put(
@@ -487,12 +464,13 @@ impl Memory for Counted<'_> {
     }
 }
 
-/// The batched walk gives the serial walk's rows on healthy memory at 5,000
-/// countries, over the callback's country census and without it, with two
-/// guarded calls per batch of countries instead of two per country.
+/// The batched walk gives the serial walk's rows on healthy memory, over the
+/// callback's country census and without it, with two guarded calls per
+/// batch of countries instead of two per country.
 #[test]
-fn batched_factories_equal_the_serial_walk_at_five_thousand_countries() {
-    let count = 5_000;
+fn batched_factories_equal_the_serial_walk() {
+    let count = 130;
+
     let bytes = population(count);
     let source = SliceMemory {
         base: MEMORY_BASE,

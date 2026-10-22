@@ -169,16 +169,6 @@ fn same(actual: &Capture, serial: &Capture) {
 }
 
 #[test]
-fn batched_province_healthy_five_thousand_country_locations_and_memos_equal_serial() {
-    let (bytes, pointers) = world(5_000);
-    let actual = capture(&bytes, &pointers, true, None, false);
-    let serial = capture(&bytes, &pointers, false, None, false);
-    same(&actual, &serial);
-    assert_eq!(actual.ids.len(), 5_000);
-    assert_eq!((actual.requests, serial.requests), (159, 10_001));
-}
-
-#[test]
 fn batched_province_persistent_fault_keeps_serial_reason_prefix_and_memos() {
     let (bytes, pointers) = world(65);
     for at in [

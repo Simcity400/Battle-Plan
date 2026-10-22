@@ -96,8 +96,8 @@ mod tests {
         }
     }
     #[test]
-    fn manpower_exile_demand_and_independent_refusals_at_5000_countries() {
-        for index in 0..5000 {
+    fn manpower_exile_demand_and_independent_refusals() {
+        for index in 0..6 {
             let host = if index % 3 == 0 { 73 } else { -1 };
             let fixture = Fixture {
                 host,

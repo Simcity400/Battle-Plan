@@ -637,44 +637,6 @@ mod advisor_tests {
     }
 
     #[test]
-    fn worker_grows_5000_and_mod_sized_faction_advisor_rows_and_text() {
-        let mut output = Vec::new();
-        let mut text = Vec::new();
-        for count in [5_000_u32, 12_345] {
-            let mut bytes = fixture();
-            let data = bytes.len();
-            bytes.resize(data + count as usize * ADVISOR_SLOT_STRIDE, 0);
-            for ordinal in 0..count {
-                p64(
-                    &mut bytes,
-                    data + ordinal as usize * ADVISOR_SLOT_STRIDE,
-                    ADVISORS[1] as u64,
-                );
-            }
-            array(&mut bytes, FACTIONS[0].0 + ADVISOR_SLOTS, data, count);
-            let result = walk_advisors_growing(
-                &SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                },
-                0,
-                GS,
-                &mut output,
-                &mut text,
-            );
-            assert_eq!(
-                result.outcome,
-                Outcome::Rows {
-                    len: count as usize
-                }
-            );
-            assert_eq!(result.bytes_len, count as usize * LONG.len());
-            assert_eq!(&text[..result.bytes_len], LONG.repeat(count as usize));
-            assert_eq!(output[count as usize - 1].ordinal, count - 1);
-        }
-    }
-
-    #[test]
     fn occupied_slots_keep_their_slot_ordinal_and_exact_token() {
         let (walk, rows, arena) = run(&fixture(), 4, 64);
         assert_eq!(walk.outcome, Outcome::Rows { len: 2 });

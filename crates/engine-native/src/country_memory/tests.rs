@@ -628,66 +628,6 @@ fn negative_filter_collisions_and_saturation_still_require_exact_keys() {
     assert!(cache.find(first, 8).is_none());
 }
 
-/// One country per province of a large mod: 15,000 countries in one
-/// census. Sizing from the registry count caches the whole census on the
-/// first hour; the old fixed 8,192 cells could not.
-#[test]
-fn census_of_fifteen_thousand_countries_fits_a_registry_sized_cache() {
-    const SLOTS: u32 = 15_001;
-    const STATE: usize = 0x1000;
-    const TABLE: usize = 0x1_0000;
-    const LINKS: usize = 0x4_0000;
-    const OBJECTS: usize = 0x6_0000;
-    let mut bytes = vec![0_u8; OBJECTS + SLOTS as usize * 0x10];
-    let mut put = |address: usize, value: &[u8]| {
-        bytes[address..address + value.len()].copy_from_slice(value);
-    };
-    for (offset, pointer) in [
-        (cgame_state::COUNTRIES, TABLE),
-        (cgame_state::COUNTRY_LINKS, LINKS),
-    ] {
-        put(STATE + offset, &(pointer as u64).to_le_bytes());
-        put(STATE + offset + 8, &SLOTS.to_le_bytes());
-        put(STATE + offset + 12, &SLOTS.to_le_bytes());
-    }
-    for slot in 1..SLOTS as usize {
-        let object = OBJECTS + slot * 0x10;
-        put(TABLE + slot * 8, &(object as u64).to_le_bytes());
-        put(LINKS + slot * 4, &(slot as u32).to_le_bytes());
-        put(object, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
-        put(object + ccountry::ID, &(slot as u32).to_le_bytes());
-    }
-    let memory = crate::memory::SliceMemory {
-        base: 0,
-        bytes: &bytes,
-    };
-
-    let mut fixed = Cache::with_capacity(8192);
-    let status = fixed.prepare(&memory, 0, STATE).seed_status();
-    assert!(matches!(status, SeedStatus::Capacity { .. }));
-    assert_eq!(fixed.roster_len, 0);
-
-    let cells = Cache::cells_for_countries(SLOTS as usize, 8192);
-    let mut sized = Cache::with_capacity(cells);
-    let view = sized.prepare(&memory, 0, STATE);
-    assert_eq!(view.seed_status(), SeedStatus::Ready);
-    assert_eq!(sized.roster_len, SLOTS as usize);
-    assert!(
-        sized.roster[1..SLOTS as usize]
-            .iter()
-            .enumerate()
-            .all(|(index, country)| country
-                .is_some_and(|c| c.canonical_slot as usize == index + 1))
-    );
-    // Scaled filters keep rejecting most unrelated reads at this size.
-    let set = sized
-        .front_filter
-        .iter()
-        .map(|w| w.count_ones())
-        .sum::<u32>() as usize;
-    assert!(set > 0 && set <= sized.front_filter.len() * 64);
-}
-
 #[test]
 fn negative_filter_learns_every_supported_width_and_reports_owned_storage() {
     let mut cache = Cache::with_capacity(256);

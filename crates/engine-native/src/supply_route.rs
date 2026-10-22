@@ -210,11 +210,12 @@ pub(crate) fn read_edge_buffer(
 mod tests {
     use super::*;
 
+    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
-    fn route_memo_retains_five_thousand_original_edges_and_clears_each_walk() {
+    fn route_memo_retains_original_edges_and_clears_each_walk() {
         let mut memo = Memo::try_with_scratch().unwrap();
         memo.begin();
-        for province in 1..=5_001_u32 {
+        for province in 1..=65_u32 {
             let (cached, admit) = memo.find(3, province);
             assert!(cached.is_none());
             let row = Row {
@@ -228,14 +229,15 @@ mod tests {
         }
         let bytes = memo.allocated_bytes();
         memo.begin();
-        assert!(memo.find(3, 5_001).0.is_none());
+        assert!(memo.find(3, 65).0.is_none());
         assert_eq!(memo.allocated_bytes(), bytes);
         assert_eq!(Memo::default().find(3, 1), (None, false));
         assert_eq!(Memo::default().allocated_bytes(), 0);
     }
 
+    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
-    fn parent_memo_retains_five_thousand_observations_and_reauthenticates_each_walk() {
+    fn parent_memo_retains_observations_and_reauthenticates_each_walk() {
         let mut bytes = [0; 1024];
         bytes[..8].copy_from_slice(&0x1100_u64.to_le_bytes());
         bytes[12..16].copy_from_slice(&7_u32.to_le_bytes());
@@ -247,10 +249,10 @@ mod tests {
         };
         let outer = Map::read(&memory, 0x1000, OUTER_STRIDE, 4).unwrap();
         let mut memo = InnerMemo::try_with_scratch().unwrap();
-        for parent in 1..=5_001 {
+        for parent in 1..=65 {
             assert!(memo.resolve(&memory, &outer, parent).unwrap().is_none());
         }
-        assert_eq!(memo.parents.len(), 5_001);
+        assert_eq!(memo.parents.len(), 65);
         let bytes = memo.allocated_bytes();
         memo.begin();
         assert!(memo.parents.is_empty());

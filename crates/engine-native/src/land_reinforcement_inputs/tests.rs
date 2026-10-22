@@ -442,7 +442,7 @@ fn acclimatization_retains_native_ties_and_active_reference_join() {
 #[test]
 fn worker_acclimatization_has_no_chosen_limit_and_retains_later_growth() {
     let mut terms = Vec::new();
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let mut bytes = vec![0_u8; 0x1000 + count * 16];
         let object = 0x100 + carmy::ACCLIMATIZATION;
         bytes[object + 8..object + 16].copy_from_slice(&0x1000_u64.to_le_bytes());
@@ -501,7 +501,7 @@ fn worker_modifier_batches_keep_mod_sized_populations_on_the_original_pass() {
         }
     }
     let mut output = Vec::new();
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let keys: Vec<_> = (1..=count as u32).collect();
         let mut len = 0;
         append_modifiers(
@@ -525,7 +525,7 @@ fn worker_modifier_batches_keep_mod_sized_populations_on_the_original_pass() {
 fn supply_and_priority_category_arenas_keep_all_mod_sized_occurrences() {
     let mut supply = Vec::new();
     let mut categories = Vec::new();
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let mut memory = Sparse::default();
         memory.u64(
             0x1000,

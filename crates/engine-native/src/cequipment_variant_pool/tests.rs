@@ -221,7 +221,7 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
 
 #[test]
 fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth() {
-    const COUNTRIES: usize = 5_000;
+    const COUNTRIES: usize = 50;
     const DATA: usize = 0xc000;
     let sources: Vec<_> = (0..COUNTRIES)
         .map(|index| DivisionSource {

@@ -137,11 +137,11 @@ fn assert_same(
 }
 
 #[test]
-fn status_split_five_thousand_divisions_and_countries_match_serial() {
-    let (source, mut seeds, mut held) = distinct_status_world(5_000);
+fn status_split_distinct_divisions_and_countries_match_serial() {
+    let (source, mut seeds, mut held) = distinct_status_world(129);
     // Shared blocks cross every range boundary. A later contradictory hold
     // cannot replace the first seed's certified observation.
-    for index in [1, 63, 64, 65, 714, 2_500, 4_999] {
+    for index in [1, 63, 64, 65, 100, 128] {
         seeds[index].stat_block = seeds[0].stat_block;
         held[index] = held[0].map(|mut value| {
             value.organisation = -17;

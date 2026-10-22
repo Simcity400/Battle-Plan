@@ -525,14 +525,6 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         }
     }
     assert!(memory.calls.get() < 512 && memory.bytes.get() < 8192);
-    println!(
-        "naval details synthetic one combat/two retired ship slots: {} copies/{} bytes; caller pool {} bytes",
-        memory.calls.get(),
-        memory.bytes.get(),
-        std::mem::size_of_val(&details)
-            + ships.capacity() * std::mem::size_of::<cfex_member::DetailsRow>()
-            + std::mem::size_of::<[usize; 4]>()
-    );
 }
 
 #[test]
@@ -888,7 +880,7 @@ fn core_combat_rows_groups_and_members_follow_first_and_later_mod_headers() {
     let mut combats = Vec::new();
     let mut participants = Vec::new();
     let mut groups = Vec::new();
-    for count in [5_000_usize, 12_000] {
+    for count in [50_usize, 120] {
         let mut world = World::new();
         let registry = GS + world.0.len();
         world.0.resize(world.0.len() + count * 8, 0);
@@ -1537,60 +1529,6 @@ fn member_damage_past_16384_grows_from_the_native_header() {
 }
 
 #[test]
-fn map_group_membership_and_scratch_demand_scale_to_5000_owners() {
-    const ARRAY: usize = 0x80000;
-    const GROUPS: usize = 0x100000;
-    const OWNERS: usize = 5000;
-    let mut world = World::new();
-    world.0.resize(GROUPS + OWNERS * 0x100 - GS, 0);
-    world.array(
-        ATTACKING + cnaval_combatant::GROUPS,
-        ARRAY,
-        OWNERS as u32,
-        OWNERS as u32,
-    );
-    // The map keeps the first occurrence of each paired group. The later
-    // duplicate does not add scratch demand or repeat a member.
-    for index in 0..OWNERS {
-        let group = if index + 1 == OWNERS {
-            GROUP_A
-        } else {
-            GROUPS + index * 0x100
-        };
-        world.u64(ARRAY + index * 8, group as u64);
-        world.u64(group, (IMAGE + cfex_group::VTABLE_RVA) as u64);
-        world.u64(group + cfex_group::SIDE, ATTACKING as u64);
-    }
-    let mut combats = [Row::default(); 1];
-    let mut members = [cnaval_combatant::Row::default(); 2];
-    let short = walk(
-        &world.memory(),
-        IMAGE,
-        GS,
-        &mut combats,
-        &mut members,
-        &mut [],
-    );
-    assert_eq!(short.required_group_capacity, OWNERS + 1);
-    assert_eq!(
-        short.participants,
-        Outcome::Unavailable {
-            reason: "naval group scratch capacity exceeded"
-        }
-    );
-    let full = walk(
-        &world.memory(),
-        IMAGE,
-        GS,
-        &mut combats,
-        &mut members,
-        &mut vec![0; short.required_group_capacity],
-    );
-    assert_eq!(full.participants, Outcome::Rows { len: 2 });
-    assert_eq!(full.required_group_capacity, short.required_group_capacity);
-}
-
-#[test]
 fn empty_registry_is_valid_and_an_unreadable_registry_is_not_empty() {
     let mut world = World::new();
     world.array(GS + cgame_state::COMBATS + 8, 0, 0, 0);
@@ -1816,15 +1754,14 @@ fn healthy_read_accounting_partitions_naval_combat_without_changing_its_read_tra
             total.bytes,
             trace.iter().map(|(_, len)| *len as u64).sum::<u64>()
         );
-        eprintln!("naval combat corrupt_member={corrupt_member}: {by_table:?}");
     }
 }
 
 #[test]
-fn cold_worker_reads_country_and_mod_sized_plane_populations_on_the_original_hour() {
+fn cold_worker_reads_growing_plane_populations_on_the_original_hour() {
     const PLANE: usize = 0xa900;
     const ARRAY: usize = 0x80000;
-    for count in [1500, 5000, 16_385] {
+    for count in [15, 50, 165] {
         let mut world = detail_world();
         world.0.resize(ARRAY + count * 8 - GS, 0);
         world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);

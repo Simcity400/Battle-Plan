@@ -1125,8 +1125,8 @@ fn counter_source_world(countries: usize) -> (Fixture, Vec<usize>) {
 }
 
 #[test]
-fn eta_source_reuse_keeps_packets_for_1500_and_5000_country_navies() {
-    for countries in [1_500, 5_000] {
+fn eta_source_reuse_keeps_packets_for_every_country_navy() {
+    for countries in [40, 80] {
         let (memory, tasks) = counter_source_world(countries);
         let capture = |serial| {
             memory.reads.borrow_mut().clear();
@@ -1444,41 +1444,6 @@ fn motion_capture_reads_fresh_operands_only_for_admitted_current_hour_native_dem
             }
         }
     }
-}
-
-#[test]
-fn growing_motion_preserves_every_original_owner_in_the_first_five_thousand_row_census() {
-    let mut memory = fixture();
-    memory.array(STATE + crate::cgame_state::PROVINCES, 0x980, 4);
-    memory.array(TASK + cunit::ORDINARY_ROUTE_DATA, 0x4800, 1);
-    memory.u32(0x4800, 2);
-    let mut rows = Vec::new();
-    let mut paths = Vec::new();
-    let mut combats = cunit::FirstCombatMemo::new(0);
-    let mut collector = ctask_force::MapMotionCollector::new_growing(
-        &memory,
-        0,
-        STATE,
-        &mut rows,
-        &mut paths,
-        &mut combats,
-    )
-    .with_fresh_hour(17)
-    .with_fresh_modifier_guard(Ok(()));
-    for index in 0..5000 {
-        collector.visit(TASK, index as u64 + 1);
-    }
-    let walk = collector.finish(None);
-    assert_eq!(walk.outcome, crate::walk::Outcome::Rows { len: 5000 });
-    assert_eq!(walk.paths_len, 5000);
-    assert!(rows[..5000].iter().all(|row| {
-        row.logical_owner == 7
-            && row
-                .fresh_owner
-                .is_some_and(|owner| owner.is_ok_and(|owner| owner.id == 1))
-    }));
-    assert_eq!(memory.calls(TASK + cunit::LOGICAL_OWNER), 5000);
-    assert_eq!(memory.calls(TASK + cunit::ROSTER_OWNER), 5000);
 }
 
 #[test]

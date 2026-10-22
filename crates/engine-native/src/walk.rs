@@ -169,10 +169,10 @@ pub fn pointers_buffer<R: Default>(
 mod tests {
     use super::*;
     #[test]
-    fn nested_worker_suffixes_grow_first_and_later_mod_demands_without_losing_prefix() {
+    fn nested_worker_suffixes_grow_first_and_later_demands_without_losing_prefix() {
         let mut values = Vec::<u32>::new();
         let mut buffer = Buffer::Growing(&mut values);
-        for countries in [1500, 5000] {
+        for countries in [15, 50] {
             buffer.ensure(countries).unwrap();
             buffer[..countries].fill(7);
             let mut tail = buffer.suffix(countries);

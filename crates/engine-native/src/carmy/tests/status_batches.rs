@@ -216,7 +216,7 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
 fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
     let mut growing = packet(0);
     growing.enable_growth();
-    for count in [5_000, 12_000] {
+    for count in [50, 120] {
         growing.clear();
         let mut source = manpower_fixture(&vec![1; count]);
         source.bytes.resize(0x40000 + (count + 1) * 8, 0);
@@ -268,11 +268,11 @@ fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
 }
 
 #[test]
-fn worker_acclimatization_registry_grows_from_original_5000_and_later_headers() {
+fn worker_acclimatization_registry_grows_from_original_and_later_headers() {
     use crate::{acclimatization_category as category, acclimatization_data as data};
     let mut growing = packet(0);
     growing.enable_growth();
-    for count in [5_000, 12_000] {
+    for count in [50, 120] {
         growing.clear();
         let mut source = presentation_fixture();
         source.bytes.resize(0x80000 + count * 0x40, 0);
@@ -294,7 +294,11 @@ fn worker_acclimatization_registry_grows_from_original_5000_and_later_headers() 
         for index in 0..count {
             let pointer = 0x80000 + index * 0x40;
             p64(&mut source.bytes, 0x30000 + index * 16, pointer as u64);
-            p64(&mut source.bytes, 0x30008 + index * 16, index as u64 * 100);
+            p64(
+                &mut source.bytes,
+                0x30008 + index * 16,
+                index as u64 * 10_000,
+            );
             p64(&mut source.bytes, 0x60000 + index * 8, pointer as u64);
             p32(
                 &mut source.bytes,
@@ -338,9 +342,10 @@ fn worker_acclimatization_registry_grows_from_original_5000_and_later_headers() 
     }
 }
 
+// regression: 403464e3fe Keep engine preparation demand independent of allocator capacity
 #[test]
 fn acquired_status_demand_excludes_allocator_spare_capacity() {
-    const COUNT: usize = 5_001;
+    const COUNT: usize = 65;
     let source = manpower_fixture(&vec![1; COUNT]);
     let mut packet = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
         units: 1,

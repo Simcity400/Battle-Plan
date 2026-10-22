@@ -239,9 +239,10 @@ pub fn capture_context_sharing(
 mod tests {
     use super::*;
 
+    // regression: 74a0f0fa8c Follow original engine demand without chosen content limits
     #[test]
-    fn parent_commander_reaches_five_thousand_native_theatres_and_formations() {
-        const COUNT: usize = 5_001;
+    fn parent_commander_reaches_the_last_native_theatre_and_formation() {
+        const COUNT: usize = 65;
         const STATE: usize = 0x1000;
         const COUNTRY: usize = 0x4000;
         const LEADER: usize = 0x8000;

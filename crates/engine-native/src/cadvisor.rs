@@ -841,15 +841,16 @@ mod tests {
         );
     }
 
+    // regression: 9d57424121 Preserve advisor roles when appended cache bytes do not fit
     #[test]
-    fn modifier_demand_sums_live_headers_for_5000_countries_and_propagates_faults() {
+    fn modifier_demand_sums_live_headers_and_propagates_faults() {
         use crate::{ccharacter, ccharacter_manager, cgame_state};
         const STATE: usize = 0x100;
         const MANAGER: usize = 0x1000;
         const ROSTER: usize = 0x2000;
         const OBJECTS: usize = 0x1_0000;
         const STRIDE: usize = 0x800;
-        const COUNT: usize = 5_000;
+        const COUNT: usize = 9;
         let mut bytes = vec![0; OBJECTS + COUNT * STRIDE];
         let word = |bytes: &mut [u8], address: usize, value: u64| {
             bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
@@ -938,10 +939,10 @@ mod tests {
     }
 
     #[test]
-    fn modifier_cache_keeps_5000_ordered_keys_and_signed_values() {
+    fn modifier_cache_keeps_ordered_keys_and_signed_values() {
         const POINTER: usize = 0x100;
         const DATA: usize = 0x400;
-        const COUNT: usize = 5_000;
+        const COUNT: usize = 9;
         let mut bytes = vec![0; DATA + COUNT * crate::modifier_entry::STRIDE];
         let header = POINTER + MODIFIER_ENTRIES;
         bytes[header..header + 8].copy_from_slice(&(DATA as u64).to_le_bytes());

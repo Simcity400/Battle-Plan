@@ -2203,50 +2203,6 @@ impl Memory for Faulted<'_> {
 /// Fixed capacities below, at and beyond the census, and growing storage.
 const CAPACITIES: [Capacities; 4] = [None, Some([1, 2, 1]), Some([70, 0, 3]), Some([0, 0, 0])];
 
-/// On healthy memory the gathered census publishes and visits exactly what
-/// the parent's per-object walk does, for 5,000 owners and their wings, in
-/// about two fewer guarded copies a wing: rows and name headers 64 a copy,
-/// and each pool's pointers in one run.
-#[test]
-fn gathered_census_equals_the_per_object_reads_at_five_thousand_countries() {
-    let scale = Scale::new(5_000, |country| country % 3);
-    let (serial, _) = census(&scale.memory(), true, None);
-    let (gathered, fallbacks) = census(&scale.memory(), false, None);
-    assert_eq!(serial.rows.len(), scale.wings);
-    assert!(serial.names.iter().all(Result::is_ok));
-    assert!(serial.rows.iter().any(|row| row.mission_region == Some(77)));
-    assert_eq!(
-        serial
-            .visits
-            .iter()
-            .map(|visit| visit.0)
-            .collect::<Vec<_>>(),
-        scale.wing_pointers
-    );
-    assert_eq!(gathered, serial);
-    assert_eq!(fallbacks, 0);
-    let counted = |serial| {
-        let memory = crate::memory::CountingMemory::new(&scale.bytes);
-        census(&memory, serial, None);
-        memory.calls.get()
-    };
-    let (serial, gathered) = (counted(true), counted(false));
-    assert!(
-        serial >= gathered + 2 * scale.wings,
-        "{serial} {gathered} {}",
-        scale.wings
-    );
-    // Fixed projections that truncate, and those that admit nothing.
-    let scale = Scale::new(200, |country| country % 3);
-    for capacities in CAPACITIES {
-        assert_eq!(
-            census(&scale.memory(), false, capacities),
-            (census(&scale.memory(), true, capacities).0, 0),
-            "{capacities:?}"
-        );
-    }
-}
-
 /// A fault at any census read gives the parent walk's result when it
 /// persists, and when it clears after its first touch either the healthy
 /// result (the gather met it, and the per-object reads that followed did

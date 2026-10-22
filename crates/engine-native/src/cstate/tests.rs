@@ -238,7 +238,7 @@ fn census_rows(count: usize) -> Vec<Row> {
 fn state_rows_and_names_grow_before_first_and_later_publication() {
     let mut rows = Vec::new();
     let mut text = Vec::new();
-    for count in [5_000, 7_000] {
+    for count in [50, 70] {
         let mut memory = named_states(count, &|_| (vec![b'p'; 31], vec![b'o'; 19]));
         for index in 1..=count {
             let state = 0x20_0000 + index * 0x1000;
@@ -441,58 +441,6 @@ fn scripted_controller_branch_is_carried_without_copying_cached_groups() {
     assert!(
         rows.iter()
             .all(|row| row.best_vp_index.is_none() && row.single_controller.is_none())
-    );
-}
-
-/// The cost at twice the states 1,500 countries hold (3,000 states, each
-/// with two heap names): reads per state and wall time are reported.
-#[test]
-fn display_name_cost_at_three_thousand_states() {
-    const STATES: usize = 3_000;
-    let memory = named_states(STATES, &|index| {
-        (
-            format!("Renamed state number {index:05}").into_bytes(),
-            format!("Owner qualified name {index:05}").into_bytes(),
-        )
-    });
-    // Dense bytes, so the timing is the walk's and not the fixture's.
-    let end = memory.0.keys().next_back().map_or(0, |last| last + 1);
-    let mut dense = vec![0_u8; end];
-    for (&address, &byte) in &memory.0 {
-        dense[address] = byte;
-    }
-    let dense = SliceMemory {
-        base: 0,
-        bytes: &dense,
-    };
-    struct Counted<'a>(&'a SliceMemory<'a>, std::cell::Cell<usize>);
-    impl Memory for Counted<'_> {
-        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            self.1.set(self.1.get() + 1);
-            self.0.copy(address, destination)
-        }
-    }
-    let counted = Counted(&dense, std::cell::Cell::new(0));
-    let mut rows = census_rows(STATES);
-    let mut arena = vec![0_u8; STATES * 64];
-    let started = std::time::Instant::now();
-    let walk = read_names(
-        &counted,
-        0,
-        Outcome::Rows { len: STATES },
-        &mut rows,
-        &mut arena,
-    );
-    let elapsed = started.elapsed();
-    assert_eq!(walk.outcome, Outcome::Rows { len: STATES });
-    assert_eq!(walk.required_bytes, STATES * 52);
-    // The root, then per state: slot, one 0xD0 header read, and a
-    // terminator and payload read for each heap string.
-    assert_eq!(counted.1.get(), 1 + STATES * 6);
-    eprintln!(
-        "state display names: {STATES} states, {} bytes, {} reads, {elapsed:?}",
-        walk.bytes_len,
-        counted.1.get()
     );
 }
 

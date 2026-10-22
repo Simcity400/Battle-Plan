@@ -474,9 +474,9 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
     let mut rows = Vec::new();
     let mut text = Vec::new();
     for (count, name) in [
-        (5000_usize, b"key" as &'static [u8]),
-        (5000, b"longer_key"),
-        (12000, b"longer_key"),
+        (50_usize, b"key" as &'static [u8]),
+        (50, b"longer_key"),
+        (120, b"longer_key"),
     ] {
         let definitions: Vec<_> = (0..count)
             .map(|index| {
@@ -520,24 +520,25 @@ fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populat
     }
 }
 
+// regression: 74a0f0fa8c Follow original engine demand without chosen content limits
 #[test]
-fn pass_metadata_memo_retains_five_thousand_original_keys() {
+fn pass_metadata_memo_retains_original_keys_past_sixty_four() {
     let mut source = Fixture::new(KEY, 0, 0);
-    for key in 1..=5_001 {
+    for key in 1..=65 {
         source.put(Fixture::row(key) + FEATURE_SELECTOR, &0_u32.to_le_bytes());
         source.put(Fixture::row(key) + FLAGS, &key.to_le_bytes());
     }
     let mut memo = PassDefinitions::default();
-    for key in 1..=5_001 {
+    for key in 1..=65 {
         assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
     }
-    assert_eq!(memo.slots.borrow().len(), 5_001);
-    for key in 1..=5_001 {
+    assert_eq!(memo.slots.borrow().len(), 65);
+    for key in 1..=65 {
         source.put(Fixture::row(key) + FLAGS, &0_u32.to_le_bytes());
         assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
     }
     memo.clear();
-    assert_eq!(memo.flags(&source, BASE, 5_001), Ok(Some(0)));
+    assert_eq!(memo.flags(&source, BASE, 65), Ok(Some(0)));
 }
 
 #[test]

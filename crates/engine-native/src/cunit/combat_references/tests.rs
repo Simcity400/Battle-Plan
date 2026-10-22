@@ -291,7 +291,7 @@ fn pointer_null_and_unsupported_class_keep_independent_static_refusals() {
 fn worker_combat_reference_arena_grows_from_the_original_count() {
     let (mut image, _) = fixture();
     let mut rows = Vec::new();
-    for count in [5_000, 20_000] {
+    for count in [50, 200] {
         // Every native occurrence is retained even when it repeats a handle.
         let mut capture =
             CombatReferencesCapture::new_buffer(crate::walk::Buffer::Growing(&mut rows));

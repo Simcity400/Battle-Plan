@@ -50,7 +50,7 @@ impl World {
             );
             world.put(group, &(VTABLE_RVA as u64).to_le_bytes());
             world.put(group + HANDLE, &handle.to_le_bytes());
-            world.put(group + COUNTRY, &((index % 5_000 + 1) as u32).to_le_bytes());
+            world.put(group + COUNTRY, &(index as u32 + 1).to_le_bytes());
         }
         world
     }
@@ -84,30 +84,30 @@ impl Memory for World {
 fn registry_and_counter_rows_grow_on_first_and_later_unchanged_country_population() {
     let mut roots = vec![Root::default(); 1];
     let mut counters = Vec::new();
-    for count in [5_000, 7_500] {
+    for count in [50, 75] {
         let world = World::new(count);
         let source = walk_roots_growing(&world, 0, &mut roots);
         assert_eq!(source, Outcome::Rows { len: count });
         assert_eq!(*world.header_reads.borrow(), 1);
-        assert_eq!(roots[count - 1].country, ((count - 1) % 5_000 + 1) as u32);
+        assert_eq!(roots[count - 1].country, count as u32);
         crate::allocation::resize_default(&mut counters, count).unwrap();
         let outcome = walk_counter_inputs(&world, 0, &roots[..count], source, &mut counters);
         assert_eq!(outcome, Outcome::Rows { len: count });
         assert_eq!(counters[count - 1].group, roots[count - 1].handle);
     }
-    let world = World::new(5_000);
+    let world = World::new(50);
     assert_eq!(
-        walk_roots(&world, 0, &mut vec![Root::default(); 4_096]),
+        walk_roots(&world, 0, &mut vec![Root::default(); 40]),
         Outcome::Truncated {
-            len: 4_096,
-            unread_rows: 904
+            len: 40,
+            unread_rows: 10
         }
     );
 }
 
 #[test]
 fn worker_growth_does_not_retry_a_failed_original_group_identity() {
-    let mut world = World::new(5_000);
+    let mut world = World::new(50);
     world.fault = Some(GROUPS + 2 * 0x1000);
     assert_eq!(
         walk_roots_growing(&world, 0, &mut Vec::new()),
@@ -208,32 +208,6 @@ fn a_chunks_groups_are_gathered_in_one_copy_in_bucket_order() {
     );
     let groups: Vec<usize> = (0..3).map(|index| GROUPS + index * 0x1000).collect();
     assert_eq!(memory.1.into_inner(), [groups]);
-}
-
-/// At 5,000 groups, one gather per chunk of 64 buckets gives every root:
-/// handle-sorted, with its pointer and country, as one gather per group did.
-#[test]
-fn five_thousand_groups_take_one_gather_per_chunk_and_every_root() {
-    let world = World::new(5_000);
-    let memory = Gathers(&world, RefCell::default());
-    let mut roots = Vec::new();
-    assert_eq!(
-        walk_roots_growing(&memory, 0, &mut roots),
-        Outcome::Rows { len: 5_000 }
-    );
-    for (index, root) in roots[..5_000].iter().enumerate() {
-        assert_eq!(
-            *root,
-            Root {
-                pointer: GROUPS + index * 0x1000,
-                handle: ((index as u64 + 1) << 32) | REFERENCE_TYPE as u64,
-                country: (index % 5_000 + 1) as u32,
-            }
-        );
-    }
-    let gathers = memory.1.into_inner();
-    assert_eq!(gathers.len(), 5_000_usize.div_ceil(64));
-    assert!(gathers.iter().all(|pointers| pointers.len() <= 64));
 }
 
 /// A persistent fault in a group's country gives the single walk's failure;

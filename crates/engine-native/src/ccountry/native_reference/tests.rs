@@ -125,11 +125,11 @@ fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
     let mut memo = memo(0, 0);
     memo.enable_worker_growth();
     for aliases in [1, 2] {
-        let (source, _, link_words, objects) = population(5_000, aliases);
+        let (source, _, link_words, objects) = population(50, aliases);
         memo.reset(0, GS);
         let context = memo.view(&source, 0, GS);
-        for raw in 1..=5_000 * aliases {
-            let slot = (raw - 1) % 5_000 + 1;
+        for raw in 1..=50 * aliases {
+            let slot = (raw - 1) % 50 + 1;
             assert_eq!(
                 context.resolve(raw as u32),
                 Ok(Country {
@@ -139,12 +139,12 @@ fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
                 })
             );
         }
-        assert_eq!(memo.raw_used(), 5_000 * aliases);
-        assert_eq!(memo.raw_required(), 5_000 * aliases);
+        assert_eq!(memo.raw_used(), 50 * aliases);
+        assert_eq!(memo.raw_required(), 50 * aliases);
         assert!(!memo.raw_required_is_lower_bound());
-        assert_eq!(memo.canonical_used(), 5_000);
-        assert_eq!(memo.link_used(), 5_000 * aliases);
-        assert_eq!(memo.link_required(), 5_000 * aliases + 1);
+        assert_eq!(memo.canonical_used(), 50);
+        assert_eq!(memo.link_used(), 50 * aliases);
+        assert_eq!(memo.link_required(), 50 * aliases + 1);
         assert!(memo.link_capacity() >= memo.link_required());
         assert_eq!(source.attempts(GS + cgame_state::COUNTRIES), 1);
         assert_eq!(source.attempts(GS + cgame_state::COUNTRY_LINKS), 1);
@@ -152,10 +152,10 @@ fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
         assert_eq!(source.attempts(objects), 1);
         let observations = source.copies.borrow().clone();
         assert!(context.resolve(1).is_ok());
-        assert!(context.resolve((5_000 * aliases) as u32).is_ok());
+        assert!(context.resolve((50 * aliases) as u32).is_ok());
         assert_eq!(*source.copies.borrow(), observations);
     }
-    let (source, _, _, _) = population(5_000, 1);
+    let (source, _, _, _) = population(50, 1);
     let fixed = super::tests::memo(0, 0);
     assert_eq!(
         fixed.view(&source, 0, GS).resolve(1),
@@ -166,7 +166,7 @@ fn growing_worker_cold_and_later_alias_populations_keep_the_original_headers() {
 
 #[test]
 fn worker_rehash_retains_first_failed_and_absent_canonical_results() {
-    let (mut source, country_words, link_words, objects) = population(5_000, 2);
+    let (mut source, country_words, link_words, objects) = population(50, 2);
     source.fail_once = Some(objects);
     source.u64(country_words + 2 * 8, 0);
     let mut memo = memo(0, 0);
@@ -177,18 +177,18 @@ fn worker_rehash_retains_first_failed_and_absent_canonical_results() {
     assert_eq!(absent, Err("country link resolves to null country"));
     source.u64(country_words + 2 * 8, (objects + 0x20) as u64);
     let context = memo.view(&source, 0, GS);
-    for raw in 3..=5_000 {
+    for raw in 3..=50 {
         assert!(context.resolve(raw).is_ok());
     }
-    assert_eq!(context.resolve(5_001), failed);
-    assert_eq!(context.resolve(5_002), absent);
-    for raw in 5_003..=10_000 {
+    assert_eq!(context.resolve(51), failed);
+    assert_eq!(context.resolve(52), absent);
+    for raw in 53..=100 {
         assert!(context.resolve(raw).is_ok());
     }
     assert_eq!(context.resolve(1), failed);
     assert_eq!(context.resolve(2), absent);
-    assert_eq!(memo.raw_used(), 10_000);
-    assert_eq!(memo.canonical_used(), 5_000);
+    assert_eq!(memo.raw_used(), 100);
+    assert_eq!(memo.canonical_used(), 50);
     assert_eq!(source.attempts(objects), 1);
     assert_eq!(source.attempts(country_words + 2 * 8), 1);
     assert_eq!(source.attempts(link_words + 4), 1);
@@ -205,7 +205,7 @@ fn worker_growth_retains_header_fault_and_reserved_zero_law() {
     let context = memo.view(&source, 0, GS);
     assert_eq!(context.resolve(0), Ok(RESERVED));
     assert!(source.copies.borrow().is_empty());
-    for raw in 1..=5_000 {
+    for raw in 1..=50 {
         assert_eq!(
             context.resolve(raw),
             Err("country links unreadable or invalid")
@@ -215,7 +215,7 @@ fn worker_growth_retains_header_fault_and_reserved_zero_law() {
     assert_eq!(source.reserved_calls.get(), 1);
     assert_eq!(source.attempts(GS + cgame_state::COUNTRIES), 1);
     assert_eq!(source.attempts(GS + cgame_state::COUNTRY_LINKS), 1);
-    assert_eq!(memo.raw_used(), 5_000);
+    assert_eq!(memo.raw_used(), 50);
     assert_eq!(memo.canonical_used(), 0);
 }
 

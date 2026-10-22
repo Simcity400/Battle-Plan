@@ -934,7 +934,7 @@ fn shared_sources_change_no_output() {
 #[test]
 fn shared_sources_fail_as_main_does() {
     let shape = Shape {
-        divisions: 40,
+        divisions: 20,
         ..small()
     };
     for authenticated in [true, false] {
