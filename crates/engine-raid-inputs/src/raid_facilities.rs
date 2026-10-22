@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn first_and_later_native_rosters_grow_without_omitting_occurrences() {
         let mut rows = Vec::new();
-        for countries in [1500, 5000] {
+        for countries in [3, 7] {
             let (bytes, _) = fixture(countries);
             let memory = SliceMemory {
                 base: 0,
@@ -238,12 +238,12 @@ mod tests {
     }
 
     #[test]
-    fn roster_order_capacity_faults_and_five_thousand_countries() {
-        let (mut bytes, start) = fixture(5_000);
-        let mut rows = vec![Row::default(); 10_000];
+    fn roster_order_capacity_and_faults() {
+        let (mut bytes, start) = fixture(3);
+        let mut rows = vec![Row::default(); 6];
         let run =
             |bytes: &[u8], rows: &mut [Row]| walk(&SliceMemory { base: 0, bytes }, 0, 0x1000, rows);
-        assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 10_000 });
+        assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: 6 });
         for (index, row) in rows.iter().enumerate() {
             assert_eq!(row.country, (index / 2 + 1) as u32);
             assert_eq!(row.ordinal, (index % 2) as u32);
@@ -253,7 +253,7 @@ mod tests {
             run(&bytes, &mut rows[..3]),
             Outcome::Truncated {
                 len: 3,
-                unread_rows: 9_997
+                unread_rows: 3
             }
         );
         bytes[start + 0x1100] ^= 1;

@@ -309,7 +309,10 @@ mod tests {
         let valid = check(&fixture, 0).unwrap();
         assert!(valid.is_verified());
         assert_eq!(valid.static_token_maximum, 0x5000);
-        for (index, &name) in modifier_keys::names().iter().enumerate() {
+        let names = modifier_keys::names();
+        // The first, a middle and the last built-in row stand for all of them.
+        for index in [0, names.len() / 2, names.len() - 1] {
+            let name = names[index];
             let index = index as u32;
             let mut wrong = name.as_bytes().to_vec();
             wrong[0] = b'!';

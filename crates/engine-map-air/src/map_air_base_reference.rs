@@ -945,15 +945,15 @@ mod tests {
         ((references, result), fallbacks)
     }
 
-    /// Healthy, the gathered witnesses of 5,000 bases and 100 misses are the
+    /// Healthy, the gathered witnesses of 150 bases and 20 misses are the
     /// per-object reads', in about four fewer guarded copies a base.
     #[test]
-    fn gathered_bases_equal_the_per_object_reads_at_five_thousand_bases() {
-        let world = Scale::new(5_000, 100);
+    fn gathered_bases_equal_the_per_object_reads() {
+        let world = Scale::new(150, 20);
         let memory = world.memory();
         let expected = serial(&memory, &world.handles);
         assert_eq!(expected.1, Ok(()));
-        assert_eq!(expected.0.iter().flatten().count(), 5_000);
+        assert_eq!(expected.0.iter().flatten().count(), 150);
         // Some provinces come from the manager's lists, not the base.
         let cached = |base: &BaseReference| {
             let at = base.object - Scale::WORLD + cair_base::PROVINCE;

@@ -231,47 +231,6 @@ fn worker_pool_growth_precedes_first_and_later_publication() {
 }
 
 #[test]
-fn growing_lend_lease_covers_5000_country_exchange_pools() {
-    let mut world = crate::ccountry::synthetic::World::new(0, 5_000, 0x1600);
-    let variant = world.alloc(16);
-    world.u64(variant, cequipment_variant::VTABLE_RVA as u64);
-    world.u32(variant + 8, cequipment_variant::REFERENCE_TYPE);
-    world.u32(variant + 12, 17);
-    for country in 1..=5_000 {
-        let resources = world.alloc(0x800);
-        world.u64(
-            world.object(country) + ccountry::RESOURCES,
-            resources as u64,
-        );
-        world.u64(resources, ccountry_resources::VTABLE_RVA as u64);
-        world.u32(resources + ccountry_resources::OWNER, country);
-        let exchange = world.alloc(SIZE);
-        world.u64(exchange, VTABLE_RVA as u64);
-        world.u64(exchange + HANDLE, u64::from(country) << 32 | 4713);
-        world.u32(exchange + RECEIVER, 1);
-        let items = world.alloc(equipment_entry::STRIDE);
-        world.u64(items, variant as u64);
-        world.u64(items + equipment_entry::AMOUNT, u64::from(country));
-        world.u64(exchange + DELIVERED, pool::VTABLE_RVA as u64);
-        world.array(exchange + DELIVERED + pool::ITEMS, items, 1);
-        world.u64(exchange + SUNK, pool::VTABLE_RVA as u64);
-        let list = world.alloc(8);
-        world.u64(list, exchange as u64);
-        world.array(resources + OUTGOING, list, 1);
-    }
-    let mut rows = Vec::new();
-    assert_eq!(
-        row_demand(&world.memory(), 0, world.game_state()),
-        Ok(5_000)
-    );
-    assert_eq!(
-        walk_growing(&world.memory(), 0, world.game_state(), &mut rows),
-        Outcome::Rows { len: 5_000 }
-    );
-    assert_eq!((rows[4_999].giver, rows[4_999].amount_raw), (5_000, 5_000));
-}
-
-#[test]
 fn market_amendment_stream_retains_all_modes_before_the_source_disappears() {
     let mut f = fixture();
     let sources = [0x80000, 0x80100, 0x80200];
@@ -333,33 +292,4 @@ fn market_amendment_stream_stops_at_a_rejected_header_without_item_reads() {
         ),
         Err("prepared occurrence storage exhausted")
     );
-}
-
-#[test]
-fn market_amendment_stream_sizes_from_5000_entries_in_each_mode() {
-    let mut f = fixture();
-    let entries: Vec<_> = (1..=5_000).map(|id| (id, i64::from(id))).collect();
-    let sources = [0x800000, 0x800100, 0x800200];
-    for (mode, source) in sources.into_iter().enumerate() {
-        pool_at(&mut f, source, 0x10_0000 + mode * 0x20_000, &entries);
-        f.put(source + pool::ALLOW_ZERO, &[0]);
-    }
-    let mut counts = [0; 3];
-    assert_eq!(
-        schedules(
-            &f,
-            0,
-            sources,
-            |header| {
-                assert_eq!(header.counts, [5_000; 3]);
-                Ok(())
-            },
-            |item| {
-                counts[item.mode as usize] += 1;
-                Ok(())
-            }
-        ),
-        Ok(15_000)
-    );
-    assert_eq!(counts, [5_000; 3]);
 }

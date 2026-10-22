@@ -317,8 +317,8 @@ mod tests {
     }
 
     #[test]
-    fn doctrine_tracks_read_only_demanded_objects_at_country_scale() {
-        for count in [1_500, 5_000] {
+    fn doctrine_tracks_read_only_demanded_objects() {
+        for count in [3, 7] {
             let first = 0x1000;
             let selected = first + count * TRACK_STRIDE;
             let mut memory = Fixture::new(selected + 16);

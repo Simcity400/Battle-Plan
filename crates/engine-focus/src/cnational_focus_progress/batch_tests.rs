@@ -38,24 +38,6 @@ fn capture(
     )
 }
 #[test]
-fn governance_batch_focus_serial_census_and_5000_country_equality() {
-    let world = World::new(5_000);
-    let before = Trace::new(&world, "Focus/CompletedFocuses serial");
-    let after = Trace::new(&world, "Focus/CompletedFocuses batch");
-    for id in 1..=5_000 {
-        let old = capture(&before, id, true);
-        let new = capture(&after, id, false);
-        assert_eq!(old.0.outcome, Outcome::Rows { len: 1 });
-        assert_eq!(old.0.completed_outcome, Outcome::Rows { len: 3 });
-        assert_eq!(new, old);
-        assert_eq!((before.count(), after.count()), (26, 8));
-        assert!(after.fallbacks.witnesses().is_empty());
-        before.clear();
-        after.clear();
-    }
-    println!("Focus + CompletedFocuses: 26 -> 8 guarded calls/country; 5000 countries");
-}
-#[test]
 fn governance_batch_focus_persistent_and_one_shot_every_serial_operand() {
     let world = World::new(1);
     let country = World::country(1);

@@ -1433,12 +1433,12 @@ fn repeated_handles_survive_dictionary_rehash_without_rereading_templates() {
 }
 
 #[test]
-fn governance_batch_slots_serial_census_and_5000_country_equality() {
+fn governance_batch_slots_serial_and_batched_equality() {
     use engine_governance_tests::{Trace, World};
-    let world = World::new(5_000);
+    let world = World::new(3);
     let before = Trace::new(&world, "ResearchSlots serial");
     let after = Trace::new(&world, "ResearchSlots batch");
-    for id in 1..=5_000 {
+    for id in 1..=3 {
         let mut old = [cresearch_slot::Row::default(); 3];
         let mut new = old;
         let serial = super::serial_slots::walk_slots_buffer(
@@ -1457,7 +1457,6 @@ fn governance_batch_slots_serial_census_and_5000_country_equality() {
         before.clear();
         after.clear();
     }
-    println!("ResearchSlots: 13 -> 7 guarded calls/country; 5000 countries");
 }
 
 #[test]

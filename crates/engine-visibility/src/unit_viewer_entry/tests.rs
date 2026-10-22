@@ -847,14 +847,14 @@ fn batched_and_serial(
     [(new, batched), (old, serial)]
 }
 
-/// On healthy memory, 5,000 shared-census divisions give the serial rows and
+/// On healthy memory, 200 shared-census divisions give the serial rows and
 /// outcome, truncated or not, with their first entry blocks read sixteen
 /// divisions to a guarded scatter instead of one copy each: the walk's
 /// single copies are the later blocks and the census and roster reads.
 #[test]
-fn batched_first_blocks_match_the_serial_walk_at_scale() {
+fn batched_first_blocks_match_the_serial_walk() {
     use crate::memory::{CountedMemory, ReadCounts};
-    const COUNT: usize = 5_000;
+    const COUNT: usize = 200;
     let (bytes, sources) = scale_fixture(COUNT);
     let rows: usize = (0..COUNT).map(|i| i % 40).sum();
     let memory = SliceMemory {

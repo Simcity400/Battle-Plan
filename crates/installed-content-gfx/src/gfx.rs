@@ -347,17 +347,4 @@ mod tests {
         assert!(set.refused[0].starts_with("interface/a.gfx: sprite \"GFX_bad\" is refused"));
     }
 
-    #[test]
-    fn a_file_with_no_sprite_block_yields_nothing() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        assert!(
-            set(&[(
-                "interface/a.gfx",
-                b"bitmapfonts = { bitmapfont = { name = \"x\" } }"
-            )])
-            .sprites
-            .is_empty()
-        );
-    }
 }

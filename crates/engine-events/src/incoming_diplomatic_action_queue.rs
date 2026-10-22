@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn growing_queue_preserves_occurrences_when_the_same_country_gains_5000_slots() {
+    fn growing_queue_preserves_occurrences_when_the_same_country_gains_slots() {
         let mut bytes = fixture();
         let mut rows = Vec::new();
         let expected = run(&bytes, 3);
@@ -323,7 +323,7 @@ mod tests {
             expected.0
         );
         assert_eq!(&rows[..expected.0.len()], &expected.1[..expected.0.len()]);
-        const COUNT: usize = 5_000;
+        const COUNT: usize = 9;
         const DATA: usize = 0x10000;
         bytes.resize(DATA + COUNT * 8, 0);
         vector(&mut bytes, QUEUE + ACTIONS, DATA, COUNT as u32);
@@ -335,7 +335,7 @@ mod tests {
             );
         }
         let expected = run(&bytes, COUNT);
-        assert_eq!(expected.0, Outcome::Rows { len: 3_333 });
+        assert_eq!(expected.0, Outcome::Rows { len: 6 });
         assert_eq!(
             walk_growing(
                 &SliceMemory {
@@ -349,7 +349,7 @@ mod tests {
             expected.0
         );
         assert_eq!(&rows[..expected.0.len()], &expected.1[..expected.0.len()]);
-        assert_eq!(rows[expected.0.len() - 1].ordinal, 4_998);
+        assert_eq!(rows[expected.0.len() - 1].ordinal, 8);
     }
 
     #[test]

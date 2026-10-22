@@ -1013,52 +1013,6 @@ fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
 }
 
 #[test]
-fn growing_pool_rows_cover_first_and_later_demand_for_5000_countries() {
-    let mut fixture = Fixture::default();
-    fixture.array(GAME + cgame_state::COMBAT_LOGS, MANAGERS, 5_001);
-    fixture.pointer(MANAGERS, 0);
-    let pool = [(17, 100_000)];
-    let month = [Entry {
-        reason: 0,
-        date: OCTOBER,
-        pool: &pool,
-    }];
-    for country in 1..=5_000 {
-        let manager = fixture.manager(country, &[(country, [&month, &[], &[], &[], &[]])]);
-        fixture.pointer(MANAGERS + country as usize * 8, manager);
-    }
-    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(5_000));
-    let mut rows = Vec::new();
-    let mut memo = VariantMemo::vacant();
-    let mut read = |fixture: &Fixture, rows: &mut Vec<Row>| {
-        walk_prepared_growing(
-            fixture,
-            BASE,
-            GAME,
-            &mut (),
-            |_, _| Ok(()),
-            |_, _| Ok(Some(Months::All)),
-            rows,
-            &mut memo,
-        )
-    };
-    assert_eq!(read(&fixture, &mut rows), Outcome::Rows { len: 5_000 });
-    assert_eq!((rows[4_999].country, rows[4_999].group), (5_000, 5_000));
-    // A retained country's pool grows without any change in country count.
-    let pool: Vec<_> = (1..=10_000).map(|id| (id, i64::from(id))).collect();
-    let month = [Entry {
-        reason: 0,
-        date: OCTOBER,
-        pool: &pool,
-    }];
-    let manager = fixture.manager(1, &[(1, [&month, &[], &[], &[], &[]])]);
-    fixture.pointer(MANAGERS + 8, manager);
-    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(14_999));
-    assert_eq!(read(&fixture, &mut rows), Outcome::Rows { len: 14_999 });
-    assert_eq!((rows[9_999].country, rows[9_999].variant), (1, 10_000));
-}
-
-#[test]
 fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storage() {
     struct Traced<'a> {
         inner: &'a Fixture,

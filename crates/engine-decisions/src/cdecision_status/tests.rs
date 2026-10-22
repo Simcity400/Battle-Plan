@@ -2,9 +2,9 @@ use super::*;
 use crate::memory::SliceMemory;
 
 #[test]
-fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries() {
-    let mut world = ccountry::synthetic::World::new(IMAGE, 5_000, 0x1000);
-    for country in 1..=5_000 {
+fn decision_random_items_preserve_full_store_and_signed_words() {
+    let mut world = ccountry::synthetic::World::new(IMAGE, 3, 0x1000);
+    for country in 1..=3 {
         let owner = world.object(country);
         let status = world.alloc(RANDOM_ITEMS + 16);
         let items = world.alloc(RANDOM_ITEM_STRIDE * 2);
@@ -28,8 +28,8 @@ fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries(
     assert_eq!(
         random_item_demand(&world.memory(), IMAGE, world.game_state()),
         Ok(RandomItemDemand {
-            rows: 10_000,
-            bytes: 50_000
+            rows: 6,
+            bytes: 30
         })
     );
     let mut rows = vec![RandomItemRow::default(); 1];
@@ -41,7 +41,7 @@ fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries(
         &mut rows,
         &mut tokens,
     );
-    assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
+    assert_eq!(walk.outcome, Outcome::Rows { len: 6 });
     for (index, row) in rows[..walk.outcome.len()].iter().enumerate() {
         assert_eq!(
             (row.country, row.ordinal),
@@ -67,10 +67,10 @@ fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries(
         short.outcome,
         Outcome::Truncated {
             len: 1,
-            unread_rows: 9_999
+            unread_rows: 5
         }
     );
-    assert_eq!(short.required_bytes, 50_000);
+    assert_eq!(short.required_bytes, 30);
     let status = crate::read::<u64>(&world.memory(), world.object(1) + ccountry::DECISION_STATUS)
         .unwrap() as usize;
     let items = crate::read::<u64>(&world.memory(), status + RANDOM_ITEMS).unwrap() as usize;

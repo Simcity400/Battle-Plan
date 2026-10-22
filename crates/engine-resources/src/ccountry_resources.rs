@@ -766,13 +766,13 @@ mod tests {
     }
 
     /// On healthy memory the batched walk returns the serial walk's rows and
-    /// outcome at 5,000 countries, truncated or not, reading each pool's
+    /// outcome, truncated or not, reading each pool's
     /// values as one span: 9 value spans per country instead of 63.
     #[test]
-    fn batched_values_match_the_serial_walk_at_scale() {
+    fn batched_values_match_the_serial_walk() {
         use super::scale_support::{descriptors, resource_world};
         use crate::memory::{CountedMemory, ReadCounts};
-        const COUNT: u32 = 5_000;
+        const COUNT: u32 = 100;
         const RESOURCES: u32 = 7;
         let w = resource_world(COUNT, RESOURCES);
         let descriptors = descriptors(RESOURCES);

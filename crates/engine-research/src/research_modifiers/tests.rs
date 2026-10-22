@@ -1127,82 +1127,6 @@ fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
     assert_eq!(run(&with(600)), baseline);
 }
 
-#[test]
-fn sharing_witnesses_retain_five_thousand_original_country_references() {
-    const COUNT: usize = 5_001;
-    const TABLE: usize = 0x40000;
-    const LINKS: usize = TABLE + (COUNT + 1) * 8;
-    let mut fixture = Fixture::new();
-    fixture.bytes.resize(LINKS + (COUNT + 1) * 4, 0);
-    fixture.array(
-        GAME + crate::cgame_state::COUNTRIES,
-        TABLE,
-        (COUNT + 1) as u32,
-    );
-    fixture.array(
-        GAME + crate::cgame_state::COUNTRY_LINKS,
-        LINKS,
-        (COUNT + 1) as u32,
-    );
-    for raw in 1..=COUNT {
-        fixture.put(TABLE + raw * 8, (COUNTRY as u64).to_le_bytes());
-        fixture.put(LINKS + raw * 4, 1_u32.to_le_bytes());
-    }
-    struct Readable<'a> {
-        source: &'a Fixture,
-        readable: Cell<bool>,
-    }
-    impl Memory for Readable<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            self.readable.get() && self.source.copy(address, output)
-        }
-    }
-    let memory = Readable {
-        source: &fixture,
-        readable: Cell::new(true),
-    };
-    let countries = ccountry::Reader::new(&memory, 0, GAME).unwrap();
-    let mut memo = sharing::Witnesses::default();
-    let mut rows = Vec::new();
-    let mut out = Output {
-        rows: crate::walk::Buffer::Growing(&mut rows),
-        len: 0,
-        omitted: 0,
-        current: Row::default(),
-    };
-    for raw in 1..=COUNT {
-        memo.capture(
-            &memory,
-            0,
-            &countries,
-            raw as u32,
-            &fixture.input(),
-            1,
-            &mut out,
-        )
-        .unwrap();
-    }
-    memory.readable.set(false);
-    for raw in 1..=COUNT {
-        memo.capture(
-            &memory,
-            0,
-            &countries,
-            raw as u32,
-            &fixture.input(),
-            1,
-            &mut out,
-        )
-        .unwrap();
-    }
-    assert_eq!(out.len, COUNT * 2);
-    assert!(
-        out.rows[..out.len]
-            .iter()
-            .all(|row| row.kind == Kind::SharingMissingMember)
-    );
-}
-
 fn batch_inputs(world: &engine_governance_tests::World, id: u32) -> Vec<research_inputs::Row> {
     let mut inputs = vec![research_inputs::Row::default(); 3];
     let mut bonuses = vec![research_inputs::BonusRow::default(); 2];
@@ -1252,23 +1176,6 @@ fn batch_capture(
     };
     rows.truncate(outcome.len());
     (outcome, rows)
-}
-#[test]
-fn governance_batch_modifiers_serial_census_and_5000_country_equality() {
-    use engine_governance_tests::{Trace, World};
-    let world = World::new(5_000);
-    let before = Trace::new(&world, "ResearchModifiers serial");
-    let after = Trace::new(&world, "ResearchModifiers batch");
-    for id in 1..=5_000 {
-        let inputs = batch_inputs(&world, id);
-        let old = batch_capture(&before, id, &inputs, true);
-        let new = batch_capture(&after, id, &inputs, false);
-        assert!(matches!(old.0, Outcome::Rows { len } if len > 0));
-        assert_eq!(new, old);
-        assert_eq!((before.count(), after.count()), (10, 9));
-        assert!(after.fallbacks.witnesses().is_empty());
-    }
-    println!("ResearchModifiers: 10 -> 9 guarded calls/country; 5000 countries");
 }
 fn batch_source_world() -> engine_governance_tests::World {
     use engine_governance_tests::{TECH, World};

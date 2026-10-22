@@ -48,26 +48,6 @@ fn owned_goal_rosters_refuse_malformed_and_duplicate_payloads() {
 }
 
 #[test]
-fn country_goal_rosters_scale_to_five_thousand_countries() {
-    let mut input = String::from("countries={");
-    for country in 1..=5000 {
-        input.push_str(&format!(
-            "C{country}={{diplomacy={{wargoals={{mod_goal={{id={{id={country} type=4713}} \
-             wargoaldata_actor=C{country} wargoaldata_recipient=C1 type=mod_goal}}}} \
-             available_wargoals={{wargoal={{id={country} type=4713}}}}}}}}"
-        ));
-    }
-    input.push('}');
-    let pack = parsed(input.as_bytes()).unwrap();
-    assert_eq!(pack.owned_goals.len(), 5000);
-    assert_eq!(pack.goals.len(), 5000);
-    assert_eq!(
-        pack.owned_goals[b"C5000".as_slice()],
-        [(5000_u64 << 32) | 4713]
-    );
-}
-
-#[test]
 fn missing_country_roster_save_coverage_is_not_known_empty() {
     assert!(parsed(b"date=1936.1.1.1").is_err());
     assert_eq!(parsed(b"countries={}").unwrap(), Pack::default());

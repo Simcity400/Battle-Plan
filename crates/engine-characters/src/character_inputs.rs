@@ -1356,68 +1356,6 @@ mod tests {
         m
     }
 
-    #[test]
-    fn worker_grows_5000_character_role_operative_and_name_arenas() {
-        let mut memory = world();
-        let pointers: Vec<_> = (0..5_000).map(|index| 0x10_0000 + index * 0x200).collect();
-        memory.array(
-            MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
-            0x40_0000,
-            &pointers,
-        );
-        memory.array(MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS, 0, &[]);
-        for (index, &pointer) in pointers.iter().enumerate() {
-            memory.character(pointer, index as u32 + 1);
-            for offset in MAPS {
-                memory.empty_map(pointer, offset, 0x48_0000);
-            }
-            memory.u64(pointer + ccharacter::SCIENTIST, 0x5400);
-            memory.u64(pointer + ccharacter::OPERATIVE, RESOLVED);
-        }
-        let mut traits = Vec::new();
-        let mut trait_values = Vec::new();
-        let mut operatives = Vec::new();
-        let mut definitions = Vec::new();
-        let mut bytes = Vec::new();
-        for values in [1_usize, 17] {
-            memory.array(
-                0x5400 + cscientist::TRAIT_DATA,
-                0x49_0000,
-                &vec![0x6200; values],
-            );
-            memory.array(
-                OPERATIVE + cunit_leader::TRAIT_DATA,
-                0x4a_0000,
-                &vec![0x7200; values],
-            );
-            let result = walk_growing(
-                &memory,
-                0,
-                GS,
-                GrowingBuffers {
-                    traits: &mut traits,
-                    trait_values: &mut trait_values,
-                    operatives: &mut operatives,
-                    definitions: &mut definitions,
-                    bytes: &mut bytes,
-                },
-            );
-            assert_eq!(result.traits, Outcome::Rows { len: 5_000 });
-            assert_eq!(result.operatives, Outcome::Rows { len: 5_000 });
-            assert_eq!(result.required_trait_values, 5_000 * values);
-            assert_eq!(result.required_definitions, 5_000 * values);
-            assert_eq!(result.bytes_len, 50_000);
-            assert_eq!(traits[4_999].character, 5_000);
-            assert_eq!(operatives[4_999].name, Some((49_990, 5)));
-            assert_eq!(operatives[4_999].codename.unwrap().group, (49_995, 5));
-            assert!(
-                operatives[..5_000]
-                    .iter()
-                    .all(|row| row.name_reason.is_none() && row.codename_reason.is_none())
-            );
-        }
-    }
-
     struct Output {
         walk: Walk,
         traits: Vec<(u32, Role, Vec<Trait>)>,

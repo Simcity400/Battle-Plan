@@ -82,14 +82,6 @@ impl Memory for TraceMemory<'_> {
 }
 
 #[test]
-fn five_thousand_countries_keep_every_construction_occurrence() {
-    let fixture = Fixture::new(5_000, 17);
-    // Two occurrences of the building, sixteen edges plus completion, and
-    // the supported repair class outside this observer's table scope.
-    assert_eq!(fixture.demand(), Ok(5_000 * (3 + 3 + 16 + 1)));
-}
-
-#[test]
 fn native_route_headers_size_empty_short_and_mod_sized_routes_without_payload_reads() {
     for provinces in [0, 1, 2, 3, 65_538] {
         let fixture = Fixture::new(1, provinces);

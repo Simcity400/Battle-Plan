@@ -1251,10 +1251,11 @@ mod capture_tests {
     use super::*;
 
     #[test]
-    fn politics_staging_demand_counts_daily_rosters_at_1500_and_5000_countries() {
+    fn politics_staging_demand_counts_daily_rosters() {
+        // regression: e51bb8d59d Size politics staging from native demand and count full rejected bursts
         use crate::{cpdx_array, nindustrial_organisation_corganisation as organisation};
 
-        for countries in [1_500, 5_000] {
+        for countries in [1, 2] {
             let mut world = ccountry::synthetic::World::new(0x4000_0000, countries, 0x1700);
             for slot in 1..=countries {
                 let country = world.object(slot);

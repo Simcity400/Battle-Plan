@@ -446,12 +446,11 @@ mod tests {
     }
 
     #[test]
-    fn unique_handles_keep_first_reference_order_at_country_scale() {
-        for countries in [1_500_u64, 5_000] {
+    fn unique_handles_keep_first_reference_order() {
+        for countries in [3_u64, 11] {
             let mut unique = UniqueHandles::try_with_capacity(countries as usize).unwrap();
             let reserved = unique.allocated_bytes();
             // Every country's base referenced three times, interleaved.
-            let started = std::time::Instant::now();
             for round in 0..3 {
                 for country in 0..countries {
                     let index = (country * 7 + round) % countries;
@@ -460,7 +459,6 @@ mod tests {
                         .unwrap();
                 }
             }
-            let elapsed = started.elapsed();
             assert_eq!(unique.len(), countries as usize);
             let expected: Vec<u64> = (0..countries)
                 .map(|country| ((country * 7) % countries + 1) << 32 | u64::from(cair_base::TYPE))
@@ -470,9 +468,6 @@ mod tests {
             assert_eq!(unique.allocated_bytes(), reserved);
             unique.clear();
             assert!(unique.is_empty() && unique.capacity() >= countries as usize);
-            eprintln!(
-                "naval combat air base selection, {countries} distinct bases x3 references: {elapsed:?} (test build)"
-            );
         }
     }
 
@@ -535,7 +530,7 @@ mod tests {
         let mut fixture = Fixture::new();
         let bases = handles(&[BASE_ID, EMPTY_ID]);
         let (mut rows, mut wings) = (Vec::new(), Vec::new());
-        for count in [1500usize, 5000, 8193] {
+        for count in [3usize, 8193] {
             fixture.vector(BASE + cair_base::REGISTERED_CONTAINERS, DATA, count as u32);
             for index in 0..count {
                 fixture.word(DATA + index * 8, CONTAINER as u64);

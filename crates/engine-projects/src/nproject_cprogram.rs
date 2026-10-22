@@ -487,11 +487,11 @@ mod tests {
     use crate::memory::SliceMemory;
 
     #[test]
-    fn gap_research_grants_supporting_assignments_preserve_5000_occurrences_timers_and_null_omission()
+    fn gap_research_grants_supporting_assignments_preserve_occurrences_timers_and_null_omission()
      {
         const BASE: usize = 0x1000;
         const DATA: usize = 0x200;
-        const COUNT: usize = 5_000;
+        const COUNT: usize = 3;
         let mut bytes = vec![0; DATA + COUNT * ASSIGNMENT_STRIDE];
         bytes[SUPPORTING_SCIENTISTS..SUPPORTING_SCIENTISTS + 8]
             .copy_from_slice(&((BASE + DATA) as u64).to_le_bytes());

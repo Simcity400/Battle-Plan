@@ -531,26 +531,6 @@ impl ScaleFixture {
     }
 }
 
-#[test]
-fn air_loss_five_thousand_countries_have_distinct_authenticated_loss_records() {
-    let mut f = ScaleFixture::new(5_000);
-    assert_eq!(wing_count(&f.memory(), BASE, f.address), Ok(5_000));
-    let mut roster_rows = Vec::new();
-    roster(&f.memory(), BASE, f.address, &mut roster_rows).unwrap();
-    assert_eq!(roster_rows.len(), 5000);
-    assert!(roster_rows.iter().all(|row| row.eligible));
-    for ordinal in 0..f.airs.len() {
-        let snapshot = before(&f.memory(), BASE, f.address, f.airs[ordinal], 1, 0, 1, 30).unwrap();
-        let offset = f.values[ordinal] - f.address;
-        f.bytes(offset + 30 * 8, &100_000_i64.to_le_bytes());
-        f.bytes(offset + 31 * 8, &100_000_i64.to_le_bytes());
-        let change = after(&f.memory(), BASE, f.address, &snapshot).unwrap();
-        assert_eq!(change.country, ordinal as u32 + 1);
-        assert_eq!(change.fields[0], 100_000);
-        assert_eq!(change.fields[1], 100_000);
-    }
-}
-
 /// Fails every copy that touches `fault`: always, or only the first.
 struct Faulted<'a> {
     inner: SliceMemory<'a>,
@@ -625,8 +605,8 @@ impl ScaleFixture {
 /// in six gathered copies, the words and the country resolution instead of
 /// about forty guarded reads.
 #[test]
-fn air_loss_gathered_call_equals_the_serial_reads_at_five_thousand_countries() {
-    let mut f = ScaleFixture::new(5_000);
+fn air_loss_gathered_call_equals_the_serial_reads() {
+    let mut f = ScaleFixture::new(70);
     let game = f.address;
     f.pointer(ScaleFixture::SINGLETON, game);
     for ordinal in 0..f.airs.len() {

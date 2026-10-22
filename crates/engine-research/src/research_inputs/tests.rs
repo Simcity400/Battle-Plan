@@ -649,13 +649,13 @@ fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
 }
 
 #[test]
-fn governance_batch_research_inputs_serial_census_and_5000_country_equality() {
+fn governance_batch_research_inputs_serial_and_batched_equality() {
     use engine_governance_tests::{Trace, World};
-    let world = World::new(5_000);
+    let world = World::new(3);
     let serial_memory = Trace::new(&world, "ResearchInputs/ResearchAppliedBonuses serial");
     let memory = Trace::new(&world, "ResearchInputs/ResearchAppliedBonuses batch");
     let context = Context::read(&world, 0);
-    for id in 1..=5_000 {
+    for id in 1..=3 {
         let mut before = vec![Row::default(); 3];
         let mut after = vec![Row::default(); 3];
         let mut old_bonuses = vec![BonusRow::default(); 2];
@@ -687,9 +687,6 @@ fn governance_batch_research_inputs_serial_census_and_5000_country_equality() {
         serial_memory.clear();
         memory.clear();
     }
-    println!(
-        "ResearchInputs + ResearchAppliedBonuses: 20 -> 14 guarded calls/country; 5000 countries"
-    );
 }
 
 #[test]

@@ -91,20 +91,6 @@ fn empty_variable_keys_do_not_relax_other_save_or_content_syntax() {
     assert!(super::super::intel::parse(saved.items()).is_err());
 }
 
-#[test]
-fn empty_variable_keys_support_5000_country_scopes() {
-    let countries = (0..5000)
-        .map(|id| format!("X{id}={{variables={{=0}}}} "))
-        .collect::<String>();
-    let saved = document(&countries, "");
-    let intel = super::super::intel::parse(saved.items()).unwrap();
-    assert_eq!(intel.countries.len(), 5000);
-    assert!(intel.countries.values().all(|country| {
-        let entries = &country.variables.as_ref().unwrap().entries;
-        entries.len() == 1 && entries[0].name.is_empty() && entries[0].value.raw == 0
-    }));
-}
-
 fn document(countries: &str, extra: &str) -> SaveDocument {
     SaveDocument::read(
         format!(

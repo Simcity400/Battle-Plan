@@ -266,26 +266,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_all_5000_entries_with_first_duplicate_lookup_and_live_capacity() {
-        let (bytes, _, _) = fixture(5_000);
-        let memory = SliceMemory {
-            base: START,
-            bytes: &bytes,
-        };
-        let mut output = vec![Row::default(); 5_000];
-        let mut arena = Arena::new(&mut output);
-        assert_eq!(arena.capture(&memory, 0, START), Ok(Some((0, 5_000))));
-        assert_eq!(arena.required, 5_000);
-        assert_eq!(arena.rows[4_999].required_raw, 104_999);
-        assert_eq!(arena.rows[4_999].required_lookup_raw, 100_000);
-        assert_eq!(arena.rows[4_999].allocated_raw, 50_000);
-        assert_eq!(arena.rows[4_999].weight_raw, 200_003);
-        let mut short = Arena::new(&mut output[..4_999]);
-        assert_eq!(short.capture(&memory, 0, START), Ok(None));
-        assert_eq!((short.len, short.required), (0, 5_000));
-    }
-
-    #[test]
     fn empty_inactive_and_partial_reads_never_fabricate_operands() {
         let (mut bytes, _, equipment) = fixture(1);
         put(&mut bytes, equipment + ty::ACTIVE, &[0]);

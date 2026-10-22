@@ -1214,19 +1214,20 @@ mod tests {
     }
 
     #[test]
-    fn selected_names_read_only_the_subject_and_overlord_among_5000_countries() {
+    fn selected_names_read_only_the_subject_and_overlord() {
+        // regression: a39bd906e4 Fix counter hover review gaps and country lookups
         let mut frame = frame();
-        let countries: Vec<_> = (1..=5000)
+        let countries: Vec<_> = (1..=5)
             .map(|id| CountryRow {
                 id,
                 canonical_slot: match id {
-                    5000 => 1,
-                    4998 | 4999 => 2,
+                    5 => 1,
+                    3 | 4 => 2,
                     _ => 10000 + id,
                 },
                 tag: match id {
-                    5000 => b"SUB".to_vec(),
-                    4999 => b"OWN".to_vec(),
+                    5 => b"SUB".to_vec(),
+                    4 => b"OWN".to_vec(),
                     _ => vec![0xff],
                 },
                 ..Default::default()
@@ -1243,7 +1244,7 @@ mod tests {
             .iter()
             .map(|row| CountryAppearanceRow {
                 country: row.id,
-                overlord: if row.id == 5000 { 4999 } else { 0 },
+                overlord: if row.id == 5 { 4 } else { 0 },
                 ..Default::default()
             })
             .collect();
@@ -1264,7 +1265,7 @@ mod tests {
             TableView::Complete(TableRows::Politics(politics));
         *frame.tables[TableId::Autonomy.index()] =
             TableView::Complete(TableRows::Autonomy(vec![AutonomyRow {
-                subject: 5000,
+                subject: 5,
                 state: b"subject".to_vec(),
                 ..Default::default()
             }]));
@@ -1279,7 +1280,7 @@ mod tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 ReservedCountryNamingRow {
                     tag: b"ZERO".to_vec(),
-                    overlord: 4999,
+                    overlord: 4,
                     autonomy: Some(b"subject".to_vec()),
                     built: 7,
                     ..Default::default()

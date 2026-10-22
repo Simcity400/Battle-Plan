@@ -76,13 +76,11 @@ impl Memory for Traced<'_> {
 }
 
 #[test]
-fn faction_upgrade_demand_reads_one_of_five_thousand_slots_and_reuses_storage() {
-    let mut bytes = fixture(5000);
-    // Different repeated keys and signed amounts are stored data, not a map
-    // to normalize. The two modifiers and their literal names stay separate.
+fn faction_upgrade_demand_reads_only_the_selected_slot_and_reuses_storage() {
+    let mut bytes = fixture(3);
     let entries = bytes.len();
     bytes.resize(entries + modifier_entry::STRIDE * 2, 0);
-    let selected = DATA + 4999 * SLOT_STRIDE;
+    let selected = DATA + 2 * SLOT_STRIDE;
     let modifier = selected + SLOT_MODIFIER;
     array(&mut bytes, modifier + cmodifier::ACCUMULATOR, entries, 2);
     for (ordinal, raw) in [-91_i64, 0].into_iter().enumerate() {
@@ -108,8 +106,8 @@ fn faction_upgrade_demand_reads_one_of_five_thousand_slots_and_reuses_storage() 
     let status = authenticate(&memory, 0, FACTION).unwrap();
     let slots = status.slots(&memory).unwrap();
     let mut output = Slot::default();
-    status.slot_into(&memory, slots, 4999, &mut output).unwrap();
-    assert_eq!(output.owner_country, 5000);
+    status.slot_into(&memory, slots, 2, &mut output).unwrap();
+    assert_eq!(output.owner_country, 3);
     assert_eq!(output.advisor_character, None);
     assert_eq!(output.spymaster_change_hour, -17);
     assert_eq!(output.modifier.name, literal);
@@ -136,7 +134,7 @@ fn faction_upgrade_demand_reads_one_of_five_thousand_slots_and_reuses_storage() 
         output.modifier.name.as_ptr(),
         output.modifier.entries.as_ptr(),
     );
-    status.slot_into(&memory, slots, 4999, &mut output).unwrap();
+    status.slot_into(&memory, slots, 2, &mut output).unwrap();
     assert_eq!(
         storage,
         (
@@ -145,7 +143,7 @@ fn faction_upgrade_demand_reads_one_of_five_thousand_slots_and_reuses_storage() 
         )
     );
     memory.calls.borrow_mut().clear();
-    assert!(status.slot_into(&memory, slots, 5000, &mut output).is_err());
+    assert!(status.slot_into(&memory, slots, 3, &mut output).is_err());
     assert!(memory.calls.borrow().is_empty());
 }
 

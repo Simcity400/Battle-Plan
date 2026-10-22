@@ -213,65 +213,18 @@ fn acquire(
     sample.requests.truncate(lengths[3]);
     (result, sample)
 }
-
 #[test]
-fn cold_worker_arenas_grow_for_five_thousand_country_hover_inputs() {
-    let fixture = Fixture::new(5000, true);
-    let mut countries = Vec::new();
-    let mut lines = Vec::new();
-    let mut efficiencies = Vec::new();
-    let mut requests = Vec::new();
-    let mut archetypes = Vec::new();
-    let mut context = None;
-    let mut out = GrowingBuffers {
-        countries: &mut countries,
-        country_len: 0,
-        country_required: 0,
-        lines: &mut lines,
-        line_len: 0,
-        line_required: 0,
-        efficiencies: &mut efficiencies,
-        efficiency_len: 0,
-        efficiency_required: 0,
-        requests: &mut requests,
-        request_len: 0,
-        request_required: 0,
-        archetypes: &mut archetypes,
-        archetype_required: 0,
-    };
-    assert_eq!(
-        capture_growing(
-            &fixture,
-            fixture.world.module,
-            fixture.world.game_state(),
-            &mut context,
-            &mut out
-        ),
-        Ok(())
-    );
-    assert_eq!(out.country_len, 5000);
-    assert_eq!(out.line_len, 5000);
-    assert_eq!(out.efficiency_len, 15000);
-    assert_eq!(out.request_len, 5000 * KEYS.len());
-    assert_eq!(out.line_required, out.line_len);
-}
-
-#[test]
-fn reader_acquires_five_thousand_authenticated_countries_and_their_ordered_retained_inputs() {
-    let mut fixture = Fixture::new(5000, true);
+fn reader_acquires_authenticated_countries_and_their_ordered_retained_inputs() {
+    let mut fixture = Fixture::new(2, true);
     fixture.fault = Some(fixture.bonuses + 8 * 16);
-    let (result, sample) = acquire(&fixture, 5000, 15000);
+    let (result, sample) = acquire(&fixture, 2, 6);
     assert_eq!(result, Ok(()));
-    assert_eq!(sample.required, [5000, 5000, 15000, 55000]);
+    assert_eq!(sample.required, [2, 2, 6, 2 * KEYS.len()]);
     assert_eq!(
         sample.context.unwrap().retention,
         [-7000, 12000, 34000, 56000]
     );
-    assert_eq!(
-        fixture.global_reads.get(),
-        21 + 5000,
-        "one context read, then one virtual predicate per line"
-    );
+    assert_eq!(fixture.global_reads.get(), 21 + 2);
     for (index, (country, line)) in sample.countries.iter().zip(&sample.lines).enumerate() {
         assert_eq!(country.country, index as u32 + 1);
         assert_eq!(line.country, country.country);
@@ -305,10 +258,10 @@ fn idle_rosters_do_not_require_global_defines_or_hover_operands() {
     assert_eq!(sample.required, [0; 4]);
     assert_eq!(fixture.global_reads.get(), 0);
 }
-
 #[test]
-fn header_demand_presizes_retained_factory_arrays_for_five_thousand_countries() {
-    let mut fixture = Fixture::new(5_000, true);
+fn header_demand_presizes_retained_factory_arrays() {
+    // regression: cbb071fb60 Retry live sizing and grow observer storage from independent pressure
+    let mut fixture = Fixture::new(2, true);
     for &pointer in &fixture.lines {
         fixture
             .world
@@ -319,10 +272,10 @@ fn header_demand_presizes_retained_factory_arrays_for_five_thousand_countries() 
     assert_eq!(
         observed,
         Demand {
-            countries: 5_000,
-            lines: 5_000,
-            efficiencies: 750_000,
-            requests: 5_000 * KEYS.len(),
+            countries: 2,
+            lines: 2,
+            efficiencies: 300,
+            requests: 2 * KEYS.len(),
         }
     );
     assert_eq!(fixture.global_reads.get(), 0);

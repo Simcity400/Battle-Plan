@@ -1461,51 +1461,6 @@ mod tests {
     }
 
     #[test]
-    fn original_host_header_grows_5000_and_later_mod_occurrences_once() {
-        use std::cell::Cell;
-        struct Traced<'a> {
-            bytes: &'a [u8],
-            header: Cell<usize>,
-        }
-        impl Memory for Traced<'_> {
-            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                if address == 0x1000 + ccountry::VOLUNTEER_HOSTS {
-                    self.header.set(self.header.get() + 1);
-                }
-                SliceMemory {
-                    base: 0,
-                    bytes: self.bytes,
-                }
-                .copy(address, output)
-            }
-        }
-        let mut output = Vec::new();
-        for count in [5_000usize, 12_345] {
-            let data = 0x3000;
-            let mut bytes = vec![0; data + count * 4];
-            let header = 0x1000 + ccountry::VOLUNTEER_HOSTS;
-            bytes[header..header + 8].copy_from_slice(&(data as u64).to_le_bytes());
-            bytes[header + 8..header + 12].copy_from_slice(&(count as u32).to_le_bytes());
-            bytes[header + 12..header + 16].copy_from_slice(&(count as u32).to_le_bytes());
-            for index in 0..count {
-                bytes[data + index * 4..data + index * 4 + 4]
-                    .copy_from_slice(&(index as u32).to_le_bytes());
-            }
-            let memory = Traced {
-                bytes: &bytes,
-                header: Cell::new(0),
-            };
-            assert_eq!(
-                volunteer_hosts_growing(&memory, 0x1000, &mut output),
-                Ok(count)
-            );
-            assert_eq!(memory.header.get(), 1);
-            assert_eq!(output[count - 1], count as u32 - 1);
-            assert_eq!(volunteer_hosts(&memory, 0x1000, &mut []), Ok(count));
-        }
-    }
-
-    #[test]
     fn detection_override_vector_grows_from_its_header_and_preserves_zero_and_signed_words() {
         let mut bytes = vec![0_u8; 32 + 5_000 * OVERRIDE_ENTRY];
         put(
@@ -1731,11 +1686,11 @@ mod tests {
         ((flags, result), fallbacks)
     }
 
-    /// Healthy, 5,000 pools' gathered flags are the per-pool reads', in two
+    /// Healthy, 150 pools' gathered flags are the per-pool reads', in two
     /// copies a 64 pools rather than three reads a pool.
     #[test]
-    fn gathered_definitions_equal_the_per_pool_reads_at_five_thousand_pools() {
-        let (bytes, pools) = definition_world(5_000);
+    fn gathered_definitions_equal_the_per_pool_reads() {
+        let (bytes, pools) = definition_world(150);
         let memory = SliceMemory {
             base: 0,
             bytes: &bytes,

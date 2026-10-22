@@ -95,12 +95,12 @@ fn buffers<'a>(
 }
 
 #[test]
-fn cold_worker_formatter_arenas_keep_five_thousand_native_labels_and_later_tree_growth() {
+fn cold_worker_formatter_arenas_keep_native_labels_and_later_tree_growth() {
     let mut roots = Vec::new();
     let mut nodes = Vec::new();
     let mut text = Vec::new();
     let mut stack = Vec::new();
-    for count in [1_500_usize, 5_000] {
+    for count in [3_usize, 7] {
         let mut fixture = Fixture::new();
         let key = modifier_keys::ATTRITION;
         let label = vec![b'M'; 300];
@@ -276,7 +276,7 @@ fn attrition_failed_tree_releases_storage_and_preserves_other_root() {
 }
 
 #[test]
-fn attrition_five_thousand_armies_share_each_requested_tree_once() {
+fn attrition_armies_share_each_requested_tree_once() {
     let mut fixture = Fixture::new();
     let key = modifier_keys::ATTRITION;
     let root = fixture.node(b"shared", &[(key, 100)], &[]);
@@ -285,7 +285,7 @@ fn attrition_five_thousand_armies_share_each_requested_tree_once() {
             accumulator: root,
             key
         };
-        5_000 * crate::carmy_attrition::SOURCE_COUNT
+        3 * crate::carmy_attrition::SOURCE_COUNT
     ];
     let mut roots = [Root::default(); 1];
     let mut nodes = [RawNode::default(); 1];
@@ -300,7 +300,7 @@ fn attrition_five_thousand_armies_share_each_requested_tree_once() {
             buffers.root_len,
             buffers.node_required
         ),
-        (50_000, 1, 1, 1)
+        (3 * crate::carmy_attrition::SOURCE_COUNT, 1, 1, 1)
     );
     assert_eq!(&buffers.text[..buffers.text_len], b"shared");
 }

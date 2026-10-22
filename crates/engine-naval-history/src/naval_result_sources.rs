@@ -407,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn population_counts_five_thousand_wings_and_combats_without_roster_reads() {
+    fn population_counts_wings_and_combats_without_roster_reads() {
         let mut bytes = population_fixture();
         assert_eq!(population(&bytes, BASE), Ok(10_000));
         // Every wing counts, even without reading its mission or plane count.

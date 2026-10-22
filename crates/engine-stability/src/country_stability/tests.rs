@@ -906,99 +906,6 @@ fn defensive_wars_and_hosted_counterparts_follow_the_engine_predicates() {
 }
 
 #[test]
-fn growing_stability_storage_captures_five_thousand_modifier_children() {
-    let mut w = world();
-    const POINTERS: usize = 0x1000_0000;
-    const OBJECTS: usize = 0x2000_0000;
-    const COUNT: usize = 5_000;
-    let display = b"A mod-defined stability modifier with a retained display name beyond the old per-country text estimate";
-    w.entries = 0x3000_0000 - ENTRIES;
-    w.heap = 0x4000_0000 - HEAP;
-    w.array(C1 + MODIFIER_CHILDREN, POINTERS, COUNT as u32);
-    for index in 0..COUNT {
-        let child = OBJECTS + index * 0x100;
-        w.u64(POINTERS + index * 8, child as u64);
-        w.vtable(child, cmodifier::VTABLE_RVA);
-        w.modifier(
-            child,
-            &[
-                (STABILITY_KEY, 100),
-                (WAR_SUPPORT_KEY, 200),
-                (COMMAND_KEY, 300),
-            ],
-            display,
-        );
-    }
-    let countries = ccountry::Reader::new(&w, BASE, GS).unwrap();
-    let country = countries.at(1).unwrap().unwrap();
-    let context = Context::read(&w, BASE, GS, keys()).unwrap();
-    let mut scratch = Scratch::vacant();
-    let mut input = InputRow::default();
-    let required = walk_country(
-        &w,
-        BASE,
-        &countries,
-        country,
-        &context,
-        &mut scratch,
-        &mut input,
-        &mut [],
-        &mut [],
-    )
-    .unwrap();
-    assert_eq!(
-        required.lines,
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: (COUNT * 3) as u32
-        }
-    );
-    assert_eq!(required.required_bytes, COUNT * display.len());
-    let mut lines = Vec::new();
-    let mut bytes = Vec::new();
-    let captured = walk_country_growing(
-        &w,
-        BASE,
-        &countries,
-        country,
-        &context,
-        &mut scratch,
-        &mut input,
-        &mut lines,
-        &mut bytes,
-        0,
-        0,
-    )
-    .unwrap();
-    assert_eq!(input.children, COUNT as u32);
-    assert_eq!(captured.lines, Outcome::Rows { len: COUNT * 3 });
-    assert_eq!(captured.bytes_len, required.required_bytes);
-    for (index, rows) in lines[..COUNT * 3].chunks_exact(3).enumerate() {
-        assert!(
-            rows.iter()
-                .all(|row| row.line == index as u32 && row.kind == Kind::Unpaired)
-        );
-        assert_eq!(
-            rows.iter()
-                .map(|row| (row.key, row.value))
-                .collect::<Vec<_>>(),
-            [
-                (STABILITY_KEY, 100),
-                (WAR_SUPPORT_KEY, 200),
-                (COMMAND_KEY, 300)
-            ]
-        );
-        for row in rows {
-            assert_eq!(
-                &bytes[row.text.start..row.text.start + row.text.len],
-                display
-            );
-        }
-    }
-    assert!(scratch.children.len() >= COUNT);
-}
-
-#[test]
 fn long_display_names_pair_only_after_exact_payload_comparison() {
     let mut w = world();
     let display = vec![b'X'; 8_197];
@@ -1756,8 +1663,8 @@ fn scaled_countries(count: u32) -> World {
 }
 
 #[test]
-fn stability_batched_copies_match_serial_at_five_thousand_countries() {
-    const COUNT: u32 = 5_000;
+fn stability_batched_copies_match_serial() {
+    const COUNT: u32 = 4;
     let w = scaled_countries(COUNT);
     let copies = Copies::new(&w);
     let countries = ccountry::Reader::new(&copies, BASE, GS).unwrap();

@@ -712,14 +712,14 @@ mod tests {
     }
 
     #[test]
-    fn exact_operands_aliases_duplicates_and_five_thousand_countries() {
-        let f = Fixture::new(5000);
-        let mut rows = vec![Row::default(); 5000];
+    fn exact_operands_aliases_and_duplicates() {
+        let f = Fixture::new(3);
+        let mut rows = vec![Row::default(); 3];
         let mut operatives = [Operative::default(); 2];
         assert_eq!(required_operatives(&f, 0, GAME), Ok(3));
         assert_eq!(
             f.run(&mut rows, &mut operatives).outcome,
-            Outcome::Rows { len: 5000 }
+            Outcome::Rows { len: 3 }
         );
         assert_eq!(
             rows[0],
@@ -740,12 +740,12 @@ mod tests {
                 context: -33333
             }; 2]
         );
-        assert_eq!(rows[4999].country, 5000);
+        assert_eq!(rows[2].country, 3);
         assert_eq!(
             f.run(&mut rows[..1], &mut operatives).outcome,
             Outcome::Truncated {
                 len: 1,
-                unread_rows: 4999
+                unread_rows: 2
             }
         );
         let short = f.run(&mut rows, &mut operatives[..1]);

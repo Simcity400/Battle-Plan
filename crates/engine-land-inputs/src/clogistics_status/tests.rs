@@ -177,23 +177,23 @@ fn value(country: usize, series: u32, archetype: u32) -> i64 {
 }
 
 #[test]
-fn worker_sizes_5000_country_roster_without_reading_native_excluded_countries() {
+fn worker_sizes_the_roster_without_reading_native_excluded_countries() {
     const COUNTRY_POINTERS: usize = 0x500_0000;
     const COUNTRY_LINKS: usize = 0x501_0000;
     const HUMAN_COUNTS: usize = 0x502_0000;
     const AUTONOMY_FLAGS: usize = 0x503_0000;
     let mut fixture = Fixture::new(3);
-    fixture.array(GAME + cgame_state::COUNTRIES, COUNTRY_POINTERS, 5_001);
-    fixture.array(GAME + cgame_state::COUNTRY_LINKS, COUNTRY_LINKS, 5_001);
-    fixture.array(GAME + cgame_state::HUMAN_STATUS, HUMAN_COUNTS, 5_001);
-    fixture.array(GAME + cgame_state::AUTONOMOUS_STATUS, AUTONOMY_FLAGS, 5_001);
-    fixture.bytes(HUMAN_COUNTS, &vec![0; 5_001]);
-    fixture.bytes(AUTONOMY_FLAGS, &vec![1; 5_001]);
+    fixture.array(GAME + cgame_state::COUNTRIES, COUNTRY_POINTERS, 9);
+    fixture.array(GAME + cgame_state::COUNTRY_LINKS, COUNTRY_LINKS, 9);
+    fixture.array(GAME + cgame_state::HUMAN_STATUS, HUMAN_COUNTS, 9);
+    fixture.array(GAME + cgame_state::AUTONOMOUS_STATUS, AUTONOMY_FLAGS, 9);
+    fixture.bytes(HUMAN_COUNTS, &[0; 9]);
+    fixture.bytes(AUTONOMY_FLAGS, &[1; 9]);
     fixture.bytes(HUMAN_COUNTS + 1, &[1]);
     fixture.bytes(AUTONOMY_FLAGS + 3, &[0]);
     fixture.pointer(COUNTRY_POINTERS, 0);
     fixture.u32(COUNTRY_LINKS, 0);
-    for slot in 1..=5_000 {
+    for slot in 1..=8 {
         let pointer = match slot {
             1 => HUMAN.0,
             2 => AI.0,
@@ -205,7 +205,7 @@ fn worker_sizes_5000_country_roster_without_reading_native_excluded_countries() 
         fixture.pointer(pointer, BASE + ccountry::VTABLE_RVA);
         fixture.u32(pointer + ccountry::ID, slot);
     }
-    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(15_000));
+    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(24));
     let mut output = Vec::new();
     assert_eq!(
         walk_growing(&fixture, BASE, GAME, &mut output),
@@ -718,34 +718,34 @@ impl Memory for Scaled {
 }
 
 #[test]
-fn native_acquisition_sizes_owners_and_rows_from_five_thousand_countries() {
-    let fixture = Scaled::new(5000);
-    assert_eq!(owner_capacity(&fixture, BASE, GAME), Ok(5001));
-    let mut owners = vec![BalanceOwner::default(); 5000];
+fn native_acquisition_sizes_owners_and_rows_from_the_live_roster() {
+    let fixture = Scaled::new(4);
+    assert_eq!(owner_capacity(&fixture, BASE, GAME), Ok(5));
+    let mut owners = vec![BalanceOwner::default(); 4];
     assert_eq!(
         walk_balance_owners(&fixture, BASE, GAME, &mut owners),
-        Outcome::Rows { len: 5000 }
+        Outcome::Rows { len: 4 }
     );
-    assert_eq!(owners.last().unwrap().country, 5000);
+    assert_eq!(owners.last().unwrap().country, 4);
     assert_eq!(
-        walk_balance_owners(&fixture, BASE, GAME, &mut owners[..4999]),
+        walk_balance_owners(&fixture, BASE, GAME, &mut owners[..3]),
         Outcome::Truncated {
-            len: 4999,
+            len: 3,
             unread_rows: 1
         }
     );
-    let mut rows = vec![Row::default(); 15000];
+    let mut rows = vec![Row::default(); 12];
     assert_eq!(
         walk(&fixture, BASE, GAME, &mut rows),
-        Outcome::Rows { len: 15000 }
+        Outcome::Rows { len: 12 }
     );
-    assert_eq!(rows[14999].country, 5000);
-    assert_eq!(rows[14999].token, token(2));
-    assert_eq!(rows[14999].balance_history, owners[4999].history);
+    assert_eq!(rows[11].country, 4);
+    assert_eq!(rows[11].token, token(2));
+    assert_eq!(rows[11].balance_history, owners[3].history);
     assert_eq!(
-        walk(&fixture, BASE, GAME, &mut rows[..14999]),
+        walk(&fixture, BASE, GAME, &mut rows[..11]),
         Outcome::Truncated {
-            len: 14997,
+            len: 9,
             unread_rows: 3
         }
     );

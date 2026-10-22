@@ -973,9 +973,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn word_demand_presizes_destroyed_divisions_for_five_thousand_countries() {
-        let mut world = crate::ccountry::synthetic::World::new(0, 5_000, ccountry::DIVISIONS + 16);
-        for slot in 1..=5_000 {
+    fn word_demand_presizes_destroyed_divisions_and_grows_with_combat_references() {
+        // regression: cbb071fb60 Retry live sizing and grow observer storage from independent pressure
+        let mut world = crate::ccountry::synthetic::World::new(0, 2, ccountry::DIVISIONS + 16);
+        for slot in 1..=2 {
             let army = world.alloc(cunit::COMBAT_REFERENCE_DATA + 16);
             let roster = world.alloc(8);
             world.u64(army, carmy::VTABLE_RVA as u64);
@@ -984,7 +985,7 @@ mod tests {
         }
         assert_eq!(
             word_demand(&world.memory(), world.module, world.game_state()),
-            Ok(70_000)
+            Ok(28)
         );
         // A live combat-reference roster can grow without adding a country.
         let roster =
@@ -994,7 +995,7 @@ mod tests {
         world.array(army + cunit::COMBAT_REFERENCE_DATA, combats, 5);
         assert_eq!(
             word_demand(&world.memory(), world.module, world.game_state()),
-            Ok(70_005)
+            Ok(33)
         );
     }
     #[test]

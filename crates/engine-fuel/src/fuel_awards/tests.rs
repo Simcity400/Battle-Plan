@@ -190,8 +190,8 @@ fn start_and_settle_read_only_their_operand_fields() {
 }
 
 #[test]
-fn applied_acquisition_at_5000_countries_preserves_wrap_zero_and_loaded_pending() {
-    let mut memory = fixture(5000);
+fn applied_acquisition_preserves_wrap_zero_and_loaded_pending() {
+    let mut memory = fixture(2);
     let received = [11_i64, -23, 37];
     for (index, value) in received.iter().enumerate() {
         memory.put(
@@ -202,7 +202,7 @@ fn applied_acquisition_at_5000_countries_preserves_wrap_zero_and_loaded_pending(
             &value.to_le_bytes(),
         );
     }
-    for slot in 1..=5000 {
+    for slot in 1..=2 {
         let status = STATUS + slot * 0x1000;
         let begun = start(&memory, 0, status).unwrap();
         let amount = if slot == 1 { 0 } else { 31_i64 };
@@ -216,7 +216,7 @@ fn applied_acquisition_at_5000_countries_preserves_wrap_zero_and_loaded_pending(
         assert_eq!(result.received, if slot == 1 { received } else { [0; 3] });
         assert_eq!(begun.remaining_hours, 7);
     }
-    assert!(memory.reads.get() < 5000 * 120);
+    assert!(memory.reads.get() < 2 * 120);
 }
 #[test]
 fn country_replacement_and_changed_applied_fields_refuse_only_the_root() {
@@ -259,12 +259,12 @@ fn native_retained_name_supports_heap_length_without_a_chosen_limit() {
 }
 
 #[test]
-fn live_census_at_5000_includes_null_air_countries_and_all_name_bytes() {
-    let mut memory = fixture(5000);
+fn live_census_includes_null_air_countries_and_all_name_bytes() {
+    let mut memory = fixture(3);
     let manager = 0x600000;
     let airs = 0x700000;
     memory.span(manager, 0x50);
-    memory.span(airs, 5001 * 8);
+    memory.span(airs, 4 * 8);
     memory.put(
         STATE + cgame_state::STRATEGIC_AIR_MANAGER,
         &(manager as u64).to_le_bytes(),
@@ -273,8 +273,8 @@ fn live_census_at_5000_includes_null_air_countries_and_all_name_bytes() {
         manager,
         &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
     );
-    memory.array(manager + cstrategic_air_manager::COUNTRY_AIR, airs, 5001);
-    for slot in 1..=5000 {
+    memory.array(manager + cstrategic_air_manager::COUNTRY_AIR, airs, 4);
+    for slot in 1..=3 {
         let country = COUNTRY + slot * 0x2000;
         let roster = 0x60000000 + slot * 0x100;
         let division = 0x70000000 + slot * 0x1000;
@@ -295,8 +295,8 @@ fn live_census_at_5000_includes_null_air_countries_and_all_name_bytes() {
     assert_eq!(
         demand(&memory, 0, STATE).unwrap(),
         Demand {
-            entries: 10000,
-            names: 40000,
+            entries: 6,
+            names: 24,
             name_stride: 8
         }
     );

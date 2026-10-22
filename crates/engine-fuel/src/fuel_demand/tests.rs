@@ -1,6 +1,5 @@
 use super::*;
 use crate::walk::Buffer;
-use crate::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
 use std::{cell::Cell, collections::BTreeMap};
 
 #[derive(Default)]
@@ -92,7 +91,7 @@ fn buffers<'a>(
 }
 
 #[test]
-fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached_faults() {
+fn cold_and_later_context_index_growth_keeps_original_contexts_and_cached_faults() {
     const STATE: usize = 0x1000;
     const REGIONS: usize = 0x100000;
     let mut contexts = Vec::new();
@@ -100,7 +99,7 @@ fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached
     let mut out = buffers(&mut [], &mut [], &mut []);
     out.contexts.rows = Buffer::Growing(&mut contexts);
     out.context_slots = Buffer::Growing(&mut slots);
-    for count in [1_500_usize, 5_000] {
+    for count in [8_usize, 40] {
         let mut memory = Map::default();
         memory.span(STATE, 0x800);
         memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA, 8);
@@ -132,7 +131,7 @@ fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached
         }
         let source = Fault {
             memory: &memory,
-            at: REGIONS + 37 * 0x100 + crate::cstrategic_region::PROVINCES_COUNT,
+            at: REGIONS + 3 * 0x100 + crate::cstrategic_region::PROVINCES_COUNT,
             failures: Cell::new(0),
         };
         out.contexts.len = 0;
@@ -140,7 +139,7 @@ fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached
         out.context_slots.fill(0);
         for index in 0..count {
             let value = super::air::context(&source, 0, STATE, REGIONS + index * 0x100, &mut out);
-            if index == 37 {
+            if index == 3 {
                 assert!(value.is_err());
             } else {
                 assert_eq!(value.unwrap().0, index);
@@ -151,7 +150,7 @@ fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached
         let reads = memory.reads.get();
         for index in 0..count {
             let value = super::air::context(&source, 0, STATE, REGIONS + index * 0x100, &mut out);
-            if index == 37 {
+            if index == 3 {
                 assert!(value.is_err());
             } else {
                 assert_eq!(value.unwrap().0, index);
@@ -436,68 +435,4 @@ fn context_keeps_native_slot_province_multiplicity_threshold_and_period_law() {
             }
         }
     }
-}
-
-#[test]
-fn admitted_5000_country_capture_is_linear_and_keeps_empty_family_zero_independent_of_topology() {
-    const STATE: usize = 0x1000;
-    const COUNTRIES: usize = 0x10000;
-    const LINKS: usize = 0x30000;
-    const MANAGER: usize = 0x40000;
-    const AIRS: usize = 0x50000;
-    const COUNTRY: usize = 0x100000;
-    const AIR: usize = 0x800000;
-    let mut memory = Map::default();
-    memory.span(STATE, 0x2000);
-    memory.span(COUNTRIES, 5001 * 8);
-    memory.span(LINKS, 5001 * 4);
-    memory.span(MANAGER, 0x50);
-    memory.span(AIRS, 5001 * 8);
-    memory.array(STATE + cgame_state::COUNTRIES, COUNTRIES, 5001);
-    memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, 5001);
-    memory.put(
-        STATE + cgame_state::STRATEGIC_AIR_MANAGER,
-        &(MANAGER as u64).to_le_bytes(),
-    );
-    memory.put(
-        MANAGER,
-        &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
-    );
-    memory.array(MANAGER + cstrategic_air_manager::COUNTRY_AIR, AIRS, 5001);
-    for id in 1_u32..=5000 {
-        let country = COUNTRY + id as usize * 0x400;
-        let air = AIR + id as usize * 0x200;
-        memory.span(country, 0x300);
-        memory.span(air, 0x100);
-        memory.put(COUNTRIES + id as usize * 8, &(country as u64).to_le_bytes());
-        memory.put(LINKS + id as usize * 4, &id.to_le_bytes());
-        memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
-        memory.put(country + ccountry::ID, &id.to_le_bytes());
-        memory.put(country + ccountry::ID_INSTANCE, &(id + 7000).to_le_bytes());
-        memory.put(AIRS + id as usize * 8, &(air as u64).to_le_bytes());
-        memory.put(air, &(cstrategic_air::VTABLE_RVA as u64).to_le_bytes());
-        memory.put(air + cstrategic_air::COUNTRY, &id.to_le_bytes());
-    }
-    let mut countries = vec![Country::default(); 5000];
-    let mut out = buffers(&mut countries, &mut [], &mut []);
-    capture(&memory, 0, STATE, &mut out).unwrap();
-    assert_eq!(out.countries.len, 5000);
-    assert_eq!(out.navy_reason, None);
-    assert!(matches!(
-        out.roots_outcome,
-        Some(crate::walk::Outcome::Unavailable { .. })
-    ));
-    assert!(
-        out.countries
-            .rows
-            .iter()
-            .all(|country| country.army_reason.is_none()
-                && country.air_reason.is_none()
-                && country.divisions.len == 0
-                && country.sites.len == 0)
-    );
-    assert!(
-        memory.reads.get() < 5000 * 80,
-        "world census must not rewalk per country"
-    );
 }

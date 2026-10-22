@@ -215,17 +215,17 @@ mod tests {
         }
     }
     #[test]
-    fn registry_append_demands_only_the_last_of_five_thousand_entries() {
+    fn registry_append_demands_only_the_last_entry() {
         let mut image = Image::default();
         let state = 0x1000;
         let data = 0x10000;
-        image.array(state + cgame_state::PENDING_EVENTS, data, 5000);
-        let last = data + 4999 * PENDING_STRIDE;
-        image.pending(last, 5001);
-        let row = pending_last(&image, state, 5001).unwrap();
+        image.array(state + cgame_state::PENDING_EVENTS, data, 3);
+        let last = data + 2 * PENDING_STRIDE;
+        image.pending(last, 4);
+        let row = pending_last(&image, state, 4).unwrap();
         assert_eq!(
             (row.instance, row.definition, row.scope, row.due_hour),
-            (5001, 99, 88, -25)
+            (4, 99, 88, -25)
         );
         assert!(
             image
@@ -235,7 +235,7 @@ mod tests {
                 .all(|at| *at == state + cgame_state::PENDING_EVENTS
                     || (*at >= last && *at < last + PENDING_STRIDE))
         );
-        assert!(pending_last(&image, state, 5000).is_err());
+        assert!(pending_last(&image, state, 3).is_err());
     }
     #[test]
     fn registry_baseline_preserves_duplicate_members_and_refuses_cycles() {

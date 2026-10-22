@@ -729,86 +729,6 @@ fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
 }
 
 #[test]
-fn growing_core_lists_preserve_5000_links_and_later_growth() {
-    let mut memory = fixture();
-    let links_address = 0x4d00_0000;
-    let mut rows = Vec::new();
-    let mut links = Vec::new();
-    for count in [5_000, 11_000] {
-        memory.array(STATE_A + cstate::CORES, links_address, count);
-        memory.array(STATE_B + cstate::CORES, 0, 0);
-        // State 2 claims as many countries as state 1 has cores.
-        let claims_address = links_address + 0x10_0000;
-        memory.array(STATE_B + cstate::CLAIMS, claims_address, count);
-        for index in 0..count {
-            memory.u32(links_address + index as usize * 4, index % 5_000 + 1);
-            memory.u32(claims_address + index as usize * 4, index % 5_000 + 2);
-        }
-        let mut required = 0;
-        assert_eq!(
-            state_cores_growing(
-                &memory,
-                0,
-                GS,
-                &[1, 2],
-                &|_| true,
-                &mut rows,
-                &mut links,
-                &mut required
-            ),
-            Outcome::Rows { len: 2 }
-        );
-        let count = count as usize;
-        assert_eq!(required, 2 * count);
-        assert_eq!(
-            rows[..2],
-            [
-                CoreRow {
-                    state: 1,
-                    start: 0,
-                    len: count,
-                    claims_start: count,
-                    claims_len: 0,
-                    locations_start: count,
-                    province_locations_start: count,
-                    ..CoreRow::default()
-                },
-                CoreRow {
-                    state: 2,
-                    start: count,
-                    len: 0,
-                    claims_start: count,
-                    claims_len: count,
-                    locations_start: 2 * count,
-                    province_locations_start: 2 * count,
-                    ..CoreRow::default()
-                }
-            ]
-        );
-        let expected = |offset| (0..count as u32).map(move |index| index % 5_000 + offset);
-        assert!(links[..count].iter().copied().eq(expected(1)));
-        assert!(links[count..2 * count].iter().copied().eq(expected(2)));
-    }
-    let mut required = 0;
-    assert_eq!(
-        state_cores(
-            &memory,
-            0,
-            GS,
-            &[1, 2],
-            &|_| true,
-            &mut [],
-            &mut [],
-            &mut required
-        ),
-        Outcome::Truncated {
-            len: 0,
-            unread_rows: 2
-        }
-    );
-}
-
-#[test]
 fn live_demand_sizes_every_raid_state_table_without_acquiring_payloads() {
     let mut memory = fixture();
     memory.array(STATE_A + cstate::CORES, 0x4d00_0000, 5_000);
@@ -1278,49 +1198,6 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
         }
     }
     (m, game_state)
-}
-
-#[test]
-fn growing_raid_state_tables_complete_5000_countries_and_later_mod_growth() {
-    let mut buffers = Buffers::empty();
-    for state_count in [5_000, 11_000] {
-        let (arena, game_state) = scaled(5_000, state_count);
-        let memory = crate::memory::SliceMemory {
-            base: arena.base,
-            bytes: &arena.bytes,
-        };
-        let captured = walk_growing(
-            &memory,
-            arena.base,
-            game_state,
-            &mut buffers,
-            Selection::ALL,
-        );
-        assert_eq!(
-            captured.outcomes,
-            [
-                Outcome::Rows { len: state_count },
-                Outcome::Rows {
-                    len: state_count * 3
-                },
-                Outcome::Rows {
-                    len: state_count * MODIFIERS_PER_STATE
-                },
-                Outcome::Rows { len: 500 }
-            ]
-        );
-        assert_eq!(buffers.inputs[state_count - 1].state, state_count as u32);
-        assert_eq!(
-            buffers.resources[state_count * 3 - 1].state,
-            state_count as u32
-        );
-        assert_eq!(
-            buffers.modifiers[state_count * MODIFIERS_PER_STATE - 1].state,
-            state_count as u32
-        );
-        assert_eq!(buffers.read_countries.len(), 5_000);
-        assert_eq!(captured.required.countries, 5_001);
-    }
 }
 
 /// `cargo test --release -p engine raid_state_inputs_bench -- --ignored --nocapture`

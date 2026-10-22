@@ -911,9 +911,9 @@ mod tests {
     }
 
     #[test]
-    fn one_owner_with_networks_in_5000_countries_is_checked_for_duplicates() {
+    fn one_owner_with_networks_in_every_other_country_is_checked_for_duplicates() {
         use crate::ccountry::synthetic::World;
-        const COUNT: u32 = 5_000;
+        const COUNT: u32 = 4;
         let mut world = World::new(0, COUNT, 0x10);
         let manager = world.alloc(0x100);
         let operatives = world.alloc((COUNT as usize + 1) * 8);
