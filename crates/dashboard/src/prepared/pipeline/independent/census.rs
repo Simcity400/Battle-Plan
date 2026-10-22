@@ -65,101 +65,46 @@ trait Census: Default + Serialize + DeserializeOwned + 'static {
     ) -> io::Result<()>;
 }
 
-impl Census for country_factories::prepared::Prepared {
-    fn family() -> &'static prepass::Family {
-        &FACTORIES_FAMILY
-    }
+/// [`Census`] for a prepared census of `family`, through its own methods.
+macro_rules! census {
+    ($prepared:ty, $family:ident) => {
+        impl Census for $prepared {
+            fn family() -> &'static prepass::Family {
+                &$family
+            }
 
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        replay: &Replay,
-        changes: &FrameChanges,
-    ) -> io::Result<()> {
-        Self::observe(self, frame, replay, changes)
-    }
+            fn observe(
+                &mut self,
+                frame: &DecodedFrame,
+                replay: &Replay,
+                changes: &FrameChanges,
+            ) -> io::Result<()> {
+                Self::observe(self, frame, replay, changes)
+            }
 
-    fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
-        Self::advance_quiet(self, hour, read)
-    }
+            fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
+                Self::advance_quiet(self, hour, read)
+            }
 
-    fn bytes(&self) -> usize {
-        Self::bytes(self)
-    }
+            fn bytes(&self) -> usize {
+                Self::bytes(self)
+            }
 
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, cancelled)
-    }
+            fn flush(
+                &mut self,
+                writer: &mut store::Writer,
+                branch: u64,
+                cancelled: &AtomicBool,
+            ) -> io::Result<()> {
+                Self::flush(self, writer, branch, cancelled)
+            }
+        }
+    };
 }
 
-impl Census for country_nukes::prepared::Prepared {
-    fn family() -> &'static prepass::Family {
-        &NUKES_FAMILY
-    }
-
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        replay: &Replay,
-        changes: &FrameChanges,
-    ) -> io::Result<()> {
-        Self::observe(self, frame, replay, changes)
-    }
-
-    fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
-        Self::advance_quiet(self, hour, read)
-    }
-
-    fn bytes(&self) -> usize {
-        Self::bytes(self)
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, cancelled)
-    }
-}
-
-impl Census for dockyard_repairs::Prepared {
-    fn family() -> &'static prepass::Family {
-        &REPAIRS_FAMILY
-    }
-
-    fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        replay: &Replay,
-        changes: &FrameChanges,
-    ) -> io::Result<()> {
-        Self::observe(self, frame, replay, changes)
-    }
-
-    fn advance_quiet(&mut self, hour: i32, read: bool) -> io::Result<bool> {
-        Self::advance_quiet(self, hour, read)
-    }
-
-    fn bytes(&self) -> usize {
-        Self::bytes(self)
-    }
-
-    fn flush(
-        &mut self,
-        writer: &mut store::Writer,
-        branch: u64,
-        cancelled: &AtomicBool,
-    ) -> io::Result<()> {
-        Self::flush(self, writer, branch, cancelled)
-    }
-}
+census!(country_factories::prepared::Prepared, FACTORIES_FAMILY);
+census!(country_nukes::prepared::Prepared, NUKES_FAMILY);
+census!(dockyard_repairs::Prepared, REPAIRS_FAMILY);
 
 // --- Families --------------------------------------------------------------
 
@@ -614,8 +559,6 @@ impl<C: Census> CensusBranch<C> {
 }
 
 impl<C: Census> Branch for CensusBranch<C> {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -635,8 +578,6 @@ impl<C: Census> Branch for CensusBranch<C> {
         observe_block(&mut *self.0, block, None, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.0.bytes()
     }
@@ -649,10 +590,6 @@ impl<C: Census> Branch for CensusBranch<C> {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.0.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {

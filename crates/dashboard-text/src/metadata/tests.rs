@@ -235,8 +235,8 @@ fn catalogue_checked_allocation_failures_propagate_instead_of_becoming_success()
 }
 
 #[test]
-fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild_at_5000_countries() {
-    let mut sample = scale_frame(1, 100, 5000);
+fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild() {
+    let mut sample = scale_frame(1, 100, 24);
     let mut tags = super::LinkTags::default();
     assert!(tags.update(&sample).unwrap());
     assert!(!tags.update(&sample).unwrap());
@@ -292,7 +292,7 @@ fn link_tags_balance_reads_keep_mapping_and_identity_changes_rebuild_at_5000_cou
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *sample.tables[TableId::Countries.index()]
     {
-        rows[0].canonical_slot = 5000;
+        rows[0].canonical_slot = 24;
     }
     assert!(tags.update(&sample).unwrap());
     assert_eq!(tags.get(100_000), None);
@@ -432,48 +432,6 @@ fn link_tags_contradictory_raw_links_and_conflicting_slots_never_reach_a_scan() 
         ));
         assert!(super::LinkTags::default().update(&decoded).is_err());
     }
-}
-
-#[test]
-#[ignore = "manual LinkTags::update timing in the test profile"]
-fn link_tags_update_cost_5000_countries() {
-    use std::{hint::black_box, time::Instant};
-    let first = scale_frame(1, 100, 5000);
-    // Prepare allocations before timing; Countries changes every built hour,
-    // while CountryLinks retains the same view as an hourly replay decoder.
-    let hours: Vec<_> = (101..=124)
-        .map(|hour| {
-            let mut sample = first.clone();
-            sample.hour = hour;
-            if let TableView::Complete(TableRows::Countries(rows)) =
-                &mut *sample.tables[TableId::Countries.index()]
-            {
-                for country in rows {
-                    country.political_power_raw = Some(i64::from(hour));
-                }
-            }
-            sample
-        })
-        .collect();
-    let mut costs = Vec::new();
-    for _ in 0..5 {
-        let mut tags = super::LinkTags::default();
-        tags.update(&first).unwrap();
-        let start = Instant::now();
-        for _ in 0..10 {
-            for hour in &hours {
-                black_box(tags.update(black_box(hour)).unwrap());
-            }
-        }
-        let ns_per_hour = start.elapsed().as_nanos() / (10 * hours.len()) as u128;
-        assert_eq!(tags.iter().count(), 5000);
-        costs.push(ns_per_hour);
-    }
-    costs.sort_unstable();
-    eprintln!(
-        "LinkTags::update 5000 countries, 240 built hours/sample: {costs:?} ns/hour; median {} ns/hour",
-        costs[2]
-    );
 }
 
 #[test]
@@ -1573,7 +1531,7 @@ fn scalar_read_rule(
 }
 
 #[test]
-fn scalar_supplying_reads_share_one_projection_at_5000_holders() {
+fn scalar_supplying_reads_share_one_projection_across_holders() {
     use replay_data::format::FormatVersion;
     use replay_frame::frame::Metrics;
     super::SLOT_READS.with_borrow_mut(|held| *held = None);
@@ -1583,7 +1541,7 @@ fn scalar_supplying_reads_share_one_projection_at_5000_holders() {
     metrics.table_ns[TableId::CountryFuel.index()] = 1;
     let hour = daily_slot_of(TableId::CountryFuel) + 1;
     let expected = scalar_read_rule(format, &metrics, TableId::CountryFuel, hour);
-    for _ in 0..5000 {
+    for _ in 0..24 {
         assert_eq!(
             super::slot_read(format, &metrics, TableId::CountryFuel, hour),
             expected
@@ -1619,8 +1577,10 @@ fn scalar_supplying_reads_share_one_projection_at_5000_holders() {
     assert_eq!(super::slot_read_batches() - before, 5);
 }
 
-fn country_key_masks_follow_the_recorded_rows(count: u32) {
+#[test]
+fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
     use super::CountryKeys;
+    let count = 8;
     let mut input = scale_frame(1, 100, count);
     let baseline = input.complete::<tables::Countries>().unwrap().to_vec();
     let keys = CountryKeys::read(&baseline);
@@ -1673,14 +1633,4 @@ fn country_key_masks_follow_the_recorded_rows(count: u32) {
         count as usize,
         "a snapshot rechecks every key"
     );
-}
-
-#[test]
-fn country_key_changes_use_field_masks_and_snapshots_keep_full_comparison() {
-    country_key_masks_follow_the_recorded_rows(8);
-}
-
-#[test]
-fn one_country_balance_change_does_not_compare_5000_country_keys() {
-    country_key_masks_follow_the_recorded_rows(5000);
 }

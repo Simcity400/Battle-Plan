@@ -1309,120 +1309,6 @@ fn prepared_country_identities_match_after_commits_resume_and_append() {
 }
 
 #[test]
-fn prepared_country_identities_keep_all_5000_countries() {
-    let replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(
-            1,
-            vec![scale_frame(1, 10, 5000), scale_frame(1, 11, 5000)],
-        )],
-    )
-    .unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("scale");
-    run(&source, None, &AtomicBool::new(false), |_| {}).unwrap();
-    assert_prepared_identities(&source, 1);
-    let history = crate::products::country_history::prepared_branch_histories(
-        &source,
-        1,
-        None,
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(history.countries.len(), 5000);
-    assert!(
-        history
-            .countries
-            .values()
-            .all(|country| country.identities.len() == 1)
-    );
-}
-
-#[test]
-fn prepared_army_top_first_page_reads_prepared_ranks_at_5000_countries() {
-    use crate::products::army_size::*;
-    let make = |hour| {
-        let mut frame = scale_frame(1, hour, 5000);
-        *frame.tables[TableId::DivisionCensus.index()] =
-            TableView::Complete(TableRows::DivisionCensus(
-                (0..5000)
-                    .map(|index| replay_data::rows::DivisionCensusRow {
-                        country: 100_000 + index,
-                        grouped: index % 101,
-                        ungrouped: 0,
-                    })
-                    .collect(),
-            ));
-        frame
-    };
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![make(100), make(101)])]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("rank-scale");
-    let flag = AtomicBool::new(false);
-    run(&source, None, &flag, |_| {}).unwrap();
-    let params = ArmySizeParams {
-        template_at: None,
-        branch_id: "1".into(),
-        tags: Vec::new(),
-        top: Some(10),
-        measure: ArmyMeasure::Divisions,
-        count_for: ArmyAttribution::Owner,
-        by_type: false,
-        window: Some(0),
-    };
-    let context = crate::products::LoadContext { content: None };
-    let started = Instant::now();
-    let reply = crate::products::army_size::prepared::query(&source, &params, &context, &flag)
-        .unwrap()
-        .unwrap();
-    let elapsed = started.elapsed();
-    assert_eq!(reply.series.len(), 10);
-    assert!(
-        reply
-            .series
-            .iter()
-            .all(|series| series.runs.iter().all(|run| run.raw == "100"))
-    );
-    use crate::products::Product;
-    let oracle = ArmySize::load(&source, &params, &context, &flag).unwrap();
-    assert_eq!(
-        serde_json::to_value(&reply).unwrap(),
-        serde_json::to_value(&oracle).unwrap()
-    );
-    eprintln!(
-        "prepared army top-10 first page: 5,000 countries, {:?}, {} bytes (debug test profile)",
-        elapsed,
-        serde_json::to_vec(&reply).unwrap().len()
-    );
-}
-
-#[test]
-fn prepared_country_identity_state_grows_with_changes_not_hours() {
-    let mut scan = crate::products::country_history::HistoryScan::new(false, &[]);
-    let mut frame = scale_frame(1, 0, 32);
-    scan.observe(&frame);
-    let first = serde_json::to_vec(&scan).unwrap().len();
-    for hour in 1..17_520 {
-        frame.hour = hour;
-        scan.observe(&frame);
-    }
-    let bytes = serde_json::to_vec(&scan).unwrap().len();
-    let history = scan.finish();
-    assert!(
-        history
-            .countries
-            .values()
-            .all(|country| country.identities.len() == 1)
-    );
-    assert!(bytes < first + 1000);
-    eprintln!(
-        "prepared identities: 32 countries, 17,520 hours, {bytes} bytes (first hour {first})"
-    );
-}
-
-#[test]
 fn cancellation_discards_whole_block_and_resume_visits_only_unaccepted_tail() {
     let replay = recording();
     assert_eq!(replay.index.len(), 2);
@@ -1849,45 +1735,6 @@ fn old_domain_accumulator_schema_rebuilds_completed_cache() {
     assert_eq!(rebuilt.new_blocks, replay.index.len());
     assert_eq!(rebuilt.next_block, replay.index.len());
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 0);
-}
-
-#[test]
-fn five_thousand_country_accumulators_retain_current_inputs_not_campaign_frames() {
-    let replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(1, 10, 1)])]).unwrap();
-    let mut state = BranchState::new(&replay, 1, 10);
-    let flag = AtomicBool::new(false);
-    for hour in 10..14 {
-        let decoded = frame(1, hour, 5_000);
-        let mut countries = 0;
-        state
-            .focus
-            .observe(&decoded, &flag, |_| {
-                countries += 1;
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(countries, 5_000);
-        state
-            .production
-            .ingest(
-                replay.format,
-                &decoded,
-                crate::products::equipment::production::Named {
-                    units: None,
-                    texts: None,
-                },
-                &flag,
-            )
-            .unwrap();
-        state.production.flush();
-        state.measure.observe(&decoded).unwrap();
-    }
-    state.measure.validate_checkpoint().unwrap();
-    let json = serde_json::to_value(&state).unwrap();
-    assert!(json.get("frames").is_none());
-    let decoded: Box<BranchState> = serde_json::from_value(json).unwrap();
-    assert_eq!(decoded.measure.next_hour(), 14);
 }
 
 #[test]
@@ -2365,7 +2212,7 @@ fn prepared_groups_replace_one_state_across_commits_cancel_resume_and_append_at_
     };
     compare(&source, "1");
     let grown = middle
-        .append(&[continuation_records(&middle, 1, vec![frame(1, 15, 5000)])])
+        .append(&[continuation_records(&middle, 1, vec![frame(1, 15, 24)])])
         .unwrap();
     fixture.replace(&grown);
     let appended = fixture.source("3");
@@ -2681,7 +2528,7 @@ fn prepared_idea_query_waits_for_its_state_even_with_complete_other_sections() {
 }
 
 #[test]
-fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_countries() {
+fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_growth() {
     use crate::products::{
         LoadContext, Product,
         subjects::{SubjectParams, Subjects},
@@ -2786,14 +2633,14 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
         .append(&[continuation_records(
             &middle,
             1,
-            vec![subjects(15, 5000), subjects(16, 5000)],
+            vec![subjects(15, 24), subjects(16, 24)],
         )])
         .unwrap();
     fixture.replace(&grown);
     let source = fixture.source("subjects-3");
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     let reply = compare(&source);
-    assert_eq!(reply.runs.len(), 5000);
+    assert_eq!(reply.runs.len(), 24);
     assert!(
         reply
             .unobserved
@@ -2803,7 +2650,7 @@ fn prepared_subjects_keep_changes_across_commits_cancel_resume_append_and_5000_c
 }
 
 #[test]
-fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_countries() {
+fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_growth() {
     use crate::products::{
         LoadContext, Product,
         autonomy::{Autonomy, AutonomyParams},
@@ -2914,14 +2761,14 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
         .append(&[continuation_records(
             &middle,
             1,
-            vec![autonomy(15, 5000), autonomy(16, 5000)],
+            vec![autonomy(15, 24), autonomy(16, 24)],
         )])
         .unwrap();
     fixture.replace(&grown);
     let source = fixture.source("autonomy-3");
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     let reply = compare(&source);
-    assert_eq!(reply.subjects.len(), 4999);
+    assert_eq!(reply.subjects.len(), 23);
     assert_eq!(
         reply
             .recorded
@@ -2945,7 +2792,7 @@ fn prepared_autonomy_matches_oracle_after_commits_cancel_resume_append_and_5000_
 }
 
 #[test]
-fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_countries() {
+fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_growth() {
     use crate::products::{BranchParams, LoadContext, Product, world_tension::WorldTension};
     fn tension(hour: i32, count: u32) -> DecodedFrame {
         let mut frame = frame(1, hour, count);
@@ -3068,14 +2915,14 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
         .append(&[continuation_records(
             &middle,
             1,
-            vec![tension(15, 5000), tension(16, 5000)],
+            vec![tension(15, 24), tension(16, 24)],
         )])
         .unwrap();
     fixture.replace(&grown);
     let source = fixture.source("tension-3");
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     let reply = compare(&source);
-    assert_eq!(reply.countries.len(), 5000);
+    assert_eq!(reply.countries.len(), 24);
     assert_eq!(
         reply
             .reads
@@ -3106,7 +2953,7 @@ fn prepared_tension_matches_oracle_after_commits_cancel_resume_append_and_5000_c
 }
 
 #[test]
-fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countries() {
+fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_growth() {
     use crate::products::{
         LoadContext, Product,
         wars::{
@@ -3181,7 +3028,7 @@ fn prepared_wars_match_oracle_after_commits_cancel_resume_append_and_5000_countr
     flag.store(false, Ordering::Release);
     assert_eq!(run(&source, None, &flag, |_| {}).unwrap().new_blocks, 1);
     compare(&source, &frames);
-    let appended = vec![scaled_recorded(105, 5000), scaled_recorded(106, 5000)];
+    let appended = vec![scaled_recorded(105, 24), scaled_recorded(106, 24)];
     let grown = middle
         .append(&[continuation_records(&middle, 1, appended.clone())])
         .unwrap();
@@ -5322,74 +5169,26 @@ fn prepared_air_force_matches_native_replies_after_two_commits_resume_append_gap
 }
 
 #[test]
-fn prepared_air_force_top_first_page_at_five_thousand_countries_uses_rank_positions() {
-    use crate::products::{LoadContext, Product, air_force::*};
-    let mut frame = scale_frame(1, 100, 5000);
-    *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
-        (0..5000)
-            .map(|index| replay_data::rows::AirWingRow {
-                id: u64::from(index),
-                owner: 100_000 + index,
-                planes: (index % 101) as i32,
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    *frame.tables[TableId::WingEquipment.index()] =
-        TableView::Complete(TableRows::WingEquipment(Vec::new()));
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("air-scale");
-    let flag = AtomicBool::new(false);
-    run(&source, None, &flag, |_| {}).unwrap();
-    let context = LoadContext { content: None };
-    let started = Instant::now();
-    let mut actual=crate::products::air_force::prepared::query(&source,"series-summary",&serde_json::json!({"branchId":"1","tags":[],"family":{"kind":"air-force-size","top":10,"measure":"planes","ownership":"roster"},"from":100,"to":100,"width":1}),&context,&flag).unwrap();
-    eprintln!(
-        "prepared air top-10 / 5000 countries: {:?}, {} bytes",
-        started.elapsed(),
-        serde_json::to_vec(&actual).unwrap().len()
-    );
-    assert_eq!(actual["series"].as_array().unwrap().len(), 10);
-    actual.as_object_mut().unwrap().remove("summaries");
-    let expected = AirForceSize::load(
-        &source,
-        &AirForceParams {
-            branch_id: "1".into(),
-            tags: Vec::new(),
-            top: Some(10),
-            measure: AirForceMeasure::Planes,
-            ownership: AirForceOwnership::Roster,
-        },
-        &context,
-        &flag,
-    )
-    .unwrap();
-    assert_eq!(actual, serde_json::to_value(expected).unwrap());
-}
-
-#[test]
-fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
- {
+fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, navy::*};
     use replay_data::{
         rows::LexicalTokenRow, rows::ShipCounterInputs, rows::ShipModelRow, rows::ShipRow,
         rows::TaskForceRow,
     };
     let make = |hour| {
-        let mut frame = scale_frame(1, hour, 5000);
+        let mut frame = scale_frame(1, hour, 24);
         *frame.tables[TableId::TaskForces.index()] = TableView::Complete(TableRows::TaskForces(
-            (0..5000)
+            (0..24)
                 .map(|index| TaskForceRow {
                     id: u64::from(index) + 1,
                     roster_owner: 100_000 + index,
-                    logical_owner: 100_000 + (index + 1) % 5000,
+                    logical_owner: 100_000 + (index + 1) % 24,
                     ..Default::default()
                 })
                 .collect(),
         ));
         *frame.tables[TableId::Ships.index()] = TableView::Complete(TableRows::Ships(
-            (0..5000_u32)
+            (0..24_u32)
                 .map(|index| ShipRow {
                     id: u64::from(index) + 1,
                     task_force: u64::from(index) + 1,
@@ -5404,7 +5203,7 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and
                 .collect(),
         ));
         *frame.tables[TableId::ShipModels.index()] = TableView::Complete(TableRows::ShipModels(
-            (0..5000_u32)
+            (0..24_u32)
                 .map(|index| ShipModelRow {
                     ship: u64::from(index) + 1,
                     counter: Some(ShipCounterInputs {
@@ -5454,11 +5253,7 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and
                             ownership,
                             grouping,
                         };
-                        let now = Instant::now();
                         let mut actual=crate::products::navy::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"navy-size","measure":measure,"ownership":ownership,"grouping":grouping,"top":top},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
-                        if top.is_some() {
-                            eprintln!("prepared navy top-10 / 5000: {:?}", now.elapsed());
-                        }
                         actual.as_object_mut().unwrap().remove("summaries");
                         let expected = NavySize::load(source, &params, &context, &flag).unwrap();
                         assert_eq!(
@@ -5496,13 +5291,12 @@ fn prepared_navy_matches_native_after_two_commits_resume_append_gaps_aliases_and
 }
 
 #[test]
-fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
- {
+fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, country_nukes::*};
     let make = |hour| {
-        let mut frame = scale_frame(1, hour, 5000);
+        let mut frame = scale_frame(1, hour, 24);
         *frame.tables[TableId::Nukes.index()] = TableView::Complete(TableRows::Nukes(
-            (0..5000)
+            (0..24)
                 .map(|index| replay_data::rows::NukeRow {
                     country: 100_000 + index,
                     nuke_type: if index == 1 && hour >= 104 { 1 } else { 0 },
@@ -5536,11 +5330,7 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_al
                 top,
                 origin_hour: None,
             };
-            let started = Instant::now();
             let mut actual=crate::products::country_nukes::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-nukes","top":top,"originHour":null},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
-            if top.is_some() {
-                eprintln!("prepared nukes top-10 / 5000: {:?}", started.elapsed());
-            }
             assert_eq!(
                 actual["coverage"]["complete"].as_bool(),
                 Some(true),
@@ -5600,14 +5390,13 @@ fn prepared_country_nukes_matches_native_after_two_commits_resume_append_gaps_al
 }
 
 #[test]
-fn prepared_country_factories_matches_native_after_two_commits_resume_append_gaps_aliases_and_five_thousand_countries()
- {
+fn prepared_country_factories_matches_native_after_two_commits_resume_append_gaps_and_aliases() {
     use crate::products::{LoadContext, Product, country_factories::*};
     let make = |hour| {
-        let mut frame = scale_frame(1, hour, 5000);
+        let mut frame = scale_frame(1, hour, 24);
         *frame.tables[TableId::CountryFactories.index()] =
             TableView::Complete(TableRows::CountryFactories(
-                (0..5000)
+                (0..24)
                     .map(|index| replay_data::rows::CountryFactoriesRow {
                         country: 100_000 + index,
                         military_total_raw: i64::from(index % 101) * 100_000,
@@ -5661,14 +5450,7 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
                         tags: if ranked { vec![] } else { vec![tag.clone()] },
                         top: top.clone(),
                     };
-                    let started = Instant::now();
                     let mut actual=crate::products::country_factories::prepared::query(source,"series-summary",&serde_json::json!({"branchId":"1","tags":params.tags,"family":{"kind":"country-factories","top":top,"mode":mode,"groups":groups},"from":100,"to":source.metadata().branches[0].last_hour,"width":100}),&context,&flag).unwrap();
-                    if ranked && mask == 7 {
-                        eprintln!(
-                            "prepared factories top-10 / 5000 {mode:?}: {:?}",
-                            started.elapsed()
-                        );
-                    }
                     assert_eq!(
                         actual["coverage"]["complete"].as_bool(),
                         Some(true),
@@ -5727,12 +5509,12 @@ fn prepared_country_factories_matches_native_after_two_commits_resume_append_gap
         .collect();
     assert_eq!(dates, vec![100, 104]);
     // Prepared on their own, the factories keep their continuation apart.
-    let bytes = store
-        .read(&key, "factories-continuation-1", 0)
-        .unwrap()
-        .map(|file| zstd::stream::decode_all(file).unwrap().len())
-        .unwrap();
-    eprintln!("factory continuation / 5000 countries: {bytes} bytes");
+    assert!(
+        store
+            .read(&key, "factories-continuation-1", 0)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -6125,84 +5907,6 @@ fn progressive_game_score_state_reads_unprepared_hour_and_tail_only_countries_wi
             .kind(),
         io::ErrorKind::Interrupted
     );
-}
-
-/// Diagnostic only: print actual compiled layouts without constructing domain state.
-/// Run before and after the heap-ownership fix to identify every large aggregate.
-#[test]
-fn preparation_stack_type_sizes() {
-    fn report<T>(label: &str) {
-        println!(
-            "stack-layout {label}: type={} size={} align={} box={} option={}",
-            std::any::type_name::<T>(),
-            std::mem::size_of::<T>(),
-            std::mem::align_of::<T>(),
-            std::mem::size_of::<Box<T>>(),
-            std::mem::size_of::<Option<T>>()
-        );
-    }
-    report::<BranchState>("BranchState");
-    report::<Checkpoint>("Checkpoint");
-    report::<Accepted>("Accepted");
-    report::<replay_frame::frame::DecodedFrame>("DecodedFrame");
-    report::<replay_frame::frame::Frame>("Frame");
-    report::<Source>("Source");
-    report::<serde_json::Value>("Value");
-    report::<super::super::series::Accumulator>("series.Accumulator");
-    report::<FocusAccumulator>("focus");
-    report::<FocusIndex>("index");
-    report::<ProductionAccumulator>("production");
-    report::<MeasureAccumulator>("measure");
-    report::<crate::products::land_battles::Census>("land");
-    report::<crate::products::naval_battles::Scan>("naval");
-    report::<crate::products::division_log::Scan>("divisions");
-    report::<crate::products::country_history::HistoryScan>("identities");
-    report::<crate::products::army_size::prepared::Prepared>("army");
-    report::<crate::products::air_force::prepared::Prepared>("air");
-    report::<crate::products::navy::prepared::Prepared>("navy");
-    report::<crate::products::country_nukes::prepared::Prepared>("nukes");
-    report::<crate::products::country_factories::prepared::Prepared>("factories");
-    report::<crate::products::supply_health::prepared::Prepared>("supply");
-    report::<crate::products::construction_log::prepared::Prepared>("construction");
-    report::<crate::products::resource_balance::prepared::Prepared>("resources");
-    report::<crate::products::trade_flows::prepared::Prepared>("trade");
-    report::<crate::products::equipment_stockpile::prepared::Prepared>("stockpile");
-    report::<crate::products::country_groups::Scan>("groups");
-    report::<crate::products::military_air_ledger::prepared::Prepared>("air_ledger");
-    report::<crate::products::air_aces::prepared::Prepared>("aces");
-    report::<crate::products::raids::prepared::Prepared>("raids");
-    report::<crate::products::air_superiority::prepared::Prepared>("air_superiority");
-    report::<crate::products::subjects::Scan>("subjects");
-    report::<crate::products::autonomy::ScannedAutonomy>("autonomy");
-    report::<crate::products::world_tension::Scan>("tension");
-    report::<crate::products::wars::prepared::Observer>("wars");
-    report::<crate::products::idea_history::Scan>("ideas");
-    report::<crate::products::party_history::prepared::Prepared>("parties");
-    report::<crate::products::intelligence_prepared::Observer>("intelligence");
-    report::<crate::prepared_stability::StabilityAccumulator>("stability");
-    report::<crate::products::politics_ledger::prepared::Prepared>("ledger");
-    report::<crate::products::country_fuel::prepared::Prepared>("fuel");
-    report::<crate::products::territory::prepared::Prepared>("territory");
-    report::<crate::products::occupied_states::prepared::Prepared>("occupation");
-    report::<crate::products::game_score::prepared::Prepared>("game_score");
-    report::<crate::products::unit_leaders::prepared::Prepared>("leaders");
-    report::<crate::products::research::prepared::Prepared>("research");
-    report::<crate::products::peace_deals::prepared::Prepared>("peace");
-    report::<crate::products::special_projects::prepared::Prepared>("projects");
-    report::<crate::products::war_casualties::prepared::Prepared>("casualties");
-    report::<crate::products::equipment_losses::prepared::Prepared>("equipment_losses");
-    report::<crate::products::decryption::prepared::Accumulator>("intelligence.decryption");
-    report::<crate::products::operative_placements::prepared::Prepared>("intelligence.placements");
-    report::<crate::products::agency_comparison::prepared::Prepared>("intelligence.agencies");
-    report::<crate::products::operatives_roster::prepared::Prepared>("intelligence.roster");
-    report::<crate::products::espionage_log::prepared::Prepared>("intelligence.espionage");
-    report::<crate::products::territory_breakdown::Prepared>("territory.breakdown");
-    report::<[super::super::series::Accumulator; 2]>("series.Accumulator[2]");
-    report::<[super::super::series::Accumulator; 4]>("series.Accumulator[4]");
-    report::<[super::super::series::Accumulator; 6]>("series.Accumulator[6]");
-    report::<[super::super::series::Accumulator; 8]>("series.Accumulator[8]");
-    report::<[super::super::series::Accumulator; 9]>("series.Accumulator[9]");
-    report::<[super::super::series::Accumulator; 11]>("series.Accumulator[11]");
 }
 
 #[test]

@@ -49,8 +49,6 @@ impl Own for Intelligence {
 struct IntelligenceBranch(Box<intelligence_prepared::State>);
 
 impl Branch for IntelligenceBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -87,8 +85,6 @@ impl Branch for IntelligenceBranch {
 
     /// The block was finished where it was folded or observed, its
     /// espionage day pages held for [`Branch::publish`].
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn publish(&mut self, writer: &mut store::Writer, _: u64, _: &AtomicBool) -> io::Result<()> {
         self.0.publish(writer)
     }
@@ -108,10 +104,6 @@ impl Branch for IntelligenceBranch {
     }
 
     /// The flush wrote the family's pages.
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
-    }
-
     /// The flush wrote the family's continuation.
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
         Ok(())

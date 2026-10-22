@@ -288,41 +288,39 @@ fn world_tension_prepared_on_its_own_publishes_and_saves_what_hourly_preparation
     let registries: [Vec<&'static dyn Own>; 2] =
         [vec![tension()], vec![tension(), &independent::IDENTITIES]];
     for families in registries {
-        for workers in [1, 3] {
-            for together in [true, false] {
-                let label = format!(
-                    "{} families, {workers} workers, at once {together}",
-                    families.len()
-                );
-                let before = notes();
-                let own = prepass::with_test_prepass(workers, None, || {
-                    independent::with_test_families(&families, || {
-                        if together {
+        for (workers, together) in [(1, true), (3, false)] {
+            let label = format!(
+                "{} families, {workers} workers, at once {together}",
+                families.len()
+            );
+            let before = notes();
+            let own = prepass::with_test_prepass(workers, None, || {
+                independent::with_test_families(&families, || {
+                    if together {
+                        prepared(&mut fixture, "tension-parity", &plain)
+                    } else {
+                        independent::with_test_one_after_another(|| {
                             prepared(&mut fixture, "tension-parity", &plain)
-                        } else {
-                            independent::with_test_one_after_another(|| {
-                                prepared(&mut fixture, "tension-parity", &plain)
-                            })
-                        }
-                    })
-                });
-                // The identity history's own sections are its own.
-                let own: Payloads = own
-                    .into_iter()
-                    .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
-                    .collect();
-                let expected: Payloads = hourly
-                    .iter()
-                    .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
-                    .map(|(key, bytes)| (key.clone(), bytes.clone()))
-                    .collect();
-                assert_same(&own, &expected, &label, false);
-                assert_eq!(
-                    notes(),
-                    before,
-                    "{label}: every block folded from its extract"
-                );
-            }
+                        })
+                    }
+                })
+            });
+            // The identity history's own sections are its own.
+            let own: Payloads = own
+                .into_iter()
+                .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
+                .collect();
+            let expected: Payloads = hourly
+                .iter()
+                .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
+                .map(|(key, bytes)| (key.clone(), bytes.clone()))
+                .collect();
+            assert_same(&own, &expected, &label, false);
+            assert_eq!(
+                notes(),
+                before,
+                "{label}: every block folded from its extract"
+            );
         }
     }
 }

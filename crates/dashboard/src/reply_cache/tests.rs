@@ -341,21 +341,6 @@ fn oversized_compressed_or_expanding_entries_are_misses_and_replaced() {
 }
 
 #[test]
-#[ignore = "recording hash throughput measurement"]
-fn measure_complete_recording_hash_throughput() {
-    let bytes = vec![0x53; 256 * 1024 * 1024];
-    let start = std::time::Instant::now();
-    for _ in 0..4 {
-        std::hint::black_box(blake3::hash(std::hint::black_box(&bytes)));
-    }
-    let elapsed = start.elapsed();
-    eprintln!(
-        "complete recording BLAKE3: 1024 MiB in {elapsed:?}, {:.1} MiB/s",
-        1024.0 / elapsed.as_secs_f64()
-    );
-}
-
-#[test]
 fn a_later_source_of_the_same_recording_is_answered_from_disk() {
     let root = root("answer");
     let (first, context) = source_with_content(vec![source(1, 100, Some(1))], &root);

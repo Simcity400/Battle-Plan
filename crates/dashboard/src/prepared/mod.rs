@@ -20,6 +20,24 @@ use std::sync::{
 };
 use ts_rs::TS;
 
+/// Run `run` with this thread's test setting `cell` set to `value`, restoring
+/// what it held afterwards, also when `run` panics.
+#[cfg(test)]
+pub(crate) fn with_test_cell<V: Copy + 'static, T>(
+    cell: &'static std::thread::LocalKey<std::cell::Cell<V>>,
+    value: V,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Reset<V: Copy + 'static>(&'static std::thread::LocalKey<std::cell::Cell<V>>, V);
+    impl<V: Copy + 'static> Drop for Reset<V> {
+        fn drop(&mut self) {
+            self.0.with(|held| held.set(self.1));
+        }
+    }
+    let _reset = Reset(cell, cell.with(|held| held.replace(value)));
+    run()
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "PreparationState")]

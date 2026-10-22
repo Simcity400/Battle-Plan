@@ -180,7 +180,7 @@ fn view_rows<T: TableSchema>(view: Option<&SharedView>) -> &[T::Row] {
 }
 
 /// A table's rows, and why an entry it lacks is unknown.
-fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
+pub(crate) fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) => (
             rows.rows::<T>().unwrap_or_default(),

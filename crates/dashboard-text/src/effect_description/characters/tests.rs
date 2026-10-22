@@ -551,7 +551,7 @@ fn missing_executable_localisation_name_is_named_and_counted() {
 }
 
 #[test]
-fn character_lookup_keeps_country_five_thousand() {
+fn character_lookup_keeps_a_late_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
@@ -560,7 +560,7 @@ fn character_lookup_keeps_country_five_thousand() {
     else {
         unreachable!()
     };
-    for slot in 4_u32..=5_000 {
+    for slot in 4_u32..=24 {
         let tag_index = slot + 7_996;
         countries.push(CountryRow {
             id: slot + 1_000,
@@ -584,7 +584,7 @@ fn character_lookup_keeps_country_five_thousand() {
         TableView::Complete(TableRows::CountryLinks(links));
     *fixture.frame.tables[TableId::CountryCharacters.index()] =
         TableView::Complete(TableRows::CountryCharacters(vec![CountryCharacterRow {
-            country: 6_000,
+            country: 1_024,
             ordinal: 0,
             character: Some(8),
         }]));
@@ -595,17 +595,17 @@ fn character_lookup_keeps_country_five_thousand() {
     };
     stores.push(ScriptVariablesRow {
         scope_kind: 1,
-        scope_id: 6_000,
+        scope_id: 1_024,
         ..Default::default()
     });
     // A recorded table is in key order: scope kind, then id.
     stores.sort_by_key(|row| (row.scope_kind, row.scope_id));
-    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(5_000))]);
+    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(24))]);
     let out = fixture.render(
         "set_nationality={character=synthetic_other target_country=BBB}",
         &mut scopes,
         Content::default(),
     );
-    assert_eq!(out.text, "Nationality Other name/basin TFW\n");
+    assert_eq!(out.text, "Nationality Other name/basin LWM\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }

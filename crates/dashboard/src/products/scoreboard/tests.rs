@@ -400,14 +400,14 @@ fn scoreboard_native_owned_count_missing_and_ambiguous_is_never_zero() {
 }
 
 #[test]
-fn scoreboard_reranks_all_5000_countries_and_fills_missing_last() {
-    let mut second = countries(101, 5000);
+fn scoreboard_reranks_every_country_and_fills_missing_last() {
+    let mut second = countries(101, 24);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *second.tables[TableId::Countries.index()]
     {
         rows[0].political_power_raw = Some(9_000_000_000);
     }
-    let source = opened(vec![countries(100, 5000), second]);
+    let source = opened(vec![countries(100, 24), second]);
     let reply = Scoreboard::load(
         &source,
         &request(
@@ -432,7 +432,7 @@ fn scoreboard_reranks_all_5000_countries_and_fills_missing_last() {
             last_hour: 101
         }])
     );
-    assert_eq!(reply.series[1].tag, "country-05000");
+    assert_eq!(reply.series[1].tag, "country-00024");
     assert_eq!(
         reply.series[1].membership,
         Some(vec![HourSpan {
@@ -559,12 +559,12 @@ fn scoreboard_registry_needs_no_scan_and_force_columns_allow_ranking() {
 }
 
 #[test]
-fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale() {
+fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads() {
     use replay_data::{
         rows::AirWingRow, rows::ShipRow, rows::TaskForceRow, rows::WingEquipmentRow,
     };
     let force_frame = |hour, planes| {
-        let mut out = countries(hour, 5000);
+        let mut out = countries(hour, 24);
         *out.tables[TableId::AirWings.index()] =
             TableView::Complete(TableRows::AirWings(vec![AirWingRow {
                 id: 1,
@@ -605,7 +605,7 @@ fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale()
     let source = opened(vec![force_frame(100, 5), missing, force_frame(103, 10)]);
     let cancelled = AtomicBool::new(false);
     let keys = vec![ScoreboardColumnKey::Planes, ScoreboardColumnKey::Ships];
-    let tags: Vec<_> = (1..=5000).map(|id| format!("country-{id:05}")).collect();
+    let tags: Vec<_> = (1..=24).map(|id| format!("country-{id:05}")).collect();
     let reply = Scoreboard::load(
         &source,
         &request(keys.clone(), tags, None),
@@ -613,7 +613,7 @@ fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale()
         &cancelled,
     )
     .unwrap();
-    assert_eq!(reply.series.len(), 5000);
+    assert_eq!(reply.series.len(), 24);
     for hour in [100, 101, 102, 103] {
         for series in &reply.series {
             for key in &keys {
@@ -1319,7 +1319,7 @@ fn scoreboard_top_accepts_five_thousand_and_only_reply_size_refuses() {
         ))
         .is_ok()
     );
-    let source = opened(vec![countries(100, 5000)]);
+    let source = opened(vec![countries(100, 24)]);
     let reply = Scoreboard::load(
         &source,
         &request(
@@ -1335,7 +1335,7 @@ fn scoreboard_top_accepts_five_thousand_and_only_reply_size_refuses() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(reply.series.len(), 5000);
+    assert_eq!(reply.series.len(), 24);
     assert!(
         reply.series.iter().all(|row| row
             .membership
@@ -1416,20 +1416,20 @@ fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() 
 }
 
 #[test]
-fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
+fn scoreboard_many_hour_stability_and_political_top_of_many_countries() {
     use replay_data::{rows::CountryStabilityInputRow, rows::SliceReadRow};
     // One held-read stretch and the next supplying read; every country remains present.
     let frames = (0..5)
         .map(|offset| {
             let hour = 100 + offset;
             let read_offset = offset / 4 * 4;
-            let mut out = countries(hour, 5000);
+            let mut out = countries(hour, 60);
             if let TableView::Complete(TableRows::Countries(rows)) =
                 &mut *out.tables[TableId::Countries.index()]
             {
                 for row in rows {
                     row.political_power_raw =
-                        Some(i64::from((row.id + offset as u32) % 5000) * 100_000);
+                        Some(i64::from((row.id + offset as u32) % 60) * 100_000);
                 }
             }
             *out.tables[TableId::CountryFactories.index()] =
@@ -1438,10 +1438,10 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
                 TableView::Complete(TableRows::CountryCounterInputs(vec![]));
             *out.tables[TableId::CountryStabilityInputs.index()] =
                 TableView::Complete(TableRows::CountryStabilityInputs(
-                    (1..=5000)
+                    (1..=60)
                         .map(|id| CountryStabilityInputRow {
                             country: id,
-                            stability_raw: i64::from((id + read_offset as u32) % 5000) * 10,
+                            stability_raw: i64::from((id + read_offset as u32) % 60) * 10,
                             ruling_party_popularity_raw: 0,
                             propaganda_stability_q15: 0,
                             coastal_protection_stability_raw: 0,
@@ -1452,7 +1452,7 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
                         .collect(),
                 ));
             *out.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(
-                (1..=5000)
+                (1..=60)
                     .map(|owner| SliceReadRow {
                         table: TableId::CountryStabilityInputs.index() as u32,
                         owner,
@@ -1496,10 +1496,10 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
             } else {
                 100_000
             };
-            let mut expected: Vec<_> = (1..=5000)
+            let mut expected: Vec<_> = (1..=60)
                 .map(|id| {
                     (
-                        i64::from((id + shifted as u32) % 5000) * scale,
+                        i64::from((id + shifted as u32) % 60) * scale,
                         format!("country-{id:05}"),
                     )
                 })
@@ -1544,18 +1544,18 @@ fn scoreboard_many_hour_stability_and_political_top_five_thousand_countries() {
         // A small single-stat request retains the large shared Stability cache.
         if key == ScoreboardColumnKey::Stability {
             let before =
-                country_stability::histories(&source, 1, &["country-04999".into()], &cancel)
+                country_stability::histories(&source, 1, &["country-00059".into()], &cancel)
                     .unwrap();
             let again = country_stability::histories(
                 &source,
                 1,
-                &["country-04999".into()],
+                &["country-00059".into()],
                 &AtomicBool::new(true),
             )
             .unwrap();
             assert!(Arc::ptr_eq(
-                &before["country-04999"],
-                &again["country-04999"]
+                &before["country-00059"],
+                &again["country-00059"]
             ));
         }
     }

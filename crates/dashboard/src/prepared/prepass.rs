@@ -1732,28 +1732,14 @@ pub(crate) use dashboard_base::prepared::prepass::{add_notes, noted, notes};
 /// Run `run` with migrated families observed hour by hour, as before.
 #[cfg(test)]
 pub(crate) fn with_test_sequential<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_SEQUENTIAL.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_SEQUENTIAL.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_SEQUENTIAL, true, run)
 }
 
 /// Run `run` with every block read whole, also for families that declare
 /// the fields they read.
 #[cfg(test)]
 pub(crate) fn with_test_alone<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_ALONE.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_ALONE.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_ALONE, true, run)
 }
 
 /// Run `run` with `workers` pre-pass workers and an extract fault hook.

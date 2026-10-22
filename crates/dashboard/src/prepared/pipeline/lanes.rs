@@ -539,14 +539,7 @@ thread_local! {
 /// ordinary lane traces continue to describe lane jobs alone.
 #[cfg(test)]
 pub(super) fn with_test_coordinator_families<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_TRACE_COORDINATOR.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_TRACE_COORDINATOR.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_TRACE_COORDINATOR, true, run)
 }
 
 /// Tests inject a family's InvalidData refusal of the frame at an hour, on the

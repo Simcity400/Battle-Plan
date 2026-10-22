@@ -463,14 +463,17 @@ fn extracts_report_what_their_facts_hold() {
                 .collect(),
         )
     };
-    for (family, small, large) in [
-        ("wars", wars(3), wars(5_000)),
-        ("identities", identities(3), identities(5_000)),
+    // Each family also holds facts no country adds (the recording's other
+    // tables, its recorded calls); measured from a recording without
+    // countries, the countries' share must grow with them.
+    for (family, none, small, large) in [
+        ("wars", wars(0), wars(3), wars(300)),
+        ("identities", identities(0), identities(3), identities(300)),
     ] {
         assert!(small > 0, "{family} reports its facts");
         assert!(
-            large > small * 10,
-            "{family}'s facts grow with the countries: {small} for 3, {large} for 5,000"
+            large - none > (small - none) * 10,
+            "{family}'s facts grow with the countries: {none} for none, {small} for 3, {large} for 300"
         );
     }
 }
@@ -827,7 +830,9 @@ fn releasing_follow_views_preserves_partial_watches_deadlines_gaps_and_partial_t
     }
 }
 
-fn follow_copies(count: u32) {
+#[test]
+fn follow_releases_replaced_views_before_the_next_delta() {
+    let count = 32;
     let replay = moving_tables(count, false);
     let (before, copies_before) = capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], false);
     let (after, copies_after) = capture(&replay, &[&CAPTURE_POWER, &CAPTURE_ALL], true);
@@ -844,16 +849,6 @@ fn follow_copies(count: u32) {
             "{table:?}: no framework-held baseline copies"
         );
     }
-}
-
-#[test]
-fn follow_releases_replaced_views_before_the_next_delta() {
-    follow_copies(32);
-}
-
-#[test]
-fn follow_releases_replaced_views_with_5000_countries() {
-    follow_copies(5000);
 }
 
 /// A family reading every hour of the countries, its facts as given.

@@ -102,8 +102,6 @@ struct SubjectsBranch {
 }
 
 impl Branch for SubjectsBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -148,8 +146,6 @@ impl Branch for SubjectsBranch {
             check,
         )
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     fn pending(&self) -> usize {
         self.state.subject_changes.bytes()
@@ -220,8 +216,6 @@ impl Own for PeaceOutcomes {
 struct PeaceBranch(Box<Peace>);
 
 impl Branch for PeaceBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -255,8 +249,6 @@ impl Branch for PeaceBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.0.buffered_bytes()
     }
@@ -272,10 +264,6 @@ impl Branch for PeaceBranch {
     }
 
     /// The flush writes every page, the continuation included.
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
-    }
-
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
         super::super::json(writer, &peace_state(branch), &*self.0)
     }
@@ -348,8 +336,6 @@ impl IdeasBranch {
 }
 
 impl Branch for IdeasBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -388,8 +374,6 @@ impl Branch for IdeasBranch {
             check,
         )
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     fn pending(&self) -> usize {
         self.changes.bytes()

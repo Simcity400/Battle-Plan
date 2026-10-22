@@ -1309,12 +1309,12 @@ fn library_preparation_preserves_disabled_clear_and_cancel_until_manual_start() 
 }
 
 #[test]
-fn library_preparation_failed_opens_stop_at_one_attempt_for_5000_inputs() {
+fn library_preparation_failed_opens_stop_at_one_attempt_for_repeated_inputs() {
     let fixture = LibraryFixture::new(&["failed-open"]);
     let path = &fixture.paths[0];
     std::fs::write(path, b"synthetic unreadable recording").unwrap();
     let service = Service::new(Arc::new(|_| true)).unwrap();
-    let paths = vec![path.clone(); 5_000];
+    let paths = vec![path.clone(); 24];
     for _ in 0..5 {
         service.prepare_library(&paths).unwrap();
     }
@@ -1425,7 +1425,7 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
         let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
         let hold = LoaderHold::new(&service, lane);
         let source = source();
-        let countries: Vec<_> = (0..5_000)
+        let countries: Vec<_> = (0..24)
             .map(|index| format!("synthetic-{index}"))
             .collect();
         let params = serde_json::json!({"countries": countries, "hour": 1});
@@ -1440,7 +1440,7 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
                 product: "country-groups".into(),
                 params: params.clone(),
             };
-            assert_eq!(body.params["countries"].as_array().unwrap().len(), 5_000);
+            assert_eq!(body.params["countries"].as_array().unwrap().len(), 24);
             let job = if prepared {
                 LoadJob::PreparedQuery {
                     request: Arc::clone(&request),

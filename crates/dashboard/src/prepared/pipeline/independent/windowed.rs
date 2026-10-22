@@ -158,8 +158,6 @@ impl DivisionsBranch {
 }
 
 impl Branch for DivisionsBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -197,8 +195,6 @@ impl Branch for DivisionsBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     /// Each block's window, the manifest and the totals since the last
     /// commit, which hourly preparation writes at each block's end.
     fn publish(
@@ -222,10 +218,6 @@ impl Branch for DivisionsBranch {
         _: &AtomicBool,
     ) -> io::Result<()> {
         Ok(())
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -632,8 +624,6 @@ impl NavalBranch {
 }
 
 impl Branch for NavalBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -661,8 +651,6 @@ impl Branch for NavalBranch {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, observed, check, Places::Every)
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     /// The block's windows, records, sinking pages and details, which hourly
     /// preparation writes at the block's end, held for the next commit; its
@@ -692,10 +680,6 @@ impl Branch for NavalBranch {
         _: &AtomicBool,
     ) -> io::Result<()> {
         Ok(())
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {

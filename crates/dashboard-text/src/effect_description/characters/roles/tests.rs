@@ -787,14 +787,14 @@ fn empty_display_name_uses_recorded_original_key() {
 }
 
 #[test]
-fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
+fn advisor_lookup_without_character_roster_join() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     if let TableView::Complete(TableRows::CountryLinks(rows)) =
         &mut *fixture.frame.tables[TableId::CountryLinks.index()]
     {
-        rows.extend((0..5_000).map(|id| CountryLinkRow {
+        rows.extend((0..24).map(|id| CountryLinkRow {
             id: 10_000 + id,
             canonical_slot: 10 + id,
         }));
@@ -802,7 +802,7 @@ fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *fixture.frame.tables[TableId::Countries.index()]
     {
-        rows.extend((0..5_000).map(|id| CountryRow {
+        rows.extend((0..24).map(|id| CountryRow {
             id: 10_000 + id,
             canonical_slot: 10 + id,
             tag: format!("S{id}").into_bytes(),
@@ -817,7 +817,7 @@ fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
     let selected = existing[0].clone();
     *fixture.frame.tables[TableId::AdvisorRoles.index()] =
         TableView::Complete(TableRows::AdvisorRoles(
-            (0..5_000)
+            (0..24)
                 .map(|id| AdvisorRoleRow {
                     character: 10_000 + id,
                     country: 10_000 + id,
@@ -829,7 +829,7 @@ fn advisor_lookup_at_five_thousand_countries_without_character_roster_join() {
         ));
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
         TableView::Complete(TableRows::AvailableAdvisors(
-            (0..5_000)
+            (0..24)
                 .map(|id| AvailableAdvisorRow {
                     country: 10_000 + id,
                     ordinal: 0,

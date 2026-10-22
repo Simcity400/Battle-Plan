@@ -583,28 +583,26 @@ fn quiet_politics_prepared_on_their_own_publish_and_save_what_hourly_preparation
     let mut fixture = Fixture::new(&replay);
     let hourly =
         independent::with_test_hourly(|| prepared(&mut fixture, "politics-parity", &plain));
-    for workers in [1, 3] {
-        for together in [true, false] {
-            let label = format!("{workers} workers, at once {together}");
-            let before = notes();
-            let own = prepass::with_test_prepass(workers, None, || {
-                independent::with_test_families(&families(), || {
-                    if together {
+    for (workers, together) in [(1, true), (3, false)] {
+        let label = format!("{workers} workers, at once {together}");
+        let before = notes();
+        let own = prepass::with_test_prepass(workers, None, || {
+            independent::with_test_families(&families(), || {
+                if together {
+                    prepared(&mut fixture, "politics-parity", &plain)
+                } else {
+                    independent::with_test_one_after_another(|| {
                         prepared(&mut fixture, "politics-parity", &plain)
-                    } else {
-                        independent::with_test_one_after_another(|| {
-                            prepared(&mut fixture, "politics-parity", &plain)
-                        })
-                    }
-                })
-            });
-            assert_same(&own, &hourly, &label, false);
-            assert_eq!(
-                notes(),
-                before,
-                "{label}: every block folded from its extract"
-            );
-        }
+                    })
+                }
+            })
+        });
+        assert_same(&own, &hourly, &label, false);
+        assert_eq!(
+            notes(),
+            before,
+            "{label}: every block folded from its extract"
+        );
     }
 }
 

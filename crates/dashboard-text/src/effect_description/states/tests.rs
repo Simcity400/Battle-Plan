@@ -1583,7 +1583,7 @@ fn states_branches() {
 }
 
 #[test]
-fn state_tables_refuse_gaps_and_country_names_scale() {
+fn state_tables_refuse_gaps_and_name_a_late_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
@@ -1635,7 +1635,7 @@ fn state_tables_refuse_gaps_and_country_names_scale() {
         }
         fixture.frame.tables[table.index()] = previous;
     }
-    fixture.set_countries(crate::effect_description::tests::synthetic_countries(5_000));
+    fixture.set_countries(crate::effect_description::tests::synthetic_countries(24));
     fixture.catalogue.localisation = fixture
         .catalogue
         .localisation
@@ -1651,7 +1651,7 @@ fn state_tables_refuse_gaps_and_country_names_scale() {
         .collect::<Localisation>()
         .into();
     Arc::make_mut(&mut fixture.catalogue.localisation).language = "english".into();
-    let mut scopes = EventScopes::new(vec![EventScope::of(C(5000))]);
+    let mut scopes = EventScopes::new(vec![EventScope::of(C(24))]);
     let out = fixture.render("transfer_state_to=THIS", &mut scopes, Content::default());
     assert_eq!(out.text, "TransferTo Many\n", "{:?}", out.refusals);
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);

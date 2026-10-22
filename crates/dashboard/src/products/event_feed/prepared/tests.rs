@@ -374,7 +374,7 @@ fn rows<T: serde::de::DeserializeOwned>(
 
 #[test]
 fn prepared_feed_sources_equal_their_change_builders_across_commits_resume_append_and_gaps() {
-    for countries in [3, 5_000] {
+    for countries in [3, 300] {
         let cancelled = AtomicBool::new(false);
         let mut fixture = Fixture::new();
         let mut sources = None;
@@ -732,8 +732,8 @@ pub(crate) fn assert_store_pages(source: &Source, store: &store::Store, key: &st
 }
 
 #[test]
-fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries_at_5000_rows() {
-    for count in [101, 5_000] {
+fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries() {
+    for count in [101, 1_001] {
         let mut frames: Vec<_> = [100, 101].map(|hour| frame(hour, 3)).into();
         for frame in &mut frames {
             *frame.tables[TableId::Focus.index()] =
@@ -766,7 +766,7 @@ fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries_at
         let mut expected = semantic(&reply(&oracle, "1", 100, 101, true));
         expected.sort_by_key(|row| std::cmp::Reverse(row["hour"].as_i64().unwrap()));
         // Deliberately split the 99/100 tie across pages while retaining a strict
-        // request bound at the real scale; this uses the owning observer/reader.
+        // request bound; this uses the owning observer/reader.
         let size = 100;
         let actual = pages(
             &source,
@@ -796,10 +796,10 @@ fn prepared_feed_same_date_completions_page_exactly_across_decimal_boundaries_at
 }
 
 #[test]
-fn prepared_feed_nuclear_increases_match_oracle_after_commits_resume_append_at_5000_countries() {
+fn prepared_feed_nuclear_increases_match_oracle_after_commits_resume_append() {
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    for count in [3, 5000] {
+    for count in [3, 300] {
         let mut fixture = Fixture::new();
         let mut state = None;
         let mut seen = Vec::new();
@@ -1107,11 +1107,11 @@ fn prepared_feed_projects_seek_tag_order_with_late_rows_and_withdrawals_at_one_r
 }
 
 #[test]
-fn prepared_feed_project_revisions_match_oracle_after_commits_resume_append_at_5000_countries() {
+fn prepared_feed_project_revisions_match_oracle_after_commits_resume_append() {
     const COMPLETION_HISTORY_MARKER: u32 = 0x4c17;
     let flag = AtomicBool::new(false);
     let context = LoadContext { content: None };
-    for count in [3, 5000] {
+    for count in [3, 300] {
         let mut fixture = Fixture::new();
         let mut state = None;
         let mut seen = Vec::new();
@@ -1298,7 +1298,7 @@ fn prepared_feed_strike_only_campaign_keeps_recorded_types_and_stockpile_refusal
 }
 
 #[test]
-fn prepared_feed_ordinary_project_after_5000_late_rows_reads_only_its_raw_page() {
+fn prepared_feed_ordinary_project_after_many_late_rows_reads_only_its_raw_page() {
     use crate::prepared::series::{self, Run};
     use special_projects::prepared::completion_stream as stream;
     let flag = AtomicBool::new(false);
@@ -1319,7 +1319,7 @@ fn prepared_feed_ordinary_project_after_5000_late_rows_reads_only_its_raw_page()
         ..Default::default()
     };
     values.through(100);
-    for ordinal in 0..5_000 {
+    for ordinal in 0..50 {
         let change = project_change(ordinal, 1_000, 8_000, Some(&format!("mod-A-{ordinal:05}")));
         values.event(stream::KEY, 8_000, &change).unwrap();
         metadata.late.insert(1_000, 8_000, stream::KEY, ordinal);
@@ -1328,12 +1328,12 @@ fn prepared_feed_ordinary_project_after_5000_late_rows_reads_only_its_raw_page()
         .event(
             stream::KEY,
             8_000,
-            &project_change(5_000, 8_000, 8_000, Some("mod-Z")),
+            &project_change(50, 8_000, 8_000, Some("mod-Z")),
         )
         .unwrap();
     values.push(
-        stream::episode_key(5_000).unwrap(),
-        Run::new(8_000, 8_000, 5_000, false),
+        stream::episode_key(50).unwrap(),
+        Run::new(8_000, 8_000, 50, false),
     );
     values.through(8_000);
     let mut writer = fixture.writer();

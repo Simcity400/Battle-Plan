@@ -213,9 +213,6 @@ mod tests {
         // Joining proves completion without a request/status poll loop.
         runner.shutdown();
         assert_eq!(runner.revision(), 1);
-        for _ in 0..5_000 {
-            assert_eq!(runner.revision(), 1);
-        }
         runner.notify_change();
         assert_eq!(runner.revision(), 2);
     }

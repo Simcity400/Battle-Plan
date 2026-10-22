@@ -209,8 +209,6 @@ impl HoursBranch {
 }
 
 impl Branch for HoursBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,

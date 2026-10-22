@@ -117,15 +117,8 @@ thread_local! {
 /// preparations it starts on this thread.
 #[cfg(test)]
 pub(super) fn with_test_batch_blocks<T>(blocks: usize, run: impl FnOnce() -> T) -> T {
-    struct Reset(Option<usize>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_BATCH_BLOCKS.with(|value| value.set(self.0));
-        }
-    }
     assert!(blocks > 0, "a batch goes through at least one block");
-    let _reset = Reset(TEST_BATCH_BLOCKS.with(|value| value.replace(Some(blocks))));
-    run()
+    crate::prepared::with_test_cell(&TEST_BATCH_BLOCKS, Some(blocks), run)
 }
 
 #[derive(Clone, Debug)]
@@ -739,8 +732,7 @@ impl Refused {
             Err(error) if refuses(&error) => {
                 // A refusal of a family's own read of another names that one.
                 let from = crate::products::air_superiority::block::refused_from(&error)
-                    .or_else(|| independent::event_feed::refused_from(&error))
-                    .or_else(|| independent::sampled::refused_from(&error));
+                    .or_else(|| independent::event_feed::refused_from(&error));
                 self.refuse(family, hour, error.to_string(), from);
                 Ok(T::default())
             }

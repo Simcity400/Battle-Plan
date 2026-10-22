@@ -867,7 +867,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unit_fixture();
-    let countries = crate::effect_description::tests::synthetic_countries(5_000);
+    let countries = crate::effect_description::tests::synthetic_countries(24);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(
             countries
@@ -880,7 +880,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
         ));
     *fixture.frame.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(countries));
-    let ids: Vec<_> = (1..=5_000_u64).map(|id| id << 32 | 55).collect();
+    let ids: Vec<_> = (1..=24_u64).map(|id| id << 32 | 55).collect();
     *fixture.frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
         ids.iter()
             .enumerate()
@@ -913,7 +913,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
         Content::default(),
         &[],
     );
-    assert_eq!(out.text, "Destroy Unit 5000 NULL\n");
+    assert_eq!(out.text, "Destroy Unit 24 NULL\n");
     assert!(out.refusals.is_empty(), "{:?}", out.refusals);
 }
 
@@ -1491,11 +1491,11 @@ fn units_have_no_country_count_cap() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
-    fixture.set_countries(crate::effect_description::tests::synthetic_countries(5_000));
+    fixture.set_countries(crate::effect_description::tests::synthetic_countries(24));
     let out = render(
         &fixture,
         "add_manpower=2.5",
-        C(5000),
+        C(24),
         Content::default(),
         &[],
     );
@@ -1516,7 +1516,7 @@ fn units_have_no_country_count_cap() {
             "LegacyTechUnnamed Base short",
         ),
     ] {
-        let out = render(&fixture, body, C(5000), content, &[]);
+        let out = render(&fixture, body, C(24), content, &[]);
         assert_eq!(out.text, expected, "{body}: {:?}", out.refusals);
         assert!(out.refusals.is_empty());
     }

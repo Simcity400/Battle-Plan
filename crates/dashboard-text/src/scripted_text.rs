@@ -19,7 +19,7 @@
 //! country tags and scripted localisation names match exactly. What the
 //! recording cannot answer is refused by name with the missing input.
 
-use crate::scope::RecordedScopes;
+use crate::scope::{RecordedScopes, table as rows};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::{localisation::Localisation, localisation::crt_case_text};
 use replay_data::{rows::TableSchema, rows::tables};
@@ -620,20 +620,6 @@ fn named(segment: &str, name: &str) -> bool {
 /// Whether the frame holds the whole table.
 fn complete<T: TableSchema>(frame: &DecodedFrame) -> bool {
     matches!(&*frame.tables[T::ID.index()], TableView::Complete(_))
-}
-
-fn rows<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String) {
-    match &*frame.tables[T::ID.index()] {
-        TableView::Complete(rows) => (
-            rows.rows::<T>().unwrap_or_default(),
-            "the complete table has no row for it".into(),
-        ),
-        TableView::Truncated { rows, missing } => (
-            rows.rows::<T>().unwrap_or_default(),
-            format!("the table is truncated ({missing} rows missing)"),
-        ),
-        TableView::Unavailable { reason } => (&[], format!("the table is unavailable: {reason}")),
-    }
 }
 
 /// A recorded query of a scripted text's own hour reads ([`crate::triggers::inputs`]).

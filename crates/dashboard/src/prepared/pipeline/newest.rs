@@ -521,14 +521,7 @@ thread_local! {
 /// other.
 #[cfg(test)]
 pub(super) fn with_test_in_turn<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_IN_TURN.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_IN_TURN.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_IN_TURN, true, run)
 }
 
 /// Run `run` with `stall` called before each branch's newest window or

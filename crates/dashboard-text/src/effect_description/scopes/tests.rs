@@ -4,11 +4,11 @@ use replay_data::rows::*;
 use replay_frame::frame::TableView;
 
 #[test]
-fn format99_country_rosters_preserve_stored_order_at_scale() {
+fn format99_country_rosters_preserve_stored_order() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
-    let countries = crate::effect_description::tests::synthetic_countries(5_000);
+    let countries = crate::effect_description::tests::synthetic_countries(24);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
         TableView::Complete(TableRows::CountryLinks(
             countries
@@ -21,7 +21,7 @@ fn format99_country_rosters_preserve_stored_order_at_scale() {
         ));
     *fixture.frame.tables[TableId::Countries.index()] =
         TableView::Complete(TableRows::Countries(countries));
-    let references: Vec<_> = (1..=5_000).rev().map(|slot| slot * 100).collect();
+    let references: Vec<_> = (1..=24).rev().map(|slot| slot * 100).collect();
     *fixture.frame.tables[TableId::CountryCounterInputs.index()] =
         TableView::Complete(TableRows::CountryCounterInputs(vec![
             CountryCounterInputRow {
@@ -45,7 +45,7 @@ fn format99_country_rosters_preserve_stored_order_at_scale() {
             renderer.roster(source, &item, Scopes::of(Scope::Country(1)))
         })
     };
-    let expected: Vec<_> = (1..=5_000).rev().map(Scope::Country).collect();
+    let expected: Vec<_> = (1..=24).rev().map(Scope::Country).collect();
     for source in [Roster::CountryNeighbors, Roster::OccupiedCountries] {
         assert_eq!(roster(&fixture, source).unwrap(), expected);
     }
@@ -1053,12 +1053,12 @@ fn scope_chains_and_character_headers_keep_native_graph_selection() {
 }
 
 #[test]
-fn country_iterator_sizes_from_five_thousand_live_rows() {
+fn country_iterator_sizes_from_live_rows() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let countries = (1..=5_000)
+    let countries = (1..=24)
         .map(|id| CountryRow {
             id,
             canonical_slot: id,

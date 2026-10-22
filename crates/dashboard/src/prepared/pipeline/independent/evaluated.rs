@@ -258,8 +258,6 @@ struct ResearchBranch {
 }
 
 impl Branch for ResearchBranch {
-    fn begin_block(&mut self) {}
-
     fn measure(&mut self) {
         self.measured = Some(Measured::new(("research.fold", "research.read")));
     }
@@ -315,8 +313,6 @@ impl Branch for ResearchBranch {
         reached
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.buffered_bytes()
     }
@@ -329,10 +325,6 @@ impl Branch for ResearchBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.prepared.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -445,8 +437,6 @@ impl ProjectsBranch {
 }
 
 impl Branch for ProjectsBranch {
-    fn begin_block(&mut self) {}
-
     fn measure(&mut self) {
         self.measured = Some(Measured::new(("projects.read", "projects.observe")));
     }
@@ -507,8 +497,6 @@ impl Branch for ProjectsBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.buffered_bytes()
     }
@@ -521,10 +509,6 @@ impl Branch for ProjectsBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.prepared.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -682,8 +666,6 @@ impl OccupationBranch {
 }
 
 impl Branch for OccupationBranch {
-    fn begin_block(&mut self) {}
-
     fn measure(&mut self) {
         self.measured = Some(Measured::new(("occupation.read", "occupation.observe")));
     }

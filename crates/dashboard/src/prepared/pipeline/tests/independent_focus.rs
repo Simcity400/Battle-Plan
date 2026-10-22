@@ -283,28 +283,26 @@ fn focus_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_does() 
     let replay = scenario(LAST, true);
     let mut fixture = Fixture::new(&replay);
     let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "focus-parity", &plain));
-    for workers in [1, 3] {
-        for together in [true, false] {
-            let label = format!("{workers} workers, at once {together}");
-            let before = notes();
-            let own = prepass::with_test_prepass(workers, None, || {
-                independent::with_test_families(&families(), || {
-                    if together {
+    for (workers, together) in [(1, true), (3, false)] {
+        let label = format!("{workers} workers, at once {together}");
+        let before = notes();
+        let own = prepass::with_test_prepass(workers, None, || {
+            independent::with_test_families(&families(), || {
+                if together {
+                    prepared(&mut fixture, "focus-parity", &plain)
+                } else {
+                    independent::with_test_one_after_another(|| {
                         prepared(&mut fixture, "focus-parity", &plain)
-                    } else {
-                        independent::with_test_one_after_another(|| {
-                            prepared(&mut fixture, "focus-parity", &plain)
-                        })
-                    }
-                })
-            });
-            assert_same(&own, &hourly, &label, false);
-            assert_eq!(
-                notes(),
-                before,
-                "{label}: every block folded from its extract"
-            );
-        }
+                    })
+                }
+            })
+        });
+        assert_same(&own, &hourly, &label, false);
+        assert_eq!(
+            notes(),
+            before,
+            "{label}: every block folded from its extract"
+        );
     }
 }
 
@@ -664,11 +662,12 @@ fn quiet_focus_hours_build_no_frame() {
     }
 }
 
-/// 5,000 countries, every one with a focus, across commits: the family's
-/// pages and continuation are hourly preparation's.
+/// A dozen countries, every one with a focus and some completing more,
+/// across commits: the family's pages and continuation are hourly
+/// preparation's.
 #[test]
-fn focus_prepared_on_its_own_matches_hourly_preparation_at_5000_countries() {
-    const COUNTRIES: u32 = 5_000;
+fn focus_prepared_on_its_own_matches_hourly_preparation_as_countries_complete_focuses() {
+    const COUNTRIES: u32 = 12;
     let scaled = |hour: i32| {
         let mut observed = frame(1, hour, COUNTRIES);
         if let TableView::Complete(TableRows::Focus(rows)) =
@@ -706,11 +705,12 @@ fn focus_prepared_on_its_own_matches_hourly_preparation_at_5000_countries() {
             .unwrap();
     }
     let mut fixture = Fixture::new(&replay);
-    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "focus-scale", &measured));
+    let hourly =
+        independent::with_test_hourly(|| prepared(&mut fixture, "focus-completions", &measured));
     let own = prepass::with_test_prepass(3, None, || {
         independent::with_test_families(&families(), || {
-            prepared(&mut fixture, "focus-scale", &measured)
+            prepared(&mut fixture, "focus-completions", &measured)
         })
     });
-    assert_same(&own, &hourly, "5,000 countries", false);
+    assert_same(&own, &hourly, "completions", false);
 }

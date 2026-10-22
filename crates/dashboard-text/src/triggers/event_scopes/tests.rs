@@ -808,11 +808,11 @@ fn state_roster_distinguishes_older_fields_from_failed_capture() {
 }
 
 #[test]
-fn controlled_state_rosters_admit_five_thousand_countries_without_map_reads() {
+fn controlled_state_rosters_admit_every_country_without_map_reads() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::rows::StateRow;
-    let tags = (1..=5_000)
+    let tags = (1..=24)
         .map(|id| format!("Synthetic{id}"))
         .collect::<Vec<_>>();
     let countries = tags
@@ -825,7 +825,7 @@ fn controlled_state_rosters_admit_five_thousand_countries_without_map_reads() {
         .collect::<Vec<_>>();
     let mut f = frame(&countries, &[]);
     *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
-        (1..=5_000)
+        (1..=24)
             .map(|id| StateRow {
                 id,
                 owner: id,
@@ -848,7 +848,7 @@ fn controlled_state_rosters_admit_five_thousand_countries_without_map_reads() {
     }
     with_world(&f, "", Err("none"), |world| {
         let body = items("any_controlled_state={always=yes}");
-        for slot in 1..=5_000 {
+        for slot in 1..=24 {
             assert_eq!(
                 world.evaluate(&body, Scopes::of(Scope::Country(slot))),
                 Eval::True

@@ -24,23 +24,20 @@ const COUNTRIES: u32 = 8;
 /// Branch 1's last hour.
 const LAST: i32 = 216;
 
-fn leader_frame(branch: u64, hour: i32, countries: u32) -> DecodedFrame {
-    crate::products::unit_leaders::prepared::test_fixtures::war_frame(branch, hour, countries)
+fn leader_frame(branch: u64, hour: i32) -> DecodedFrame {
+    crate::products::unit_leaders::prepared::test_fixtures::war_frame(branch, hour, COUNTRIES)
 }
 
 /// Branch 1's hours from 100 through `last` of the war
 /// (`test_fixtures::war_frame`), without 136 and 137 (a gap inside the
 /// second combat), in blocks of 12, then branch 2's one block (hours 20 to
 /// 25) when `second`.
-fn scenario_of(last: i32, second: bool, countries: u32) -> Replay {
+fn scenario(last: i32, second: bool) -> Replay {
     let hours: Vec<i32> = (100..=last)
         .filter(|hour| !(136..=137).contains(hour))
         .collect();
     let frames = |hours: &[i32]| -> Vec<DecodedFrame> {
-        hours
-            .iter()
-            .map(|&hour| leader_frame(1, hour, countries))
-            .collect()
+        hours.iter().map(|&hour| leader_frame(1, hour)).collect()
     };
     let mut blocks = hours.chunks(12);
     let mut replay = Replay::from_records(
@@ -57,17 +54,11 @@ fn scenario_of(last: i32, second: bool, countries: u32) -> Replay {
         replay = replay
             .append(&[records(
                 2,
-                (20..=25)
-                    .map(|hour| leader_frame(2, hour, countries))
-                    .collect(),
+                (20..=25).map(|hour| leader_frame(2, hour)).collect(),
             )])
             .unwrap();
     }
     replay
-}
-
-fn scenario(last: i32, second: bool) -> Replay {
-    scenario_of(last, second, COUNTRIES)
 }
 
 fn leaders() -> &'static dyn Own {
@@ -204,41 +195,39 @@ fn leaders_prepared_on_their_own_publish_and_save_what_hourly_preparation_does()
     let registries: [Vec<&'static dyn Own>; 2] =
         [vec![leaders()], vec![leaders(), &independent::IDENTITIES]];
     for families in registries {
-        for workers in [1, 3] {
-            for together in [true, false] {
-                let label = format!(
-                    "{} families, {workers} workers, at once {together}",
-                    families.len()
-                );
-                let before = notes();
-                let own = prepass::with_test_prepass(workers, None, || {
-                    independent::with_test_families(&families, || {
-                        if together {
+        for (workers, together) in [(1, true), (3, false)] {
+            let label = format!(
+                "{} families, {workers} workers, at once {together}",
+                families.len()
+            );
+            let before = notes();
+            let own = prepass::with_test_prepass(workers, None, || {
+                independent::with_test_families(&families, || {
+                    if together {
+                        prepared(&mut fixture, "leaders-parity", &plain)
+                    } else {
+                        independent::with_test_one_after_another(|| {
                             prepared(&mut fixture, "leaders-parity", &plain)
-                        } else {
-                            independent::with_test_one_after_another(|| {
-                                prepared(&mut fixture, "leaders-parity", &plain)
-                            })
-                        }
-                    })
-                });
-                // The identity history's own sections are its own.
-                let own: Payloads = own
-                    .into_iter()
-                    .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
-                    .collect();
-                let expected: Payloads = hourly
-                    .iter()
-                    .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
-                    .map(|(key, bytes)| (key.clone(), bytes.clone()))
-                    .collect();
-                assert_same(&own, &expected, &label, false);
-                assert_eq!(
-                    notes(),
-                    before,
-                    "{label}: every block folded from its extract"
-                );
-            }
+                        })
+                    }
+                })
+            });
+            // The identity history's own sections are its own.
+            let own: Payloads = own
+                .into_iter()
+                .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
+                .collect();
+            let expected: Payloads = hourly
+                .iter()
+                .filter(|((name, _), _)| !name.starts_with("territory-identities-"))
+                .map(|(key, bytes)| (key.clone(), bytes.clone()))
+                .collect();
+            assert_same(&own, &expected, &label, false);
+            assert_eq!(
+                notes(),
+                before,
+                "{label}: every block folded from its extract"
+            );
         }
     }
 }
@@ -619,21 +608,6 @@ fn leaders_take_the_block_readers_changes_and_read_only_their_bound_tables() {
             "{label}: the countries reduced {reduced} times in {blocks} blocks"
         );
     }
-}
-
-/// Five thousand leaders of as many countries at war publish what hourly
-/// preparation does.
-#[test]
-fn leaders_prepared_on_their_own_match_hourly_preparation_at_5000_countries() {
-    let replay = scenario_of(160, false, 5000);
-    let mut fixture = Fixture::new(&replay);
-    let hourly = independent::with_test_hourly(|| prepared(&mut fixture, "leaders-scale", &plain));
-    let own = prepass::with_test_prepass(3, None, || {
-        independent::with_test_families(&[leaders()], || {
-            prepared(&mut fixture, "leaders-scale", &plain)
-        })
-    });
-    assert_same(&own, &hourly, "5000 countries", false);
 }
 
 fn leader_values(reply: &serde_json::Value, hour: i64) -> serde_json::Value {

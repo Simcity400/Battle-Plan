@@ -1194,16 +1194,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 .ok_or_else(|| {
                     format!("state modifier {} has no recorded definition", modifier.key)
                 })?;
-            if definition.feature_selector != 0 {
-                let features = frame
-                    .complete::<tables::SimulationFeatures>()
-                    .map_err(|why| why.to_string())?;
-                let [features] = features else {
-                    return Err("SimulationFeatures has no unique feature mask".into());
-                };
-                if features.dlc_mask & definition.feature_selector == 0 {
-                    continue;
-                }
+            if !feature_enabled(frame, definition)? {
+                continue;
             }
             let argument = crate::scripted_text::stored_text(
                 self.context.localisation,
@@ -1451,16 +1443,8 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             if value == 0 && definition.flags & 0x100 == 0 {
                 continue;
             }
-            if definition.feature_selector != 0 {
-                let features = frame
-                    .complete::<tables::SimulationFeatures>()
-                    .map_err(|why| why.to_string())?;
-                let [features] = features else {
-                    return Err("SimulationFeatures has no unique feature mask".into());
-                };
-                if features.dlc_mask & definition.feature_selector == 0 {
-                    continue;
-                }
+            if !feature_enabled(frame, definition)? {
+                continue;
             }
             let argument = crate::scripted_text::stored_text(
                 self.context.localisation,
@@ -1517,6 +1501,24 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         }
         Ok(out)
     }
+}
+
+/// Whether `definition`'s feature selector, if it has one, is in the
+/// recorded DLC mask.
+fn feature_enabled(
+    frame: &replay_frame::frame::DecodedFrame,
+    definition: &ModifierDefinitionRow,
+) -> Result<bool, String> {
+    if definition.feature_selector == 0 {
+        return Ok(true);
+    }
+    let [features] = frame
+        .complete::<tables::SimulationFeatures>()
+        .map_err(|why| why.to_string())?
+    else {
+        return Err("SimulationFeatures has no unique feature mask".into());
+    };
+    Ok(features.dlc_mask & definition.feature_selector != 0)
 }
 
 #[cfg(test)]

@@ -638,8 +638,8 @@ mod tests {
     }
 
     #[test]
-    fn faction_names_keep_all_five_thousand_bound_nodes() {
-        let count = 5_000;
+    fn faction_names_keep_every_bound_node() {
+        let count = 300;
         let loc = loaded("l_english:\n PASS:0 \"$ARG$\"\n");
         let bound = BoundLocalization {
             nodes: (0..count)

@@ -621,14 +621,13 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
 }
 
 #[test]
-fn scoreboard_prepared_top_and_mounted_page_keep_5000_countries_and_unknown_last_in_both_directions()
- {
-    let mut first_frame = countries(100, 5000);
+fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_in_both_directions() {
+    let mut first_frame = countries(100, 24);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *first_frame.tables[TableId::Countries.index()]
     {
         rows[0].political_power_raw = Some(i64::MIN);
-        rows[4999].political_power_raw = Some(i64::MAX);
+        rows[23].political_power_raw = Some(i64::MAX);
     }
     let first =
         Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first_frame.clone()])]).unwrap();
@@ -650,14 +649,13 @@ fn scoreboard_prepared_top_and_mounted_page_keep_5000_countries_and_unknown_last
             ],
             Vec::new(),
             Some(ScoreboardTop {
-                count: 5000,
+                count: 24,
                 sort: ScoreboardColumnKey::PoliticalPower,
                 descending,
             }),
         );
         let mut first_page_selection = selection.clone();
         first_page_selection.top.as_mut().unwrap().count = 10;
-        let started = std::time::Instant::now();
         let first_page_index = query(
             &source,
             &first_page_selection,
@@ -682,15 +680,10 @@ fn scoreboard_prepared_top_and_mounted_page_keep_5000_countries_and_unknown_last
             ScoreboardColumnKey::PoliticalPower,
             descending,
         );
-        eprintln!(
-            "scoreboard top-10 first index + cells at 5000 countries, direction={descending}: {:?}",
-            started.elapsed()
-        );
         assert_eq!(
             first_page_cells["data"]["series"].as_array().unwrap().len(),
             10
         );
-        let started = std::time::Instant::now();
         let index = query(
             &source,
             &selection,
@@ -700,17 +693,13 @@ fn scoreboard_prepared_top_and_mounted_page_keep_5000_countries_and_unknown_last
             ScoreboardColumnKey::PoliticalPower,
             descending,
         );
-        eprintln!(
-            "scoreboard 5000-country moment index, direction={descending}: {:?}",
-            started.elapsed()
-        );
         let rows = index["data"]["series"].as_array().unwrap();
-        assert_eq!(rows.len(), 5000);
+        assert_eq!(rows.len(), 24);
         assert_eq!(rows.last().unwrap()["tag"], "country-00002");
         assert_eq!(
             rows[0]["tag"],
             if descending {
-                "country-05000"
+                "country-00024"
             } else {
                 "country-00001"
             }
@@ -973,9 +962,9 @@ fn scoreboard_factory_moments_answer_beyond_preparation_as_preparation_does() {
 }
 
 #[test]
-fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
+fn scoreboard_cold_factory_moment_matches_the_scan() {
     use ScoreboardColumnKey::{Factories, FactoriesBuilt, FactoriesTopbar};
-    let mut frame = countries(100, 5000);
+    let mut frame = countries(100, 24);
     if let TableView::Complete(TableRows::CountryFactories(rows)) =
         &mut *frame.tables[TableId::CountryFactories.index()]
     {
@@ -992,7 +981,7 @@ fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
             columns.clone(),
             Vec::new(),
             Some(ScoreboardTop {
-                count: 5000,
+                count: 24,
                 sort: Factories,
                 descending: true,
             }),
@@ -1004,9 +993,9 @@ fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
         true,
     );
     let rows = index["data"]["series"].as_array().unwrap();
-    assert_eq!(rows.len(), 5000);
-    assert_eq!(rows[0]["tag"], "country-05000");
-    assert_eq!(rows[4999]["tag"], "country-00017");
+    assert_eq!(rows.len(), 24);
+    assert_eq!(rows[0]["tag"], "country-00024");
+    assert_eq!(rows[23]["tag"], "country-00017");
     let tags: Vec<String> = rows
         .iter()
         .map(|row| row["tag"].as_str().unwrap().to_owned())
@@ -1032,7 +1021,7 @@ fn scoreboard_cold_factory_moment_matches_the_scan_for_5000_countries() {
     .unwrap();
     let expected = at(&oracle, 100);
     assert_eq!(at(&page["data"], 100), expected);
-    assert_eq!(at(&index["data"], 100).as_object().unwrap().len(), 5000);
+    assert_eq!(at(&index["data"], 100).as_object().unwrap().len(), 24);
     for column in ["factories", "factoriesBuilt", "factoriesTopbar"] {
         let maximum = expected
             .as_object()

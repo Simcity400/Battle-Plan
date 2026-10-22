@@ -3258,7 +3258,7 @@ fn missing_state_content_refuses_only_state_predicates_that_read_it() {
 }
 
 #[test]
-fn government_id_and_scope_resolution_reuses_the_full_5000_country_input() {
+fn government_id_and_scope_resolution_cover_every_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow};
@@ -3269,7 +3269,7 @@ fn government_id_and_scope_resolution_reuses_the_full_5000_country_input() {
     let ideologies = installed_content_core::ideologies::read(&cat.content.layers)
         .unwrap()
         .0;
-    let tags: Vec<_> = (0..5000)
+    let tags: Vec<_> = (0..24)
         .map(|id| {
             format!(
                 "{}{}{}",

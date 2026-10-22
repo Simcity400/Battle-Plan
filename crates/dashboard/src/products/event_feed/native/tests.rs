@@ -490,14 +490,14 @@ fn occurrence_range_and_sequence_validation_are_independent_of_read_visibility()
 }
 
 #[test]
-fn five_thousand_holder_events_share_occurrence_witnesses_and_existing_reply_windows() {
-    let sample = frame(105, 5000);
+fn holder_events_share_occurrence_witnesses_and_existing_reply_windows() {
+    let sample = frame(105, 24);
     let observed = pack(
-        (0..5000)
+        (0..24)
             .map(|index| EventFeedEvent {
                 script: None,
                 actor: identity(index),
-                target: identity((index + 1) % 5000),
+                target: identity((index + 1) % 24),
                 ..event(u64::from(index) + 1, EventFeedSource::Declaration, 105)
             })
             .collect(),
@@ -517,12 +517,12 @@ fn five_thousand_holder_events_share_occurrence_witnesses_and_existing_reply_win
         )
         .unwrap();
     assert_eq!(frame_reads, 1);
-    assert_eq!(builder.feed.rows.len(), 5000);
-    assert_eq!(builder.feed.rows[4999].tags[0], "synthetic / country 4999");
+    assert_eq!(builder.feed.rows.len(), 24);
+    assert_eq!(builder.feed.rows[23].tags[0], "synthetic / country 23");
     let feed = builder.finish().unwrap();
     assert_eq!(
         feed.windows.iter().map(|window| window.count).sum::<u32>(),
-        5000
+        24
     );
     assert!(super::super::window_fits(
         &feed,

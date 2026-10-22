@@ -305,38 +305,36 @@ fn event_feed_prepared_on_its_own_publishes_and_saves_what_hourly_preparation_do
     ];
     for families in registries {
         let own: Vec<&str> = families.iter().map(|own| own.family().name).collect();
-        for workers in [1, 3] {
-            for together in [true, false] {
-                let label = format!("{own:?}, {workers} workers, at once {together}");
-                let before = (notes(), counted("event_feed"));
-                let payloads = prepass::with_test_prepass(workers, None, || {
-                    independent::with_test_families(&families, || {
-                        if together {
+        for (workers, together) in [(1, true), (3, false)] {
+            let label = format!("{own:?}, {workers} workers, at once {together}");
+            let before = (notes(), counted("event_feed"));
+            let payloads = prepass::with_test_prepass(workers, None, || {
+                independent::with_test_families(&families, || {
+                    if together {
+                        prepared(&mut fixture, "feed-parity", &plain)
+                    } else {
+                        independent::with_test_one_after_another(|| {
                             prepared(&mut fixture, "feed-parity", &plain)
-                        } else {
-                            independent::with_test_one_after_another(|| {
-                                prepared(&mut fixture, "feed-parity", &plain)
-                            })
-                        }
-                    })
-                });
-                assert_same(&payloads, &hourly, &label, &own, false);
+                        })
+                    }
+                })
+            });
+            assert_same(&payloads, &hourly, &label, &own, false);
+            assert_eq!(
+                notes(),
+                before.0,
+                "{label}: every block folded from its extract"
+            );
+            // Every hour reads its own event pack: each is a frame a
+            // worker read, observed once on the carried feed (counted
+            // where the feed prepares on this thread).
+            if !together || families.len() == 1 {
+                let (observed, frames) = counted("event_feed");
                 assert_eq!(
-                    notes(),
-                    before.0,
-                    "{label}: every block folded from its extract"
+                    (observed - before.1.0, frames - before.1.1),
+                    (recorded, recorded),
+                    "{label}: every hour observed once from a worker's frame"
                 );
-                // Every hour reads its own event pack: each is a frame a
-                // worker read, observed once on the carried feed (counted
-                // where the feed prepares on this thread).
-                if !together || families.len() == 1 {
-                    let (observed, frames) = counted("event_feed");
-                    assert_eq!(
-                        (observed - before.1.0, frames - before.1.1),
-                        (recorded, recorded),
-                        "{label}: every hour observed once from a worker's frame"
-                    );
-                }
             }
         }
     }

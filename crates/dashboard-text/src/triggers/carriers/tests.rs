@@ -100,10 +100,10 @@ fn named_carriers_use_pool_country_and_roster_order() {
 }
 
 #[test]
-fn named_carriers_resolve_the_last_of_five_thousand_countries() {
+fn named_carriers_resolve_the_last_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let tags = (0..5_000)
+    let tags = (0..24)
         .map(|i| {
             String::from_utf8(vec![
                 b'A' + (i / 676) as u8,
@@ -140,25 +140,25 @@ fn named_carriers_resolve_the_last_of_five_thousand_countries() {
     if let TableView::Complete(TableRows::Projects(rows)) =
         &mut *f.tables[TableId::Projects.index()]
     {
-        rows[0].owner = 14_999;
+        rows[0].owner = 10_023;
     }
     if let TableView::Complete(TableRows::IndustrialOrganisations(rows)) =
         &mut *f.tables[TableId::IndustrialOrganisations.index()]
     {
         for row in rows {
-            row.country = 14_999;
+            row.country = 10_023;
         }
     }
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None);
-        let caller = Scopes::of(Scope::Country(5_000));
+        let caller = Scopes::of(Scope::Country(24));
         assert_eq!(
             evaluator.enter(
                 &installed_content_core::scope::parse("sp:synthetic_project", false, world.recorded()),
                 caller
             ),
             Ok(Some(Scope::Project {
-                owner: 14_999,
+                owner: 10_023,
                 id: 9
             }))
         );

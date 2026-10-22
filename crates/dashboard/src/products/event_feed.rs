@@ -740,6 +740,20 @@ fn plain_item(
 #[derive(Default)]
 struct ScriptContentIndex(std::sync::Mutex<Option<Arc<installed_content_events::events::LazyEvents>>>);
 
+/// The event database of the catalogue's content stack, read once per stack.
+fn script_events(catalogue: &Catalogue) -> Arc<installed_content_events::events::LazyEvents> {
+    let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
+    let mut index = cache
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(index.get_or_insert_with(|| {
+        Arc::new(installed_content_events::events::LazyEvents::from_content(
+            Arc::clone(&catalogue.content),
+        ))
+    }))
+}
+
 /// Event labels use the same recorded stack and event database lookup as
 /// effect descriptions. A plain sole title needs no runtime trigger capture.
 fn script_presentation(
@@ -783,18 +797,7 @@ fn script_presentation(
     let Some(token) = &item.token else {
         return Ok(());
     };
-    let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
-    let events = {
-        let mut index = cache
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(index.get_or_insert_with(|| {
-            Arc::new(installed_content_events::events::LazyEvents::from_content(
-                Arc::clone(&catalogue.content),
-            ))
-        }))
-    };
+    let events = script_events(catalogue);
     let event = match events.get(token.as_bytes()) {
         Ok(event) if event.refused.is_none() => event,
         Ok(event) => {

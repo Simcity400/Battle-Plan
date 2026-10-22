@@ -122,10 +122,6 @@ impl Branch for TensionBranch {
         self.scan.flush(writer, branch, cancelled)
     }
 
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
-    }
-
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
         Ok(())
     }

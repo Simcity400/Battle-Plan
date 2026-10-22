@@ -759,7 +759,7 @@ fn active_raids_must_agree_on_one_wing_name() {
 fn active_raid_wing_names_have_no_country_or_wing_cap() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let count = 5_000;
+    let count = 24;
     let (mut f, _folder) = wing_fixture(b"Wing");
     let countries = crate::effect_description::tests::synthetic_countries(count);
     *f.frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(

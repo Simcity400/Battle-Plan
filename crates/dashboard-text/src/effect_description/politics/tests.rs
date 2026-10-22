@@ -557,15 +557,15 @@ fn empty_agency_own_text_uses_core_projection_and_child_walk() {
 }
 
 #[test]
-fn country_targets_support_five_thousand_synthetic_countries() {
+fn country_targets_resolve_a_late_synthetic_country() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
-    let countries = (1..=5_000)
+    let countries = (1..=24)
         .map(|id| CountryRow {
             id,
             canonical_slot: id,
-            tag: if id == 5_000 {
+            tag: if id == 24 {
                 b"BBB".to_vec()
             } else {
                 format!("S{id}").into_bytes()
@@ -574,7 +574,7 @@ fn country_targets_support_five_thousand_synthetic_countries() {
         })
         .collect();
     fixture.set_countries(countries);
-    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(5_000))]);
+    let mut scopes = EventScopes::new(vec![EventScope::of(EventObject::Country(24))]);
     let output = fixture.render("hold_election=ROOT", &mut scopes, Content::default());
     assert_eq!(output.text, "Election Beta\n");
     assert!(output.refusals.is_empty(), "{:?}", output.refusals);

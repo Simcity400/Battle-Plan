@@ -128,18 +128,18 @@ fn identities_section(branch: u64) -> String {
     format!("event-feed-identities-{branch}")
 }
 
-/// A refusal of the feed's own read of the identity history: the
-/// identities' error, recorded for the feed as coming from them
-/// ([`refused_from`]), as hourly preparation records an identities refusal
-/// reaching the feed.
+/// A refusal of a family's own read of the identity history (the feed's or
+/// territory's): the identities' error, recorded for the family as coming
+/// from them ([`refused_from`]), as hourly preparation records an
+/// identities refusal reaching it.
 #[derive(Debug)]
 pub(in crate::prepared::pipeline) struct IdentitiesRefusal(io::Error);
 
 impl IdentitiesRefusal {
     const FROM: &'static str = "identities";
 
-    /// The history's refusal as the feed's; any other error is unchanged.
-    fn wrap(error: io::Error) -> io::Error {
+    /// The history's refusal as the family's; any other error is unchanged.
+    pub(super) fn wrap(error: io::Error) -> io::Error {
         if error.kind() == io::ErrorKind::InvalidData {
             io::Error::new(io::ErrorKind::InvalidData, Self(error))
         } else {
@@ -156,7 +156,7 @@ impl fmt::Display for IdentitiesRefusal {
 
 impl std::error::Error for IdentitiesRefusal {}
 
-/// The family a refusal came from, when it is a refusal of the feed's own
+/// The family a refusal came from, when it is a refusal of a family's own
 /// read of the identities ([`IdentitiesRefusal`]).
 pub(in crate::prepared::pipeline) fn refused_from(error: &io::Error) -> Option<&'static str> {
     error
@@ -207,8 +207,6 @@ impl FeedBranch {
 }
 
 impl Branch for FeedBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -266,8 +264,6 @@ impl Branch for FeedBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.feed.bytes()
     }
@@ -288,10 +284,6 @@ impl Branch for FeedBranch {
             serde_json::to_vec(&*self.identities)?.as_slice(),
         )?;
         self.feed.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {

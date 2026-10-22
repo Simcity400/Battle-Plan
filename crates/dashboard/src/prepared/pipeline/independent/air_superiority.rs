@@ -113,8 +113,6 @@ impl Branch for SuperiorityBranch {
 
     /// The block's end is folded with the block, where its publication's
     /// refusal is recorded at the block's last hour.
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.0.pending()
     }

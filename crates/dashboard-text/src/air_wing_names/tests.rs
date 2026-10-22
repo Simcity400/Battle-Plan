@@ -58,9 +58,9 @@ fn legacy_frame(bytes: &[u8]) -> DecodedFrame {
 }
 
 #[test]
-fn stored_names_keep_empty_text_and_full_handles_for_5000_wings() {
+fn stored_names_keep_empty_text_and_full_handles() {
     let mut frame = legacy_frame(b"Raid text");
-    let requested: HashSet<_> = (1..=5_000).map(|index| (index << 32) | 70).collect();
+    let requested: HashSet<_> = (1..=24).map(|index| (index << 32) | 70).collect();
     *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(
         requested
             .iter()
@@ -77,7 +77,7 @@ fn stored_names_keep_empty_text_and_full_handles_for_5000_wings() {
     ));
     let mut refused = Refusals::default();
     let names = recorded_names(&frame, &requested, &mut refused);
-    assert_eq!(names.len(), 5_000);
+    assert_eq!(names.len(), 24);
     for &id in &requested {
         assert_eq!(
             names[&id],

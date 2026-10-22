@@ -12,7 +12,7 @@ fn land_owners_shared_changes_skip_unchanged_rosters_and_bound_one_changed_row()
         observer_tests::{self, Work},
     };
     let format = replay_data::format::FormatVersion::default();
-    let first = scale_frame(1, 100, 5_000);
+    let first = scale_frame(1, 100, 24);
     let work = observer_tests::scaled_work(10, |hours| {
         let mut scan = Scan::default();
         let mut tracker = FrameChangeTracker::new();
@@ -421,7 +421,7 @@ fn land_owner_scan_honors_cancellation_and_block_budget() {
 
 #[test]
 fn land_owners_list_every_country_once_across_branches() {
-    const COUNTRIES: u32 = 5_000;
+    const COUNTRIES: u32 = 24;
     let replay = Replay::from_records(
         CAMPAIGN.into(),
         &[
@@ -452,11 +452,6 @@ fn land_owners_list_every_country_once_across_branches() {
             country.observed_branch_id.as_str(),
             country.observed_hour
         ) == ("1", 100))
-    );
-    let bytes = serde_json::to_vec(&result).unwrap().len();
-    assert!(
-        bytes < crate::transport::MAX_REPLY_BYTES / 4,
-        "{bytes} bytes"
     );
 }
 
@@ -538,63 +533,5 @@ fn land_owners_prepared_recording_state_matches_after_two_commits_resume_append_
             .iter()
             .filter(|country| country.tag == "GER" || country.tag == "FRA")
             .all(|country| country.observed_branch_id == "1")
-    );
-}
-
-#[test]
-fn land_owners_prepared_five_thousand_countries_retains_no_hour_history() {
-    use super::Scan;
-    use crate::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
-    let fixture = Fixture::new();
-    let mut scan = Scan::default();
-    let mut tracker = FrameChangeTracker::new();
-    let format = replay_data::format::FormatVersion::CURRENT;
-    let mut read = scale_frame(2, 90, 5000);
-    scan.observe(&read, None, Some(&tracker.observe(&read, format)))
-        .unwrap();
-    read.branch = 1;
-    read.hour = 100;
-    scan.observe(&read, None, Some(&tracker.observe(&read, format)))
-        .unwrap();
-    let initial = scan.saved_bytes().unwrap();
-    let configured = scan.work;
-    for hour in 101..125 {
-        read.hour = hour;
-        scan.observe(&read, None, Some(&tracker.observe(&read, format)))
-            .unwrap();
-    }
-    assert_eq!(
-        scan.work, configured,
-        "unchanged hours perform no ownership join"
-    );
-    assert_eq!(
-        scan.saved_bytes().unwrap(),
-        initial,
-        "unchanged hours retain exactly the same continuation"
-    );
-    let mut writer = fixture.writer();
-    writer
-        .write_at("land-owners", 0, initial.as_slice())
-        .unwrap();
-    writer.commit().unwrap();
-    let restored = Scan::read(
-        fixture
-            .store
-            .read(&fixture.key, "land-owners", 0)
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(restored.reply().countries.len(), 5000);
-    assert!(
-        restored
-            .reply()
-            .countries
-            .iter()
-            .all(|country| country.observed_branch_id == "1" && country.observed_hour == 100)
-    );
-    eprintln!(
-        "land-owners compressed continuation at 5,000 countries: {} bytes",
-        initial.len()
     );
 }

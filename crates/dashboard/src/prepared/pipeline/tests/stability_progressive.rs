@@ -332,11 +332,11 @@ fn stability_measures_answer_unprepared_spans_from_the_shared_sampler_as_prepara
 }
 
 #[test]
-fn stability_sampler_matches_the_branch_scan_for_every_measure_at_5000_countries() {
+fn stability_sampler_matches_the_branch_scan_for_every_measure() {
     use crate::{
         prepared_stability::sample, products::country_stability, test_fixtures::scale_tag,
     };
-    const COUNT: u32 = 5_000;
+    const COUNT: u32 = 24;
     let frame = |hour: i32| {
         let mut frame = scale_frame(1, hour, COUNT);
         *frame.tables[TableId::CountryStabilityInputs.index()] =

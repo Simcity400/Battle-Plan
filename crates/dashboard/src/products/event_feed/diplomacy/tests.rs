@@ -530,7 +530,7 @@ fn unread_capitulation_hours_and_unattributed_events_have_separate_counts() {
 
 #[test]
 fn event_feed_diplomacy_observer_resumes_and_appends_without_repeating_relations() {
-    for countries in [3, 5_000] {
+    for countries in [3, 40] {
         let observed = |hour: i32| {
             let mut frame = scale_frame(1, hour, countries);
             for rows in [

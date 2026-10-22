@@ -380,39 +380,28 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 .get(at)
                 .ok_or("scope graph cursor is outside the caller graph")?;
         }
-        if let Parsed::Chain { head, then } = parsed {
-            let Some(head) = self.enter_graph(&Parsed::Keyword(*head), scopes)? else {
-                return Ok(None);
-            };
-            let Some(result) = self.enter_graph(then, head)? else {
-                return Ok(None);
-            };
-            // Dotted-tail exit restores the original PREV.
-            let binding = self.event_graph.borrow();
-            let mut graph = binding
-                .as_ref()
-                .ok_or("scope graph is missing")?
-                .borrow_mut();
-            graph.scopes[result.cursor.unwrap()].prev = Link::Scope(at);
-            drop(graph);
-            drop(binding);
-            return self.event_scopes(result.cursor.unwrap()).map(Some);
-        }
-        if let Parsed::EventTarget {
-            name,
-            then: Some(then),
-        } = parsed
-        {
-            let first = Parsed::EventTarget {
-                name: name.clone(),
-                then: None,
-            };
+        let dotted = match parsed {
+            Parsed::Chain { head, then } => Some((Parsed::Keyword(*head), then)),
+            Parsed::EventTarget {
+                name,
+                then: Some(then),
+            } => Some((
+                Parsed::EventTarget {
+                    name: name.clone(),
+                    then: None,
+                },
+                then,
+            )),
+            _ => None,
+        };
+        if let Some((first, then)) = dotted {
             let Some(first) = self.enter_graph(&first, scopes)? else {
                 return Ok(None);
             };
             let Some(result) = self.enter_graph(then, first)? else {
                 return Ok(None);
             };
+            // Dotted-tail exit restores the original PREV.
             let binding = self.event_graph.borrow();
             let mut graph = binding
                 .as_ref()

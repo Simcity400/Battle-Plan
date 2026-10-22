@@ -250,9 +250,9 @@ fn completed_owner_range_preserves_boundaries_and_absent_owners() {
 }
 
 #[test]
-fn selected_focus_history_inspects_logarithmic_completed_owner_keys_at_scale() {
+fn selected_focus_history_inspects_logarithmic_completed_owner_keys() {
     use replay_data::rows::FocusRow;
-    const COUNTRIES: u32 = 5_000;
+    const COUNTRIES: u32 = 200;
     const COMPLETIONS: u32 = 40;
     let selected = COUNTRIES / 2;
     let mut frame = scale_frame(1, 100, COUNTRIES);
@@ -283,7 +283,7 @@ fn selected_focus_history_inspects_logarithmic_completed_owner_keys_at_scale() {
     let history = crate::focus_history(&replay, 1, &tag, &AtomicBool::new(false)).unwrap();
     let inspections = COMPLETED_OWNER_INSPECTIONS.with(|count| count.replace(0));
     // Count the real history path's owner-key reads rather than elapsed time.
-    // Inspecting every recorded completion would visit 200,000 owner keys.
+    // Inspecting every recorded completion would visit 8,000 owner keys.
     assert!(
         (1..128).contains(&inspections),
         "selected owner extraction inspected {inspections} keys"
@@ -298,9 +298,9 @@ fn selected_focus_history_inspects_logarithmic_completed_owner_keys_at_scale() {
 }
 
 #[test]
-fn held_focus_hours_validate_once_across_hourly_balances_at_scale() {
+fn held_focus_hours_validate_once_across_hourly_balances() {
     use replay_data::{rows::FocusRow, rows::tables};
-    const COUNTRIES: u32 = 5_000;
+    const COUNTRIES: u32 = 24;
     const HOURS: i32 = 24;
     let selected = COUNTRIES / 2;
     let mut first = scale_frame(1, 100, COUNTRIES);

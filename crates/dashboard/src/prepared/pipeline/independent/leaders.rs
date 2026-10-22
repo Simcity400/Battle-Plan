@@ -135,8 +135,6 @@ impl LeadersBranch {
 }
 
 impl Branch for LeadersBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -176,8 +174,6 @@ impl Branch for LeadersBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.buffered_bytes()
     }
@@ -202,10 +198,6 @@ impl Branch for LeadersBranch {
             &read.errors,
             cancelled,
         )
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {

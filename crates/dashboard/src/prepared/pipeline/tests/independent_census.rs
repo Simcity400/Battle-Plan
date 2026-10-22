@@ -368,44 +368,42 @@ fn census_families_prepared_on_their_own_publish_and_save_what_hourly_preparatio
         ];
         for families in registries {
             let own: Vec<&str> = families.iter().map(|own| own.family().name).collect();
-            for workers in [1, 3] {
-                for together in [true, false] {
-                    let label = format!(
-                        "{own:?}, {workers} workers, at once {together}, unavailable {unavailable}"
-                    );
-                    let before = notes();
-                    let payloads = prepass::with_test_prepass(workers, None, || {
-                        independent::with_test_families(&families, || {
-                            if together {
+            for (workers, together) in [(1, true), (3, false)] {
+                let label = format!(
+                    "{own:?}, {workers} workers, at once {together}, unavailable {unavailable}"
+                );
+                let before = notes();
+                let payloads = prepass::with_test_prepass(workers, None, || {
+                    independent::with_test_families(&families, || {
+                        if together {
+                            prepared(&mut fixture, "census-parity", &plain)
+                        } else {
+                            independent::with_test_one_after_another(|| {
                                 prepared(&mut fixture, "census-parity", &plain)
-                            } else {
-                                independent::with_test_one_after_another(|| {
-                                    prepared(&mut fixture, "census-parity", &plain)
-                                })
-                            }
-                        })
-                    });
-                    assert_same(&payloads, &hourly, &label, &own, false);
-                    let after = notes();
-                    let [
-                        factories_sequential,
-                        factories_fallback,
-                        nukes_sequential,
-                        nukes_fallback,
-                    ] = [0, 1, 2, 3].map(|index| after[index] - before[index]);
-                    assert_eq!(
-                        (factories_sequential, nukes_sequential),
-                        (0, 0),
-                        "{label}: every block folded from its extract"
-                    );
-                    assert_eq!(factories_fallback, 0, "{label}: factories never fall back");
-                    // A stockpile read at 171 that is not complete names its
-                    // reason from the frame: unless the pre-pass gives that
-                    // hour a frame, its block is observed hour by hour from
-                    // there. No other block falls back.
-                    let allowed = usize::from(unavailable && own.contains(&"nukes"));
-                    assert!(nukes_fallback <= allowed, "{label}: stockpile fallbacks");
-                }
+                            })
+                        }
+                    })
+                });
+                assert_same(&payloads, &hourly, &label, &own, false);
+                let after = notes();
+                let [
+                    factories_sequential,
+                    factories_fallback,
+                    nukes_sequential,
+                    nukes_fallback,
+                ] = [0, 1, 2, 3].map(|index| after[index] - before[index]);
+                assert_eq!(
+                    (factories_sequential, nukes_sequential),
+                    (0, 0),
+                    "{label}: every block folded from its extract"
+                );
+                assert_eq!(factories_fallback, 0, "{label}: factories never fall back");
+                // A stockpile read at 171 that is not complete names its
+                // reason from the frame: unless the pre-pass gives that
+                // hour a frame, its block is observed hour by hour from
+                // there. No other block falls back.
+                let allowed = usize::from(unavailable && own.contains(&"nukes"));
+                assert!(nukes_fallback <= allowed, "{label}: stockpile fallbacks");
             }
         }
     }

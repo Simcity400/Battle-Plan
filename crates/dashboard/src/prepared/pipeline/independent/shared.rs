@@ -977,41 +977,20 @@ fn with_test_gate<T>(gate: Arc<tests::Gate>, run: impl FnOnce() -> T) -> T {
 /// Run `run` with `count` reader threads.
 #[cfg(test)]
 fn with_test_readers<T>(count: usize, run: impl FnOnce() -> T) -> T {
-    struct Reset(Option<usize>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_READERS.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_READERS.with(|value| value.replace(Some(count))));
-    run()
+    crate::prepared::with_test_cell(&TEST_READERS, Some(count), run)
 }
 
 /// Run `run` with every family reading each block alone, as before the
 /// shared reader: the reference of its parity tests.
 #[cfg(test)]
 pub(in crate::prepared::pipeline) fn with_test_unshared<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_UNSHARED.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_UNSHARED.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_UNSHARED, true, run)
 }
 
 /// Run `run` with a read-ahead budget of `bytes`.
 #[cfg(test)]
 pub(in crate::prepared::pipeline) fn with_test_budget<T>(bytes: u64, run: impl FnOnce() -> T) -> T {
-    struct Reset(Option<u64>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_BUDGET.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_BUDGET.with(|value| value.replace(Some(bytes))));
-    run()
+    crate::prepared::with_test_cell(&TEST_BUDGET, Some(bytes), run)
 }
 
 #[cfg(test)]

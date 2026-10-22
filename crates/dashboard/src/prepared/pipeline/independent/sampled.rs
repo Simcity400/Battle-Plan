@@ -955,43 +955,6 @@ fn territory_identities(branch: u64) -> String {
     format!("territory-identities-{branch}")
 }
 
-/// A refusal of territory's own read of the identity history: the
-/// identities' error, recorded for territory as coming from them
-/// ([`refused_from`]), as hourly preparation records an identities refusal
-/// reaching territory.
-#[derive(Debug)]
-pub(in crate::prepared::pipeline) struct IdentitiesRefusal(io::Error);
-
-impl IdentitiesRefusal {
-    const FROM: &'static str = "identities";
-
-    /// The history's refusal as territory's; any other error is unchanged.
-    fn wrap(error: io::Error) -> io::Error {
-        if error.kind() == io::ErrorKind::InvalidData {
-            io::Error::new(io::ErrorKind::InvalidData, Self(error))
-        } else {
-            error
-        }
-    }
-}
-
-impl std::fmt::Display for IdentitiesRefusal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::error::Error for IdentitiesRefusal {}
-
-/// The family a refusal came from, when it is a refusal of territory's own
-/// read of the identities ([`IdentitiesRefusal`]).
-pub(in crate::prepared::pipeline) fn refused_from(error: &io::Error) -> Option<&'static str> {
-    error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<IdentitiesRefusal>())
-        .map(|_| IdentitiesRefusal::FROM)
-}
-
 impl Sampled for Territory {
     fn family() -> &'static prepass::Family {
         &TERRITORY_FAMILY
@@ -1053,7 +1016,7 @@ impl Sampled for Territory {
             .observe_owned_states(frame, &mut self.identities, Some(changes));
         #[cfg(test)]
         let owned = super::super::lanes::inject("identities", frame.hour, owned);
-        owned.map_err(IdentitiesRefusal::wrap)?;
+        owned.map_err(super::event_feed::IdentitiesRefusal::wrap)?;
         self.prepared
             .observe(frame, block.replay.format, running, changes)
     }
@@ -1078,7 +1041,7 @@ impl Sampled for Territory {
                 0,
                 serde_json::to_vec(&self.identities)?.as_slice(),
             )
-            .map_err(IdentitiesRefusal::wrap)?;
+            .map_err(super::event_feed::IdentitiesRefusal::wrap)?;
         self.prepared.flush(writer, branch, cancelled)
     }
 
@@ -1598,8 +1561,6 @@ impl<S: Sampled> SampledBranch<S> {
 }
 
 impl<S: Sampled> Branch for SampledBranch<S> {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -1641,8 +1602,6 @@ impl<S: Sampled> Branch for SampledBranch<S> {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, observed, check)
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     fn pending(&self) -> usize {
         self.state.as_ref().map_or(0, |state| state.bytes())

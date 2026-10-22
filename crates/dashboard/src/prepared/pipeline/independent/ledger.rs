@@ -313,8 +313,6 @@ fn before(block: &Block<'_>) -> io::Result<Option<DecodedFrame>> {
 }
 
 impl Branch for LedgerBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -342,8 +340,6 @@ impl Branch for LedgerBranch {
         let _cpu = ::replay_frame::cpu::scope("fold driver", None);
         self.observe_hours(block, None, observed, check)
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     fn pending(&self) -> usize {
         self.ledger.bytes()

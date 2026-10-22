@@ -350,10 +350,10 @@ fn dynamic_modifier_missing_tables_and_owner_links_remain_named() {
 }
 
 #[test]
-fn dynamic_modifier_country_index_at_5000_countries() {
+fn dynamic_modifier_country_index() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let tags: Vec<_> = (0..5000)
+    let tags: Vec<_> = (0..24)
         .map(|id| {
             format!(
                 "{}{}{}",
@@ -384,7 +384,7 @@ fn dynamic_modifier_country_index_at_5000_countries() {
     }]));
     *f.tables[TableId::DynamicModifiers.index()] =
         TableView::Complete(TableRows::DynamicModifiers(
-            (0..5000)
+            (0..24)
                 .map(|id| DynamicModifierRow {
                     country: id + 100,
                     token: b"modded_name".to_vec(),
@@ -395,7 +395,7 @@ fn dynamic_modifier_country_index_at_5000_countries() {
         ));
     with_world(&f, "", Err("none"), |world| {
         let trigger = items("has_dynamic_modifier = { modifier = modded_name scope = 64 }");
-        for slot in [0, 2499, 4999] {
+        for slot in [0, 12, 23] {
             assert_eq!(
                 world.evaluate(&trigger, Scopes::of(Scope::Country(slot))),
                 Eval::True

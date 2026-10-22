@@ -215,18 +215,7 @@ fn render(
         scripted,
         inputs.actor_slot.unwrap_or(0),
     );
-    let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
-    let events = {
-        let mut index = cache
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(index.get_or_insert_with(|| {
-            Arc::new(installed_content_events::events::LazyEvents::from_content(
-                Arc::clone(&catalogue.content),
-            ))
-        }))
-    };
+    let events = script_events(catalogue);
     let lookup = |id: &[u8]| events.get(id);
     let context = effect_description::Context::new(
         &text,
@@ -314,18 +303,7 @@ pub(super) fn present(
         kind,
         ScriptEventFired | NewsEventFired | EventOptionSelected
     ) {
-        let cache = catalogue.content.layers.derived::<ScriptContentIndex>();
-        let events = {
-            let mut index = cache
-                .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(index.get_or_insert_with(|| {
-                Arc::new(installed_content_events::events::LazyEvents::from_content(
-                    Arc::clone(&catalogue.content),
-                ))
-            }))
-        };
+        let events = script_events(catalogue);
         match events.get(token.as_bytes()) {
             Ok(event) => {
                 if let Some(reason) = &event.refused {

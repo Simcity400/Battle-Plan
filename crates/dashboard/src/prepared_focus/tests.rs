@@ -4,25 +4,6 @@ use crate::test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame,
 use replay_data::rows::{FocusRow, TableRows};
 use std::sync::Arc;
 
-impl FocusAccumulator {
-    /// Each tag's focus observation at `frame`'s hour, read alone.
-    pub(crate) fn observe(
-        &mut self,
-        frame: &DecodedFrame,
-        cancelled: &AtomicBool,
-        mut emit: impl FnMut(String) -> io::Result<()>,
-    ) -> io::Result<()> {
-        check_cancel(cancelled)?;
-        for tag in read_hour(frame, None, &HourRead::default(), false)
-            .tags
-            .into_keys()
-        {
-            emit(tag.to_string())?;
-        }
-        Ok(())
-    }
-}
-
 /// Countries A to E (`scale_tag(0..5)`, slots 0 to 4) whose balances move
 /// every hour, with their focus at `hour`:
 /// - A completes `a0`, `a1`, ... every ten hours from 100; its progress

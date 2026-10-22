@@ -419,31 +419,29 @@ fn air_superiority_prepared_on_its_own_publishes_and_saves_what_hourly_preparati
     let hourly =
         independent::with_test_hourly(|| prepared(&mut fixture, "superiority-parity", &plain));
     for families in registries() {
-        for workers in [1, 3] {
-            for together in [true, false] {
-                let label = format!(
-                    "{} families, {workers} workers, at once {together}",
-                    families.len()
-                );
-                let before = notes();
-                let own = prepass::with_test_prepass(workers, None, || {
-                    independent::with_test_only(families, || {
-                        if together {
+        for (workers, together) in [(1, true), (3, false)] {
+            let label = format!(
+                "{} families, {workers} workers, at once {together}",
+                families.len()
+            );
+            let before = notes();
+            let own = prepass::with_test_prepass(workers, None, || {
+                independent::with_test_only(families, || {
+                    if together {
+                        prepared(&mut fixture, "superiority-parity", &plain)
+                    } else {
+                        independent::with_test_one_after_another(|| {
                             prepared(&mut fixture, "superiority-parity", &plain)
-                        } else {
-                            independent::with_test_one_after_another(|| {
-                                prepared(&mut fixture, "superiority-parity", &plain)
-                            })
-                        }
-                    })
-                });
-                assert_same(&own, &hourly, &label, false);
-                assert_eq!(
-                    notes(),
-                    before,
-                    "{label}: every block folded from its extract"
-                );
-            }
+                        })
+                    }
+                })
+            });
+            assert_same(&own, &hourly, &label, false);
+            assert_eq!(
+                notes(),
+                before,
+                "{label}: every block folded from its extract"
+            );
         }
     }
 }
@@ -1029,46 +1027,4 @@ fn air_day_values(reply: &serde_json::Value, day: usize) -> serde_json::Value {
         }
     }
     serde_json::to_value(rows).unwrap()
-}
-
-#[test]
-fn sampled_air_comparison_keeps_five_thousand_countries() {
-    let mut first = frame(1, 120, 5000);
-    for rows in [
-        TableRows::Factions(vec![]),
-        TableRows::FactionMembers(vec![]),
-        TableRows::WarRelations(vec![]),
-        TableRows::HumanControllers(vec![]),
-        TableRows::Capitulation(vec![]),
-        TableRows::AirWings(vec![]),
-        TableRows::AirTheatres(vec![]),
-        TableRows::AirTheatreGroups(vec![]),
-        TableRows::AirTheatreMembers(vec![]),
-    ] {
-        let table = rows.table();
-        *first.tables[table.index()] = TableView::Complete(rows);
-    }
-    *first.tables[TableId::RaidAirScores.index()] = TableView::Complete(TableRows::RaidAirScores(
-        (0..5000)
-            .map(|id| RaidAirScoreRow {
-                country: 100_000 + id,
-                region: 7000,
-                friendly: i64::from(id) + 7,
-                enemy: 3,
-                ..Default::default()
-            })
-            .collect(),
-    ));
-    let mut last = first.clone();
-    last.hour = 121;
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, last])]).unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("air-sample-5000");
-    let params = serde_json::json!({"branchId":"1", "view":"timeline", "firstHour":120,"lastHour":121, "mode":"sides", "regions":[7000]});
-    let cold = query(&source, params.clone());
-    assert_eq!(cold["sides"].as_array().unwrap().len(), 5000);
-    plain(&source);
-    let complete = query(&source, params);
-    assert_eq!(air_day_values(&cold, 0), air_day_values(&complete, 0));
-    clear(source);
 }

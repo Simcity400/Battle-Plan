@@ -54,8 +54,6 @@ impl Own for AirLedger {
 struct LedgerBranch(Box<military_air_ledger::prepared::Prepared>);
 
 impl Branch for LedgerBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -89,8 +87,6 @@ impl Branch for LedgerBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.0.buffered_bytes()
     }
@@ -103,10 +99,6 @@ impl Branch for LedgerBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.0.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
@@ -166,8 +158,6 @@ impl RaidsBranch {
 }
 
 impl Branch for RaidsBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -203,8 +193,6 @@ impl Branch for RaidsBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.bytes()
     }
@@ -217,10 +205,6 @@ impl Branch for RaidsBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.prepared.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
@@ -265,8 +249,6 @@ impl Own for Aces {
 struct AcesBranch(Box<air_aces::prepared::Prepared>);
 
 impl Branch for AcesBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -303,8 +285,6 @@ impl Branch for AcesBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     /// The windows of the blocks it went through since the last commit,
     /// which hourly preparation writes at each block's end.
     fn publish(&mut self, writer: &mut store::Writer, _: u64, _: &AtomicBool) -> io::Result<()> {
@@ -323,10 +303,6 @@ impl Branch for AcesBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.0.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {

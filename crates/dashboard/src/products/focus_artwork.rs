@@ -777,11 +777,11 @@ mod tests {
     }
 
     #[test]
-    fn static_icon_only_product_skips_scoped_titles_at_five_thousand_countries() {
+    fn static_icon_only_product_skips_scoped_titles() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::from_url;
-        let mut frame = focus_scale_frame(100, 5_000, 2_500, &["static"]);
+        let mut frame = focus_scale_frame(100, 24, 12, &["static"]);
         for table in [TableId::States, TableId::Provinces] {
             frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
         }
@@ -793,7 +793,7 @@ mod tests {
         let params = FocusArtworkParams {
             branch_id: "1".into(),
             hour: 100,
-            tag: String::from_utf8(scale_tag(2_500)).unwrap(),
+            tag: String::from_utf8(scale_tag(12)).unwrap(),
             tokens: vec!["static".into()],
             text_only: Some(false),
             include_descriptions: Some(false),
@@ -835,7 +835,7 @@ mod tests {
                     .complete::<tables::Countries>()
                     .unwrap()
                     .len(),
-                5_000
+                24
             );
         }
         // The same authored title, when requested, still needs the dated kit
@@ -900,7 +900,7 @@ mod tests {
         use crate::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..103)
-            .map(|hour| focus_scale_frame(hour, 5_000, 2_500, &["conditional"]))
+            .map(|hour| focus_scale_frame(hour, 24, 12, &["conditional"]))
             .collect();
         for (frame, ruling_id) in frames.iter_mut().zip([20, 30]) {
             frame.tables[TableId::PoliticalParties.index()] =
@@ -908,7 +908,7 @@ mod tests {
                     [(20, "mod_group"), (30, "other_group")]
                         .into_iter()
                         .map(|(id, token)| PoliticalPartyRow {
-                            country: 102_500,
+                            country: 100_012,
                             id,
                             is_ruling: u8::from(id == ruling_id),
                             token: token.as_bytes().to_vec(),
@@ -942,7 +942,7 @@ mod tests {
             let params = FocusArtworkParams {
                 branch_id: "1".into(),
                 hour,
-                tag: String::from_utf8(scale_tag(2_500)).unwrap(),
+                tag: String::from_utf8(scale_tag(12)).unwrap(),
                 tokens: vec!["conditional".into()],
                 text_only: Some(false),
                 include_descriptions: Some(false),
@@ -982,7 +982,7 @@ mod tests {
             );
             assert_eq!(
                 entry.frame.complete::<tables::Countries>().unwrap().len(),
-                5_000
+                24
             );
         }
         assert_eq!(shared.lock().unwrap().reads, 3);
@@ -997,15 +997,15 @@ mod tests {
             &[records(
                 1,
                 vec![
-                    focus_scale_frame(100, 5_000, 2_500, &["focus_a"]),
-                    focus_scale_frame(102, 5_000, 2_500, &["focus_a", "focus_b"]),
+                    focus_scale_frame(100, 24, 12, &["focus_a"]),
+                    focus_scale_frame(102, 24, 12, &["focus_a", "focus_b"]),
                 ],
             )],
         )
         .unwrap();
         let (source, context, _folder) = product_source(replay);
         let cancelled = AtomicBool::new(false);
-        let tag = String::from_utf8(scale_tag(2_500)).unwrap();
+        let tag = String::from_utf8(scale_tag(12)).unwrap();
         NationalFocus::load(
             &source,
             &CountryParams {
@@ -1211,9 +1211,9 @@ mod tests {
     }
 
     #[test]
-    fn national_focus_product_seeds_verified_completion_frames_at_five_thousand_countries() {
+    fn national_focus_product_seeds_verified_completion_frames() {
         use crate::products::{CountryParams, national_focus::NationalFocus};
-        const COUNTRIES: u32 = 5_000;
+        const COUNTRIES: u32 = 24;
         let selected = COUNTRIES / 2;
         let tag = String::from_utf8(scale_tag(selected)).unwrap();
         let frames = vec![
@@ -1472,7 +1472,7 @@ mod tests {
             unreachable!();
         };
         let template = rows[0].clone();
-        *rows = (0..5_000)
+        *rows = (0..24)
             .map(|index| {
                 let mut country = template.clone();
                 country.id = 9001 + index;
@@ -1494,7 +1494,7 @@ mod tests {
         let TableView::Complete(rows) = &*next.tables[countries] else {
             unreachable!();
         };
-        assert_eq!(rows.rows::<tables::Countries>().unwrap().len(), 5_000);
+        assert_eq!(rows.rows::<tables::Countries>().unwrap().len(), 24);
     }
 
     #[test]

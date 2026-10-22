@@ -34,7 +34,6 @@ struct FactionBranch {
     state: Box<prepared::Prepared>,
 }
 impl Branch for FactionBranch {
-    fn begin_block(&mut self) {}
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -72,7 +71,6 @@ impl Branch for FactionBranch {
             block.cancelled,
         )
     }
-    fn end_block(&mut self, _: &Replay, _: u64) {}
     fn pending(&self) -> usize {
         self.state.bytes()
     }

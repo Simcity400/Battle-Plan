@@ -253,28 +253,7 @@ impl Block<'_> {
         visit: impl FnMut(Arc<replay_frame::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
-        #[cfg(test)]
-        let mut visit = visit;
-        #[cfg(test)]
-        let visit = |raw, frame: &DecodedFrame| {
-            if let Some(name) = self.read_hook_family {
-                let changes =
-                    crate::prepared::frame_changes::FrameChanges::alone(frame, self.replay.format);
-                if !test_observation(name, frame, &changes)? {
-                    return Ok(());
-                }
-            }
-            visit(raw, frame)
-        };
-        shared::read_alone(
-            self.replay,
-            self.index,
-            self.shared,
-            tables,
-            None,
-            visit,
-            check,
-        )
+        self.read(tables, None, visit, check)
     }
 
     /// [`Self::read_alone`] through the hour `last`. A family that reads
@@ -284,6 +263,16 @@ impl Block<'_> {
         &self,
         tables: &[TableId],
         last: i32,
+        visit: impl FnMut(Arc<replay_frame::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
+        check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.read(tables, Some(last), visit, check)
+    }
+
+    fn read(
+        &self,
+        tables: &[TableId],
+        last: Option<i32>,
         visit: impl FnMut(Arc<replay_frame::frame::RecordedFrame>, &DecodedFrame) -> io::Result<()>,
         check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
@@ -305,7 +294,7 @@ impl Block<'_> {
             self.index,
             self.shared,
             tables,
-            Some(last),
+            last,
             visit,
             check,
         )
@@ -319,7 +308,7 @@ pub(super) type Observed<'a> = dyn FnMut(i32, io::Result<()>) -> io::Result<bool
 /// One branch's state of a family prepared on its own.
 pub(super) trait Branch {
     /// Before each block it observes.
-    fn begin_block(&mut self);
+    fn begin_block(&mut self) {}
     /// Fold the block's pre-pass facts; how it folded and the last hour it
     /// reached.
     fn fold(
@@ -339,7 +328,9 @@ pub(super) trait Branch {
     ) -> io::Result<Option<i32>>;
     /// After each block it went on through. Pages hourly preparation writes
     /// at a block's end are held here and written by [`Self::publish`].
-    fn end_block(&mut self, replay: &Replay, branch: u64);
+    fn end_block(&mut self, replay: &Replay, branch: u64) {
+        let _ = (replay, branch);
+    }
     /// Write the pages it holds from the blocks it went through since its
     /// last commit, which hourly preparation writes at each such block's end
     /// (air aces' windows, espionage day pages, production pages). Called at
@@ -388,7 +379,10 @@ pub(super) trait Branch {
     ) -> io::Result<()>;
     /// Its pages after the flush: the outer error stops its preparation, the
     /// inner one refuses the branch.
-    fn save(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<io::Result<()>>;
+    fn save(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<io::Result<()>> {
+        let _ = (writer, branch);
+        Ok(Ok(()))
+    }
     /// Its continuation, which hourly preparation keeps in its branch state.
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()>;
 }
@@ -704,8 +698,6 @@ struct IdentitiesBranch {
 }
 
 impl Branch for IdentitiesBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -739,8 +731,6 @@ impl Branch for IdentitiesBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         0
     }
@@ -760,10 +750,6 @@ impl Branch for IdentitiesBranch {
             0,
             serde_json::to_vec(&*self.scan)?.as_slice(),
         )
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
@@ -798,8 +784,6 @@ impl Own for Wars {
 }
 
 impl Branch for crate::products::wars::block::OwnBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -835,8 +819,6 @@ impl Branch for crate::products::wars::block::OwnBranch {
         )
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.pending_bytes()
     }
@@ -849,10 +831,6 @@ impl Branch for crate::products::wars::block::OwnBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.flush_batch(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, _: &mut store::Writer, _: u64) -> io::Result<()> {
@@ -891,8 +869,6 @@ impl Own for Casualties {
 }
 
 impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -956,10 +932,6 @@ impl Branch for crate::products::war_casualties::prepared::block::OwnBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.flush_batch(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -2730,14 +2702,7 @@ fn grouping() -> Grouping {
 /// Run `run` with the families' commits grouped by `grouping`.
 #[cfg(test)]
 pub(super) fn with_test_grouping<T>(grouping: Grouping, run: impl FnOnce() -> T) -> T {
-    struct Reset(Grouping);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_GROUPING.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_GROUPING.with(|value| value.replace(grouping)));
-    run()
+    crate::prepared::with_test_cell(&TEST_GROUPING, grouping, run)
 }
 
 /// The store commits families prepared on their own published on this
@@ -2794,14 +2759,7 @@ fn install_observation_hook(hook: Option<lanes::Hook>) -> impl Drop {
 /// Run `run` with every family prepared hour by hour, as before.
 #[cfg(test)]
 pub(super) fn with_test_hourly<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_HOURLY.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_HOURLY.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_HOURLY, true, run)
 }
 
 /// Run `run` with only the registered families named `names` prepared on
@@ -2822,43 +2780,22 @@ pub(super) fn with_test_only<T>(names: &[&str], run: impl FnOnce() -> T) -> T {
 /// Run `run` with `families` as the families prepared on their own.
 #[cfg(test)]
 pub(super) fn with_test_families<T>(families: &[&'static dyn Own], run: impl FnOnce() -> T) -> T {
-    struct Reset(Option<&'static [&'static dyn Own]>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_FAMILIES.with(|value| value.set(self.0));
-        }
-    }
     let families: &'static [&'static dyn Own] = Box::leak(families.to_vec().into_boxed_slice());
-    let _reset = Reset(TEST_FAMILIES.with(|value| value.replace(Some(families))));
-    run()
+    crate::prepared::with_test_cell(&TEST_FAMILIES, Some(families), run)
 }
 
 /// Run `run` with the families prepared on their own one after another, on
 /// this thread, rather than at once.
 #[cfg(test)]
 pub(super) fn with_test_one_after_another<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_ONE_AFTER_ANOTHER.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_ONE_AFTER_ANOTHER.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_ONE_AFTER_ANOTHER, true, run)
 }
 
 /// Complete every newest-view side job before admitting the walk. Fixtures
 /// needing all branches' pages and diagnostics choose this order explicitly.
 #[cfg(test)]
 pub(super) fn with_test_newest_first<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_NEWEST_FIRST.with(|value| value.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_NEWEST_FIRST.with(|value| value.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_NEWEST_FIRST, true, run)
 }
 
 /// Observe actual accepted family publications, on the group leader's thread.

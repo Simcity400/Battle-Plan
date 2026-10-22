@@ -53,8 +53,6 @@ struct FocusBranch {
 }
 
 impl Branch for FocusBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -74,8 +72,6 @@ impl Branch for FocusBranch {
         family::observe_block(&mut self.index, block.replay, block.index, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.index.buffered_bytes()
     }
@@ -90,10 +86,6 @@ impl Branch for FocusBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.index.flush(writer, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {

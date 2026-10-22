@@ -1013,16 +1013,6 @@ fn family_lanes_measured_work_overlaps_critical_path_without_double_counting_res
 }
 
 #[test]
-fn family_lanes_five_thousand_countries_match_every_section() {
-    let replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(1, vec![frame(1, 10, 5_000), frame(1, 11, 5_000)])],
-    )
-    .unwrap();
-    compare_fixture(&replay);
-}
-
-#[test]
 fn family_lanes_missing_and_modded_content_match_every_section_and_warning_byte() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");

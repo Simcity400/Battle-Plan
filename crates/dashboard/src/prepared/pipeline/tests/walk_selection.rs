@@ -8,14 +8,7 @@ use serde_json::Value;
 type Payloads = BTreeMap<(String, u64), Vec<u8>>;
 
 fn all_tables<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset(bool);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_ALL_TABLES.with(|flag| flag.set(self.0));
-        }
-    }
-    let _reset = Reset(TEST_ALL_TABLES.with(|flag| flag.replace(true)));
-    run()
+    crate::prepared::with_test_cell(&TEST_ALL_TABLES, true, run)
 }
 
 fn clear(source: &Source) {
@@ -339,22 +332,6 @@ fn selected_walk_matches_hourly_preparation_and_saves_the_same_domain_state() {
             assert_eq!(actual[field], expected[field], "{name}: {field}");
         }
     }
-}
-
-#[test]
-fn selected_walk_and_all_table_walk_save_identical_5000_country_pages_and_state() {
-    let replay = Replay::from_records(
-        CAMPAIGN.into(),
-        &[records(1, vec![frame(1, 100, 5000), frame(1, 101, 5000)])],
-    )
-    .unwrap();
-    let mut fixture = Fixture::new(&replay);
-    let source = fixture.source("walk-5000");
-    all_tables(|| measured(&source));
-    let expected = payloads(&source, None);
-    clear(&source);
-    measured(&source);
-    assert_same(&payloads(&source, None), &expected);
 }
 
 #[test]

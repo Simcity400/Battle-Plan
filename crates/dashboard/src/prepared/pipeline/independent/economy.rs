@@ -607,8 +607,6 @@ impl Ledger for ConstructionBranch {
 }
 
 impl Branch for ConstructionBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -629,8 +627,6 @@ impl Branch for ConstructionBranch {
     }
 
     /// The block's end ran with its last hour (`Ledger::finish_block`).
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.bytes()
     }
@@ -648,10 +644,6 @@ impl Branch for ConstructionBranch {
             .ok_or_else(|| io::Error::other("Construction flushed before observing a block"))?;
         self.prepared
             .flush_in(writer, replay, &self.windows, names, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -786,8 +778,6 @@ impl Ledger for StockpileBranch {
 }
 
 impl Branch for StockpileBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -807,8 +797,6 @@ impl Branch for StockpileBranch {
         observe_block(self, &STOCKPILE_FAMILY, block, None, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared.bytes()
     }
@@ -821,10 +809,6 @@ impl Branch for StockpileBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.prepared.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -988,8 +972,6 @@ impl Ledger for ProductionBranch {
 }
 
 impl Branch for ProductionBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -1008,8 +990,6 @@ impl Branch for ProductionBranch {
     ) -> io::Result<Option<i32>> {
         observe_block(self, &PRODUCTION_FAMILY, block, None, observed, check)
     }
-
-    fn end_block(&mut self, _: &Replay, _: u64) {}
 
     fn pending(&self) -> usize {
         self.accumulator.buffered_bytes() + self.held.bytes()
@@ -1041,10 +1021,6 @@ impl Branch for ProductionBranch {
             prepared_production::publish_endpoint(writer, &mut self.accumulator, &page)?;
         }
         prepared_production::write_catalogue(writer, &mut self.accumulator, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -1149,8 +1125,6 @@ impl Ledger for ExperienceBranch {
 }
 
 impl Branch for ExperienceBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -1170,8 +1144,6 @@ impl Branch for ExperienceBranch {
         observe_block(self, &EXPERIENCE_FAMILY, block, None, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.accumulator.buffered_bytes()
     }
@@ -1184,10 +1156,6 @@ impl Branch for ExperienceBranch {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.accumulator.flush(writer, branch, cancelled)
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
@@ -1324,8 +1292,6 @@ impl Ledger for FuelBranch {
 }
 
 impl Branch for FuelBranch {
-    fn begin_block(&mut self) {}
-
     fn fold(
         &mut self,
         facts: Box<dyn Any + Send>,
@@ -1345,8 +1311,6 @@ impl Branch for FuelBranch {
         observe_block(self, &FUEL_FAMILY, block, None, observed, check)
     }
 
-    fn end_block(&mut self, _: &Replay, _: u64) {}
-
     fn pending(&self) -> usize {
         self.prepared
             .as_ref()
@@ -1364,10 +1328,6 @@ impl Branch for FuelBranch {
             Some(prepared) => prepared.flush(writer, branch, self.format, cancelled),
             None => Ok(()),
         }
-    }
-
-    fn save(&mut self, _: &mut store::Writer, _: u64) -> io::Result<io::Result<()>> {
-        Ok(Ok(()))
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
