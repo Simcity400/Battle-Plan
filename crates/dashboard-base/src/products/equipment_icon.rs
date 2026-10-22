@@ -14,7 +14,10 @@
 //!    culture and no prefix), then the graphic pool for L alone.
 //! 4. Otherwise no icon.
 //!
-//! Products about equipment (production lines, stockpile) read icons here.
+//! Products about equipment (production lines, stockpile) read icons here. The rule's only
+//! questions of the artwork are whether a sprite is declared and whether a texture file
+//! exists ([`Probe`]); a choice can be made with them left open ([`icon_choice`]) and answered
+//! later by whichever presentation shows it ([`IconChoice::shown`]).
 
 use crate::catalogue::Catalogue;
 use installed_content_core::{equipment::Database, technology::Enablers};
@@ -76,6 +79,86 @@ pub enum Icon {
     Path(String),
 }
 
+/// One question the icon rule asks of the artwork, in the order it asks.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum Probe {
+    /// Whether a sprite is declared (an `Err` when it is refused).
+    Sprite(String),
+    /// Whether a texture file exists.
+    File(String),
+    /// A name from a pool: a declared sprite, else a texture file when it reads as a path.
+    Existing(String),
+}
+
+/// A variant's icon with the artwork questions left open: the rule's questions in the order
+/// it asks them, and what it gives when every answer is no. The first question a
+/// presentation answers yes gives the icon it shows ([`Self::walk`]).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct IconChoice {
+    pub probes: Vec<Probe>,
+    /// With every answer no: no icon, or why it cannot be known.
+    pub otherwise: Result<(), String>,
+}
+
+impl IconChoice {
+    /// A choice that cannot be made, with why.
+    pub fn unknown(reason: String) -> Self {
+        Self {
+            probes: Vec::new(),
+            otherwise: Err(reason),
+        }
+    }
+
+    /// The icon the rule chooses where `answer` answers its questions: the first one found,
+    /// else none or why; a question `answer` cannot tell stops the walk with why, as it stops
+    /// the rule.
+    pub fn walk(
+        &self,
+        answer: impl Fn(&Probe) -> Result<Option<Icon>, String>,
+    ) -> Result<Option<Icon>, String> {
+        for probe in &self.probes {
+            if let Some(icon) = answer(probe)? {
+                return Ok(Some(icon));
+            }
+        }
+        self.otherwise.clone().map(|()| None)
+    }
+
+    /// The icon `catalogue` shows: sprites its presentation declares, texture files its
+    /// presentation stack holds.
+    pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
+        let layers = catalogue.content.layers.presentation();
+        let sprite = |name: &str| match catalogue.sprites.refusal(name) {
+            Some(reason) => Err(reason),
+            None => Ok(catalogue
+                .sprites
+                .contains(name)
+                .then(|| Icon::Sprite(name.to_owned()))),
+        };
+        let file = |path: &str| {
+            layers
+                .has_file(path)
+                .map(|found| found.then(|| Icon::Path(path.to_owned())))
+                .map_err(|error| format!("{path}: {error}"))
+        };
+        self.walk(|probe| match probe {
+            Probe::Sprite(name) => sprite(name),
+            Probe::File(path) => file(path),
+            Probe::Existing(name) => match sprite(name)? {
+                Some(icon) => Ok(Some(icon)),
+                None if reads_as_path(name) => file(name),
+                None => Ok(None),
+            },
+        })
+    }
+}
+
+/// Whether a name from a pool or an icon entry is a texture path: the save loader classifies
+/// a string holding `/` or `.` as one.
+fn reads_as_path(name: &str) -> bool {
+    name.contains('/') || name.contains('.')
+}
+
 /// Every equipment product decodes the same native sprite frame/texture path.
 pub fn image(catalogue: &Catalogue, icon: &Icon, max_edge: u32) -> io::Result<String> {
     let layers = &catalogue.content.layers;
@@ -132,12 +215,9 @@ pub struct IconContent {
     sprites: BTreeSet<String>,
     refused_sprites: BTreeMap<String, String>,
     files: Files,
-    /// Every texture path the rule asked about, with the answer: the files it
-    /// found or missed, outside the recorded content's hash.
-    probes: std::sync::Mutex<BTreeMap<String, Result<bool, String>>>,
-    /// A digest of the rule's visual inputs the recorded content's hash does not
-    /// cover: the declared and refused sprites, the graphic pools, the geography
-    /// and the DLC names.
+    /// A digest of what a choice ([`icon_choice`]) reads that the recorded content's hash
+    /// does not cover: the graphic pools, the geography and the DLC names. The declared
+    /// sprites and texture files are not among them: a choice leaves those questions open.
     visual: String,
 }
 
@@ -207,7 +287,6 @@ impl IconContent {
             }),
             catalogue: Some(catalogue),
             load_warnings: warnings,
-            probes: Default::default(),
             visual: String::new(),
         }
         .fingerprinted())
@@ -215,42 +294,19 @@ impl IconContent {
 
     /// The content with the digest of its visual inputs.
     fn fingerprinted(mut self) -> Self {
-        let inputs = format!(
-            "{:?}\0{:?}\0{:?}\0{:?}\0{:?}",
-            self.sprites, self.refused_sprites, self.pools, self.geography, self.dlc
-        );
+        let inputs = format!("{:?}\0{:?}\0{:?}", self.pools, self.geography, self.dlc);
         self.visual = blake3::hash(inputs.as_bytes()).to_hex().to_string();
         self
     }
 
-    /// Whether a texture file exists, recorded with its answer ([`Self::file_probes`]).
+    /// Whether a texture file exists.
     fn file(&self, path: &str) -> Result<bool, String> {
-        let found = (self.files)(path);
-        self.probes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(path.to_owned(), found.clone());
-        found
+        (self.files)(path)
     }
 
-    /// Every texture path asked about so far, with the answer it had.
-    pub fn file_probes(&self) -> BTreeMap<String, Result<bool, String>> {
-        self.probes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
-    }
-
-    /// Whether every one of `probes` has the answer it had when it was asked.
-    pub fn probes_hold(&self, probes: &BTreeMap<String, Result<bool, String>>) -> bool {
-        probes
-            .iter()
-            .all(|(path, answer)| self.file(path) == *answer)
-    }
-
-    /// The digest of the rule's visual inputs outside the recorded content's
-    /// hash; the rest it reads (the equipment database, the technologies'
-    /// enablers, the map) is game content the recording pins by hash.
+    /// The digest of a choice's inputs outside the recorded content's hash; the rest it
+    /// reads (the equipment database, the technologies' enablers, the map) is game content
+    /// the recording pins by hash.
     pub fn visual_inputs(&self) -> &str {
         &self.visual
     }
@@ -275,7 +331,6 @@ impl IconContent {
             sprites,
             refused_sprites: BTreeMap::new(),
             files: Box::new(move |path| Ok(files.contains(path))),
-            probes: Default::default(),
             visual: String::new(),
         }
         .fingerprinted()
@@ -403,10 +458,19 @@ impl IconContent {
         if let Some(icon) = self.sprite(name)? {
             return Ok(Some(icon));
         }
-        if !(name.contains('/') || name.contains('.')) {
+        if !reads_as_path(name) {
             return Ok(None);
         }
         Ok(self.file(name)?.then(|| Icon::Path(name.to_owned())))
+    }
+
+    /// The answer to one of the rule's questions in this content.
+    pub(crate) fn answer(&self, probe: &Probe) -> Result<Option<Icon>, String> {
+        match probe {
+            Probe::Sprite(name) => self.sprite(name),
+            Probe::File(path) => Ok(self.file(path)?.then(|| Icon::Path(path.clone()))),
+            Probe::Existing(name) => self.existing(name),
+        }
     }
 }
 
@@ -478,6 +542,48 @@ pub fn variant_icon(
     variant: &VariantDefinitionRow,
     spelling: &str,
 ) -> Result<Option<Icon>, String> {
+    rule(content, hour, variant, spelling, &|probe| content.answer(&probe))
+}
+
+/// The variant's icon at this hour with the artwork questions left open, for any
+/// presentation to answer ([`IconChoice::shown`]): what [`variant_icon`] chooses wherever the
+/// answers are this content's.
+///
+/// The questions are those the rule asks when every answer is no, recorded in order. They
+/// do not depend on the answers: the rule's only inputs a presentation can change are these
+/// answers, and it uses each only to return the icon found (or, where one cannot be told, to
+/// stop with why); no answer names a later candidate, reaches a recorded fact or decides a
+/// later branch (the pools are tried as one list, first found wins). So up to the first yes,
+/// the questions asked with any answers are these, and walking them makes the rule's choice.
+pub fn icon_choice(
+    content: &IconContent,
+    hour: &IconHour,
+    variant: &VariantDefinitionRow,
+    spelling: &str,
+) -> IconChoice {
+    let probes = std::cell::RefCell::new(Vec::new());
+    let otherwise = rule(content, hour, variant, spelling, &|probe| {
+        probes.borrow_mut().push(probe);
+        Ok(None)
+    });
+    IconChoice {
+        probes: probes.into_inner(),
+        // Nothing was found, so the rule ended with no icon or why.
+        otherwise: otherwise.map(|_| ()),
+    }
+}
+
+/// The answer to one of the rule's questions.
+type Ask<'a> = dyn Fn(Probe) -> Result<Option<Icon>, String> + 'a;
+
+/// [`variant_icon`]'s rule, asking `ask` each artwork question.
+fn rule(
+    content: &IconContent,
+    hour: &IconHour,
+    variant: &VariantDefinitionRow,
+    spelling: &str,
+    ask: &Ask,
+) -> Result<Option<Icon>, String> {
     let key = content
         .units
         .named(spelling)
@@ -527,16 +633,15 @@ pub fn variant_icon(
                 country,
                 ideology.as_deref(),
                 culture.as_deref(),
+                ask,
             )? {
                 return Ok(Some(icon));
             }
         } else {
             let found = if variant.icon_kind == 0 {
-                content.sprite(&entry)?
+                ask(Probe::Sprite(entry.clone().into_owned()))?
             } else {
-                content
-                    .file(&entry)?
-                    .then(|| Icon::Path(entry.clone().into_owned()))
+                ask(Probe::File(entry.clone().into_owned()))?
             };
             if found.is_some() {
                 return Ok(found);
@@ -645,6 +750,7 @@ pub fn variant_icon(
         capital,
         l_link,
         &mut BTreeSet::new(),
+        ask,
     )
 }
 
@@ -667,6 +773,7 @@ fn fallback(
     capital: bool,
     country: Option<u32>,
     visited: &mut BTreeSet<String>,
+    ask: &Ask,
 ) -> Result<Option<Icon>, String> {
     let model = type_model(&content.units, key)?;
     if !visited.insert(key.to_owned()) {
@@ -678,7 +785,7 @@ fn fallback(
     for suffix in suffixes {
         for name in [Some(key), model.archetype].into_iter().flatten() {
             for candidate in sprite_names(name, suffix, names.tag).into_iter().flatten() {
-                if let Some(icon) = content.sprite(&candidate)? {
+                if let Some(icon) = ask(Probe::Sprite(candidate))? {
                     return Ok(Some(icon));
                 }
             }
@@ -702,17 +809,17 @@ fn fallback(
                 // the icon unknown rather than skipping to the next name.
                 if let Some(tag) = names.technology_tag.clone()?
                     && let Some(icon) =
-                        content.sprite(&format!("GFX_{tag}_{technology}{suffix}"))?
+                        ask(Probe::Sprite(format!("GFX_{tag}_{technology}{suffix}")))?
                 {
                     return Ok(Some(icon));
                 }
                 if let Some(culture) = names.culture_2d.clone()?
                     && let Some(icon) =
-                        content.sprite(&format!("GFX_{culture}_{technology}{suffix}"))?
+                        ask(Probe::Sprite(format!("GFX_{culture}_{technology}{suffix}")))?
                 {
                     return Ok(Some(icon));
                 }
-                if let Some(icon) = content.sprite(&format!("GFX_{technology}{suffix}"))? {
+                if let Some(icon) = ask(Probe::Sprite(format!("GFX_{technology}{suffix}")))? {
                     return Ok(Some(icon));
                 }
             }
@@ -727,11 +834,12 @@ fn fallback(
             capital,
             country,
             visited,
+            ask,
         )?
     {
         return Ok(Some(icon));
     }
-    pool(content, hour, key, country, None, None)
+    pool(content, hour, key, country, None, None, ask)
 }
 
 /// The graphic pool for a type and a country (or only the default
@@ -743,6 +851,7 @@ fn pool(
     country: Option<u32>,
     ideology: Option<&str>,
     culture: Option<&str>,
+    ask: &Ask,
 ) -> Result<Option<Icon>, String> {
     let model = type_model(&content.units, key)?;
     let family = model
@@ -754,6 +863,7 @@ fn pool(
         None => None,
     };
     let failed = std::cell::RefCell::new(None::<String>);
+    let shown = std::cell::RefCell::new(None::<Icon>);
     let found = content.pools.lookup_icon(
         &Context {
             equipment: key,
@@ -771,8 +881,13 @@ fn pool(
         |name| Some(content.dlc.contains(name)),
         // A candidate whose existence cannot be told stops the lookup: whatever a
         // later candidate would give is not known to be what the game shows.
-        |name| match content.existing(name) {
-            Ok(found) => found.is_some(),
+        |name| match ask(Probe::Existing(name.to_owned())) {
+            Ok(Some(icon)) => {
+                // The first found is the icon, kept so its question is asked once.
+                shown.borrow_mut().get_or_insert(icon);
+                true
+            }
+            Ok(None) => false,
             Err(reason) => {
                 failed.borrow_mut().get_or_insert(reason);
                 true
@@ -782,10 +897,7 @@ fn pool(
     if let Some(reason) = failed.into_inner() {
         return Err(reason);
     }
-    match found {
-        Some(name) => content.existing(&name),
-        None => Ok(None),
-    }
+    Ok(found.and(shown.into_inner()))
 }
 
 #[cfg(test)]

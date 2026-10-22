@@ -1,4 +1,12 @@
 use super::*;
+use crate::products::equipment_icon::Probe;
+
+/// What `content`'s answers make of a variant icon choice, as a reply's key.
+fn answered(content: &IconContent, choice: &IconChoice) -> Result<Option<String>, String> {
+    Ok(choice
+        .walk(|probe| content.answer(probe))?
+        .map(|icon| icon_key(&icon)))
+}
 use crate::test_fixtures::{
     CAMPAIGN, LineFixture, OutputFixture, PRODUCTION_HOUR as FIRST, equipment_types,
     production_frame, records,
@@ -815,7 +823,10 @@ fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives(
         Default::default(),
     );
     let scanned = scan(&replay, 1, "GER", Some(&content), &AtomicBool::new(false)).unwrap();
-    let icons: Vec<(i32, Result<Option<Icon>, String>)> = scanned.icons[&71].clone();
+    let icons: Vec<(i32, Result<Option<Icon>, String>)> = scanned.icons[&71]
+        .iter()
+        .map(|(hour, choice)| (*hour, choice.walk(|probe| content.answer(probe))))
+        .collect();
     assert_eq!(
         icons,
         [
@@ -832,9 +843,12 @@ fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives(
         ]
     );
     // The reply's entries give the art from 134.
-    let mut shown = std::collections::BTreeMap::new();
-    let (entries, _, _) =
-        crate::products::production_lines::variant_entries(&scanned, None, true, &mut shown);
+    let (entries, _, _) = crate::products::production_lines::variant_entries(
+        &scanned,
+        None,
+        true,
+        &mut |choice| answered(&content, choice),
+    );
     let art: Vec<_> = entries
         .iter()
         .filter(|entry| entry.id == "71")
@@ -912,8 +926,12 @@ fn a_known_variants_icon_follows_a_changed_definition_at_its_read() {
     );
     let scanned = scan(&replay, 1, "GER", Some(&content), &AtomicBool::new(false)).unwrap();
     let sprite = |name: &str| Ok(Some(Icon::Sprite(name.to_owned())));
+    let icons: Vec<_> = scanned.icons[&70]
+        .iter()
+        .map(|(hour, choice)| (*hour, choice.walk(|probe| content.answer(probe))))
+        .collect();
     assert_eq!(
-        scanned.icons[&70],
+        icons,
         [(FIRST, sprite("GFX_A")), (FIRST + 30, sprite("GFX_B"))]
     );
     // A variant no line used is not looked up.
@@ -1022,15 +1040,28 @@ fn a_variant_is_named_only_from_its_first_definition_read_onwards() {
         vec![
             (
                 FIRST,
-                Err("the variant's definition is not recorded yet".into()),
+                IconChoice::unknown("the variant's definition is not recorded yet".into()),
             ),
-            (FIRST + 24, Ok(Some(Icon::Sprite("GFX_rifle".into())))),
+            (
+                FIRST + 24,
+                IconChoice {
+                    probes: vec![Probe::Sprite("GFX_rifle".into())],
+                    otherwise: Ok(()),
+                },
+            ),
         ],
     );
-    let mut shown = std::collections::BTreeMap::new();
     let mut texts = installed_content_localisation::localisation::Localisation::default();
     texts.language = "english".into();
-    let (entries, unnamed, _) = variant_entries(&scanned, Some(&texts), true, &mut shown);
+    // Every sprite declared.
+    let (entries, unnamed, _) = variant_entries(&scanned, Some(&texts), true, &mut |choice| {
+        Ok(choice
+            .walk(|probe| match probe {
+                Probe::Sprite(name) => Ok(Some(Icon::Sprite(name.clone()))),
+                _ => Ok(None),
+            })?
+            .map(|icon| icon_key(&icon)))
+    });
     assert_eq!(unnamed, 0);
     // Nothing before hour 128: the hour-104 look is unknown, never the later name.
     assert_eq!(
@@ -1513,9 +1544,12 @@ fn variants_are_known_only_where_their_table_is_read_and_carried() {
         [(FIRST, true), (FIRST + 24, false), (FIRST + 48, true)]
     );
     // The reply's entries say so, so a census at 128 does not carry the old name.
-    let mut shown = std::collections::BTreeMap::new();
-    let (entries, _, _) =
-        crate::products::production_lines::variant_entries(&scanned, None, false, &mut shown);
+    let (entries, _, _) = crate::products::production_lines::variant_entries(
+        &scanned,
+        None,
+        false,
+        &mut |_| Err("no choice is answered".into()),
+    );
     assert_eq!(
         entries
             .iter()
@@ -2259,9 +2293,19 @@ fn a_saved_scan_restores_the_scan_it_saved() {
         unlinked_rows: 2,
         ..ScannedLines::default()
     };
-    scanned
-        .icons
-        .insert(70, vec![(0, Ok(None)), (24, Err("unknown".into()))]);
+    scanned.icons.insert(
+        70,
+        vec![
+            (
+                0,
+                IconChoice {
+                    probes: Vec::new(),
+                    otherwise: Ok(()),
+                },
+            ),
+            (24, IconChoice::unknown("unknown".into())),
+        ],
+    );
     scanned.organisations.insert(
         79,
         vec![RawOrganisation {
@@ -2489,23 +2533,32 @@ fn a_kept_scan_answers_as_the_scan_it_kept_while_it_is_current() {
     assert_eq!(read.len(), 13);
 }
 
-/// A kept scan's pictures hold only while what the icon rule chose them by holds:
-/// its visual inputs (sprites declared, graphic pools) and every texture file it
-/// asked about. A mod texture deleted without any change the recording's content
-/// hash sees refuses the scan, whose picture a new scan would not choose.
+/// A kept scan's icon choices hold only while what they were made with holds outside the
+/// recorded content's hash: its graphic pools (and geography and DLC). Which sprites are
+/// declared and which texture files exist do not refuse it: a choice leaves those questions
+/// open, the same whatever the answers, and each reply answers them (a deleted texture is
+/// then another icon).
 #[test]
-fn a_kept_scans_pictures_hold_only_while_their_files_and_visual_inputs_do() {
+fn a_kept_scans_choices_hold_only_while_their_inputs_do() {
     use crate::products::{
-        equipment_icon::{Icon, IconContent, IconHour, variant_icon},
+        equipment_icon::{Icon, IconContent, IconHour, icon_choice},
         production_lines::{SavedLines, SavedScan, pictures_hold},
     };
+    use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
     const TEXTURE: &str = "gfx/models/custom.dds";
-    let content = |files: &[&str], sprites: &[&str]| {
+    let content = |files: &[&str], sprites: &[&str], pools: &[&[u8]]| {
         IconContent::from_parts(
             equipment_types(&[b"equipments = { infantry_equipment_1 = { } }"]).unwrap(),
             Default::default(),
-            Default::default(),
+            equipment_graphics::Content::from_texts(
+                pools,
+                &equipment_graphics::Names {
+                    countries: Default::default(),
+                    continents: Default::default(),
+                },
+            )
+            .unwrap(),
             Default::default(),
             sprites.iter().map(|name| (*name).to_owned()).collect(),
             files.iter().map(|name| (*name).to_owned()).collect(),
@@ -2522,44 +2575,49 @@ fn a_kept_scans_pictures_hold_only_while_their_files_and_visual_inputs_do() {
         ..Default::default()
     };
     let frame = production_frame(FIRST, true, true, 9001, &[], Some(&[]));
-    let with = content(&[TEXTURE], &["GFX_fallback"]);
+    let with = content(&[TEXTURE], &["GFX_fallback"], &[]);
     let hour = IconHour::read(&frame, &with).unwrap();
-    let chosen = variant_icon(&with, &hour, &definition, "infantry_equipment_1");
-    assert_eq!(chosen, Ok(Some(Icon::Path(TEXTURE.into()))));
-    assert_eq!(with.file_probes().get(TEXTURE), Some(&Ok(true)));
+    let choice = icon_choice(&with, &hour, &definition, "infantry_equipment_1");
+    assert_eq!(
+        choice.walk(|probe| with.answer(probe)),
+        Ok(Some(Icon::Path(TEXTURE.into())))
+    );
     let saved = SavedScan {
         branch: 1,
         tag: "GER".into(),
         pictured: true,
         visual: Some(with.visual_inputs().to_owned()),
-        probes: with.file_probes(),
         executable: false,
         last_block: None,
         scan: SavedLines::save(&ScannedLines::default(), &AtomicBool::new(false)).unwrap(),
     };
     assert!(pictures_hold(
-        Some(&content(&[TEXTURE], &["GFX_fallback"])),
+        Some(&content(&[TEXTURE], &["GFX_fallback"], &[])),
         &saved
     ));
-    // The texture is deleted: the same visual inputs, another choice.
-    let deleted = content(&[], &["GFX_fallback"]);
-    assert_eq!(deleted.visual_inputs(), with.visual_inputs());
-    let hour = IconHour::read(&frame, &deleted).unwrap();
-    assert_ne!(
-        variant_icon(&deleted, &hour, &definition, "infantry_equipment_1"),
-        chosen
+    // The texture deleted, or sprites declared otherwise: the same choice, which the reply
+    // answers with another icon; the kept scan holds.
+    let deleted = content(&[], &["GFX_other"], &[]);
+    assert_eq!(
+        icon_choice(&deleted, &hour, &definition, "infantry_equipment_1"),
+        choice
     );
-    assert!(!pictures_hold(Some(&deleted), &saved));
-    // Sprites declared otherwise, or no icon content, refuse it too.
-    assert!(!pictures_hold(
-        Some(&content(&[TEXTURE], &["GFX_other"])),
-        &saved
-    ));
+    assert_ne!(
+        choice.walk(|probe| deleted.answer(probe)),
+        Ok(Some(Icon::Path(TEXTURE.into())))
+    );
+    assert!(pictures_hold(Some(&deleted), &saved));
+    // Other graphic pools, or no icon content, refuse it.
+    let pooled = content(
+        &[TEXTURE],
+        &["GFX_fallback"],
+        &[br#"default = { infantry_equipment_1 = { pool = { icons = { GFX_fallback } } } }"#],
+    );
+    assert!(!pictures_hold(Some(&pooled), &saved));
     assert!(!pictures_hold(None, &saved));
     let unpictured = SavedScan {
         pictured: false,
         visual: None,
-        probes: Default::default(),
         ..saved
     };
     assert!(pictures_hold(None, &unpictured));
@@ -2972,4 +3030,137 @@ fn quiet_production_spans_equal_hourly_scan_bytes_across_reads_gaps_refusals_and
             .kind(),
         io::ErrorKind::Interrupted
     );
+}
+
+/// A variant's icon choice is answered and drawn as the request's selection shows it: the
+/// recording's own icon without one; a mod declaring an earlier candidate the recording lacks
+/// makes it the icon, as does a mod texture file at an earlier path, found on the selection's
+/// own stack. Where the selection's choice cannot be drawn, the recording's own choice is,
+/// named on every reply. Each choice renders once per selection, and a second reply only hits
+/// the memo.
+#[test]
+fn variant_icons_follow_the_selection_once_per_choice() {
+    use crate::test_fixtures::visual_mods::{
+        BLUE, GREEN, Machine, RED, fallback_line, first_pixel, png, select,
+    };
+    let sprites = |early: Option<&str>| {
+        let early = early.map_or(String::new(), |texture| {
+            format!("spriteType = {{ name = GFX_early textureFile = {texture} }}")
+        });
+        format!(
+            "spriteTypes = {{ spriteType = {{ name = GFX_late textureFile = gfx/late.png }} {early} }}"
+        )
+    };
+    let machine = Machine::new("production_line_icons");
+    machine.write("interface/equipment.gfx", sprites(None).as_bytes());
+    machine.write("gfx/late.png", &png(RED));
+    machine.write_mod("early", "interface/equipment.gfx", sprites(Some("gfx/early.png")).as_bytes());
+    machine.write_mod("early", "gfx/early.png", &png(BLUE));
+    machine.write_mod("texture", "gfx/designs/custom.png", &png(GREEN));
+    // The mod's declarations replace the recording's file: its early sprite does not load.
+    machine.write_mod("broken", "interface/equipment.gfx", sprites(Some("gfx/broken.png")).as_bytes());
+    machine.write_mod("broken", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    let choice = IconChoice {
+        probes: vec![
+            Probe::File("gfx/designs/custom.png".into()),
+            Probe::Sprite("GFX_early".into()),
+            Probe::Sprite("GFX_late".into()),
+        ],
+        otherwise: Ok(()),
+    };
+    let shown = |options: &dashboard_core::config::ContentOptions| {
+        let admitted = catalogue::catalogue(&source, options).unwrap();
+        let recorded = catalogue::recorded_catalogue(&source, options).unwrap();
+        let state = source.state::<catalogue::ByCatalogue<VariantArt>>();
+        let mut state = state.lock().unwrap();
+        let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
+        let mut images = BTreeMap::new();
+        let (key, line) =
+            fallback_line(|| draw_variant_icon(drawn, &mut images, &choice).unwrap().unwrap());
+        (first_pixel(images[&key].as_deref().unwrap()), line)
+    };
+    let renders = catalogue::presented;
+    select(&source, &mut options, &[]);
+    let before = renders();
+    assert_eq!(shown(&options), (RED, None));
+    assert_eq!(renders() - before, 1, "one render per choice");
+    let before = renders();
+    assert_eq!(shown(&options), (RED, None));
+    assert_eq!(renders() - before, 0, "a second reply only hits the memo");
+    select(&source, &mut options, &["early"]);
+    assert_eq!(shown(&options), (BLUE, None));
+    select(&source, &mut options, &["texture"]);
+    assert_eq!(shown(&options), (GREEN, None));
+    select(&source, &mut options, &["broken"]);
+    for _ in 0..2 {
+        let (pixel, line) = shown(&options);
+        assert_eq!(pixel, RED, "the recording's own choice");
+        assert!(
+            line.as_ref().is_some_and(|line| line.contains("production line icon")),
+            "{line:?}"
+        );
+    }
+}
+
+/// One reply's pictures are keyed by what they show: a mod recolours the recording's sprite A
+/// and adds an earlier candidate E it cannot draw. A variant choosing [E, A] shows the
+/// recording's own choice, the recording's red A; a variant choosing [A] and an organisation
+/// showing A show the mod's blue A. The two As are two pictures under two keys, and the two
+/// blue ones share one.
+#[test]
+fn reply_pictures_are_keyed_by_what_they_show() {
+    use crate::test_fixtures::visual_mods::{BLUE, Machine, RED, first_pixel, png, select};
+    let machine = Machine::new("production_line_picture_keys");
+    machine.write(
+        "interface/equipment.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png } }",
+    );
+    machine.write("gfx/a.png", &png(RED));
+    // The mod's declarations replace the recording's file: its E does not load.
+    machine.write_mod(
+        "selector",
+        "interface/equipment.gfx",
+        b"spriteTypes = { spriteType = { name = GFX_a textureFile = gfx/a.png } \
+          spriteType = { name = GFX_e textureFile = gfx/broken.png } }",
+    );
+    machine.write_mod("selector", "gfx/a.png", &png(BLUE));
+    machine.write_mod("selector", "gfx/broken.png", b"not a png");
+    let (source, mut options) = machine.open();
+    select(&source, &mut options, &["selector"]);
+    let admitted = catalogue::catalogue(&source, &options).unwrap();
+    let recorded = catalogue::recorded_catalogue(&source, &options).unwrap();
+    let state = source.state::<catalogue::ByCatalogue<VariantArt>>();
+    let mut state = state.lock().unwrap();
+    let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
+    let sprites = |names: &[&str]| IconChoice {
+        probes: names.iter().map(|name| Probe::Sprite((*name).into())).collect(),
+        otherwise: Ok(()),
+    };
+    let mut images = BTreeMap::new();
+    let fallen = draw_variant_icon(drawn, &mut images, &sprites(&["GFX_e", "GFX_a"]))
+        .unwrap()
+        .unwrap();
+    let plain = draw_variant_icon(drawn, &mut images, &sprites(&["GFX_a"]))
+        .unwrap()
+        .unwrap();
+    let a = Icon::Sprite("GFX_a".into());
+    let organisation = draw_organisation_pictures(
+        &source,
+        &admitted,
+        &BTreeMap::from([(icon_key(&a), a.clone())]),
+        &mut images,
+        &mut Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .remove(&icon_key(&a))
+    .unwrap();
+    let pixel = |key: &str| first_pixel(images[key].as_deref().unwrap());
+    assert_eq!(pixel(&fallen), RED, "the recording's own choice");
+    assert_eq!(pixel(&plain), BLUE);
+    assert_eq!(pixel(&organisation), BLUE);
+    assert_ne!(fallen, plain);
+    assert_eq!(plain, organisation, "one picture, one key");
+    assert_eq!(images.len(), 2);
 }

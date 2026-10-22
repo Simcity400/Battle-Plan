@@ -175,13 +175,7 @@ fn a_kept_prepared_answer_names_a_refused_selection() {
     let (root, source, admitted) = refused_selection("prepared");
     let answered = std::collections::BTreeSet::new();
     for _ in 0..2 {
-        let lines = crate::prepared::query::served_lines(
-            &source,
-            Some(&admitted),
-            "occupied-states-manifest",
-            "occupied-states-manifest",
-            &answered,
-        );
+        let lines = crate::prepared::query::served_lines(&source, Some(&admitted), &answered);
         assert!(names_refusal(&lines), "{lines:?}");
     }
     let _ = std::fs::remove_dir_all(root);

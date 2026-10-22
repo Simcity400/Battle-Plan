@@ -503,13 +503,15 @@ being read waits for it, and takes it over if it fails. A country's whole scan
 can be kept between sessions (`saved_scan`, `write_saved`, in the recording's
 own row encoding for its modifier rows, each shared country row found in one
 lookup) with what it was read with: the branch's last block, whether icon
-content was loaded, whether executable metadata was configured, a digest of the
-icon rule's visual inputs the recorded content's hash does not cover (declared
-and refused sprites, graphic pools, geography, DLC names) and every texture
-path the rule asked about with its answer. A whole-scan request that holds no
-scan reads a kept one, read-only, and answers from it only where it is the scan
-it would make (`hold_saved`, `pictures_hold`): a deleted or added texture, or
-changed sprites, refuse it. The countries a request read whole wait in their
+content was loaded, whether executable metadata was configured, and a digest of
+what the icon choices read that the recorded content's hash does not cover
+(graphic pools, geography, DLC names). A whole-scan request that holds no scan
+reads a kept one, read-only, and answers from it only where it is the scan it
+would make (`hold_saved`, `pictures_hold`). Which sprites are declared and which
+texture files exist are not among them: the scan keeps each variant's icon as a
+choice with those questions left open (`equipment_icon::icon_choice`: the rule's
+questions in the order it asks them, recorded with every answer no, and what it
+gives then), and each reply answers them from its own selection. The countries a request read whole wait in their
 source's unkept set (`read_whole`, a set) until the source's next preparation
 keeps them; a request writes nothing.
 

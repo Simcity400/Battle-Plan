@@ -150,19 +150,6 @@ fn refuse<P: Product>(
     Err(prepared_only(P::KEY))
 }
 
-/// The artwork a product's replies draw from what the prepared store keeps by recorded content
-/// alone (`catalogue::recorded_catalogue` and its kin), named on every reply, fresh or kept,
-/// served while its request shows visual mods (`catalogue::credit_stored_artwork`). Families
-/// whose stored art is drawn again at query time from the request's selection are not here.
-pub(crate) fn stored_artwork(product: &str) -> Option<&'static str> {
-    Some(match product {
-        // The pictures follow the selection; which picture a design shows is still chosen
-        // when the scan is prepared.
-        "production-lines" => "production line icon choices",
-        _ => return None,
-    })
-}
-
 fn load_json<P: Product>(
     source: &Source,
     lease_id: &str,
@@ -202,15 +189,8 @@ fn load_json<P: Product>(
             // What this reply drew in the recording's style because the selected visual mods
             // could not supply it, named and counted as the map names its own: the reply's
             // own fallbacks, with those of shared loads it reused.
-            let (data, own) = crate::catalogue::capture(|| {
-                let data = P::load(source, &params, context, cancelled);
-                // What the product's stored payloads keep from the recording, named from this
-                // reply's own admission ([`stored_artwork`]).
-                if let (Some(what), Some(content)) = (stored_artwork(P::KEY), &context.content) {
-                    crate::catalogue::credit_stored_artwork(content, what);
-                }
-                data
-            });
+            let (data, own) =
+                crate::catalogue::capture(|| P::load(source, &params, context, cancelled));
             let mut data = data.map_err(|error| error.to_string())?;
             source.append_content_warnings(data.warnings_mut());
             // What the presentation the request was admitted under shows, never the source's now.

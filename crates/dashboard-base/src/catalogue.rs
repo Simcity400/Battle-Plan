@@ -215,28 +215,14 @@ pub fn catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Ca
 }
 
 /// The catalogue of these folders drawing the recording's own artwork whatever visual mods the
-/// request shows, for prepared families whose stored payloads hold artwork: the prepared store
-/// keeps them by recorded content alone, so they never mix two presentations. It credits
-/// nothing: the replies of those families name it by product ([`credit_stored_artwork`]).
+/// request shows: what preparation reads, so the prepared store keeps payloads by recorded
+/// content alone, and what a reply's art falls back to ([`present`]). It credits nothing.
 /// Without visual mods it is [`catalogue`]'s.
 pub fn recorded_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Arc<Catalogue>> {
     if options.presentation.is_empty() {
         return catalogue(source, options);
     }
     recorded_slot(source, options)
-}
-
-/// Names `what`, artwork a prepared family stores with its payloads, as drawn from the recording
-/// on a reply drawn while the request it answers shows visual mods, in the line the map names
-/// its own fallbacks with. Each reply credits it from its own admission when it is served (by
-/// product), never a shared load: a load kept for later replies would replay it after the
-/// selection changed.
-pub fn credit_stored_artwork(options: &ContentOptions, what: &str) {
-    if !options.presentation.is_empty() {
-        installed_content_core::content::credit_overlay_refusals(&std::collections::BTreeSet::from([
-            format!("{what} (prepared data keeps the recording's artwork)"),
-        ]));
-    }
 }
 
 /// Art a reply draws from the operands a prepared payload kept, as the request's selection shows

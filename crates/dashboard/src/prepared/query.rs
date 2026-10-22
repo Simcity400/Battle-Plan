@@ -2755,40 +2755,16 @@ pub(in crate::prepared) fn append_stack_warnings(
 
 /// The lines every served reply adds to its first content warning list, a fresh answer and a
 /// kept one alike: what the presentation the request was admitted under could not show, then
-/// what the answer drew in the recording's style instead ([`served_fallbacks`]).
+/// what the answer drew in the recording's style instead (`answered`).
 pub(crate) fn served_lines(
     source: &Source,
     content: Option<&ContentOptions>,
-    product: &str,
-    name: &str,
     answered: &std::collections::BTreeSet<String>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     source.append_presentation_warnings(&mut lines, content);
-    let fallbacks = served_fallbacks(content, product, name, answered);
-    lines.extend(installed_content_core::content::overlay_refusal_line(&fallbacks));
+    lines.extend(installed_content_core::content::overlay_refusal_line(answered));
     lines
-}
-
-/// What a served reply names as drawn from the recording: its answer's own fallbacks, and the
-/// artwork the prepared store kept from the recording while the request shows visual mods,
-/// whenever it was prepared.
-fn served_fallbacks(
-    content: Option<&ContentOptions>,
-    product: &str,
-    name: &str,
-    answered: &std::collections::BTreeSet<String>,
-) -> std::collections::BTreeSet<String> {
-    let ((), stored) = installed_content_core::content::observe_overlay_refusals(|| {
-        if let (Some(what), Some(content)) = (
-            crate::products::stored_artwork(product)
-                .or_else(|| crate::products::stored_artwork(name)),
-            content,
-        ) {
-            dashboard_base::catalogue::credit_stored_artwork(content, what);
-        }
-    });
-    answered.iter().chain(&stored).cloned().collect()
 }
 
 /// `lines` added to a reply's first content warning list, each once.
@@ -2936,7 +2912,7 @@ pub fn query(
         }
     });
     append_stack_warnings(source, &request.product, name, &mut data);
-    let lines = served_lines(source, content, &request.product, name, &answer.fallbacks);
+    let lines = served_lines(source, content, &answer.fallbacks);
     append_lines(&request.product, name, lines, &mut data);
     bounded_json(
         &Reply {

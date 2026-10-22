@@ -24,7 +24,7 @@ use std::{
 };
 
 /// The saved layout's version: a scan saved by another is scanned again.
-pub const SCHEMA: u32 = 4;
+pub const SCHEMA: u32 = 5;
 
 #[cfg(test)]
 thread_local! {

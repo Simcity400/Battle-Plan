@@ -486,33 +486,6 @@ fn a_redeclared_sprite_falls_back_to_the_recordings_own_declaration() {
     assert!(line.unwrap().contains("sprite GFX_icon ("));
 }
 
-/// Stored artwork is named as the recording's on every reply while visual mods are shown, and
-/// not at all without them.
-#[test]
-fn stored_artwork_is_named_only_while_visual_mods_are_shown() {
-    let (_machine, source, mut options) = machine("stored");
-    let named = |options: &ContentOptions| {
-        dashboard_text::catalogue::capture(|| catalogue::credit_stored_artwork(options, "laws"))
-            .1
-            .fallback_line()
-    };
-    assert_eq!(named(&options), None);
-    assert!(present(
-        &source,
-        &mut options,
-        &[choice("mod/art.mod", "Art")]
-    ));
-    assert!(
-        named(&options)
-            .unwrap()
-            .contains("laws (prepared data keeps the recording's artwork)")
-    );
-    // Recorded-only work shows no visual mod, whatever its binding selects.
-    let preparation = source.admit(crate::source::Work::Recorded).unwrap();
-    assert!(preparation.presentation.is_empty());
-    assert_eq!(named(&preparation), None);
-}
-
 /// Recorded content a shared cache loaded while visual mods were shown keeps no note of them:
 /// the load credits nothing, so once the selection is cleared a reply reading what was kept
 /// names nothing either.

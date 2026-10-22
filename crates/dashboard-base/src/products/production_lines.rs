@@ -83,7 +83,7 @@ use super::{
     equipment::{
         self, EQUIPMENT_DECIMALS, Tags, Texts, VariantCatalogue, VariantHour, VariantReads,
     },
-    equipment_icon::{Icon, IconContent, IconHour, variant_icon},
+    equipment_icon::{Icon, IconChoice, IconContent, IconHour, icon_choice},
 };
 use crate::{
     Source,
@@ -563,8 +563,9 @@ pub struct RawOrganisation {
     pub state: Option<OrganisationState>,
 }
 
-/// A variant's icon at a read: the icon, none, or why it is unknown.
-pub type IconAt = (i32, Result<Option<Icon>, String>);
+/// A variant's icon at a read, with its artwork questions left open for the reply's
+/// presentation ([`IconChoice`]), or why it is unknown.
+pub type IconAt = (i32, IconChoice);
 
 /// A demanded design's own observation, including explicit unavailable intervals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -1431,8 +1432,8 @@ fn scan_blocks_mode(
                                 pending.remove(&id);
                                 let definition = &definitions[&id];
                                 let icon = match &state {
-                                    Err(error) => Err(error.to_string()),
-                                    Ok(state) => variant_icon(
+                                    Err(error) => IconChoice::unknown(error.to_string()),
+                                    Ok(state) => icon_choice(
                                         content,
                                         state,
                                         definition,
@@ -1893,18 +1894,22 @@ fn scan_blocks_mode(
                         let state = IconHour::read(decoded, content);
                         for id in produced {
                             let icon = match (&state, definitions.get(&id)) {
-                                (Err(error), _) => Err(error.to_string()),
+                                (Err(error), _) => IconChoice::unknown(error.to_string()),
                                 (Ok(_), None) => {
                                     pending.insert(id);
-                                    Err("the variant's definition is not recorded yet".to_owned())
+                                    IconChoice::unknown(
+                                        "the variant's definition is not recorded yet".to_owned(),
+                                    )
                                 }
                                 // A definition carried from before a gap may have changed since.
                                 (Ok(_), Some(_)) if result.variants.current(id).is_none() => {
                                     pending.insert(id);
-                                    Err("the variant's definition is not recorded at this time"
-                                        .to_owned())
+                                    IconChoice::unknown(
+                                        "the variant's definition is not recorded at this time"
+                                            .to_owned(),
+                                    )
                                 }
-                                (Ok(state), Some(definition)) => variant_icon(
+                                (Ok(state), Some(definition)) => icon_choice(
                                     content,
                                     state,
                                     definition,
@@ -2076,16 +2081,17 @@ pub fn organisation_icon_with_token(
 }
 
 /// The produced variants' names and icons by hour, merged from the variant catalogue
-/// (names, and where they are known) and the line reads (icons), each icon added to
-/// `shown`. Names are known only from their first definition read onwards: an earlier
-/// hour is left out (unknown), never given a later read's name; an hour the catalogue
-/// no longer knows them is an entry with `known` false. Returns the entries, how many
-/// produced variants were never defined, and the reasons icons were unknown.
+/// (names, and where they are known) and the line reads (icons), each icon's key the one
+/// `shown` gives its choice (choosing and drawing it), or why it has none. Names are known
+/// only from their first definition read onwards: an earlier hour is left out (unknown),
+/// never given a later read's name; an hour the catalogue no longer knows them is an entry
+/// with `known` false. Returns the entries, how many produced variants were never defined,
+/// and the reasons icons were unknown.
 pub fn variant_entries(
     scanned: &ScannedLines,
     texts: Option<&dyn Texts>,
     has_content: bool,
-    shown: &mut BTreeMap<String, Icon>,
+    shown: &mut dyn FnMut(&IconChoice) -> Result<Option<String>, String>,
 ) -> (Vec<VariantName>, usize, BTreeSet<String>) {
     let used: BTreeSet<u64> = scanned
         .lines
@@ -2154,12 +2160,8 @@ pub fn variant_entries(
                         .rev()
                         .find(|(at, _)| *at <= hour)
                         .map(|(_, icon)| icon);
-                    let (icon, icon_unknown) = match icon {
-                        Some(Ok(Some(icon))) => {
-                            let key = icon_key(icon);
-                            shown.insert(key.clone(), icon.clone());
-                            (Some(key), None)
-                        }
+                    let (icon, icon_unknown) = match icon.map(|choice| shown(choice)) {
+                        Some(Ok(Some(key))) => (Some(key), None),
                         Some(Ok(None)) => (None, None),
                         Some(Err(reason)) => {
                             unknown_icons.insert(reason.clone());
@@ -2198,7 +2200,108 @@ pub fn variant_entries(
     (variants, unnamed, unknown_icons)
 }
 
-/// The key an icon is shared under in the reply.
+/// The variants' icons drawn for one selection, by their choices, with each icon's key and
+/// picture; one per kind of catalogue ([`catalogue::ByCatalogue`]).
+#[derive(Default)]
+struct VariantArt(Option<VariantIcons>);
+
+type VariantIcons = catalogue::Redrawn<IconChoice, Option<(String, String)>>;
+
+/// The key of the icon a variant's `choice` shows in the selection `drawn` is bound to, its
+/// picture kept in `images` under that key: the choice's questions answered and its icon drawn
+/// as one operation ([`catalogue::present`]), so where the selection cannot draw it, the
+/// recording's own choice is drawn and named.
+fn draw_variant_icon(
+    drawn: &mut VariantIcons,
+    images: &mut BTreeMap<String, Option<String>>,
+    choice: &IconChoice,
+) -> Result<Option<String>, String> {
+    let shown = drawn.get(
+        choice.clone(),
+        || "production line icon".to_owned(),
+        |catalogue| {
+            let Some(icon) = choice.shown(catalogue)? else {
+                return Ok(None);
+            };
+            let asset = icon_key(&icon);
+            let image = icon_image(catalogue, &icon)
+                .map_err(|error| format!("{asset}: picture unavailable: {error}"))?;
+            Ok(Some((picture_key(&asset, Some(&image)), image)))
+        },
+    );
+    match shown {
+        Ok(Some((key, image))) => {
+            images
+                .entry(key.clone())
+                .or_insert_with(|| Some(image.clone()));
+            Ok(Some(key.clone()))
+        }
+        Ok(None) => Ok(None),
+        Err(reason) => Err(reason.clone()),
+    }
+}
+
+/// Draws each organisation picture `shown` names, by its asset's key, from `catalogue` (kept
+/// per catalogue in the product's cache), adds it to `images` under its picture's key, and
+/// returns each asset's picture key.
+fn draw_organisation_pictures(
+    source: &Source,
+    catalogue: &Arc<Catalogue>,
+    shown: &BTreeMap<String, Icon>,
+    images: &mut BTreeMap<String, Option<String>>,
+    warnings: &mut Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, String>> {
+    let state = source.state::<Cache>();
+    let mut keys = BTreeMap::new();
+    for (asset, icon) in shown {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
+        let cached = cached_image(
+            &state.lock().unwrap_or_else(|error| error.into_inner()).images,
+            catalogue,
+            asset,
+        );
+        let image = match cached {
+            Some(image) => image,
+            None => {
+                let drawn = catalogue::Drawn::new(|| match icon_image(catalogue, icon) {
+                    Ok(image) => Some(image),
+                    Err(error) => {
+                        warnings.push(format!("{asset}: picture unavailable: {error}"));
+                        None
+                    }
+                });
+                let image = drawn.get().clone();
+                keep_image(
+                    &mut state.lock().unwrap_or_else(|error| error.into_inner()).images,
+                    catalogue,
+                    asset.clone(),
+                    drawn,
+                );
+                image
+            }
+        };
+        let key = picture_key(asset, image.as_deref());
+        images.entry(key.clone()).or_insert(image);
+        keys.insert(asset.clone(), key);
+    }
+    Ok(keys)
+}
+
+/// The key a reply's picture is shared under: the asset it shows (`icon_key`) and a digest of
+/// its pixels, so two elements share a key only when they show the same picture. The same
+/// asset drawn from the selection and, where the selection could not draw a choice, from the
+/// recording are two pictures under two keys.
+fn picture_key(asset: &str, image: Option<&str>) -> String {
+    match image {
+        Some(image) => format!("{asset}#{}", blake3::hash(image.as_bytes()).to_hex()),
+        None => format!("{asset}#none"),
+    }
+}
+
+/// The key an icon's asset is known by: its kind and name.
 fn icon_key(icon: &Icon) -> String {
     match icon {
         Icon::Sprite(name) => format!("sprite:{name}"),
@@ -2528,12 +2631,9 @@ pub struct SavedScan {
     pub tag: String,
     /// Icon content was loaded: the scan pictured variants.
     pub pictured: bool,
-    /// The digest of the icon rule's visual inputs the scan's pictures were
-    /// chosen with ([`IconContent::visual_inputs`]); none without icon content.
+    /// The digest of what the scan's icon choices were made with outside the recorded
+    /// content's hash ([`IconContent::visual_inputs`]); none without icon content.
     pub visual: Option<String>,
-    /// Every texture path the icon rule asked about, with the answer it had: a
-    /// kept scan's pictures hold only while each has it still.
-    pub probes: BTreeMap<String, Result<bool, String>>,
     /// The game's executable metadata was configured, so modifier runs were
     /// read where their layout authenticated.
     pub executable: bool,
@@ -2543,31 +2643,19 @@ pub struct SavedScan {
     pub scan: SavedLines,
 }
 
-/// Whether a kept scan's pictures are those the icon content would choose now:
-/// icon content loaded alike, the same visual inputs, and every texture path it
-/// asked about with the answer it had. Otherwise its pictures may differ from a
-/// new scan's, and it is not held.
+/// Whether a kept scan's icon choices are those the icon content would make now: icon
+/// content loaded alike, with the same inputs outside the recorded content's hash.
+/// Otherwise its choices may differ from a new scan's, and it is not held. Which sprites
+/// and files exist is not among them: each reply answers that ([`IconChoice::shown`]).
 pub fn pictures_hold(icons: Option<&IconContent>, saved: &SavedScan) -> bool {
-    pictures_hold_with(
-        icons,
-        saved.pictured,
-        saved.visual.as_deref(),
-        &saved.probes,
-    )
+    pictures_hold_with(icons, saved.pictured, saved.visual.as_deref())
 }
 
 /// [`pictures_hold`] of what a kept scan's meta records.
-fn pictures_hold_with(
-    icons: Option<&IconContent>,
-    pictured: bool,
-    visual: Option<&str>,
-    probes: &BTreeMap<String, Result<bool, String>>,
-) -> bool {
+fn pictures_hold_with(icons: Option<&IconContent>, pictured: bool, visual: Option<&str>) -> bool {
     match icons {
         None => !pictured,
-        Some(icons) => {
-            pictured && visual == Some(icons.visual_inputs()) && icons.probes_hold(probes)
-        }
+        Some(icons) => pictured && visual == Some(icons.visual_inputs()),
     }
 }
 
@@ -2599,11 +2687,6 @@ pub fn saved_scan(
         tag: tag.to_owned(),
         pictured: icons.is_some(),
         visual: icons.as_ref().map(|icons| icons.visual_inputs().to_owned()),
-        // Read after the scan, whose probes are among them.
-        probes: icons
-            .as_ref()
-            .map(|icons| icons.file_probes())
-            .unwrap_or_default(),
         executable: engine_executable::executable_tables::is_initialized(),
         last_block: last_block(source.replay_ref(), branch),
         scan: SavedLines::save(&scanned, cancelled)?,
@@ -2853,7 +2936,6 @@ struct SavedMeta {
     executable: bool,
     last_block: Option<(i32, i32, u64)>,
     visual: Option<String>,
-    probes: BTreeMap<String, Result<bool, String>>,
 }
 
 /// Writes a country's scan to keep between sessions (with [`saved_scan`]).
@@ -2872,7 +2954,6 @@ pub fn write_saved<W: crate::prepared::pages::Pages + ?Sized>(
             executable: saved.executable,
             last_block: saved.last_block,
             visual: saved.visual.clone(),
-            probes: saved.probes.clone(),
         },
     )
 }
@@ -2901,7 +2982,6 @@ pub fn saved_current(
         icons.as_deref(),
         meta.pictured,
         meta.visual.as_deref(),
-        &meta.probes,
     ))
 }
 
@@ -3087,7 +3167,6 @@ impl Product for ProductionLines {
         context: &LoadContext,
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
-        let state = source.state::<Cache>();
         let mut warnings = Vec::new();
         let view = match params.exact {
             Some(true) => View::Whole,
@@ -3111,18 +3190,47 @@ impl Product for ProductionLines {
         let texts = catalogue
             .as_ref()
             .map(|catalogue| catalogue.as_ref() as &dyn Texts);
-        let mut shown: BTreeMap<String, Icon> = BTreeMap::new();
-        let (variants, unnamed, unknown_icons) =
-            variant_entries(&scanned, texts, catalogue.is_some(), &mut shown);
-        warnings.extend(scanned.variants.warnings());
-        // The scan's icon choices are the recording's (they are kept with prepared scans); the
-        // pictures this reply draws follow the source's visual mods.
-        let pictured = catalogue.as_ref().and_then(|_| {
+        // The scan keeps each variant's icon as a choice with its artwork questions open
+        // (kept with prepared scans too); this reply answers them, and draws the icon, as the
+        // request's selection shows it.
+        let pictured = catalogue.as_ref().map(|_| {
             context
                 .content()
                 .and_then(|content| catalogue::catalogue(source, content))
-                .ok()
         });
+        let mut images: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let (variants, unnamed, unknown_icons) = {
+            let art = source.state::<catalogue::ByCatalogue<VariantArt>>();
+            let mut art = art.lock().unwrap_or_else(|error| error.into_inner());
+            let mut drawn = match (&pictured, &catalogue) {
+                (Some(Ok(admitted)), Some(recorded)) => Ok(catalogue::Redrawn::bind(
+                    &mut art.of(admitted).0,
+                    admitted,
+                    recorded,
+                )),
+                (Some(Err(error)), _) => Err(format!("Equipment pictures are unavailable: {error}")),
+                _ => Err("Equipment icons need the game folders.".to_owned()),
+            };
+            variant_entries(
+                &scanned,
+                texts,
+                catalogue.is_some(),
+                &mut |choice: &IconChoice| {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err("cancelled".to_owned());
+                    }
+                    let drawn = drawn.as_mut().map_err(|why| why.clone())?;
+                    draw_variant_icon(drawn, &mut images, choice)
+                },
+            )
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
+        warnings.extend(scanned.variants.warnings());
+        let pictured = pictured.and_then(Result::ok);
+        // Organisations' icons, chosen and drawn here from the selection.
+        let mut shown: BTreeMap<String, Icon> = BTreeMap::new();
         // Organisations.
         let mut organisations = Vec::new();
         for (id, versions) in &scanned.organisations {
@@ -3162,52 +3270,29 @@ impl Product for ProductionLines {
                 }
             }
         }
-        // Pictures, decoded once per catalogue.
-        let mut icons_out = Vec::new();
+        // Organisations' pictures, decoded once per catalogue, each under its picture's key.
         if let Some(catalogue) = &pictured {
-            for (key, icon) in &shown {
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancelled_error());
-                }
-                let cached = cached_image(
-                    &state
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .images,
-                    catalogue,
-                    key,
-                );
-                let image = match cached {
-                    Some(image) => image,
-                    None => {
-                        let drawn = catalogue::Drawn::new(|| match icon_image(catalogue, icon) {
-                            Ok(image) => Some(image),
-                            Err(error) => {
-                                warnings.push(format!("{key}: picture unavailable: {error}"));
-                                None
-                            }
-                        });
-                        let image = drawn.get().clone();
-                        keep_image(
-                            &mut state
-                                .lock()
-                                .unwrap_or_else(|error| error.into_inner())
-                                .images,
-                            catalogue,
-                            key.clone(),
-                            drawn,
-                        );
-                        image
-                    }
-                };
-                icons_out.push(EquipmentIcon {
-                    key: key.clone(),
-                    image,
-                });
+            let keys = draw_organisation_pictures(
+                source,
+                catalogue,
+                &shown,
+                &mut images,
+                &mut warnings,
+                cancelled,
+            )?;
+            for organisation in &mut organisations {
+                organisation.icon = organisation
+                    .icon
+                    .take()
+                    .and_then(|asset| keys.get(&asset).cloned());
             }
-            if !icons_out.is_empty() {
-                warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
-            }
+        }
+        let icons_out: Vec<EquipmentIcon> = images
+            .into_iter()
+            .map(|(key, image)| EquipmentIcon { key, image })
+            .collect();
+        if !icons_out.is_empty() {
+            warnings.push("Widget artwork comes from the recorded content stack; visual assets are outside content hash coverage.".to_owned());
         }
         for reason in unknown_icons {
             warnings.push(format!("Some equipment icons are unknown: {reason}"));

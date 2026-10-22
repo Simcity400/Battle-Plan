@@ -2,6 +2,22 @@ use crate::test_fixtures::{PRODUCTION_HOUR, equipment_types, production_frame};
 use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 
+/// The rule's icon ([`super::variant_icon`]), checked against its choice made with every
+/// artwork question left open ([`super::icon_choice`]) and then answered by the same content:
+/// across the rule's steps, the walk makes the rule's choice.
+fn chosen(
+    content: &super::IconContent,
+    hour: &super::IconHour,
+    row: &replay_data::rows::VariantDefinitionRow,
+    spelling: &str,
+) -> Result<Option<super::Icon>, String> {
+    let direct = super::variant_icon(content, hour, row, spelling);
+    let walked =
+        super::icon_choice(content, hour, row, spelling).walk(|probe| content.answer(probe));
+    assert_eq!(walked, direct, "{spelling}");
+    direct
+}
+
 #[test]
 fn equipment_icon_warnings_name_every_refused_technology() {
     let refused: Vec<_> = (0..9).map(|entry| format!("technology_{entry}")).collect();
@@ -25,7 +41,7 @@ fn equipment_icon_warnings_name_every_refused_technology() {
 
 #[test]
 fn equipment_icons_keep_null_archetype_fallbacks() {
-    use super::{Icon, IconContent, IconHour, variant_icon};
+    use super::{Icon, IconContent, IconHour};
     use installed_content_core::{technology::Enabler, technology::Enablers};
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
@@ -102,7 +118,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         ("pooled_type", "GFX_pool_picture"),
     ] {
         assert_eq!(
-            variant_icon(&content, &hour, &row, token),
+            chosen(&content, &hour, &row, token),
             Ok(Some(Icon::Sprite(expected.into()))),
             "{token}"
         );
@@ -114,7 +130,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         ..Default::default()
     };
     for row in [&row, &capital] {
-        assert_eq!(variant_icon(&content, &hour, row, "undrawn_type"), Ok(None));
+        assert_eq!(chosen(&content, &hour, row, "undrawn_type"), Ok(None));
     }
     let auto = VariantDefinitionRow {
         icon_active: 1,
@@ -123,7 +139,7 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         ..Default::default()
     };
     assert_eq!(
-        variant_icon(&content, &hour, &auto, "pooled_type"),
+        chosen(&content, &hour, &auto, "pooled_type"),
         Ok(Some(Icon::Sprite("GFX_pool_picture".into())))
     );
     // The null object's empty name has sentinel hash -1 and cannot match an
@@ -132,16 +148,16 @@ fn equipment_icons_keep_null_archetype_fallbacks() {
         default = { "" = { pool = { icons = { GFX_null_pool } } } }
     "#]);
     assert_eq!(
-        variant_icon(&null_pool, &hour, &row, "undrawn_type"),
+        chosen(&null_pool, &hour, &row, "undrawn_type"),
         Ok(None)
     );
-    let reason = variant_icon(&content, &hour, &row, "undeclared_type").unwrap_err();
+    let reason = chosen(&content, &hour, &row, "undeclared_type").unwrap_err();
     assert!(reason.contains("undeclared_type"), "{reason}");
 }
 
 #[test]
 fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
-    use super::{Icon, IconContent, IconHour, variant_icon};
+    use super::{Icon, IconContent, IconHour};
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::rows::VariantDefinitionRow;
 
@@ -176,12 +192,12 @@ fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
     let row = VariantDefinitionRow::default();
     for token in ["", "empty_parent", "family_member"] {
         assert_eq!(
-            variant_icon(&content, &hour, &row, token),
+            chosen(&content, &hour, &row, token),
             Ok(Some(Icon::Sprite("GFX_empty_pool".into()))),
             "{token:?}"
         );
     }
-    assert_eq!(variant_icon(&content, &hour, &row, "bare_type"), Ok(None));
+    assert_eq!(chosen(&content, &hour, &row, "bare_type"), Ok(None));
 }
 
 #[test]
@@ -228,7 +244,7 @@ fn authored_equipment_icons_keep_null_archetype_candidates() {
 fn equipment_icons_follow_the_production_rows_rule() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
+    use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use installed_content_core::{technology::Enabler, technology::Enablers};
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
@@ -321,7 +337,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
                    row: &VariantDefinitionRow,
                    spelling: &str| {
         let hour = IconHour::read(frame, content).unwrap();
-        variant_icon(content, &hour, row, spelling)
+        chosen(content, &hour, row, spelling)
     };
     let icon = |content: &IconContent, row: &VariantDefinitionRow, spelling: &str| {
         icon_at(&frame, content, row, spelling)
@@ -569,7 +585,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
+    use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use installed_content_core::{ResolvedLayers, technology};
     use installed_content_equipment_graphics::equipment_graphics;
     use replay_data::{rows::PoliticalPartyRow, rows::PoliticsRow, rows::VariantDefinitionRow};
@@ -657,11 +673,11 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     };
     let sprite = |name: &str| Ok(Some(Icon::Sprite(name.to_owned())));
     assert_eq!(
-        variant_icon(&content, &hour, &row, "laser_rifle_1"),
+        chosen(&content, &hour, &row, "laser_rifle_1"),
         sprite("GFX_Laser_Tech_medium")
     );
     assert_eq!(
-        variant_icon(&content, &hour, &row, "rifles_1"),
+        chosen(&content, &hour, &row, "rifles_1"),
         sprite("GFX_rifles_1_medium")
     );
     assert_eq!(
@@ -672,7 +688,7 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
             .as_deref(),
         Some("gfx/interface/mod_rifle.dds")
     );
-    let refused = variant_icon(&content, &hour, &row, "plasma_rifle_1").unwrap_err();
+    let refused = chosen(&content, &hour, &row, "plasma_rifle_1").unwrap_err();
     assert!(refused.contains("plasma_rifle_1"), "{refused}");
     // A technology enabling by a script is refused alone, in a counted warning: a type
     // it mentions whose rule reaches the technology step is unknown; one found before
@@ -682,6 +698,6 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
         warning.starts_with("1 technologies") && warning.contains("Gauss_Tech"),
         "{warning}"
     );
-    let unknown = variant_icon(&content, &hour, &row, "gauss_rifle_1").unwrap_err();
+    let unknown = chosen(&content, &hour, &row, "gauss_rifle_1").unwrap_err();
     assert!(unknown.contains("Gauss_Tech"), "{unknown}");
 }
