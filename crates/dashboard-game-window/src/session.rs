@@ -37,13 +37,10 @@ pub struct Session {
     /// Everything the session drew from the recording because the visual mods could not
     /// supply it, which every window it draws reports ([`Self::load`]).
     fallbacks: std::collections::BTreeSet<String>,
-    /// Encoded pages, by id, kept within [`ENCODED_BYTES`]: eviction changes reuse only.
-    encoded: std::collections::BTreeMap<usize, Arc<str>>,
-    encoded_bytes: usize,
+    /// The session's pages on the device and the sprite pass painting its windows, built on
+    /// the first paint ([`crate::paint`]).
+    pub painter: Option<crate::paint::Painter>,
 }
-
-/// The encoded pages one session keeps before it encodes again.
-const ENCODED_BYTES: usize = 64 * 1024 * 1024;
 
 impl Session {
     /// Opens the session of `layers`, a recorded stack with the source's visual mods mounted
@@ -80,8 +77,7 @@ impl Session {
             images: Vec::new(),
             presented,
             fallbacks,
-            encoded: Default::default(),
-            encoded_bytes: 0,
+            painter: None,
         })
     }
 
@@ -101,28 +97,6 @@ impl Session {
         self.fallbacks.extend(fallbacks);
         installed_content_core::content::credit_overlay_refusals(&self.fallbacks);
         loaded
-    }
-
-    /// A page already encoded as a PNG data URL.
-    pub fn encoded(&self, id: usize) -> Option<Arc<str>> {
-        self.encoded.get(&id).cloned()
-    }
-
-    /// Keeps an encoded page, dropping every kept page first when the budget is spent.
-    pub fn keep_encoded(&mut self, id: usize, image: Arc<str>) {
-        if self.encoded_bytes + image.len() > ENCODED_BYTES {
-            self.encoded.clear();
-            self.encoded_bytes = 0;
-        }
-        self.encoded_bytes += image.len();
-        if let Some(old) = self.encoded.insert(id, image) {
-            self.encoded_bytes -= old.len();
-        }
-    }
-
-    /// A loaded texture page's size, by its id.
-    pub fn page_size(&self, id: usize) -> Option<[u32; 2]> {
-        self.images.get(id).map(|image| [image.width, image.height])
     }
 }
 

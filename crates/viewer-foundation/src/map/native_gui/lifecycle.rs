@@ -5245,3 +5245,42 @@ mod clock_pruning_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod disabled_icon_tests {
+    use super::*;
+    use crate::map::{native_effects::synthetic, test_support::gui::fixture};
+
+    /// An icon the code disables draws its drawable's Disable technique; one the code leaves
+    /// alone, or enables, draws Up as before.
+    #[test]
+    fn an_icon_the_code_disables_draws_its_disable_technique() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let fixture = fixture();
+        let gui = native::read(
+            br#"guiTypes={containerWindowType={name=root size={width=100 height=50}
+            iconType={name=icon spriteType=GFX_even}
+        }}"#,
+        );
+        let root = gui.template("root").unwrap();
+        let icon = root.path_named("icon").unwrap();
+        let shading = |enabled: Option<bool>| {
+            let mut instance = Instance::construct(root, [800, 600], &fixture).unwrap();
+            instance.gui_show(root, root).unwrap();
+            if enabled.is_some() {
+                instance.control(root, icon).unwrap().enabled = enabled;
+            }
+            let layout = instance
+                .layout_with_regions(root, &fixture, None, true)
+                .unwrap()
+                .unwrap();
+            layout.parts[0].shading.clone()
+        };
+        let [up, disable] = ["Up", "Disable"]
+            .map(|technique| super::super::shading(&synthetic::buttonstate(), technique, 0.0));
+        assert_eq!(shading(None), up);
+        assert_eq!(shading(Some(true)), up);
+        assert_eq!(shading(Some(false)), disable);
+    }
+}

@@ -1,17 +1,16 @@
-//! Synthetic windows through the native layout, the scene flattening and the policy rows.
+//! Synthetic windows through the native layout, the painting and the policy rows.
 
 use std::collections::BTreeMap;
 
 use installed_content_core::gui::native::read;
 use viewer_foundation::map::{
-    native_gui::{Resources, Sheets},
+    native_gui::{PartKind, Resources},
     test_support::gui::{Fixture, fixture_with},
 };
 
 use crate::{
-    compose::{self, BoundList, Hover, Row},
+    compose::{self, BoundList, Hover, Laid, Row},
     mio,
-    scene::Scene,
 };
 
 pub(crate) fn tables() {
@@ -19,19 +18,13 @@ pub(crate) fn tables() {
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
 }
 
-/// Every page is 64 by 32 texels.
-fn sizes(_: usize) -> Option<[u32; 2]> {
-    Some([64, 32])
-}
-
-/// `root` composed with `rows` row windows, each hovered and the second muted, in a list
-/// `list` of `row`.
+/// `root` composed with `rows` row windows, each hovered, in a list `list` of `row`.
 fn composed(
     fixture: &Fixture,
     root: &str,
     list: Option<(&str, &str, usize)>,
     scroll: &BTreeMap<String, i32>,
-) -> Result<Scene, Vec<String>> {
+) -> Result<Laid, Vec<String>> {
     let resources: &dyn Resources = fixture;
     let template = resources.gui_type(root.as_bytes()).unwrap();
     let instance = compose::construct(template, [800, 600], resources).unwrap();
@@ -48,14 +41,12 @@ fn composed(
                             title: format!("row {index}"),
                             details: Vec::new(),
                         }),
-                        muted: index == 1,
                     })
                     .collect(),
             }]
         }
         None => Vec::new(),
     };
-    let sheets: &dyn Sheets = fixture;
     compose::compose(
         &compose::Window {
             name: root,
@@ -63,20 +54,17 @@ fn composed(
             instance: &instance,
             lists: &lists,
             grids: &[],
-            muted: &[],
             hovers: &[],
         },
         scroll,
         resources,
-        sheets,
-        &sizes,
     )
 }
 
-/// A sprite's frame is its strip offset added to the first frame's coordinates, at the place
-/// the native layout gives it; a text's glyphs carry its colour; clips are shared by index.
+/// Every part the native layout gives the window is handed to the paint, in draw order, at the
+/// place the layout gives it: a sprite at its frame, a text with its glyphs.
 #[test]
-fn quads_follow_the_native_draw() {
+fn every_laid_out_part_is_painted_in_draw_order() {
     tables();
     let fixture = fixture_with(read(
         br#"guiTypes = { containerWindowType = {
@@ -86,33 +74,25 @@ fn quads_follow_the_native_draw() {
                 maxWidth = 60 maxHeight = 20 }
         } }"#,
     ));
-    let scene = composed(&fixture, "w", None, &BTreeMap::new()).unwrap();
-    assert_eq!(scene.size, [100, 50]);
-    let icon = &scene.quads[0];
-    assert_eq!(icon.uv, [[0.5, 0.0], [0.75, 0.0], [0.75, 1.0], [0.5, 1.0]]);
-    assert_eq!(icon.corners[0], [5.0, 6.0]);
-    assert_eq!(icon.glyph, None);
-    let glyphs: Vec<_> = scene
-        .quads
-        .iter()
-        .filter(|quad| quad.glyph == Some(true))
-        .collect();
-    assert_eq!(glyphs.len(), 2);
-    assert!(glyphs.iter().all(|glyph| glyph.color[3] > 0.0));
-    assert_eq!(
-        scene
-            .textures
-            .iter()
-            .map(|texture| texture.width)
-            .collect::<Vec<_>>(),
-        vec![64; scene.textures.len()]
-    );
-    assert!(scene.notes.is_empty(), "{:?}", scene.notes);
+    let laid = composed(&fixture, "w", None, &BTreeMap::new()).unwrap();
+    assert_eq!(laid.size, [100, 50]);
+    let paths: Vec<_> = laid.parts.iter().map(|part| part.path.as_str()).collect();
+    assert_eq!(paths, ["w.i", "w.t"]);
+    let PartKind::Sprite {
+        geometry, offsets, ..
+    } = &laid.parts[0].kind
+    else {
+        panic!("{:?}", laid.parts[0].kind)
+    };
+    assert_eq!(geometry.corners()[0], [5.0, 6.0]);
+    assert_eq!(offsets[0], 0.5);
+    assert!(matches!(&laid.parts[1].kind, PartKind::Text { glyphs, .. } if glyphs.len() == 2));
+    assert!(laid.notes.is_empty(), "{:?}", laid.notes);
 }
 
 /// A window whose container `c` holds grid `g` of 20-pixel rows, laid out in `format` with the
 /// grid at `grid_y`, composed with five rows in its first column at `offset` of `c`.
-fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Scene, String) {
+fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Laid, String) {
     let fixture = fixture_with(read(
         format!(
             r#"guiTypes = {{
@@ -136,7 +116,6 @@ fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Scene, Stri
         .as_bytes(),
     ));
     let resources: &dyn Resources = &fixture;
-    let sheets: &dyn Sheets = &fixture;
     let template = resources.gui_type(b"w").unwrap();
     let item = resources.gui_type(b"item").unwrap();
     let instance = compose::construct(template, [800, 600], resources).unwrap();
@@ -153,7 +132,6 @@ fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Scene, Stri
                             title: format!("item {row}"),
                             details: Vec::new(),
                         }),
-                        muted: false,
                     },
                     [0, row],
                 )
@@ -164,27 +142,24 @@ fn scrolled_grid(format: &str, grid_y: i32, offset: Option<i32>) -> (Scene, Stri
         .map(|offset| (container.clone(), offset))
         .into_iter()
         .collect();
-    let scene = compose::compose(
+    let laid = compose::compose(
         &compose::Window {
             name: "w",
             root: template,
             instance: &instance,
             lists: &[],
             grids: &grids,
-            muted: &[],
             hovers: &[],
         },
         &scroll,
         resources,
-        sheets,
-        &sizes,
     )
     .unwrap();
-    (scene, container)
+    (laid, container)
 }
 
-fn tops(scene: &Scene) -> Vec<f32> {
-    scene.hovers.iter().map(|hover| hover.rect[1]).collect()
+fn tops(laid: &Laid) -> Vec<f32> {
+    laid.hovers.iter().map(|hover| hover.rect[1]).collect()
 }
 
 /// A grid whose items overflow its scrolling container makes the container scroll as the game
@@ -242,10 +217,9 @@ fn a_grid_overflowing_upward_scrolls_below_zero() {
     }
 }
 
-/// A muted root control draws muted, every part below it included; a hovered control explains
-/// itself over its own region.
+/// A hovered root control explains itself over its own region; others explain nothing.
 #[test]
-fn root_controls_are_muted_and_explained_by_path() {
+fn root_controls_are_explained_by_path() {
     tables();
     let fixture = fixture_with(read(
         br#"guiTypes = { containerWindowType = {
@@ -257,17 +231,14 @@ fn root_controls_are_muted_and_explained_by_path() {
     let resources: &dyn Resources = &fixture;
     let template = resources.gui_type(b"w").unwrap();
     let instance = compose::construct(template, [800, 600], resources).unwrap();
-    let muted = template.path_named("i").unwrap().path.clone();
     let hovered = template.path_named("j").unwrap().path.clone();
-    let sheets: &dyn Sheets = &fixture;
-    let scene = compose::compose(
+    let laid = compose::compose(
         &compose::Window {
             name: "w",
             root: template,
             instance: &instance,
             lists: &[],
             grids: &[],
-            muted: &[muted.as_str()],
             hovers: &[(
                 hovered.as_str(),
                 Hover {
@@ -278,49 +249,11 @@ fn root_controls_are_muted_and_explained_by_path() {
         },
         &BTreeMap::new(),
         resources,
-        sheets,
-        &sizes,
     )
     .unwrap();
-    let at = |x: f32| {
-        scene
-            .quads
-            .iter()
-            .find(|quad| quad.corners[0][0] == x)
-            .unwrap()
-    };
-    assert_eq!(at(5.0).muted, Some(true));
-    assert_eq!(at(40.0).muted, None);
-    assert_eq!(scene.hovers.len(), 1);
-    assert_eq!(scene.hovers[0].rect[0], 40.0);
-}
-
-/// A part the dashboard cannot draw is left out by path and the window says it is incomplete.
-#[test]
-fn undrawn_parts_are_named() {
-    tables();
-    let fixture = fixture_with(read(
-        br#"guiTypes = { containerWindowType = {
-            name = "w" size = { width = 200 height = 50 }
-            iconType = { name = "bar" spriteType = "GFX_bar" }
-        } }"#,
-    ));
-    let scene = composed(&fixture, "w", None, &BTreeMap::new()).unwrap();
-    assert!(scene.quads.is_empty());
-    assert!(
-        scene
-            .notes
-            .iter()
-            .any(|note| note.contains("w.bar is not drawn: progress bars")),
-        "{:?}",
-        scene.notes
-    );
-    assert!(
-        scene
-            .notes
-            .iter()
-            .any(|note| note.contains("drawn incompletely"))
-    );
+    assert_eq!(laid.parts.len(), 2);
+    assert_eq!(laid.hovers.len(), 1);
+    assert_eq!(laid.hovers[0].rect[0], 40.0);
 }
 
 /// A smooth list box places its rows at the scroll offset, clamped to the rows' run beyond the
@@ -355,20 +288,13 @@ fn list_rows_scroll_within_their_run() {
         "{:?}",
         scrolled.hovers
     );
-    // Every row's quads are clipped to the list; only the muted row's are muted.
-    let row_quads: Vec<_> = scrolled
-        .quads
+    // Every row's parts are clipped to the list.
+    let clipped = scrolled
+        .parts
         .iter()
-        .filter(|quad| quad.clip.is_some())
-        .collect();
-    assert_eq!(row_quads.len(), 4);
-    assert_eq!(
-        row_quads
-            .iter()
-            .map(|quad| quad.muted == Some(true))
-            .collect::<Vec<_>>(),
-        [false, true, false, false]
-    );
+        .filter(|part| part.clip.is_some())
+        .count();
+    assert_eq!(clipped, 4);
 }
 
 /// A missing root is refused by the window's name, not drawn from another template.
@@ -403,26 +329,35 @@ fn policy_rows_join_the_allowed_tokens() {
     details.state.policy = 1;
     let roster = [policy(1, 50), policy(3, 75)];
     let spell = |token: u32| Ok(format!("token_{token}").into_bytes());
-    let (rows, unlisted) = mio::rows(&details, &roster, spell).unwrap();
+    let tag = |country: u32| {
+        if country == 7 {
+            Ok("SYN".to_owned())
+        } else {
+            Err(format!("country {country} has no tag"))
+        }
+    };
+    let (rows, unlisted) = mio::rows(&details, &roster, spell, tag).unwrap();
     assert_eq!(
         rows.iter().map(|row| row.token.clone()).collect::<Vec<_>>(),
         [b"token_3".to_vec(), b"token_1".to_vec()]
     );
     assert_eq!(rows[0].cost, 75);
+    // Each row keeps the tag of the country its instance belongs to.
+    assert_eq!(rows[0].tag.as_deref(), Ok("SYN"));
     assert!(!rows[0].selected && rows[1].selected);
     assert_eq!(unlisted, [b"token_2".to_vec()]);
     // The constructor's sentinel selects nothing, even if a policy had that token.
     details.state.policy = 0x4c17;
     details.allowed_policies = vec![0x4c17];
-    let (rows, _) = mio::rows(&details, &[policy(0x4c17, 1)], spell).unwrap();
+    let (rows, _) = mio::rows(&details, &[policy(0x4c17, 1)], spell, tag).unwrap();
     assert!(!rows[0].selected);
-    let failed = mio::rows(&details, &roster, |_| Err("unspelled".to_owned()));
+    let failed = mio::rows(&details, &roster, |_| Err("unspelled".to_owned()), tag);
     assert_eq!(failed.unwrap_err(), "unspelled");
 }
 
 /// A policy whose visibility does not hold has no row and one whose visibility is unknown is
-/// withheld by name; availability is kept per row, unknown with its reason; a policy with no
-/// authored icon has its icon refused.
+/// withheld by name; availability is kept per row, unknown with its reason; each row keeps its
+/// definition's authored icon, empty when it names none.
 #[test]
 fn policy_definitions_decide_what_a_row_can_show() {
     tables();
@@ -455,6 +390,7 @@ fn policy_definitions_decide_what_a_row_can_show() {
         cost: 1,
         days: 2,
         selected: token == "bare",
+        tag: Ok("SYN".into()),
     };
     let rows = [
         "shown",
@@ -492,14 +428,8 @@ fn policy_definitions_decide_what_a_row_can_show() {
     assert_eq!(shown[0].available, Ok(false));
     assert_eq!(shown[1].available, Err("not recorded".to_owned()));
     assert_eq!(shown[2].available, Ok(true));
-    assert_eq!(shown[0].icon.as_deref(), Ok(b"GFX_shown".as_slice()));
-    assert!(
-        shown[2]
-            .icon
-            .as_ref()
-            .unwrap_err()
-            .contains("names no icon")
-    );
+    assert_eq!(shown[0].icon, b"GFX_shown");
+    assert!(shown[2].icon.is_empty());
     let hover = mio::hover(&shown[2]);
     // A name the viewer may not show leaves the row and its other facts; the key titles it.
     assert!(shown[2].name.is_err());
@@ -552,7 +482,8 @@ pub(crate) fn installed(overlay: &[&std::path::Path]) -> installed_content_core:
     installed_content_core::ResolvedLayers::from_folders(&folders).unwrap()
 }
 
-/// `count` synthetic rows, each named and with `icon` (or a refused icon).
+/// `count` synthetic rows, each named, with `icon` (or none of its own), the first attached and
+/// the second unavailable.
 fn synthetic_rows(count: usize, icon: Option<&[u8]>) -> Vec<mio::Shown> {
     (0..count)
         .map(|index| mio::Shown {
@@ -562,14 +493,20 @@ fn synthetic_rows(count: usize, icon: Option<&[u8]>) -> Vec<mio::Shown> {
                 cost: 10,
                 days: 30,
                 selected: index == 0,
+                tag: Ok("SYN".into()),
             },
             name: Ok(format!("Synthetic policy {index}")),
-            icon: icon.map(<[u8]>::to_vec).ok_or_else(|| "no icon".to_owned()),
-            // The second row is unavailable.
+            icon: icon.map(<[u8]>::to_vec).unwrap_or_default(),
             available: Ok(index != 1),
         })
         .collect()
 }
+
+/// An organisation whose own conditions hold and whose cooldown is over.
+const OPEN: mio::Gate = mio::Gate {
+    organisation: Ok(true),
+    cooldown_days: 0,
+};
 
 type Drawn = (
     crate::products::game_window::Bound,
@@ -601,51 +538,144 @@ fn drawn(
         &localisation,
         rows,
         &[],
+        &OPEN,
         scroll,
     )
     .unwrap();
     (bound, session)
 }
 
+/// The sizes of the texture pages `laid`'s parts sample, from `session`'s sheets and pages.
+pub(crate) fn drawn_pages(laid: &Laid, session: &crate::session::Session) -> Vec<[u32; 2]> {
+    use viewer_foundation::map::native_gui::{InlineSource, Sheets};
+    let sheet = |sprite: &[u8]| session.gui.sheet(sprite).map(|sheet| sheet.texture);
+    let mut ids = Vec::new();
+    for part in &laid.parts {
+        match &part.kind {
+            PartKind::Sprite { sprite, .. } | PartKind::Tiles { sprite, .. } => {
+                ids.extend(sheet(sprite))
+            }
+            PartKind::Cell { texture, .. } => ids.push(*texture),
+            PartKind::Inline { source, .. } => match source {
+                InlineSource::Sprite(sprite) => ids.extend(sheet(sprite)),
+                InlineSource::Texture(texture) => ids.push(*texture),
+            },
+            PartKind::Text { glyphs, .. } => ids.extend(glyphs.iter().map(|glyph| glyph.texture)),
+            _ => {}
+        }
+    }
+    ids.iter()
+        .filter_map(|id| session.images.get(*id))
+        .map(|page| [page.width, page.height])
+        .collect()
+}
+
+/// Whether `laid` draws from a texture page of `size`.
+fn loaded(
+    laid: &Laid,
+    session: &std::sync::Mutex<crate::session::Session>,
+    size: [u32; 2],
+) -> bool {
+    drawn_pages(laid, &session.lock().unwrap()).contains(&size)
+}
+
+/// The technique a part draws with.
+fn technique(part: &viewer_foundation::map::native_gui::Part) -> Option<&str> {
+    part.shading
+        .compiled
+        .as_ref()
+        .map(|effect| effect.technique.as_str())
+}
+
 /// The installed policy window lays out through the native layout with its content's own
-/// sprites, fonts and list, every texture page it samples loads, and its rows scroll.
+/// sprites, fonts and list, and its rows scroll. The attached policy, removable, draws its
+/// background in frame 2 and its icon in Up and hides its cost; an unattached policy that is not
+/// available draws both in their Disable technique; a row whose gate is not decided (an
+/// unattached policy waiting on its quote) draws neither, counted. A policy with no icon of its
+/// own takes the game's lookup, ending at the unknown idea's sprite.
 #[test]
 fn the_installed_policy_window_draws_and_scrolls() {
     tables();
     let layers = installed(&[]);
     let rows = synthetic_rows(12, None);
-    let (bound, session) = drawn(&layers, &rows, &BTreeMap::new());
-    let scene = bound.scene.unwrap();
-    assert!(!scene.quads.is_empty());
-    assert!(scene.quads.iter().any(|quad| quad.glyph == Some(true)));
-    assert!(!scene.hovers.is_empty() && scene.hovers.len() <= rows.len());
-    // The unavailable row's quads, and only those, are muted.
-    assert!(scene.quads.iter().any(|quad| quad.muted == Some(true)));
+    let (bound, _) = drawn(&layers, &rows, &BTreeMap::new());
+    let laid = bound.scene.unwrap();
     assert!(
-        scene
-            .quads
+        laid.parts
             .iter()
-            .any(|quad| quad.muted.is_none() && quad.clip.is_some())
+            .any(|part| matches!(part.kind, PartKind::Text { .. }))
     );
-    assert_eq!(scene.lists.len(), 1);
-    let list = &scene.lists[0];
+    assert!(!laid.hovers.is_empty() && laid.hovers.len() <= rows.len());
+    assert_eq!(laid.lists.len(), 1);
+    let list = &laid.lists[0];
     assert!(list.max > 0, "{list:?}");
-    let pages = session.lock().unwrap();
-    for texture in &scene.textures {
-        let page = pages.images[texture.id as usize].clone();
-        assert_eq!([page.width, page.height], [texture.width, texture.height]);
-        installed_content_image::rgba::dds_base(page).unwrap();
+    let drawn_of = |control: &str| -> Vec<_> {
+        laid.parts
+            .iter()
+            .filter(|part| part.path.ends_with(control))
+            .collect()
+    };
+    // The attached and the blocked rows draw their background and icon: Up, then Disable.
+    for control in [".background_button", ".icon"] {
+        let parts = drawn_of(control);
+        let techniques: Vec<_> = parts.iter().map(|part| technique(part)).collect();
+        assert_eq!(techniques, [Some("Up"), Some("Disable")], "{control}");
     }
-    drop(pages);
+    assert!(drawn_of(".icon").iter().all(|icon| matches!(&icon.kind,
+        PartKind::Sprite { sprite, .. } if sprite == b"GFX_idea_unknown")));
+    // The attached row's background takes its second frame; the blocked row's, the first.
+    let frames: Vec<_> = drawn_of(".background_button")
+        .iter()
+        .map(|part| match &part.kind {
+            PartKind::Sprite { offsets, .. } => offsets[0] > 0.0 || offsets[1] > 0.0,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(frames, [true, false]);
+    assert!(drawn_of(".ai_value").is_empty());
+    let slot = |name: &str| {
+        bound
+            .slots
+            .iter()
+            .find(|slot| slot.name == name)
+            .unwrap()
+            .state
+    };
+    use crate::products::game_window::SlotState;
+    assert_eq!(slot("row icon"), SlotState::Bound);
+    assert_eq!(slot("row state"), SlotState::Refused);
     // At the end of its run the first rows have left the list.
     let path = list.path.clone();
     let (bound, _) = drawn(&layers, &rows, &BTreeMap::from([(path, i32::MAX)]));
     let scrolled = bound.scene.unwrap();
     assert_eq!(scrolled.lists[0].offset, scrolled.lists[0].max);
-    assert!(scrolled.hovers[0].rect[1] < scene.hovers[0].rect[1]);
-    // Icons that do not resolve are named in the window's slots, not drawn as another.
-    assert!(bound.slots.iter().any(|slot| slot.name == "row icon"
-        && slot.state == crate::products::game_window::SlotState::Refused));
+    assert!(scrolled.hovers[0].rect[1] < laid.hovers[0].rect[1]);
+}
+
+/// The installed window paints as the game draws it: an image of its size, every part drawn.
+#[test]
+#[ignore = "requires DXC and a GPU; reads the installation"]
+fn the_installed_policy_window_paints() {
+    tables();
+    let layers = installed(&[]);
+    let (bound, session) = drawn(&layers, &synthetic_rows(4, None), &BTreeMap::new());
+    let mut session = session.lock().unwrap();
+    let session = &mut *session;
+    let scene = bound
+        .scene
+        .unwrap()
+        .paint(compose::Canvas {
+            sheets: &session.gui,
+            pages: &session.images,
+            painter: &mut session.painter,
+        })
+        .unwrap();
+    assert!(scene.image.starts_with("data:image/png;base64,"));
+    assert!(
+        !scene.notes.iter().any(|note| note.contains("incompletely")),
+        "{:?}",
+        scene.notes
+    );
 }
 
 /// A mod layer's own sprite draws as a policy icon from the mod's texture, and a mod that
@@ -664,20 +694,14 @@ fn mod_layers_supply_icons_and_replace_templates() {
         ],
     );
     let layers = installed(&[&icons]);
-    let (bound, _) = drawn(
+    // The second row is blocked, so its icon draws.
+    let (bound, session) = drawn(
         &layers,
-        &synthetic_rows(1, Some(b"GFX_synthetic_policy_icon")),
+        &synthetic_rows(2, Some(b"GFX_synthetic_policy_icon")),
         &BTreeMap::new(),
     );
-    let scene = bound.scene.unwrap();
-    assert!(
-        scene
-            .textures
-            .iter()
-            .any(|texture| [texture.width, texture.height] == [36, 20]),
-        "{:?}",
-        scene.textures
-    );
+    let laid = bound.scene.unwrap();
+    assert!(loaded(&laid, &session, [36, 20]), "the mod's icon texture");
     // A mod that replaces the file declaring the window draws its own window.
     let replaced = |name: &str, control: &str| {
         folder(
@@ -690,7 +714,9 @@ fn mod_layers_supply_icons_and_replace_templates() {
                     containerWindowType = {{ name = "policy_list_window" size = {{ width = 300 height = 200 }}
                         smoothListBoxType = {{ name = "policy_list" size = {{ x = 280 y = 180 }} }} }} }}
                 containerWindowType = {{ name = "policy_item" size = {{ width = 280 height = 40 }}
+                    buttonType = {{ name = "background_button" spriteType = "GFX_mio_entry_bg" }}
                     iconType = {{ name = "icon" }} instantTextboxType = {{ name = "{control}" }}
+                    instantTextboxType = {{ name = "attach_cost" }}
                     instantTextboxType = {{ name = "ai_value" }} }} }}"#
                 )
                 .into_bytes(),
@@ -743,7 +769,9 @@ fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_
                     containerWindowType = { name = "policy_list_window" size = { width = 300 height = 200 }
                         smoothListBoxType = { name = "policy_list" size = { x = 280 y = 180 } } } }
                 containerWindowType = { name = "policy_item" size = { width = 280 height = 40 }
+                    buttonType = { name = "background_button" spriteType = "GFX_mio_entry_bg" }
                     iconType = { name = "icon" } instantTextboxType = { name = "name" }
+                    instantTextboxType = { name = "attach_cost" }
                     instantTextboxType = { name = "ai_value" } } }"#
                     .to_vec(),
             ),
@@ -772,19 +800,12 @@ fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_
     };
     let plan = visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
     assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
-    let rows = synthetic_rows(1, Some(b"GFX_synthetic_policy_icon"));
+    let rows = synthetic_rows(2, Some(b"GFX_synthetic_policy_icon"));
     let ((bound, session), fallbacks) =
         observe_overlay_refusals(|| drawn(&layers, &rows, &BTreeMap::new()));
-    let scene = bound.scene.unwrap();
-    assert_eq!(scene.size, [300, 200], "the visual mod's own window");
-    assert!(
-        scene
-            .textures
-            .iter()
-            .any(|texture| [texture.width, texture.height] == [36, 20]),
-        "the recording's icon: {:?}",
-        scene.textures
-    );
+    let laid = bound.scene.unwrap();
+    assert_eq!(laid.size, [300, 200], "the visual mod's own window");
+    assert!(loaded(&laid, &session, [36, 20]), "the recording's icon");
     assert!(
         fallbacks
             .iter()
@@ -799,6 +820,7 @@ fn visual_mods_style_windows_and_what_they_break_is_drawn_from_the_recording_by_
             &localisation,
             &rows,
             &[],
+            &OPEN,
             &BTreeMap::new(),
         )
         .unwrap()
@@ -1149,4 +1171,225 @@ fn a_read_ahead_of_replaced_content_never_replaces_a_request_s_session() {
         current(&sessions, &id).is_some(),
         "the request's session stays"
     );
+}
+
+/// A synthetic paint shader: the vertex input `input` beside position and texture coordinate,
+/// a constant colour and the blend `blend`.
+fn paint_shader(input: &str, blend: &str) -> String {
+    format!(
+        r#"VertexStruct Input {{ float3 position : POSITION;
+float2 uv : TEXCOORD0;
+{input}
+}};
+VertexStruct Output {{ float4 position : SV_POSITION;
+float2 uv : TEXCOORD0;
+}};
+ConstantBuffer(0,0) {{ float4x4 M;
+float4 Color;
+}};
+VertexShader = {{ MainCode V [[
+Output main(Input i) {{ Output o; o.position = mul(M, float4(i.position, 1)); o.uv = i.uv; return o; }}
+]] }}
+PixelShader = {{ MainCode P [[
+float4 main(Output i) : SV_TARGET {{ return float4(0.25, 0.5, 0.75, 0.5); }}
+]] }}
+BlendState BlendState {{ BlendEnable = yes {blend} }}
+Effect Up {{ VertexShader = V PixelShader = P }}
+"#
+    )
+}
+
+const SOURCE_OVER: &str = r#"SourceBlend = "SRC_ALPHA" DestBlend = "INV_SRC_ALPHA""#;
+
+/// A window a content folder `name` declares, its icon drawn with `shader`.
+fn paint_folder(name: &str, shader: &str) -> std::path::PathBuf {
+    folder(
+        name,
+        &[
+            (
+                "interface/synthetic_paint.gui",
+                br#"guiTypes = { containerWindowType = { name = "synthetic_paint_window" size = { width = 20 height = 20 }
+                    iconType = { name = "mark" spriteType = "GFX_synthetic_paint" position = { x = 2 y = 3 } } } }"#
+                    .to_vec(),
+            ),
+            (
+                "interface/synthetic_paint.gfx",
+                br#"spriteTypes = { spriteType = { name = "GFX_synthetic_paint" texturefile = "gfx/interface/synthetic_paint.tga" effectFile = "gfx/FX/synthetic_paint.lua" } }"#
+                    .to_vec(),
+            ),
+            ("gfx/interface/synthetic_paint.tga", tga(8, 8)),
+            ("gfx/FX/synthetic_paint.shader", shader.as_bytes().to_vec()),
+        ],
+    )
+}
+
+/// The synthetic window over `layers`, painted `paints` times by one session's painter, each
+/// with what it drew from the recording instead of the visual mods.
+fn painted_window(
+    layers: &installed_content_core::ResolvedLayers,
+    paints: usize,
+) -> Vec<(crate::paint::Painted, std::collections::BTreeSet<String>)> {
+    let localisation = installed_content_localisation::localisation::read(layers, "english").unwrap();
+    let sessions = std::sync::Mutex::new(crate::session::Sessions::default());
+    let session = crate::session::session(
+        &sessions,
+        "paint",
+        layers,
+        "english",
+        installed_content_image::native::Decode::default(),
+        [1920, 1080],
+        crate::session::Opener::Request,
+        &|| true,
+    )
+    .unwrap()
+    .unwrap();
+    let mut session = session.lock().unwrap();
+    let session = &mut *session;
+    let root = session
+        .guis
+        .template(b"synthetic_paint_window")
+        .unwrap()
+        .clone();
+    let mut assets = viewer_foundation::map::native_gui::Assets::default();
+    {
+        let guis = &session.guis;
+        assets.extend(viewer_foundation::map::native_gui::assets_in(
+            &root,
+            &|name: &[u8]| guis.template(name),
+            &localisation,
+        ));
+    }
+    session.load(layers, &assets).unwrap();
+    let resources = crate::resources::WindowResources {
+        gui: &session.gui,
+        guis: &session.guis,
+        localisation: &localisation,
+    };
+    let instance = compose::construct(&root, session.viewport, &resources).unwrap();
+    let layout = instance
+        .layout_with_regions(&root, &resources, None, true)
+        .unwrap()
+        .unwrap();
+    (0..paints)
+        .map(|_| {
+            let (painted, fallbacks) = installed_content_core::content::observe_overlay_refusals(|| {
+                crate::paint::paint(
+                    &mut session.painter,
+                    &session.images,
+                    &session.gui,
+                    layout.composed_parts(&vec![Vec::new(); layout.holders.len()]),
+                    layout.size,
+                )
+                .unwrap()
+            });
+            (painted, fallbacks)
+        })
+        .collect()
+}
+
+/// A window a mod declares paints offscreen as the game draws it: its icon runs the mod's own
+/// effect with its authored blend, and the image is straight alpha, clear where nothing draws.
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn a_window_paints_its_parts_through_their_own_effects() {
+    tables();
+    let synthetic = paint_folder("paint", &paint_shader("", SOURCE_OVER));
+    let mut painted = painted_window(&installed(&[&synthetic]), 1);
+    let (painted, _) = painted.remove(0);
+    assert!(painted.refused.lines().is_empty());
+    let image = painted.image;
+    assert_eq!([image.width, image.height], [20, 20]);
+    let pixel = |x: u32, y: u32| {
+        let at = ((y * 20 + x) * 4) as usize;
+        <[u8; 4]>::try_from(&image.pixels[at..at + 4]).unwrap()
+    };
+    assert_eq!(pixel(0, 0), [0; 4]);
+    let drawn = pixel(5, 6);
+    assert!(
+        drawn
+            .iter()
+            .zip([64, 128, 191, 128])
+            .all(|(a, b)| a.abs_diff(b) <= 1),
+        "{drawn:?}"
+    );
+}
+
+/// A part whose colour blend cannot be flattened into an image composited later (additive over
+/// transparent pixels) is left out by its effect's name, not drawn as something else.
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn a_part_that_cannot_be_flattened_is_refused_by_name() {
+    tables();
+    let additive = paint_shader("", r#"SourceBlend = "ONE" DestBlend = "ONE""#);
+    let synthetic = paint_folder("paint_additive", &additive);
+    let (painted, _) = painted_window(&installed(&[&synthetic]), 1).remove(0);
+    let refused = painted.refused.lines();
+    assert!(
+        refused
+            .iter()
+            .any(|why| why.contains("synthetic_paint") && why.contains("blends colour")),
+        "{refused:?}"
+    );
+    assert!(painted.image.pixels.iter().all(|byte| *byte == 0));
+}
+
+/// A visual mod's replacement whose pipeline cannot be built draws the recording's effect, and
+/// every paint names it: a later identical paint reuses the prepared draws, so the name comes
+/// from what the painter kept.
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn a_paint_time_fallback_is_named_on_every_paint() {
+    use installed_content_core::content::visual;
+    tables();
+    let recorded = paint_folder("paint_recorded", &paint_shader("", SOURCE_OVER));
+    // The same program writing whole numbers, which compiles but no float target accepts:
+    // its pipeline cannot be built.
+    let broken = paint_shader("", SOURCE_OVER).replace(
+        "float4 main(Output i) : SV_TARGET { return float4(0.25, 0.5, 0.75, 0.5); }",
+        "uint4 main(Output i) : SV_TARGET { return uint4(1, 2, 3, 4); }",
+    );
+    let art = folder(
+        "paint_art",
+        &[("gfx/FX/synthetic_paint.shader", broken.into_bytes())],
+    );
+    let user = folder(
+        "paint_user",
+        &[(
+            "mod/art.mod",
+            format!(
+                "name=\"Art\"\npath=\"{}\"\n",
+                art.display().to_string().replace('\\', "/")
+            )
+            .into_bytes(),
+        )],
+    );
+    let mut layers = installed(&[&recorded]);
+    let options = installed_content_core::ResolveOptions {
+        game_dir: user.clone(),
+        user_dir: user.clone(),
+        cache_dir: user.join("cache"),
+    };
+    let choice = visual::Choice {
+        id: "mod/art.mod".into(),
+        name: "Art".into(),
+    };
+    let plan = visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let mut paints = painted_window(&layers, 2);
+    let images: Vec<_> = paints
+        .iter()
+        .map(|(painted, _)| painted.image.clone())
+        .collect();
+    for (index, (painted, fallbacks)) in paints.drain(..).enumerate() {
+        let refused = painted.refused.lines();
+        assert!(refused.is_empty(), "paint {index}: {refused:?}");
+        assert!(
+            fallbacks
+                .iter()
+                .any(|fallback| fallback.starts_with("shader gfx/FX/synthetic_paint")),
+            "paint {index}: {fallbacks:?}"
+        );
+    }
+    // Both draw the recording's effect.
+    assert_eq!(images[0].pixels, images[1].pixels);
 }

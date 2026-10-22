@@ -58,15 +58,24 @@ test('a game window is browsed by keyboard and belongs to the client that asked 
       const what = `${horizontal ? 'across' : 'down'} at scale ${scale}`;
       await act(`mountScrolling(${horizontal}, ${scale})`); await act('focusFirstOutside()');
       for (let tab = 0; tab < 6; tab++) await press('Tab');
-      const revealed = await act(`repliedAt(50, ${horizontal})`) as { replied: number[]; active: string | null; start: number | null };
+      const revealed = await act(`repliedAt(50, ${horizontal})`) as { replied: number[]; active: string | null; start: number | null; image: string | null };
       assert.equal(revealed.active, 'Policy 4', `${what}: the row keeps focus`);
       assert.equal(revealed.replied[0], 0);
       assert.equal(revealed.replied[revealed.replied.length - 1], 50, `${what}: laid out at the revealing offset`);
       assert.equal(revealed.start, 10 + 70 * scale, `${what}: drawn wholly within the box`);
+      assert.equal(revealed.image, 'offset 50', `${what}: the image drawn is the reply at the revealing offset`);
     }
 
-    // Two windows colouring the same page at once both draw it, whichever finished first.
+    // The image follows the reply: a later hour, then a later presentation, draw their own.
+    await act('mountFollowing(10)');
+    assert.equal(await act('shownImage("hour 10 reply 1")'), 'hour 10 reply 1');
+    await act('mountFollowing(11)');
+    assert.equal(await act('shownImage("hour 11 reply 2")'), 'hour 11 reply 2', 'a new hour draws its own reply');
+    await act('advancePresentation()');
+    assert.equal(await act('shownImage("hour 11 reply 3")'), 'hour 11 reply 3', 'a new presentation draws its own reply');
+
+    // Two windows of one client drawn at once each show their image.
     await act('mountTwins()');
-    assert.deepEqual(await act('twinQuads()'), [1, 1]);
+    assert.deepEqual(await act('twinImages()'), [1, 1]);
   }, 120_000));
 });

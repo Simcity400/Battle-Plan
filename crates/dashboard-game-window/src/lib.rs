@@ -4,8 +4,7 @@
 //! and bound to the recorded state of one entity at one hour.
 //!
 //! One product crate above [dashboard-base](../dashboard-base/README.md): the dashboard
-//! re-exports its products at `products::game_window` and `products::game_window_artwork`
-//! and registers them.
+//! re-exports its product at `products::game_window` and registers it.
 
 /// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
@@ -15,18 +14,15 @@ static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod compose;
 pub mod designer;
 pub mod mio;
+pub mod paint;
 pub mod resources;
 pub mod scene;
 pub mod session;
 
 pub mod products {
     pub mod game_window;
-    pub mod game_window_artwork;
 
-    dashboard_base::reply_warnings!(
-        game_window::GameWindowReply,
-        game_window_artwork::GameWindowArtworkReply,
-    );
+    dashboard_base::reply_warnings!(game_window::GameWindowReply);
 }
 
 #[cfg(test)]

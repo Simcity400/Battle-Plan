@@ -44,7 +44,7 @@ pub use dashboard_forces::products::parts_race_prepared;
 pub use dashboard_forces::products::supply_health;
 pub use dashboard_forces::products::volunteers_expeditionaries;
 pub use dashboard_game_score::products::game_score;
-pub use dashboard_game_window::products::{game_window, game_window_artwork};
+pub use dashboard_game_window::products::game_window;
 pub use dashboard_intelligence::products::agency_comparison;
 pub use dashboard_intelligence::products::decryption;
 pub use dashboard_intelligence::products::espionage_log;
@@ -269,7 +269,6 @@ pub static PRODUCTS: &[Registered] = &[
     register::<country_flags::CountryFlags>(),
     register::<doctrines::Doctrines>(),
     register::<game_window::GameWindow>(),
-    register::<game_window_artwork::GameWindowArtwork>(),
     register_prepared::<army_size::ArmySize>(),
     register_prepared::<volunteers_expeditionaries::VolunteersExpeditionaries>(),
     register_prepared::<supply_health::SupplyHealth>(),

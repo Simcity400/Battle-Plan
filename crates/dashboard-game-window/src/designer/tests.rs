@@ -96,6 +96,17 @@ fn designer(regiment: &str, support: &str) -> Designer {
 }
 
 fn draw_on(layers: &ResolvedLayers, designer: &Designer) -> Bound {
+    draw_with_session(layers, designer).0
+}
+
+/// [`draw_on`], with the session it drew from.
+fn draw_with_session(
+    layers: &ResolvedLayers,
+    designer: &Designer,
+) -> (
+    Bound,
+    std::sync::Arc<std::sync::Mutex<crate::session::Session>>,
+) {
     let localisation = installed_content_localisation::localisation::read(layers, "english").unwrap();
     let sessions = std::sync::Mutex::new(crate::session::Sessions::default());
     let session = crate::session::session(
@@ -110,7 +121,7 @@ fn draw_on(layers: &ResolvedLayers, designer: &Designer) -> Bound {
     )
     .unwrap()
     .unwrap();
-    super::draw(
+    let bound = super::draw(
         &mut session.lock().unwrap(),
         layers,
         &localisation,
@@ -118,7 +129,18 @@ fn draw_on(layers: &ResolvedLayers, designer: &Designer) -> Bound {
         false,
         &BTreeMap::new(),
     )
-    .unwrap()
+    .unwrap();
+    (bound, session)
+}
+
+/// The sizes of the pages the drawn designer samples.
+fn pages(
+    drawn: &(
+        Bound,
+        std::sync::Arc<std::sync::Mutex<crate::session::Session>>,
+    ),
+) -> Vec<[u32; 2]> {
+    crate::tests::drawn_pages(drawn.0.scene.as_ref().unwrap(), &drawn.1.lock().unwrap())
 }
 
 fn slot<'a>(bound: &'a Bound, name: &str) -> &'a WindowSlot {
@@ -129,17 +151,60 @@ fn slot<'a>(bound: &'a Bound, name: &str) -> &'a WindowSlot {
         .unwrap_or_else(|| panic!("no {name} slot in {:?}", bound.slots))
 }
 
-/// The installed designer lays out its composition cells in their grids, mutes the editor's
-/// buttons, explains the filled cells on hover and names what it does not bind.
+/// The installed designer lays out its composition cells in their grids, draws the editor's
+/// buttons as the game draws them with no pending edit, explains the filled cells and the
+/// buttons on hover and names what it does not bind.
 #[test]
 fn the_installed_designer_draws_its_composition() {
     tables();
     let layers = installed(&[]);
     let bound = draw_on(&layers, &designer("infantry", "engineer"));
     let scene = bound.scene.as_ref().unwrap();
-    assert!(!scene.quads.is_empty());
+    assert!(!scene.parts.is_empty());
+    let technique = |control: &str| -> Vec<Option<String>> {
+        scene
+            .parts
+            .iter()
+            .filter(|part| part.path.ends_with(control))
+            .map(|part| {
+                part.shading
+                    .compiled
+                    .as_ref()
+                    .map(|effect| effect.technique.clone())
+            })
+            .collect()
+    };
+    // Reset and save draw disabled; duplicate, whose state is not recorded, is hidden; the
+    // equipment button acts with regiments, so it draws Up.
+    for control in [".reset_button", ".save_button"] {
+        let drawn = technique(control);
+        assert!(!drawn.is_empty(), "{control}");
+        assert!(
+            drawn
+                .iter()
+                .all(|technique| technique.as_deref() == Some("Disable")),
+            "{control}: {drawn:?}"
+        );
+    }
+    assert!(technique(".duplicate_button").is_empty());
+    assert!(
+        technique(".division_equipment_btn")
+            .iter()
+            .all(|technique| technique.as_deref() != Some("Disable"))
+    );
+    let read_only: Vec<_> = scene
+        .hovers
+        .iter()
+        .filter(|hover| hover.title == "Read-only")
+        .collect();
+    assert_eq!(read_only.len(), 2, "{:?}", scene.hovers);
     // Four filled cells and both stat rows, each dated by its inputs' read.
-    assert_eq!(scene.hovers.len(), 6, "{:?}", scene.hovers);
+    let scene_hovers: Vec<_> = scene
+        .hovers
+        .iter()
+        .filter(|hover| hover.title != "Read-only")
+        .collect();
+    assert_eq!(scene_hovers.len(), 6, "{:?}", scene.hovers);
     assert!(scene.hovers.iter().any(|hover| hover.title == "Speed"
         && hover.details
             == [
@@ -208,22 +273,14 @@ fn mods_supply_units_and_replace_the_designer() {
         ],
     );
     let layers = installed(&[&unit]);
-    let bound = draw_on(&layers, &designer("synthetic_ranger", "engineer"));
+    let drawn = draw_with_session(&layers, &designer("synthetic_ranger", "engineer"));
     assert_eq!(
-        slot(&bound, "unit glyphs").state,
+        slot(&drawn.0, "unit glyphs").state,
         Slot::Bound,
         "{:?}",
-        bound.slots
+        drawn.0.slots
     );
-    let scene = bound.scene.unwrap();
-    assert!(
-        scene
-            .textures
-            .iter()
-            .any(|texture| [texture.width, texture.height] == [78, 26]),
-        "{:?}",
-        scene.textures
-    );
+    assert!(pages(&drawn).contains(&[78, 26]), "{:?}", pages(&drawn));
     let replaced = |name: &str, grid: &str| {
         folder(
             name,
@@ -340,17 +397,8 @@ fn fnt() -> Vec<u8> {
 #[test]
 fn a_mods_sprites_and_fonts_restyle_the_designer() {
     tables();
-    let textures = |bound: &Bound| -> Vec<[u32; 2]> {
-        bound
-            .scene
-            .as_ref()
-            .unwrap()
-            .textures
-            .iter()
-            .map(|texture| [texture.width, texture.height])
-            .collect()
-    };
-    let installed_only = draw_on(&installed(&[]), &designer("infantry", "engineer"));
+    let textures = pages;
+    let installed_only = draw_with_session(&installed(&[]), &designer("infantry", "engineer"));
     let restyle = folder(
         "designer_restyle",
         &[
@@ -364,7 +412,7 @@ fn a_mods_sprites_and_fonts_restyle_the_designer() {
             ),
         ],
     );
-    let restyled = draw_on(&installed(&[&restyle]), &designer("infantry", "engineer"));
+    let restyled = draw_with_session(&installed(&[&restyle]), &designer("infantry", "engineer"));
     for size in [[98, 34], [37, 41]] {
         assert!(
             !textures(&installed_only).contains(&size),
@@ -426,15 +474,10 @@ fn a_selected_visual_mod_restyles_the_designer() {
     };
     let plan = visual::apply(&mut layers, &options, &[choice], &[], &Default::default()).unwrap();
     assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
-    let restyled = draw_on(&layers, &designer("infantry", "engineer"));
-    let textures: Vec<[u32; 2]> = restyled
-        .scene
-        .as_ref()
-        .unwrap()
-        .textures
-        .iter()
-        .map(|texture| [texture.width, texture.height])
-        .collect();
+    let textures = pages(&draw_with_session(
+        &layers,
+        &designer("infantry", "engineer"),
+    ));
     for size in [[98, 34], [37, 41]] {
         assert!(textures.contains(&size), "{size:?} not drawn: {textures:?}");
     }
@@ -472,4 +515,29 @@ fn header_frames_and_sprites_follow_the_template() {
     assert!(equipment_button(&settings, &[]).is_err());
     assert_eq!(experience_points(1_234_567), 12);
     assert_eq!(experience_points(-150_000), -1);
+}
+
+/// The installed designer paints as the game draws it, every part drawn.
+#[test]
+#[ignore = "requires DXC and a GPU; reads the installation"]
+fn the_installed_designer_paints() {
+    tables();
+    let (bound, session) = draw_with_session(&installed(&[]), &designer("infantry", "engineer"));
+    let mut session = session.lock().unwrap();
+    let session = &mut *session;
+    let scene = bound
+        .scene
+        .unwrap()
+        .paint(crate::compose::Canvas {
+            sheets: &session.gui,
+            pages: &session.images,
+            painter: &mut session.painter,
+        })
+        .unwrap();
+    assert!(scene.image.starts_with("data:image/png;base64,"));
+    assert!(
+        !scene.notes.iter().any(|note| note.contains("incompletely")),
+        "{:?}",
+        scene.notes
+    );
 }

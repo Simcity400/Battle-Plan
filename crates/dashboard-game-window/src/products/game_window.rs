@@ -84,8 +84,6 @@ pub struct WindowSlot {
 #[serde(rename_all = "camelCase")]
 pub struct GameWindowReply {
     pub warnings: Vec<String>,
-    /// The artwork session the scene's texture ids belong to (`game-window-artwork`).
-    pub session: String,
     /// The window's title as plain text, for the app's own heading and accessibility.
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,7 +105,7 @@ pub struct GameWindowReply {
 pub struct Bound {
     pub title: Option<String>,
     pub read_hour: Option<i32>,
-    pub scene: Result<Scene, Vec<String>>,
+    pub scene: Result<crate::compose::Laid, Vec<String>>,
     pub slots: Vec<WindowSlot>,
     pub warnings: Vec<String>,
 }
@@ -128,8 +126,6 @@ impl Product for GameWindow {
             SlotState::decl(),
             WindowSlot::decl(),
             Scene::decl(),
-            crate::scene::SceneTexture::decl(),
-            crate::scene::SceneQuad::decl(),
             crate::scene::SceneHover::decl(),
             crate::scene::SceneList::decl(),
         ]
@@ -205,16 +201,23 @@ impl Product for GameWindow {
                 cancelled,
             )?,
         };
-        let (scene, refused) = match bound.scene {
+        let mut session = shared.lock().unwrap_or_else(|error| error.into_inner());
+        let session = &mut *session;
+        let painted = bound.scene.and_then(|laid| {
+            laid.paint(crate::compose::Canvas {
+                sheets: &session.gui,
+                pages: &session.images,
+                painter: &mut session.painter,
+            })
+        });
+        let (scene, refused) = match painted {
             Ok(scene) => (Some(scene), Vec::new()),
             Err(refused) => (None, refused),
         };
-        let session = shared.lock().unwrap_or_else(|error| error.into_inner());
         let mut warnings = bound.warnings;
         warnings.extend(session.gui.uncovered_note("Game window"));
         let reply = GameWindowReply {
             warnings,
-            session: session.id.clone(),
             title: bound.title,
             read_hour: bound.read_hour,
             scene,

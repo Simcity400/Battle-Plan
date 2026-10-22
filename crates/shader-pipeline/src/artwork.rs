@@ -37,7 +37,7 @@ const SOURCE_OVER: wgpu::BlendComponent = wgpu::BlendComponent {
 
 /// A layer's target keeps premultiplied colour and coverage without quantizing
 /// between passes.
-const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 struct Renderer {
     device: wgpu::Device,
@@ -675,8 +675,7 @@ impl Readback {
                     .chunks_exact(region.pitch as usize)
                     .map(|row| &row[..(width * texel) as usize]);
                 let pixels = if region.layered {
-                    rows.flat_map(|row| row.chunks_exact(8).flat_map(straight))
-                        .collect()
+                    rows.flat_map(layer_pixels).collect()
                 } else {
                     rows.flatten().copied().collect()
                 };
@@ -688,6 +687,11 @@ impl Readback {
             })
             .collect())
     }
+}
+
+/// A layer's premultiplied half-float RGBA texels ([`LAYER_FORMAT`]) as straight RGBA8.
+pub fn layer_pixels(texels: &[u8]) -> Vec<u8> {
+    texels.chunks_exact(8).flat_map(straight).collect()
 }
 
 /// A layer texel's premultiplied half-float colour and coverage as straight RGBA8.

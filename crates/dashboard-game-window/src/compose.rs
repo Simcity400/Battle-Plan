@@ -1,6 +1,6 @@
 //! Lays a bound window and the rows its code adds to its list boxes and grid boxes out through
-//! the native GUI, as the map viewer lays its windows out, and flattens the result into a
-//! [`Scene`].
+//! the native GUI, as the map viewer lays its windows out, into a [`Laid`] window, which is
+//! painted as the game draws it into a [`Scene`] ([`crate::paint`]).
 //!
 //! A window's binder constructs the root [`Instance`] and one per row, applies the calls the
 //! game's code makes (texts, sprites, frames, shows and hides), and hands them here with what
@@ -25,7 +25,7 @@ use viewer_foundation::map::{
     native_gui::{self, Bindings, Part, Refusals, Resources, Sheets, lifecycle::Instance, widgets},
 };
 
-use crate::scene::{Counted, Flatten, Scene, SceneHover, SceneList};
+use crate::scene::{Counted, Scene, SceneHover, SceneList};
 
 /// What the app explains when the pointer rests on a row: its in-game name and details.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,8 +38,6 @@ pub struct Hover {
 pub struct Row {
     pub instance: Instance,
     pub hover: Option<Hover>,
-    /// Drawn muted, as the app mutes a row that cannot be acted on ([`crate::scene::SceneQuad::muted`]).
-    pub muted: bool,
 }
 
 /// A list box of the root and the rows the code adds to it, in order.
@@ -68,22 +66,21 @@ pub struct Window<'a> {
     pub instance: &'a Instance,
     pub lists: &'a [BoundList<'a>],
     pub grids: &'a [BoundGrid<'a>],
-    /// Root controls drawn as the app mutes what cannot be acted on, each with every part
-    /// below it, by element path ([`Element::path`]).
-    pub muted: &'a [&'a str],
     /// Root controls the app explains on hover, by element path.
     pub hovers: &'a [(&'a str, Hover)],
+}
+
+/// What a window is painted with: its session's sprite sheets and texture pages, and the
+/// session's painter, built on the first paint.
+pub struct Canvas<'a> {
+    pub sheets: &'a dyn Sheets,
+    pub pages: &'a [installed_content_image::dds::Texture],
+    pub painter: &'a mut Option<crate::paint::Painter>,
 }
 
 /// The path of the element `path` lies directly below.
 fn parent(path: &str) -> Option<&str> {
     path.rsplit_once(['.', '/']).map(|(parent, _)| parent)
-}
-
-/// Whether `path` is `control` or lies below it.
-fn under(path: &str, control: &str) -> bool {
-    path.strip_prefix(control)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '/']))
 }
 
 /// Lays `window` out, each list scrolled to its offset in `scroll` (clamped to its range; zero
@@ -92,16 +89,13 @@ pub fn compose(
     window: &Window<'_>,
     scroll: &BTreeMap<String, i32>,
     resources: &dyn Resources,
-    sheets: &dyn Sheets,
-    sizes: &dyn Fn(usize) -> Option<[u32; 2]>,
-) -> Result<Scene, Refused> {
+) -> Result<Laid, Refused> {
     let Window {
         name,
         root,
         instance,
         lists,
         grids,
-        muted: muted_controls,
         hovers: control_hovers,
     } = *window;
     let refused = |refusals: Refusals| -> Refused {
@@ -128,8 +122,6 @@ pub fn compose(
         notes.note(noted_cause(name, diagnostic));
     }
     let mut items: Vec<Vec<Part>> = vec![Vec::new(); layout.holders.len()];
-    // The parts of muted rows, by their range in their holder's items.
-    let mut muted: Vec<Vec<std::ops::Range<usize>>> = vec![Vec::new(); layout.holders.len()];
     let mut hovers = Vec::new();
     let mut scenes = Vec::new();
     let mut bindings = Bindings::default();
@@ -159,7 +151,7 @@ pub fn compose(
                     for diagnostic in &item.diagnostics {
                         notes.note(noted_cause(name, diagnostic));
                     }
-                    laid.push((item, row.hover.clone(), row.muted));
+                    laid.push((item, row.hover.clone()));
                 }
                 None => notes.note(format!(
                     "{name}: a {} row draws nothing",
@@ -194,13 +186,9 @@ pub fn compose(
             let [x, y, w, h] = region.rect;
             [x as i32, y as i32, (x + w) as i32, (y + h) as i32]
         });
-        for (place, (item, hover, dim)) in rows.places.iter().zip(&laid) {
+        for (place, (item, hover)) in rows.places.iter().zip(&laid) {
             let Some(place) = place else { continue };
-            let first = items[at].len();
             items[at].extend(holder.place(*place, item));
-            if *dim {
-                muted[at].push(first..items[at].len());
-            }
             if let Some(hover) = hover {
                 // The row's own frame, placed as its parts are, within the list's clip.
                 let k = holder.scale;
@@ -266,11 +254,7 @@ pub fn compose(
             for diagnostic in &item.diagnostics {
                 notes.note(noted_cause(name, diagnostic));
             }
-            let first = items[at].len();
             items[at].extend(holder.place(place, &item));
-            if row.muted {
-                muted[at].push(first..items[at].len());
-            }
             if let Some(hover) = &row.hover {
                 let k = holder.scale;
                 let rect = [
@@ -314,52 +298,73 @@ pub fn compose(
             hovers.push((region.rect, region.clip, None, hover.clone()));
         }
     }
-    let mut flatten = Flatten::new(sheets, sizes);
-    let is_muted = |part: &Part| {
-        muted_controls
-            .iter()
-            .any(|control| under(&part.path, control))
-            || items.iter().zip(&muted).any(|(items, ranges)| {
-                ranges.iter().any(|range| {
-                    items[range.clone()]
-                        .as_ptr_range()
-                        .contains(&std::ptr::from_ref(part))
-                })
-            })
-    };
-    for part in layout.composed_parts(&items) {
-        flatten.part(part, is_muted(part));
-    }
     let hovers: Vec<SceneHover> = hovers
         .into_iter()
         .map(|(rect, clip, list, hover)| SceneHover {
             rect,
-            clip: flatten.clip(clip),
+            clip,
             list,
             title: hover.title,
             details: hover.details,
         })
         .collect();
-    let (quads, textures, clips, effects, flattened, omitted) = flatten.finish();
-    let mut notes = notes.lines();
-    notes.extend(flattened.lines());
-    if omitted > 0 {
-        notes.push(format!(
-            "{name} is drawn incompletely: {omitted} part(s) the dashboard cannot draw yet are left out"
-        ));
-    }
-    Ok(Scene {
+    Ok(Laid {
         name: name.to_owned(),
         size: layout.size,
         viewport: instance.viewport(),
-        textures,
-        clips,
-        quads,
+        parts: layout.composed_parts(&items).cloned().collect(),
         hovers,
         lists: scenes,
-        effects: effects.lines(),
-        notes,
+        notes: notes.lines(),
     })
+}
+
+/// A window laid out: every part in the game's draw order, the areas the app explains on hover,
+/// the lists the pointer scrolls and what the layout noted.
+#[derive(Debug)]
+pub struct Laid {
+    pub name: String,
+    pub size: [i32; 2],
+    pub viewport: [i32; 2],
+    pub parts: Vec<Part>,
+    pub hovers: Vec<SceneHover>,
+    pub lists: Vec<SceneList>,
+    pub notes: Vec<String>,
+}
+
+impl Laid {
+    /// The window painted as the game draws it ([`crate::paint`]); a part the native draw
+    /// refuses is left out, named, and the scene says it is incomplete.
+    pub fn paint(self, canvas: Canvas<'_>) -> Result<Scene, Refused> {
+        let name = &self.name;
+        let painted = crate::paint::paint(
+            canvas.painter,
+            canvas.pages,
+            canvas.sheets,
+            &self.parts,
+            self.size,
+        )
+        .map_err(|why| vec![format!("{name} is not painted: {why}")])?;
+        let image = dashboard_text::catalogue::png_data_url(&painted.image)
+            .map_err(|why| vec![format!("{name} is not painted: {why}")])?;
+        let incomplete = !painted.refused.is_empty();
+        let mut notes = self.notes;
+        notes.extend(painted.refused.lines());
+        if incomplete {
+            notes.push(format!(
+                "{name} is drawn incompletely: the parts named are left out"
+            ));
+        }
+        Ok(Scene {
+            name: self.name,
+            size: self.size,
+            viewport: self.viewport,
+            image,
+            hovers: self.hovers,
+            lists: self.lists,
+            notes,
+        })
+    }
 }
 
 /// The instance with each grid's items finalized into it and each grid's enclosing container

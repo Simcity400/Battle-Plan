@@ -3066,16 +3066,24 @@ impl<'a> Walk<'a> {
             _ => (icon.frame, icon.rotation),
         };
         let rotation = bound.and_then(|bound| bound.rotation).unwrap_or(rotation);
-        self.sprite_part(
+        // An icon the code disables draws its drawable's Disable state; enabling it, Up.
+        let state = if bound.and_then(|bound| bound.enabled) == Some(false) {
+            State::Disable
+        } else {
+            State::Up
+        };
+        self.state_part(
             element,
             &icon.sprite,
-            frame,
+            FrameSource::Own(frame),
+            state,
             bound.and_then(|bound| bound.scale).unwrap_or(icon.scale),
             rotation,
             at,
             centre,
             clip,
         )
+        .map(|_| ())
     }
 
     /// Lays out a button with its own or inherited sprite, orientation offset, optional

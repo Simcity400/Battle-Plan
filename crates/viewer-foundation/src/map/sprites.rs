@@ -718,6 +718,8 @@ pub struct SpritePass {
     fade_pages: usize,
     /// The vertex lists an upload fills, kept between frames for their storage.
     scratch: Scratch,
+    /// The frame is a layer composited later ([`SpritePass::set_layer`]).
+    layer: bool,
 }
 
 /// One upload's lists: the frame's snapped quads, the fade pages' and the composites' vertices,
@@ -921,6 +923,7 @@ impl SpritePass {
             composite_capacity: INITIAL_VERTICES,
             fade_pages: 0,
             scratch: Scratch::default(),
+            layer: false,
         })
     }
 
@@ -1639,6 +1642,49 @@ impl SpritePass {
         }
     }
 
+    /// Makes the frame a layer composited later, as a GUI window drawn outside the map is:
+    /// its draws keep their programs' colour blend and accumulate premultiplied colour, as a
+    /// fade page's do. Takes effect at the next upload.
+    pub fn set_layer(&mut self, layer: bool) {
+        self.layer = layer;
+    }
+
+    /// Draws the uploaded layer ([`SpritePass::set_layer`]) into `view`, cleared first, after
+    /// the fading icons' pages. Only compiled native draws accumulate as a layer: a snapped
+    /// quad is refused.
+    pub fn draw_layer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: [u32; 2],
+    ) -> Result<(), String> {
+        if !self.layer {
+            return Err("the sprite pass is not drawing a layer".into());
+        }
+        if self.runs.iter().any(|run| run.pipe == Pipe::Legacy) {
+            return Err("a layer holds a quad without a compiled effect".into());
+        }
+        self.draw_pages(encoder);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("sprite layer"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.draw_runs(&mut pass, size);
+        Ok(())
+    }
+
     /// Quads the last upload produced, for reporting.
     pub fn quad_count(&self) -> u32 {
         self.count / 6 + self.native_draws.len() as u32
@@ -1688,7 +1734,8 @@ impl SpritePass {
                     format: self.native_format,
                     samples: self.native_samples,
                     clip,
-                    premultiply: false,
+                    premultiply: self.layer,
+                    layer: self.layer,
                 },
             ),
             Some(format) => prepare_draw(
@@ -1704,6 +1751,7 @@ impl SpritePass {
                     samples: 1,
                     clip,
                     premultiply: true,
+                    layer: false,
                 },
             ),
         };
@@ -1784,6 +1832,7 @@ impl SpritePass {
                     samples: 1,
                     clip: None,
                     premultiply: false,
+                    layer: false,
                 },
             );
             views.clear();
@@ -1881,6 +1930,37 @@ struct Output {
     samples: u32,
     clip: Option<fade::ClipAffine>,
     premultiply: bool,
+    /// The frame is a layer composited later as a straight-alpha image
+    /// ([`SpritePass::set_layer`]): only draws that flatten into one exactly are submitted.
+    layer: bool,
+}
+
+/// The colour blend that flattens exactly into a layer composited later: source over.
+const SOURCE_OVER: wgpu::BlendComponent = wgpu::BlendComponent {
+    src_factor: wgpu::BlendFactor::SrcAlpha,
+    dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+    operation: wgpu::BlendOperation::Add,
+};
+
+/// Why a draw with `blend` and `mask` cannot be flattened into a layer composited later as one
+/// straight-alpha image: the layer keeps premultiplied colour and accumulates coverage, which
+/// reproduces a source-over colour blend over anything beneath it. Its alpha write is the
+/// layer's own; a draw that leaves colour channels unwritten, or blends colour another way
+/// (additive or multiplied over transparent pixels, or no blend), has no such image.
+fn unflattenable(blend: Option<wgpu::BlendState>, mask: wgpu::ColorWrites) -> Option<String> {
+    match blend {
+        Some(blend) if blend.color == SOURCE_OVER && mask.contains(wgpu::ColorWrites::COLOR) => {
+            None
+        }
+        Some(blend) if blend.color == SOURCE_OVER => Some(format!(
+            "it writes only {mask:?} of its colour, which a composited image cannot keep"
+        )),
+        Some(blend) => Some(format!(
+            "it blends colour as {:?}, which a composited image cannot reproduce",
+            blend.color
+        )),
+        None => Some("it draws without blending, which a composited image cannot reproduce".into()),
+    }
 }
 
 /// Applies the draw's program, constants, textures and samplers before preparing submission.
@@ -1901,6 +1981,7 @@ fn prepare_draw(
         samples,
         clip,
         premultiply,
+        layer,
     }: Output,
 ) -> Result<super::native_shader::stream::Submission, String> {
     use installed_content_core::pdxshader::program::Stage;
@@ -1928,6 +2009,15 @@ fn prepare_draw(
     }
     if draw.default_blend {
         native.bind_blend(None, wgpu::ColorWrites::ALL);
+    }
+    if layer {
+        let (blend, mask) = native.blend();
+        if let Some(why) = unflattenable(blend, mask) {
+            refused.get_or_insert(format!(
+                "native GUI draw {label:?} (effect {:?}, technique {}): {why}",
+                draw.effect.asset.source.effect, draw.effect.technique
+            ));
+        }
     }
     if premultiply {
         native.accumulate_alpha();
@@ -2952,6 +3042,46 @@ mod tests {
         assert_eq!(
             device_corners([0.0, 0.0, 2048.0, 1152.0], 1.25),
             [0.0, 0.0, 2560.0, 1440.0]
+        );
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    /// Only a source-over colour blend writing every colour channel flattens into a layer; its
+    /// alpha write is the layer's own.
+    #[test]
+    fn only_source_over_colour_flattens_into_a_layer() {
+        let over = wgpu::BlendState {
+            color: SOURCE_OVER,
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
+        assert_eq!(unflattenable(Some(over), wgpu::ColorWrites::ALL), None);
+        assert_eq!(unflattenable(Some(over), wgpu::ColorWrites::COLOR), None);
+        assert!(
+            unflattenable(Some(over), wgpu::ColorWrites::RED)
+                .unwrap()
+                .contains("writes only")
+        );
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
+        assert!(
+            unflattenable(Some(additive), wgpu::ColorWrites::ALL)
+                .unwrap()
+                .contains("blends colour")
+        );
+        assert!(
+            unflattenable(None, wgpu::ColorWrites::ALL)
+                .unwrap()
+                .contains("without blending")
         );
     }
 }

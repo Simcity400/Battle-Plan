@@ -406,7 +406,6 @@ pub fn draw(
         slot("special forces", Slot::Bound, None)
     });
     // Equipment settings button and warning.
-    let mut muted: Vec<String> = Vec::new();
     let mut equipment = Counted::default();
     if let Some(element) = find(&format!("{header}/division_equipment_btn"), &mut controls) {
         match designer.equipment_button {
@@ -416,8 +415,10 @@ pub fn draw(
             ),
             Err(ref why) => equipment.note(why.clone()),
         }
-        if !designer.regiments {
-            muted.push(element.path.clone());
+        // The game enables it only while the regiment grid holds a real definition.
+        match instance.control(&root, element) {
+            Ok(control) => control.enabled = Some(designer.regiments),
+            Err(why) => controls.note(why),
         }
     }
     slots.push(counted("equipment settings", equipment, None));
@@ -444,17 +445,35 @@ pub fn draw(
         }
     }
     slots.push(counted("army experience", experience, None));
-    // The editor's buttons act; the window does not.
-    for path in EDITOR_BUTTONS {
-        if let Some(element) = root.path_named(path) {
-            muted.push(element.path.clone());
+    // The editor's buttons, as the game draws them over a template with no pending edit. They
+    // do not act here; the app says so on hover.
+    let mut hovers = Vec::new();
+    for (path, enabled) in EDITOR_BUTTONS {
+        let Some(element) = root.path_named(path) else {
+            continue;
+        };
+        let applied = match enabled {
+            Some(enabled) => instance
+                .control(&root, element)
+                .map(|control| control.enabled = Some(enabled)),
+            None => instance.hide(&root, element),
+        };
+        apply(applied, &mut controls);
+        if enabled.is_some() {
+            hovers.push((
+                element.path.clone(),
+                compose::Hover {
+                    title: "Read-only".into(),
+                    details: vec!["This button does not act in the replay.".into()],
+                },
+            ));
         }
     }
     slots.push(slot(
         "editor",
         Slot::Unbound,
         Some(
-            "read-only: the editor's buttons are muted and no pending edit or price is shown"
+            "read-only: reset and save are drawn disabled, as the game draws them with no pending edit; duplicate is hidden, because whether the game enables it depends on the designer's mode, which is not recorded; no pending price is shown"
                 .into(),
         ),
     ));
@@ -501,7 +520,6 @@ pub fn draw(
                         Row {
                             instance: item,
                             hover: drawn.hover.clone(),
-                            muted: false,
                         },
                         drawn.cell.slot,
                     ));
@@ -577,7 +595,6 @@ pub fn draw(
                                 Row {
                                     instance: item,
                                     hover,
-                                    muted: false,
                                 },
                                 [0, index as i32],
                             ));
@@ -597,8 +614,10 @@ pub fn draw(
     slots.push(counted("stat rows", values, None));
     slots.push(counted("unit glyphs", glyphs, None));
     slots.push(counted("controls", controls, None));
-    let muted: Vec<&str> = muted.iter().map(String::as_str).collect();
-    let sizes = |id: usize| session.page_size(id);
+    let hovers: Vec<(&str, compose::Hover)> = hovers
+        .iter()
+        .map(|(path, hover)| (path.as_str(), hover.clone()))
+        .collect();
     let scene = compose::compose(
         &compose::Window {
             name: ROOT,
@@ -606,13 +625,10 @@ pub fn draw(
             instance: &instance,
             lists: &[],
             grids: &grids,
-            muted: &muted,
-            hovers: &[],
+            hovers: &hovers,
         },
         scroll,
         &resources,
-        &session.gui,
-        &sizes,
     );
     Ok(Bound {
         title: designer

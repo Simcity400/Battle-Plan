@@ -6,8 +6,10 @@
 //! The window is the designer the template's roster owner sees: a cell is attached in the
 //! state the designer gives it ([`slots::state`]), a filled cell shows its definition's unit
 //! glyph, an addable one the new-slot sprite and a locked or blocked one its lock or block
-//! sprite. Nothing in the window acts: the editor's buttons are muted as the app mutes what
-//! cannot be acted on, the save button's price is cleared, and no picker or overlay opens.
+//! sprite. Nothing in the window acts: the editor's buttons draw as the game draws them over a
+//! template with no pending edit (reset and save disabled; duplicate, whose enabling depends on
+//! the designer's unrecorded mode, hidden), the app saying on hover that they do not act, the
+//! save button's price is cleared, and no picker or overlay opens.
 //!
 //! Root, entry and control names are the binding contract: a stack that renames them refuses
 //! the window or the control by name. A fact the recording cannot give (the country's
@@ -63,8 +65,13 @@ const POPUPS: [&str; 5] = [
 /// The colonial force flag, whose binding is not established; the window draws no country
 /// flags in any case.
 const COLONIAL_FLAG: &str = "colonial_force_flag";
-/// The editor's buttons, which act and so are muted.
-const EDITOR_BUTTONS: [&str; 3] = ["duplicate_button", "reset_button", "save_button"];
+/// The editor's buttons and the enabled state the game gives them with no pending edit: reset
+/// and save are disabled (nothing changed); duplicate's state is not recorded, so it is hidden.
+const EDITOR_BUTTONS: [(&str, Option<bool>); 3] = [
+    ("duplicate_button", None),
+    ("reset_button", Some(false)),
+    ("save_button", Some(false)),
+];
 /// Hidden by the designer's setup.
 const SAVE_AND_DEPLOY: &str = "save_and_deploy_button";
 /// The summary values' text boxes, in the order of [`Designer::summary`].

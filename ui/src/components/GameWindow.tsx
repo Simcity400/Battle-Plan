@@ -1,15 +1,11 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from 'react';
 import { validateProductReply } from '../dashboard/client';
 import type { DashboardClient, ProductRequest } from '../dashboard/client';
 import { useContentRevision } from '../dashboard/contentRevision';
 import WidgetState from './WidgetState';
-import { pageCache } from './gameWindowPages';
-import { WHEEL_LINE_PIXELS, batches, clipRuns, described, fitZoom, keyedOffset, listAt, missingTextures, quadStyle, revealedOffset, scrolledOffset, tintName,
-  tintPixels, tinted, wheelPixels } from './gameWindowScene';
-import type { ClipRun } from './gameWindowScene';
-import type { GameWindowArtworkParams, GameWindowArtworkReply, GameWindowParams, GameWindowReply, GameWindowTarget, ListScroll, Scene,
-  SceneHover, SceneTexture, WindowTextureImage } from '../generated/dashboard';
+import { WHEEL_LINE_PIXELS, described, fitZoom, keyedOffset, listAt, revealedOffset, scrolledOffset, wheelPixels } from './gameWindowScene';
+import type { GameWindowParams, GameWindowReply, GameWindowTarget, ListScroll, Scene, SceneHover } from '../generated/dashboard';
 import './GameWindow.css';
 
 /** How long the wheel rests before a scrolled list's window is asked for again. */
@@ -41,9 +37,10 @@ export interface GameWindowProps {
   active?: boolean;
 }
 
-/** One game window, laid out by the service at the hour shown and drawn from its texture
- * pages. It is fitted whole into the space it has by zoom, never laid out again here:
- * scrolling a list asks the service for the window at the new offset. */
+/** One game window, laid out and painted by the service as the game draws it at the hour shown.
+ * Its image is fitted whole into the space it has by zoom, never laid out again here: scrolling
+ * a list asks the service for the window at the new offset. That the window is read-only is
+ * described to assistive technology only; nothing is drawn over or beside the game's image. */
 export default function GameWindow({ client, source, branchId, hour, target, onDiagnostics, onTitle, active = true }: GameWindowProps) {
   const { sourceId, revision } = source;
   // The window belongs to its client, the content folders it was read with, its recording and
@@ -65,9 +62,14 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
     const controller = new AbortController();
     const params: GameWindowParams = { branchId, hour, window: target, ...(lists.length ? { scroll: lists } : {}) };
     const request: ProductRequest<GameWindowParams> = { sourceId, revision, product: 'game-window', params };
-    client.product<GameWindowReply>(request, controller.signal).then(reply => {
+    client.product<GameWindowReply>(request, controller.signal).then(async reply => {
       if (controller.signal.aborted) return;
-      setShown({ identity, key, reply: validateProductReply(reply, request).data });
+      const data = validateProductReply(reply, request).data;
+      // The new drawing is decoded before it replaces the old, so hover areas never sit over
+      // the previous window's image.
+      if (data.scene) await decoded(data.scene.image);
+      if (controller.signal.aborted) return;
+      setShown({ identity, key, reply: data });
       setFailure(null);
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setFailure({ identity, detail: message(error) });
@@ -79,8 +81,6 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   // A reply of another window or recording is never shown; one of an earlier hour or scroll is, until its successor arrives.
   const reply = shown?.identity === identity ? shown.reply : null;
   const scene = reply?.scene ?? null;
-  const owner = reply ? `${clientNumber(client)}:${content}:${reply.session}` : null;
-  const artwork = useArtwork(client, sourceId, revision, owner, reply?.session ?? null, scene, active);
 
   const title = reply?.title ?? null;
   useEffect(() => { onTitle?.(title); }, [onTitle, title]);
@@ -88,11 +88,11 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   useEffect(() => {
     if (!onDiagnostics) return;
     // Hidden, it reports nothing; what it reported belonged to what was shown.
-    const lines = !active ? NO_LINES : [...reply?.warnings ?? [], ...reply?.refused ?? [], ...scene?.notes ?? [], ...scene?.effects ?? [],
+    const lines = !active ? NO_LINES : [...reply?.warnings ?? [], ...reply?.refused ?? [], ...scene?.notes ?? [],
       ...(reply?.slots ?? []).filter(slot => slot.state !== 'bound').map(slot => `${slot.name}: ${slot.detail ?? (slot.state === 'refused' ? 'refused' : 'not filled')}`),
-      ...artwork.warnings, ...reply && failed ? [`Couldn’t load the window again: ${failed}`] : []];
+      ...reply && failed ? [`Couldn’t load the window again: ${failed}`] : []];
     onDiagnostics(lines.length ? lines : NO_LINES);
-  }, [onDiagnostics, active, reply, scene, artwork.warnings, failed]);
+  }, [onDiagnostics, active, reply, scene, failed]);
   useEffect(() => () => onDiagnostics?.(NO_LINES), [onDiagnostics]);
 
   // The offsets the wheel has reached, ahead of the scene drawn at the last settled ones.
@@ -117,8 +117,14 @@ export default function GameWindow({ client, source, branchId, hour, target, onD
   if (!reply) return frame(failed ? <WidgetState kind="error" what="this window" detail={failed} onRetry={retry} />
     : <WidgetState kind="loading" label="Loading window…" />);
   if (!scene) return frame(<WidgetState kind="unavailable" message={reply.refused.length ? reply.refused.join(' ') : undefined} />);
-  return frame(<SceneView scene={scene} title={title} images={artwork.images} tints={artwork.tints} version={artwork.version}
-    zoom={fitZoom(scene.size, available)} offsetOf={offsetOf} onScroll={onScroll} />, scene.size);
+  return frame(<SceneView scene={scene} title={title} zoom={fitZoom(scene.size, available)} offsetOf={offsetOf} onScroll={onScroll} />, scene.size);
+}
+
+/** Resolves once `url` is decoded and ready to draw. */
+async function decoded(url: string): Promise<void> {
+  const image = new Image();
+  image.src = url;
+  await image.decode();
 }
 
 /** The CSS pixels the element has, followed as it resizes. */
@@ -137,89 +143,6 @@ function useAvailable(ref: RefObject<HTMLDivElement | null>): [number, number] {
   return size;
 }
 
-/** The scene's texture pages: those not yet held, a few per request, every batch at once, kept
- * in the shared page cache under `owner` while this window draws from them; then the pages
- * its quads draw multiplied by a colour. */
-function useArtwork(client: DashboardClient, sourceId: string, revision: string, owner: string | null, session: string | null, scene: Scene | null,
-  active: boolean) {
-  // A shown window follows its own owner's pages, whichever window loaded or coloured them.
-  const follow = useCallback((listener: () => void) => active && owner ? pageCache.subscribe(owner, listener) : () => {}, [active, owner]);
-  const pagesRevision = useCallback(() => owner ? pageCache.revision(owner) : 0, [owner]);
-  const version = useSyncExternalStore(follow, pagesRevision, pagesRevision);
-  const [warnings, setWarnings] = useState<{ owner: string | null; lines: string[] }>({ owner: null, lines: NO_LINES });
-  const asked = useRef<{ owner: string | null; ids: Set<number>; tints: Set<string>; controller: AbortController } | null>(null);
-  useEffect(() => {
-    if (!active || !owner) return;
-    pageCache.acquire(owner);
-    return () => { asked.current?.controller.abort(); pageCache.release(owner); };
-  }, [client, sourceId, revision, owner, active]);
-  useEffect(() => {
-    if (!active || !owner || !session || !scene) return;
-    if (asked.current?.owner !== owner || asked.current.controller.signal.aborted)
-      asked.current = { owner, ids: new Set(), tints: new Set(), controller: new AbortController() };
-    const { ids, tints, controller } = asked.current;
-    const note = (lines: string[]) => setWarnings(previous => ({ owner, lines: [...previous.owner === owner ? previous.lines : [], ...lines] }));
-    const held = pageCache.pages(owner);
-    for (const batch of batches(missingTextures(scene, id => held.has(id) || ids.has(id)))) {
-      for (const id of batch) ids.add(id);
-      const request: ProductRequest<GameWindowArtworkParams> = { sourceId, revision, product: 'game-window-artwork', params: { session, textures: batch } };
-      client.product<GameWindowArtworkReply>(request, controller.signal).then(reply => {
-        if (controller.signal.aborted) return;
-        const data = validateProductReply(reply, request).data;
-        for (const item of data.items) pageCache.add(owner, item);
-        const lines = [...data.warnings, ...data.items.flatMap(item => item.unavailable ? [`Texture page ${item.id}: ${item.unavailable}`] : [])];
-        if (lines.length) note(lines);
-      }).catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        // Asked again by the next scene that draws them.
-        for (const id of batch) ids.delete(id);
-        note([`Texture pages ${batch.join(', ')} couldn’t load: ${message(error)}`]);
-      });
-    }
-    // Pages drawn times a colour, once their page has arrived.
-    const made = pageCache.tinted(owner);
-    for (const quad of scene.quads) {
-      const name = tintName(quad), image = held.get(quad.texture)?.image;
-      if (!tinted(quad) || !image || made.has(name) || tints.has(name)) continue;
-      tints.add(name);
-      tintImage(image, quad.color).then(({ url, bytes }) => {
-        if (controller.signal.aborted) { URL.revokeObjectURL(url); return; }
-        // Kept, or another window's copy kept first: either way the cache tells every window.
-        pageCache.addTinted(owner, name, url, bytes);
-      }).catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        tints.delete(name);
-        note([`Texture page ${quad.texture} couldn’t be coloured: ${message(error)}`]);
-      });
-    }
-  }, [client, sourceId, revision, owner, session, scene, active, version]);
-  return {
-    images: owner ? pageCache.pages(owner) : EMPTY_PAGES, tints: owner ? pageCache.tinted(owner) : EMPTY_TINTS, version,
-    warnings: warnings.owner === owner ? warnings.lines : NO_LINES,
-  };
-}
-
-/** A page multiplied by a colour as the game's draw multiplies it ({@link tintPixels}). */
-async function tintImage(url: string, color: readonly number[]): Promise<{ url: string; bytes: number }> {
-  const image = new Image();
-  image.src = url;
-  await image.decode();
-  const canvas = document.createElement('canvas');
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('no 2D canvas');
-  context.drawImage(image, 0, 0);
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height, { colorSpace: 'srgb' });
-  tintPixels(pixels.data, color);
-  context.putImageData(pixels, 0, 0);
-  const blob = await new Promise<Blob>((done, fail) => canvas.toBlob(blob => blob ? done(blob) : fail(new Error('the page could not be encoded')), 'image/png'));
-  return { url: URL.createObjectURL(blob), bytes: blob.size };
-}
-
-const EMPTY_PAGES: ReadonlyMap<number, WindowTextureImage> = new Map();
-const EMPTY_TINTS: ReadonlyMap<string, string> = new Map();
-
 type Clip = readonly [number, number, number, number];
 
 /** Children drawn inside a clip rectangle, still placed in window pixels. */
@@ -230,43 +153,28 @@ function Clipped({ clip, children }: { clip: Clip | undefined; children: ReactNo
   </div>;
 }
 
+const sameClip = (a: Clip | undefined, b: Clip | undefined) => a === b || (!!a && !!b && a.every((edge, index) => edge === b[index]));
+
 /** Consecutive hover areas sharing one clip, in draw order. */
 function hoverRuns(hovers: readonly SceneHover[]) {
-  const runs: { clip: number | undefined; start: number; hovers: SceneHover[] }[] = [];
+  const runs: { clip: Clip | undefined; start: number; hovers: SceneHover[] }[] = [];
   hovers.forEach((hover, index) => {
     const last = runs[runs.length - 1];
-    if (last && last.clip === hover.clip) last.hovers.push(hover);
+    if (last && sameClip(last.clip, hover.clip)) last.hovers.push(hover);
     else runs.push({ clip: hover.clip, start: index, hovers: [hover] });
   });
   return runs;
 }
 
-const QuadRun = memo(function QuadRun({ run, clip, textures, images, tints }: {
-  run: ClipRun; clip: Clip | undefined; textures: ReadonlyMap<number, SceneTexture>; images: ReadonlyMap<number, WindowTextureImage>;
-  tints: ReadonlyMap<string, string>;
-  /** Changes as pages arrive in `images`. */
-  version: number;
-}) {
-  const quads = run.quads.map((quad, index) => {
-    // A page not loaded (or not yet coloured) leaves its quads undrawn.
-    const texture = textures.get(quad.texture);
-    const image = tinted(quad) ? tints.get(tintName(quad)) : images.get(quad.texture)?.image;
-    const style = texture && image ? quadStyle(quad, texture, image) : null;
-    return style && <div key={run.start + index} className="game-window-quad" style={style} />;
-  });
-  return <Clipped clip={clip}>{run.muted ? <div className="game-window-muted">{quads}</div> : quads}</Clipped>;
-});
-
-/** A scene drawn from the pages loaded so far, with its hover areas on top. */
-export const SceneView = memo(function SceneView({ scene, title, images, tints, version, zoom, offsetOf, onScroll }: {
-  scene: Scene; title: string | null; images: ReadonlyMap<number, WindowTextureImage>; tints: ReadonlyMap<string, string>; version: number; zoom: number;
+/** A window's image as the game draws it, with its hover areas on top; that it is read-only is
+ * a description for assistive technology, never drawn. */
+export const SceneView = memo(function SceneView({ scene, title, zoom, offsetOf, onScroll }: {
+  scene: Scene; title: string | null; zoom: number;
   offsetOf: (path: string, drawn: number) => number; onScroll: (path: string, offset: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
-  const runs = useMemo(() => clipRuns(scene.quads), [scene]);
-  const textures = useMemo(() => new Map(scene.textures.map(texture => [texture.id, texture])), [scene]);
   const hovers = useMemo(() => hoverRuns(scene.hovers), [scene]);
-  const clipOf = (index: number | undefined) => index === undefined ? undefined : scene.clips[index];
+  const description = useId();
 
   // The wheel over a list moves it; the page around the window does not scroll meanwhile.
   const latest = useRef({ scene, offsetOf, onScroll });
@@ -316,19 +224,23 @@ export const SceneView = memo(function SceneView({ scene, title, images, tints, 
     if (next !== offset) onScroll(list.path, next);
   };
 
-  return <div ref={box} className="game-window-scene" role="group" aria-label={title ?? 'Game window'} tabIndex={scrollable ? 0 : undefined}
-    onKeyDown={onKeyDown} style={{ width: scene.size[0], height: scene.size[1], zoom }}>
-    <div className="game-window-layer" aria-hidden="true">
-      {runs.map(run => <QuadRun key={run.start} run={run} clip={clipOf(run.clip)} textures={textures} images={images} tints={tints} version={version} />)}
-    </div>
-    <div className="game-window-layer is-hovers" role="list">
-      {hovers.map(run => <Clipped key={run.start} clip={clipOf(run.clip)}>
+  return <div className="game-window-view">
+    <div ref={box} className="game-window-scene" role="group" aria-label={title ?? 'Game window'} aria-describedby={description}
+      tabIndex={scrollable ? 0 : undefined} onKeyDown={onKeyDown} style={{ width: scene.size[0], height: scene.size[1], zoom }}>
+      <img className="game-window-image" src={scene.image} alt="" draggable={false} />
+      <div className="game-window-layer is-hovers" role="list">
+      {hovers.map(run => <Clipped key={run.start} clip={run.clip}>
         {run.hovers.map((hover, index) => <span key={run.start + index} className="game-window-hover" role="listitem" tabIndex={0} onFocus={() => reveal(hover)}
           aria-label={described(hover)} data-list={hover.list}
           data-line={Math.round(hover.rect[scene.lists.find(list => list.path === hover.list)?.horizontal ? 2 : 3])}
           style={{ left: hover.rect[0], top: hover.rect[1], width: hover.rect[2], height: hover.rect[3] }}
           data-tooltip={[hover.title, ...hover.details].join('\n')} />)}
       </Clipped>)}
+      </div>
     </div>
+    <span id={description} className="sr-only">{READ_ONLY}</span>
   </div>;
 });
+
+/** What assistive technology is told of a window: nothing in it acts. */
+const READ_ONLY = 'Read-only: the game’s window as it stood at this hour. Nothing in it acts here.';
