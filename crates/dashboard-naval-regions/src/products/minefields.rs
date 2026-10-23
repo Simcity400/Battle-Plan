@@ -8,11 +8,15 @@
 use crate::shared::{self, Choice};
 use dashboard_base::{
     catalogue::{self, Refusals},
-    prepared::{prepass::Family, query::progressive},
+    prepared::{
+        prepass::{Family, HeldBytes},
+        query::progressive,
+    },
     products::{Product, ReplyWarnings},
 };
 use dashboard_keyed::{
-    Observer, Values,
+    Delta, Observer, Values,
+    delta::same_rows,
     countries::Countries,
     query::{KeyedWindow, Query},
 };
@@ -22,7 +26,7 @@ use replay_data::{
     rows::{NavalAccidentReportRow, NavalRegionalMineRow, TableId, tables},
 };
 use replay_derive::naval_mine_levels::Levels;
-use replay_frame::frame::DecodedFrame;
+use replay_frame::frame::{DecodedFrame, SharedView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -136,7 +140,185 @@ impl Product for Minefields {
 #[derive(Default, Serialize, Deserialize)]
 pub struct MinefieldsObserver {
     pub refusals: BTreeMap<String, u64>,
+    /// The last known observation, which the next hour's changes are found against; never published.
+    #[serde(skip)]
+    last: Option<Box<Last>>,
 }
+
+/// The last known observation: its inputs and each owner's part of it.
+struct Last {
+    mines: SharedView,
+    links: SharedView,
+    countries: SharedView,
+    identities: Countries,
+    /// Each raw reference's canonical slot.
+    slots: BTreeMap<u32, u32>,
+    /// The raw references linked to each canonical slot, ascending.
+    raws: BTreeMap<u32, Vec<u32>>,
+    /// Each slot holding vectors, with what they read.
+    owners: BTreeMap<u32, Owner>,
+    /// Rows of each raw reference without a canonical slot.
+    unlinked: BTreeMap<u32, u64>,
+    /// The refusals each observation of these inputs notes.
+    notes: BTreeMap<String, u64>,
+}
+
+/// One canonical slot's vectors as an observation reads them.
+struct Owner {
+    values: Vec<(String, i128)>,
+    /// What it notes, if refused.
+    note: Option<String>,
+    /// Whether it counts among the vectors the hour cannot name.
+    unnamed: bool,
+}
+
+impl Last {
+    fn read(frame: &DecodedFrame) -> Option<Self> {
+        let identities = Countries::read(frame)?;
+        let rows = frame.complete::<tables::NavalRegionalMines>().ok()?;
+        let links = frame.complete::<tables::CountryLinks>().ok()?;
+        let slots: BTreeMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
+        let mut raws = BTreeMap::<u32, Vec<u32>>::new();
+        for (&raw, &slot) in &slots {
+            raws.entry(slot).or_default().push(raw);
+        }
+        let mut groups = BTreeMap::<u32, Vec<NavalRegionalMineRow>>::new();
+        let mut unlinked = BTreeMap::<u32, u64>::new();
+        for row in rows {
+            if let Some(slot) = identities.slot(row.country) {
+                groups.entry(slot).or_default().push(*row);
+            } else {
+                *unlinked.entry(row.country).or_default() += 1;
+            }
+        }
+        let owners = groups
+            .into_iter()
+            .map(|(slot, group)| (slot, owner(&identities, &slots, slot, &group)))
+            .collect();
+        let mut last = Self {
+            mines: frame.tables[TableId::NavalRegionalMines.index()].clone(),
+            links: frame.tables[TableId::CountryLinks.index()].clone(),
+            countries: frame.tables[TableId::Countries.index()].clone(),
+            identities,
+            slots,
+            raws,
+            owners,
+            unlinked,
+            notes: BTreeMap::new(),
+        };
+        let unlinked: u64 = last.unlinked.values().sum();
+        count(&mut last.notes, UNLINKED, unlinked, true);
+        for owner in last.owners.values() {
+            if let Some(note) = &owner.note {
+                count(&mut last.notes, note, 1, true);
+            }
+        }
+        Some(last)
+    }
+
+    /// The vectors the hour holds but cannot name.
+    fn unnamed(&self) -> i128 {
+        (self.unlinked.len() + self.owners.values().filter(|owner| owner.unnamed).count()) as i128
+    }
+
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .add(size_of::<Self>())
+            .view(&self.mines)
+            .view(&self.links)
+            .view(&self.countries)
+            .tree::<u32, u32>(self.slots.len())
+            .tree::<u32, Vec<u32>>(self.raws.len())
+            .tree::<u32, Owner>(self.owners.len())
+            .tree::<u32, u64>(self.unlinked.len())
+            .heap(&self.notes);
+        self.identities.held(bytes);
+        for raws in self.raws.values() {
+            bytes.heap(raws);
+        }
+        for owner in self.owners.values() {
+            bytes.add(owner.values.capacity() * size_of::<(String, i128)>());
+            for (name, _) in &owner.values {
+                bytes.heap(name);
+            }
+            if let Some(note) = &owner.note {
+                bytes.heap(note);
+            }
+        }
+    }
+}
+
+/// What one canonical slot's vectors read: `group`, its rows in table order.
+fn owner(
+    identities: &Countries,
+    slots: &BTreeMap<u32, u32>,
+    slot: u32,
+    group: &[NavalRegionalMineRow],
+) -> Owner {
+    let Some(owner) = identities.slotted(slot).filter(|s| !s.contains('|')) else {
+        return Owner {
+            values: Vec::new(),
+            note: Some("Minefield owner tag is unavailable".into()),
+            unnamed: true,
+        };
+    };
+    let raw = group[0].country;
+    let admitted = (|| -> Result<u32, String> {
+        let levels = Levels::from_rows(group, slots)?;
+        let witnesses: Vec<_> = group.iter().filter(|r| r.kind == 0).collect();
+        let [witness] = witnesses.as_slice() else {
+            return Err("Regional mine owner completeness witness is missing or duplicated".into());
+        };
+        for row in group {
+            if row.country != raw {
+                return Err("Regional mine vector duplicates a canonical country".into());
+            }
+            if row.kind == 1 {
+                let _ = levels.amount(raw, row.region)?;
+            }
+        }
+        Ok(witness.region)
+    })();
+    match admitted {
+        Ok(extent) => {
+            // names: OWNER|extent and OWNER|region; zeros stay sparse.
+            let mut values = vec![(format!("{owner}|extent"), i128::from(extent))];
+            for row in group.iter().filter(|r| r.kind == 1 && r.amount != 0) {
+                values.push((format!("{owner}|{}", row.region), i128::from(row.amount)));
+            }
+            Owner {
+                values,
+                note: None,
+                unnamed: false,
+            }
+        }
+        // Dated: the owner is known to hold an unadmitted vector.
+        Err(why) => Owner {
+            values: vec![(format!("{owner}|refused"), 1)],
+            note: Some(why),
+            unnamed: false,
+        },
+    }
+}
+
+/// Add or take away `count` notes of `reason`, keeping no reason at zero.
+fn count(notes: &mut BTreeMap<String, u64>, reason: &str, count: u64, add: bool) {
+    if count == 0 {
+        return;
+    }
+    let held = notes.entry(reason.to_owned()).or_default();
+    if add {
+        *held += count;
+    } else {
+        *held -= count;
+        if *held == 0 {
+            notes.remove(reason);
+        }
+    }
+}
+
+const UNLINKED: &str = "Minefield owner country link is unavailable";
+
 pub static FAMILY: Family = dashboard_keyed::block::family::<MinefieldsObserver>(
     "minefields",
     "minefields.extract",
@@ -167,81 +349,147 @@ impl Observer for MinefieldsObserver {
         frame: &DecodedFrame,
         values: &mut Values,
     ) -> io::Result<bool> {
-        let (Some(countries), Ok(rows), Ok(links)) = (
-            Countries::read(frame),
-            frame.complete::<tables::NavalRegionalMines>(),
-            frame.complete::<tables::CountryLinks>(),
-        ) else {
+        self.last = None;
+        let Some(last) = Last::read(frame) else {
             shared::note(
                 &mut self.refusals,
                 "Minefield amounts or country identities are not recorded",
             );
             return Ok(false);
         };
-        let links: BTreeMap<_, _> = links.iter().map(|r| (r.id, r.canonical_slot)).collect();
-        let mut groups = BTreeMap::<u32, Vec<&NavalRegionalMineRow>>::new();
-        // Owners whose vectors this hour holds but cannot name.
-        let mut unnamed = BTreeSet::new();
-        for row in rows {
-            if let Some(slot) = countries.slot(row.country) {
-                groups.entry(slot).or_default().push(row);
-            } else {
-                unnamed.insert(row.country);
-                shared::note(
-                    &mut self.refusals,
-                    "Minefield owner country link is unavailable",
-                );
+        for owner in last.owners.values() {
+            for (name, value) in &owner.values {
+                values.push(name.clone(), *value);
             }
         }
-        let mut unnamed = unnamed.len() as i128;
-        for (slot, group) in groups {
-            let Some(owner) = countries.slotted(slot).filter(|s| !s.contains('|')) else {
-                unnamed += 1;
-                shared::note(&mut self.refusals, "Minefield owner tag is unavailable");
-                continue;
-            };
-            let raw = group[0].country;
-            let group: Vec<_> = group.into_iter().copied().collect();
-            let admitted = (|| -> Result<u32, String> {
-                let levels = Levels::from_rows(&group, &links)?;
-                let witnesses: Vec<_> = group.iter().filter(|r| r.kind == 0).collect();
-                let [witness] = witnesses.as_slice() else {
-                    return Err(
-                        "Regional mine owner completeness witness is missing or duplicated".into(),
-                    );
-                };
-                for row in &group {
-                    if row.country != raw {
-                        return Err("Regional mine vector duplicates a canonical country".into());
-                    }
-                    if row.kind == 1 {
-                        let _ = levels.amount(raw, row.region)?;
-                    }
-                }
-                Ok(witness.region)
-            })();
-            match admitted {
-                Ok(extent) => {
-                    // names: OWNER|extent and OWNER|region; zeros stay sparse.
-                    values.push(format!("{owner}|extent"), i128::from(extent));
-                    for row in group.iter().filter(|r| r.kind == 1 && r.amount != 0) {
-                        values.push(format!("{owner}|{}", row.region), i128::from(row.amount));
-                    }
-                }
-                Err(why) => {
-                    // Dated: the owner is known to hold an unadmitted vector.
-                    values.push(format!("{owner}|refused"), 1);
-                    shared::note(&mut self.refusals, why);
-                }
-            }
-        }
+        let unnamed = last.unnamed();
         if unnamed > 0 {
             values.push(format!("{UNNAMED}|refused"), unnamed);
         }
+        self.note(&last.notes);
+        self.last = Some(Box::new(last));
         Ok(true)
     }
+    fn observe_changes(
+        &mut self,
+        _: FormatVersion,
+        frame: &DecodedFrame,
+        _: &dashboard_keyed::delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        let Some(mut last) = self.last.take() else {
+            return Ok(None);
+        };
+        let view = |table: TableId| &frame.tables[table.index()];
+        // Identities that name any owner anew observe the hour whole.
+        if !(same_rows::<tables::CountryLinks>(
+            Some(&last.links),
+            view(TableId::CountryLinks),
+            PartialEq::eq,
+        ) && same_rows::<tables::Countries>(
+            Some(&last.countries),
+            view(TableId::Countries),
+            |a, b| a.canonical_slot == b.canonical_slot && a.tag == b.tag,
+        )) {
+            return Ok(None);
+        }
+        last.links = view(TableId::CountryLinks).clone();
+        last.countries = view(TableId::Countries).clone();
+        let Ok(rows) = frame.complete::<tables::NavalRegionalMines>() else {
+            return Ok(None);
+        };
+        if !SharedView::ptr_eq(&last.mines, view(TableId::NavalRegionalMines)) {
+            let Some(before) = dashboard_keyed::delta::rows::<tables::NavalRegionalMines>(&last.mines)
+            else {
+                return Ok(None);
+            };
+            let mut changed = BTreeSet::new();
+            let ordered = dashboard_keyed::delta::changed_rows(before, rows, PartialEq::eq, |old, new| {
+                changed.extend(old.or(new).map(|row| row.country));
+            });
+            if ordered.is_none() {
+                return Ok(None);
+            }
+            let of = |raw: u32| {
+                let first = u128::from(raw) << 33;
+                dashboard_keyed::delta::key_range(rows, first..first + (1 << 33))
+            };
+            let mut slots = BTreeSet::new();
+            for raw in changed {
+                match last.identities.slot(raw) {
+                    Some(slot) => {
+                        slots.insert(slot);
+                    }
+                    None => {
+                        let held = last.unlinked.remove(&raw).unwrap_or(0);
+                        let now = of(raw).len() as u64;
+                        if now > 0 {
+                            last.unlinked.insert(raw, now);
+                        }
+                        count(&mut last.notes, UNLINKED, held, false);
+                        count(&mut last.notes, UNLINKED, now, true);
+                    }
+                }
+            }
+            for slot in slots {
+                let group: Vec<NavalRegionalMineRow> = last
+                    .raws
+                    .get(&slot)
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|&raw| of(raw).iter().copied())
+                    .collect();
+                let now = (!group.is_empty())
+                    .then(|| owner(&last.identities, &last.slots, slot, &group));
+                let held = match now {
+                    Some(now) => last.owners.insert(slot, now),
+                    None => last.owners.remove(&slot),
+                };
+                if let Some(held) = &held {
+                    for (name, _) in &held.values {
+                        delta.remove(name.clone());
+                    }
+                    if let Some(note) = &held.note {
+                        count(&mut last.notes, note, 1, false);
+                    }
+                }
+                if let Some(now) = last.owners.get(&slot) {
+                    for (name, value) in &now.values {
+                        delta.set(name.clone(), *value);
+                    }
+                    if let Some(note) = &now.note {
+                        count(&mut last.notes, note, 1, true);
+                    }
+                }
+            }
+            let name = format!("{UNNAMED}|refused");
+            match last.unnamed() {
+                0 => delta.remove(name),
+                unnamed => delta.set(name, unnamed),
+            }
+            last.mines = view(TableId::NavalRegionalMines).clone();
+        }
+        self.note(&last.notes);
+        self.last = Some(last);
+        Ok(Some(true))
+    }
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.refusals);
+        if let Some(last) = &self.last {
+            last.held(bytes);
+        }
+    }
 }
-/// The owner part of the count of vectors the hour holds but cannot name.
+
+impl MinefieldsObserver {
+    /// Note what an observation of the held inputs refuses.
+    fn note(&mut self, notes: &BTreeMap<String, u64>) {
+        for (reason, &count) in notes {
+            *self.refusals.entry(reason.clone()).or_default() += count;
+        }
+    }
+}
+// The owner part of the count of vectors the hour holds but cannot name.
 const UNNAMED: &str = "?";
 
 pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {

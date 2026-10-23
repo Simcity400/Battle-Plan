@@ -277,3 +277,125 @@ fn a_resumption_after_refused_hours_keeps_its_vouched_read_but_never_across_a_ga
     ];
     assert_eq!(vouched(&late, true).reads, [(10, 10, 10)]);
 }
+
+/// Gives each hour after a known one as its changes from the whole values it last returned.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Changing<O> {
+    inner: O,
+    #[serde(skip)]
+    last: Option<std::collections::BTreeMap<String, i128>>,
+}
+
+impl<O: Observer> Observer for Changing<O> {
+    const NAME: &'static str = O::NAME;
+    const TABLES: &'static [TableId] = O::TABLES;
+    const READ: TableId = O::READ;
+
+    fn family() -> &'static Family {
+        O::family()
+    }
+
+    fn fields() -> io::Result<Vec<TableFields>> {
+        O::fields()
+    }
+
+    fn observe(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        values: &mut Values,
+    ) -> io::Result<bool> {
+        self.last = None;
+        let known = self.inner.observe(format, frame, values)?;
+        if known {
+            self.last = Some(values.iter().map(|(n, v)| (n.to_owned(), v)).collect());
+        }
+        Ok(known)
+    }
+
+    fn observe_changes(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        _: &crate::delta::Names<'_>,
+        delta: &mut crate::Delta,
+    ) -> io::Result<Option<bool>> {
+        let Some(last) = self.last.take() else {
+            return Ok(None);
+        };
+        let mut values = Values::default();
+        if !self.inner.observe(format, frame, &mut values)? {
+            return Ok(Some(false));
+        }
+        let now: std::collections::BTreeMap<String, i128> =
+            values.iter().map(|(n, v)| (n.to_owned(), v)).collect();
+        for name in last.keys().filter(|name| !now.contains_key(*name)) {
+            delta.remove(name.clone());
+        }
+        // Each changed name once, where a whole observation first pushes it.
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, _) in values.iter() {
+            if seen.insert(name) && last.get(name) != now.get(name) {
+                delta.set(name.to_owned(), now[name]);
+            }
+        }
+        self.last = Some(now);
+        Ok(Some(true))
+    }
+}
+
+#[test]
+fn hours_given_as_changes_publish_exactly_as_whole_hours() {
+    let format = FormatVersion::CURRENT;
+    let frames = [
+        frame(100, Some(&[(11, 3, 5)])),
+        frame(101, Some(&[(11, 3, 5), (9001, 3, 6)])),
+        frame(102, Some(&[(11, 3, 7), (21, 4, 2)])),
+        frame(103, Some(&[(21, 4, 2), (21, 5, 1), (11, 6, 1)])),
+        frame(104, None),
+        frame(105, Some(&[(9001, 3, 7)])),
+        frame(106, Some(&[(9001, 3, 7), (21, 9, 4)])),
+        frame(107, Some(&[(11, 3, 1), (9001, 3, 7)])),
+        frame(108, Some(&[])),
+        frame(109, Some(&[(21, 4, 3)])),
+    ];
+    let publish = |changing: bool, restore: bool| {
+        let fixture = dashboard_base::prepared::series::tests::Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut whole = Scan::<Mines>::default();
+        let mut changes = Scan::<Changing<Mines>>::default();
+        for batch in [&frames[..3], &frames[3..6], &frames[6..]] {
+            let mut writer = fixture.writer();
+            for frame in batch {
+                if changing {
+                    changes.prepare(format, frame, true).unwrap();
+                } else {
+                    whole.prepare(format, frame, true).unwrap();
+                }
+            }
+            if changing {
+                changes.flush(&mut writer, 1, &flag).unwrap();
+            } else {
+                whole.flush(&mut writer, 1, &flag).unwrap();
+            }
+            writer.commit().unwrap();
+            if restore {
+                changes =
+                    serde_json::from_slice(&serde_json::to_vec(&changes).unwrap()).unwrap();
+            }
+        }
+        fixture.payloads()
+    };
+    let whole = publish(false, false);
+    dashboard_base::prepared::series::tests::assert_payloads_equal(
+        &publish(true, false),
+        &whole,
+        "changes",
+    );
+    dashboard_base::prepared::series::tests::assert_payloads_equal(
+        &publish(true, true),
+        &whole,
+        "restored changes",
+    );
+}

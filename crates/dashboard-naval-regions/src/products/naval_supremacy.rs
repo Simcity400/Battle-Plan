@@ -8,12 +8,16 @@ use crate::{
 };
 use dashboard_base::{
     catalogue::Refusals,
-    prepared::{frame_changes::FrameChanges, prepass::Family},
+    prepared::{
+        frame_changes::FrameChanges,
+        prepass::{Family, HeldBytes},
+    },
     products::Product,
 };
 use dashboard_keyed::daily::DAY_HOURS;
 use dashboard_keyed::{
-    Observer, Values,
+    Delta, Observer, Values,
+    delta::same_rows,
     countries::Countries,
     daily::{Day, Days},
     query::{KeyedWindow, Opened, Query},
@@ -27,7 +31,7 @@ use replay_derive::naval_region_control;
 use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::Arc,
 };
@@ -82,7 +86,20 @@ impl Product for NavalSupremacy {
 #[derive(Default, Serialize, Deserialize)]
 pub struct NavalSupremacyObserver {
     pub refusals: BTreeMap<String, u64>,
+    /// The last known observation, which the next hour's changes are found against; never published.
+    #[serde(skip)]
+    last: Option<Box<Last>>,
 }
+
+/// The last known observation's inputs.
+struct Last {
+    /// The currents' view, then each of [`INPUTS`]', where complete.
+    views: Vec<Option<SharedView>>,
+    countries: Option<Countries>,
+    /// Each raw reference's owner part; None for an unresolved-identity operand.
+    parts: HashMap<u32, Option<String>>,
+}
+
 pub static FAMILY: Family = dashboard_keyed::block::family::<NavalSupremacyObserver>(
     "naval-supremacy",
     "naval-supremacy.extract",
@@ -138,6 +155,7 @@ impl Observer for NavalSupremacyObserver {
         frame: &DecodedFrame,
         values: &mut Values,
     ) -> io::Result<bool> {
+        self.last = None;
         let Ok(currents) = frame.complete::<tables::NavalSupremacy>() else {
             shared::note(&mut self.refusals, "NavalSupremacy is not recorded");
             return Ok(false);
@@ -146,67 +164,337 @@ impl Observer for NavalSupremacyObserver {
             values.push("epoch".into(), i128::from(hour));
         }
         let countries = Countries::read(frame);
+        let mut parts = HashMap::new();
         // names: TAG@slot|region|raw:<reference>, with raw references distinct;
         // input-current|region|raw is an unresolved-identity operand, not a label.
         // input|table|row|length/fields/mask/word holds reduced diplomacy rows.
         for row in currents {
-            let name = shared::country_part(frame, countries.as_ref(), row.country)
-                .filter(|n| !n.contains('|'))
-                .map_or_else(
-                    || format!("input-current|{}|{}", row.region, row.country),
-                    |owner| format!("{owner}|{}|raw:{}", row.region, row.country),
-                );
-            values.push(name, i128::from(row.current));
+            let part = parts
+                .entry(row.country)
+                .or_insert_with(|| owner_part(frame, countries.as_ref(), row.country));
+            values.push(
+                current_row_name(part.as_deref(), row.region, row.country),
+                i128::from(row.current),
+            );
             values.push(
                 format!("region|{}|slot", row.region),
                 i128::from(row.region_slot),
             );
         }
         operands::save::<tables::CountryLinks>(frame, values, Clone::clone)?;
-        operands::save::<tables::Countries>(frame, values, |r| rows::CountryRow {
-            id: r.id,
-            canonical_slot: r.canonical_slot,
-            tag: r.tag.clone(),
-            ..Default::default()
-        })?;
+        operands::save::<tables::Countries>(frame, values, reduce_country)?;
         operands::save::<tables::FactionMembers>(frame, values, Clone::clone)?;
-        operands::save::<tables::Subjects>(frame, values, |r| rows::SubjectRow {
-            overlord: r.overlord,
-            subject: r.subject,
-            ..Default::default()
-        })?;
-        operands::save::<tables::WarRelations>(frame, values, |r| rows::WarRelationRow {
-            first_country: r.first_country,
-            second_country: r.second_country,
-            ..Default::default()
-        })?;
+        operands::save::<tables::Subjects>(frame, values, reduce_subject)?;
+        operands::save::<tables::WarRelations>(frame, values, reduce_war)?;
         operands::save::<tables::AirCountryRelations>(frame, values, Clone::clone)?;
-        operands::save::<tables::RelationTuples>(frame, values, |r| rows::RelationTupleRow {
-            owner_country: r.owner_country,
-            target_country: r.target_country,
-            type_id: r.type_id,
-            ordinal: r.ordinal,
-            first_country: r.first_country,
-            second_country: r.second_country,
-            ..Default::default()
-        })?;
-        operands::save::<tables::CountryCounterInputs>(frame, values, |r| {
-            rows::CountryCounterInputRow {
-                country: r.country,
-                forward_visibility: r.forward_visibility,
-                directed_wars: r.directed_wars.clone(),
-                ..Default::default()
-            }
-        })?;
-        operands::save::<tables::ReservedCountryNaming>(frame, values, |r| {
-            rows::ReservedCountryNamingRow {
-                tag: r.tag.clone(),
-                faction: r.faction,
-                reverse_visibility: r.reverse_visibility.clone(),
-                ..Default::default()
-            }
-        })?;
+        operands::save::<tables::RelationTuples>(frame, values, reduce_tuple)?;
+        operands::save::<tables::CountryCounterInputs>(frame, values, reduce_counters)?;
+        operands::save::<tables::ReservedCountryNaming>(frame, values, reduce_reserved)?;
+        self.last = Some(Box::new(Last {
+            views: tracked_views(frame),
+            countries,
+            parts,
+        }));
         Ok(true)
+    }
+    fn observe_changes(
+        &mut self,
+        _: FormatVersion,
+        frame: &DecodedFrame,
+        _: &dashboard_keyed::delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        let Some(mut last) = self.last.take() else {
+            return Ok(None);
+        };
+        let Ok(currents) = frame.complete::<tables::NavalSupremacy>() else {
+            return Ok(None);
+        };
+        match frame.tables[Self::READ.index()].sampled_at() {
+            Some(hour) => delta.set("epoch".into(), i128::from(hour)),
+            None => delta.remove("epoch".into()),
+        }
+        let views = std::mem::take(&mut last.views);
+        // The part each raw reference had before the identity tables changed it.
+        let mut renamed = HashMap::new();
+        let held = |table: TableId| views[tracked(table)].as_ref();
+        let view = |table: TableId| &frame.tables[table.index()];
+        let links_same = same_rows::<tables::CountryLinks>(
+            held(TableId::CountryLinks),
+            view(TableId::CountryLinks),
+            PartialEq::eq,
+        );
+        // Saved countries compare these same fields: equal ones save nothing new.
+        let countries_same = same_rows::<tables::Countries>(
+            held(TableId::Countries),
+            view(TableId::Countries),
+            |a, b| a.canonical_slot == b.canonical_slot && a.tag == b.tag,
+        );
+        if !(links_same
+            && countries_same
+            && same_rows::<tables::ReservedCountryNaming>(
+                held(TableId::ReservedCountryNaming),
+                view(TableId::ReservedCountryNaming),
+                |a, b| a.tag == b.tag,
+            ))
+        {
+            last.countries = Countries::read(frame);
+            for (&raw, part) in &mut last.parts {
+                let now = owner_part(frame, last.countries.as_ref(), raw);
+                if *part != now {
+                    renamed.insert(raw, std::mem::replace(part, now));
+                }
+            }
+        }
+        let Some(held) = views[0].as_ref() else {
+            return Ok(None);
+        };
+        if !SharedView::ptr_eq(held, &frame.tables[Self::READ.index()]) || !renamed.is_empty() {
+            let Some(before) = dashboard_keyed::delta::rows::<tables::NavalSupremacy>(held) else {
+                return Ok(None);
+            };
+            let Last {
+                countries, parts, ..
+            } = &mut *last;
+            let mut slots = BTreeSet::new();
+            let mut touched = BTreeSet::new();
+            let ordered = dashboard_keyed::delta::changed_rows(
+                before,
+                currents,
+                |old, new| {
+                    old.region_slot == new.region_slot
+                        && old.current == new.current
+                        && !renamed.contains_key(&old.country)
+                },
+                |old, new| {
+                    if let Some(old) = old {
+                        let part = renamed.get(&old.country).or_else(|| parts.get(&old.country));
+                        delta.remove(current_row_name(
+                            part.and_then(Option::as_deref),
+                            old.region,
+                            old.country,
+                        ));
+                        touched.insert(old.region);
+                    }
+                    if let Some(new) = new {
+                        let part = parts
+                            .entry(new.country)
+                            .or_insert_with(|| owner_part(frame, countries.as_ref(), new.country));
+                        delta.set(
+                            current_row_name(part.as_deref(), new.region, new.country),
+                            i128::from(new.current),
+                        );
+                        // A region's slot is first pushed after its first current.
+                        if slots.insert(new.region) {
+                            region_slot(currents, new.region, delta);
+                        }
+                    }
+                },
+            );
+            if ordered.is_none() {
+                return Ok(None);
+            }
+            for &region in touched.difference(&slots) {
+                region_slot(currents, region, delta);
+            }
+        }
+        let mut held = views.iter().skip(1).map(Option::as_ref);
+        let mut next = || held.next().flatten();
+        let saved = [
+            match next() {
+                _ if links_same => Some(()),
+                held => operands::save_changes::<tables::CountryLinks>(
+                    held,
+                    frame,
+                    Clone::clone,
+                    PartialEq::eq,
+                    delta,
+                )?,
+            },
+            match next() {
+                _ if countries_same => Some(()),
+                held => operands::save_changes::<tables::Countries>(
+                    held,
+                    frame,
+                    reduce_country,
+                    |a, b| a.canonical_slot == b.canonical_slot && a.tag == b.tag,
+                    delta,
+                )?,
+            },
+            operands::save_changes::<tables::FactionMembers>(
+                next(),
+                frame,
+                Clone::clone,
+                PartialEq::eq,
+                delta,
+            )?,
+            // Reduced to its key: rows at equal keys save equal values.
+            operands::save_changes::<tables::Subjects>(
+                next(),
+                frame,
+                reduce_subject,
+                |_, _| true,
+                delta,
+            )?,
+            operands::save_changes::<tables::WarRelations>(
+                next(),
+                frame,
+                reduce_war,
+                |_, _| true,
+                delta,
+            )?,
+            operands::save_changes::<tables::AirCountryRelations>(
+                next(),
+                frame,
+                Clone::clone,
+                PartialEq::eq,
+                delta,
+            )?,
+            operands::save_changes::<tables::RelationTuples>(
+                next(),
+                frame,
+                reduce_tuple,
+                |a, b| a.first_country == b.first_country && a.second_country == b.second_country,
+                delta,
+            )?,
+            operands::save_changes::<tables::CountryCounterInputs>(
+                next(),
+                frame,
+                reduce_counters,
+                |a, b| {
+                    a.forward_visibility == b.forward_visibility
+                        && a.directed_wars == b.directed_wars
+                },
+                delta,
+            )?,
+            operands::save_changes::<tables::ReservedCountryNaming>(
+                next(),
+                frame,
+                reduce_reserved,
+                |a, b| {
+                    a.tag == b.tag
+                        && a.faction == b.faction
+                        && a.reverse_visibility == b.reverse_visibility
+                },
+                delta,
+            )?,
+        ];
+        if saved.iter().any(Option::is_none) {
+            return Ok(None);
+        }
+        last.views = tracked_views(frame);
+        self.last = Some(last);
+        Ok(Some(true))
+    }
+    fn held(&self, bytes: &mut HeldBytes) {
+        bytes.heap(&self.refusals);
+        if let Some(last) = &self.last {
+            bytes.add(size_of::<Last>());
+            bytes.add(last.views.capacity() * size_of::<Option<SharedView>>());
+            for view in last.views.iter().flatten() {
+                bytes.view(view);
+            }
+            if let Some(countries) = &last.countries {
+                countries.held(bytes);
+            }
+            bytes.table::<u32, Option<String>>(last.parts.capacity());
+            for part in last.parts.values().flatten() {
+                bytes.heap(part);
+            }
+        }
+    }
+}
+
+/// The currents' view in `frame`, then each of [`INPUTS`]', where complete.
+fn tracked_views(frame: &DecodedFrame) -> Vec<Option<SharedView>> {
+    std::iter::once(TableId::NavalSupremacy)
+        .chain(INPUTS.iter().map(|(table, _)| *table))
+        .map(|table| {
+            let view = &frame.tables[table.index()];
+            matches!(&**view, TableView::Complete(rows) if rows.table() == table)
+                .then(|| view.clone())
+        })
+        .collect()
+}
+
+/// Where `table`'s view is in [`Last::views`].
+fn tracked(table: TableId) -> usize {
+    1 + INPUTS
+        .iter()
+        .position(|(input, _)| *input == table)
+        .expect("tracked naval input")
+}
+
+/// The owner part naming raw reference `raw`'s currents; None for an unresolved-identity operand.
+fn owner_part(frame: &DecodedFrame, countries: Option<&Countries>, raw: u32) -> Option<String> {
+    shared::country_part(frame, countries, raw).filter(|n| !n.contains('|'))
+}
+
+fn current_row_name(part: Option<&str>, region: u32, raw: u32) -> String {
+    part.map_or_else(
+        || format!("input-current|{region}|{raw}"),
+        |owner| format!("{owner}|{region}|raw:{raw}"),
+    )
+}
+
+/// A region's slot: its last current's, as the last value its currents push.
+fn region_slot(currents: &[rows::NavalSupremacyRow], region: u32, delta: &mut Delta) {
+    let name = format!("region|{region}|slot");
+    let first = u128::from(region) << 32;
+    let rows = dashboard_keyed::delta::key_range(currents, first..first + (1 << 32));
+    match rows.last() {
+        Some(row) => delta.set(name, i128::from(row.region_slot)),
+        None => delta.remove(name),
+    }
+}
+
+fn reduce_country(r: &rows::CountryRow) -> rows::CountryRow {
+    rows::CountryRow {
+        id: r.id,
+        canonical_slot: r.canonical_slot,
+        tag: r.tag.clone(),
+        ..Default::default()
+    }
+}
+fn reduce_subject(r: &rows::SubjectRow) -> rows::SubjectRow {
+    rows::SubjectRow {
+        overlord: r.overlord,
+        subject: r.subject,
+        ..Default::default()
+    }
+}
+fn reduce_war(r: &rows::WarRelationRow) -> rows::WarRelationRow {
+    rows::WarRelationRow {
+        first_country: r.first_country,
+        second_country: r.second_country,
+        ..Default::default()
+    }
+}
+fn reduce_tuple(r: &rows::RelationTupleRow) -> rows::RelationTupleRow {
+    rows::RelationTupleRow {
+        owner_country: r.owner_country,
+        target_country: r.target_country,
+        type_id: r.type_id,
+        ordinal: r.ordinal,
+        first_country: r.first_country,
+        second_country: r.second_country,
+        ..Default::default()
+    }
+}
+fn reduce_counters(r: &rows::CountryCounterInputRow) -> rows::CountryCounterInputRow {
+    rows::CountryCounterInputRow {
+        country: r.country,
+        forward_visibility: r.forward_visibility,
+        directed_wars: r.directed_wars.clone(),
+        ..Default::default()
+    }
+}
+fn reduce_reserved(r: &rows::ReservedCountryNamingRow) -> rows::ReservedCountryNamingRow {
+    rows::ReservedCountryNamingRow {
+        tag: r.tag.clone(),
+        faction: r.faction,
+        reverse_visibility: r.reverse_visibility.clone(),
+        ..Default::default()
     }
 }
 fn current_name(name: &str) -> Option<(u32, u32)> {

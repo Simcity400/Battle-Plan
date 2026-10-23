@@ -1061,8 +1061,8 @@ fn s5_fold<O: Observer>(source: &dashboard_base::Source, scan: &mut Scan<O>) -> 
 }
 
 #[test]
-fn s5_repairs_and_refits_share_the_management_projection_and_each_ship_join() {
-    use dashboard_base::prepared::{prepass, query::observations};
+fn s5_repairs_and_refits_project_the_management_operands_and_each_ship_join_once() {
+    use dashboard_base::prepared::prepass;
     let mut frames = s5_management_frames(8, 8);
     if let TableView::Complete(TableRows::ShipModels(rows)) =
         &mut *frames[0].tables[TableId::ShipModels.index()]
@@ -1087,11 +1087,9 @@ fn s5_repairs_and_refits_share_the_management_projection_and_each_ship_join() {
     refits
         .observe(FormatVersion::CURRENT, &independent, &mut refit_values)
         .unwrap();
-    assert_eq!(prepass::noted("naval-yards.project") - projects, 1);
-    assert_eq!(prepass::noted("naval-yards.ship") - ships, 1);
-    let (retained, budget, computations) = observations::usage(&source, yards::management::CACHE);
-    assert_eq!(computations, 1);
-    assert!(retained > 0 && retained <= budget);
+    // Each family projects and joins the ship once whole and once in the projection it keeps.
+    assert_eq!(prepass::noted("naval-yards.project") - projects, 2);
+    assert_eq!(prepass::noted("naval-yards.ship") - ships, 4);
     for (values, state) in [
         (&repair_values, &repairs.state),
         (&refit_values, &refits.state),
@@ -1284,7 +1282,7 @@ fn s5_sibling_dates_survive_quiet_flush_restore_and_reset_after_a_recorded_gap()
 
 #[test]
 fn s5_projection_invalidates_changed_operands_and_preserves_supplier_local_unknowns() {
-    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, query::observations};
+    use dashboard_base::prepared::frame_changes::FrameChangeTracker;
     let mut frames = s5_management_frames(8, 12);
     for frame in &mut frames[2..] {
         if let TableView::Complete(TableRows::Ships(rows)) =
@@ -1314,9 +1312,6 @@ fn s5_projection_invalidates_changed_operands_and_preserves_supplier_local_unkno
             .prepare_changed(FormatVersion::CURRENT, frame, &changes)
             .unwrap();
     }
-    // Four shared snapshots and one completed block observation, not one
-    // projection for each view.
-    assert_eq!(observations::usage(&source, yards::management::CACHE).2, 5);
     let repair_store = Fixture::new();
     let refit_store = Fixture::new();
     flush(&repair_store, &mut repairs);
@@ -1461,7 +1456,7 @@ fn s5_sequential_fallback_preserves_sibling_dates_across_block_boundaries() {
 }
 
 #[test]
-fn s5_separate_family_folds_share_every_changed_projection_in_a_block() {
+fn s5_family_folds_project_whole_only_the_hour_they_start_from() {
     use dashboard_base::prepared::prepass;
     let mut frames = s5_management_frames(8, 12);
     for frame in &mut frames[2..] {
@@ -1482,7 +1477,10 @@ fn s5_separate_family_folds_share_every_changed_projection_in_a_block() {
     let mut repairs = Scan::<RepairsObserver>::default();
     let mut refits = Scan::<RefitsObserver>::default();
     assert_eq!(s5_fold(&source, &mut repairs), (3, 2));
-    assert_eq!(prepass::noted("naval-yards.project") - before, 3);
+    assert_eq!(prepass::noted("naval-yards.project") - before, 1);
     assert_eq!(s5_fold(&source, &mut refits), (3, 2));
-    assert_eq!(prepass::noted("naval-yards.project") - before, 3);
+    assert_eq!(prepass::noted("naval-yards.project") - before, 2);
+
 }
+
+mod changes;

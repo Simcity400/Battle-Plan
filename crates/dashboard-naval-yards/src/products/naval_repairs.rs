@@ -8,16 +8,22 @@
 //! `TAG@slot|total|<measure>`. Shared `known|<table>`, `read|<table>` and
 //! `refusal|<token>` channels preserve independent supplier availability.
 use super::yards::{self, NavalYardsParams, Operand, State, YardChoice, YardGroup};
-use dashboard_base::{prepared::prepass::Family, products::Product};
+use dashboard_base::{
+    prepared::prepass::{Family, HeldBytes},
+    products::Product,
+};
 use dashboard_keyed::{
-    Observer, Values,
+    Delta, Observer, Values,
     countries::Countries,
     query::{KeyedWindow, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
     format::FormatVersion,
-    rows::{TableId, tables},
+    rows::{
+        CountryFactoriesRow, NavalBaseRow, NavalRepairBaseRow, NavalRepairCountryRow,
+        NavalRepairQueueRow, ShipRow, TableId, tables,
+    },
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -55,7 +61,7 @@ pub struct RepairsObserver {
 }
 
 // names: TAG@slot|province|ship|full-handle|measure; queue|ordinal retains repeats.
-const SOURCES: &[TableId] = &[
+pub(super) const SOURCES: &[TableId] = &[
     TableId::NavalRepairCountries,
     TableId::CountryFactories,
     TableId::NavalBases,
@@ -106,6 +112,24 @@ impl Observer for RepairsObserver {
     ) -> io::Result<bool> {
         self.state.observe(format, frame, SOURCES, false, values)
     }
+    fn observe_changes(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        names: &dashboard_keyed::delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        self.state.observe_changes(format, frame, SOURCES, names, delta)
+    }
+    fn held(&self, bytes: &mut HeldBytes) {
+        self.state.held(bytes);
+    }
+    fn unpublished(&self) -> usize {
+        self.state.unpublished()
+    }
+    fn published(&mut self) {
+        self.state.published();
+    }
 }
 
 pub(super) fn project(
@@ -118,27 +142,14 @@ pub(super) fn project(
     if let Ok(rows) = frame.complete::<tables::NavalRepairCountries>() {
         for row in rows {
             if let Some(owner) = countries.raw(row.country) {
-                for (field, amount) in [
-                    ("usedDockyards", row.num_used_dockyards),
-                    ("repairLimit", row.max_allowed_dockyards_to_repair),
-                    ("buildingRepairLimit", row.max_factories_for_repair),
-                ] {
-                    values.push(format!("{owner}|total|{field}"), i128::from(amount));
-                }
+                repair_country(&owner, row, values);
             }
         }
     }
     if let Ok(rows) = frame.complete::<tables::CountryFactories>() {
         for row in rows {
             if let Some(owner) = countries.raw(row.country) {
-                values.push(
-                    format!("{owner}|total|dockyardsRaw"),
-                    i128::from(row.naval_total_raw),
-                );
-                values.push(
-                    format!("{owner}|total|dockyards"),
-                    i128::from(row.naval_total_raw / 100_000),
-                );
+                factories(&owner, row, values);
             }
         }
     }
@@ -155,114 +166,188 @@ pub(super) fn project(
     let queues = frame.complete::<tables::NavalRepairQueue>().ok();
     let mut totals = BTreeMap::<String, (usize, BTreeSet<u64>)>::new();
     for base in bases {
-        let Some(owner) = countries.raw(base.country) else {
+        let Some((owner, ships)) = port(
+            state,
+            frame,
+            countries,
+            base,
+            repair_bases,
+            queues,
+            values,
+            &mut |state, values, owner, prefix, ship| state.ship(frame, values, owner, prefix, ship),
+        ) else {
             continue;
         };
-        let prefix = format!("{owner}|{}", base.province);
-        let port = yards::find(repair_bases, base.province, |row| row.province);
-        let entries = queues.map(|rows| {
-            let first = rows.partition_point(|row| row.province < base.province);
-            let count = rows[first..].partition_point(|row| row.province == base.province);
-            &rows[first..first + count]
-        });
-        if port.is_none() && entries.is_none_or(|rows| rows.is_empty()) {
-            continue;
+        for ship in ships {
+            let total = totals.entry(owner.clone()).or_default();
+            total.0 += 1;
+            total.1.insert(ship);
         }
-        values.push(format!("{prefix}|present"), 1);
-        if let Some(province) = yards::find(
-            frame.complete::<tables::Provinces>().ok(),
-            base.province,
-            |row| row.id,
-        ) {
-            values.push(format!("{prefix}|state"), i128::from(province.state));
-        }
+    }
+    let ships = frame.complete::<tables::Ships>().ok();
+    for owner in owners {
+        queue_totals(
+            state,
+            values,
+            owner,
+            ownership_complete && queues.is_some(),
+            totals.get(owner).map(|(count, ships)| {
+                (
+                    *count,
+                    ships.len(),
+                    Box::new(ships.iter().copied()) as Box<dyn Iterator<Item = u64> + '_>,
+                )
+            }),
+            ships,
+        );
+    }
+}
+
+/// A repair country row's values.
+pub(super) fn repair_country(owner: &str, row: &NavalRepairCountryRow, values: &mut Values) {
+    for (field, amount) in [
+        ("usedDockyards", row.num_used_dockyards),
+        ("repairLimit", row.max_allowed_dockyards_to_repair),
+        ("buildingRepairLimit", row.max_factories_for_repair),
+    ] {
+        values.push(format!("{owner}|total|{field}"), i128::from(amount));
+    }
+}
+
+/// A country factory row's dockyard values.
+pub(super) fn factories(owner: &str, row: &CountryFactoriesRow, values: &mut Values) {
+    values.push(
+        format!("{owner}|total|dockyardsRaw"),
+        i128::from(row.naval_total_raw),
+    );
+    values.push(
+        format!("{owner}|total|dockyards"),
+        i128::from(row.naval_total_raw / 100_000),
+    );
+}
+
+/// A base's port values, projecting its queued ships by `ship`; its owner and queued ships, or None.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn port(
+    state: &mut State,
+    frame: &DecodedFrame,
+    countries: &Countries,
+    base: &NavalBaseRow,
+    repair_bases: Option<&[NavalRepairBaseRow]>,
+    queues: Option<&[NavalRepairQueueRow]>,
+    values: &mut Values,
+    ship: &mut dyn FnMut(&mut State, &mut Values, &str, &str, u64),
+) -> Option<(String, Vec<u64>)> {
+    let owner = countries.raw(base.country)?;
+    let prefix = format!("{owner}|{}", base.province);
+    let port = yards::find(repair_bases, base.province, |row| row.province);
+    let entries = queues.map(|rows| {
+        let first = rows.partition_point(|row| row.province < base.province);
+        let count = rows[first..].partition_point(|row| row.province == base.province);
+        &rows[first..first + count]
+    });
+    if port.is_none() && entries.is_none_or(|rows| rows.is_empty()) {
+        return None;
+    }
+    values.push(format!("{prefix}|present"), 1);
+    if let Some(province) = yards::find(
+        frame.complete::<tables::Provinces>().ok(),
+        base.province,
+        |row| row.id,
+    ) {
+        values.push(format!("{prefix}|state"), i128::from(province.state));
+    }
+    state.label(
+        values,
+        format!("{prefix}|name"),
+        Operand::Port(yards::port_operand(frame, countries, base.province)),
+    );
+    if let Some(port) = port {
+        values.push(format!("{prefix}|priority"), i128::from(port.priority));
+        values.push(
+            format!("{prefix}|dockyards"),
+            i128::from(port.allocated_dockyards),
+        );
         state.label(
             values,
-            format!("{prefix}|name"),
-            Operand::Port(yards::port_operand(frame, countries, base.province)),
+            format!("{prefix}|policy"),
+            Operand::Policy {
+                port: true,
+                value: port.priority,
+            },
         );
-        if let Some(port) = port {
-            values.push(format!("{prefix}|priority"), i128::from(port.priority));
+    }
+    let mut queued = Vec::new();
+    if let Some(entries) = entries {
+        values.push(format!("{prefix}|queueCount"), entries.len() as i128);
+        let mut unique = BTreeSet::new();
+        for entry in entries {
             values.push(
-                format!("{prefix}|dockyards"),
-                i128::from(port.allocated_dockyards),
+                format!("{prefix}|queue|{}", entry.ordinal),
+                i128::from(entry.ship),
             );
-            state.label(
-                values,
-                format!("{prefix}|policy"),
-                Operand::Policy {
-                    port: true,
-                    value: port.priority,
-                },
-            );
-        }
-        if let Some(entries) = entries {
-            values.push(format!("{prefix}|queueCount"), entries.len() as i128);
-            let mut unique = BTreeSet::new();
-            for entry in entries {
-                values.push(
-                    format!("{prefix}|queue|{}", entry.ordinal),
-                    i128::from(entry.ship),
-                );
-                let total = totals.entry(owner.clone()).or_default();
-                total.0 += 1;
-                total.1.insert(entry.ship);
-                if unique.insert(entry.ship) {
-                    let ship_prefix = format!("{prefix}|ship|{}", entry.ship);
-                    values.push(format!("{ship_prefix}|present"), 1);
-                    state.ship(frame, values, &owner, &ship_prefix, entry.ship);
-                }
+            queued.push(entry.ship);
+            if unique.insert(entry.ship) {
+                let ship_prefix = format!("{prefix}|ship|{}", entry.ship);
+                values.push(format!("{ship_prefix}|present"), 1);
+                ship(state, values, &owner, &ship_prefix, entry.ship);
             }
         }
     }
-    for owner in owners {
+    Some((owner, queued))
+}
+
+/// A country's queue totals from its entries, distinct ships and those ships.
+pub(super) fn queue_totals(
+    state: &mut State,
+    values: &mut Values,
+    owner: &str,
+    complete: bool,
+    total: Option<(usize, usize, Box<dyn Iterator<Item = u64> + '_>)>,
+    ships: Option<&[ShipRow]>,
+) {
+    values.push(
+        format!("{owner}|total|queueCensusComplete"),
+        i128::from(complete),
+    );
+    if !complete {
+        state.refuse(
+            values,
+            owner,
+            "Repair queue or port ownership not recorded; empty queue cannot be established",
+            1,
+        );
+        return;
+    }
+    let (entries, distinct, mut queued) = match total {
+        Some((entries, distinct, queued)) => (Some(entries), distinct, Some(queued)),
+        None => (None, 0, None),
+    };
+    values.push(
+        format!("{owner}|total|queueEntries"),
+        entries.unwrap_or(0) as i128,
+    );
+    values.push(
+        format!("{owner}|total|distinctQueuedReferences"),
+        distinct as i128,
+    );
+    if let Some(ships) = ships
+        && queued.as_mut().is_none_or(|queued| {
+            queued.all(|ship| yards::find(Some(ships), ship, |row| row.id).is_some())
+        })
+    {
         values.push(
-            format!("{owner}|total|queueCensusComplete"),
-            i128::from(ownership_complete && queues.is_some()),
+            format!("{owner}|total|distinctQueuedShips"),
+            distinct as i128,
         );
     }
-    if queues.is_some() && ownership_complete {
-        for owner in owners {
-            let total = totals.get(owner);
-            values.push(
-                format!("{owner}|total|queueEntries"),
-                total.map_or(0, |total| total.0) as i128,
-            );
-            values.push(
-                format!("{owner}|total|distinctQueuedReferences"),
-                total.map_or(0, |total| total.1.len()) as i128,
-            );
-            if let Ok(ships) = frame.complete::<tables::Ships>()
-                && total.is_none_or(|total| {
-                    total
-                        .1
-                        .iter()
-                        .all(|ship| yards::find(Some(ships), *ship, |row| row.id).is_some())
-                })
-            {
-                values.push(
-                    format!("{owner}|total|distinctQueuedShips"),
-                    total.map_or(0, |total| total.1.len()) as i128,
-                );
-            }
-            if let Some((count, _)) = total {
-                state.refuse(
-                    values,
-                    owner,
-                    "Repair rate and ETA unavailable: the exact repair rate is not recorded",
-                    *count,
-                );
-            }
-        }
-    } else {
-        for owner in owners {
-            state.refuse(
-                values,
-                owner,
-                "Repair queue or port ownership not recorded; empty queue cannot be established",
-                1,
-            );
-        }
+    if let Some(count) = entries {
+        state.refuse(
+            values,
+            owner,
+            "Repair rate and ETA unavailable: the exact repair rate is not recorded",
+            count,
+        );
     }
 }
 

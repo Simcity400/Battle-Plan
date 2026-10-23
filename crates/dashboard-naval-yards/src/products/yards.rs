@@ -1,4 +1,7 @@
 //! Shared wire types and content-independent naming operands for the yard products.
+mod changes;
+#[cfg(test)]
+pub(crate) mod reference;
 pub(crate) mod management;
 mod naming;
 mod ship_names;
@@ -97,8 +100,6 @@ pub struct State {
     dates: BTreeMap<usize, i32>,
     last_hour: Option<i32>,
     #[serde(skip)]
-    design_key: Option<DesignKey>,
-    #[serde(skip)]
     designs: Option<Result<HashMap<u64, Operand>, String>>,
     #[serde(skip)]
     management: management::Shared,
@@ -108,6 +109,12 @@ pub struct State {
     ship_views: Vec<replay_frame::frame::ViewIdentity>,
     #[serde(skip)]
     ship_refusals: Option<Vec<(usize, usize)>>,
+    /// The last whole observation's projection, which the next hour's changes are found against.
+    #[serde(skip)]
+    engine: Option<Box<changes::Engine>>,
+    /// About what tokens interned since the catalogue was last published hold.
+    #[serde(skip)]
+    unpublished: usize,
 }
 
 struct ShipProjection {
@@ -115,16 +122,13 @@ struct ShipProjection {
     refusals: Vec<(usize, usize)>,
 }
 
-#[derive(PartialEq)]
-struct DesignKey {
-    variants: replay_frame::frame::ViewIdentity,
-    lexical: replay_frame::frame::ViewIdentity,
-    links: replay_frame::frame::ViewIdentity,
-    countries: Vec<(u32, Vec<u8>)>,
-    original: Vec<(u32, Vec<u8>)>,
-}
 impl State {
     pub fn intern(&mut self, operand: Operand) -> usize {
+        let key = serde_json::to_string(&operand).expect("serializable naming operand");
+        self.intern_key(&key, || operand)
+    }
+    /// The token of the operand whose interning key is `key`, if interned.
+    fn interned(&mut self, key: &str) -> Option<usize> {
         if self.index.len() != self.tokens.len() {
             self.index = self
                 .tokens
@@ -138,13 +142,30 @@ impl State {
                 })
                 .collect();
         }
-        let key = serde_json::to_string(&operand).expect("serializable naming operand");
-        if let Some(&id) = self.index.get(&key) {
+        self.index.get(key).copied()
+    }
+    /// Intern the operand whose interning key is `key`.
+    fn intern_key(&mut self, key: &str, operand: impl FnOnce() -> Operand) -> usize {
+        if self.index.len() != self.tokens.len() {
+            self.index = self
+                .tokens
+                .iter()
+                .enumerate()
+                .map(|(id, operand)| {
+                    (
+                        serde_json::to_string(operand).expect("serializable naming operand"),
+                        id,
+                    )
+                })
+                .collect();
+        }
+        if let Some(&id) = self.index.get(key) {
             return id;
         }
         let id = self.tokens.len();
-        self.tokens.push(operand);
-        self.index.insert(key, id);
+        self.tokens.push(operand());
+        self.index.insert(key.to_owned(), id);
+        self.unpublished = self.unpublished.saturating_add(key.len());
         id
     }
     pub fn label(&mut self, values: &mut Values, key: String, operand: Operand) {
@@ -187,28 +208,27 @@ impl State {
         values: &mut Values,
     ) {
         self.refusal_counts.clear();
-        let key = DesignKey {
-            variants: frame.tables[TableId::VariantDefinitions.index()].identity(),
-            lexical: frame.tables[TableId::LexicalTokens.index()].identity(),
-            links: frame.tables[TableId::CountryLinks.index()].identity(),
-            countries: frame
-                .complete::<tables::Countries>()
-                .unwrap_or_default()
-                .iter()
-                .map(|row| (row.canonical_slot, row.tag.clone()))
-                .collect(),
-            original: frame
-                .complete::<tables::CountryAppearance>()
-                .unwrap_or_default()
-                .iter()
-                .filter(|row| !row.name_tag.is_empty())
-                .map(|row| (row.country, row.name_tag.clone()))
-                .collect(),
-        };
-        if self.design_key.as_ref() != Some(&key) {
-            self.design_key = Some(key);
-            self.designs = None;
+        self.date(format, frame, sources);
+        for &table in sources {
+            let known = known(frame, table);
+            for owner in owners {
+                values.push(format!("{owner}|known|{table:?}"), i128::from(known));
+                if !known {
+                    let reason = dashboard_base::products::table_missing_reason(frame, table)
+                        .unwrap_or_else(|| "Table not recorded".into());
+                    self.refuse(values, owner, format!("{table:?}: {reason}"), 1);
+                }
+                if known
+                    && dated(table, format)
+                    && let Some(&read) = self.dates.get(&table.index())
+                {
+                    values.push(format!("{owner}|read|{table:?}"), i128::from(read));
+                }
+            }
         }
+    }
+    /// Date each source's supplying read at the hour, as [`Self::sources`] does.
+    fn date(&mut self, format: FormatVersion, frame: &DecodedFrame, sources: &[TableId]) {
         if !self
             .management
             .continues(self.last_hour, frame.branch, frame.hour)
@@ -217,8 +237,7 @@ impl State {
         }
         self.last_hour = Some(frame.hour);
         for &table in sources {
-            let known = matches!(&*frame.tables[table.index()], replay_frame::frame::TableView::Complete(rows) if rows.table() == table);
-            if !known {
+            if !known(frame, table) {
                 self.dates.remove(&table.index());
             } else if dashboard_text::metadata::slot_read(format, &frame.metrics, table, frame.hour)
             {
@@ -231,25 +250,9 @@ impl State {
                     .and_modify(|read| *read = (*read).max(hour))
                     .or_insert(hour);
             }
-            for owner in owners {
-                values.push(format!("{owner}|known|{table:?}"), i128::from(known));
-                if !known {
-                    let reason = dashboard_base::products::table_missing_reason(frame, table)
-                        .unwrap_or_else(|| "Table not recorded".into());
-                    self.refuse(values, owner, format!("{table:?}: {reason}"), 1);
-                }
-                if known
-                    && !matches!(
-                        replay_data::cadence::cadence_in(table, format),
-                        replay_data::cadence::Cadence::Hourly
-                    )
-                    && let Some(&read) = self.dates.get(&table.index())
-                {
-                    values.push(format!("{owner}|read|{table:?}"), i128::from(read));
-                }
-            }
         }
     }
+
     pub fn design(&mut self, frame: &DecodedFrame, handle: u64) -> Result<Operand, String> {
         if self.designs.is_none() {
             // Bind country tags once per changed naming census, not once per ship.
@@ -531,6 +534,19 @@ impl State {
 pub fn find<T, K: Ord>(rows: Option<&[T]>, key: K, by: impl Fn(&T) -> K) -> Option<&T> {
     let rows = rows?;
     rows.binary_search_by_key(&key, by).ok().map(|at| &rows[at])
+}
+
+/// Whether `table` holds its own complete rows at the hour.
+fn known(frame: &DecodedFrame, table: TableId) -> bool {
+    matches!(&*frame.tables[table.index()], replay_frame::frame::TableView::Complete(rows) if rows.table() == table)
+}
+
+/// Whether a known source carries the date of its supplying read.
+fn dated(table: TableId, format: FormatVersion) -> bool {
+    !matches!(
+        replay_data::cadence::cadence_in(table, format),
+        replay_data::cadence::Cadence::Hourly
+    )
 }
 
 pub fn owners(frame: &DecodedFrame, countries: &Countries) -> Vec<String> {

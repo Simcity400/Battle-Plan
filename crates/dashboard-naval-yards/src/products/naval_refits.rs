@@ -9,18 +9,21 @@
 //! `read|<table>` and `refusal|<token>` retain supplier-local evidence.
 use super::yards::{self, NavalYardsParams, State, YardChoice, YardGroup};
 use dashboard_base::{
-    prepared::prepass::Family,
+    prepared::prepass::{Family, HeldBytes},
     products::{Product, finite_fixed64},
 };
 use dashboard_keyed::{
-    Observer, Values,
+    Delta, Observer, Values,
     countries::Countries,
     query::{KeyedWindow, Query},
 };
 use replay::container::TableFields;
 use replay_data::{
     format::FormatVersion,
-    rows::{NavalRefitShipRow, TableId, tables},
+    rows::{
+        NavalRefitProgressRow, NavalRefitShipRow, ProductionLineRow, ShipRow, TableId,
+        TaskForceRow, tables,
+    },
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -56,7 +59,7 @@ impl Product for NavalRefits {
 pub struct RefitsObserver {
     pub state: State,
 }
-const SOURCES: &[TableId] = &[
+pub(super) const SOURCES: &[TableId] = &[
     TableId::NavalRefitShips,
     TableId::NavalRefitProgress,
     TableId::ProductionLines,
@@ -105,6 +108,24 @@ impl Observer for RefitsObserver {
     ) -> io::Result<bool> {
         self.state.observe(format, frame, SOURCES, true, values)
     }
+    fn observe_changes(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        names: &dashboard_keyed::delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        self.state.observe_changes(format, frame, SOURCES, names, delta)
+    }
+    fn held(&self, bytes: &mut HeldBytes) {
+        self.state.held(bytes);
+    }
+    fn unpublished(&self) -> usize {
+        self.state.unpublished()
+    }
+    fn published(&mut self) {
+        self.state.published();
+    }
 }
 
 pub(super) fn project(
@@ -125,10 +146,7 @@ pub(super) fn project(
         || (progress.is_some() && links.is_some() && ships.is_some() && tasks.is_some());
     if let Some(links) = links {
         for link in links.iter().filter(|link| link.line != 0) {
-            let ship = yards::find(ships, link.ship, |row| row.id);
-            let owner = ship
-                .and_then(|ship| yards::find(tasks, ship.task_force, |task| task.id))
-                .and_then(|task| countries.raw(task.roster_owner));
+            let owner = link_owner(link, ships, tasks, countries);
             let typed = dashboard_forces::products::naval_management::projection::refit(
                 link, progress, production,
             );
@@ -146,11 +164,7 @@ pub(super) fn project(
                     .entry((owner.clone(), link.line))
                     .or_default()
                     .insert(link.ship);
-                values.push(format!("{prefix}|live"), 1);
-                values.push(
-                    format!("{prefix}|progress"),
-                    i128::from(amount.progress_raw),
-                );
+                line_progress(&prefix, amount, values);
                 let ship_prefix = format!("{prefix}|ship|{}", link.ship);
                 values.push(format!("{ship_prefix}|present"), 1);
                 state.ship(frame, values, &owner, &ship_prefix, link.ship);
@@ -160,87 +174,164 @@ pub(super) fn project(
             if !metadata_seen.insert((owner.clone(), link.line)) {
                 continue;
             }
-            if let Some(line) = typed.metadata {
-                values.push(format!("{prefix}|cost"), i128::from(line.cost_raw));
-                values.push(
-                    format!("{prefix}|dockyards"),
-                    i128::from(line.active_factories),
-                );
-                state.design_value(frame, values, &owner, &prefix, "target", line.variant);
-                if let Some(amount) = typed.progress {
-                    if line.cost_raw > 0
-                        && finite_fixed64(line.cost_raw)
-                        && finite_fixed64(amount.progress_raw)
-                    {
-                        values.push(
-                            format!("{prefix}|remainingCostRaw"),
-                            i128::from(line.cost_raw) - i128::from(amount.progress_raw),
-                        );
-                    } else {
-                        state.refuse(values,&owner,"Refit ratio and remaining cost unavailable: nonpositive or nonfinite last recorded cost or progress",1);
-                    }
-                }
-            } else {
-                state.refuse(
-                    values,
-                    &owner,
-                    "Refit daily target, cost and allocation not recorded",
-                    1,
-                );
-            }
+            line_metadata(
+                state,
+                frame,
+                values,
+                &owner,
+                &prefix,
+                typed.metadata,
+                typed.progress,
+            );
         }
     }
     // Every line contributes once, irrespective of its ship multiplicity.
-    let mut totals = BTreeMap::<String, (usize, usize, Option<i128>, Option<i128>)>::new();
+    let mut totals = BTreeMap::<String, RefitTotal>::new();
     for ((owner, line), ships) in &lines {
-        let total = totals
+        totals
             .entry(owner.clone())
-            .or_insert((0, 0, Some(0), Some(0)));
-        total.0 += ships.len();
-        total.1 += 1;
-        let link = NavalRefitShipRow {
-            ship: 0,
-            line: *line,
-        };
+            .or_default()
+            .add(ships.len(), *line, progress, production);
+    }
+    for owner in owners {
+        refit_totals(state, values, owner, census_complete, totals.get(owner));
+    }
+}
+
+/// The country whose task force holds a refit link's ship.
+pub(super) fn link_owner(
+    link: &NavalRefitShipRow,
+    ships: Option<&[ShipRow]>,
+    tasks: Option<&[TaskForceRow]>,
+    countries: &Countries,
+) -> Option<String> {
+    yards::find(ships, link.ship, |row| row.id)
+        .and_then(|ship| yards::find(tasks, ship.task_force, |task| task.id))
+        .and_then(|task| countries.raw(task.roster_owner))
+}
+
+/// A live line's hourly values.
+pub(super) fn line_progress(prefix: &str, amount: &NavalRefitProgressRow, values: &mut Values) {
+    values.push(format!("{prefix}|live"), 1);
+    values.push(
+        format!("{prefix}|progress"),
+        i128::from(amount.progress_raw),
+    );
+}
+
+/// A line's daily metadata and its refusals.
+pub(super) fn line_metadata(
+    state: &mut State,
+    frame: &DecodedFrame,
+    values: &mut Values,
+    owner: &str,
+    prefix: &str,
+    metadata: Option<&ProductionLineRow>,
+    progress: Option<&NavalRefitProgressRow>,
+) {
+    if let Some(line) = metadata {
+        values.push(format!("{prefix}|cost"), i128::from(line.cost_raw));
+        values.push(
+            format!("{prefix}|dockyards"),
+            i128::from(line.active_factories),
+        );
+        state.design_value(frame, values, owner, prefix, "target", line.variant);
+        if let Some(amount) = progress {
+            if line.cost_raw > 0 && finite_fixed64(line.cost_raw) && finite_fixed64(amount.progress_raw)
+            {
+                values.push(
+                    format!("{prefix}|remainingCostRaw"),
+                    i128::from(line.cost_raw) - i128::from(amount.progress_raw),
+                );
+            } else {
+                state.refuse(values,owner,"Refit ratio and remaining cost unavailable: nonpositive or nonfinite last recorded cost or progress",1);
+            }
+        }
+    } else {
+        state.refuse(
+            values,
+            owner,
+            "Refit daily target, cost and allocation not recorded",
+            1,
+        );
+    }
+}
+
+/// A country's live lines summed; dockyards and remaining cost are None once a line lacks them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct RefitTotal {
+    ships: usize,
+    lines: usize,
+    dockyards: Option<i128>,
+    remaining: Option<i128>,
+}
+
+impl Default for RefitTotal {
+    fn default() -> Self {
+        Self {
+            ships: 0,
+            lines: 0,
+            dockyards: Some(0),
+            remaining: Some(0),
+        }
+    }
+}
+
+impl RefitTotal {
+    /// Add a live line holding `ships` ships.
+    pub(super) fn add(
+        &mut self,
+        ships: usize,
+        line: u64,
+        progress: Option<&[NavalRefitProgressRow]>,
+        production: Option<&[ProductionLineRow]>,
+    ) {
+        let link = NavalRefitShipRow { ship: 0, line };
         let typed = dashboard_forces::products::naval_management::projection::refit(
             &link, progress, production,
         );
-        total.2 = total
-            .2
+        self.ships += ships;
+        self.lines += 1;
+        self.dockyards = self
+            .dockyards
             .zip(typed.metadata)
             .map(|(sum, line)| sum + i128::from(line.active_factories));
-        total.3 =
-            total
-                .3
-                .zip(typed.metadata.zip(typed.progress))
-                .and_then(|(sum, (line, amount))| {
-                    (line.cost_raw > 0
-                        && finite_fixed64(line.cost_raw)
-                        && finite_fixed64(amount.progress_raw))
-                    .then_some(sum + i128::from(line.cost_raw) - i128::from(amount.progress_raw))
-                });
+        self.remaining = self
+            .remaining
+            .zip(typed.metadata.zip(typed.progress))
+            .and_then(|(sum, (line, amount))| {
+                (line.cost_raw > 0
+                    && finite_fixed64(line.cost_raw)
+                    && finite_fixed64(amount.progress_raw))
+                .then_some(sum + i128::from(line.cost_raw) - i128::from(amount.progress_raw))
+            });
     }
-    for owner in owners {
-        values.push(
-            format!("{owner}|total|censusComplete"),
-            i128::from(census_complete),
-        );
-        if census_complete {
-            let total = totals
-                .get(owner)
-                .copied()
-                .unwrap_or((0, 0, Some(0), Some(0)));
-            values.push(format!("{owner}|total|ships"), total.0 as i128);
-            values.push(format!("{owner}|total|lines"), total.1 as i128);
-            if let Some(dockyards) = total.2 {
-                values.push(format!("{owner}|total|dockyards"), dockyards);
-            }
-            if let Some(remaining) = total.3 {
-                values.push(format!("{owner}|total|remainingCostRaw"), remaining);
-            }
-        } else {
-            state.refuse(values,owner,"Active refit count unavailable: incomplete hourly progress, links, ships or ownership census",1);
+}
+
+/// A country's refit totals: `complete` whether the census is.
+pub(super) fn refit_totals(
+    state: &mut State,
+    values: &mut Values,
+    owner: &str,
+    complete: bool,
+    total: Option<&RefitTotal>,
+) {
+    values.push(
+        format!("{owner}|total|censusComplete"),
+        i128::from(complete),
+    );
+    if complete {
+        let total = total.copied().unwrap_or_default();
+        values.push(format!("{owner}|total|ships"), total.ships as i128);
+        values.push(format!("{owner}|total|lines"), total.lines as i128);
+        if let Some(dockyards) = total.dockyards {
+            values.push(format!("{owner}|total|dockyards"), dockyards);
         }
+        if let Some(remaining) = total.remaining {
+            values.push(format!("{owner}|total|remainingCostRaw"), remaining);
+        }
+    } else {
+        state.refuse(values,owner,"Active refit count unavailable: incomplete hourly progress, links, ships or ownership census",1);
     }
 }
 

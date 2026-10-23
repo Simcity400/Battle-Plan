@@ -1,9 +1,9 @@
 //! Lossless, sparse prepared diplomacy operands. Each row uses its native
 //! codec's changed fields from an empty baseline, packed into numeric words.
 //! No frame, row strings or historical packets grow the observer catalogue.
-use dashboard_keyed::Values;
+use dashboard_keyed::{Delta, Values};
 use replay_data::rows::{DeltaRow, RowCodec, TableId, TableSchema};
-use replay_frame::frame::{DecodedFrame, TableView};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use std::{collections::BTreeMap, io};
 
 pub fn save<T: TableSchema>(
@@ -14,24 +14,110 @@ pub fn save<T: TableSchema>(
     let Ok(rows) = frame.complete::<T>() else {
         return Ok(());
     };
-    let prefix = format!("input|{}", T::ID.index());
-    values.push(format!("{prefix}|known"), 1);
+    values.push(known::<T>(), 1);
     for row in rows {
-        let row = reduce(row);
-        let delta = row
-            .delta(None)?
-            .ok_or_else(|| io::Error::other("Prepared naval row has no insertion"))?;
-        let name = format!("{prefix}|{}", delta.key);
-        values.push(format!("{name}|length"), delta.values.len() as i128);
-        values.push(format!("{name}|fields"), delta.recorded_fields as i128);
-        values.push(format!("{name}|mask"), i128::from(delta.mask));
-        for (at, chunk) in delta.values.chunks(8).enumerate() {
-            let mut word = [0; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            values.push(format!("{name}|{at}"), i128::from(u64::from_le_bytes(word)));
-        }
+        save_row::<T>(&reduce(row), &mut |name, value| values.push(name, value))?;
     }
     Ok(())
+}
+
+/// The name marking `T`'s rows known.
+pub fn known<T: TableSchema>() -> String {
+    format!("input|{}|known", T::ID.index())
+}
+
+/// The values one reduced row of `T` saves, in the order [`save`] pushes them.
+pub fn save_row<T: TableSchema>(
+    row: &T::Row,
+    push: &mut dyn FnMut(String, i128),
+) -> io::Result<()> {
+    let delta = row
+        .delta(None)?
+        .ok_or_else(|| io::Error::other("Prepared naval row has no insertion"))?;
+    let name = format!("input|{}|{}", T::ID.index(), delta.key);
+    push(format!("{name}|length"), delta.values.len() as i128);
+    push(format!("{name}|fields"), delta.recorded_fields as i128);
+    push(format!("{name}|mask"), i128::from(delta.mask));
+    for (at, chunk) in delta.values.chunks(8).enumerate() {
+        let mut word = [0; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        push(format!("{name}|{at}"), i128::from(u64::from_le_bytes(word)));
+    }
+    Ok(())
+}
+
+/// `T`'s saved values' changes from `before`'s rows to `frame`'s; None when keys are out of order.
+pub fn save_changes<T: TableSchema>(
+    before: Option<&SharedView>,
+    frame: &DecodedFrame,
+    reduce: impl Fn(&T::Row) -> T::Row,
+    same: impl Fn(&T::Row, &T::Row) -> bool,
+    delta: &mut Delta,
+) -> io::Result<Option<()>> {
+    let view = &frame.tables[T::ID.index()];
+    if before.is_some_and(|before| SharedView::ptr_eq(before, view)) {
+        return Ok(Some(()));
+    }
+    let old = before.and_then(dashboard_keyed::delta::rows::<T>);
+    let new = frame.complete::<T>().ok();
+    let mut removed = Vec::new();
+    let mut set = Vec::new();
+    let mut failed = None;
+    let known_now = match (old, new) {
+        (Some(_), None) => Some(false),
+        (None, Some(_)) => Some(true),
+        _ => None,
+    };
+    let mut visit = |old: Option<&T::Row>, new: Option<&T::Row>| {
+        if failed.is_some() {
+            return;
+        }
+        let result = old
+            .map_or(Ok(()), |row| {
+                save_row::<T>(&reduce(row), &mut |name, _| removed.push(name))
+            })
+            .and_then(|()| {
+                new.map_or(Ok(()), |row| {
+                    save_row::<T>(&reduce(row), &mut |name, value| set.push((name, value)))
+                })
+            });
+        if let Err(why) = result {
+            failed = Some(why);
+        }
+    };
+    match (old, new) {
+        (None, None) => {}
+        (Some(old), None) => {
+            for row in old {
+                visit(Some(row), None);
+            }
+        }
+        (None, Some(new)) => {
+            for row in new {
+                visit(None, Some(row));
+            }
+        }
+        (Some(old), Some(new)) => {
+            if dashboard_keyed::delta::changed_rows(old, new, &same, &mut visit).is_none() {
+                return Ok(None);
+            }
+        }
+    }
+    if let Some(why) = failed {
+        return Err(why);
+    }
+    match known_now {
+        Some(false) => delta.remove(known::<T>()),
+        Some(true) => delta.set(known::<T>(), 1),
+        None => {}
+    }
+    for name in removed {
+        delta.remove(name);
+    }
+    for (name, value) in set {
+        delta.set(name, value);
+    }
+    Ok(Some(()))
 }
 
 /// The names of `table`'s operands all begin with this.

@@ -1,6 +1,4 @@
-//! One management projection for the two keyed yard views. Native hull and refit
-//! operands stay owned by dashboard-forces; the ordinary observation LRU shares
-//! this history adaptation between their independently published windows.
+//! The two yard views' management projection; later hours project only what changed.
 use super::*;
 use crate::products::{naval_refits, naval_repairs};
 use dashboard_base::{
@@ -9,14 +7,12 @@ use dashboard_base::{
         frame_changes::FrameChanges,
         kept::consecutive,
         prepass::{Extract, Family, Held, HeldBytes},
-        query::observations::{self, Scope},
     },
 };
-use dashboard_keyed::Observer;
+use dashboard_keyed::{Delta, Observer};
 use replay::container::{QuietHours, Replay};
 use replay_data::cadence::{Cadence, cadence_in};
-use replay_frame::frame::ViewIdentity;
-use std::{any::Any, ops::Range, sync::atomic::AtomicBool};
+use std::{any::Any, collections::HashSet, ops::Range};
 
 pub const TABLES: &[TableId] = &[
     TableId::Countries,
@@ -44,38 +40,10 @@ pub const TABLES: &[TableId] = &[
     TableId::States,
 ];
 
-pub(crate) const CACHE: &str = "naval-management-yards";
-
 #[derive(Default)]
 pub(super) struct Shared {
     binding: Option<dashboard_base::SourceKey>,
-    scope: Option<Scope>,
     replay: Option<Arc<Replay>>,
-    current: Option<(FormatVersion, Vec<ViewIdentity>, Arc<Projection>)>,
-    pending: Option<Pending>,
-}
-
-struct Pending {
-    block: (u64, i32, i32),
-    projections: BlockProjection,
-}
-
-struct BlockProjection(Vec<(i32, Arc<Projection>)>);
-
-impl BlockProjection {
-    fn at(&self, hour: i32) -> io::Result<Arc<Projection>> {
-        let through = self.0.partition_point(|(first, _)| *first <= hour);
-        through
-            .checked_sub(1)
-            .map(|position| Arc::clone(&self.0[position].1))
-            .ok_or_else(|| io::Error::other("Naval management block has no preceding projection"))
-    }
-
-    fn bytes(&self) -> usize {
-        let mut held = HeldBytes::default();
-        held.add(size_of::<Self>()).heap(&self.0);
-        held.total() as usize
-    }
 }
 
 impl Shared {
@@ -84,10 +52,7 @@ impl Shared {
             return;
         }
         self.binding = Some(source.key().clone());
-        self.scope = Some(observations::scope(source, CACHE, None));
         self.replay = Some(source.replay());
-        self.current = None;
-        self.pending = None;
     }
 
     pub(super) fn continues(&self, last: Option<i32>, branch: u64, hour: i32) -> bool {
@@ -104,107 +69,6 @@ impl Shared {
                         })
                     }))
         })
-    }
-
-    fn project(
-        &mut self,
-        format: FormatVersion,
-        frame: &DecodedFrame,
-    ) -> io::Result<Arc<Projection>> {
-        let unchanged = self
-            .current
-            .as_ref()
-            .and_then(|(held_format, views, projection)| {
-                (*held_format == format
-                    && views
-                        .iter()
-                        .zip(TABLES)
-                        .all(|(view, table)| view.is(&frame.tables[table.index()])))
-                .then(|| Arc::clone(projection))
-            });
-        let projection = if let Some(scope) = &self.scope {
-            let block = self
-                .replay
-                .as_ref()
-                .expect("bound naval management replay")
-                .index
-                .iter()
-                .find(|block| {
-                    block.branch == frame.branch
-                        && block.first_hour <= frame.hour
-                        && frame.hour <= block.last_hour
-                })
-                .ok_or_else(|| {
-                    io::Error::other("Naval management frame is outside the recorded blocks")
-                })?;
-            let cancelled = AtomicBool::new(false);
-            if let Some(held) = scope.get_cached::<BlockProjection>(block, &(), &cancelled)? {
-                self.pending = None;
-                held.at(frame.hour)?
-            } else {
-                let projection = match unchanged {
-                    Some(projection) => projection,
-                    None => scope.get_query(
-                        block,
-                        &frame.hour,
-                        &cancelled,
-                        Projection::bytes,
-                        || Ok(Projection::read(frame)),
-                    )?,
-                };
-                let key = (block.branch, block.first_hour, block.last_hour);
-                if self
-                    .pending
-                    .as_ref()
-                    .is_none_or(|pending| pending.block != key)
-                {
-                    self.pending = Some(Pending {
-                        block: key,
-                        projections: BlockProjection(Vec::new()),
-                    });
-                }
-                let pending = self.pending.as_mut().expect("current management block");
-                if pending
-                    .projections
-                    .0
-                    .last()
-                    .is_none_or(|(_, previous)| !Arc::ptr_eq(previous, &projection))
-                {
-                    pending
-                        .projections
-                        .0
-                        .push((frame.hour, Arc::clone(&projection)));
-                }
-                if frame.hour == block.last_hour && block.first_hour != block.last_hour {
-                    let pending = self.pending.take().expect("completed management block");
-                    if pending
-                        .projections
-                        .0
-                        .first()
-                        .is_some_and(|(hour, _)| *hour == block.first_hour)
-                    {
-                        // Families fold a whole block separately. Retain its
-                        // immutable changed projections as one ordinary LRU
-                        // observation, not competing per-hour entries.
-                        scope.get_query(block, &(), &cancelled, BlockProjection::bytes, || {
-                            Ok(pending.projections)
-                        })?;
-                    }
-                }
-                projection
-            }
-        } else {
-            unchanged.unwrap_or_else(|| Arc::new(Projection::read(frame)))
-        };
-        self.current = Some((
-            format,
-            TABLES
-                .iter()
-                .map(|table| frame.tables[table.index()].identity())
-                .collect(),
-            Arc::clone(&projection),
-        ));
-        Ok(projection)
     }
 }
 
@@ -243,22 +107,6 @@ impl Projection {
                 .collect(),
         }
     }
-
-    fn bytes(&self) -> usize {
-        let mut held = HeldBytes::default();
-        held.value(self);
-        held.total() as usize
-    }
-}
-
-impl Held for Projection {
-    fn held(&self, bytes: &mut HeldBytes) {
-        bytes
-            .heap(&self.tokens)
-            .heap(&self.owners)
-            .heap(&self.repairs)
-            .heap(&self.refits);
-    }
 }
 
 impl State {
@@ -271,6 +119,7 @@ impl State {
         {
             self.dates.clear();
             self.last_hour = None;
+            self.engine = None;
         }
         self.management.bind(source);
     }
@@ -283,6 +132,7 @@ impl State {
         refits: bool,
         values: &mut Values,
     ) -> io::Result<bool> {
+        self.engine = None;
         if frame.complete::<tables::Countries>().is_err()
             || frame.complete::<tables::CountryLinks>().is_err()
         {
@@ -290,7 +140,7 @@ impl State {
             self.last_hour = None;
             return Ok(false);
         }
-        let projection = self.management.project(format, frame)?;
+        let projection = Projection::read(frame);
         self.sources(format, frame, sources, &projection.owners, values);
         let mut tokens = HashMap::new();
         for (name, amount) in if refits {
@@ -319,7 +169,98 @@ impl State {
                 values.push(name.clone(), *amount);
             }
         }
+        self.engine = changes::Engine::build(frame, refits);
         Ok(true)
+    }
+
+    /// The hour as changes from the last observation, when the kept projection finds them.
+    pub(crate) fn observe_changes(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        sources: &[TableId],
+        names: &dashboard_keyed::delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        let Some(mut engine) = self.engine.take() else {
+            return Ok(None);
+        };
+        let Some(changes) = engine.changes(frame) else {
+            return Ok(None);
+        };
+        // Two refusals one owner first names this hour could intern in either order.
+        let mut fresh = HashSet::new();
+        for (owner, why) in changes.first_held(engine.totals()) {
+            let key = serde_json::to_string(&Operand::Refusal(why.to_owned()))
+                .expect("serializable naming operand");
+            let new = self
+                .interned(&key)
+                .is_none_or(|id| !names.numbered(&format!("{owner}|refusal|{id}")));
+            if new && !fresh.insert(owner) {
+                return Ok(None);
+            }
+        }
+        // Every source is known at both hours: only supplying read dates move.
+        let before = self.dates.clone();
+        self.date(format, frame, sources);
+        for &table in sources {
+            let now = self.dates.get(&table.index()).copied();
+            if !dated(table, format) || before.get(&table.index()).copied() == now {
+                continue;
+            }
+            for owner in engine.owners() {
+                let name = format!("{owner}|read|{table:?}");
+                match now {
+                    Some(read) => delta.set(name, i128::from(read)),
+                    None => delta.remove(name),
+                }
+            }
+        }
+        engine.publish(changes, self, delta);
+        self.engine = Some(engine);
+        Ok(Some(true))
+    }
+
+    pub(crate) fn held(&self, bytes: &mut HeldBytes) {
+        bytes
+            .add(self.tokens.capacity() * size_of::<Operand>())
+            .table::<String, usize>(self.index.capacity())
+            .tree::<usize, i32>(self.dates.len());
+        for operand in &self.tokens {
+            operand.held(bytes);
+        }
+        for key in self.index.keys() {
+            bytes.heap(key);
+        }
+        bytes.table::<(String, usize), usize>(self.refusal_counts.capacity());
+        for (owner, _) in self.refusal_counts.keys() {
+            bytes.heap(owner);
+        }
+        if let Some(Ok(designs)) = &self.designs {
+            bytes.table::<u64, Operand>(designs.capacity());
+            for operand in designs.values() {
+                operand.held(bytes);
+            }
+        }
+        bytes.table::<u64, (Values, Vec<(usize, usize)>)>(self.ships.capacity());
+        for ship in self.ships.values() {
+            ship.values.held(bytes);
+            bytes.heap(&ship.refusals);
+        }
+        bytes
+            .heap(&self.ship_views)
+            .add(self.ship_refusals.as_ref().map_or(0, |held| held.capacity()) * size_of::<(usize, usize)>());
+        if let Some(engine) = &self.engine {
+            changes::Engine::held(engine, bytes);
+        }
+    }
+
+    pub(crate) fn unpublished(&self) -> usize {
+        self.unpublished
+    }
+
+    pub(crate) fn published(&mut self) {
+        self.unpublished = 0;
     }
 }
 

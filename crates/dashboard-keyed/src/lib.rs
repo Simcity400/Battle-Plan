@@ -27,13 +27,19 @@ static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod block;
 pub mod countries;
 pub mod daily;
+pub mod delta;
 pub mod query;
 pub mod regions;
 
 #[cfg(test)]
 mod tests;
 
-use dashboard_base::prepared::{frame_changes::FrameChanges, prepass::Family, series::Accumulator};
+use dashboard_base::prepared::{
+    frame_changes::FrameChanges,
+    prepass::{Family, HeldBytes},
+    series::Accumulator,
+};
+pub use delta::Delta;
 use replay::container::TableFields;
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
@@ -50,6 +56,8 @@ pub const READ: u64 = 0;
 pub const KNOWN: u64 = 1;
 /// The first key a name is numbered with.
 const FIRST: u64 = 2;
+/// About what one held value differing from its publication adds to the next catalogue.
+const CHANGE_BYTES: usize = 2 * size_of::<u64>() + size_of::<i128>();
 
 /// The values one hour reads, by name. Names are the observer's own keys
 /// (`series::field_key` of their parts, for instance); a name read twice in
@@ -77,6 +85,14 @@ impl Values {
     pub fn iter(&self) -> impl Iterator<Item = (&str, i128)> {
         self.0.iter().map(|(name, value)| (name.as_str(), *value))
     }
+
+    pub fn held(&self, bytes: &mut HeldBytes) {
+        bytes.add(self.0.capacity() * size_of::<(String, i128)>());
+        for (name, _) in &self.0 {
+            bytes.heap(name);
+        }
+    }
+
 }
 
 /// One keyed family's observation of a frame.
@@ -133,6 +149,31 @@ pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
         frame: &DecodedFrame,
         values: &mut Values,
     ) -> io::Result<bool>;
+
+    /// The hour as changes from the last known observation; Ok(None), touching nothing published, observes it whole.
+    fn observe_changes(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        names: &delta::Names<'_>,
+        delta: &mut Delta,
+    ) -> io::Result<Option<bool>> {
+        let _ = (format, frame, names, delta);
+        Ok(None)
+    }
+
+    /// What the observer retains between hours beyond what it publishes.
+    fn held(&self, bytes: &mut HeldBytes) {
+        let _ = bytes;
+    }
+
+    /// About what the observer's part of the catalogue gained since [`Self::published`].
+    fn unpublished(&self) -> usize {
+        0
+    }
+
+    /// The scan's flush published the catalogue.
+    fn published(&mut self) {}
 }
 
 /// The carried state of one keyed family on one branch: its observer, the
@@ -158,6 +199,19 @@ pub struct Scan<O> {
     batch: Accumulator,
     #[serde(skip)]
     values: Values,
+    #[serde(skip)]
+    delta: Delta,
+    #[serde(skip)]
+    changed: BTreeMap<u64, Option<i128>>,
+    /// Bytes of the names numbered since the last flush.
+    #[serde(skip)]
+    named: usize,
+    /// Each held value changed since the last flush, with its value then.
+    #[serde(skip)]
+    dirty: HashMap<u64, Option<i128>>,
+    /// How many of those differ from their value then.
+    #[serde(skip)]
+    differing: usize,
 }
 
 impl<O: Observer> Scan<O> {
@@ -182,6 +236,23 @@ impl<O: Observer> Scan<O> {
             .map(|(at, name)| (name.as_str(), FIRST + at as u64))
     }
 
+    /// The key of `name` if it has been numbered.
+    fn numbered(&mut self, name: &str) -> Option<u64> {
+        self.index_names();
+        self.index.get(name).copied()
+    }
+
+    fn index_names(&mut self) {
+        if self.index.len() != self.names.len() {
+            self.index = self
+                .names
+                .iter()
+                .enumerate()
+                .map(|(at, name)| (name.clone(), FIRST + at as u64))
+                .collect();
+        }
+    }
+
     fn number(&mut self, name: &str) -> u64 {
         if self.index.len() != self.names.len() {
             self.index = self
@@ -195,6 +266,7 @@ impl<O: Observer> Scan<O> {
             return key;
         }
         let key = FIRST + self.names.len() as u64;
+        self.named = self.named.saturating_add(name.len() + size_of::<String>());
         self.names.push(name.to_owned());
         self.index.insert(name.to_owned(), key);
         key
@@ -239,6 +311,34 @@ impl<O: Observer> Scan<O> {
         let continuous = self.continues_to(hour);
         let starts = !self.open || !continuous;
         self.last_hour = Some(hour);
+        if !starts {
+            let mut delta = std::mem::take(&mut self.delta);
+            delta.clear();
+            self.index_names();
+            let observed = self.observer.observe_changes(
+                format,
+                frame,
+                &delta::Names(&self.index),
+                &mut delta,
+            );
+            let done = match observed {
+                Ok(Some(true)) => {
+                    self.apply(hour, read, &delta);
+                    Ok(true)
+                }
+                Ok(Some(false)) => {
+                    self.refused(hour, continuous);
+                    Ok(true)
+                }
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            };
+            delta.clear();
+            self.delta = delta;
+            if done? {
+                return Ok(());
+            }
+        }
         let mut values = std::mem::take(&mut self.values);
         values.clear();
         let known = self.observer.observe(format, frame, &mut values);
@@ -250,25 +350,7 @@ impl<O: Observer> Scan<O> {
             }
         };
         if !known {
-            if self.open {
-                for key in [READ, KNOWN]
-                    .into_iter()
-                    .chain(self.current.keys().copied())
-                    .collect::<Vec<_>>()
-                {
-                    self.batch.observe(key, hour, None, false);
-                }
-            }
-            self.current.clear();
-            // Keep the read only across consecutive refused hours, never a gap.
-            self.refused_read = if continuous {
-                self.last_read.or(self.refused_read)
-            } else {
-                None
-            };
-            self.open = false;
-            self.last_read = None;
-            self.batch.through(hour);
+            self.refused(hour, continuous);
             self.values = values;
             return Ok(());
         }
@@ -289,14 +371,23 @@ impl<O: Observer> Scan<O> {
         }
         self.values = values;
         for (&key, &value) in &next {
-            if starts || self.current.get(&key) != Some(&value) {
+            let before = self.current.get(&key).copied();
+            if starts || before != Some(value) {
                 self.batch.observe(key, hour, Some(value), starts);
             }
-        }
-        for &key in self.current.keys() {
-            if !next.contains_key(&key) {
-                self.batch.observe(key, hour, None, false);
+            if before != Some(value) {
+                self.touch(key, before, Some(value));
             }
+        }
+        let ended: Vec<(u64, i128)> = self
+            .current
+            .iter()
+            .filter(|(key, _)| !next.contains_key(key))
+            .map(|(&key, &value)| (key, value))
+            .collect();
+        for (key, value) in ended {
+            self.batch.observe(key, hour, None, false);
+            self.touch(key, Some(value), None);
         }
         if starts {
             self.batch.observe(KNOWN, hour, Some(1), true);
@@ -309,6 +400,92 @@ impl<O: Observer> Scan<O> {
         self.current = next;
         self.open = true;
         Ok(())
+    }
+
+    /// An hour whose inputs are not recorded: every name becomes unknown.
+    fn refused(&mut self, hour: i32, continuous: bool) {
+        if self.open {
+            for key in [READ, KNOWN]
+                .into_iter()
+                .chain(self.current.keys().copied())
+                .collect::<Vec<_>>()
+            {
+                self.batch.observe(key, hour, None, false);
+            }
+        }
+        for (key, value) in std::mem::take(&mut self.current) {
+            self.touch(key, Some(value), None);
+        }
+        // Keep the read only across consecutive refused hours, never a gap.
+        self.refused_read = if continuous {
+            self.last_read.or(self.refused_read)
+        } else {
+            None
+        };
+        self.open = false;
+        self.last_read = None;
+        self.batch.through(hour);
+    }
+
+    /// A held value changed: count it once while it differs from its last publication.
+    fn touch(&mut self, key: u64, before: Option<i128>, now: Option<i128>) {
+        let published = *self.dirty.entry(key).or_insert(before);
+        match (before != published, now != published) {
+            (false, true) => self.differing += 1,
+            (true, false) => self.differing -= 1,
+            _ => {}
+        }
+    }
+
+    /// A known hour given as its changes, published exactly as its whole values.
+    fn apply(&mut self, hour: i32, read: bool, delta: &Delta) {
+        if read {
+            self.last_read = Some(hour);
+        }
+        self.refused_read = None;
+        let mut changed = std::mem::take(&mut self.changed);
+        changed.clear();
+        for name in &delta.removed {
+            if let Some(key) = self.numbered(name) {
+                changed.insert(key, None);
+            }
+        }
+        for (name, value) in &delta.set {
+            let key = self.number(name);
+            changed.insert(key, Some(*value));
+        }
+        // A whole hour's values set what changed in key order, then end the rest.
+        for (&key, value) in &changed {
+            let before = self.current.get(&key).copied();
+            if value.is_some() && *value != before {
+                self.batch.observe(key, hour, *value, false);
+                self.touch(key, before, *value);
+            }
+        }
+        for (&key, value) in &changed {
+            if let (None, Some(before)) = (value, self.current.get(&key).copied()) {
+                self.batch.observe(key, hour, None, false);
+                self.touch(key, Some(before), None);
+            }
+        }
+        for (&key, &value) in &changed {
+            match value {
+                Some(value) => {
+                    self.current.insert(key, value);
+                }
+                None => {
+                    self.current.remove(&key);
+                }
+            }
+        }
+        changed.clear();
+        self.changed = changed;
+        if read {
+            self.batch
+                .observe(READ, hour, self.last_read.map(i128::from), false);
+        }
+        self.batch.through(hour);
+        self.open = true;
     }
 
     /// Whether `hour` follows the last hour observed.
@@ -344,9 +521,31 @@ impl<O: Observer> Scan<O> {
         self.refused_read = None;
     }
 
-    /// What the accumulator holds until its next flush.
+    /// What its next flush publishes and releases: accumulated events, new names and values off their publication.
     pub fn buffered_bytes(&self) -> usize {
-        self.batch.bytes()
+        self.batch
+            .bytes()
+            .saturating_add(self.named)
+            .saturating_add(self.differing.saturating_mul(CHANGE_BYTES))
+            .saturating_add(self.observer.unpublished())
+    }
+
+    /// What it retains across flushes, which bounds the catalogue text a flush publishes.
+    pub fn held_bytes(&self) -> usize {
+        let mut bytes = HeldBytes::default();
+        bytes
+            .heap(&self.names)
+            .table::<String, u64>(self.index.capacity())
+            .tree::<u64, i128>(self.current.len())
+            .tree::<u64, Option<i128>>(self.changed.len())
+            .table::<u64, Option<i128>>(self.dirty.capacity());
+        for name in self.index.keys() {
+            bytes.heap(name);
+        }
+        self.values.held(&mut bytes);
+        self.delta.held(&mut bytes);
+        self.observer.held(&mut bytes);
+        usize::try_from(bytes.total()).unwrap_or(usize::MAX)
     }
 
     /// Publish the batch and the catalogue (this scan).
@@ -364,7 +563,12 @@ impl<O: Observer> Scan<O> {
             branch,
             &BTreeMap::new(),
             self,
-        )
+        )?;
+        self.named = 0;
+        self.dirty.clear();
+        self.differing = 0;
+        self.observer.published();
+        Ok(())
     }
 }
 

@@ -64,6 +64,16 @@ impl Countries {
     pub fn slotted(&self, slot: u32) -> Option<String> {
         Some(part(self.tag(slot)?, slot))
     }
+
+    /// What its tables hold.
+    pub fn held(&self, bytes: &mut dashboard_base::prepared::prepass::HeldBytes) {
+        bytes
+            .table::<u32, u32>(self.links.capacity())
+            .table::<u32, String>(self.tags.capacity());
+        for tag in self.tags.values() {
+            bytes.heap(tag);
+        }
+    }
 }
 
 /// A country's name part: its tag and canonical slot.
