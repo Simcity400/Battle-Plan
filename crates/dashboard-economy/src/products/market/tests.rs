@@ -614,3 +614,85 @@ fn a_group_ledger_lists_members_only_while_members() {
     };
     assert!(MarketLedger::validate(&params).is_err());
 }
+
+/// Observed by its changes, with quiet hours before supplying variant reads, it publishes what whole hours do.
+#[test]
+fn observing_by_changes_publishes_what_observing_every_hour_does() {
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series::tests::assert_payloads_equal};
+    use replay_frame::frame::{FrameDecoder, FrameEncoder, Metrics, TableView};
+    let format = FormatVersion::CURRENT;
+    let supplying = |hour: i32| {
+        dashboard_base::metadata::slot_read(format, &Metrics::default(), TableId::VariantDefinitions, hour)
+    };
+    let at = |hour: i32| {
+        let mut at = base(hour);
+        // Balances move every fifth hour; identities never.
+        if let TableView::Complete(TableRows::Countries(rows)) = &mut *at.tables[TableId::Countries.index()] {
+            for row in rows.iter_mut() {
+                row.political_power_raw = Some(i64::from(hour / 5) * 10 + i64::from(row.id));
+            }
+        }
+        let mut contracts = vec![terms(1, 2, 7, 0), terms(1, 2, 9, 1)];
+        if hour >= 6 {
+            contracts.push(terms(2, 3, 8, 1));
+        }
+        if hour >= 14 {
+            contracts.retain(|row| row.id != 7);
+        }
+        contracts.sort_by_key(|row| (row.country, row.id, row.kind));
+        set(&mut at, TableRows::MarketContractTerms(contracts));
+        // The design changes only at the variant table's supplying reads.
+        let reads = (0..=hour).filter(|&hour| supplying(hour)).count();
+        set(
+            &mut at,
+            TableRows::VariantDefinitions(vec![
+                VariantDefinitionRow { id: 0xa1, creator_link: 1, obsolete: (reads % 2) as u8, ..Default::default() },
+                VariantDefinitionRow { id: 0xa2, creator_link: 2, ..Default::default() },
+            ]),
+        );
+        at
+    };
+    let blocks: Vec<Vec<i32>> = (0..4).map(|block| (block * 20..(block * 20 + 20).min(72)).collect()).collect();
+    // A supplying read after an hour whose countries and variants did not change.
+    assert!(
+        blocks.iter().any(|hours| hours.windows(3).any(|hours| {
+            supplying(hours[2]) && hours[1] % 5 != 0 && hours[2] % 5 != 0 && !supplying(hours[1])
+        })),
+        "no supplying read follows a quiet hour"
+    );
+    let (mut changed, mut whole) = (Prepared::default(), Prepared::default());
+    let (published, expected) = (Published { fixture: fixture() }, Published { fixture: fixture() });
+    for (block, hours) in blocks.iter().enumerate() {
+        let mut encoder = FrameEncoder::new();
+        let mut decoder = FrameDecoder::new();
+        let mut tracker = FrameChangeTracker::new();
+        for (index, &hour) in hours.iter().enumerate() {
+            let wire = encoder.encode(at(hour), index == 0).unwrap();
+            let decoded = decoder.advance(&wire).unwrap().clone();
+            let changes = tracker.observe_updates(&decoded, std::sync::Arc::new(wire), format);
+            changed.observe_changes(format, &decoded, &changes).unwrap();
+            whole.step(&decoded);
+        }
+        for (state, published) in [(&mut changed, &published), (&mut whole, &expected)] {
+            let mut writer = published.fixture.writer();
+            state.flush(&mut writer, 1, &AtomicBool::new(false)).unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &published.fixture.payloads(),
+            &expected.fixture.payloads(),
+            &format!("market block {block}"),
+        );
+        let through = *hours.last().unwrap();
+        for view in [MarketView::Contracts, MarketView::Requests, MarketView::Inventory, MarketView::Agreements] {
+            for tags in [&[][..], &["SEL"][..]] {
+                assert_eq!(
+                    serde_json::to_string(&published.history(view, tags, through)).unwrap(),
+                    serde_json::to_string(&expected.history(view, tags, through)).unwrap(),
+                    "block {block} {view:?} {tags:?}"
+                );
+            }
+        }
+        changed = serde_json::from_slice(&serde_json::to_vec(&changed).unwrap()).unwrap();
+    }
+}

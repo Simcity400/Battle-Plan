@@ -19,12 +19,16 @@
 //! Each domain is observed when its own tables changed or after a gap, and
 //! keeps its own refusals: a failed organisation read never refuses
 //! licences or designs.
+//!
+//! An observed hour observes again only the rows its recorded changes name ([`observe`]).
+
+mod observe;
 
 use super::keyed::{
-    EconomyRun, HolderTag, Keyed, Observed, Published, Tags, branch_of, clip_text, selected_spans,
+    self, EconomyRun, HolderTag, Published, branch_of, clip_text, selected_spans,
 };
 use dashboard_base::{
-    prepared::frame_changes::FrameChanges,
+    prepared::{frame_changes::FrameChanges, series::CatalogueWriter},
     products::{
         Product,
         equipment::{self, StockVariantName, Texts, VariantCatalogue, VariantVersion},
@@ -33,7 +37,7 @@ use dashboard_base::{
 };
 use replay_data::{
     format::FormatVersion,
-    rows::{TableId, tables},
+    rows::TableId,
 };
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -126,10 +130,50 @@ pub struct Extra {
     pub designs_from: Option<i32>,
 }
 
+/// [`Extra`] without the designs' naming reads, which the variant catalogue holds.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Held {
+    pub texts: Vec<String>,
+    pub organisations: BTreeMap<u64, Vec<RawOrganisation>>,
+    pub designs_from: Option<i32>,
+}
+
+/// [`Extra`] borrowed, its fields in its order.
+#[derive(Serialize)]
+struct ExtraView<'a> {
+    texts: &'a Vec<String>,
+    organisations: &'a BTreeMap<u64, Vec<RawOrganisation>>,
+    variants: Named<'a>,
+    designs_from: &'a Option<i32>,
+}
+
+struct Named<'a> {
+    ids: Vec<u64>,
+    versions: &'a BTreeMap<u64, Vec<VariantVersion>>,
+}
+
+impl Serialize for Named<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            self.ids
+                .iter()
+                .filter_map(|id| Some((id, self.versions.get(id)?))),
+        )
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Prepared {
-    keyed: Keyed<Field, Extra>,
+    keyed: keyed::Keyed<Field, Held>,
     variants: VariantCatalogue,
+    /// What observing the next hour by its changes needs; never saved.
+    #[serde(skip)]
+    open: observe::Open,
+    #[serde(skip)]
+    catalogue: CatalogueWriter,
+    /// The catalogue's base range length, once a flush saw it.
+    #[serde(skip)]
+    base: Option<usize>,
 }
 
 impl Prepared {
@@ -140,7 +184,7 @@ impl Prepared {
         changes: &FrameChanges,
     ) -> io::Result<()> {
         let gap = self.keyed.step(frame.hour)?;
-        super::keyed::observe_variants(&mut self.variants, format, frame, Some(changes));
+        self.observe_variants(format, frame, Some(changes));
         let changed = |tables: &[TableId]| {
             gap || [TableId::Countries, TableId::CountryLinks]
                 .iter()
@@ -155,244 +199,67 @@ impl Prepared {
                 || changes.slot_read[TableId::VariantDefinitions.index()],
         ];
         if domains.iter().any(|&domain| domain) {
-            self.observe(frame, domains);
+            self.observe(frame, domains, (!gap).then_some(changes));
         }
         Ok(())
     }
 
+    /// One hour observed whole.
     #[cfg(test)]
     pub(crate) fn step(&mut self, frame: &DecodedFrame) {
         self.keyed.step(frame.hour).unwrap();
-        super::keyed::observe_variants(&mut self.variants, FormatVersion::CURRENT, frame, None);
-        self.observe(frame, [true; 3]);
+        self.observe_variants(FormatVersion::CURRENT, frame, None);
+        self.observe(frame, [true; 3], None);
     }
 
-    fn text(&mut self, text: String) -> i128 {
-        let texts = &mut self.keyed.meta.extra.texts;
-        let index = texts.iter().position(|held| *held == text).unwrap_or_else(|| {
-            texts.push(text);
-            texts.len() - 1
-        });
-        index as i128
+    fn observe_variants(
+        &mut self,
+        format: FormatVersion,
+        frame: &DecodedFrame,
+        changes: Option<&FrameChanges>,
+    ) {
+        let changed = keyed::observe_variants(&mut self.variants, format, frame, changes);
+        let bytes = changed
+            .iter()
+            .map(|(_, version)| keyed::json_len(version) + 24)
+            .sum();
+        self.keyed.note_change(bytes);
     }
 
-    fn observe(&mut self, frame: &DecodedFrame, domains: [bool; 3]) {
-        let hour = frame.hour;
-        let mut observed = Observed::new();
-        let tags = match Tags::new(frame) {
-            Ok(tags) => tags,
-            Err(error) => {
-                self.keyed
-                    .refuse(format!("country identities unavailable: {error}"));
-                self.keyed
-                    .commit(hour, &observed, |field| domains[usize::from(field.domain())]);
-                return;
-            }
-        };
-        if domains[0] {
-            self.licences(frame, &tags, &mut observed);
-        }
-        if domains[1] {
-            self.organisations(frame, &tags, &mut observed);
-        }
-        if domains[2] {
-            self.designs(frame, &tags, &mut observed);
-        }
-        self.keyed
-            .commit(hour, &observed, |field| domains[usize::from(field.domain())]);
-    }
-
-    fn licences(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) {
-        let hour = frame.hour;
-        let rows = match frame.complete::<tables::ProductionLicenseRecords>() {
-            Ok(rows) => rows,
-            Err(error) => {
-                self.keyed.refuse(format!("licences unavailable: {error}"));
-                return;
-            }
-        };
-        observed.insert(self.keyed.key(Field::Known(0)), 1);
-        for row in rows {
-            let (Some(owner), Some(giver)) = (tags.slot(row.owner), tags.slot(row.giver)) else {
-                self.keyed.refuse("a licence names a country with no identity");
-                continue;
-            };
-            self.keyed.tag(tags, owner, hour);
-            self.keyed.tag(tags, giver, hour);
-            let at = row.ordinal;
-            for (field, value) in [
-                (Field::LicenceGiver(owner, at), i128::from(giver)),
-                (Field::LicenceLent(owner, at), i128::from(row.lended_cic)),
-                (Field::LicenceRequired(owner, at), i128::from(row.required_cic)),
-                (Field::LicenceStart(owner, at), i128::from(row.start_date)),
-            ] {
-                observed.insert(self.keyed.key(field), value);
-            }
-            for (index, &variant) in row.equipment.iter().enumerate() {
-                observed.insert(
-                    self.keyed.key(Field::LicenceVariant(owner, at, index as u32)),
-                    i128::from(variant),
-                );
-            }
-        }
-    }
-
-    fn organisations(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) {
-        let hour = frame.hour;
-        // The roster and its numbers need only the roster and the identities
-        // (read by the caller); the token dictionary names them, and its
-        // failure refuses the names alone.
-        let (roster, countries, links) = match (
-            frame.complete::<tables::IndustrialOrganisations>(),
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-        ) {
-            (Ok(roster), Ok(countries), Ok(links)) => (roster, countries, links),
-            (Err(error), ..) | (_, Err(error), _) | (.., Err(error)) => {
-                self.keyed.refuse(format!("organisations unavailable: {error}"));
-                return;
-            }
-        };
-        let lexical = match frame.complete::<tables::LexicalTokens>() {
-            Ok(lexical) => Some(lexical),
-            Err(error) => {
-                self.keyed
-                    .refuse(format!("organisation names unavailable: {error}"));
-                None
-            }
-        };
-        let naming = equipment::Tags::new(
-            countries,
-            links,
-            frame.complete::<tables::CountryAppearance>().ok(),
-        );
-        observed.insert(self.keyed.key(Field::Known(1)), 1);
-        let details = frame.complete::<tables::IndustrialOrganisationDetails>();
-        if let Err(error) = &details {
-            self.keyed
-                .refuse(format!("organisation state unavailable: {error}"));
-        }
-        let policies = frame.complete::<tables::IndustrialOrganisationPolicies>();
-        if let Err(error) = &policies {
-            self.keyed
-                .refuse(format!("organisation policies unavailable: {error}"));
-        }
-        for row in roster {
-            let Some(holder) = tags.slot(row.country) else {
-                self.keyed.refuse("an organisation's country has no identity");
-                continue;
-            };
-            self.keyed.tag(tags, holder, hour);
-            let id = row.organisation;
-            observed.insert(self.keyed.key(Field::MioHolder(id)), i128::from(holder));
-            // Without the dictionary the names are unknown from this read on.
-            let raw = match lexical {
-                Some(lexical) => production_lines::raw_organisation(row, hour, &naming, lexical),
-                None => RawOrganisation { first_hour: hour, owner_unknown: true, ..Default::default() },
-            };
-            let versions = self.keyed.meta.extra.organisations.entry(id).or_default();
-            if versions.last().is_none_or(|last| {
-                (&last.token, &last.name_key, &last.icon, &last.owner_tag, last.owner_unknown)
-                    != (&raw.token, &raw.name_key, &raw.icon, &raw.owner_tag, raw.owner_unknown)
-            }) {
-                versions.push(raw);
-            }
-            let Some(detail) = details.as_ref().ok().and_then(|details| {
-                details
-                    .binary_search_by_key(&id, |detail| detail.organisation)
-                    .ok()
-                    .map(|index| &details[index])
-                    .filter(|detail| detail.country == row.country)
-            }) else {
-                continue;
-            };
-            // Without the dictionary a selected policy reads as unspelled.
-            let state = production_lines::organisation_state(detail, None, lexical.map_or(&[][..], |rows| rows));
-            for (field, value) in [
-                (Field::MioSize(id), Some(i128::from(detail.state.size))),
-                (Field::MioFunds(id), Some(i128::from(detail.state.funds_raw))),
-                (Field::MioPoints(id), Some(i128::from(detail.state.points))),
-                (Field::MioUnlocked(id), Some(detail.unlocked.len() as i128)),
-                (Field::MioCooldown(id), detail.state.cooldown_hour.map(i128::from)),
-            ] {
-                if let Some(value) = value {
-                    observed.insert(self.keyed.key(field), value);
-                }
-            }
-            if state.policy_token.as_deref() == Some("") {
-                self.keyed.refuse("a selected policy's token is not spelled");
-                observed.insert(self.keyed.key(Field::MioPolicyUnresolved(id)), 1);
-            }
-            if let Some(token) = state.policy_token.as_ref().filter(|token| !token.is_empty()) {
-                let index = self.text(token.clone());
-                observed.insert(self.keyed.key(Field::MioPolicy(id)), index);
-            }
-            // The country's stored policy name joins by the raw token, spelled or not.
-            if state.policy_token.is_some() {
-                let name = policies.as_ref().ok().and_then(|rows| {
-                    rows.binary_search_by_key(&detail.country, |row| row.country)
-                        .ok()
-                        .and_then(|index| {
-                            rows[index]
-                                .policies
-                                .iter()
-                                .find(|policy| policy.token == detail.state.policy)
-                        })
-                        .map(|policy| String::from_utf8_lossy(&policy.name).into_owned())
-                });
-                if let Some(name) = name.filter(|name| !name.is_empty()) {
-                    let index = self.text(name);
-                    observed.insert(self.keyed.key(Field::MioPolicyName(id)), index);
-                }
-            }
-        }
-    }
-
-    fn designs(&mut self, frame: &DecodedFrame, tags: &Tags<'_>, observed: &mut Observed) {
-        let hour = frame.hour;
-        let rows = match frame.complete::<tables::VariantDefinitions>() {
-            Ok(rows) => rows,
-            Err(error) => {
-                self.keyed.refuse(format!("designs unavailable: {error}"));
-                return;
-            }
-        };
-        self.keyed.meta.extra.designs_from.get_or_insert(hour);
-        observed.insert(self.keyed.key(Field::Known(2)), 1);
-        for row in rows {
-            let Some(creator) = tags.slot(row.creator_link) else {
-                self.keyed.refuse("a design's creator has no identity");
-                continue;
-            };
-            self.keyed.tag(tags, creator, hour);
-            observed.insert(self.keyed.key(Field::DesignCreator(row.id)), i128::from(creator));
-            observed.insert(
-                self.keyed.key(Field::DesignObsolete(row.id)),
-                i128::from(row.obsolete != 0),
-            );
-        }
-    }
-
+    /// Bytes the next commit publishes and releases.
     pub fn bytes(&self) -> usize {
-        self.keyed.bytes()
+        self.keyed.pending()
+    }
+
+    /// Bytes kept through commits: saved state, catalogue base and open state. Walks the state.
+    pub fn held_bytes(&self) -> usize {
+        keyed::compressed_bound(keyed::json_len(self))
+            + self.base.unwrap_or_default()
+            + self.keyed.catalogue_bytes()
+            + self.open.bytes()
     }
 
     pub fn flush(&mut self, writer: &mut store::Writer, branch: u64, cancelled: &AtomicBool) -> io::Result<()> {
-        let named: BTreeSet<u64> = self
+        let ids = self
             .keyed
-            .meta
-            .fields
-            .values()
-            .filter_map(|field| match *field {
-                Field::DesignCreator(id) => Some(id),
-                _ => None,
+            .keys_in(Field::DesignCreator(0)..=Field::DesignCreator(u64::MAX))
+            .map(|(field, _)| match *field {
+                Field::DesignCreator(id) => id,
+                _ => unreachable!("a design creator range holds only design creators"),
             })
             .collect();
-        self.keyed.meta.extra.variants = named
-            .into_iter()
-            .filter_map(|id| Some((id, self.variants.versions.get(&id)?.clone())))
-            .collect();
-        self.keyed.flush(writer, FAMILY, branch, cancelled)
+        self.keyed.flush_values(writer, FAMILY, branch, cancelled)?;
+        let held = &self.keyed.meta.extra;
+        let extra = ExtraView {
+            texts: &held.texts,
+            organisations: &held.organisations,
+            variants: Named { ids, versions: &self.variants.versions },
+            designs_from: &held.designs_from,
+        };
+        self.keyed
+            .publish_catalogue(writer, FAMILY, branch, &mut self.catalogue, &mut self.base, &extra)?;
+        self.keyed.published();
+        Ok(())
     }
 }
 
@@ -848,3 +715,5 @@ pub fn query(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod equivalence;

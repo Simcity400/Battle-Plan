@@ -42,6 +42,18 @@ pub struct Metadata<F, X> {
     pub extra: X,
 }
 
+/// [`Metadata`] borrowed, with the family's published `extra`.
+#[derive(Serialize)]
+struct MetadataView<'a, F, E> {
+    fields: &'a BTreeMap<u64, F>,
+    tags: &'a BTreeMap<u32, Vec<(i32, String)>>,
+    refusals: &'a BTreeMap<String, u64>,
+    extra: E,
+}
+
+/// Framing a catalogue change adds beyond its own text.
+pub const EDIT_MARGIN: usize = 32;
+
 #[derive(Serialize, Deserialize)]
 #[serde(bound(
     serialize = "F: Serialize, X: Serialize",
@@ -52,6 +64,15 @@ pub struct Keyed<F, X> {
     keys: BTreeMap<String, u64>,
     pub meta: Metadata<F, X>,
     last: Option<i32>,
+    /// `meta.fields` inverted; rebuilt after a restore.
+    #[serde(skip)]
+    index: BTreeMap<F, u64>,
+    /// Catalogue text changed since the last flush, from above.
+    #[serde(skip)]
+    changed: usize,
+    /// Refusal reasons whose counts changed since the last flush.
+    #[serde(skip)]
+    refused: std::collections::BTreeSet<String>,
 }
 
 impl<F, X: Default> Default for Keyed<F, X> {
@@ -66,11 +87,16 @@ impl<F, X: Default> Default for Keyed<F, X> {
                 extra: X::default(),
             },
             last: None,
+            index: BTreeMap::new(),
+            changed: 0,
+            refused: std::collections::BTreeSet::new(),
         }
     }
 }
 
-impl<F: Serialize + DeserializeOwned + Ord, X: Serialize + DeserializeOwned + Default> Keyed<F, X> {
+impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOwned + Default>
+    Keyed<F, X>
+{
     /// Authenticate an accepted hour: whether it follows a gap (or is the
     /// first), so that every value is observed again.
     pub fn step(&mut self, hour: i32) -> io::Result<bool> {
@@ -81,25 +107,86 @@ impl<F: Serialize + DeserializeOwned + Ord, X: Serialize + DeserializeOwned + De
     }
 
     pub fn key(&mut self, field: F) -> u64 {
-        let name = serde_json::to_string(&field).expect("field keys serialize");
-        if let Some(&key) = self.keys.get(&name) {
+        if let Some(key) = self.lookup(&field) {
             return key;
         }
+        let name = serde_json::to_string(&field).expect("field keys serialize");
         let key = self.keys.len() as u64;
+        self.changed += 2 * name.len() + 20 + EDIT_MARGIN;
         self.keys.insert(name, key);
-        self.meta.fields.insert(key, field);
+        self.meta.fields.insert(key, field.clone());
+        self.index.insert(field, key);
         key
     }
 
+    #[cfg(test)]
+    pub fn keys(&self) -> &BTreeMap<String, u64> {
+        &self.keys
+    }
+
+    /// The field's key, without giving one.
+    pub fn lookup(&mut self, field: &F) -> Option<u64> {
+        if self.index.len() != self.meta.fields.len() {
+            self.index = self
+                .meta
+                .fields
+                .iter()
+                .map(|(&key, field)| (field.clone(), key))
+                .collect();
+        }
+        self.index.get(field).copied()
+    }
+
+    pub fn keys_in(
+        &mut self,
+        range: impl std::ops::RangeBounds<F>,
+    ) -> impl Iterator<Item = (&F, u64)> + '_ {
+        if self.index.len() != self.meta.fields.len() {
+            self.index = self
+                .meta
+                .fields
+                .iter()
+                .map(|(&key, field)| (field.clone(), key))
+                .collect();
+        }
+        self.index.range(range).map(|(field, &key)| (field, key))
+    }
+
     pub fn refuse(&mut self, reason: impl Into<String>) {
-        *self.meta.refusals.entry(reason.into()).or_default() += 1;
+        self.refuse_times(reason.into(), 1);
+    }
+
+    pub fn refuse_times(&mut self, reason: impl AsRef<str> + Into<String>, times: u64) {
+        if times == 0 {
+            return;
+        }
+        if !self.refused.contains(reason.as_ref()) {
+            self.changed += 2 * reason.as_ref().len() + 20 + EDIT_MARGIN;
+            self.refused.insert(reason.as_ref().to_owned());
+        }
+        match self.meta.refusals.get_mut(reason.as_ref()) {
+            Some(count) => *count += times,
+            None => {
+                self.meta.refusals.insert(reason.into(), times);
+            }
+        }
+    }
+
+    /// Count `bytes` of the family's own catalogue facts as changed.
+    pub fn note_change(&mut self, bytes: usize) {
+        self.changed += bytes + EDIT_MARGIN;
     }
 
     /// Record the holder's tag at `hour` when it changed.
     pub fn tag(&mut self, tags: &Tags<'_>, slot: u32, hour: i32) {
-        if let Some(tag) = tags.slot_tag(slot) {
+        self.tag_text(slot, tags.slot_tag(slot), hour);
+    }
+
+    pub fn tag_text(&mut self, slot: u32, tag: Option<String>, hour: i32) {
+        if let Some(tag) = tag {
             let runs = self.meta.tags.entry(slot).or_default();
             if runs.last().is_none_or(|(_, last)| *last != tag) {
+                self.changed += tag.len() + 16 + EDIT_MARGIN;
                 runs.push((hour, tag));
             }
         }
@@ -127,6 +214,16 @@ impl<F: Serialize + DeserializeOwned + Ord, X: Serialize + DeserializeOwned + De
         self.values.bytes()
     }
 
+    /// What the next flush publishes: the values and the catalogue patch.
+    pub fn pending(&self) -> usize {
+        let catalogue = if self.changed == 0 {
+            0
+        } else {
+            self.changed + CATALOGUE_MARGIN
+        };
+        self.values.bytes() + catalogue
+    }
+
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -137,7 +234,124 @@ impl<F: Serialize + DeserializeOwned + Ord, X: Serialize + DeserializeOwned + De
         self.values
             .flush(writer, &values_section(family, branch), 0, cancelled)?;
         series::write_catalogue(writer, family, branch, &self.keys, &self.meta)
+            .map_err(structural)?;
+        self.published();
+        Ok(())
     }
+
+    pub fn flush_values(
+        &mut self,
+        writer: &mut store::Writer,
+        family: &str,
+        branch: u64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.values
+            .flush(writer, &values_section(family, branch), 0, cancelled)
+    }
+
+    /// The catalogue with `extra` as its facts; `base` notes the base range's length.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_catalogue(
+        &self,
+        writer: &mut store::Writer,
+        family: &str,
+        branch: u64,
+        catalogue: &mut series::CatalogueWriter,
+        base: &mut Option<usize>,
+        extra: &impl Serialize,
+    ) -> io::Result<()> {
+        let meta = MetadataView {
+            fields: &self.meta.fields,
+            tags: &self.meta.tags,
+            refusals: &self.meta.refusals,
+            extra,
+        };
+        catalogue
+            .write(&mut BaseWatch { writer, base }, family, branch, &self.keys, &meta)
+            .map_err(structural)
+    }
+
+    pub fn published(&mut self) {
+        self.changed = 0;
+        self.refused.clear();
+    }
+
+    /// Bytes the key catalogue and index hold, roughly.
+    pub fn catalogue_bytes(&self) -> usize {
+        self.keys.keys().map(|name| name.len() + 64).sum::<usize>()
+            + self.meta.fields.len() * (2 * size_of::<F>() + 96)
+    }
+}
+
+/// A malformed stored catalogue ends the run rather than refusing the family.
+fn structural(error: io::Error) -> io::Error {
+    if error.kind() == io::ErrorKind::InvalidData {
+        io::Error::other(error)
+    } else {
+        error
+    }
+}
+
+/// A catalogue patch's header and frame.
+pub const CATALOGUE_MARGIN: usize = 256;
+
+/// A writer noting the length of the base range it reads or writes.
+struct BaseWatch<'a> {
+    writer: &'a mut store::Writer,
+    base: &'a mut Option<usize>,
+}
+
+impl dashboard_base::prepared::pages::Pages for BaseWatch<'_> {
+    fn write_at(&mut self, section: &str, range: u64, data: &[u8]) -> io::Result<()> {
+        dashboard_base::prepared::pages::Pages::write_at(self.writer, section, range, data)?;
+        if range == 0 {
+            *self.base = Some(data.len());
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, section: &str, data: &[u8]) -> io::Result<u64> {
+        dashboard_base::prepared::pages::Pages::write(self.writer, section, data)
+    }
+
+    fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
+        let bytes = dashboard_base::prepared::pages::Pages::read_at(self.writer, section, range)?;
+        if range == 0
+            && let Some(bytes) = &bytes
+        {
+            *self.base = Some(bytes.len());
+        }
+        Ok(bytes)
+    }
+
+    fn range_ids(
+        &mut self,
+        section: &str,
+        count: u64,
+    ) -> io::Result<Option<Vec<Option<store::RangeId>>>> {
+        dashboard_base::prepared::pages::Pages::range_ids(self.writer, section, count)
+    }
+}
+
+pub fn json_len(value: &impl Serialize) -> usize {
+    struct Count(usize);
+    impl io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).map_or(0, |()| count.0)
+}
+
+/// The most bytes zstd writes for `len` bytes.
+pub fn compressed_bound(len: usize) -> usize {
+    len + (len >> 8) + 64
 }
 
 pub fn values_section(family: &str, branch: u64) -> String {
@@ -390,18 +604,17 @@ impl<'a> Tags<'a> {
     }
 }
 
-/// Advance the variant catalogue over an accepted hour: observe it where a
-/// naming table changed or was read, else carry its names.
+/// Advance the variant catalogue over an hour; the versions it changed.
 pub fn observe_variants(
     variants: &mut dashboard_base::products::equipment::VariantCatalogue,
     format: replay_data::format::FormatVersion,
     frame: &DecodedFrame,
     changes: Option<&dashboard_base::prepared::frame_changes::FrameChanges>,
-) {
+) -> Vec<(u64, dashboard_base::products::equipment::VariantVersion)> {
     use replay_data::rows::TableId;
     let Some(changes) = changes else {
         variants.observe(format, frame);
-        return;
+        return Vec::new();
     };
     let unchanged = !dashboard_base::products::equipment::design_changed(frame)
         && !changes.slot_read[TableId::VariantDefinitions.index()]
@@ -409,9 +622,10 @@ pub fn observe_variants(
             .iter()
             .all(|table| !changes.rows_changed[table.index()]);
     if unchanged {
-        variants.advance(frame.hour);
+        variants.advance_changed(frame, changes);
+        Vec::new()
     } else {
-        let _ = variants.observe_changed(format, frame, changes);
+        variants.observe_changed(format, frame, changes)
     }
 }
 
