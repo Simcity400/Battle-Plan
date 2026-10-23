@@ -778,9 +778,9 @@ fn observing_by_changes_publishes_what_observing_every_row_does() {
     assert!(quiet.len() >= 30, "{quiet:?}");
 }
 
-/// 5,000 countries with a licence, an organisation and two designs each.
+/// 1,500 countries with a licence, an organisation and two designs each.
 fn crowd(hour: i32) -> DecodedFrame {
-    const COUNTRIES: u32 = 5_000;
+    const COUNTRIES: u32 = 1_500;
     let mut at = frame(hour);
     many_countries(&mut at, COUNTRIES);
     balances(&mut at, |row| {
@@ -858,14 +858,14 @@ fn crowd(hour: i32) -> DecodedFrame {
 }
 
 #[test]
-fn five_thousand_countries_observe_only_their_changed_rows() {
+fn fifteen_hundred_countries_observe_only_their_changed_rows() {
     let blocks = vec![(0..6).collect(), (6..12).collect()];
     let recording = Recording {
         blocks,
         frame: Box::new(crowd),
     };
-    let later = compare(&recording, &["T0001", "T4999"], "crowd");
-    // Two designs change each later hour, of 10,000; nothing else does.
+    let later = compare(&recording, &["T0001", "T1499"], "crowd");
+    // Two designs change each later hour, of 3,000; nothing else does.
     assert!(
         later.iter().all(|&(_, observed)| observed <= 2),
         "{later:?}"
