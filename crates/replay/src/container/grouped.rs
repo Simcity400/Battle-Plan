@@ -2827,7 +2827,8 @@ impl Replay {
         index: &BlockIndex,
         tables: &[TableId],
     ) -> io::Result<RecordedFrame> {
-        let _consumer = self.section_consumer(self.block_position(index).unwrap_or(0));
+        let _consumer =
+            self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
@@ -2930,7 +2931,8 @@ impl Replay {
         through: Hour,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<RecordedFrame>> {
-        let _consumer = self.section_consumer(self.block_position(index).unwrap_or(0));
+        let _consumer =
+            self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
         if let Some(block) = self.grouped_block(index)? {
             let frames =
                 read_recorded_through(self, index, &block, Some(tables), parallel, Some(through))?;
@@ -3019,6 +3021,13 @@ fn keyframe_admitted(
         1,
         true,
         || {
+            #[cfg(any(test, feature = "test-support"))]
+            replay.decoded_sections.wire_decode(
+                from.position,
+                table,
+                1,
+                super::decoded_sections::WireRoute::Keyframe,
+            );
             let raw = directory
                 .read_raw(replay, from.index, keyframe_section(table))?
                 .ok_or_else(|| {
@@ -3080,7 +3089,8 @@ fn read_recorded_through(
     parallel: Option<&Parallel<'_>>,
     through: Option<Hour>,
 ) -> io::Result<Vec<RecordedFrame>> {
-    let _consumer = replay.section_consumer(replay.block_position(index).unwrap_or(0));
+    let _consumer =
+        replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -3196,7 +3206,8 @@ pub(crate) fn read_selected_updates(
     selected: &[TableId],
     check: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<SelectedUpdates> {
-    let _consumer = replay.section_consumer(replay.block_position(index).unwrap_or(0));
+    let _consumer =
+        replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
     let _cpu = crate::cpu::scope("decode", None);
     let format = replay.format;
     if format.version() < GROUPED_FORMAT {
@@ -3630,8 +3641,21 @@ impl LaterSection {
 }
 
 fn raw_stage(context: &Context<'_>, table: TableId, use_direct: bool) -> io::Result<RawColumn> {
+    #[cfg(any(test, feature = "test-support"))]
+    context.replay.decoded_sections.wire_decode(
+        context.position,
+        table,
+        context.hours.len(),
+        if use_direct {
+            super::decoded_sections::WireRoute::Direct
+        } else {
+            super::decoded_sections::WireRoute::Original
+        },
+    );
     #[cfg(test)]
     super::aliases::private::hooks::fail_raw(table)?;
+    #[cfg(test)]
+    super::aliases::private::hooks::gate_raw(table);
     let format = context.format;
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];

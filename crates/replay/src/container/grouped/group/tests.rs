@@ -524,3 +524,74 @@ fn a_member_panic_ends_a_parallel_read_without_hanging() {
         replay.read_block(index).unwrap()
     );
 }
+
+#[test]
+fn overlapping_groups_decode_a_shared_member_twice_and_admit_it_once() {
+    let shared = TableId::DivisionStatus;
+    hooks::with(|hooks| hooks.verify_group = false);
+    // Check the overlap before installing the gate so a changed fixture fails without waiting.
+    let (probe, _) = alias_fixture(Layout::Chosen);
+    let divisions = [TableId::Divisions];
+    let (_, decodes) = crate::container::test_work::table_decodes(|| {
+        results(&probe, &probe.index[0], Some(&divisions[..]), None, false)
+    });
+    assert!(
+        decodes.iter().any(|&(_, _, table, _)| table == shared),
+        "the fixture's Divisions no longer reads DivisionStatus, which this test needs: {decodes:?}"
+    );
+    let expected = [TableId::Divisions, shared].map(|selected| {
+        Block::new(&probe, &probe.index[0])
+            .read(
+                &probe,
+                &probe.index[0],
+                Some(&[selected]),
+                None,
+                true,
+                &[selected],
+            )
+            .pop()
+            .unwrap()
+    });
+    let (replay, _) = alias_fixture(Layout::Chosen);
+    let index = &replay.index[0];
+    replay.cache_decoded_sections(true);
+    replay.log_section_decodes();
+    hooks::with(|hooks| {
+        hooks.raw_gate = Some((shared, std::sync::Arc::new(hooks::Gate::new(2))));
+    });
+    std::thread::scope(|scope| {
+        for (selected, expected) in [TableId::Divisions, shared].into_iter().zip(&expected) {
+            let replay = &replay;
+            scope.spawn(move || {
+                let read = Block::new(replay, index).read(
+                    replay,
+                    index,
+                    Some(&[selected][..]),
+                    None,
+                    false,
+                    &[selected],
+                );
+                assert!(read[0].is_ok(), "{selected:?}");
+                same(selected, expected, &read[0], "overlapping groups");
+            });
+        }
+    });
+    hooks::with(|hooks| hooks.raw_gate = None);
+    let wire: Vec<_> = replay
+        .wire_decodes()
+        .into_iter()
+        .filter(|decode| decode.table == shared.index())
+        .collect();
+    let admitted: Vec<_> = replay
+        .section_decodes()
+        .into_iter()
+        .filter(|decode| decode.table == shared.index())
+        .collect();
+    let direct = wire
+        .iter()
+        .filter(|decode| decode.route == crate::container::WireRoute::Direct)
+        .count();
+    assert_eq!(direct, 2, "a wire decode in each group: {wire:?}");
+    assert_eq!(admitted.len(), 1, "one admission: {admitted:?}");
+    assert!(admitted[0].returned && !admitted[0].keyframe_only);
+}

@@ -32,7 +32,9 @@ const FOOTER_SIZE: usize = 24;
 mod aliases;
 mod changes;
 mod decoded_sections;
-pub use decoded_sections::SectionConsumer;
+pub use decoded_sections::{SectionCacheCensus, SectionConsumer};
+#[cfg(any(test, feature = "test-support"))]
+pub use decoded_sections::{SectionDecode, WireDecode, WireRoute};
 mod file_backed;
 mod stream;
 #[cfg(any(test, feature = "test-support"))]

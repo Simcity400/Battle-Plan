@@ -945,6 +945,7 @@ pub(crate) mod hooks {
         pub fail: Vec<(TableId, usize, bool, Failure)>,
         /// Tables whose raw columns fail.
         pub fail_raw: Vec<(TableId, Failure)>,
+        pub raw_gate: Option<(TableId, std::sync::Arc<Gate>)>,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -996,6 +997,62 @@ pub(crate) mod hooks {
                 format_args!("injected alias failure: {table:?} raw"),
             )),
             None => Ok(()),
+        }
+    }
+
+    /// Hold overlapping raw decodes until every expected reader has arrived.
+    pub(crate) struct Gate {
+        parties: usize,
+        arrived: std::sync::Mutex<usize>,
+        all: std::sync::Condvar,
+    }
+
+    impl Gate {
+        pub(crate) fn new(parties: usize) -> Self {
+            Self {
+                parties,
+                arrived: std::sync::Mutex::new(0),
+                all: std::sync::Condvar::new(),
+            }
+        }
+
+        /// Arrival counts decide progress; the timeout only prevents a hung test.
+        fn arrive(&self) {
+            let bound = std::time::Instant::now() + std::time::Duration::from_secs(600);
+            let mut arrived = self
+                .arrived
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *arrived += 1;
+            self.all.notify_all();
+            while *arrived < self.parties {
+                let left = bound.saturating_duration_since(std::time::Instant::now());
+                assert!(
+                    !left.is_zero(),
+                    "a raw column gate: {} of {} arrived",
+                    *arrived,
+                    self.parties
+                );
+                arrived = self
+                    .all
+                    .wait_timeout(arrived, left)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
+            }
+        }
+    }
+
+    /// Wait at `table`'s raw column gate, if one is set; the hooks are not held while waiting.
+    pub(crate) fn gate_raw(table: TableId) {
+        let gate = with(|hooks| {
+            hooks
+                .raw_gate
+                .as_ref()
+                .filter(|(gated, _)| *gated == table)
+                .map(|(_, gate)| std::sync::Arc::clone(gate))
+        });
+        if let Some(gate) = gate {
+            gate.arrive();
         }
     }
 
