@@ -1,11 +1,12 @@
 import { useMemo, useRef } from 'react';
-import type { AirSide, CountryStyle } from '../generated/dashboard';
+import { COUNTRY_COLOURS_OVER_BUDGET } from '../generated/dashboard.ts';
+import type { AirSide, CountryColourReply, CountryColourRun, CountryStyle } from '../generated/dashboard';
 import type { DashboardClient } from './client';
 import type { BoundTrack } from './model';
 import { countryLineColours } from './countryLineColours.ts';
 import { nameKey, useCountryFactsRead } from './countryNamesAt.ts';
 import { MAX_NAME_HOURS } from './countryFacts.ts';
-import type { NameAt } from './countryFacts';
+import type { BatchFactSpec, FactPlan, NameAt } from './countryFacts';
 import { STYLES } from './useCountriesAt.ts';
 import { lookHour } from './countryLooks.ts';
 import { airSegmentAt, sideAt } from './airSuperiority.ts';
@@ -13,6 +14,54 @@ import type { AirMoment, AirTimeline } from './airSuperiority';
 import type { ChartTokens } from '../charts/tokens';
 
 type Reply = AirMoment | AirTimeline;
+/** A country's recorded map colour at an hour. */
+export type CountryColour = Pick<CountryStyle, 'color'>;
+
+/** The last of a tag's runs (ascending) starting at or before `hour`. */
+function runAt(runs: readonly CountryColourRun[] | undefined, hour: number): CountryColourRun | undefined {
+  if (!runs) return undefined;
+  let low = 0, high = runs.length;
+  while (low < high) { const middle = (low + high) >> 1; if (runs[middle].hour <= hour) low = middle + 1; else high = middle; }
+  return runs[low - 1];
+}
+
+/** Each planned hour's colours from `country-colours` runs. An hour the reply could
+ * not read is absent; a country with no recorded colour is absent from its hour, so
+ * it is read with nothing. Hours in one run share one colour object. */
+export function colourHours(reply: CountryColourReply, plan: FactPlan): Map<number, Map<string, CountryColour>> {
+  const unread = new Set(reply.unread.map(item => item.hour));
+  const runs = new Map<string, CountryColourRun[]>();
+  for (const run of reply.runs) {
+    const list = runs.get(run.tag);
+    if (list) list.push(run); else runs.set(run.tag, [run]);
+  }
+  const shared = new Map<CountryColourRun, CountryColour>();
+  const hours = new Map<number, Map<string, CountryColour>>();
+  for (const [hour, tags] of plan) {
+    if (unread.has(hour)) continue;
+    const found = hours.get(hour) ?? new Map<string, CountryColour>();
+    hours.set(hour, found);
+    for (const tag of tags) {
+      const run = runAt(runs.get(tag), hour);
+      if (!run?.color) continue;
+      let colour = shared.get(run);
+      if (!colour) shared.set(run, colour = { color: run.color });
+      found.set(tag, colour);
+    }
+  }
+  return hours;
+}
+
+/** Colours for every day of a timeline in one `country-colours` request, not one
+ * request per day. A single hour (a day Follow adds) is read on the interactive path
+ * as before; a reply too large for one request is read again in halves. */
+export const COLOURS: BatchFactSpec<CountryColour> = {
+  product: 'country-colours', batch: true, single: STYLES, oversize: COUNTRY_COLOURS_OVER_BUDGET,
+  params: (branchId, plan) => ({ branchId, hours: [...new Set(plan.map(([hour]) => hour))], tags: [...new Set(plan.flatMap(([, tags]) => tags))].sort() }),
+  // The request reads every country it names at every hour it names.
+  size: plan => new Set(plan.map(([hour]) => hour)).size * new Set(plan.flatMap(([, tags]) => tags)).size,
+  extract: (data, plan) => colourHours(data as CountryColourReply, plan),
+};
 /** The country reads colouring one displayed hour, by `nameKey`: each side's and the viewpoint's. */
 export interface AirColourSources { sides: Map<string, string>; viewpoint?: string }
 /** The colours shown at one hour, by side key and for the viewpoint. */
@@ -77,9 +126,9 @@ export function airColourGroups(history: ReadonlyMap<number, AirColourSources>, 
       before = held.group;
       continue;
     }
-    const entries = new Map<string, CountryStyle>();
+    const entries = new Map<string, CountryColour>();
     for (const read of viewpoint === undefined ? sides.values() : [...sides.values(), viewpoint]) {
-      const found = style(read) as CountryStyle | null | undefined;
+      const found = style(read) as CountryColour | null | undefined;
       if (found && typeof found === 'object' && found.color != null) entries.set(read, found);
     }
     const colours = countryLineColours([...entries.keys()].sort(), entries, surface, fixed);
@@ -101,16 +150,19 @@ function lookup(groups: AirColourGroups, muted: string): AirColourLookup {
   };
 }
 
-/** `reply` colours the reply's own hours and changes only when one of them does, so a
- * played hour moving the current day's read never projects the history again; `latest`
- * also colours the current day. That day is read apart from the history for the same
- * reason; an hour both plan is read once. */
+/** Two colourings: `reply` for the reply's own hours, and `latest`, which also
+ * colours the current day. `reply` changes only when one of its hours does, so
+ * playing through the current day never redraws the history.
+ *
+ * A timeline's days are read in one request (`COLOURS`). A moment's played hour is
+ * read alone, as is the current day, kept apart from the history for the same
+ * reason. An hour both need is read once. */
 export function useAirCountryColours(client: DashboardClient, track: BoundTrack | undefined, data: Reply | undefined, day: AirMoment | undefined,
   hour: number, dayHour: number | null, viewpointTag: string | undefined, active: boolean, tokens: ChartTokens) {
   const plan = useMemo(() => airColourPlan(data, undefined, hour, null, track?.branch, viewpointTag), [data, hour, track?.branch, viewpointTag]);
   const dayPlan = useMemo(() => airColourPlan(undefined, day, hour, dayHour, track?.branch, viewpointTag), [day, hour, dayHour, track?.branch, viewpointTag]);
   const dayWanted = useMemo(() => dayPlan.wanted.filter(item => !plan.keys.has(nameKey(item.hour, item.tag))), [plan, dayPlan]);
-  const styles = useCountryFactsRead(client, track, plan.wanted, active, STYLES, plan.maxHours);
+  const styles = useCountryFactsRead<CountryColour>(client, track, plan.wanted, active, data?.view === 'moment' ? STYLES : COLOURS, plan.maxHours);
   const dayStyles = useCountryFactsRead(client, track, dayWanted, active, STYLES, dayPlan.maxHours);
   const held = useRef<{ groups: AirColourGroups; hours: number[]; shown: (AirColourGroup | undefined)[]; muted: string; reply: AirColourLookup } | null>(null);
   const groups = useMemo(() => airColourGroups(plan.sources, dayPlan.sources, key => styles.get(key) ?? dayStyles.get(key),

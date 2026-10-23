@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryStyleReply } from '../generated/dashboard';
 import type { DashboardClient } from './client';
-import { FAILED_FACT, FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey, readFacts } from './countryFacts.ts';
-import type { FactRead, FactRequestOrder, FactSpec, FactsFound, NameAt } from './countryFacts';
+import { FAILED_FACT, FactRequests, factsKey, HourStore, MAX_NAME_HOURS, nameKey, readFactBatch, readFacts } from './countryFacts.ts';
+import type { BatchFactSpec, FactRead, FactRequestOrder, FactSpec, FactsFound, NameAt } from './countryFacts';
 import { useContentRevision } from './contentRevision.ts';
 import type { BoundTrack } from './model';
 
 export { MAX_NAME_HOURS, nameKey };
 export type { NameAt };
+
+/** How a store's facts are read: per hour and chunk of countries, or every hour in one request. */
+type AnyFactSpec<V> = FactSpec<V, FactsFound<V>> | BatchFactSpec<V>;
 
 const sameWanted = (a: readonly NameAt[], b: readonly NameAt[]) => a === b
   || a.length === b.length && a.every((item, index) => item.hour === b[index].hour && item.tag === b[index].tag);
@@ -22,7 +25,7 @@ const sameWanted = (a: readonly NameAt[], b: readonly NameAt[]) => a === b
  * the values `wanted` asks for, keyed by `nameKey`; one the recording does not give
  * at its hour is absent, so the caller shows its fallback. */
 export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: FactSpec<V, FactsFound<V>>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V> {
+  spec: AnyFactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V> {
   const { held, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // Only what is wanted is handed out, so an update never copies everything read.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -33,7 +36,7 @@ export function useCountryFactsAt<V>(client: DashboardClient, track: Pick<BoundT
  * (`FAILED_FACT`), and completed without a value (null). A new `attempt` retries
  * failures at once; new content discards every dependent answer. */
 export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: FactSpec<V, FactsFound<V>>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null | typeof FAILED_FACT> {
+  spec: AnyFactSpec<V>, maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, V | null | typeof FAILED_FACT> {
   const { requests, key, version } = useFactStore(client, track, wanted, active, spec, maxHours, attempt);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => requests.pickRead(wanted), [requests, key, version]);
@@ -41,16 +44,17 @@ export function useCountryFactsRead<V>(client: DashboardClient, track: Pick<Boun
 
 /** The store behind both hooks. */
 function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
-  spec: FactSpec<V, FactsFound<V>>, maxHours: number, attempt: number) {
+  spec: AnyFactSpec<V>, maxHours: number, attempt: number) {
   // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
   const content = useContentRevision(client);
   const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product, spec.identity, content]) : '';
   // The same countries in another order are the same request (`factsKey`). Callers
   // rebuild `wanted` each render, so it is keyed again only when its items change.
+  const order = 'batch' in spec ? undefined : spec.requestOrder;
   const keyed = useRef<{ trackKey: string; wanted: readonly NameAt[]; order?: FactRequestOrder; key: string } | null>(null);
-  if (!keyed.current || keyed.current.trackKey !== trackKey || keyed.current.order !== spec.requestOrder
+  if (!keyed.current || keyed.current.trackKey !== trackKey || keyed.current.order !== order
     || !sameWanted(keyed.current.wanted, wanted)) {
-    keyed.current = { trackKey, wanted, order: spec.requestOrder, key: factsKey(trackKey, wanted, spec.requestOrder) };
+    keyed.current = { trackKey, wanted, order, key: factsKey(trackKey, wanted, order) };
   }
   const key = keyed.current.key;
   const [version, setVersion] = useState(0);
@@ -61,7 +65,8 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
     store.current?.requests.cancel();
     const held = new HourStore<V>(MAX_NAME_HOURS);
     const source = track ? { sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, content } : null;
-    const read: FactRead<V> = (plan, signal, onChunk) => source ? readFacts(client, source, spec, plan, signal, onChunk, track?.source) : Promise.resolve();
+    const read: FactRead<V> = (plan, signal, onChunk) => !source ? Promise.resolve()
+      : 'batch' in spec ? readFactBatch(client, source, spec, plan, signal, onChunk, track?.source) : readFacts(client, source, spec, plan, signal, onChunk, track?.source);
     store.current = { trackKey, client, store: held, requests: new FactRequests(held, read, () => setVersion(value => value + 1)) };
   }
   const { store: held, requests } = store.current;
@@ -73,12 +78,14 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
     if (!active || !track) { requests.cancel(); return; }
     // Nothing wanted: whatever was read is released.
     if (!wanted.length) { requests.cancel(); if (held.size) { held.clear(); setVersion(value => value + 1); } return; }
-    requests.want(wanted, maxHours, spec.perRequest, spec.requestOrder);
+    // A batched product reads every hour and country queued in one request.
+    if ('batch' in spec) requests.want(wanted, maxHours, Infinity, 'time', true);
+    else requests.want(wanted, maxHours, spec.perRequest, spec.requestOrder);
     // A new attempt tries a failing read again without waiting.
     if (attempted.current !== attempt) { attempted.current = attempt; requests.retry(); }
     // The key names every request; the arrays behind it are rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, active, attempt, requests, spec.requestOrder]);
+  }, [key, active, attempt, requests, order]);
   return { held, requests, key, version };
 }
 

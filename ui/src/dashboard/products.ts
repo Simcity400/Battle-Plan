@@ -3,6 +3,7 @@ import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } f
 import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
 import { forgetFlags } from './flagCache.ts';
+import { forgetReplySizes } from './replySizes.ts';
 import { contentRevision, useContentRevision } from './contentRevision.ts';
 import { isPreparedProduct, preparedSeriesQuery } from './preparedSeries.ts';
 import { validateCountryGroupReply } from './groupsReply.ts';
@@ -114,6 +115,7 @@ export async function loadTransientProduct<T>(client: DashboardClient, request: 
 export function forgetProducts(client: DashboardClient, sourceId: string): void {
   cache(client).deleteSource(sourceId);
   forgetFlags(client, sourceId);
+  forgetReplySizes(client, sourceId);
 }
 
 /** Forget completed products of a source so they are requested again; loads in flight are untouched. */

@@ -1251,7 +1251,8 @@ impl Replay {
         }
     }
 
-    fn gap_reason(&self, branch: BranchId, hour: Hour) -> io::Result<String> {
+    /// Why `hour` of `branch` has no frame, as a seek of it names the gap.
+    pub fn gap_reason(&self, branch: BranchId, hour: Hour) -> io::Result<String> {
         let mut reason = String::new();
         for gap in self
             .gaps

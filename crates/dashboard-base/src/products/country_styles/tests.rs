@@ -122,7 +122,8 @@ fn country_styles_answer_per_hour_and_keep_missing_values_missing() {
         second
             .warnings
             .iter()
-            .any(|w| w == "GER: no recorded map colour")
+            .any(|w| w
+                .starts_with("GER: no recorded map colour (the appearance table is incomplete"))
     );
     assert!(
         CountryStyles::validate(&CountryStyleParams {

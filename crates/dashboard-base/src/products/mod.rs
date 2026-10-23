@@ -7,6 +7,7 @@ pub use product::*;
 pub mod artwork;
 pub mod battles;
 pub mod character_portraits;
+pub mod country_colours;
 pub mod country_experience;
 pub mod country_factories;
 pub mod country_groups;
@@ -38,6 +39,7 @@ pub mod territory;
 pub mod territory_breakdown;
 
 crate::reply_warnings!(
+    country_colours::CountryColourReply,
     country_experience::ExperienceReply,
     country_factories::CountryFactoriesReply,
     country_groups::CountryGroupReply,

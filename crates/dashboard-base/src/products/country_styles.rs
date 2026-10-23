@@ -11,7 +11,7 @@ use crate::{Source, catalogue::plain_text, content, invalid};
 use installed_content_country_names::country_names::CountryNames;
 use installed_content_localisation::localisation::Localisation;
 use replay::container::SeekResult;
-use replay_data::rows::tables;
+use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -37,6 +37,19 @@ pub fn country_name(names: &CountryNames<'_>, slot: u32) -> Result<String, Strin
 const MAX_TAGS: usize = 64;
 /// Hours kept per source, so a chart's legend and its labels share one decode.
 const RECENT_HOURS: usize = 4;
+/// The tables an hour's styles are read from; the seek adds the campaign.
+pub(crate) const STYLE_TABLES: &[TableId] = &installed_content_country_names::country_names::TABLES;
+
+/// One hour's frame for its styles, or the gap that hour is. Every style product
+/// reads hours this way, so they agree on which hours can be read.
+pub(crate) fn seek_styles(
+    source: &Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<SeekResult> {
+    crate::prepared::query::frames::seek(source, branch, hour, STYLE_TABLES, cancelled)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -129,8 +142,7 @@ impl Product for CountryStyles {
                     .branch_id
                     .parse::<u64>()
                     .map_err(|_| invalid("Invalid country style branch"))?;
-                let tables = Some(&installed_content_country_names::country_names::TABLES[..]);
-                let frame = match source.replay().seek_selected(branch, params.hour, tables)? {
+                let frame = match seek_styles(source, branch, params.hour, cancelled)? {
                     SeekResult::Frame(frame) => frame,
                     SeekResult::Gap { reason, .. } => {
                         return Err(invalid(format!(
@@ -226,6 +238,13 @@ impl HourStyles {
             .iter()
             .map(|row| (row.country, row.map_color()))
             .collect();
+        // A colour the appearance table may have omitted says so.
+        let no_colour = match frame.complete::<tables::CountryAppearance>() {
+            Ok(_) => "no recorded map colour".to_owned(),
+            Err(error) => format!(
+                "no recorded map colour (the appearance table is incomplete at this hour: {error})"
+            ),
+        };
         let mut by_tag = HashMap::new();
         // Only a complete country table can say a tag is not a country this hour.
         let incomplete = frame
@@ -245,9 +264,9 @@ impl HourStyles {
             };
             let color = colors.get(&country.id).copied();
             let problem = match (name_problem, color) {
-                (Some(reason), None) => Some(format!("{reason}; no recorded map colour")),
+                (Some(reason), None) => Some(format!("{reason}; {no_colour}")),
                 (Some(reason), Some(_)) => Some(reason),
-                (None, None) => Some("no recorded map colour".to_owned()),
+                (None, None) => Some(no_colour.clone()),
                 (None, Some(_)) => None,
             };
             by_tag
@@ -267,6 +286,16 @@ impl HourStyles {
 
     pub fn get(&self, tag: &str) -> Option<&CountryStyle> {
         self.by_tag.get(tag).map(|(style, _)| style)
+    }
+
+    /// A tag's recorded map colour, or why it has none, as this hour's warnings say.
+    pub fn colour(&self, tag: &str) -> Result<[u8; 3], String> {
+        match self.by_tag.get(tag) {
+            Some((style, problem)) => style
+                .color
+                .ok_or_else(|| problem.clone().unwrap_or_default()),
+            None => Err(self.missing_reason(tag)),
+        }
     }
 }
 

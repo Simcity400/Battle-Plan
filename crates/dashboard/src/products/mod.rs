@@ -261,6 +261,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<training_queue::TrainingQueue>(),
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
+    register::<country_colours::CountryColours>(),
     register::<faction_details::FactionDetails>(),
     register_prepared::<country_groups::CountryGroups>(),
     // All faction history views share one prepared publication and gate.

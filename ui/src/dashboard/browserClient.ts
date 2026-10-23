@@ -5,6 +5,7 @@ import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
+import { forgetReplySizes } from './replySizes.ts';
 import { INTERACTIVE_PRODUCTS } from '../generated/dashboard.ts';
 import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
@@ -118,6 +119,7 @@ export const browserDashboardClient: DashboardClient = {
   },
 
   async releaseSource(sourceId) {
+    forgetReplySizes(browserDashboardClient, sourceId);
     requests.cancelSource(sourceId);
     await request({ type: 'release', sourceId });
     leases.delete(sourceId);

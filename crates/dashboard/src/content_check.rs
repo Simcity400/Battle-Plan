@@ -607,6 +607,9 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             names_check(content, true, findings)?;
             Ok("Static-country names checked through the product's plain-text country-name preparation; map colours, dynamic-country names and cosmetic identities require recorded country appearance and naming operands.".into())
         }
+        country_colours::CountryColours::KEY => {
+            Ok("No content dependency: map colours use recorded Countries and CountryAppearance rows.".into())
+        }
         country_groups::CountryGroups::KEY => {
             Ok("Faction names use recorded keys localised through the content stack; their inventory requires a recording.".into())
         }

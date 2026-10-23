@@ -10,6 +10,7 @@ import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, HistoryCacheReply, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { contentRevision } from './contentRevision.ts';
+import { forgetReplySizes } from './replySizes.ts';
 
 function cancelled(): DOMException {
   return new DOMException('Request cancelled', 'AbortError');
@@ -63,6 +64,7 @@ async function preparation(command: string, query: PreparationRequest, signal: A
 }
 
 async function releaseSource(sourceId: string): Promise<void> {
+  forgetReplySizes(nativeDashboardClient, sourceId);
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
 }

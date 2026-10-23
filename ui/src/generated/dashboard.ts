@@ -1166,6 +1166,38 @@ name: string | null,
  */
 color: [number, number, number] | null, };
 export type CountryStyleReply = { branchId: string, hour: number, styles: Array<CountryStyle>, warnings: Array<string>, };
+export type CountryColourParams = { branchId: string,
+/**
+ * The hours to read, in any order.
+ */
+hours: Array<number>,
+/**
+ * The countries to read at every one of those hours.
+ */
+tags: Array<string>, };
+export type CountryColourRun = { tag: string,
+/**
+ * The first read hour with this colour; it holds at each later read hour up to the tag's next run.
+ */
+hour: number,
+/**
+ * The recorded map colour as sRGB bytes; null when none was recorded.
+ */
+color: [number, number, number] | null,
+/**
+ * Why there is no colour, as `country-styles` warns of it; null with a colour.
+ */
+missing: string | null, };
+export type UnreadColourHour = { hour: number, reason: string, };
+export type CountryColourReply = { branchId: string,
+/**
+ * Every tag's runs over the read hours, in hour order.
+ */
+runs: Array<CountryColourRun>,
+/**
+ * Requested hours that could not be read, and why.
+ */
+unread: Array<UnreadColourHour>, warnings: Array<string>, };
 export type FactionDetailParams = { branchId: string, hour: number, faction: string, };
 export type FactionGoalDefinition = { progress: Array<FactionRewardDetail>, sections: Array<FactionRewardDetail>, conditions: Array<FactionConditionDetail>, rewards: Array<FactionRewardDetail>, flags: Array<FactionConditionDetail>, token: string | null, name: string | null, description: string | null, icon: string | null, category: string | null,
 /**
@@ -5522,3 +5554,5 @@ export const TRANSIENT_ERRORS = [CAPACITY_REACHED, BROWSER_BRIDGE_BUSY, NATIVE_Q
 export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-artwork", "focus-art", "research", "technology-artwork", "country-flags", "doctrines", "game-window", "army-size", "supply-health", "division-log", "division-log-manifest", "unit-leaders", "unit-leader-portraits", "land-owners", "land-battles", "land-battles-ranking", "land-battle-course", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "country-groups", "faction-state", "wars", "wargoals", "country-stability", "stability-parts", "country-people", "country-fuel", "country-fuel-awards", "country-fuel-demand", "country-fuel-demand-history", "country-fuel-demand-stack", "war-casualties", "casualty-breakdown", "country-factories", "territory", "territory-breakdown", "faction-totals", "air-aces", "air-ace-portraits", "air-force-size", "navy-size", "naval-management", "game_score", "scoreboard", "country-nukes", "air-superiority", "raids", "occupied-states", "occupied-states-manifest", "occupation-trend", "idea-history", "party-history", "politics-state", "politics-state-history", "politics-ledger", "fuel-branches", "market-history", "market-ledger", "production-catalogue", "convoy-health", "peace-deals", "resource-balance", "decryption", "production-lines", "equipment-design-detail", "production-line-detail", "production-line-breakdown", "equipment-stockpile", "stockpile-artwork", "equipment-produced", "production-spending", "dockyard-spending", "military-factory-spending", "trade-flows", "market-lendlease", "special-projects", "subjects", "event-feed", "event-choices", "decisions", "autonomy", "construction-log-manifest", "equipment-losses", "military-air-ledger", "ships-sunk", "ships-sunk-battle-titles", "naval-battle-details", "naval-losses", "construction-spending", "espionage-log", "intel-details", "operative-placements", "operatives-roster", "agency-comparison", "aircraft-catalogue", "air-missions", "air-statistics", "regional-weather", "minefields", "naval-supremacy", "doctrine-mastery", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** Products served separately from whole-branch history reads. */
 export const INTERACTIVE_PRODUCTS = ["focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork"] as const;
+/** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */
+export const COUNTRY_COLOURS_OVER_BUDGET = "Country colours exceed the product reply budget";

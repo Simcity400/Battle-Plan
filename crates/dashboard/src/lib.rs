@@ -211,6 +211,10 @@ pub fn typescript_contract() -> String {
     text.push_str(&format!(
         "/** Products served separately from whole-branch history reads. */\nexport const INTERACTIVE_PRODUCTS = [{interactive_products}] as const;\n"
     ));
+    text.push_str(&format!(
+        "/** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */\nexport const COUNTRY_COLOURS_OVER_BUDGET = {:?};\n",
+        products::country_colours::OVER_BUDGET
+    ));
     text
 }
 

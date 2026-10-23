@@ -4,7 +4,7 @@ import type { CountryStyle } from '../generated/dashboard';
 
 /** Recorded map colours, with the chart's optional appearance adjustment. Missing
  * colours take the palette, exactly as the country balance charts do. */
-export function countryLineColours(tags: readonly string[], styles: ReadonlyMap<string, CountryStyle>, surface: string, fixed: boolean): Map<string, string> {
+export function countryLineColours(tags: readonly string[], styles: ReadonlyMap<string, Pick<CountryStyle, 'color'>>, surface: string, fixed: boolean): Map<string, string> {
   const palette = categoricalPalette(surface);
   const raw = tags.map((tag, index) => {
     const color = styles.get(tag)?.color;

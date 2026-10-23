@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FAILED_FACT, FactRequests, HourStore, MAX_READING, nameKey, readFacts, RETRY_MOST_MS, retryDelay } from './countryFacts.ts';
-import type { FactClock, FactRead, NameAt } from './countryFacts';
+import type { FactClock, FactPlan, FactRead, NameAt } from './countryFacts';
 import type { DashboardClient, ProductRequest } from './client';
 import { BROWSER_BRIDGE_BUSY, CAPACITY_REACHED, MAP_CONTROLS_BUSY, NATIVE_QUEUE_FULL, TRANSIENT_ERRORS } from '../generated/dashboard.ts';
 
@@ -476,4 +476,87 @@ test('a read the desktop rejects is tried again while still wanted', async () =>
   await advance(3000);
   assert.equal(store.get(100, 'A'), 'name of A');
   assert.equal(store.get(100, 'B'), 'name of B');
+});
+
+test('a batched store reads everything queued in one request, keeps it while a country it has still to tell is wanted, and settles', async () => {
+  const reads: { plan: FactPlan; signal: AbortSignal; answer: () => void }[] = [];
+  const read: FactRead<string> = (plan, signal, onChunk) => new Promise<void>(resolve => {
+    reads.push({ plan, signal, answer: () => {
+      // The reply could not read hour 3: that chunk fails without retrying.
+      for (const [hour, tags] of plan) onChunk(hour, tags, hour === 3 ? null : new Map(tags.map(tag => [tag, `${tag} at ${hour}`])), false);
+      resolve();
+    } });
+  });
+  const requests = new FactRequests(new HourStore<string>(64), read, () => {});
+  const days = Array.from({ length: 800 }, (_, hour) => ['A', 'B'].map(tag => ({ hour, tag }))).flat();
+  assert.equal(requests.want(days, Infinity, Infinity, 'time', true), 1);
+  assert.equal(reads[0].plan.length, 800);
+  // A day joining while the first read goes on is read on its own, never restarting the first.
+  const later = [...days.slice(2), { hour: 800, tag: 'A' }];
+  assert.equal(requests.want(later, Infinity, Infinity, 'time', true), 1);
+  assert.deepEqual(reads[1].plan, [[800, ['A']]]);
+  assert.equal(reads[0].signal.aborted, false);
+  for (const item of reads) item.answer();
+  await Promise.resolve();
+  assert.equal(requests.running, 0); assert.equal(requests.pending.size, 0);
+  const found = requests.pickRead(later);
+  assert.equal(found.get(nameKey(799, 'B')), 'B at 799'); assert.equal(found.get(nameKey(800, 'A')), 'A at 800');
+  assert.equal(found.get(nameKey(3, 'A')), FAILED_FACT);
+  // Answered, nothing is asked again; a read none of whose hours is wanted is cancelled.
+  assert.equal(requests.want(later, Infinity, Infinity, 'time', true), 0);
+  assert.equal(reads.length, 2);
+  requests.want([{ hour: 900, tag: 'A' }], Infinity, Infinity, 'time', true);
+  requests.want([{ hour: 901, tag: 'A' }], Infinity, Infinity, 'time', true);
+  assert.equal(reads[2].signal.aborted, true);
+  assert.equal(requests.running, 1);
+});
+
+test('a batch stops once none of the countries it has still to tell is wanted, though its hour is', async () => {
+  const reads: { plan: FactPlan; signal: AbortSignal }[] = [];
+  const read: FactRead<string> = (plan, signal) => new Promise<void>(() => { reads.push({ plan, signal }); });
+  const requests = new FactRequests(new HourStore<string>(64), read, () => {});
+  requests.want([{ hour: 100, tag: 'A' }, { hour: 101, tag: 'A' }], Infinity, Infinity, 'time', true);
+  requests.want([{ hour: 100, tag: 'B' }], Infinity, Infinity, 'time', true);
+  assert.equal(reads[0].signal.aborted, true);
+  assert.deepEqual(reads[1].plan, [[100, ['B']]]);
+  assert.equal(requests.running, 1);
+});
+
+test('a reply after its read was cancelled is ignored, and chunks a read never tells fail', async () => {
+  const tells: ((hour: number, tags: readonly string[], found: ReadonlyMap<string, string> | null) => void)[] = [];
+  const ends: (() => void)[] = [];
+  const read: FactRead<string> = (_plan, _signal, onChunk) => new Promise<void>(resolve => { tells.push(onChunk); ends.push(resolve); });
+  const requests = new FactRequests(new HourStore<string>(64), read, () => {});
+  const first = [{ hour: 1, tag: 'A' }, { hour: 2, tag: 'A' }];
+  requests.want(first, Infinity, Infinity, 'time', true);
+  requests.want([{ hour: 3, tag: 'A' }], Infinity, Infinity, 'time', true);
+  // The cancelled read answers anyway: nothing is recorded.
+  tells[0](1, ['A'], new Map([['A', 'late']]));
+  assert.equal(requests.pickRead([{ hour: 1, tag: 'A' }]).size, 0);
+  // A read that tells its first chunk and ends fails the rest, to be tried again.
+  tells[1](3, ['A'], new Map([['A', 'A at 3']]));
+  requests.want([{ hour: 3, tag: 'A' }, { hour: 4, tag: 'A' }, { hour: 5, tag: 'A' }], Infinity, Infinity, 'time', true);
+  tells[2](4, ['A'], new Map([['A', 'A at 4']]));
+  ends[2]();
+  await Promise.resolve(); await Promise.resolve();
+  const found = requests.pickRead([{ hour: 3, tag: 'A' }, { hour: 4, tag: 'A' }, { hour: 5, tag: 'A' }]);
+  assert.equal(found.get(nameKey(3, 'A')), 'A at 3');
+  assert.equal(found.get(nameKey(4, 'A')), 'A at 4');
+  assert.equal(found.get(nameKey(5, 'A')), FAILED_FACT);
+  assert.equal(requests.pending.size, 0);
+});
+
+test('a chunk answered in part keeps its answers and fails only its unanswered countries', async () => {
+  const read: FactRead<string> = async (plan, _signal, onChunk) => {
+    for (const [hour, tags] of plan) onChunk(hour, tags, new Map([['A', 'A here']]), undefined, new Map([['B', false]]));
+  };
+  const requests = new FactRequests(new HourStore<string>(64), read, () => {});
+  const wanted = [{ hour: 7, tag: 'A' }, { hour: 7, tag: 'B' }];
+  requests.want(wanted, Infinity, Infinity, 'time', true);
+  await Promise.resolve(); await Promise.resolve();
+  const found = requests.pickRead(wanted);
+  assert.equal(found.get(nameKey(7, 'A')), 'A here');
+  assert.equal(found.get(nameKey(7, 'B')), FAILED_FACT);
+  // The failure was not one to retry by itself: nothing more is asked.
+  assert.equal(requests.want(wanted, Infinity, Infinity, 'time', true), 0);
 });

@@ -277,6 +277,8 @@ struct BlockDecoder {
     decoders: Vec<(FrameDecoder, Vec<TableId>)>,
     position: usize,
     frame: Option<DecodedFrame>,
+    /// Once a frame's campaign differs, every later hour of the block is that gap, as a seek finds.
+    mismatch: Option<String>,
 }
 
 impl BlockDecoder {
@@ -315,10 +317,18 @@ impl BlockDecoder {
             decoders,
             position: 0,
             frame: None,
+            mismatch: None,
         })
     }
 
     fn at(&mut self, source: &Source, hour: i32, cancelled: &AtomicBool) -> io::Result<SeekResult> {
+        if let Some(reason) = &self.mismatch {
+            return Ok(SeekResult::Gap {
+                branch: self.branch,
+                hour,
+                reason: reason.clone(),
+            });
+        }
         if self.frame.as_ref().is_some_and(|frame| frame.hour != hour) {
             self.frame = None;
         }
@@ -333,10 +343,12 @@ impl BlockDecoder {
                 {
                     self.position = self.reads[0].frames.len();
                     self.frame = None;
+                    let reason = error.to_string();
+                    self.mismatch = Some(reason.clone());
                     return Ok(SeekResult::Gap {
                         branch: self.branch,
                         hour,
-                        reason: error.to_string(),
+                        reason,
                     });
                 }
                 if decoded.hour != hour {
@@ -355,10 +367,11 @@ impl BlockDecoder {
         }
         match &self.frame {
             Some(frame) if frame.hour == hour => Ok(SeekResult::Frame(Box::new(frame.clone()))),
+            // An hour the block holds no frame of: the gap a seek names.
             _ => Ok(SeekResult::Gap {
                 branch: self.branch,
                 hour,
-                reason: "Hour not recorded".into(),
+                reason: source.replay_ref().gap_reason(self.branch, hour)?,
             }),
         }
     }
