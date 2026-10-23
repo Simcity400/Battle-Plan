@@ -17,6 +17,7 @@ use viewer_foundation::profile_writer::profiling;
 use viewer_foundation::profiling::BuilderSpan;
 use viewer_foundation::retirement::Dropper;
 use viewer_foundation::retirement::Retired;
+use viewer_world::map::scene::SceneInput;
 use {
     crate::{document::Document, hours},
     viewer_foundation::map::camera::{Camera, MapSize},
@@ -467,11 +468,15 @@ impl Viewer {
             Ok(layers) => layers,
             Err(error) => {
                 if let Some(scene) = self.scene.as_mut() {
-                    scene.missing_map_text_events(
-                        (branch, hour),
-                        seek,
-                        format!("map text presented hour failed: {error}"),
-                    );
+                    scene.apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::MissingMapTextEvents {
+                            at: (branch, hour),
+                            seek,
+                            reason: format!("map text presented hour failed: {error}"),
+                        },
+                    )?;
                 }
                 self.animation_seek = false;
                 present_raids(
@@ -562,21 +567,27 @@ impl Viewer {
                     mesh,
                     rails.geometry.as_ref(),
                 )?;
-                let replaced = scene.set_prepared_railways(
-                    &state.device,
-                    &state.queue,
-                    &document.rail_assets,
-                    geometry,
-                )?;
+                let replaced = scene
+                    .apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::SetPreparedRailways {
+                            assets: &document.rail_assets,
+                            geometry,
+                        },
+                    )?
+                    .into_prepared_railways();
                 retired.push(replaced);
             }
             {
                 let _bridges_span = viewer_foundation::profiling::span("bridges_install");
-                scene.set_bridges(
+                scene.apply(
                     &state.device,
                     &state.queue,
-                    &document.bridges,
-                    bridges.clone(),
+                    SceneInput::SetBridges {
+                        bridges: &document.bridges,
+                        field: bridges.clone(),
+                    },
                 )?;
             }
             uploaded.rails = Some(rails.id);
@@ -589,12 +600,14 @@ impl Viewer {
                     .map(|(hour, _)| &hour.value)
                     .collect::<Vec<_>>()
             });
-            scene.set_map_buildings(
+            scene.apply(
                 &state.device,
                 &state.queue,
-                &document.map_buildings,
-                buildings.value.clone(),
-                skipped.as_deref(),
+                SceneInput::SetMapBuildings {
+                    assets: &document.map_buildings,
+                    prepared: buildings.value.clone(),
+                    passed: skipped.as_deref(),
+                },
             )?;
             uploaded.buildings = Some(buildings.id);
         }
@@ -621,22 +634,53 @@ impl Viewer {
         if keep_movers {
             retired.push(trains);
         } else {
-            let replaced = scene.set_trains(document.trains.clone(), trains, continuity)?;
+            let replaced = scene
+                .apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::SetTrains {
+                        assets: document.trains.clone(),
+                        plan: trains,
+                        continuity,
+                    },
+                )?
+                .into_trains();
             retired.push(replaced);
         }
         laps.lap("trains_upload");
         if keep_movers {
             retired.push(aircraft);
         } else {
-            let replaced = scene.set_aircraft(document.aircraft.clone(), aircraft)?;
+            let replaced = scene
+                .apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::SetAircraft {
+                        assets: document.aircraft.clone(),
+                        plan: aircraft,
+                    },
+                )?
+                .into_aircraft();
             retired.push(replaced);
         }
         laps.lap("aircraft_upload");
         if !keep_movers {
             match unit_restart {
                 UnitRestart::Keep => {}
-                UnitRestart::ViewingCountry => scene.restart_unit_models(Some(units.owned())),
-                UnitRestart::All => scene.restart_unit_models(None),
+                UnitRestart::ViewingCountry => {
+                    scene.apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::RestartUnitModels(Some(units.owned())),
+                    )?;
+                }
+                UnitRestart::All => {
+                    scene.apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::RestartUnitModels(None),
+                    )?;
+                }
             }
             if unit_restart == UnitRestart::Keep && !same_units {
                 if let Some(previous) = &self.unit_models {
@@ -654,7 +698,14 @@ impl Viewer {
             .as_ref()
             .is_none_or(|had| !Arc::ptr_eq(had, &orders))
         {
-            scene.set_orders(&state.device, &state.queue, &document.orders, &orders)?;
+            scene.apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetOrders {
+                    assets: &document.orders,
+                    field: &orders,
+                },
+            )?;
             retired.push(uploaded.orders.replace(Arc::clone(&orders)));
         }
         let plan_warnings = orders.report.warnings();
@@ -663,25 +714,40 @@ impl Viewer {
         if keep_movers {
             retired.push(effects);
         } else {
-            let replaced = scene.set_prepared_weather_effects(
-                &state.device,
-                &state.queue,
-                document.weather_effects.clone(),
-                effects,
-                continuity,
-            )?;
+            let replaced = scene
+                .apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::SetPreparedWeatherEffects {
+                        assets: document.weather_effects.clone(),
+                        prepared: effects,
+                        continuity,
+                    },
+                )?
+                .into_weather_effects();
             retired.push(replaced);
         }
         laps.lap("effects_upload");
         if uploaded.political != Some(political.id) {
             let _political_span = viewer_foundation::profiling::span("political_show");
-            scene.set_political(&state.device, &state.queue, &political.layers.regions)?;
+            scene.apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetPolitical(&political.layers.regions),
+            )?;
             uploaded.political = Some(political.id);
         }
         // borders: the window has no demilitarised-zone override, so the zone is the
         // recorded one.
         if uploaded.borders != Some(borders.id) {
-            scene.set_border_plans(&state.device, &borders.classes, &borders.highlighted)?;
+            scene.apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetBorderPlans {
+                    classes: &borders.classes,
+                    zone: &borders.highlighted,
+                },
+            )?;
             uploaded.borders = Some(borders.id);
         }
         laps.lap("border_classes");
@@ -695,7 +761,14 @@ impl Viewer {
                     && had.refresh == snow_mud.refresh
         });
         if !same_snow || continuity == Continuity::Reset {
-            scene.set_snow_mud(&state.device, &state.queue, &snow_mud, continuity)?;
+            scene.apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetSnowMud {
+                    snow: &snow_mud,
+                    continuity,
+                },
+            )?;
             uploaded.snow_mud = Some(Arc::clone(&snow_mud));
         }
         laps.lap("snow_upload");
@@ -705,7 +778,14 @@ impl Viewer {
             .as_ref()
             .is_none_or(|had| !Arc::ptr_eq(had, &intel))
         {
-            scene.set_fog_of_war(&state.queue, &intel.texels, intel.fog)?;
+            scene.apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetFogOfWar {
+                    texels: &intel.texels,
+                    fog: intel.fog,
+                },
+            )?;
             uploaded.intel = Some(Arc::clone(&intel));
         }
         laps.lap("fog_upload");
@@ -725,27 +805,38 @@ impl Viewer {
             _ if keep_movers => retired.push((impacts, map_text)),
             crate::playback::Current::Frame(_) => {
                 let presented = (impacts, map_text);
-                scene.present_hours(
-                    (branch, hour),
-                    seek,
-                    presented_events(
-                        skipped.iter().flatten().map(|(_, events)| events),
-                        &presented,
+                scene.apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::PresentHours {
+                        at: (branch, hour),
+                        seek,
+                        hours: presented_events(
+                            skipped.iter().flatten().map(|(_, events)| events),
+                            &presented,
+                            continuity,
+                        )
+                        .into_iter()
+                        .map(|(impacts, map_text)| (&**impacts, &**map_text))
+                        .collect(),
                         continuity,
-                    )
-                    .into_iter()
-                    .map(|(impacts, map_text)| (&**impacts, &**map_text)),
-                    continuity,
-                    |province| document.content.counters.anchor(province, 0),
-                    heights,
-                    &document.content.icons.counters.gui,
-                );
+                        anchor: &|province: u32| document.content.counters.anchor(province, 0),
+                        heights,
+                        gui: &document.content.icons.counters.gui,
+                    },
+                )?;
             }
-            crate::playback::Current::Gap { reason, .. } => scene.missing_map_text_events(
-                (branch, hour),
-                seek,
-                format!("map text presented hour is unavailable: {reason}"),
-            ),
+            crate::playback::Current::Gap { reason, .. } => {
+                scene.apply(
+                    &state.device,
+                    &state.queue,
+                    SceneInput::MissingMapTextEvents {
+                        at: (branch, hour),
+                        seek,
+                        reason: format!("map text presented hour is unavailable: {reason}"),
+                    },
+                )?;
+            }
         }
         retired.push(self.overlay_tables.replace((
             branch,

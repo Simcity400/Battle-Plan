@@ -3531,6 +3531,7 @@ impl Instance {
         pointer: Option<Pointer>,
         regions: bool,
     ) -> Result<Option<Layout>, Refusals> {
+        let _profile = crate::profiling::span("dc_layout");
         let mut bindings = self
             .bindings(root, resources)
             .map_err(|why| vec![Refusal::new(&root.path, RefusalKind::MissingInput, why)])?;
@@ -3903,6 +3904,7 @@ impl<K: Clone + Eq> Pool<K> {
         resources: &dyn Resources,
         tick: Tick,
     ) -> Result<(), String> {
+        let _profile = crate::profiling::span("dc_pool_tick");
         self.tick_clocks(template, resources, tick)?;
         self.tick_transitions(template)?;
         self.tick_draws(template, resources)

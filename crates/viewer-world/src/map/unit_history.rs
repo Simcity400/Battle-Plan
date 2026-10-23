@@ -30,7 +30,7 @@ use std::{
 };
 use viewer_foundation::map::province_admission::province_boxes;
 use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::map::province_schedule::Shared;
+use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
 use viewer_foundation::unit_handle::Unit;
 
 use {
@@ -721,6 +721,25 @@ impl History {
         schedule.advance_frame_boxes(&self.province_bounds, camera, viewport, self.steady);
     }
 
+    /// A rewound clock must reset before taking updates, so leave its cut to the walk.
+    pub fn take_province_frame(&self, time: f32) -> Option<(ProvinceFrame, FrameRestore)> {
+        if self.last.is_some_and(|previous| time < previous) {
+            return None;
+        }
+        self.schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take_frame()
+    }
+
+    /// Gives back a frame cut whose walk never ran, as if never taken.
+    pub fn untake_province_frame(&self, restore: FrameRestore) {
+        self.schedule
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .untake_frame(restore);
+    }
+
     /// The scene's single frame walk: buildings then units per province,
     /// followed by deferred land creation. Offline exports settle both histories.
     #[allow(clippy::too_many_arguments)]
@@ -734,12 +753,37 @@ impl History {
         buildings: &mut BuildingHistory,
         buildings_enabled: bool,
     ) -> FrameModels {
+        self.update_models_with_frame(
+            camera,
+            viewport,
+            time,
+            gates,
+            limit,
+            buildings,
+            buildings_enabled,
+            None,
+        )
+    }
+
+    /// Uses the host's cut without spending the shared schedule twice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_models_with_frame(
+        &mut self,
+        camera: Camera,
+        viewport: [u32; 2],
+        time: f32,
+        gates: Gates,
+        limit: i32,
+        buildings: &mut BuildingHistory,
+        buildings_enabled: bool,
+        frame: Option<&ProvinceFrame>,
+    ) -> FrameModels {
         let _update_span = viewer_foundation::profiling::span("step_update_models");
         let admission = std::cell::LazyCell::new(|| Admission::new(camera, viewport));
         let bounds = Arc::clone(&self.bounds);
         let mut buildings = buildings.frame(camera, viewport, time, buildings_enabled, self.steady);
         let mut budget = Budget::new(limit, self.steady);
-        let placed = self.step_with(
+        let placed = self.step_with_frame(
             time,
             gates,
             [gates.units(camera.height), gates.ships(camera.height)],
@@ -747,6 +791,7 @@ impl History {
             |id| admission.admits_province(&bounds, id),
             &mut budget,
             |id, budget| buildings.through(id, budget),
+            frame,
         );
         FrameModels {
             units: placed,
@@ -794,6 +839,7 @@ impl History {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn step_with(
         &mut self,
@@ -803,7 +849,23 @@ impl History {
         arrows: bool,
         in_view: impl Fn(u32) -> bool,
         budget: &mut Budget,
+        buildings: impl FnMut(u32, &mut Budget),
+    ) -> Vec<(usize, ModelInstance)> {
+        self.step_with_frame(time, gates, shown, arrows, in_view, budget, buildings, None)
+    }
+
+    /// Uses cut updates, or takes the shared schedule when no cut exists.
+    #[allow(clippy::too_many_arguments)]
+    fn step_with_frame(
+        &mut self,
+        time: f32,
+        gates: Gates,
+        shown: [bool; 2],
+        arrows: bool,
+        in_view: impl Fn(u32) -> bool,
+        budget: &mut Budget,
         mut buildings: impl FnMut(u32, &mut Budget),
+        province_frame: Option<&ProvinceFrame>,
     ) -> Vec<(usize, ModelInstance)> {
         if self.last.is_some_and(|previous| time < previous) {
             self.reset(None);
@@ -821,21 +883,27 @@ impl History {
         // the frame already advanced it for its map icons); never indexed by
         // the replay hour.
         let schedule_span = viewer_foundation::profiling::span("units_schedule");
-        let schedule = Arc::clone(&self.schedule);
-        let mut schedule = schedule
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !schedule.take_pending() {
-            schedule.advance(self.provinces.keys().copied(), &in_view, self.steady);
-            schedule.take_pending();
-        }
         // The frame's update list, the one the map icons' owners read. Buildings consume
         // every group through each reached province, so omitted unit visits leave their
         // order and shared budget unchanged.
         self.queued.clear();
         self.updates.clear();
-        self.updates.extend(schedule.updates());
-        self.updates.sort_unstable_by_key(|&(id, _)| id);
+        match province_frame {
+            // The host took exactly this at its frame cut.
+            Some(taken) => self.updates.extend_from_slice(taken.updates()),
+            None => {
+                let schedule = Arc::clone(&self.schedule);
+                let mut schedule = schedule
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !schedule.take_pending() {
+                    schedule.advance(self.provinces.keys().copied(), &in_view, self.steady);
+                    schedule.take_pending();
+                }
+                self.updates.extend(schedule.updates());
+                self.updates.sort_unstable_by_key(|&(id, _)| id);
+            }
+        }
         drop(schedule_span);
         let fast_empty = true;
         #[cfg(test)]
@@ -1866,5 +1934,81 @@ pub mod tests {
         assert_eq!(schedule.lock().unwrap().update(1), None);
         h.reset(None);
         assert!(schedule.lock().unwrap().dirty(1));
+    }
+
+    /// Compare cut frames with the independent walk across rewinds, resets and failed frames.
+    #[test]
+    fn cut_frames_place_and_schedule_like_walks_that_take_their_own() {
+        let targets: Vec<_> = (1..=40).map(|id| target(id, Kind::Land)).collect();
+        let arm = || {
+            let mut h = history(targets.clone(), false);
+            let schedule = Shared::default();
+            h.share_schedule(&schedule);
+            (h, schedule)
+        };
+        let ((mut walk, walk_schedule), (mut cut, cut_schedule)) = (arm(), arm());
+        let mut time = 0.0f32;
+        let mut cut_walks = 0;
+        for frame in 0..400u32 {
+            time = if frame % 53 == 52 {
+                time - 0.25
+            } else {
+                time + 1.0 / 60.0
+            };
+            let in_view = move |id: u32| !(id + frame / 7).is_multiple_of(4);
+            for schedule in [&walk_schedule, &cut_schedule] {
+                let mut schedule = schedule.lock().unwrap();
+                if frame % 5 != 4 {
+                    schedule.advance(1..=40, in_view, frame.is_multiple_of(41));
+                }
+                if frame % 9 == 3 {
+                    schedule.set_selected(BTreeSet::from([frame % 40 + 1, 7]));
+                }
+                if frame % 17 == 8 {
+                    schedule.set_selected(BTreeSet::new());
+                }
+                if frame % 31 == 30 {
+                    schedule.cancel_pending();
+                }
+                if frame % 47 == 46 {
+                    schedule.reset(Some(&BTreeSet::from([2, 3, 5])));
+                }
+            }
+            let taken = cut.take_province_frame(time);
+            if frame % 13 == 12 {
+                // The frame fails before its walk: the cut goes back and neither arm walks.
+                if let Some((_, restore)) = taken {
+                    cut.untake_province_frame(restore);
+                }
+            } else {
+                cut_walks += usize::from(taken.is_some());
+                let walked = walk.step(time, GATES, [true; 2], true, in_view);
+                let steady = cut.steady;
+                let placed = cut.step_with_frame(
+                    time,
+                    GATES,
+                    [true; 2],
+                    true,
+                    in_view,
+                    &mut Budget::new(i32::MAX, steady),
+                    |_, _| {},
+                    taken.as_ref().map(|(frame, _)| frame),
+                );
+                assert_eq!(placed, walked, "frame {frame}");
+                assert_eq!(cut.updates, walk.updates, "frame {frame}");
+            }
+            {
+                // The carried state borrows its guard: bind both before comparing.
+                let cut_guard = cut_schedule.lock().unwrap();
+                let walk_guard = walk_schedule.lock().unwrap();
+                assert_eq!(
+                    cut_guard.presentation_state(),
+                    walk_guard.presentation_state(),
+                    "frame {frame}"
+                );
+            }
+        }
+        // The cut path, not only the fallback, was exercised.
+        assert!(cut_walks > 200, "{cut_walks} cut walks");
     }
 }

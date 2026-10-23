@@ -12,6 +12,7 @@ use viewer_foundation::map::camera::{Camera, frustum};
 use viewer_foundation::map::frame::FrameConstants;
 
 /// The model a free camera mode's user steers: one entity of a content library.
+#[derive(Clone)]
 pub struct PlayerModel<'a> {
     pub library: &'a ModelLibrary,
     /// The pass label whose entity data the library's figures take: `"unit models"` for a land

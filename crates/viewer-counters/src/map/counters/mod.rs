@@ -2330,6 +2330,199 @@ impl CounterReport {
         *self.unknown_sharing.entry((what, cause)).or_default() += 1;
     }
 
+    /// Appends a later branch in serial order; debug-checks fields it must not write.
+    fn absorb_later(&mut self, later: &mut Self) {
+        fn add_counts<K: Ord>(into: &mut BTreeMap<K, usize>, from: &mut BTreeMap<K, usize>) {
+            for (key, count) in std::mem::take(from) {
+                *into.entry(key).or_default() += count;
+            }
+        }
+        fn unite_sets<K: Ord, T: Ord>(
+            into: &mut BTreeMap<K, BTreeSet<T>>,
+            from: &mut BTreeMap<K, BTreeSet<T>>,
+        ) {
+            for (key, mut set) in std::mem::take(from) {
+                into.entry(key).or_default().append(&mut set);
+            }
+        }
+        fn untouched<T: Default + PartialEq>(field: &T, name: &str) {
+            debug_assert!(
+                *field == T::default(),
+                "a later counters step wrote {name}, which absorbing it would lose"
+            );
+        }
+        let Self {
+            unit_hits,
+            base_hits,
+            radar_hits,
+            air_base_hits,
+            air_grid_hits,
+            air_mission_hits,
+            naval_mission_hits,
+            naval_region_hovers,
+            regional_naval_unit_hits,
+            combat_hits,
+            naval_marker_hovers,
+            land_hovers,
+            task_force_hovers,
+            task_force_port_hovers,
+            eta,
+            land_counters,
+            railway_guns,
+            unavailable_railway_guns,
+            unavailable_railway_gun_locations,
+            unplaced_railway_gun_routes,
+            unavailable_ability_icons,
+            naval_counters,
+            navy_counter_gaps,
+            naval_window_notes,
+            land_counter_gaps,
+            land_action_gaps,
+            unplaced_task_forces,
+            unplaced_task_force_routes,
+            unavailable_naval_flags,
+            unavailable_type_tints,
+            type_tint_problem,
+            no_intel_counters,
+            no_intel_combats,
+            air_bases,
+            hidden_air_bases,
+            naval_bases,
+            naval_headquarters,
+            facilities,
+            rocket_sites,
+            gun_emplacements,
+            radars,
+            strategic_locations,
+            unknown_bases,
+            unresolved_facility_sprites,
+            icon_gui_notes,
+            faction_pings,
+            faction_pin_hovers,
+            pin_gui_refusals,
+            faction_ping_limits,
+            land_combats,
+            combat_gaps,
+            combat_limits,
+            unknown_sharing,
+            naval_combats,
+            unavailable_naval_combats,
+            base_frame_naval_combats,
+            naval_result_icons,
+            naval_grid_gaps,
+            unavailable_naval_results,
+            naval_result_gaps,
+            undeclared_result_sprites,
+            naval_mission_entries,
+            undecided_naval_mission_children,
+            authored_naval_mission_buttons,
+            undefined_naval_mission_sprites,
+            unanchored_naval_missions,
+            naval_mission_gaps,
+            naval_mission_limits,
+            unanchored,
+            moving,
+            missing_flags,
+            counter_flag_gaps,
+            refused_tokens,
+            grouping,
+            grouping_gaps,
+            groups,
+            perspective,
+        } = later;
+        self.unit_hits.append(unit_hits);
+        self.base_hits.append(base_hits);
+        untouched(&*radar_hits, "radar_hits");
+        untouched(&*air_base_hits, "air_base_hits");
+        untouched(&*air_grid_hits, "air_grid_hits");
+        self.air_mission_hits.append(air_mission_hits);
+        self.naval_mission_hits.append(naval_mission_hits);
+        self.naval_region_hovers.append(naval_region_hovers);
+        untouched(&*regional_naval_unit_hits, "regional_naval_unit_hits");
+        self.combat_hits.append(combat_hits);
+        self.naval_marker_hovers.append(naval_marker_hovers);
+        self.land_hovers.append(land_hovers);
+        self.task_force_hovers.append(task_force_hovers);
+        self.task_force_port_hovers.append(task_force_port_hovers);
+        untouched(&*eta, "eta");
+        self.land_counters += std::mem::take(land_counters);
+        self.railway_guns += std::mem::take(railway_guns);
+        self.unavailable_railway_guns += std::mem::take(unavailable_railway_guns);
+        self.unavailable_railway_gun_locations += std::mem::take(unavailable_railway_gun_locations);
+        self.unplaced_railway_gun_routes += std::mem::take(unplaced_railway_gun_routes);
+        self.unavailable_ability_icons += std::mem::take(unavailable_ability_icons);
+        self.naval_counters += std::mem::take(naval_counters);
+        add_counts(&mut self.navy_counter_gaps, navy_counter_gaps);
+        add_counts(&mut self.naval_window_notes, naval_window_notes);
+        add_counts(&mut self.land_counter_gaps, land_counter_gaps);
+        add_counts(&mut self.land_action_gaps, land_action_gaps);
+        unite_sets(&mut self.unplaced_task_forces, unplaced_task_forces);
+        unite_sets(
+            &mut self.unplaced_task_force_routes,
+            unplaced_task_force_routes,
+        );
+        self.unavailable_naval_flags += std::mem::take(unavailable_naval_flags);
+        self.unavailable_type_tints += std::mem::take(unavailable_type_tints);
+        untouched(&*type_tint_problem, "type_tint_problem");
+        self.no_intel_counters += std::mem::take(no_intel_counters);
+        self.no_intel_combats += std::mem::take(no_intel_combats);
+        self.air_bases += std::mem::take(air_bases);
+        self.hidden_air_bases += std::mem::take(hidden_air_bases);
+        self.naval_bases += std::mem::take(naval_bases);
+        self.naval_headquarters += std::mem::take(naval_headquarters);
+        self.facilities += std::mem::take(facilities);
+        self.rocket_sites += std::mem::take(rocket_sites);
+        self.gun_emplacements += std::mem::take(gun_emplacements);
+        self.radars += std::mem::take(radars);
+        self.strategic_locations += std::mem::take(strategic_locations);
+        untouched(&*unknown_bases, "unknown_bases");
+        add_counts(
+            &mut self.unresolved_facility_sprites,
+            unresolved_facility_sprites,
+        );
+        add_counts(&mut self.icon_gui_notes, icon_gui_notes);
+        self.faction_pings += std::mem::take(faction_pings);
+        self.faction_pin_hovers.append(faction_pin_hovers);
+        add_counts(&mut self.pin_gui_refusals, pin_gui_refusals);
+        untouched(&*faction_ping_limits, "faction_ping_limits");
+        self.land_combats += std::mem::take(land_combats);
+        unite_sets(&mut self.combat_gaps, combat_gaps);
+        unite_sets(&mut self.combat_limits, combat_limits);
+        add_counts(&mut self.unknown_sharing, unknown_sharing);
+        self.naval_combats += std::mem::take(naval_combats);
+        self.unavailable_naval_combats += std::mem::take(unavailable_naval_combats);
+        self.base_frame_naval_combats += std::mem::take(base_frame_naval_combats);
+        self.naval_result_icons += std::mem::take(naval_result_icons);
+        add_counts(&mut self.naval_grid_gaps, naval_grid_gaps);
+        self.unavailable_naval_results += std::mem::take(unavailable_naval_results);
+        add_counts(&mut self.naval_result_gaps, naval_result_gaps);
+        add_counts(
+            &mut self.undeclared_result_sprites,
+            undeclared_result_sprites,
+        );
+        self.naval_mission_entries += std::mem::take(naval_mission_entries);
+        add_counts(
+            &mut self.undecided_naval_mission_children,
+            undecided_naval_mission_children,
+        );
+        self.authored_naval_mission_buttons += std::mem::take(authored_naval_mission_buttons);
+        self.undefined_naval_mission_sprites
+            .append(undefined_naval_mission_sprites);
+        self.unanchored_naval_missions += std::mem::take(unanchored_naval_missions);
+        add_counts(&mut self.naval_mission_gaps, naval_mission_gaps);
+        self.naval_mission_limits.append(naval_mission_limits);
+        self.unanchored += std::mem::take(unanchored);
+        self.moving += std::mem::take(moving);
+        self.missing_flags.append(missing_flags);
+        add_counts(&mut self.counter_flag_gaps, counter_flag_gaps);
+        self.refused_tokens.append(refused_tokens);
+        untouched(&*grouping, "grouping");
+        add_counts(&mut self.grouping_gaps, grouping_gaps);
+        self.groups += std::mem::take(groups);
+        // The branch report keeps its default perspective, which nothing reads.
+        let _ = perspective;
+    }
+
     /// `*self = source.clone()`, reusing this report's storage: a report kept across frames
     /// allocates only when a list outgrows its capacity or the missing-flag set changes.
     pub fn assign(&mut self, source: &Self) {
@@ -3454,6 +3647,8 @@ struct DrawnCounters {
     report: CounterReport,
     /// The owners whose flag a drawn land counter lacked, before their tags are looked up.
     missing_owners: Vec<u32>,
+    /// The later land branch, absorbed after the preceding counters.
+    land_report: CounterReport,
 }
 
 impl PreparedCounters {
@@ -3534,6 +3729,7 @@ impl PreparedCounters {
             combats,
             report,
             missing_owners,
+            ..
         } = drawn;
         fixed.pings.clear();
         fixed.bases.clear();
@@ -3630,6 +3826,140 @@ impl PreparedCounters {
         Ok(())
     }
 
+    /// Parallel draw with serial atlas decisions and report merge order.
+    #[allow(clippy::too_many_arguments)] // Separate mutable state for the host's composed icon views.
+    pub fn draw_branched(
+        &mut self,
+        inputs: &CounterInputs<'_>,
+        time: f32,
+        workers: &viewer_foundation::parallel::Workers,
+        owners: viewer_foundation::profiling::FrameOwners,
+        naval: &mut naval_windows::Windows,
+        pings: &mut PoolView,
+        bases: &mut BaseView,
+        land_combats: &mut land_windows::View,
+    ) -> io::Result<Option<viewer_foundation::profiling::OwnerSample>> {
+        use viewer_foundation::map::request_order::{Preceding, following};
+        let Self { fixed, land, drawn } = self;
+        let DrawnCounters {
+            batch,
+            combats,
+            report,
+            missing_owners,
+            land_report,
+        } = drawn;
+        fixed.pings.clear();
+        fixed.bases.clear();
+        fixed.combats.clear();
+        batch.clear();
+        combats.clear();
+        report.assign_all_but_flags(&fixed.report);
+        missing_owners.clear();
+        let mut at_sea = Vec::new();
+        let preceding = Arc::new(Preceding::default());
+        let countries = fixed.naval.countries.as_deref();
+        let others = {
+            let preceding = Arc::clone(&preceding);
+            let native_pings = &mut fixed.native_pings;
+            let ping_batch = &mut fixed.pings;
+            let native_bases = &mut fixed.native_bases;
+            let base_batch = &mut fixed.bases;
+            let native_land_combats = &mut fixed.native_land_combats;
+            let combat_batch = &mut fixed.combats;
+            let report = &mut *report;
+            move || {
+                // The land counters' undecided flag keys wait until this branch has finished.
+                let _finished = preceding.finishing();
+                owners.measure("counters_branch", || {
+                    let span = viewer_foundation::profiling::span("dc_pings");
+                    native_pings.draw(inputs, pings, time, countries, ping_batch, report);
+                    drop(span);
+                    let span = viewer_foundation::profiling::span("dc_bases");
+                    native_bases.draw(inputs, bases, time, countries, base_batch, report);
+                    drop(span);
+                    let _span = viewer_foundation::profiling::span("dc_land_combats");
+                    native_land_combats.draw(
+                        inputs,
+                        land_combats,
+                        time,
+                        countries,
+                        combat_batch,
+                        report,
+                    );
+                })
+            }
+        };
+        let land_counters = {
+            let land = &mut *land;
+            let batch = &mut *batch;
+            let land_report = &mut *land_report;
+            let missing_owners = &mut *missing_owners;
+            let at_sea = &mut at_sea;
+            move || {
+                following(&preceding, || {
+                    let _span = viewer_foundation::profiling::span("dc_land");
+                    match land.as_mut() {
+                        Some(land) => land.draw(inputs, batch, land_report, missing_owners, at_sea),
+                        None => Ok(Vec::new()),
+                    }
+                })
+            }
+        };
+        let ((_, sample), columns) = branches(workers, others, land_counters);
+        // The land counters drew after the other three in the serial order, failing or not.
+        report.absorb_later(land_report);
+        let columns = columns?;
+        // The presented frame runs the naval windows' lifecycle once, on this view's windows.
+        {
+            let _span = viewer_foundation::profiling::span("dc_naval");
+            let plates: Vec<_> = at_sea
+                .iter()
+                .filter_map(|plate| {
+                    let land = land.as_ref()?;
+                    Some((
+                        &land.flotillas[plate.member],
+                        land.countries.as_ref(),
+                        plate,
+                    ))
+                })
+                .collect();
+            naval_windows::present(
+                inputs,
+                &fixed.naval,
+                &plates,
+                &columns,
+                time,
+                naval,
+                &mut fixed.bases,
+                batch,
+                combats,
+                report,
+            )?;
+        }
+        batch.quads.extend_from_slice(&fixed.counters.quads);
+        let span = viewer_foundation::profiling::span("dc_air");
+        let empty_air = air_missions::Prepared::default();
+        fixed.native_air.as_deref().unwrap_or(&empty_air).draw(
+            inputs,
+            time,
+            &mut naval.air_missions,
+            combats,
+            report,
+        );
+        drop(span);
+        missing_owners.sort_unstable();
+        missing_owners.dedup();
+        let tags = land.as_ref().map(|land| &land.countries.tags);
+        assign_union(
+            &mut report.missing_flags,
+            &fixed.report.missing_flags,
+            missing_owners
+                .iter()
+                .filter_map(|owner| tags.and_then(|tags| tags.get(owner))),
+        );
+        Ok(sample)
+    }
+
     /// The last [`PreparedCounters::draw`]'s batch and report.
     pub fn drawn(&self) -> (&Batch, &CounterReport) {
         (&self.drawn.batch, &self.drawn.report)
@@ -3639,6 +3969,36 @@ impl PreparedCounters {
     pub fn drawn_combats(&self) -> &Batch {
         &self.drawn.combats
     }
+}
+
+/// Starts `first` before `second` can wait for it, even without a helper.
+fn branches<A: Send, B: Send>(
+    workers: &viewer_foundation::parallel::Workers,
+    first: impl FnOnce() -> A + Send,
+    second: impl FnOnce() -> B + Send,
+) -> (A, B) {
+    if workers.threads() == 1 {
+        let first = first();
+        return (first, second());
+    }
+    let first = std::sync::Mutex::new(Some(first));
+    let second = std::sync::Mutex::new(Some(second));
+    let firsts = std::sync::Mutex::new(None);
+    let seconds = std::sync::Mutex::new(None);
+    workers.run(2, &|at| match at {
+        0 => {
+            let first = first.lock().unwrap().take().expect("each task runs once");
+            *firsts.lock().unwrap() = Some(first());
+        }
+        _ => {
+            let second = second.lock().unwrap().take().expect("each task runs once");
+            *seconds.lock().unwrap() = Some(second());
+        }
+    });
+    (
+        firsts.into_inner().unwrap().expect("the first task ran"),
+        seconds.into_inner().unwrap().expect("the second task ran"),
+    )
 }
 
 /// What the grouping pass needs about the map and the camera this hour.

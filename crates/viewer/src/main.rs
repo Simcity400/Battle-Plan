@@ -2241,6 +2241,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .with_resizable(false)
             .with_taskbar(false)
             .with_min_inner_size([1.0, 1.0])
+    } else if options.window_dump
+        && background_window(std::env::var_os("BATTLE_PLAN_VIEWER_PROFILE_BACKGROUND").or_else(|| std::env::var_os("HOI4_VIEWER_PROFILE_BACKGROUND")).as_deref())
+    {
+        behind_other_windows(viewport)
     } else {
         viewport
     };
@@ -2269,6 +2273,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(error) => Err(invalid(error).into()),
         None => Ok(()),
     }
+}
+
+/// Keep background profiling windows visible so eframe continues painting them.
+fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+fn behind_other_windows(viewport: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    viewport
+        .with_active(false)
+        .with_window_level(eframe::egui::WindowLevel::AlwaysOnBottom)
 }
 
 fn main() -> std::process::ExitCode {
@@ -2854,6 +2869,25 @@ mod tests {
                 "b.battleplan"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_background_window_dump_only_drops_focus_and_z_order() {
+        use std::ffi::OsStr;
+        for value in [None, Some(""), Some("0"), Some("true"), Some(" 1")] {
+            assert!(!background_window(value.map(OsStr::new)), "{value:?}");
+        }
+        assert!(background_window(Some(OsStr::new("1"))));
+        // Still shown, sized and on the taskbar: only activation and level change.
+        let viewport = eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]);
+        assert_eq!(
+            behind_other_windows(viewport.clone()),
+            eframe::egui::ViewportBuilder {
+                active: Some(false),
+                window_level: Some(eframe::egui::WindowLevel::AlwaysOnBottom),
+                ..viewport
+            }
         );
     }
 

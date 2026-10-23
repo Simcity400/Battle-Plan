@@ -44,6 +44,8 @@ pub(super) struct Presentation<'a> {
     pub last_animation_time: Option<f32>,
     /// The hour builders' threads the step may lend its independent work.
     pub workers: &'a viewer_foundation::parallel::Workers,
+    /// The host's cut, or `None` to take updates at the walk.
+    pub province_frame: Option<&'a viewer_foundation::map::province_schedule::ProvinceFrame>,
 }
 
 impl Presentation<'_> {
@@ -79,6 +81,7 @@ impl Presentation<'_> {
             ambient,
             last_animation_time,
             workers,
+            province_frame,
         } = self;
         let view_span = viewer_foundation::profiling::span("step_view");
         let visible = camera.visible_ground(size, MARGIN);
@@ -145,7 +148,7 @@ impl Presentation<'_> {
         // mode no unit arrows, as the game's camera cutoffs would.
         let gates = gates.for_mode(&visibility);
         let history_profile = viewer_foundation::profiling::thread_span("history_update");
-        let models = unit_history.update_models(
+        let models = unit_history.update_models_with_frame(
             camera,
             size,
             animation_time,
@@ -153,6 +156,7 @@ impl Presentation<'_> {
             mesh_limit,
             building_history,
             true,
+            province_frame,
         );
         drop(history_profile);
         if let Some(arrows) = movement_arrows {
@@ -166,7 +170,7 @@ impl Presentation<'_> {
         }
         if let Some(text) = animated_text {
             let _text_span = viewer_foundation::profiling::span("step_text");
-            text.advance(camera, animation_time);
+            text.advance(camera, animation_time, province_frame);
         }
         if let Some(pass) = map_buildings {
             let _buildings_span = viewer_foundation::profiling::span("step_buildings");
@@ -397,6 +401,7 @@ mod tests {
                 ambient: None,
                 last_animation_time: self.last,
                 workers: &Default::default(),
+                province_frame: None,
             }
             .step(camera, [1024, 768], time, true);
             self.last = Some(time);

@@ -31,7 +31,7 @@ pub enum Update {
 }
 
 /// One view's phase, dirty bits and the frame's update list.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
     /// The retained off-screen update cursor.
     phase: u32,
@@ -54,6 +54,34 @@ pub struct Schedule {
 
 /// The schedule a view's scene and counters share.
 pub type Shared = Arc<Mutex<Schedule>>;
+
+/// Province-ordered updates shared by this frame's unit walk and text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProvinceFrame {
+    updates: Vec<(u32, Update)>,
+}
+
+impl ProvinceFrame {
+    /// The reached updates in province order.
+    pub fn updates(&self) -> &[(u32, Update)] {
+        &self.updates
+    }
+
+    /// How `province` is updated this frame, or `None` when it is not ([`Schedule::update`]).
+    pub fn update(&self, province: u32) -> Option<Update> {
+        self.updates
+            .binary_search_by_key(&province, |&(id, _)| id)
+            .ok()
+            .map(|at| self.updates[at].1)
+    }
+}
+
+/// Force counts to restore if the frame never reaches its walk.
+#[derive(Debug)]
+pub struct FrameRestore {
+    /// Each spent force count, by province, before it was spent.
+    spent: Vec<(u32, u8)>,
+}
 
 impl Schedule {
     /// Canonical carried state for cross-crate presentation oracles.
@@ -253,6 +281,31 @@ impl Schedule {
         pending
     }
 
+    /// Takes pending updates in province order, spending force counts once.
+    pub fn take_frame(&mut self) -> Option<(ProvinceFrame, FrameRestore)> {
+        if !self.pending {
+            return None;
+        }
+        let spent = self
+            .in_view
+            .iter()
+            .chain(&self.off_screen)
+            .filter_map(|&id| self.forced.get(&id).map(|&count| (id, count)))
+            .collect();
+        self.take_pending();
+        let mut updates: Vec<_> = self.updates().collect();
+        updates.sort_unstable_by_key(|&(id, _)| id);
+        Some((ProvinceFrame { updates }, FrameRestore { spent }))
+    }
+
+    /// Puts a taken frame back as if never taken: its walk did not run.
+    pub fn untake_frame(&mut self, restore: FrameRestore) {
+        self.pending = true;
+        for (id, count) in restore.spent {
+            self.forced.insert(id, count);
+        }
+    }
+
     /// A successfully applied hour supersedes a scene frame whose unit walk
     /// never ran (for example, a viewport too small for the native post seed).
     /// Restore its unconsumed dirty work and retain the force counts, selection,
@@ -285,6 +338,41 @@ impl Schedule {
 mod tests {
     use super::*;
     use crate::map::camera::Pose;
+
+    /// Restoring a cut must undo its spent force counts, not just its pending bit.
+    #[test]
+    fn taken_frames_match_the_walk_and_restore_exactly() {
+        // An owned snapshot: the carried state borrows its schedule.
+        let state = |schedule: &Schedule| format!("{:?}", schedule.presentation_state());
+        let mut schedules = [Schedule::default(), Schedule::default()];
+        for schedule in &mut schedules {
+            schedule.set_selected(BTreeSet::from([4, 7]));
+            schedule.advance([1, 2, 4, 7, 103, 205], |id| id.is_multiple_of(2), false);
+            schedule.set_selected(BTreeSet::from([4, 7, 103]));
+        }
+        let before = state(&schedules[1]);
+        let walked: Vec<_> = {
+            let walk = &mut schedules[0];
+            assert!(walk.take_pending());
+            let mut updates: Vec<_> = walk.updates().collect();
+            updates.sort_unstable_by_key(|&(id, _)| id);
+            updates
+        };
+        let (frame, restore) = schedules[1].take_frame().expect("an advance is pending");
+        assert_eq!(frame.updates(), walked.as_slice());
+        assert_eq!(state(&schedules[1]), state(&schedules[0]));
+        for &(id, update) in &walked {
+            assert_eq!(frame.update(id), Some(update));
+        }
+        assert_eq!(frame.update(3), None);
+        schedules[1].untake_frame(restore);
+        assert_eq!(state(&schedules[1]), before);
+        // Nothing pending: nothing taken, nothing changed.
+        let mut idle = Schedule::default();
+        let idle_state = state(&idle);
+        assert!(idle.take_frame().is_none());
+        assert_eq!(state(&idle), idle_state);
+    }
 
     #[test]
     fn retained_boxes_match_tree_admission_across_selection_reset_and_pending_frames() {

@@ -239,6 +239,34 @@ pub fn take_spans() -> String {
     SPANS.with(|spans| spans_line(&std::mem::take(&mut *spans.borrow_mut())))
 }
 
+/// Completed render records transferred from their worker to the frame owner.
+pub struct ThreadRecords {
+    frame: frame_cpu::FrameRecords,
+    spans: Vec<(&'static str, f64, bool)>,
+}
+
+/// This thread's unprinted scopes, spans and laps, taken; `None` when not profiling.
+pub fn take_thread_records() -> Option<ThreadRecords> {
+    crate::profile_writer::profiling().then(|| ThreadRecords {
+        frame: frame_cpu::take_frame_records(),
+        spans: SPANS.with(|spans| std::mem::take(&mut *spans.borrow_mut())),
+    })
+}
+
+/// Adds records another thread took to this thread's frame, as if recorded here.
+pub fn adopt_thread_records(records: Option<ThreadRecords>) {
+    let Some(records) = records else {
+        return;
+    };
+    frame_cpu::adopt_frame_records(records.frame);
+    SPANS.with(|spans| {
+        let mut spans = spans.borrow_mut();
+        for (name, ms, required) in records.spans {
+            add_span(&mut spans, name, ms, required);
+        }
+    });
+}
+
 /// Named CPU laps of one frame, recorded only while `start` was given a clock.
 #[derive(Default)]
 pub struct CpuLaps {

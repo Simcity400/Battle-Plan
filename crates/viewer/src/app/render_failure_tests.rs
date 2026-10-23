@@ -184,7 +184,11 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     )?;
     let mut viewer = Viewer::create(
         Config::default(),
-        Options::default(),
+        // The injected post-chain failure is reachable only with colour grading enabled.
+        Options {
+            postfx: true,
+            ..Options::default()
+        },
         None,
         Arc::new(Mutex::new(None)),
         None,
@@ -260,17 +264,25 @@ fn failed_redraw_and_failed_hour_never_export_or_acknowledge_stale_pixels() -> s
     assert_eq!(state.hour, Some(target.hour));
     assert_eq!(state.sequence, state.requested_sequence);
 
-    // Real consumer path for a failed hour builder and a decoded gap. Synthetic
-    // failure operands avoid inventing a later healthy hour in the OA recording.
+    // Keep the seek epoch so the window consumes injected failed hours instead of rebuilding them.
+    let (_, last) = fixture
+        .document
+        .playback
+        .range(fixture.input.branch)
+        .expect("the fixture's branch is in its recording");
+    assert!(
+        target.hour + 2 <= last,
+        "the fixture's hour {} needs two following hours in its branch (last {last})",
+        target.hour
+    );
     for (index, gap) in [false, true].into_iter().enumerate() {
         let reason = if gap {
             "synthetic recorded allocation gap"
         } else {
             "synthetic unavailable hour operands"
         };
-        target.hour -= 1;
+        target.hour += 1;
         target.sequence += 1;
-        target.seek_sequence = Some(target.sequence);
         let current = if gap {
             crate::playback::Current::Gap {
                 branch: fixture.input.branch,

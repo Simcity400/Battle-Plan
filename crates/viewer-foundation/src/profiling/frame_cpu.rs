@@ -228,6 +228,64 @@ impl Drop for ThreadSpan {
     }
 }
 
+/// Unprinted scopes, counts and owner samples transferred to a frame owner.
+pub(super) struct FrameRecords {
+    spans: Vec<Record>,
+    counts: Vec<(&'static str, u64)>,
+    owners: Vec<OwnerRecord>,
+}
+
+pub(super) fn take_frame_records() -> FrameRecords {
+    FRAME.with(|frame| {
+        let mut frame = frame.borrow_mut();
+        FrameRecords {
+            spans: std::mem::take(&mut frame.spans),
+            counts: std::mem::take(&mut frame.counts),
+            owners: std::mem::take(&mut frame.owners),
+        }
+    })
+}
+
+/// Sums another thread's taken records into this thread's frame, calls included.
+pub(super) fn adopt_frame_records(records: FrameRecords) {
+    FRAME.with(|frame| merge_frame_records(&mut frame.borrow_mut(), records));
+}
+
+fn merge_frame_records(frame: &mut Frame, records: FrameRecords) {
+    for span in records.spans {
+        match frame.spans.iter_mut().find(|own| own.name == span.name) {
+            Some(own) => {
+                own.wall_ms += span.wall_ms;
+                own.cpu_ms = own.cpu_ms.zip(span.cpu_ms).map(|(a, b)| a + b);
+                own.calls += span.calls;
+            }
+            None => frame.spans.push(span),
+        }
+    }
+    for (name, value) in records.counts {
+        match frame.counts.iter_mut().find(|(key, _)| *key == name) {
+            Some((_, count)) => *count += value,
+            None => frame.counts.push((name, value)),
+        }
+    }
+    for owner in records.owners {
+        match frame.owners.iter_mut().find(|own| own.name == owner.name) {
+            Some(own) => {
+                own.main.merge(owner.main);
+                own.helper.merge(owner.helper);
+            }
+            None => frame.owners.push(owner),
+        }
+    }
+}
+
+impl OwnerUsage {
+    fn merge(&mut self, other: Self) {
+        self.calls += other.calls;
+        self.cpu_ms = self.cpu_ms.zip(other.cpu_ms).map(|(a, b)| a + b);
+    }
+}
+
 /// Counts are explicit, summed and never threshold-filtered. Callers gate any
 /// nontrivial operand gathering before this function, not just its output.
 pub fn record_count(name: &'static str, value: u64) {
@@ -455,6 +513,35 @@ mod tests {
         assert_eq!(frame.owners[0].helper.calls, 0);
         assert_eq!(frame.owners[1].main.calls, 0);
         assert_eq!(frame.owners[1].helper.calls, 1);
+    }
+
+    /// Transferred records preserve call counts, unavailable CPU and owner placement.
+    #[test]
+    fn taken_thread_records_merge_calls_counts_and_owners() {
+        let mut frame = Frame::default();
+        add(&mut frame.spans, "sprite_upload", 0.1, Some(0.1));
+        frame.counts.push(("synthetic_work", 3));
+        let mut taken = Frame::default();
+        add(&mut taken.spans, "sprite_upload", 0.2, Some(0.15));
+        add(&mut taken.spans, "sprite_upload", 0.3, None);
+        add(&mut taken.spans, "rc_terrain", 0.0, Some(0.0));
+        taken.counts.push(("synthetic_work", 4));
+        taken.counts.push(("synthetic_hits", 1));
+        let mut owner = OwnerRecord::new("render_owner");
+        owner.add(false, Some(2.5));
+        taken.owners.push(owner);
+        merge_frame_records(
+            &mut frame,
+            FrameRecords {
+                spans: taken.spans,
+                counts: taken.counts,
+                owners: taken.owners,
+            },
+        );
+        assert_eq!(
+            line(&frame.spans, &frame.counts, &frame.owners),
+            "mt_sprite_upload=0.600 mt_sprite_upload_cpu=unavailable mt_sprite_upload_calls=3 mt_rc_terrain=0.000 mt_rc_terrain_cpu=0.000 mt_rc_terrain_calls=1 synthetic_work=7 synthetic_hits=1 owner_render_owner=helper owner_render_owner_cpu=2.500 owner_render_owner_calls=1"
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::map::province_admission::side_planes;
 use viewer_foundation::map::province_admission::views;
 use viewer_foundation::map::province_map::ProvinceMap;
-use viewer_foundation::map::province_schedule::Shared;
+use viewer_foundation::map::province_schedule::{FrameRestore, ProvinceFrame, Shared};
 use viewer_foundation::map::textures::fow_size;
 use viewer_foundation::profile_writer::profiling;
 use viewer_foundation::profiling::CpuLaps;
@@ -38,6 +38,10 @@ mod step;
 #[path = "scene_player.rs"]
 mod player;
 pub use player::PlayerModel;
+
+#[path = "scene_input.rs"]
+pub mod input;
+pub use input::{SceneInput, SceneOutput};
 
 #[cfg(any(test, feature = "test-support"))]
 use super::scene_faults as failure_tests;
@@ -231,6 +235,8 @@ pub struct Scene {
     /// The hour builders' threads a frame's presentation step may lend its work;
     /// the calling thread alone until the window lends them ([`Scene::use_workers`]).
     workers: viewer_foundation::parallel::Workers,
+    /// Cut updates remain recoverable until the frame reaches its province walk.
+    province_frame: Option<(ProvinceFrame, FrameRestore)>,
     pub pass_diagnostics: passes::Diagnostics,
     /// CPU laps inside animation and overlay preparation, under `BATTLE_PLAN_VIEWER_PROFILE`.
     detail_laps: CpuLaps,
@@ -735,6 +741,7 @@ impl Scene {
             render_laps: [0.0; 4],
             pass_timer: PassTimer::new(device, queue),
             workers: Default::default(),
+            province_frame: None,
             pass_diagnostics: Default::default(),
             detail_laps: Default::default(),
             pass_cpu_laps: Default::default(),
@@ -1288,6 +1295,19 @@ impl Scene {
     /// render takes the advance ([`crate::map::unit_history::History::advance_schedule`]).
     pub fn advance_provinces(&mut self, camera: Camera, size: [u32; 2]) {
         self.unit_history.advance_schedule(camera, size);
+    }
+
+    /// Cut after the final selection change; an unwalked frame returns its force counts.
+    pub fn cut_province_frame(&mut self, animation_time: f32) {
+        self.restore_province_frame();
+        self.province_frame = self.unit_history.take_province_frame(animation_time);
+    }
+
+    /// Gives back a cut that no walk read.
+    fn restore_province_frame(&mut self) {
+        if let Some((_, restore)) = self.province_frame.take() {
+            self.unit_history.untake_province_frame(restore);
+        }
     }
 
     /// Recreates the unit entities of `provinces`, or of every province
@@ -1857,6 +1877,18 @@ impl Scene {
         queue: &wgpu::Queue,
         request: Request<'_>,
     ) -> io::Result<()> {
+        let rendered = self.render_frame(device, queue, request);
+        // A frame that failed before its walk leaves the schedule as if it was never cut.
+        self.restore_province_frame();
+        rendered
+    }
+
+    fn render_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        request: Request<'_>,
+    ) -> io::Result<()> {
         #[cfg(any(test, feature = "test-support"))]
         let faults = &self.test_faults;
         #[cfg(any(test, feature = "test-support"))]
@@ -1938,8 +1970,8 @@ impl Scene {
         // buckets against.
         let visible = camera.visible_ground(size, MARGIN);
         self.detail_laps.lap("targets_shadow_resize");
-        // Everything the frame advances, whatever the display hides
-        // ([`step::Presentation::step`]).
+        // The walk consumes the host's cut even when display switches hide its actors.
+        let province_frame = self.province_frame.take();
         let struck = step::Presentation {
             graphics: &self.graphics,
             aircraft: self.aircraft.as_mut(),
@@ -1961,6 +1993,7 @@ impl Scene {
             ambient: self.ambient.as_mut(),
             last_animation_time: self.last_animation_time,
             workers: &self.workers,
+            province_frame: province_frame.as_ref().map(|(frame, _)| frame),
         }
         .step(camera, size, animation_time, rails_shown);
         if let Some(player) = &mut self.player {
@@ -3369,9 +3402,10 @@ impl Scene {
         self.arena.flush(queue);
         cpu_mark("arena_flush");
         let encoded = clock.map(|clock| clock.elapsed());
-        command_buffers.push(encoder.finish());
+        command_buffers.push(ModelPass::finished_buffer(encoder.finish()));
         cpu_mark("encoder_finish");
-        queue.submit(command_buffers);
+        // Joining here preserves native buffer order without earlier encoder waits.
+        queue.submit(ModelPass::submitted_buffers(command_buffers));
         cpu_mark("queue_submit");
         #[cfg(any(test, feature = "test-support"))]
         faults.submissions.set(faults.submissions.get() + 1);

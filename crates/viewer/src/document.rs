@@ -794,7 +794,16 @@ impl PreparedOverlay {
                 let _finish = order.finishing();
                 let _span = viewer_foundation::profiling::span("d_counters");
                 owner_profile.measure("counters", || {
-                    icons.draw(&inputs, time, naval, pings, bases, land_combats)
+                    icons.draw_branched(
+                        &inputs,
+                        time,
+                        workers,
+                        owner_profile,
+                        naval,
+                        pings,
+                        bases,
+                        land_combats,
+                    )
                 })
             },
             || {
@@ -916,7 +925,11 @@ impl PreparedOverlay {
         );
         let (counters, counters_owner) = counters;
         let ((other, other_owners), other_owner) = other;
-        for sample in [counters_owner, other_owner].into_iter().chain(other_owners)
+        // The counters' own branch, when they drew branched.
+        let counters_branch = counters.as_ref().ok().copied().flatten();
+        for sample in [counters_owner, counters_branch, other_owner]
+            .into_iter()
+            .chain(other_owners)
         {
             viewer_foundation::profiling::record_owner_sample(sample);
         }
@@ -1271,14 +1284,17 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
         })
 }
 
-/// Compose selected counter routes with this scene's retained arrow and unit presentation.
+/// Preserves the selection setter order through the scene input seam.
 pub fn select_movement(
     scene: &mut viewer_world::map::scene::Scene,
+    device: &eframe::wgpu::Device,
+    queue: &eframe::wgpu::Queue,
     content: &Content,
     frame: &DecodedFrame,
     ours: u32,
     selected: &BTreeSet<viewer_foundation::unit_handle::Unit>,
-) {
+) -> std::io::Result<()> {
+    use viewer_world::map::scene::SceneInput;
     let epoch = (frame.branch, frame.hour, ours);
     if !scene.movement_arrows.matches(epoch, selected) {
         let heights = HeightField {
@@ -1294,22 +1310,36 @@ pub fn select_movement(
             ours,
             selected,
         );
-        scene.movement_arrows.set(
-            epoch,
-            routes,
-            warnings,
-            heights,
-            content.map.width as f32,
-            selected,
-        );
+        scene.apply(
+            device,
+            queue,
+            SceneInput::SetMovementArrows {
+                epoch,
+                routes,
+                warnings,
+                heights,
+                width: content.map.width as f32,
+                selected,
+            },
+        )?;
     }
-    scene
-        .unit_history
-        .prepare_arrow_bounds(&content.map, &content.unit_models.bounds);
-    scene.unit_history.set_selection(selected);
-    scene.unit_history.select_provinces(
-        viewer_counter_products::map::movement_routes::selected_provinces(frame, selected),
-    );
+    scene.apply(
+        device,
+        queue,
+        SceneInput::PrepareArrowBounds {
+            map: &content.map,
+            known: &content.unit_models.bounds,
+        },
+    )?;
+    scene.apply(device, queue, SceneInput::SetUnitSelection(selected))?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::SelectProvinces(
+            viewer_counter_products::map::movement_routes::selected_provinces(frame, selected),
+        ),
+    )?;
+    Ok(())
 }
 
 impl Document {

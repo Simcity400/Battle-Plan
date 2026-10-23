@@ -343,7 +343,12 @@ impl Player {
     /// A fixed 60 Hz presentation step derived entirely from the animation
     /// time. The recording client's own phase is not claimed. A dump's
     /// same-time settling never advances a popup.
-    pub fn advance(&mut self, camera: Camera, animation_time: f32) {
+    pub fn advance(
+        &mut self,
+        camera: Camera,
+        animation_time: f32,
+        frame: Option<&province_schedule::ProvinceFrame>,
+    ) {
         if !animation_time.is_finite() {
             return;
         }
@@ -360,7 +365,7 @@ impl Player {
             self.reset();
             return;
         };
-        let schedule = self.schedule.lock().unwrap();
+        let schedule = frame.is_none().then(|| self.schedule.lock().unwrap());
         let cutoff = match &self.cutoff {
             Ok(cutoff) => *cutoff,
             Err(reason) => {
@@ -372,7 +377,12 @@ impl Player {
             }
         };
         for (&province, objects) in &mut self.provinces {
-            let Some(update) = schedule.update(province) else {
+            let update = match (frame, &schedule) {
+                (Some(frame), _) => frame.update(province),
+                (None, Some(schedule)) => schedule.update(province),
+                (None, None) => unreachable!("an uncut frame locks the schedule"),
+            };
+            let Some(update) = update else {
                 continue;
             };
             // The game's camera height, or a free eye's distance to the province's texts.

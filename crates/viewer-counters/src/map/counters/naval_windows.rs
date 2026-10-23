@@ -2573,6 +2573,7 @@ fn base_frame(
         drop(maps_profile);
         for (province, slot) in pass.updated {
             let instance = pool.get(slot).ok_or("an updated icon has no window")?;
+            let update_profile = viewer_foundation::profiling::span("dc_nu_base_update");
             match glyphs.get(&province) {
                 Some(glyph) => {
                     if inputs.visibility.priorities
@@ -2602,6 +2603,7 @@ fn base_frame(
                     // BaseUnknowns already counts why this hour has no decided glyph.
                 }
             }
+            drop(update_profile);
             // No roster (or an emptied box) appends nothing; an undecided one appends what the
             // hour does not know.
             let items = match &bases.ports {
@@ -2613,7 +2615,9 @@ fn base_frame(
                 },
                 Err(why) => Err(why),
             };
+            let items_profile = viewer_foundation::profiling::span("dc_nu_base_items");
             base_items(windows, instance, window, slot, items, &resources, report)?;
+            drop(items_profile);
             pool.rewrote(slot, Rewrote::Update);
         }
         Ok(())

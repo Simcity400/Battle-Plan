@@ -58,6 +58,7 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
+use viewer_world::map::scene::SceneInput;
 use {
     viewer_counters::map::counters::CounterReport, viewer_foundation::map::name_draw::Placements,
     viewer_foundation::map::sprites::Batch, viewer_world::map::labels::LabelReport,
@@ -1209,41 +1210,81 @@ pub(crate) fn load_scene(
         &document.icons.lazy,
         graphics,
     )?;
-    scene.install_animated_text(&document.icons.animated_text, &document.icons.counters.gui);
-    scene.set_borders(
+    scene.apply(
         device,
         queue,
-        &document.border_assets,
-        &document.border_meshes,
-        &document.straits,
+        SceneInput::InstallAnimatedText {
+            assets: &document.icons.animated_text,
+            gui: &document.icons.counters.gui,
+        },
     )?;
-    scene.set_rivers(device, queue, &document.river_assets, &document.river_mesh)?;
-    scene.set_trees(
+    scene.apply(
         device,
         queue,
-        &document.tree_assets,
-        document.tree_geometry.clone(),
-        &document.tree_field,
+        SceneInput::SetBorders {
+            assets: &document.border_assets,
+            meshes: &document.border_meshes,
+            straits: &document.straits,
+        },
     )?;
-    scene.set_sprawl(device, queue, &document.sprawl)?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::SetRivers {
+            assets: &document.river_assets,
+            mesh: &document.river_mesh,
+        },
+    )?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::SetTrees {
+            assets: &document.tree_assets,
+            geometry: document.tree_geometry.clone(),
+            field: &document.tree_field,
+        },
+    )?;
+    scene.apply(device, queue, SceneInput::SetSprawl(&document.sprawl))?;
     // The map's ambient objects and the nuclear impact entities share this pass,
     // as in a dump: their sounds and impacts need it in every window.
-    scene.set_map_frame(device, queue, &document.frame_assets)?;
-    scene.warm_trains(device, queue, &document.trains)?;
-    scene.warm_aircraft(device, queue, &document.aircraft)?;
-    scene.warm_unit_models(device, queue, &document.unit_models)?;
-    scene.warm_map_buildings(device, queue, &document.map_buildings)?;
-    scene.warm_bridges(device, queue, &document.bridges)?;
-    scene.warm_railways(device, queue, &document.rail_assets)?;
-    scene.warm_orders(device, queue, &document.orders)?;
-    scene.warm_weather(device, queue, document.weather_effects.clone())?;
-    scene.warm_political(
+    scene.apply(
         device,
         queue,
-        &document.content.map,
-        &document.content.strategic_regions,
-        &document.content.map_defines.gradient_field,
-        &document.content.political_gpu,
+        SceneInput::SetMapFrame(&document.frame_assets),
+    )?;
+    scene.apply(device, queue, SceneInput::WarmTrains(&document.trains))?;
+    scene.apply(device, queue, SceneInput::WarmAircraft(&document.aircraft))?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::WarmUnitModels(&document.unit_models),
+    )?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::WarmMapBuildings(&document.map_buildings),
+    )?;
+    scene.apply(device, queue, SceneInput::WarmBridges(&document.bridges))?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::WarmRailways(&document.rail_assets),
+    )?;
+    scene.apply(device, queue, SceneInput::WarmOrders(&document.orders))?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::WarmWeather(document.weather_effects.clone()),
+    )?;
+    scene.apply(
+        device,
+        queue,
+        SceneInput::WarmPolitical {
+            map: &document.content.map,
+            strategic_regions: &document.content.strategic_regions,
+            field: &document.content.map_defines.gradient_field,
+            cache: &document.content.political_gpu,
+        },
     )?;
     Ok(scene)
 }
@@ -2756,6 +2797,7 @@ impl Viewer {
         &mut self,
         document: &Document,
         device: &eframe::wgpu::Device,
+        queue: &eframe::wgpu::Queue,
         point: Option<[f32; 2]>,
     ) -> Result<(), String> {
         let Ok(color) = &document.border_assets.faction_highlight_color else {
@@ -2784,7 +2826,14 @@ impl Viewer {
             && !scene.faction_highlight_regions().is_empty()
         {
             scene
-                .set_border_plans(device, &borders.classes, &borders.highlighted)
+                .apply(
+                    device,
+                    queue,
+                    SceneInput::SetBorderPlans {
+                        classes: &borders.classes,
+                        zone: &borders.highlighted,
+                    },
+                )
                 .map_err(|why| why.to_string())?;
         }
         let content = Arc::clone(&document.content);
@@ -2817,15 +2866,18 @@ impl Viewer {
             },
             dropper,
         ) {
-            let result = scene.set_faction_highlight(
+            let result = scene.apply(
                 device,
-                &plan,
-                &self
-                    .faction_highlight
-                    .requested()
-                    .expect("requested highlight")
-                    .regions,
-                *color,
+                queue,
+                SceneInput::SetFactionHighlight {
+                    plan: &plan,
+                    strategic_regions: &self
+                        .faction_highlight
+                        .requested()
+                        .expect("requested highlight")
+                        .regions,
+                    color: *color,
+                },
             );
             dropper.drop_later(plan);
             result.map_err(|why| why.to_string())?;
@@ -3382,10 +3434,8 @@ impl Viewer {
             }
         };
         let ui_scale = raster.ui_scale;
-        // Ordinary viewing builds none of this text: only diagnostics mode
-        // shows it and only a capture prints it (the desktop's on-demand
-        // report rebuilds it in `report_map_details`).
-        let build_warnings = self.diagnostics || self.capture.is_some();
+        // Only diagnostics and a capture's saving frame need warning text.
+        let build_warnings = builds_warnings(self.diagnostics, self.capture.as_ref());
         self.interface_points =
             ui_scale_points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
         let size = ui.available_size().max(egui::vec2(1.0, 1.0));
@@ -3921,12 +3971,14 @@ impl Viewer {
             laps.lap("units_field");
             let units_cpu = viewer_foundation::profiling::thread_span("units_upload");
             scene
-                .set_unit_models(
+                .apply(
                     &state.device,
                     &state.queue,
-                    &document.unit_models,
-                    units,
-                    self.options.window_dump,
+                    SceneInput::SetUnitModels {
+                        assets: &document.unit_models,
+                        field: units,
+                        steady: self.options.window_dump,
+                    },
                 )
                 .map_err(|error| error.to_string())?;
             units_cpu.finish();
@@ -3982,7 +4034,9 @@ impl Viewer {
                 convoys_shown,
                 &mut self.convoy_refused,
             ));
-            scene.set_raid_units(units);
+            scene
+                .apply(&state.device, &state.queue, SceneInput::SetRaidUnits(units))
+                .map_err(|error| error.to_string())?;
             self.raid_tick = Some(tick);
             self.convoys_sailing = sailing;
         }
@@ -4152,7 +4206,13 @@ impl Viewer {
             if let Some(hours) = &self.hours {
                 self.raid_lane.use_workers(hours.workers());
                 if let Some(scene) = self.scene.as_mut() {
-                    scene.use_workers(hours.frame_workers());
+                    scene
+                        .apply(
+                            &state.device,
+                            &state.queue,
+                            SceneInput::UseWorkers(hours.frame_workers()),
+                        )
+                        .map_err(|error| error.to_string())?;
                 }
             }
             self.raid_lane.show(
@@ -4299,15 +4359,35 @@ impl Viewer {
             // (province updates precede map-icon updates); the scene's
             // render takes it.
             if let Some(scene) = self.scene.as_mut() {
-                scene.share_province_schedule(self.counter_view.presentation.schedule());
+                scene
+                    .apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::ShareProvinceSchedule(
+                            self.counter_view.presentation.schedule(),
+                        ),
+                    )
+                    .map_err(|error| error.to_string())?;
                 crate::document::select_movement(
                     scene,
+                    &state.device,
+                    &state.queue,
                     &document.content,
                     now.frame,
                     self.overlay_tables.as_ref().expect("parsed above").3.ours(),
                     self.unit_selection.units().as_ref(),
-                );
-                scene.advance_provinces(camera, pixels);
+                )
+                .map_err(|error| error.to_string())?;
+                scene
+                    .apply(
+                        &state.device,
+                        &state.queue,
+                        SceneInput::AdvanceProvinces {
+                            camera,
+                            size: pixels,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
             }
             if self.overlay_fraction != Some(document.hour_fraction) {
                 let prepared = self.prepared_overlay.as_mut().expect("prepared above");
@@ -4709,7 +4789,12 @@ impl Viewer {
         };
         laps.lap("diagnostics");
         let render_cpu = viewer_foundation::profiling::thread_span("render");
-        self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
+        self.update_faction_highlight(
+            document,
+            &state.device,
+            &state.queue,
+            point.filter(|_| !over_combat),
+        )?;
         let overlay = if self.looks.is_some() {
             &self.free_overlay
         } else {
@@ -4775,15 +4860,40 @@ impl Viewer {
             let ranges = carrier_ranges
                 .as_ref()
                 .unwrap_or_else(|| prepared.air_ranges.shown(hovered_air_base));
-            scene.set_air_ranges(&ranges.ranges);
-            scene.set_air_transfers(&prepared.air_orders.transfers.progress);
-            scene.set_radar(&prepared.radar, self.picker.radar, hovered_radar);
-            scene.set_air_assignment(&state.queue, prepared.province_stripes());
+            let (device, queue) = (&state.device, &state.queue);
             scene
-                .set_strategic_styles(
-                    &state.device,
-                    &state.queue,
-                    &prepared.naval_selection.styles,
+                .apply(device, queue, SceneInput::SetAirRanges(&ranges.ranges))
+                .map_err(|e| e.to_string())?;
+            scene
+                .apply(
+                    device,
+                    queue,
+                    SceneInput::SetAirTransfers(&prepared.air_orders.transfers.progress),
+                )
+                .map_err(|e| e.to_string())?;
+            scene
+                .apply(
+                    device,
+                    queue,
+                    SceneInput::SetRadar {
+                        field: &prepared.radar,
+                        shown: self.picker.radar,
+                        hovered: hovered_radar,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            scene
+                .apply(
+                    device,
+                    queue,
+                    SceneInput::SetAirAssignment(prepared.province_stripes()),
+                )
+                .map_err(|e| e.to_string())?;
+            scene
+                .apply(
+                    device,
+                    queue,
+                    SceneInput::SetStrategicStyles(&prepared.naval_selection.styles),
                 )
                 .map_err(|e| e.to_string())?;
             if let Some(base) = &self.uploaded.orders {
@@ -4800,7 +4910,14 @@ impl Viewer {
                     let air_field = air.highlighted(&ranges.highlighted_bases);
                     let field = viewer_foundation::map::ribbon_mesh::append(&field, &air_field);
                     scene
-                        .set_orders(&state.device, &state.queue, &document.orders, &field)
+                        .apply(
+                            device,
+                            queue,
+                            SceneInput::SetOrders {
+                                assets: &document.orders,
+                                field: &field,
+                            },
+                        )
                         .map_err(|error| error.to_string())?;
                     self.uploaded.air_order_sources = Some((
                         Arc::clone(base),
@@ -4810,7 +4927,13 @@ impl Viewer {
                 }
             }
         }
-        scene.set_graphics(self.graphics);
+        scene
+            .apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetGraphics(self.graphics),
+            )
+            .map_err(|error| error.to_string())?;
         // The walking mode's figure stands in the scene while it walks, and the flying mode's
         // aircraft where this frame's flight placed it.
         let library = document.unit_models.library();
@@ -4822,18 +4945,40 @@ impl Viewer {
             _ => None,
         };
         scene
-            .set_player(&state.device, &state.queue, player)
+            .apply(&state.device, &state.queue, SceneInput::SetPlayer(player))
             .map_err(|error| error.to_string())?;
         drop((library, aircraft));
-        scene.set_visibility(self.counter_view.visibility);
+        scene
+            .apply(
+                &state.device,
+                &state.queue,
+                SceneInput::SetVisibility(self.counter_view.visibility),
+            )
+            .map_err(|error| error.to_string())?;
         crate::document::select_movement(
             scene,
+            &state.device,
+            &state.queue,
             &document.content,
             document.frame().map_err(|error| error.to_string())?,
             self.overlay_tables.as_ref().expect("parsed above").3.ours(),
             self.unit_selection.units().as_ref(),
-        );
-        scene.label_frame(u64::from(self.profile_frame));
+        )
+        .map_err(|error| error.to_string())?;
+        scene
+            .apply(
+                &state.device,
+                &state.queue,
+                SceneInput::LabelFrame(u64::from(self.profile_frame)),
+            )
+            .map_err(|error| error.to_string())?;
+        scene
+            .apply(
+                &state.device,
+                &state.queue,
+                SceneInput::CutProvinceFrame(animation_time),
+            )
+            .map_err(|error| error.to_string())?;
         scene
             .render(
                 &state.device,
@@ -5660,6 +5805,11 @@ fn engaged_relayout(
     shown.is_some_and(|(covered, branch, hour)| !covered && covers(branch, hour))
 }
 
+/// A deferred save may build unused warnings, but an unsavable frame never needs them.
+fn builds_warnings(diagnostics: bool, capture: Option<&Capture>) -> bool {
+    diagnostics || capture.is_some_and(|capture| capture.remaining == 0)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
@@ -5696,6 +5846,53 @@ pub(crate) mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_capture_builds_warnings_only_on_the_frames_that_can_save_them() {
+        let capture = |remaining, frames| Capture {
+            path: "capture.png".into(),
+            remaining,
+            pinned: None,
+            exit: true,
+            time: None,
+            step: 0.25,
+            frames,
+            index: 0,
+        };
+        // Ordinary viewing builds none; diagnostics mode builds them on every frame.
+        assert!(!builds_warnings(false, None));
+        for remaining in [0, 1, 3_321] {
+            assert!(builds_warnings(true, Some(&capture(remaining, 1))));
+        }
+        assert!(builds_warnings(true, None));
+        // Mirror save_capture's countdown and sequence steps without rendering.
+        for (remaining, frames) in [(3_321, 1), (1, 1), (0, 1), (2, 3)] {
+            let mut capture = capture(remaining, frames);
+            let mut built = Vec::new();
+            loop {
+                built.push(builds_warnings(false, Some(&capture)));
+                if capture.remaining > 0 {
+                    capture.remaining -= 1;
+                    continue;
+                }
+                if capture.frames == 1 {
+                    break;
+                }
+                capture.frames -= 1;
+                capture.index += 1;
+                capture.remaining = 0;
+            }
+            let saved: Vec<_> = (0..built.len())
+                .map(|frame| frame >= remaining as usize)
+                .collect();
+            assert_eq!(built, saved, "remaining {remaining}, frames {frames}");
+            assert_eq!(
+                built.iter().filter(|&&built| built).count(),
+                frames as usize,
+                "one build per saved frame"
+            );
+        }
+    }
 
     #[test]
     fn occupation_controls_keep_independent_hits_and_follow_free_icon_visibility() {

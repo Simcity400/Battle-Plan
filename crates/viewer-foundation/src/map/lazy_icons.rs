@@ -384,6 +384,7 @@ impl LazyFlags {
     /// candidate. The first candidate not decoded yet is queued, and until it
     /// is, a later candidate that is already decoded stands in for it.
     pub fn resolve(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
+        self.order_request(candidates, false);
         let mut state = lock(&self.state);
         let mut queued = false;
         let mut found = None;
@@ -449,6 +450,7 @@ impl LazyFlags {
     /// the set had been built whole at load, as the engine builds its flag atlases,
     /// so a frame never draws a stand-in for a flag that is not decoded yet.
     pub fn acquire(&self, candidates: &[&str]) -> Option<(usize, [f32; 4])> {
+        self.order_request(candidates, true);
         let queued = {
             let mut state = lock(&self.state);
             let mut queued = false;
@@ -469,6 +471,35 @@ impl LazyFlags {
     /// One exact key's cell, queued when not decoded yet.
     pub fn get(&self, key: &str) -> Option<(usize, [f32; 4])> {
         self.resolve(&[key])
+    }
+
+    /// Cells only append; wait before an undecided request, never while holding the atlas lock.
+    fn order_request(&self, candidates: &[&str], every: bool) {
+        if !super::request_order::is_following() {
+            return;
+        }
+        let decides = {
+            let state = lock(&self.state);
+            let mut decides = false;
+            for key in candidates {
+                if !self.index.contains_key(*key) {
+                    continue;
+                }
+                match state.cells.get(*key) {
+                    Some(None) => continue,
+                    Some(Some(_)) if every => continue,
+                    Some(Some(_)) => break,
+                    None => {
+                        decides = true;
+                        break;
+                    }
+                }
+            }
+            decides
+        };
+        if decides {
+            super::request_order::before_deciding();
+        }
     }
 
     /// The key a quad of this set draws, if it is one of its cells.
@@ -1158,5 +1189,49 @@ mod tests {
         let second = loaded(&images, "b");
         assert_ne!(first, second);
         assert!(textures.snapshot().iter().all(|(id, _)| *id != first));
+    }
+
+    /// Already-decided keys must not wait behind an unfinished preceding branch.
+    #[test]
+    fn a_following_branch_decides_flag_keys_in_the_serial_order() {
+        use crate::map::request_order::{Preceding, following};
+        use std::sync::mpsc;
+        let cell = [2, 2];
+        // The serial draw: the first branch decides T0001 and T0003, then the second T0002.
+        let serial_textures = foreground();
+        let serial = flag_set(&serial_textures, cell);
+        let expected = [
+            serial.acquire(&["T0001"]),
+            serial.acquire(&["T0003"]),
+            serial.acquire(&["T0002"]),
+        ];
+        let textures = foreground();
+        let flags = flag_set(&textures, cell);
+        let preceding = Arc::new(Preceding::default());
+        let (decided, decided_seen) = mpsc::channel();
+        let (asked, asked_seen) = mpsc::channel();
+        let (first, third, second) = std::thread::scope(|scope| {
+            let (leading, leader_flags) = (&preceding, &flags);
+            let leader = scope.spawn(move || {
+                let _finished = leading.finishing();
+                let flags = leader_flags;
+                let first = flags.acquire(&["T0001"]);
+                decided.send(()).unwrap();
+                // Held until the following branch has made both requests below.
+                asked_seen.recv().unwrap();
+                (first, flags.acquire(&["T0003"]))
+            });
+            let second = following(&preceding, || {
+                decided_seen.recv().unwrap();
+                // Decided already: no wait, though the preceding branch is held.
+                assert_eq!(flags.acquire(&["T0001"]), flags.get("T0001"));
+                asked.send(()).unwrap();
+                // Undecided: waits until the preceding branch has decided T0003 and finished.
+                flags.acquire(&["T0002"])
+            });
+            let (first, third) = leader.join().unwrap();
+            (first, third, second)
+        });
+        assert_eq!([first, third, second], expected);
     }
 }

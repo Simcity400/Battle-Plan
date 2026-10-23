@@ -441,6 +441,31 @@ impl ResourceIdentities {
 
 type VertexKey = ((u64, bool), usize);
 
+/// Submission order is fixed even while preceding encoders finish on helpers.
+pub(crate) enum MapBuffer {
+    Finished(wgpu::CommandBuffer),
+    Finishing(viewer_foundation::parallel::Detached<wgpu::CommandBuffer>),
+}
+
+impl MapBuffer {
+    /// Every buffer in order, waiting for those still finishing.
+    fn submitted(buffers: Vec<Self>) -> Vec<wgpu::CommandBuffer> {
+        let wall_profile = viewer_foundation::profile_writer::profiling();
+        let clock = wall_profile.then(std::time::Instant::now);
+        let buffers = buffers
+            .into_iter()
+            .map(|buffer| match buffer {
+                Self::Finished(buffer) => buffer,
+                Self::Finishing(finishing) => finishing.join(),
+            })
+            .collect();
+        if let Some(clock) = clock {
+            viewer_foundation::profiling::record_lap("native_finish_join", clock.elapsed());
+        }
+        buffers
+    }
+}
+
 /// Prepared in native order on the presentation thread; encoding reads only GPU handles.
 #[derive(Default)]
 pub(crate) struct DrawList {
@@ -498,99 +523,96 @@ impl DrawList {
         }
     }
 
-    /// Encode contiguous slices independently; all passes load/store the same attachments.
-    /// Submission retains slice order and no pass samples these attachments between slices.
+    /// Slices share attachments; the preceding encoder joins first at submission.
     fn encode(
         lists: &[&Self],
         device: &wgpu::Device,
         targets: &Targets,
         admitted: &viewer_foundation::parallel::Admitted,
         preceding: &mut wgpu::CommandEncoder,
-    ) -> Vec<wgpu::CommandBuffer> {
+    ) -> Vec<MapBuffer> {
         let total = lists.iter().map(|list| list.draws.len()).sum::<usize>();
         let count = total.min(admitted.capacity());
         if count == 0 {
             admitted.run(0, &|_, _| {});
             return Vec::new();
         }
-        let preceding = std::sync::Mutex::new(Some(std::mem::replace(
+        let preceding = std::mem::replace(
             preceding,
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") }),
-        )));
-        // The first buffer stays before every slice, whichever encoder finishes first.
-        let outputs: Vec<_> = (0..=count).map(|_| std::sync::Mutex::new(None)).collect();
-        let finish = |_: &dyn Fn() -> bool| {
-            if let Some(encoder) = preceding.lock().unwrap_or_else(|e| e.into_inner()).take() {
-                *outputs[0].lock().unwrap_or_else(|e| e.into_inner()) = Some(encoder.finish());
-            }
-        };
+        );
+        let slice = |index, count| Self::encode_slice(lists, total, device, targets, index, count);
+        let outputs: Vec<_> = (0..count).map(|_| std::sync::Mutex::new(None)).collect();
         let wall_profile = viewer_foundation::profile_writer::profiling();
-        let (count, timing) = viewer_foundation::parallel::profile_run(wall_profile, || {
-            admitted.run_beside(
-                count,
-                &|index, count| {
-                    let std::ops::Range { start, end } = draw_slice(total, count, index);
-                    let mut encoder =
-                        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("native model slice"),
-                        });
-                    {
-                        let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
-                        // No producer samples the resolved scene between these slices. Keep every
-                        // multisample value, but resolve only after the last slice's draws.
-                        if index + 1 < count {
-                            colour.resolve_target = None;
-                        }
-                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("native model slice"),
-                            color_attachments: &[Some(colour)],
-                            depth_stencil_attachment: Some(
-                                targets.depth_attachment(wgpu::LoadOp::Load),
-                            ),
-                            ..Default::default()
-                        });
-                        let mut base = 0;
-                        for list in lists {
-                            let next = base + list.draws.len();
-                            if base < end && next > start {
-                                list.record_slice(
-                                    &mut pass,
-                                    &list.draws[start.saturating_sub(base)
-                                        ..(end - base).min(list.draws.len())],
-                                );
-                            }
-                            base = next;
-                            if base >= end {
-                                break;
-                            }
-                        }
-                    }
-                    *outputs[index + 1].lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(encoder.finish());
-                },
-                Some(&finish),
-            )
-        });
-        // Busy builders, or helpers that did not take a turn before the caller finished,
-        // leave the preceding encoder here. No commands are submitted until Scene is done.
-        let clock = wall_profile.then(std::time::Instant::now);
-        finish(&|| true);
-        let caller = timing.own + clock.map_or(std::time::Duration::ZERO, |clock| clock.elapsed());
-
+        let ((count, finishing), timing) =
+            viewer_foundation::parallel::profile_run(wall_profile, || {
+                admitted.run_detached(
+                    count,
+                    &|index, count| {
+                        *outputs[index].lock().unwrap_or_else(|e| e.into_inner()) =
+                            Some(slice(index, count));
+                    },
+                    move || preceding.finish(),
+                )
+            });
         if wall_profile {
-            viewer_foundation::profiling::record_lap("native_encode_caller", caller);
+            viewer_foundation::profiling::record_lap("native_encode_caller", timing.own);
             viewer_foundation::profiling::record_lap("native_turns_finish_wait", timing.wait);
         }
-        outputs
-            .into_iter()
-            .take(count + 1)
-            .map(|output| {
-                output
-                    .into_inner()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .expect("native slice encoded")
-            })
+        // The first buffer stays before every slice, whichever encoder finishes first.
+        std::iter::once(MapBuffer::Finishing(finishing))
+            .chain(outputs.into_iter().take(count).map(|output| {
+                MapBuffer::Finished(
+                    output
+                        .into_inner()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .expect("native slice encoded"),
+                )
+            }))
             .collect()
+    }
+
+    /// Slice `index` of `count` over the lists' draws, in its own finished encoder.
+    fn encode_slice(
+        lists: &[&Self],
+        total: usize,
+        device: &wgpu::Device,
+        targets: &Targets,
+        index: usize,
+        count: usize,
+    ) -> wgpu::CommandBuffer {
+        let std::ops::Range { start, end } = draw_slice(total, count, index);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("native model slice"),
+        });
+        {
+            let mut colour = targets.scene_attachment(wgpu::LoadOp::Load);
+            // Resolve only the last slice; intermediate slices retain every multisample value.
+            if index + 1 < count {
+                colour.resolve_target = None;
+            }
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("native model slice"),
+                color_attachments: &[Some(colour)],
+                depth_stencil_attachment: Some(targets.depth_attachment(wgpu::LoadOp::Load)),
+                ..Default::default()
+            });
+            let mut base = 0;
+            for list in lists {
+                let next = base + list.draws.len();
+                if base < end && next > start {
+                    list.record_slice(
+                        &mut pass,
+                        &list.draws[start.saturating_sub(base)..(end - base).min(list.draws.len())],
+                    );
+                }
+                base = next;
+                if base >= end {
+                    break;
+                }
+            }
+        }
+        encoder.finish()
     }
 
     fn clear(&mut self) {
@@ -879,7 +901,7 @@ impl ModelPass {
         targets: &Targets,
         admitted: &viewer_foundation::parallel::Admitted,
         preceding: &mut wgpu::CommandEncoder,
-    ) -> Vec<wgpu::CommandBuffer> {
+    ) -> Vec<MapBuffer> {
         DrawList::encode(
             &lists.iter().map(|(_, list)| list).collect::<Vec<_>>(),
             device,
@@ -887,6 +909,16 @@ impl ModelPass {
             admitted,
             preceding,
         )
+    }
+
+    /// A finished map command buffer, in the order [`Self::encode_native`]'s buffers keep.
+    pub(crate) fn finished_buffer(buffer: wgpu::CommandBuffer) -> MapBuffer {
+        MapBuffer::Finished(buffer)
+    }
+
+    /// The map's buffers in submission order, once every native preceding encoder finished.
+    pub(crate) fn submitted_buffers(buffers: Vec<MapBuffer>) -> Vec<wgpu::CommandBuffer> {
+        MapBuffer::submitted(buffers)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1786,8 +1818,7 @@ mod tests {
                         }
                     }
                 }
-                // Like Scene, finish the preceding clear beside the slices when a helper
-                // takes it, but always submit it first. Busy builders finish it here instead.
+                // The preceding clear must submit first even when it finishes last.
                 let slices = workers.map(|(workers, helpers)| {
                     workers.with_admitted(workers.threads(), |admitted| {
                         admitted.wait_for_helpers(helpers);
@@ -1800,8 +1831,8 @@ mod tests {
                     })
                 });
                 let mut commands = slices.unwrap_or_default();
-                commands.push(encoder.finish());
-                queue.submit(commands);
+                commands.push(ModelPass::finished_buffer(encoder.finish()));
+                queue.submit(ModelPass::submitted_buffers(commands));
                 read_texture(&device, &queue, targets.scene_texture(), 8).unwrap()
             };
             for empty in [false, true] {

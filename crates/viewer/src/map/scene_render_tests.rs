@@ -307,3 +307,70 @@ fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+fn scene_province_frame_cut_spends_once_and_restores_an_unwalked_frame() -> io::Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    use viewer_foundation::map::province_schedule::Shared;
+    use viewer_world::map::scene::SceneInput;
+
+    let fixture = Fixture::load("scene-province-frame")?;
+    let (device, queue) = (&fixture.state.device, &fixture.state.queue);
+    for samples in [1, 4] {
+        let mut scene = fixture.scene_with_samples(samples)?;
+        let schedule = Shared::default();
+        scene.apply(device, queue, SceneInput::ShareProvinceSchedule(&schedule))?;
+        {
+            let mut schedule = schedule.lock().unwrap();
+            schedule.advance([1, 2, 101, 203], |id| id == 2, false);
+            schedule.set_selected(BTreeSet::from([101]));
+        }
+        let expect = |pending, force| {
+            let expected = (
+                1u32,
+                BTreeSet::from([1u32]),
+                BTreeSet::from([2u32, 101]),
+                BTreeSet::from([1u32]),
+                pending,
+                None::<u32>,
+                BTreeSet::from([101u32]),
+                BTreeMap::from([(101u32, force)]),
+            );
+            assert_eq!(
+                format!("{:?}", schedule.lock().unwrap().presentation_state()),
+                format!("{expected:?}"),
+            );
+        };
+        expect(true, 2u8);
+        let request = Request {
+            animation_time: 0.,
+            ..fixture.request([256, 144])
+        };
+        for _ in 0..2 {
+            scene.apply(device, queue, SceneInput::CutProvinceFrame(0.))?;
+            expect(false, 1);
+        }
+        let submissions = scene.test_faults.submissions.get();
+        assert!(
+            scene
+                .render(
+                    device,
+                    queue,
+                    Request {
+                        size: [0, 0],
+                        ..request
+                    }
+                )
+                .is_err()
+        );
+        expect(true, 2);
+        assert_eq!(scene.test_faults.submissions.get(), submissions);
+        scene.apply(device, queue, SceneInput::CutProvinceFrame(0.))?;
+        expect(false, 1);
+        scene.render(device, queue, request)?;
+        expect(false, 1);
+        assert_eq!(scene.test_faults.submissions.get(), submissions + 1);
+    }
+    Ok(())
+}
