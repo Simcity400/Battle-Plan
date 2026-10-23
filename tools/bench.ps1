@@ -33,8 +33,9 @@ Plan JSON:
     { "name": "candidate", "frozen": "candidate-bin" }
   ]
 }
-"frozen" is a directory holding recorder.exe and collector.dll. "speed" is the
-native game speed 0-4 (default 4). "max_hours"
+"frozen" is a directory holding recorder.exe and collector.dll. A recorder
+candidate's "capture_mode" ("full" or "map", default the recorder's own) is passed
+to it as --capture-mode. "speed" is the native game speed 0-4 (default 4). "max_hours"
 defaults to 420; choose a cap above the expected progress for a full-duration run.
 Ordinary recorder candidates require -MetricsTool pointing to a reader built for
 their replay format. Missing or incomplete metrics, failed drains, drops and write
@@ -142,6 +143,10 @@ foreach ($candidate in $spec.candidates) {
     if ($diagnostic -and (-not $candidate.frozen -or [string]$candidate.name -notlike 'diag-*')) { throw 'Diagnostic candidates require a frozen recorder and a diag-* name.' }
     if (($candidate.PSObject.Properties['warm'] -and $candidate.warm) -or $candidate.PSObject.Properties['warm_gate']) {
         throw 'Consistency warmup was retired. Remove warm=true and warm_gate from the benchmark plan.'
+    }
+    if ($candidate.PSObject.Properties['capture_mode']) {
+        if (-not $candidate.frozen) { throw 'capture_mode applies only to frozen recorder candidates.' }
+        if ([string]$candidate.capture_mode -cnotin @('full', 'map')) { throw 'capture_mode must be "full" or "map".' }
     }
     if ($candidate.frozen -and -not $diagnostic -and -not $SummarizeOnly -and (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf))) {
         throw 'Recorder candidates require -MetricsTool with a reader built for their replay format.'
@@ -716,7 +721,9 @@ function Start-Candidate($candidate, [string]$runDir) {
     $previousSampler = $(if (Test-Path Env:BATTLE_PLAN_WORKER_SAMPLER) { $env:BATTLE_PLAN_WORKER_SAMPLER } else { $env:HOI4_WORKER_SAMPLER })
     try {
         if ($WorkerSampler) { $env:BATTLE_PLAN_WORKER_SAMPLER = $WorkerSampler }
-        $process = Start-Process -FilePath $recorderExe -ArgumentList @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"')) `
+        $arguments = @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"'))
+        if ($candidate.PSObject.Properties['capture_mode']) { $arguments += @('--capture-mode', [string]$candidate.capture_mode) }
+        $process = Start-Process -FilePath $recorderExe -ArgumentList $arguments `
             -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
     } finally {
@@ -1163,6 +1170,8 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
         $runDir = Join-Path $Out ("r{0:d2}_{1:d2}_{2}" -f $rep, $index, $name)
         $null = New-Item -ItemType Directory -Force -Path $runDir
         $row = [ordered]@{ name = $name; repeat = $rep; frozen = $candidate.frozen; run_dir = $runDir; started_utc = [DateTime]::UtcNow.ToString('o'); passed = $false }
+        # Only the mode the plan asked for: an omitted one is the recorder's own, not named here.
+        $row.capture_mode = $(if ($candidate.PSObject.Properties['capture_mode']) { [string]$candidate.capture_mode } else { $null })
         if ($candidate.PSObject.Properties['diagnostic'] -and $candidate.diagnostic) {
             $row.diagnostic_only = $true; $row.recording_valid = $false; $row.performance_screen_clean = $false
         }
