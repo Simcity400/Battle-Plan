@@ -1464,6 +1464,21 @@ fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
                 glyphs(&[&recorded, &unrecorded]),
                 counter_status::Glyphs::default()
             );
+            // Map's witness draws the training glyph alone; a refused read is never off.
+            let mut witnessed = unrecorded.clone();
+            witnessed.status.exercising = Some(true);
+            witnessed.status.attrition = true;
+            assert_eq!(
+                glyphs(&[&unrecorded, &witnessed]),
+                counter_status::Glyphs {
+                    training: Some(true),
+                    ..Default::default()
+                }
+            );
+            let mut idle = unrecorded.clone();
+            idle.status.exercising = Some(false);
+            assert_eq!(glyphs(&[&idle]).training, Some(false));
+            assert_eq!(glyphs(&[&idle, &unrecorded]).training, None);
         },
     );
 }

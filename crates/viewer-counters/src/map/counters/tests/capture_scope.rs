@@ -13,6 +13,38 @@ const PRESENTED_ABSENT: [TableId; 3] = [
     TableId::CountryVisibility,
 ];
 
+/// Map's land counters take each division's exercise predicate from DivisionModelInputs,
+/// reading no table Map leaves out; a refused or missing read is unknown, never off.
+#[test]
+fn map_counters_take_the_exercise_predicate_from_the_model_witness() {
+    use replay_data::rows::DivisionModelInputRow;
+    let mut frame = complete_frame(11, |table| {
+        replay_data::rows::sample_extended_table(table, 0)
+    });
+    put_sample_campaign(&mut frame);
+    let mut frame = map_scoped(frame);
+    let witness = |division, exercising| DivisionModelInputRow {
+        division,
+        exercising,
+        ..Default::default()
+    };
+    *frame.tables[TableId::DivisionModelInputs.index()] = replay_frame::frame::TableView::Complete(
+        replay_data::rows::TableRows::DivisionModelInputs(vec![
+            witness(1, Some(1)),
+            witness(2, Some(0)),
+            witness(3, None),
+        ]),
+    );
+    let statuses =
+        assert_reads_recorded(&frame, &[], || land::DivisionStatuses::read(&frame)).unwrap();
+    assert_eq!(
+        [1, 2, 3, 4].map(|division| statuses.get(division).exercising),
+        [Some(true), Some(false), None, None]
+    );
+    // Every other glyph input stays unrecorded.
+    assert!(!statuses.recorded(1) && statuses.get(1).has_order.is_none());
+}
+
 #[test]
 fn map_counters_markers_and_selections_read_only_recorded_tables() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();

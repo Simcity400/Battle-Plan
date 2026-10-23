@@ -95,7 +95,8 @@ pub struct Member {
     /// The division's stored attrition exceeds its recorded threshold. This is the counter's
     /// attrition-presence predicate.
     pub attrition: bool,
-    pub exercising: u8,
+    /// The exercise predicate; `None` when the hour holds no readable one.
+    pub exercising: Option<bool>,
     /// The raw division's group is present; an ungrouped member skips both
     /// order-icon branches even when its invalid-orders byte is nonzero.
     pub grouped: bool,
@@ -116,7 +117,8 @@ pub struct Glyphs {
     /// Frame of `GFX_onmap_digin_icon`, or `None` for no spade.
     pub digin: Option<u32>,
     pub attrition: bool,
-    pub training: bool,
+    /// Unknown when a member's exercise predicate is and no other member exercises.
+    pub training: Option<bool>,
     /// Unknown when missing order inputs could change the red latch.
     pub no_orders: Option<bool>,
     /// The yellow `!` can coexist with the red one in a mixed stack.
@@ -214,16 +216,33 @@ pub fn order_glyphs(members: &[Member]) -> (Option<bool>, Option<bool>) {
     (icon(1), icon(2))
 }
 
+/// Any exercising member shows the training glyph; it is off only when every
+/// member's exercise predicate is known.
+pub fn stack_training(members: &[Member]) -> Option<bool> {
+    if members.iter().any(|member| member.exercising == Some(true)) {
+        Some(true)
+    } else {
+        members
+            .iter()
+            .all(|member| member.exercising.is_some())
+            .then_some(false)
+    }
+}
+
 /// Fold supply, dig-in, attrition and training over the stack. Recorded attrition
 /// and exercise predicates retain their own modifier and deployment gates; raw
 /// training requests alone do not establish exercise. Order glyphs use their
-/// ordered latches and preserve unavailable membership. Training hides the spade.
+/// ordered latches and preserve unavailable membership. Training hides the spade,
+/// so an unknown one withholds it.
 pub fn glyphs(members: &[Member], thresholds: Option<SupplyThresholds>) -> Glyphs {
-    let training = members.iter().any(|member| member.exercising != 0);
+    let training = stack_training(members);
     let (no_orders, invalid_orders) = order_glyphs(members);
     Glyphs {
         supply: thresholds.and_then(|limits| supply_frame(stack_supply(members), limits)),
-        digin: if training { None } else { digin_frame(members) },
+        digin: match training {
+            Some(false) => digin_frame(members),
+            _ => None,
+        },
         attrition: members.iter().any(|member| member.attrition),
         training,
         no_orders,
@@ -384,7 +403,7 @@ mod tests {
             entrenchment: FIXED,
             entrenchment_cap: FIXED,
             attrition: true,
-            exercising: 1,
+            exercising: Some(true),
             grouped: true,
             own: true,
             has_order: Some(false),
@@ -392,7 +411,7 @@ mod tests {
         };
         let out = glyphs(&[quiet, busy], Some(VANILLA_SUPPLY));
         assert!(out.attrition);
-        assert!(out.training);
+        assert_eq!(out.training, Some(true));
         assert_eq!(out.no_orders, Some(true));
         assert_eq!(
             out.invalid_orders,
@@ -405,13 +424,34 @@ mod tests {
         assert_eq!(glyphs(&[quiet], Some(VANILLA_SUPPLY)).supply, None);
         let calm = glyphs(
             &[Member {
-                exercising: 0,
+                exercising: Some(false),
                 ..busy
             }],
             Some(VANILLA_SUPPLY),
         );
         assert_eq!(calm.digin, Some(1));
-        assert!(!calm.training);
+        assert_eq!(calm.training, Some(false));
+    }
+
+    #[test]
+    fn an_unknown_exercise_predicate_is_never_off_but_never_hides_a_known_one() {
+        let known = |exercising| Member {
+            exercising: Some(exercising),
+            entrenchment: FIXED,
+            entrenchment_cap: FIXED,
+            ..member(FIXED)
+        };
+        let unknown = Member {
+            exercising: None,
+            ..known(false)
+        };
+        assert_eq!(stack_training(&[]), Some(false));
+        assert_eq!(stack_training(&[known(false), known(false)]), Some(false));
+        assert_eq!(stack_training(&[unknown, known(true)]), Some(true));
+        assert_eq!(stack_training(&[known(false), unknown]), None);
+        // The spade shows only while the stack is known not to exercise.
+        let unsure = glyphs(&[known(false), unknown], Some(VANILLA_SUPPLY));
+        assert_eq!((unsure.training, unsure.digin), (None, None));
     }
 
     #[test]

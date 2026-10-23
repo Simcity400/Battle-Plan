@@ -561,20 +561,21 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
             );
         }
     }
-    const COUNTER_STATUS: &str = "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment, exercise and no-order glyphs are not drawn";
-    // A recording without DivisionStatus draws its land figures from DivisionModelInputs.
+    // A recording without DivisionStatus draws its land figures and exercise glyphs from
+    // DivisionModelInputs.
     if !frame.recorded(tables::DivisionStatus::ID) {
-        out.note::<tables::DivisionStatus>(frame, COUNTER_STATUS);
+        out.note::<tables::DivisionStatus>(
+            frame,
+            "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment and no-order glyphs are not drawn",
+        );
         out.note::<tables::DivisionModelInputs>(
             frame,
-            "a close-zoom division among the missing rows has no known model number, camouflage or exercise, so it draws no model",
+            "a division among the missing rows has no known model number, camouflage or exercise: at close zoom it draws no model, and its land counter draws no exercise glyph unless another division of its stack exercises",
         );
     } else {
         out.note::<tables::DivisionStatus>(
             frame,
-            &format!(
-                "{COUNTER_STATUS}; at close zoom its model number and camouflage are unknown, so it draws no model"
-            ),
+            "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment, exercise and no-order glyphs are not drawn; at close zoom its model number and camouflage are unknown, so it draws no model",
         );
     }
     // close zoom: the 3D model selectors' daily inputs

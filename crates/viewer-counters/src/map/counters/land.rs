@@ -752,7 +752,9 @@ pub(super) struct DivisionStatus {
     ///
     /// [`DivisionStatusRow::has_attrition`]: replay_data::rows::DivisionStatusRow::has_attrition
     pub(super) attrition: bool,
-    pub(super) exercising: u8,
+    /// `DivisionStatus.exercising`, or Map's `DivisionModelInputs.exercising`; `None`
+    /// without a row or for a refused read.
+    pub(super) exercising: Option<bool>,
     /// `DivisionStatus.has_order`; `None` without a row.
     pub(super) has_order: Option<bool>,
     pub(super) invalid_orders: u8,
@@ -1135,6 +1137,9 @@ impl Movements {
 #[derive(Clone, Default)]
 pub(super) struct DivisionStatuses {
     pub(super) by_division: BTreeMap<u64, DivisionStatus>,
+    /// A recording without DivisionStatus: each division's exercise predicate from
+    /// DivisionModelInputs, `None` where its read was refused.
+    pub(super) witnessed: BTreeMap<u64, Option<bool>>,
 }
 
 impl DivisionStatuses {
@@ -1146,7 +1151,7 @@ impl DivisionStatuses {
         entrenchment_cap: 0,
         supply_ratio: counter_status::FIXED,
         attrition: false,
-        exercising: 0,
+        exercising: None,
         has_order: None,
         invalid_orders: 0,
         naval_transfer: false,
@@ -1154,6 +1159,17 @@ impl DivisionStatuses {
     };
 
     pub(super) fn read(frame: &DecodedFrame) -> io::Result<Self> {
+        if !frame.recorded(replay_data::rows::TableId::DivisionStatus) {
+            let witnessed = rows::<tables::DivisionModelInputs>(frame)?
+                .rows()
+                .iter()
+                .map(|row| (row.division, row.exercising.map(|value| value != 0)))
+                .collect();
+            return Ok(Self {
+                by_division: BTreeMap::new(),
+                witnessed,
+            });
+        }
         let mut by_division: BTreeMap<u64, DivisionStatus> = BTreeMap::new();
         for row in rows::<tables::DivisionStatus>(frame)?.rows() {
             by_division.insert(
@@ -1165,7 +1181,7 @@ impl DivisionStatuses {
                     entrenchment_cap: row.entrenchment_cap,
                     supply_ratio: row.supply_ratio,
                     attrition: row.has_attrition(),
-                    exercising: row.exercising,
+                    exercising: Some(row.exercising != 0),
                     has_order: Some(row.has_order != 0),
                     invalid_orders: row.invalid_orders,
                     naval_transfer: false,
@@ -1178,14 +1194,20 @@ impl DivisionStatuses {
                 status.naval_transfer = row.naval_transfer != 0;
             }
         }
-        Ok(Self { by_division })
+        Ok(Self {
+            by_division,
+            witnessed: BTreeMap::new(),
+        })
     }
 
     pub(super) fn get(&self, division: u64) -> DivisionStatus {
         self.by_division
             .get(&division)
             .copied()
-            .unwrap_or(Self::MISSING)
+            .unwrap_or(DivisionStatus {
+                exercising: self.witnessed.get(&division).copied().flatten(),
+                ..Self::MISSING
+            })
     }
 
     pub(super) fn recorded(&self, division: u64) -> bool {
@@ -2322,11 +2344,15 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         None => StackStyle {
             organisation: counter_status::stack_fill(&stack.organisation),
             strength: counter_status::stack_fill(&stack.hit_points),
-            // Every glyph reads a member's status; one unrecorded withholds them, as it does the bars.
+            // Every glyph but training reads a member's status; one unrecorded withholds them, as
+            // it does the bars. Training also reads Map's DivisionModelInputs.
             glyphs: if stack.bars {
                 counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
             } else {
-                counter_status::Glyphs::default()
+                counter_status::Glyphs {
+                    training: counter_status::stack_training(&stack.members),
+                    ..Default::default()
+                }
             },
             count,
         },
@@ -2944,7 +2970,7 @@ pub(super) fn draw_glyphs(
     if let Some(frame) = glyphs.digin {
         draw(&layout.digin, frame, [1.0; 4]);
     }
-    if glyphs.training {
+    if glyphs.training == Some(true) {
         draw(&layout.training, 0, [1.0; 4]);
     }
 }

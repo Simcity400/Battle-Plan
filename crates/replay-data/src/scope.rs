@@ -18,6 +18,7 @@ pub const fn omits(mode: CaptureMode) -> Option<&'static str> {
         // Owner decision 2026-10-23: kept views withhold what reads beyond this scope, and say so here.
         CaptureMode::Map => Some(concat!(
             "division names, organisation and strength (counters and battle windows show none), ",
+            "land counters' supply, attrition, dig-in and order glyphs, ",
             "division details, fog of war, supply, fronts and plans, raids, ",
             "some hover details, most map modes and every dashboard",
         )),
@@ -244,6 +245,12 @@ mod tests {
         }
         let omits = omits(CaptureMode::Map).unwrap();
         assert!(!omits.contains("3D unit figures"), "{omits}");
+        // The witness's exercise predicate draws the land counters' training glyph.
+        assert!(
+            omits.contains("land counters' supply, attrition, dig-in and order glyphs")
+                && !omits.contains("training"),
+            "{omits}"
+        );
     }
 
     #[test]
