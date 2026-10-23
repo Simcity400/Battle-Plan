@@ -1051,6 +1051,8 @@ fn content_blocks_with(
     LoadContext,
     dashboard_text::catalogue::tests::Folder,
 ) {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "division-equipment-{name}-{}-{:?}",
         std::process::id(),

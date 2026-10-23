@@ -1,4 +1,4 @@
-//! Content reads share rename, move and deletion while held and after every outcome.
+//! Held objects share direct changes; released reads also permit every ancestor change.
 use super::*;
 use std::sync::mpsc;
 
@@ -131,7 +131,7 @@ fn a_failed_holder_reports_startup_failure_without_attempting_the_change() {
     assert!(!changed.get());
 }
 
-/// Each cell uses a fresh fixture; collect every obstacle without retrying.
+/// The first object is directly held; Windows does not promise held-ancestor renames.
 fn held_matrix<H>(
     name: &str,
     objects: &[&str],
@@ -142,6 +142,9 @@ fn held_matrix<H>(
     let mut obstacles = Vec::new();
     for (at, object) in objects.iter().enumerate() {
         for change in CHANGES {
+            if at > 0 && matches!(change, Change::Rename | Change::Move) {
+                continue;
+            }
             let root = scratch(&format!("{name}{at}{change:?}"));
             let held = while_held(|| hold(&root), &use_held, || apply(&root, object, change));
             match &held {
@@ -160,7 +163,7 @@ fn held_matrix<H>(
 
 /// `folder_file`'s handle, the one every folder read reads and identifies through.
 #[test]
-fn a_held_folder_read_lets_the_file_and_every_folder_above_change() {
+fn a_held_folder_read_shares_direct_changes_and_ancestor_deletion() {
     let objects: Vec<&str> = std::iter::once(HELD_FILE).chain(ABOVE).collect();
     held_matrix(
         "file",
@@ -177,7 +180,7 @@ fn a_held_folder_read_lets_the_file_and_every_folder_above_change() {
 
 /// An archive layer's reader, held as a lookup holds it.
 #[test]
-fn a_held_archive_read_lets_the_archive_and_every_folder_above_change() {
+fn a_held_archive_read_shares_direct_changes_and_ancestor_deletion() {
     let objects: Vec<&str> = std::iter::once(HELD_ARCHIVE).chain(ABOVE).collect();
     held_matrix(
         "archive",
@@ -194,7 +197,7 @@ fn a_held_archive_read_lets_the_archive_and_every_folder_above_change() {
 
 /// A changed listing must finish, but its remaining entries are not specified.
 #[test]
-fn a_held_listing_lets_its_folder_and_every_folder_above_change() {
+fn a_held_listing_shares_direct_changes_and_ancestor_deletion() {
     held_matrix(
         "listing",
         &ABOVE,

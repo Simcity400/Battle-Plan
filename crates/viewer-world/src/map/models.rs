@@ -2711,6 +2711,7 @@ impl ModelPass {
             &mut field.clock_order_builds,
         );
         std::mem::swap(&mut self.field, field);
+        self.bind_field();
         let clocks = std::mem::take(&mut self.field.clocks);
         self.install_clocks(clocks, false);
         self.redirect_field();
@@ -2878,8 +2879,62 @@ impl ModelPass {
             self.default_palette = library.palette.clone();
         }
         if route_change {
+            self.bind_field();
             self.rebuild_native_walk();
         }
+    }
+
+    fn bind_field(&mut self) {
+        let mut changed = false;
+        for group in &mut self.field.groups {
+            let Some(mesh) = self.meshes.get(group.mesh) else {
+                continue;
+            };
+            let rebind = group.asset != mesh.asset;
+            if rebind {
+                group.asset = mesh.asset.clone();
+                changed = true;
+            }
+            if rebind || !self.field.bindings.contains_key(&group.mesh) {
+                self.field.bindings.insert(group.mesh, mesh.asset.clone());
+                changed = true;
+            }
+        }
+        for &(slot, _, _) in self
+            .field
+            .clocks
+            .keys()
+            .chain(self.clock_routes.sources.iter())
+        {
+            if let Some(mesh) = self.meshes.get(slot)
+                && !self.field.bindings.contains_key(&slot)
+            {
+                self.field.bindings.insert(slot, mesh.asset.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.clock_records = None;
+        self.field.clock_sources.clear();
+        self.field.ordered_clocks.clear();
+        self.field.clock_priorities.clear();
+        // Keep each producer's ordinal and effective route while refreshing its asset tie-break.
+        for route in &mut self.clock_routes.routes {
+            route.asset = self.field.bindings.get(&route.source.0).cloned();
+        }
+        self.clock_routes.routes.sort_unstable_by(|a, b| {
+            (a.ordinal, &a.asset, a.source.1, a.source.2, a.source.0)
+                .cmp(&(b.ordinal, &b.asset, b.source.1, b.source.2, b.source.0))
+        });
+        for route in &self.clock_routes.routes {
+            self.field
+                .clock_priorities
+                .insert(route.target, route.ordinal);
+        }
+        self.refresh_hidden_actors();
+        self.poses.get_mut().1.clear();
     }
 
     /// Material content failures are actor refusals; other upload failures stay fatal.
@@ -2975,6 +3030,7 @@ impl ModelPass {
             self.make_resident(device, queue, library, group.mesh)?;
         }
         self.field = field;
+        self.bind_field();
         self.redirect_field();
         self.rebuild_native_walk();
         Ok(())

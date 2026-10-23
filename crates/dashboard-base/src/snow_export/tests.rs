@@ -226,7 +226,14 @@ fn all_grid_gap_and_branch_endpoints_restore_the_live_builder_across_committed_b
                 (142, 2),
             ]
             .contains(&(frame.hour, frame.branch));
-            if exported {
+            if (frame.branch, frame.hour) == (1, -40) {
+                assert!(matches!(
+                    reader.restore(1, -40),
+                    Restore::Miss(reason)
+                        if reason == "snow unavailable: truncated at keyframe: 1 rows not read"
+                ));
+                assert!(session.inputs.as_ref().unwrap().build(frame).is_err());
+            } else if exported {
                 assert_eq!(
                     &*hit(&reader, frame.branch, frame.hour),
                     &session.inputs.as_ref().unwrap().build(frame).unwrap()

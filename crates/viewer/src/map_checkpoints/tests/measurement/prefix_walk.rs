@@ -72,13 +72,38 @@ fn prefix_admission_failure_reaches_playback_fallback_without_repeating_visitors
     let replay = Arc::new(status_replay(&(100..160).collect::<Vec<_>>()));
     let fixture = Fixture::new(&replay);
     let progress = prepare(&fixture, &replay, 720, SELECTED);
-    let mut unreadable = Replay::open(replay.bytes().to_vec()).unwrap();
-    unreadable.index[0].offset = u64::MAX;
-    let map = fixture.reader(progress, Arc::new(unreadable), SELECTED);
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fixture
+        .store
+        .read(&fixture.key, &section(1), 0)
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    // The checkpoint restores, but its cursor must fail source-prefix admission.
+    bytes[28..36].copy_from_slice(&2u64.to_le_bytes());
+    let mut writer = fixture.store.extend(&fixture.key).unwrap();
+    writer.write_at(&section(1), 0, bytes.as_slice()).unwrap();
+    writer.commit().unwrap();
+    let mut probe = fixture.reader(progress.clone(), Arc::clone(&replay), SELECTED);
+    assert!(probe.seek(1, 100).unwrap().is_some());
+    let error = probe
+        .advance(1, 124, |_| panic!("admission must precede visitors"))
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "map source cursor differs from decoded baseline"
+    );
+    assert_eq!(probe.applied_frames, 0);
+    assert_eq!(probe.source_reads, 1);
+    let map = fixture.reader(progress, Arc::clone(&replay), SELECTED);
+    assert!(Arc::ptr_eq(map.replay_handle(), &replay));
     let mut playback = crate::playback::Playback::unloaded(Arc::clone(&replay))
         .unwrap()
         .with_checkpoints(map);
     playback.seek(1, 100).unwrap();
+    assert_eq!(playback.source_paths(), &[(100, true, Some(159))]);
     let mut passed = Vec::new();
     playback
         .seek_with(1, 124, |frame| passed.push(frame.clone()))
@@ -87,6 +112,7 @@ fn prefix_admission_failure_reaches_playback_fallback_without_repeating_visitors
         passed.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
         (100..124).collect::<Vec<_>>()
     );
+    assert_eq!(playback.source_paths().last(), Some(&(124, false, None)));
     let oracle = Replay::open(replay.bytes().to_vec()).unwrap();
     oracle.cache_decoded_sections(false);
     let mut decoder = FrameDecoder::new();

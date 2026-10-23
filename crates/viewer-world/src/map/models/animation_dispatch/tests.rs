@@ -298,7 +298,19 @@ fn assert_frame(
             assert!(
                 alive
                     .iter()
-                    .any(|&key| pass.actor_address(key) == event.key.actor())
+                    .any(|&key| pass.actor_address(key) == event.key.actor()),
+                "frame {frame}: event {:?}, actor {:?}, live addresses {:?}, groups {:?}",
+                event.key,
+                event.key.actor(),
+                alive
+                    .iter()
+                    .map(|&key| pass.actor_address(key))
+                    .collect::<Vec<_>>(),
+                pass.field
+                    .groups
+                    .iter()
+                    .map(|group| (group.mesh, &group.asset))
+                    .collect::<Vec<_>>()
             );
             assert_eq!(event.definition.particle.as_deref(), Some("smoke"));
             assert!(event.age.is_finite());
@@ -363,6 +375,110 @@ fn actor_bits(player: &entity_animation::Player, rig: &Rig) -> String {
         })
         .collect();
     format!("{bits:?}")
+}
+
+#[test]
+fn late_mesh_admission_binds_events_without_changing_existing_actor_identities() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("synthetic animation tables");
+    for label in ["unit models", "map buildings", "general animation"] {
+        for install in [false, true] {
+            let mut library = ModelLibrary::default();
+            append_rig(&mut library, 0);
+            let mut pass = ModelPass::new(&library, label);
+            let known = ModelInstance {
+                animation: entity_animation::DEFAULT_STATE,
+                scale: 1.,
+                animation_seed: 31,
+                animation_identity: 17,
+                animation_epoch: 9,
+                ..Default::default()
+            };
+            let late = ModelInstance {
+                animation: entity_animation::named_request("idle"),
+                scale: 1.,
+                animation_seed: 43,
+                animation_identity: 19,
+                animation_epoch: 11,
+                ..Default::default()
+            };
+            pass.update_placed(vec![(0, known), (1, late)], 256.);
+            pass.animate(0.25, None, &[0.]);
+            pass.animate(0.5, None, &[0.]);
+            assert_eq!(pass.default_appeared.len(), 1);
+            let known_key = key(0, known);
+            let late_key = key(1, late);
+            let address = pass.actor_address(known_key);
+            assert!(pass.events.iter().any(|event| event.key.actor() == address));
+            assert!(!pass.players.contains_key(&late_key));
+            let player = &pass.players[&known_key] as *const _;
+            let played = pass.root_play_position(known_key);
+            let appeared = pass.default_appeared.clone();
+            let existing = pass
+                .field
+                .groups
+                .iter()
+                .find(|group| group.mesh == 0)
+                .unwrap()
+                .clone();
+            let instances = pass.field.instances.clone();
+            let order = pass.field.native_order.clone();
+            let producers = pass.field.producer_order.clone();
+            let mut stale = pass.field.clone();
+            assert!(!stale.bindings.contains_key(&1));
+            append_rig(&mut library, 1);
+            if install {
+                pass.sync(&library);
+                pass.replace_field(&library, &mut stale);
+            } else {
+                pass.sync(&library);
+            }
+            assert_eq!(pass.actor_address(known_key), address);
+            assert_eq!(&pass.players[&known_key] as *const _, player);
+            assert_eq!(pass.root_play_position(known_key), played);
+            assert_eq!(pass.default_appeared, appeared);
+            assert_eq!(pass.field.instances, instances);
+            assert_eq!(pass.field.native_order, order);
+            assert_eq!(pass.field.producer_order, producers);
+            assert_eq!(
+                pass.field.groups.iter().find(|group| group.mesh == 0),
+                Some(&existing)
+            );
+            assert_eq!(pass.field.bindings.get(&1), Some(&library.meshes[1].asset));
+            assert_eq!(
+                pass.field
+                    .groups
+                    .iter()
+                    .find(|group| group.mesh == 1)
+                    .unwrap()
+                    .asset,
+                library.meshes[1].asset
+            );
+            pass.animate(0.75, None, &[0.]);
+            let live = pass.actor_address(late_key);
+            let emitted: Vec<_> = pass
+                .events
+                .iter()
+                .filter(|event| {
+                    let actor = event.key.actor();
+                    (actor.2, actor.3) == (live.2, live.3)
+                })
+                .collect();
+            assert!(
+                !emitted.is_empty(),
+                "{label}, install={install}: {:?}",
+                pass.events
+                    .iter()
+                    .map(|event| &event.key)
+                    .collect::<Vec<_>>()
+            );
+            for event in emitted {
+                assert_eq!(event.key.model, library.meshes[1].asset);
+                assert_eq!(event.key.actor(), live);
+            }
+            assert_eq!(pass.actor_address(known_key), address);
+        }
+    }
 }
 
 #[test]

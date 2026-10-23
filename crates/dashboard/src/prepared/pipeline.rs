@@ -2976,7 +2976,8 @@ fn run_planned(
                 return Ok(None);
             }
             let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key.clone())?;
-            if key.refresh_recording(source.path())? != key
+            let current_path = std::fs::canonicalize(source.path())?;
+            if key.refresh_recording(&current_path)? != key
                 || (current.as_ref() == Some(&key) && !store.is_reusable(&key)?)
             {
                 return Err(io::Error::new(
@@ -2995,7 +2996,8 @@ fn run_planned(
         return Ok(None);
     }
     let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key)?;
-    if key.refresh_recording(source.path())? != key
+    let current_path = std::fs::canonicalize(source.path())?;
+    if key.refresh_recording(&current_path)? != key
         || (current_saved.as_ref() == Some(&key) && !store.is_reusable(&key)?)
     {
         return Err(io::Error::new(

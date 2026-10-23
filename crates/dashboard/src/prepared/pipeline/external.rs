@@ -1296,6 +1296,63 @@ mod tests {
     }
 
     #[test]
+    fn noncanonical_absolute_sources_validate_the_current_stamp_after_a_writer_wait() {
+        for changed in [false, true] {
+            for cancel_wait in [false, true] {
+                let (replay, _) = scenario();
+                let mut fixture = Fixture::new(&replay);
+                std::fs::create_dir(fixture.root.join("alias")).unwrap();
+                fixture.path = fixture.root.join("alias/../campaign.battleplan");
+                let source = fixture.source();
+                assert!(source.path().is_absolute());
+                assert_ne!(source.path(), std::fs::canonicalize(source.path()).unwrap());
+                let binding = BoundSource::open(&source, None).unwrap();
+                let mut holder = Some(binding.store.replace(binding.key.clone()).unwrap());
+                let cancelled = AtomicBool::new(false);
+                let mut waited = false;
+                let result = without_replanning(|| {
+                    run(&source, None, &cancelled, |accepted| {
+                        if accepted.sections.iter().any(|row| row.id == "writer") {
+                            assert!(!waited);
+                            waited = true;
+                            if changed {
+                                let file = std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .open(source.path())
+                                    .unwrap();
+                                let modified = file.metadata().unwrap().modified().unwrap();
+                                file.set_times(
+                                    std::fs::FileTimes::new()
+                                        .set_modified(modified + Duration::from_secs(5)),
+                                )
+                                .unwrap();
+                            }
+                            cancelled.store(cancel_wait, Ordering::Release);
+                            drop(holder.take());
+                        }
+                    })
+                });
+                assert!(waited);
+                if changed {
+                    assert!(fixture.store.saved_key().unwrap().is_none());
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+                    assert_eq!(
+                        error.to_string(),
+                        "Recording changed; reopen it before preparing the current content"
+                    );
+                } else if cancel_wait {
+                    assert!(fixture.store.saved_key().unwrap().is_none());
+                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+                } else {
+                    assert!(result.is_ok(), "{result:?}");
+                    assert!(state(&source, None).forward_complete(replay.index.len()));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_recording_stamp_change_without_a_manifest_change_requires_reopen_without_replanning() {
         let (replay, blocks) = scenario();
         let fixture = Fixture::new(&replay);
@@ -1488,6 +1545,8 @@ mod tests {
 
     #[test]
     fn a_changed_recorded_mod_input_refuses_the_checkpoint_and_prepares_the_family_normally() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (replay, blocks) = scenario();
         let fixture = Fixture::new(&replay);
         let game = fixture.root.join("game");

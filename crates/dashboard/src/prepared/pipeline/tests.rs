@@ -1632,7 +1632,8 @@ fn cancelled_initial_block_publishes_no_country_or_day_state() {
             );
         }
         flag.store(false, Ordering::Release);
-        assert!(run(&source, None, &flag, |_| {}).is_ok());
+        let result = run(&source, None, &flag, |_| {});
+        assert!(result.is_ok(), "{result:?}");
     };
     independent::with_test_hourly(check);
     check();
@@ -2010,7 +2011,7 @@ fn lightweight_map_binding_reads_the_published_map_page_before_whole_source_comp
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("1");
     let flag = AtomicBool::new(false);
-    run_checked(
+    let error = run_checked(
         &source,
         None,
         &flag,
@@ -2024,6 +2025,7 @@ fn lightweight_map_binding_reads_the_published_map_page_before_whole_source_comp
         },
     )
     .unwrap_err();
+    assert_eq!(error.to_string(), "stop after one block");
     let binding = map_checkpoint_binding(&source, None).unwrap().unwrap();
     assert_eq!(binding.2.branches[&1].last_hour, Some(11));
     assert!(!binding.2.branches.contains_key(&2));
@@ -5054,7 +5056,15 @@ fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_byte
         "changed source bytes must not reuse completed exports: {:?}",
         status.error
     );
-    assert_eq!(unprepared_blocks(&source, None).unwrap(), Some(1));
+    assert_eq!(
+        unprepared_blocks(&source, None).unwrap(),
+        Some(replay.index.len())
+    );
+    let (store, key) = super::super::files(&source, None).unwrap();
+    let (state, _) = checkpoint(&store, &key, store.saved_key().unwrap().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.cursor.next_block, 0);
     assert!(
         source
             .replay_ref()

@@ -560,7 +560,7 @@ fn the_lane_serves_a_wanted_hour_past_its_window() {
 }
 
 #[test]
-fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
+fn an_already_obsolete_walk_starts_no_native_work() {
     let hours: Vec<Hour> = (10..=300).collect();
     let replay = long_replay(&hours);
     let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
@@ -569,9 +569,11 @@ fn a_walk_whose_target_is_no_longer_wanted_stops_after_one_step() {
         state: Mutex::new(LaneState::default()),
         changed: Condvar::new(),
     };
-    // Nothing wants 290: the walk stops after its first step.
+    // Nothing wants 290, so no source block is admitted.
     assert!(!DecodeLane::walk(&shared, &mut playback, (1, 290)));
-    assert_eq!(playback.walk_start(1, 290), Some(i64::from(9 + DECODE_STEP)));
+    assert_eq!(playback.walk_start(1, 290), Some(9));
+    assert!(!playback.holds_source());
+    assert!(playback.source_paths().is_empty());
     // Wanted, the walk goes all the way to the last step before it.
     Mutex::lock(&shared.state).unwrap().urgent = Some((1, 290));
     assert!(DecodeLane::walk(&shared, &mut playback, (1, 290)));

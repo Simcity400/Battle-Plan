@@ -75,6 +75,8 @@ fn snowy_frame(hour: i32) -> DecodedFrame {
 }
 
 fn content_fixture(frames: Vec<DecodedFrame>) -> (Fixture, Replay, ContentOptions) {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let placeholder = Replay::from_records(CAMPAIGN.into(), &[records(1, frames.clone())]).unwrap();
     let fixture = Fixture::new(&placeholder);
     let game = fixture.root.join("snow-content");

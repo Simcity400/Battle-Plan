@@ -1418,6 +1418,8 @@ fn a_member_without_recorded_maxima_withholds_the_stack_bars() {
 
 #[test]
 fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     with_counter_inputs_fixture(
         action_gui(false),
         |_| {},

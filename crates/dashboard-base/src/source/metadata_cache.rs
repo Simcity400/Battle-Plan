@@ -142,7 +142,8 @@ pub(super) fn read(
     };
     // Raw catalogue metadata depends on the recording. Named metadata is checked
     // against the complete resolved input list when the content binding is made.
-    let current = key.refresh_recording(path)?;
+    let current_path = std::fs::canonicalize(path)?;
+    let current = key.refresh_recording(&current_path)?;
     let file = if current == key {
         store.read(&key, SECTION, 0)?
     } else {
@@ -226,6 +227,31 @@ mod tests {
             self.store.clear().unwrap();
             std::fs::remove_dir_all(&self.root).unwrap();
         }
+    }
+
+    #[test]
+    fn ordinary_absolute_names_restore_the_canonical_preparation_key_unchanged() {
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![scale_frame(1, 10, 2)])])
+                .unwrap();
+        let mut fixture = Fixture::new(&replay);
+        std::fs::create_dir(fixture.root.join("alias")).unwrap();
+        fixture.path = fixture.root.join("alias/../synthetic.battleplan");
+        assert!(fixture.path.is_absolute());
+        assert_ne!(fixture.path, std::fs::canonicalize(&fixture.path).unwrap());
+        let source = fixture.open();
+        let (store, key) = crate::prepared::files(&source, None).unwrap();
+        let mut writer = store.replace(key.clone()).unwrap();
+        write(&mut writer, &source).unwrap();
+        writer.commit().unwrap();
+        let restored = read(&fixture.path, &source.replay(), &AtomicBool::new(false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.inputs, key);
+        assert_eq!(
+            restored.metadata.countries.len(),
+            source.metadata().countries.len()
+        );
     }
 
     #[test]
