@@ -1,6 +1,6 @@
 //! Division career and honor text from recorded entries and content localisation.
 use super::*;
-use replay_data::{rows::DivisionHistoryRow, rows::SharedDivisionHistoryRow};
+use replay_data::{rows::DivisionHistoryRow, rows::SharedDivisionHistoryRow, rows::TableId};
 use viewer_foundation::tooltip_text::token_with;
 
 use dashboard_text::division_history::{date, event_key};
@@ -233,6 +233,9 @@ pub(super) fn text(
     frame: &DecodedFrame,
     division: u64,
 ) -> Result<(String, Vec<String>), String> {
+    if !frame.recorded(TableId::DivisionHistory) {
+        return Err("DivisionHistory not recorded in this recording".into());
+    }
     let rows = frame
         .complete::<tables::DivisionHistory>()
         .map_err(|e| e.to_string())?;

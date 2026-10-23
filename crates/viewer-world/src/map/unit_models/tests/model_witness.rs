@@ -145,7 +145,13 @@ fn map_figures_read_the_model_witness_as_full_reads_division_status() {
     assert_eq!(map_figures, expected);
     assert_eq!(
         full_errors,
-        BTreeMap::from([("division camouflage is unavailable this hour".to_owned(), 1)])
+        BTreeMap::from([
+            ("division camouflage is unavailable this hour".to_owned(), 1),
+            (
+                "division acclimatization status is unavailable".to_owned(),
+                1
+            ),
+        ])
     );
     assert_eq!(
         map_errors,

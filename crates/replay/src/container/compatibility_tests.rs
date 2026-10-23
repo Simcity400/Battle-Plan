@@ -1869,8 +1869,17 @@ fn incompatible_technology_updates_keep_source_byte_accounting() {
                 hour: 1000,
                 keyframe: true,
                 metrics: Default::default(),
-                tables: std::array::from_fn(|_| TableUpdate::Unavailable {
-                    reason: "fixture omitted".into(),
+                tables: std::array::from_fn(|index| {
+                    match crate::frame::current_absence(TableId::ALL[index]) {
+                        Some(TableView::NotRecorded { mode }) => TableUpdate::NotRecorded { mode },
+                        Some(TableView::Unavailable { reason }) => {
+                            TableUpdate::Unavailable { reason }
+                        }
+                        None => TableUpdate::Unavailable {
+                            reason: "fixture omitted".into(),
+                        },
+                        _ => unreachable!("absence is an omission or a named refusal"),
+                    }
                 }),
             };
             emitted.tables[table.index()] = frame.tables[table.index()].clone();

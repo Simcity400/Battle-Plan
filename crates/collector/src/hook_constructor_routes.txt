@@ -313,3 +313,5 @@ method:unwrap_or_else
 method:validation_refusals
 method:wake_spool
 method:with_file_name
+# Collector configuration drops one campaign's prepared history; no game call or hook construction.
+method:without_history

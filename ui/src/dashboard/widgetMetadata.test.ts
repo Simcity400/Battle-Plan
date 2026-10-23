@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { WidgetMeta, WidgetRuntime } from './definitions';
 import type { BoundTrack, DashboardTemplate, WidgetSpec } from './model';
+import { syntheticDashboardSource } from './source.fixture.ts';
 
 test('widget metadata preserves world controls and content-choice title policies', async () => {
   // Only UI leaves are replaced; metadata, frame, settings and picker decisions are production code.
@@ -51,7 +52,7 @@ test('widget metadata preserves world controls and content-choice title policies
     const world = createWidget(meta.kind, 'main', 'world');
     const country = createWidget('test-country', 'main', 'country');
     template.widgets = [world];
-    const track = { ...template.tracks[0], source: { id: 'source', revision: 1, path: 'Synthetic campaign.battleplan' },
+    const track = { ...template.tracks[0], source: syntheticDashboardSource('source', '1', 'Synthetic campaign.battleplan'),
       branch: { id: 'branch' } } as unknown as BoundTrack;
     const runtime = { campaignTracks: template.tracks, defaultRoleId: 'primary', tracks: [track, { ...track, id: 'other' }],
       maps: { schedule() {} }, client: {} } as unknown as WidgetRuntime;

@@ -124,6 +124,7 @@ compared_tables!(
     WarCapturedProvinces,
     WarLendLeaseHistories,
     DivisionStatus,
+    DivisionModelInputs,
     CountryCounterInputs,
     ScriptVariables,
     AdvisorRoles,

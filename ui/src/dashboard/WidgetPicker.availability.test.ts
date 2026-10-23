@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
 import type { DashboardSource, ProductRequest } from './client';
 import type { WidgetRuntime } from './definitions';
+import { syntheticDashboardSource } from './source.fixture.ts';
 
 test('the casualty-pairs catalogue probe carries its source into prepared product routing', async () => {
   const calls: { request: ProductRequest; source: DashboardSource; active: boolean }[] = [];
@@ -26,7 +27,7 @@ test('the casualty-pairs catalogue probe carries its source into prepared produc
     const { definition } = await vite.ssrLoadModule('/ui/src/widgets/casualties-between/definition.ts');
     const { default: Picker } = await vite.ssrLoadModule('/ui/src/dashboard/WidgetPicker.tsx');
     registerWidgets([definition]);
-    const source = { id: 'pair-source', revision: 'pair-revision' } as DashboardSource;
+    const source = syntheticDashboardSource('pair-source', 'pair-revision');
     const runtime = { client: {}, defaultRoleId: 'chosen', tracks: [{ id: 'track', roleId: 'chosen', source,
       branch: { id: 'branch' } }] } as unknown as WidgetRuntime;
     renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onOpen() {}, onAdd() {} }));

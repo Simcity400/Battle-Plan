@@ -1412,14 +1412,15 @@ fn row_replacements_reject_bad_positions_tokens_and_later_errors_atomically() {
         indices: vec![0],
         rows: TableRows::Provinces(vec![changed.clone()]),
     };
-    // The last table the current format records: a retired table is never
-    // encoded, so it cannot fail the frame.
+    // An omitted table is never encoded, so it cannot fail the frame.
+    let mode = valid.capture_mode().unwrap();
     let later = TableId::ALL
         .into_iter()
         .rfind(|table| {
             table
                 .last_change()
                 .present(crate::format::FormatVersion::CURRENT.version())
+                && crate::scope::records(mode, *table)
         })
         .unwrap();
     assert!(later.index() > TableId::Provinces.index());
@@ -2674,7 +2675,10 @@ fn truncated_keyframe_names_missing_rows_and_never_supplies_a_baseline() {
     assert!(frame.keyframe);
     assert!(frame.tables.iter().all(|t| matches!(
         t,
-        TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
+        TableUpdate::Snapshot(_)
+            | TableUpdate::Unavailable { .. }
+            | TableUpdate::Incompatible { .. }
+            | TableUpdate::NotRecorded { .. }
     )));
     let actual = decoder.apply(&wire(&frame)).unwrap();
     unavailable(
@@ -3146,77 +3150,94 @@ fn checked_table_clones_preserve_recorded_fields() {
 /// bytes the frame encodes itself; a segment of another frame is refused.
 #[test]
 fn table_segments_encoded_beside_the_frame_write_its_bytes() {
-    let mut whole = FrameEncoder::new();
-    let mut split = FrameEncoder::new();
-    for hour in 0..4 {
-        let mut decoded = source(1, hour);
-        if hour == 2 {
-            *decoded.tables[TableId::Clock.index()] = TableView::Unavailable {
-                reason: "fixture clock fault".into(),
-            };
-        }
-        let input: FrameInput = decoded.into();
-        let expected = whole.encode_bytes(input.clone(), hour == 3).unwrap();
-        let context = split.frame_context(1, hour, hour == 3);
-        let encoder = &split;
-        let encoded: Vec<_> = std::thread::scope(|scope| {
-            let workers: Vec<_> = (0..2)
-                .map(|lane| {
-                    let input = &input;
-                    scope.spawn(move || {
-                        TableId::ALL
-                            .into_iter()
-                            .filter(|table| table.index() % 3 == lane)
-                            .map(|table| {
-                                let segment = encoder
-                                    .encode_segment(&context, table, &input.tables[table.index()])
-                                    .unwrap();
-                                (table, segment)
-                            })
-                            .collect::<Vec<_>>()
+    for mode in [CaptureMode::Full, CaptureMode::Map] {
+        let frame_input = |hour| match mode {
+            CaptureMode::Full => FrameInput::from(source(1, hour)),
+            CaptureMode::Map => map_input(source(1, hour)),
+        };
+        let mut whole = FrameEncoder::new();
+        let mut split = FrameEncoder::new();
+        for hour in 0..4 {
+            let mut input = frame_input(hour);
+            if hour == 2 {
+                input.tables[TableId::Clock.index()] = TableView::Unavailable {
+                    reason: "fixture clock fault".into(),
+                }
+                .into();
+            }
+            let expected = whole.encode_bytes(input.clone(), hour == 3).unwrap();
+            let context = split.frame_context(1, hour, hour == 3);
+            let encoder = &split;
+            let encoded: Vec<_> = std::thread::scope(|scope| {
+                let workers: Vec<_> = (0..2)
+                    .map(|lane| {
+                        let input = &input;
+                        scope.spawn(move || {
+                            TableId::ALL
+                                .into_iter()
+                                .filter(|table| {
+                                    table.index() % 3 == lane
+                                        && wire::table_stored(
+                                            *table,
+                                            crate::format::FormatVersion::CURRENT,
+                                            mode,
+                                        )
+                                })
+                                .map(|table| {
+                                    let segment = encoder
+                                        .encode_segment(
+                                            &context,
+                                            table,
+                                            &input.tables[table.index()],
+                                        )
+                                        .unwrap();
+                                    (table, segment)
+                                })
+                                .collect::<Vec<_>>()
+                        })
                     })
-                })
-                .collect();
-            workers
-                .into_iter()
-                .flat_map(|worker| worker.join().unwrap())
-                .collect()
-        });
-        let mut segments = std::array::from_fn(|_| None);
-        for (table, segment) in encoded {
-            segments[table.index()] = Some(segment);
+                    .collect();
+                workers
+                    .into_iter()
+                    .flat_map(|worker| worker.join().unwrap())
+                    .collect()
+            });
+            let mut segments = std::array::from_fn(|_| None);
+            for (table, segment) in encoded {
+                segments[table.index()] = Some(segment);
+            }
+            let mut prepared = split
+                .prepare_bytes_with(input, hour == 3, &mut segments)
+                .unwrap();
+            let actual = prepared.take_frame();
+            split.commit(prepared).unwrap();
+            assert_eq!(actual.bytes, expected.bytes, "{mode} hour {hour}");
         }
-        let mut prepared = split
-            .prepare_bytes_with(input, hour == 3, &mut segments)
-            .unwrap();
-        let actual = prepared.take_frame();
-        split.commit(prepared).unwrap();
-        assert_eq!(actual.bytes, expected.bytes, "hour {hour}");
+        let input = frame_input(4);
+        let other_hour = split.frame_context(1, 5, false);
+        let mut segments = std::array::from_fn(|_| None);
+        segments[TableId::Countries.index()] = Some(
+            split
+                .encode_segment(
+                    &other_hour,
+                    TableId::Countries,
+                    &input.tables[TableId::Countries.index()],
+                )
+                .unwrap(),
+        );
+        assert!(
+            split
+                .prepare_bytes_with(input, false, &mut segments)
+                .is_err()
+        );
+        let stale = FrameEncoder::new().frame_context(1, 4, false);
+        let countries = frame_input(4).tables[TableId::Countries.index()].clone();
+        assert!(
+            split
+                .encode_segment(&stale, TableId::Countries, &countries)
+                .is_err()
+        );
     }
-    let input: FrameInput = source(1, 4).into();
-    let other_hour = split.frame_context(1, 5, false);
-    let mut segments = std::array::from_fn(|_| None);
-    segments[TableId::Countries.index()] = Some(
-        split
-            .encode_segment(
-                &other_hour,
-                TableId::Countries,
-                &input.tables[TableId::Countries.index()],
-            )
-            .unwrap(),
-    );
-    assert!(
-        split
-            .prepare_bytes_with(input, false, &mut segments)
-            .is_err()
-    );
-    let stale = FrameEncoder::new().frame_context(1, 4, false);
-    let countries = FrameInput::from(source(1, 4)).tables[TableId::Countries.index()].clone();
-    assert!(
-        split
-            .encode_segment(&stale, TableId::Countries, &countries)
-            .is_err()
-    );
 }
 
 /// A commit hands back the baselines it replaced instead of freeing them,
@@ -3393,6 +3414,65 @@ fn map_input(source: DecodedFrame) -> FrameInput {
 }
 
 #[test]
+fn raw_frame_table_sizes_match_storage_for_unmarked_full_and_map() {
+    for mode in [CaptureMode::Full, CaptureMode::Map] {
+        let input = match mode {
+            CaptureMode::Full => FrameInput::from(source(1, 0)),
+            CaptureMode::Map => map_input(source(1, 0)),
+        };
+        let mut frame = FrameEncoder::new().encode_input(input, true).unwrap();
+        if mode == CaptureMode::Full {
+            frame.tables[TableId::DivisionModelInputs.index()] = TableUpdate::Snapshot(
+                crate::rows::sample_extended_table(TableId::DivisionModelInputs, 1).unwrap(),
+            );
+            frame.metrics.table_ns[TableId::DivisionModelInputs.index()] = 123;
+        }
+        assert_eq!(frame.capture_mode().unwrap(), mode);
+        let mut bytes = Vec::new();
+        let sizes = frame.encode_with_sizes(&mut bytes).unwrap();
+        assert_eq!(frame.table_encoded_sizes().unwrap(), sizes, "{mode}");
+        assert_eq!(
+            frame
+                .table_encoded_sizes_version(crate::format::FormatVersion::CURRENT)
+                .unwrap(),
+            sizes,
+            "{mode}"
+        );
+        let decoded = Frame::decode(&mut Decoder::new(&bytes)).unwrap();
+        for table in TableId::ALL
+            .into_iter()
+            .filter(|&table| !crate::scope::records(mode, table))
+        {
+            assert_eq!(sizes[table.index()], 0, "{mode} {table:?}");
+            assert_eq!(
+                decoded.metrics.table_ns[table.index()],
+                0,
+                "{mode} {table:?}"
+            );
+            // A retired table decodes as its catalogued refusal, not as an omission of the mode.
+            let format = crate::format::FormatVersion::CURRENT.version();
+            if table.last_change().present(format) {
+                assert_eq!(
+                    decoded.tables[table.index()],
+                    TableUpdate::NotRecorded { mode },
+                    "{mode} {table:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        &decoded.tables[table.index()],
+                        TableUpdate::Unavailable { reason }
+                            if Some(reason.as_str()) == table.last_change().table_gap(table, format).as_deref()
+                    ),
+                    "{mode} {table:?}: {:?}",
+                    decoded.tables[table.index()]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
     use crate::scope::{self, CaptureMode};
     let full = source(1, 0);
@@ -3443,7 +3523,12 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
             assert_eq!(map_sizes[index], full_sizes[index], "{table:?}");
         }
     }
-    assert!(left_out > 300 && scope::records(CaptureMode::Map, TableId::Divisions));
+    let expected = TableId::ALL
+        .into_iter()
+        .filter(|&table| only_full(table))
+        .count();
+    assert_eq!(left_out, expected);
+    assert!(left_out > 0 && scope::records(CaptureMode::Map, TableId::Divisions));
     assert!(added > 8 && only_map(TableId::DivisionModelInputs));
     assert_eq!(full_bytes.len() + added - map_bytes.len(), omitted);
     let decoded = FrameDecoder::new()

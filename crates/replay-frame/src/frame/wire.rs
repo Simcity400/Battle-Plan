@@ -44,9 +44,10 @@ impl Frame {
     ) -> io::Result<[usize; TABLE_COUNT]> {
         // Size decoded values directly: absent historical fields are not
         // re-encoded as current rows, and deltas retain their recorded mask width.
+        let mode = self.capture_mode()?;
         TableId::ALL
             .map(|table| {
-                if !table.last_change().present(format.version()) {
+                if !table_stored(table, format, mode) {
                     return Ok(0);
                 }
                 let bytes = match &self.tables[table.index()] {

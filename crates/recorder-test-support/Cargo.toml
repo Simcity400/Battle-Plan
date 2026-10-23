@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 replay.workspace = true
-replay-frame.workspace = true
+replay-frame = { workspace = true, features = ["test-support"] }
 # TableRows::one_default, which completes the fixture frames' singleton tables.
 replay-data = { workspace = true, features = ["test-support"] }
 

@@ -5659,6 +5659,19 @@ mod tests {
         );
     }
 
+    fn assert_only_naming_lock(output: &Path) {
+        assert!(replay::recording_files::listing(output).unwrap().is_empty());
+        let names: Vec<_> = fs::read_dir(output)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                assert!(entry.file_type().unwrap().is_file());
+                entry.file_name()
+            })
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("recording-names.lock")]);
+    }
+
     #[test]
     fn allocation_failure_without_global_watermark_refuses_raw_crc_valid_frames() {
         let (session, output, mut witness) = allocation_session("uncertified-prefix");
@@ -5674,7 +5687,7 @@ mod tests {
         assert!(paths.is_empty());
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("no committed spool watermark"));
-        assert!(fs::read_dir(output).unwrap().next().is_none());
+        assert_only_naming_lock(&output);
     }
 
     #[test]
@@ -5935,7 +5948,7 @@ mod tests {
         ] {
             fs::write(session.join(WITNESS_FILE_NAME), bad.encode()).unwrap();
             assert!(finalize_session(&session, &output).is_err(), "{bad:?}");
-            assert!(fs::read_dir(&output).unwrap().next().is_none());
+            assert_only_naming_lock(&output);
         }
         let mut torn = witness.encode();
         torn[31] ^= 1;
@@ -6174,14 +6187,16 @@ mod tests {
                             },
                         ]))
                     }
-                    // A current spool holds no retired table; decoding names it.
-                    // Every other singleton takes one default row from the registry.
-                    table => match FormatVersion::CURRENT.table_refusal(table) {
-                        Some(reason) => TableUpdate::Unavailable { reason },
+                    table => match replay_frame::frame::current_absence(table) {
+                        Some(TableView::NotRecorded { mode }) => TableUpdate::NotRecorded { mode },
+                        Some(TableView::Unavailable { reason }) => {
+                            TableUpdate::Unavailable { reason }
+                        }
                         None if table.key_bits() == 0 => {
                             TableUpdate::Snapshot(TableRows::one_default(table))
                         }
                         None => TableUpdate::Snapshot(TableRows::empty(table)),
+                        _ => unreachable!("absence is an omission or a named refusal"),
                     },
                 }),
             })

@@ -122,10 +122,15 @@ pub fn allocation_frame(branch: u64, hour: i32, load_signal: i64) -> replay_fram
                 table if table.key_bits() == 0 => TableRows::one_default(table),
                 table => TableRows::empty(table),
             };
-            // A current spool holds no retired table; decoding names it.
-            match replay_data::format::FormatVersion::CURRENT.table_refusal(rows.table()) {
-                Some(reason) => TableUpdate::Unavailable { reason },
+            match replay_frame::frame::current_absence(rows.table()) {
+                Some(replay_frame::frame::TableView::NotRecorded { mode }) => {
+                    TableUpdate::NotRecorded { mode }
+                }
+                Some(replay_frame::frame::TableView::Unavailable { reason }) => {
+                    TableUpdate::Unavailable { reason }
+                }
                 None => TableUpdate::Snapshot(rows),
+                _ => unreachable!("absence is an omission or a named refusal"),
             }
         }),
     }

@@ -414,73 +414,80 @@ fn each_reader_admits_each_table_once_and_cache_values_ignore_selection() {
 
 #[test]
 fn selected_and_unselected_admission_preserve_absence_and_layout_gap_checks() {
-    let mut checked = [false; 3];
+    let mut checked = [false; 4];
     for version in crate::rows::compatibility::PROVEN_FROM..=FormatVersion::CURRENT.version() {
         let Ok(format) = FormatVersion::read(version) else {
             continue;
         };
-        for table in TableId::ALL {
-            let change = &HISTORY[table.index()];
-            let present = change.present(version);
-            let gap = change.table_gap(table, version);
-            checked[if !present {
-                0
-            } else if gap.is_some() {
-                1
-            } else {
-                2
-            }] = true;
-            let mut directory = Directory {
-                frames: 1,
-                layout: Layout::Chosen,
-                sections: vec![None; SECTIONS],
-            };
-            for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
-                let (result, counts) =
-                    admissions(|| keyframe_refusal(&directory, format, CaptureMode::Full, selection, table));
-                assert_eq!(counts, [table]);
-                let result = result.unwrap();
-                if !present {
-                    assert_eq!(
-                        result,
-                        Some(TableUpdate::Unavailable {
-                            reason: gap.clone().unwrap()
-                        })
-                    );
-                } else if gap.is_none() && selection.is_some_and(|tables| tables.is_empty()) {
-                    assert!(
-                        matches!(result, Some(TableUpdate::Unavailable { reason }) if reason == "Table not selected for reconstruction")
-                    );
+        for mode in [CaptureMode::Full, CaptureMode::Map]
+            .into_iter()
+            .filter(|mode| {
+                *mode == CaptureMode::Full
+                    || version >= crate::rows::compatibility::CAPTURE_MODE_FORMAT
+            })
+        {
+            for table in TableId::ALL {
+                let change = &HISTORY[table.index()];
+                let present = change.present(version);
+                let recorded = scope::records(mode, table);
+                let gap = change.table_gap(table, version);
+                checked[if !present {
+                    0
+                } else if !recorded {
+                    1
+                } else if gap.is_some() {
+                    2
                 } else {
-                    assert!(
-                        result.is_none(),
-                        "{table:?} at {version}: selected tables and present layout gaps must reach the selection-independent decoder"
-                    );
-                }
-            }
-            if !present {
-                for section in [keyframe_section(table), later_section(table)] {
-                    directory.sections[section] = Some((0, 1, 1));
-                    for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
+                    3
+                }] = true;
+                let mut directory = Directory {
+                    frames: 1,
+                    layout: Layout::Chosen,
+                    sections: vec![None; SECTIONS],
+                };
+                for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
+                    let (result, counts) =
+                        admissions(|| keyframe_refusal(&directory, format, mode, selection, table));
+                    assert_eq!(counts, [table]);
+                    let result = result.unwrap();
+                    if !present {
+                        assert_eq!(
+                            result,
+                            Some(TableUpdate::Unavailable {
+                                reason: gap.clone().unwrap()
+                            })
+                        );
+                    } else if !recorded {
+                        assert_eq!(result, Some(TableUpdate::NotRecorded { mode }));
+                    } else if gap.is_none() && selection.is_some_and(|tables| tables.is_empty()) {
                         assert!(
-                            keyframe_refusal(
-                                &directory,
-                                format,
-                                CaptureMode::Full,
-                                selection,
-                                table
-                            )
-                            .is_err(),
-                            "stored absent {table:?} at {version} must refuse even when omitted"
+                            matches!(result, Some(TableUpdate::Unavailable { reason }) if reason == "Table not selected for reconstruction")
+                        );
+                    } else {
+                        assert!(
+                            result.is_none(),
+                            "{table:?} at {version} in {mode}: selected tables and present layout gaps must reach the selection-independent decoder"
                         );
                     }
-                    directory.sections[section] = None;
+                }
+                if !present || !recorded {
+                    for section in [keyframe_section(table), later_section(table)] {
+                        directory.sections[section] = Some((0, 1, 1));
+                        for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
+                            assert!(
+                                keyframe_refusal(&directory, format, mode, selection, table)
+                                    .is_err(),
+                                "stored absent {table:?} at {version} in {mode} must refuse even when omitted"
+                            );
+                        }
+                        directory.sections[section] = None;
+                    }
                 }
             }
         }
     }
     assert_eq!(
-        checked, [true; 3],
-        "exercise absent, present gap and current tables"
+        checked, [true; 4],
+        "exercise absent, out-of-scope, present gap and current tables"
     );
 }

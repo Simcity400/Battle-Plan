@@ -22,12 +22,17 @@ fn frame(hour: i32, keyframe: bool) -> Frame {
         hour,
         keyframe,
         metrics: Metrics::default(),
-        tables: std::array::from_fn(|index| TableUpdate::Unavailable {
-            // A retired table decodes with its catalogued refusal.
-            reason: match crate::frame::current_absence(crate::rows::TableId::ALL[index]) {
-                Some(crate::frame::TableView::Unavailable { reason }) => reason,
-                _ => "x".into(),
-            },
+        tables: std::array::from_fn(|index| {
+            match crate::frame::current_absence(crate::rows::TableId::ALL[index]) {
+                Some(crate::frame::TableView::NotRecorded { mode }) => {
+                    TableUpdate::NotRecorded { mode }
+                }
+                Some(crate::frame::TableView::Unavailable { reason }) => {
+                    TableUpdate::Unavailable { reason }
+                }
+                None => TableUpdate::Unavailable { reason: "x".into() },
+                _ => unreachable!("absence is an omission or a named refusal"),
+            }
         }),
     }
 }

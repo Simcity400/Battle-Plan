@@ -736,7 +736,7 @@ pub(crate) mod tests {
     }
 
     fn source(branch: BranchId, hour: Hour) -> DecodedFrame {
-        DecodedFrame {
+        replay_frame::frame::retire_absent(DecodedFrame {
             branch,
             hour,
             metrics: Metrics::default(),
@@ -931,7 +931,7 @@ pub(crate) mod tests {
                 }
                 tables.map(Into::into)
             },
-        }
+        })
     }
 
     /// The resources map mode's and the trade routes' hourly tables, one row each and

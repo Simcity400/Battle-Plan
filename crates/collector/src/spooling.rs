@@ -3675,7 +3675,7 @@ fn decoded(
     clock: Clock,
     branch: BranchId,
 ) -> replay_frame::frame::DecodedFrame {
-    sampled_frame(
+    replay_frame::frame::retire_absent(sampled_frame(
         decoded_with_costs(
             captured,
             clock.borrowed(),
@@ -3691,7 +3691,7 @@ fn decoded(
             },
         )
         .0,
-    )
+    ))
 }
 
 fn decoded_with_costs(
@@ -6226,13 +6226,18 @@ mod tests {
             unavailable("division pointer unreadable")
         );
         captured.clock = None;
-        assert_eq!(
-            decoded(&captured, clock(10), 1).tables,
+        // Every table a Full recording holds names the clock; the others decode as a recording does.
+        let mut expected =
             unavailable_tables("clock unreadable at hook entry").map(|input| match input {
                 TableInput::Sampled(view) => view,
                 _ => unreachable!("fixture expected ordinary sampled rows"),
-            })
-        );
+            });
+        for table in TableId::ALL {
+            if let Some(view) = replay_frame::frame::current_absence(table) {
+                expected[table.index()] = view.into();
+            }
+        }
+        assert_eq!(decoded(&captured, clock(10), 1).tables, expected);
     }
 
     #[test]
@@ -8063,12 +8068,13 @@ mod tests {
                 };
             }
         }
-        DecodedFrame {
+        // A table Full leaves out decodes as not recorded.
+        replay_frame::frame::retire_absent(DecodedFrame {
             branch,
             hour,
             tables: tables.map(Into::into),
             metrics: Metrics::default(),
-        }
+        })
     }
 
     /// A staggered (daily) table.

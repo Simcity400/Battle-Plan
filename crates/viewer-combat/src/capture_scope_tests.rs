@@ -129,6 +129,14 @@ fn map_battle_windows_read_only_recorded_tables() {
                 bindings.entries[..2].iter().all(|side| !side.is_empty()),
                 "both sides' committed entries bind"
             );
+            // Division hovers name what they omit in the window's warnings.
+            assert!(
+                bindings.warnings.iter().any(|warning| warning.contains(
+                    "division hover parts are omitted: division history: DivisionHistory not recorded in this recording"
+                )),
+                "{:?}",
+                bindings.warnings
+            );
         }
     }
     std::fs::remove_dir_all(root).unwrap();
