@@ -173,8 +173,13 @@ impl Replay {
                 &mut check,
             )?;
             if !self.is_verified(index) {
-                super::grouped::verify(&block, index)?;
+                super::grouped::verify_with(
+                    &block,
+                    index,
+                    &mut super::check::Check::new(&mut check),
+                )?;
             }
+            check()?;
             self.mark_verified(index);
             drop(block);
             check()?;
@@ -256,16 +261,34 @@ impl Replay {
     /// [`Replay::read_block_selected`] returns them, except that a grouped
     /// block's tables not read are unavailable without a reason, which no
     /// reader reconstructs: for readers that keep a block for others and may
-    /// give it up partway. `check` is called before each table section of a
-    /// grouped block is decoded and before each hour of an interleaved
-    /// block, so an error from it (a reader giving the block up) ends the
-    /// read with what it decoded released. Admission and verification are
-    /// `read_block_selected`'s.
+    /// give it up partway. `check` stops table, hour and verification work
+    /// cooperatively; an error releases the unfinished read. Admission and
+    /// verification are `read_block_selected`'s.
     pub fn read_block_kept(
         &self,
         index: &BlockIndex,
         tables: &[TableId],
         mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<Arc<RecordedFrame>>> {
+        self.read_block_kept_inner(index, tables, &mut check, true)
+    }
+
+    /// Keep a block, checking willingness only at the original table/hour boundaries.
+    pub fn read_block_kept_coarse(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<Arc<RecordedFrame>>> {
+        self.read_block_kept_inner(index, tables, &mut check, false)
+    }
+
+    fn read_block_kept_inner(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        check: &mut dyn FnMut() -> io::Result<()>,
+        inner_checks: bool,
     ) -> io::Result<Vec<Arc<RecordedFrame>>> {
         check()?;
         let mut chosen = [false; TABLE_COUNT];
@@ -275,15 +298,30 @@ impl Replay {
         }
         let read = BlockTables::new(&self.campaign_id, self.format, &chosen)?;
         if let Some(block) = self.grouped_block(index)? {
-            let selected = super::grouped::read_selected_updates(
-                self,
-                index,
-                &block,
-                &read.tables,
-                &mut check,
-            )?;
+            let selected = if inner_checks {
+                super::grouped::read_selected_updates(self, index, &block, &read.tables, check)?
+            } else {
+                super::grouped::read_selected_updates_coarse(
+                    self,
+                    index,
+                    &block,
+                    &read.tables,
+                    check,
+                )?
+            };
             if !self.is_verified(index) {
-                super::grouped::verify(&block, index)?;
+                if inner_checks {
+                    super::grouped::verify_with(
+                        &block,
+                        index,
+                        &mut super::check::Check::new(check),
+                    )?;
+                } else {
+                    super::grouped::verify(&block, index)?;
+                }
+            }
+            if inner_checks {
+                check()?;
             }
             self.mark_verified(index);
             drop(block);

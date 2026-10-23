@@ -262,14 +262,14 @@ fn compare(replay: &Replay, expected: &[Frame], index: &BlockIndex, bytes: &[u8]
         {
             continue;
         }
-        let updates = table_updates_inner(&context, table).unwrap();
+        let updates = table_updates_inner(&context, table, &mut Check::disabled()).unwrap();
         assert_eq!(updates.len(), through);
-        let admitted = table_updates_admitted(&context, table).unwrap();
+        let admitted = table_updates_admitted(&context, table, &mut Check::disabled()).unwrap();
         assert_eq!(admitted.len(), through);
         for (at, update) in updates.iter().enumerate() {
             assert_eq!(**admitted.get(at), *update);
         }
-        let memoized = table_updates_admitted(&context, table).unwrap();
+        let memoized = table_updates_admitted(&context, table, &mut Check::disabled()).unwrap();
         assert!(Arc::ptr_eq(admitted.get(0), memoized.get(0)));
         for ((actual, expected), update) in actual.iter_mut().zip(&expected).zip(updates) {
             assert_eq!(
@@ -597,7 +597,8 @@ fn direct_delta_section_refusals_keep_original_framing_and_wire_precedence() {
                 memo: &memo,
                 group: &OnceLock::new(),
             };
-            let original = table_updates_body(&context, table, false).unwrap_err();
+            let original =
+                table_updates_body(&context, table, false, &mut Check::disabled()).unwrap_err();
             assert_eq!(
                 original.kind(),
                 io::ErrorKind::InvalidData,
@@ -606,10 +607,10 @@ fn direct_delta_section_refusals_keep_original_framing_and_wire_precedence() {
             assert_eq!(original.to_string(), expected, "{layout:?}: {name}");
             // A failed fast attempt must retry from the section's initial state.
             assert!(
-                table_updates_body(&context, table, true).is_err(),
+                table_updates_body(&context, table, true, &mut Check::disabled()).is_err(),
                 "{layout:?}: {name}"
             );
-            let actual = table_updates_inner(&context, table).unwrap_err();
+            let actual = table_updates_inner(&context, table, &mut Check::disabled()).unwrap_err();
             assert_eq!(actual.kind(), original.kind(), "{layout:?}: {name}");
             assert_eq!(actual.to_string(), expected, "{layout:?}: {name}");
             checked += 1;
@@ -745,7 +746,8 @@ fn direct_delta_malformed_columns_have_fixed_refusals_in_every_layout() {
                     memo: &memo,
                     group: &OnceLock::new(),
                 };
-                let error = table_updates_inner(&context, table).unwrap_err();
+                let error =
+                    table_updates_inner(&context, table, &mut Check::disabled()).unwrap_err();
                 rejected += 1;
                 assert_eq!(error.kind(), io::ErrorKind::InvalidData);
                 assert_eq!(
@@ -1055,6 +1057,7 @@ fn direct_delta_alias_keyframe_memos_and_cached_prefixes_hold_only_resolved_upda
                         table,
                         &raw,
                         &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
+                        &mut Check::disabled(),
                     )
                     .unwrap();
                     anchors += usize::from(stored.anchored);
@@ -1156,11 +1159,11 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
                 continue;
             }
             // Warm the alias sources' shared views and memo before counting checked growth.
-            direct::table_updates(&context, table).unwrap();
+            direct::table_updates(&context, table, &mut Check::disabled()).unwrap();
             ATTEMPTS.set(0);
             FAIL_AT.set(None);
             engine_allocation::set_stop_hook(Some(fail_allocation));
-            let healthy = direct::table_updates(&context, table);
+            let healthy = direct::table_updates(&context, table, &mut Check::disabled());
             engine_allocation::set_stop_hook(None);
             healthy.unwrap();
             let attempts = ATTEMPTS.get();
@@ -1168,7 +1171,7 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
                 ATTEMPTS.set(0);
                 FAIL_AT.set(Some(ordinal));
                 engine_allocation::set_stop_hook(Some(fail_allocation));
-                let result = direct::table_updates(&context, table);
+                let result = direct::table_updates(&context, table, &mut Check::disabled());
                 engine_allocation::set_stop_hook(None);
                 assert_eq!(
                     result.unwrap_err().kind(),
@@ -1251,7 +1254,7 @@ fn span_buffer_growth_failures_propagate_on_both_routes() {
                 ROUTES.with_borrow_mut(Vec::clear);
                 FAIL_AT.set(fail_at);
                 engine_allocation::set_stop_hook(Some(fail_allocation));
-                let result = direct::table_updates(&context, table);
+                let result = direct::table_updates(&context, table, &mut Check::disabled());
                 engine_allocation::set_stop_hook(None);
                 (result, ROUTES.with_borrow_mut(std::mem::take))
             };
@@ -1263,7 +1266,7 @@ fn span_buffer_growth_failures_propagate_on_both_routes() {
                     continue;
                 }
                 // Warm the alias sources' memo, so every read repeats the same growths.
-                direct::table_updates(&context, table).unwrap();
+                direct::table_updates(&context, table, &mut Check::disabled()).unwrap();
                 let (healthy, routes) = read(table, None);
                 healthy.unwrap();
                 for (ordinal, &residual) in (1..).zip(&routes) {
@@ -1361,9 +1364,11 @@ fn candidate_hour_allocation_failures_propagate_instead_of_retrying() {
         FAIL_AT.set(fail_at);
         engine_allocation::set_stop_hook(Some(fail_allocation));
         let result = if alone {
-            direct::table_updates(&context, table).map(|updates| updates.len())
+            direct::table_updates(&context, table, &mut Check::disabled())
+                .map(|updates| updates.len())
         } else {
-            table_updates_admitted(&context, table).map(|updates| updates.len())
+            table_updates_admitted(&context, table, &mut Check::disabled())
+                .map(|updates| updates.len())
         };
         engine_allocation::set_stop_hook(None);
         (result, STEPS.with_borrow_mut(std::mem::take))

@@ -48,6 +48,7 @@
 
 use super::{
     BlockIndex, CompressedBlock, MAX_BLOCK_RAW_BYTES, Parallel, Replay,
+    check::Check,
     pack::{self, Cores},
     parallel_tables, patch, zstd_error,
 };
@@ -74,6 +75,8 @@ use std::{
 
 #[cfg(test)]
 mod allocation_tests;
+#[cfg(test)]
+mod cancellation_tests;
 #[cfg(test)]
 #[path = "decoded_section_tests.rs"]
 mod decoded_section_tests;
@@ -2678,9 +2681,20 @@ pub(crate) fn sections(block: &[u8], index: &BlockIndex) -> io::Result<Vec<Secti
 /// Inflate every section of a grouped block, checking the directory's CRC and
 /// each section's zstd checksum, without decoding any table.
 pub(crate) fn verify(block: &[u8], index: &BlockIndex) -> io::Result<()> {
+    verify_with(block, index, &mut Check::disabled())
+}
+
+pub(super) fn verify_with(
+    block: &[u8],
+    index: &BlockIndex,
+    check: &mut Check<'_>,
+) -> io::Result<()> {
     let _cpu = crate::cpu::scope("decode", None);
     let directory = Directory::parse(block, index)?;
     for id in 0..SECTIONS {
+        #[cfg(test)]
+        let _step = super::check::Scope::enter(super::check::Step::Verify(id));
+        check.run()?;
         directory.raw(block, id)?;
     }
     Ok(())
@@ -2911,6 +2925,22 @@ impl Replay {
         self.read_block_recorded_through(index, tables, index.last_hour)
     }
 
+    /// Shared selected updates with cooperative cancellation inside table resolution.
+    pub fn read_block_recorded_selected_with(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<RecordedFrame>> {
+        self.read_block_recorded_inner_checked(
+            index,
+            tables,
+            index.last_hour,
+            None,
+            &mut Check::new(&mut check),
+        )
+    }
+
     /// The selected prefix as immutable updates. A prefix never admits later grammar.
     pub fn read_block_recorded_through(
         &self,
@@ -2936,13 +2966,39 @@ impl Replay {
         through: Hour,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<RecordedFrame>> {
+        self.read_block_recorded_inner_checked(
+            index,
+            tables,
+            through,
+            parallel,
+            &mut Check::disabled(),
+        )
+    }
+
+    fn read_block_recorded_inner_checked(
+        &self,
+        index: &BlockIndex,
+        tables: &[TableId],
+        through: Hour,
+        parallel: Option<&Parallel<'_>>,
+        check: &mut Check<'_>,
+    ) -> io::Result<Vec<RecordedFrame>> {
+        check.run()?;
         let _consumer =
             self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
         if let Some(block) = self.grouped_block(index)? {
-            let frames =
-                read_recorded_through(self, index, &block, Some(tables), parallel, Some(through))?;
+            let frames = read_recorded_through_checked(
+                self,
+                index,
+                &block,
+                Some(tables),
+                parallel,
+                Some(through),
+                check,
+            )?;
             let mut order = super::BlockOrder::new(index);
             for frame in &frames {
+                check.run()?;
                 order.next(frame)?;
             }
             if frames
@@ -2951,13 +3007,14 @@ impl Replay {
             {
                 order.finish()?;
                 if !self.is_verified(index) {
-                    verify(&block, index)?;
+                    verify_with(&block, index, check)?;
                 }
+                check.run()?;
                 self.mark_verified(index);
             }
             return Ok(frames);
         }
-        self.read_block_selected_through(index, Some(tables), through, None)?
+        self.read_block_selected_through_checked(index, Some(tables), through, None, check)?
             .into_iter()
             .map(|frame| Ok(frame.into()))
             .collect()
@@ -2979,10 +3036,61 @@ impl Replay {
         through: Hour,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
+        self.read_block_selected_through_checked(
+            index,
+            tables,
+            through,
+            parallel,
+            &mut Check::disabled(),
+        )
+    }
+
+    /// Selected prefix read with cooperative cancellation inside table resolution.
+    pub fn read_block_selected_through_with(
+        &self,
+        index: &BlockIndex,
+        tables: Option<&[TableId]>,
+        through: Hour,
+        mut check: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<Frame>> {
+        self.read_block_selected_through_checked(
+            index,
+            tables,
+            through,
+            None,
+            &mut Check::new(&mut check),
+        )
+    }
+
+    pub(super) fn read_block_selected_through_checked(
+        &self,
+        index: &BlockIndex,
+        tables: Option<&[TableId]>,
+        through: Hour,
+        parallel: Option<&Parallel<'_>>,
+        check: &mut Check<'_>,
+    ) -> io::Result<Vec<Frame>> {
+        check.run()?;
         if let Some(block) = self.grouped_block(index)? {
-            let frames = read_through(self, index, &block, tables, parallel, Some(through))?;
+            let frames = read_recorded_through_checked(
+                self,
+                index,
+                &block,
+                tables,
+                parallel,
+                Some(through),
+                check,
+            )?;
+            let frames = frames
+                .into_iter()
+                .map(|frame| {
+                    check.run()?;
+                    frame.into_owned_frame()
+                })
+                .collect::<io::Result<Vec<_>>>()?;
             let mut order = super::BlockOrder::new(index);
             for frame in &frames {
+                check.run()?;
                 order.next(frame)?;
             }
             if frames
@@ -2991,14 +3099,16 @@ impl Replay {
             {
                 order.finish()?;
                 if tables.is_some() && !self.is_verified(index) {
-                    verify(&block, index)?;
+                    verify_with(&block, index, check)?;
                 }
+                check.run()?;
                 self.mark_verified(index);
             }
             return Ok(frames);
         }
         let mut frames = Vec::new();
         self.visit_block(index, tables, |frame| {
+            check.run()?;
             if frame.hour > through {
                 return Ok(false);
             }
@@ -3046,6 +3156,7 @@ fn keyframe_admitted(
                 table,
                 &raw,
                 &Budget(AtomicUsize::new(MAX_BLOCK_RAW_BYTES)),
+                &mut Check::disabled(),
             )?;
             super::aliases::private::resolve(
                 table,
@@ -3094,6 +3205,26 @@ fn read_recorded_through(
     parallel: Option<&Parallel<'_>>,
     through: Option<Hour>,
 ) -> io::Result<Vec<RecordedFrame>> {
+    read_recorded_through_checked(
+        replay,
+        index,
+        block,
+        selected,
+        parallel,
+        through,
+        &mut Check::disabled(),
+    )
+}
+
+fn read_recorded_through_checked(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: Option<&[TableId]>,
+    parallel: Option<&Parallel<'_>>,
+    through: Option<Hour>,
+    check: &mut Check<'_>,
+) -> io::Result<Vec<RecordedFrame>> {
     let _consumer =
         replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
     let _cpu = crate::cpu::scope("decode", None);
@@ -3109,7 +3240,7 @@ fn read_recorded_through(
     let frames = directory.frames;
     check_header_size(frames, &present)?;
     let header = directory.raw(block, HEADER)?.unwrap_or_default();
-    let (hours, entries) = read_header(&header, index, frames, &present)?;
+    let (hours, entries) = read_header_with(&header, index, frames, &present, check)?;
     let keep = through.map_or(frames, |through| {
         hours.partition_point(|hour| *hour <= through)
     });
@@ -3117,7 +3248,7 @@ fn read_recorded_through(
         .raw(block, DIAGNOSTICS)?
         .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
     let timed = directory.layout == Layout::Timed;
-    let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, keep)?;
+    let metrics = read_diagnostics_prefix_with(&diagnostics, frames, &present, timed, keep, check)?;
     if keep == 0 {
         return Ok(Vec::new());
     }
@@ -3139,7 +3270,7 @@ fn read_recorded_through(
         memo: &memo,
         group: &group,
     };
-    let decode = |table: &TableId| table_updates(&context, *table);
+    let decode = |table: &TableId| table_updates(&context, *table, &mut Check::disabled());
     let decoded = match parallel {
         // Start alias sources before their readers, then the heaviest remaining tables.
         Some(parallel) => {
@@ -3148,7 +3279,18 @@ fn read_recorded_through(
                 .with_largest(schedule::table_order)?;
             parallel_tables(&TableId::ALL, &order, parallel, decode)?
         }
-        None => engine_allocation::collect_vec(TableId::ALL.iter().map(decode))?,
+        None => {
+            let mut decoded = engine_allocation::vec(TableId::ALL.len())?;
+            for table in TableId::ALL {
+                check.run()?;
+                let result = match table_updates(&context, table, check) {
+                    Err(error) if check.failed() => return Err(error),
+                    result => result,
+                };
+                decoded.push(result);
+            }
+            decoded
+        }
     };
     let columns = decoded.into_iter().collect::<io::Result<Vec<_>>>()?;
     let slots = Arc::new(std::array::from_fn(Some));
@@ -3157,6 +3299,7 @@ fn read_recorded_through(
     });
     let mut out = engine_allocation::vec(keep)?;
     for (position, (hour, metrics)) in hours.iter().zip(metrics).enumerate() {
+        check.run()?;
         out.push(RecordedFrame::from_columns(
             index.branch,
             *hour,
@@ -3202,14 +3345,41 @@ pub(crate) struct SelectedUpdates {
 /// [`read`] of a whole block for `selected` (each table once), keeping each
 /// selected table's updates by table rather than by frame. The same sections
 /// are inflated and decoded, in the same table order, so it fails exactly
-/// where [`read`] fails. `check` is called before each table is decoded; its
-/// error ends the read.
+/// where [`read`] fails. `check` stops header, table and alias-hour work on its first error.
 pub(crate) fn read_selected_updates(
     replay: &Replay,
     index: &BlockIndex,
     block: &[u8],
     selected: &[TableId],
     check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<SelectedUpdates> {
+    read_selected_updates_inner(replay, index, block, selected, None, &mut Check::new(check))
+}
+
+pub(crate) fn read_selected_updates_coarse(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: &[TableId],
+    check: &mut dyn FnMut() -> io::Result<()>,
+) -> io::Result<SelectedUpdates> {
+    read_selected_updates_inner(
+        replay,
+        index,
+        block,
+        selected,
+        Some(check),
+        &mut Check::disabled(),
+    )
+}
+
+fn read_selected_updates_inner(
+    replay: &Replay,
+    index: &BlockIndex,
+    block: &[u8],
+    selected: &[TableId],
+    mut table_check: Option<&mut dyn FnMut() -> io::Result<()>>,
+    check: &mut Check<'_>,
 ) -> io::Result<SelectedUpdates> {
     let _consumer =
         replay.section_block_reader(replay.block_position(index).unwrap_or(0), None, "read");
@@ -3226,12 +3396,13 @@ pub(crate) fn read_selected_updates(
     let frames = directory.frames;
     check_header_size(frames, &present)?;
     let header = directory.raw(block, HEADER)?.unwrap_or_default();
-    let (hours, entries) = read_header(&header, index, frames, &present)?;
+    let (hours, entries) = read_header_with(&header, index, frames, &present, check)?;
     let diagnostics = directory
         .raw(block, DIAGNOSTICS)?
         .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
     let timed = directory.layout == Layout::Timed;
-    let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, frames)?;
+    let metrics =
+        read_diagnostics_prefix_with(&diagnostics, frames, &present, timed, frames, check)?;
     let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
     let group = OnceLock::new();
     let context = Context {
@@ -3253,7 +3424,10 @@ pub(crate) fn read_selected_updates(
         engine_allocation::collect_vec(selected.iter().map(|_| None))?;
     let mut dependent_keyframe = false;
     for table in TableId::ALL {
-        check()?;
+        if let Some(table_check) = &mut table_check {
+            table_check()?;
+        }
+        check.run()?;
         let wanted = selected.iter().position(|selected| *selected == table);
         // One selection-aware admission per table. A present layout gap
         // still reaches the ordinary decoder even when not selected.
@@ -3267,7 +3441,7 @@ pub(crate) fn read_selected_updates(
         let decoded = match (wanted, refusal) {
             (None, Some(_)) => continue,
             (Some(_), Some(update)) => Updates::repeat(update, frames)?,
-            (_, None) => table_updates_admitted(&context, table)?,
+            (_, None) => table_updates_admitted(&context, table, check)?,
         };
         match wanted {
             Some(position) => updates[position] = Some(decoded),
@@ -3311,6 +3485,16 @@ fn read_header(
     frames: usize,
     present: &Present,
 ) -> io::Result<(Vec<Hour>, Vec<u8>)> {
+    read_header_with(header, index, frames, present, &mut Check::disabled())
+}
+
+fn read_header_with(
+    header: &[u8],
+    index: &BlockIndex,
+    frames: usize,
+    present: &Present,
+    check: &mut Check<'_>,
+) -> io::Result<(Vec<Hour>, Vec<u8>)> {
     let width = present.width();
     let mut input = Decoder::new(header);
     let mut hours = Vec::with_capacity(frames);
@@ -3321,6 +3505,7 @@ fn read_header(
         entries[width - 1] = (1 << tail) - 1;
     }
     for frame in 1..frames {
+        check.run()?;
         let gap = i128::try_from(input.varint()?).unwrap_or(i128::MAX);
         hours.push(hour_from(i128::from(hours[frame - 1]) + 1 + gap)?);
         let bits = input.take(width)?;
@@ -3345,6 +3530,17 @@ fn read_diagnostics_prefix(
     timed: bool,
     keep: usize,
 ) -> io::Result<Vec<Metrics>> {
+    read_diagnostics_prefix_with(raw, frames, present, timed, keep, &mut Check::disabled())
+}
+
+fn read_diagnostics_prefix_with(
+    raw: &[u8],
+    frames: usize,
+    present: &Present,
+    timed: bool,
+    keep: usize,
+    check: &mut Check<'_>,
+) -> io::Result<Vec<Metrics>> {
     let mut input = Decoder::new(raw);
     let width = present.width();
     let mut reads = vec![0; width];
@@ -3355,6 +3551,7 @@ fn read_diagnostics_prefix(
         u64::try_from(value).map_err(|_| invalid_static("grouped metric outside its range"))
     };
     for frame in 0..frames {
+        check.run()?;
         let total_ns = u64_from(i128::try_from(input.varint()?).unwrap_or(-1))?;
         pool = u64_from(i128::from(pool) + unzigzag(input.varint()?))?;
         dropped = u64_from(i128::from(dropped) + unzigzag(input.varint()?))?;
@@ -3449,6 +3646,7 @@ fn keyframe_update(
     table: TableId,
     raw: &[u8],
     budget: &Budget,
+    check: &mut Check<'_>,
 ) -> io::Result<KeyframeUpdate> {
     let _cpu = crate::cpu::scope("decode_keyframe", None);
     let format = replay.format;
@@ -3471,8 +3669,8 @@ fn keyframe_update(
     let head = take_head(&mut key_input, None, first, &mut plain, layout)?;
     let update = if let Some(anchor) = head.anchor {
         let own = raw.len();
-        let anchor = anchored_keyframe(
-            replay, from, table, fields, discarded, anchor, own, format, false,
+        let anchor = anchored_keyframe_with(
+            replay, from, table, fields, discarded, anchor, own, format, false, check,
         )?
         .state;
         shadow = anchor.shadow;
@@ -3515,7 +3713,14 @@ fn keyframe_update(
     })
 }
 
-fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+fn table_updates(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Updates> {
+    #[cfg(test)]
+    let _step = super::check::Scope::enter(super::check::Step::Table(table));
+    check.run()?;
     // Unselected tables keep their own compatibility and framing checks.
     if let Some(update) = keyframe_refusal(
         context.directory,
@@ -3526,13 +3731,17 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
     )? {
         return Updates::repeat(update, context.hours.len());
     }
-    table_updates_admitted(context, table)
+    table_updates_admitted(context, table, check)
 }
 
 // The cached decoder receives only admitted sections. No selection-dependent
 // value can enter the cache; selected tables and unselected layout gaps use
 // this identical decoder. Selection below only attributes CPU measurements.
-fn dependency_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+fn dependency_updates(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Updates> {
     if let Some(update) = keyframe_refusal(
         context.directory,
         context.format,
@@ -3542,10 +3751,15 @@ fn dependency_updates(context: &Context<'_>, table: TableId) -> io::Result<Updat
     )? {
         return Updates::repeat(update, context.hours.len());
     }
-    table_updates_admitted(context, table)
+    table_updates_admitted(context, table, check)
 }
 
-fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+fn table_updates_admitted(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Updates> {
+    check.run()?;
     if let Some(updates) = context.memo[table.index()].get() {
         return Ok(updates.clone());
     }
@@ -3553,11 +3767,19 @@ fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<U
     let cache = &context.replay.decoded_sections;
     let updates = if group::resolves(context, table) {
         cache.read_updates(key, context.hours.len(), false, || {
-            measured(context, table, || group_column(context, table))
+            measured(context, table, || {
+                let column = group_column(context, table, check)?;
+                check.run()?;
+                Ok(column)
+            })
         })?
     } else {
         cache.read(key, context.hours.len(), false, || {
-            measured(context, table, || table_updates_inner(context, table))
+            measured(context, table, || {
+                let updates = table_updates_inner(context, table, check)?;
+                check.run()?;
+                Ok(updates)
+            })
         })?
     };
     let _ = context.memo[table.index()].set(updates.clone());
@@ -3585,9 +3807,13 @@ fn measured<T>(context: &Context<'_>, table: TableId, decode: impl FnOnce() -> T
 }
 
 /// A cached member missing from the group still resolves alone.
-fn group_column(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
-    let Some(column) = group::column(context, table) else {
-        return Updates::new(table_updates_inner(context, table)?);
+fn group_column(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Updates> {
+    let Some(column) = group::column(context, table, check) else {
+        return Updates::new(table_updates_inner(context, table, check)?);
     };
     #[cfg(test)]
     super::watched::note_decoded();
@@ -3596,32 +3822,38 @@ fn group_column(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
     column
 }
 
-fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
+fn table_updates_inner(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Vec<TableUpdate>> {
     #[cfg(test)]
     super::watched::note_decoded();
     #[cfg(any(test, feature = "test-support"))]
     super::test_work::decoded(context.index, table, context.hours.len());
-    direct::table_updates(context, table)
+    direct::table_updates(context, table, check)
 }
 
 fn table_updates_body(
     context: &Context<'_>,
     table: TableId,
     use_direct: bool,
+    check: &mut Check<'_>,
 ) -> io::Result<Vec<TableUpdate>> {
     let RawColumn {
         updates,
         key_marks,
         later,
-    } = raw_stage(context, table, use_direct)?;
-    super::aliases::private::resolve(
+    } = raw_stage(context, table, use_direct, check)?;
+    super::aliases::private::resolve_with(
         table,
         context.hours,
         updates,
         key_marks.as_deref(),
         later.marks(),
         context.complete,
-        |source| dependency_updates(context, source),
+        |source, check| dependency_updates(context, source, check),
+        check,
     )
 }
 
@@ -3645,7 +3877,15 @@ impl LaterSection {
     }
 }
 
-fn raw_stage(context: &Context<'_>, table: TableId, use_direct: bool) -> io::Result<RawColumn> {
+fn raw_stage(
+    context: &Context<'_>,
+    table: TableId,
+    use_direct: bool,
+    check: &mut Check<'_>,
+) -> io::Result<RawColumn> {
+    #[cfg(test)]
+    let _step = super::check::Scope::enter(super::check::Step::Raw(table, 0));
+    check.run()?;
     #[cfg(any(test, feature = "test-support"))]
     context.replay.decoded_sections.wire_decode(
         context.position,
@@ -3709,7 +3949,7 @@ fn raw_stage(context: &Context<'_>, table: TableId, use_direct: bool) -> io::Res
         mut plain,
         mut shadow,
         anchored,
-    } = keyframe_update(context.replay, &from, table, &key_raw, &budget)?;
+    } = keyframe_update(context.replay, &from, table, &key_raw, &budget, check)?;
     // Whole keyframes seed later row names; anchored changes leave none.
     if !anchored && layout.keyed() {
         keys.advance(table, version, &plain)?;
@@ -3723,6 +3963,9 @@ fn raw_stage(context: &Context<'_>, table: TableId, use_direct: bool) -> io::Res
     settle_advance(table, layout, &mut shadow, rows);
     let first = context.hours[0];
     for frame in 1..frames {
+        #[cfg(test)]
+        let _step = super::check::Scope::enter(super::check::Step::Raw(table, frame));
+        check.run()?;
         let previous = context.hours[frame - 1];
         if !get(
             &context.entries[frame * width..(frame + 1) * width],
@@ -3937,6 +4180,33 @@ fn anchored_keyframe(
     format: FormatVersion,
     keep_root: bool,
 ) -> io::Result<Resolved> {
+    anchored_keyframe_with(
+        replay,
+        from,
+        table,
+        fields,
+        discarded,
+        anchor,
+        own,
+        format,
+        keep_root,
+        &mut Check::disabled(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn anchored_keyframe_with(
+    replay: &Replay,
+    from: &From<'_>,
+    table: TableId,
+    fields: usize,
+    discarded: bool,
+    anchor: AnchorRef,
+    own: usize,
+    format: FormatVersion,
+    keep_root: bool,
+    check: &mut Check<'_>,
+) -> io::Result<Resolved> {
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {
@@ -3964,6 +4234,7 @@ fn anchored_keyframe(
     let mut anchored = own;
     let (mut position, mut index, mut anchor) = (from.position, from.index, anchor);
     loop {
+        check.run()?;
         if chain.len() == depth {
             return Err(invalid_static("keyframe anchor is not a snapshot"));
         }
@@ -4029,6 +4300,7 @@ fn anchored_keyframe(
     let mut state: Option<AnchorState> = None;
     let mut root_state = None;
     for link in chain.iter().rev() {
+        check.run()?;
         let mut input = ColumnReader::stored(&link.raw, fields, table, version)?;
         let mut plain = Vec::new();
         let head = take_head(&mut input, None, link.hour, &mut plain, link.layout)?;

@@ -1,4 +1,5 @@
 //! Storage-only alias marks, independent of native rows and their delta masks.
+use super::super::check::Check;
 use super::{complete, find, plain, update};
 use crate::{
     Hour,
@@ -1193,8 +1194,14 @@ fn catch_up(
     view: &mut Option<SharedView>,
     hours: &[Hour],
     at: usize,
+    check: &mut Check<'_>,
 ) -> io::Result<()> {
     while *source_at <= at {
+        #[cfg(test)]
+        let _step = super::super::check::Scope::enter(super::super::check::Step::CatchUp(
+            source, *source_at,
+        ));
+        check.run()?;
         let before = view
             .take()
             .filter(|view| matches!(&**view, TableView::Complete(_)))
@@ -1217,8 +1224,12 @@ fn source_keys(
     from: usize,
     at: usize,
     keys: &mut Vec<u128>,
+    check: &mut Check<'_>,
 ) -> io::Result<bool> {
     for hour in from..=at {
+        #[cfg(test)]
+        let _step = super::super::check::Scope::enter(super::super::check::Step::Keys(hour));
+        check.run()?;
         match column.update(hour) {
             TableUpdate::Delta {
                 changed, deleted, ..
@@ -1269,8 +1280,9 @@ impl Followed {
         column: &(impl Column + ?Sized),
         at: usize,
         keys: &mut Vec<u128>,
+        check: &mut Check<'_>,
     ) -> io::Result<bool> {
-        source_keys(column, self.source_at, at, keys)
+        source_keys(column, self.source_at, at, keys, check)
     }
 
     pub(crate) fn complete(&self) -> bool {
@@ -1287,6 +1299,7 @@ impl Followed {
         column: &(impl Column + ?Sized),
         hours: &[Hour],
         at: usize,
+        check: &mut Check<'_>,
     ) -> io::Result<()> {
         catch_up(
             source,
@@ -1295,6 +1308,7 @@ impl Followed {
             &mut self.view,
             hours,
             at,
+            check,
         )
     }
 
@@ -1312,14 +1326,26 @@ pub(crate) trait Supply {
     /// The position of `source` among those loaded, if it is.
     fn position(&self, source: TableId) -> Option<usize>;
     /// Load `source`, first needed at hour index `at`, and give its position.
-    fn load(&mut self, source: TableId, at: usize) -> io::Result<usize>;
+    fn load(&mut self, source: TableId, at: usize, check: &mut Check<'_>) -> io::Result<usize>;
     /// Return false when the source replaces its whole table.
-    fn changed_keys(&mut self, index: usize, at: usize, keys: &mut Vec<u128>) -> io::Result<bool>;
+    fn changed_keys(
+        &mut self,
+        index: usize,
+        at: usize,
+        keys: &mut Vec<u128>,
+        check: &mut Check<'_>,
+    ) -> io::Result<bool>;
     /// Whether the source was complete at the hour it was last brought up to.
     fn complete(&self, index: usize) -> bool;
     fn members(&self, index: usize, keys: &[u128], out: &mut Vec<u128>) -> io::Result<()>;
     /// Bring the source up to hour index `at`.
-    fn catch_up(&mut self, index: usize, hours: &[Hour], at: usize) -> io::Result<()>;
+    fn catch_up(
+        &mut self,
+        index: usize,
+        hours: &[Hour],
+        at: usize,
+        check: &mut Check<'_>,
+    ) -> io::Result<()>;
     /// The source's view at the hour it was last brought up to.
     fn view(&self, index: usize) -> SharedView;
 }
@@ -1329,7 +1355,7 @@ struct Own<F> {
     loaded: Vec<(TableId, Updates, Followed)>,
 }
 
-impl<F: FnMut(TableId) -> io::Result<Updates>> Supply for Own<F> {
+impl<F: FnMut(TableId, &mut Check<'_>) -> io::Result<Updates>> Supply for Own<F> {
     fn loaded(&self) -> usize {
         self.loaded.len()
     }
@@ -1342,16 +1368,23 @@ impl<F: FnMut(TableId) -> io::Result<Updates>> Supply for Own<F> {
         self.loaded.iter().position(|entry| entry.0 == source)
     }
 
-    fn load(&mut self, source: TableId, _at: usize) -> io::Result<usize> {
+    fn load(&mut self, source: TableId, _at: usize, check: &mut Check<'_>) -> io::Result<usize> {
+        check.run()?;
         allocation::reserve(&mut self.loaded, 1)?;
         self.loaded
-            .push((source, (self.load)(source)?, Followed::default()));
+            .push((source, (self.load)(source, check)?, Followed::default()));
         Ok(self.loaded.len() - 1)
     }
 
-    fn changed_keys(&mut self, index: usize, at: usize, keys: &mut Vec<u128>) -> io::Result<bool> {
+    fn changed_keys(
+        &mut self,
+        index: usize,
+        at: usize,
+        keys: &mut Vec<u128>,
+        check: &mut Check<'_>,
+    ) -> io::Result<bool> {
         let (_, column, followed) = &self.loaded[index];
-        followed.changed_keys(column, at, keys)
+        followed.changed_keys(column, at, keys, check)
     }
 
     fn complete(&self, index: usize) -> bool {
@@ -1362,9 +1395,15 @@ impl<F: FnMut(TableId) -> io::Result<Updates>> Supply for Own<F> {
         self.loaded[index].2.members(keys, out)
     }
 
-    fn catch_up(&mut self, index: usize, hours: &[Hour], at: usize) -> io::Result<()> {
+    fn catch_up(
+        &mut self,
+        index: usize,
+        hours: &[Hour],
+        at: usize,
+        check: &mut Check<'_>,
+    ) -> io::Result<()> {
         let (source, column, followed) = &mut self.loaded[index];
-        followed.catch_up(*source, &*column, hours, at)
+        followed.catch_up(*source, &*column, hours, at, check)
     }
 
     fn view(&self, index: usize) -> SharedView {
@@ -1576,6 +1615,7 @@ fn candidate_hour(
     previous: &(Hour, SharedView),
     supply: &mut impl Supply,
     source_changes: &mut Vec<u128>,
+    check: &mut Check<'_>,
 ) -> io::Result<Option<CandidateHour>> {
     let (TableView::Complete(raw_rows), TableView::Complete(resolved)) = (view, &*previous.1)
     else {
@@ -1599,10 +1639,11 @@ fn candidate_hour(
     allocation::reserve(&mut keys, mark_keys.len())?;
     keys.extend_from_slice(mark_keys);
     for index in 0..supply.loaded() {
+        check.run()?;
         let source = supply.table(index);
         let changed = &mut *source_changes;
         changed.clear();
-        if !supply.changed_keys(index, at, changed)? {
+        if !supply.changed_keys(index, at, changed, check)? {
             return Ok(None);
         }
         let was_complete = supply.complete(index);
@@ -1612,7 +1653,7 @@ fn candidate_hour(
             supply.members(index, changed, &mut keys)?;
         }
         at_step(Step::CatchUp);
-        supply.catch_up(index, hours, at)?;
+        supply.catch_up(index, hours, at, check)?;
         at_step(Step::Keys);
         if supply.complete(index) != was_complete {
             return Ok(None);
@@ -1652,6 +1693,7 @@ fn candidate_hour(
     }
     let mut sources = Vec::new();
     for &source in dependencies(table) {
+        check.run()?;
         if !needs_source(&candidates, &candidate_marks, default, source) {
             continue;
         }
@@ -1659,11 +1701,11 @@ fn candidate_hour(
             Some(index) => index,
             None => {
                 at_step(Step::Load);
-                supply.load(source, at)?
+                supply.load(source, at, check)?
             }
         };
         at_step(Step::CatchUp);
-        supply.catch_up(index, hours, at)?;
+        supply.catch_up(index, hours, at, check)?;
         at_step(Step::Rows);
         allocation::reserve(&mut sources, 1)?;
         sources.push((source, supply.view(index)));
@@ -1713,19 +1755,21 @@ fn whole_hour(
     previous: Option<&(Hour, SharedView)>,
     supply: &mut impl Supply,
     sources: &mut Vec<(TableId, SharedView)>,
+    check: &mut Check<'_>,
 ) -> io::Result<(Vec<u8>, SharedView)> {
     // Open only marked lanes' sources. A source first needed later still
     // reconstructs its full prefix before supplying this same-frame value.
     sources.clear();
     for &source in dependencies(table) {
+        check.run()?;
         if !needs_source(view, marks, default, source) {
             continue;
         }
         let index = match supply.position(source) {
             Some(index) => index,
-            None => supply.load(source, at)?,
+            None => supply.load(source, at, check)?,
         };
-        supply.catch_up(index, hours, at)?;
+        supply.catch_up(index, hours, at, check)?;
         allocation::reserve(sources, 1)?;
         sources.push((source, supply.view(index)));
     }
@@ -1802,7 +1846,12 @@ impl<'m> TableResolution<'m> {
         at: usize,
         raw: TableUpdate,
         supply: &mut impl Supply,
+        check: &mut Check<'_>,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        let _step =
+            super::super::check::Scope::enter(super::super::check::Step::Alias(self.table, at));
+        check.run()?;
         let (table, default, candidates) = (self.table, self.default, self.candidates);
         #[cfg(test)]
         hooks::fail(table, at, false)?;
@@ -1842,9 +1891,12 @@ impl<'m> TableResolution<'m> {
                 previous,
                 supply,
                 &mut self.source_changes,
+                check,
             ) {
                 Ok(hour) => hour,
-                Err(error) if allocation::is_allocation_error(&error) => return Err(error),
+                Err(error) if check.failed() || allocation::is_allocation_error(&error) => {
+                    return Err(error);
+                }
                 Err(_) => None,
             },
             None => None,
@@ -1870,6 +1922,7 @@ impl<'m> TableResolution<'m> {
                         self.previous.as_ref(),
                         supply,
                         &mut self.sources,
+                        check,
                     )
                 });
                 let (_, mut resolved) = self.previous.take().expect("a candidate hour follows one");
@@ -1921,6 +1974,7 @@ impl<'m> TableResolution<'m> {
                     self.previous.as_ref(),
                     supply,
                     &mut self.sources,
+                    check,
                 )?;
                 if candidates {
                     self.sources.clear();
@@ -1979,7 +2033,29 @@ pub(crate) fn resolve(
     key_marks: Option<&[u8]>,
     later_marks: Option<&[u8]>,
     complete: bool,
-    load: impl FnMut(TableId) -> io::Result<Updates>,
+    mut load: impl FnMut(TableId) -> io::Result<Updates>,
+) -> io::Result<Vec<TableUpdate>> {
+    resolve_with(
+        table,
+        hours,
+        updates,
+        key_marks,
+        later_marks,
+        complete,
+        |source, _| load(source),
+        &mut Check::disabled(),
+    )
+}
+
+pub(crate) fn resolve_with(
+    table: TableId,
+    hours: &[Hour],
+    updates: Vec<TableUpdate>,
+    key_marks: Option<&[u8]>,
+    later_marks: Option<&[u8]>,
+    complete: bool,
+    load: impl FnMut(TableId, &mut Check<'_>) -> io::Result<Updates>,
+    check: &mut Check<'_>,
 ) -> io::Result<Vec<TableUpdate>> {
     let Some(key_marks) = key_marks else {
         return Ok(updates);
@@ -1990,7 +2066,7 @@ pub(crate) fn resolve(
         loaded: Vec::new(),
     };
     for (at, raw) in updates.into_iter().enumerate() {
-        resolution.hour(hours, at, raw, &mut supply)?;
+        resolution.hour(hours, at, raw, &mut supply, check)?;
     }
     resolution.finish(complete)
 }

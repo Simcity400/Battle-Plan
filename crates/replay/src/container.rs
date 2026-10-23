@@ -1,5 +1,6 @@
 //! Independently compressed blocks, an indexed trailer, and atomic publication.
 
+use self::check::Check;
 use crate::identity::IdentityCodec;
 use std::{
     borrow::Cow,
@@ -31,6 +32,7 @@ const FOOTER_MAGIC: &[u8; 4] = b"H4FT";
 const FOOTER_SIZE: usize = 24;
 mod aliases;
 mod changes;
+mod check;
 mod decoded_sections;
 pub use decoded_sections::{SectionCacheCensus, SectionConsumer};
 #[cfg(any(test, feature = "test-support"))]
@@ -1218,7 +1220,7 @@ impl Replay {
         hour: Hour,
         tables: Option<&[TableId]>,
     ) -> io::Result<SeekResult> {
-        self.seek_selected_with(branch, hour, tables, || Ok(()))
+        self.seek_selected_checked(branch, hour, tables, &mut Check::disabled())
     }
 
     /// Selected seek with caller cancellation, retaining allocation/cancellation
@@ -1230,7 +1232,17 @@ impl Replay {
         tables: Option<&[TableId]>,
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<SeekResult> {
-        check()?;
+        self.seek_selected_checked(branch, hour, tables, &mut Check::new(&mut check))
+    }
+
+    fn seek_selected_checked(
+        &self,
+        branch: BranchId,
+        hour: Hour,
+        tables: Option<&[TableId]>,
+        check: &mut Check<'_>,
+    ) -> io::Result<SeekResult> {
+        check.run()?;
         let gap = |reason| SeekResult::Gap {
             branch,
             hour,
@@ -1261,10 +1273,10 @@ impl Replay {
             .map_or_else(FrameDecoder::new, FrameDecoder::for_tables);
         let mut found = None;
         let read = self
-            .read_block_selected_through(index, selected.as_deref(), hour, None)
+            .read_block_selected_through_checked(index, selected.as_deref(), hour, None, check)
             .and_then(|frames| {
                 let mut visit = |frame: Frame| {
-                    check()?;
+                    check.run()?;
                     if frame.hour > hour {
                         return Ok(false);
                     }

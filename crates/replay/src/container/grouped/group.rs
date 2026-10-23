@@ -2,7 +2,7 @@
 use super::super::aliases::private::{self, Followed, Supply, TableResolution};
 use super::super::decoded_sections::Key;
 use super::{
-    Context, LaterSection, RawColumn, keyframe_refusal, raw_stage, table_updates_admitted,
+    Check, Context, LaterSection, RawColumn, keyframe_refusal, raw_stage, table_updates_admitted,
 };
 use crate::{
     Hour,
@@ -113,21 +113,40 @@ impl Group {
 }
 
 /// The first member resolves the group; cached members can remain outside its outcomes.
-pub(super) fn column(context: &Context<'_>, table: TableId) -> Option<io::Result<Updates>> {
+pub(super) fn column(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> Option<io::Result<Updates>> {
     let mut resolved = false;
+    // Keep caller errors intact instead of rebuilding them as ordinary member failures.
+    let mut stopped = None;
     let group = context.group.get_or_init(|| {
         resolved = true;
-        resolve(context)
+        match resolve(context, check) {
+            Ok(group) => group,
+            Err(error) => {
+                stopped = Some(error);
+                Group {
+                    resolved: Vec::new(),
+                    failure: None,
+                }
+            }
+        }
     });
-    if resolved {
-        enter(context, group);
+    if let Some(error) = stopped {
+        return Some(Err(error));
+    }
+    if resolved && let Err(error) = enter(context, group, check) {
+        return Some(Err(error));
     }
     group.outcome(table)
 }
 
 /// Source-only members enter the memo and cache under their own table keys.
-fn enter(context: &Context<'_>, group: &Group) {
+fn enter(context: &Context<'_>, group: &Group, check: &mut Check<'_>) -> io::Result<()> {
     for (table, result) in &group.resolved {
+        check.run()?;
         let Ok(column) = result else {
             continue;
         };
@@ -143,48 +162,57 @@ fn enter(context: &Context<'_>, group: &Group) {
                 super::super::watched::note_decoded();
                 #[cfg(any(test, feature = "test-support"))]
                 super::super::test_work::decoded(context.index, *table, context.hours.len());
+                check.run()?;
                 Ok(column.clone())
             },
         );
-        if let Ok(updates) = entered {
+        if check.failed() {
+            entered?;
+        } else if let Ok(updates) = entered {
             let _ = context.memo[table.index()].set(updates);
         }
     }
+    Ok(())
 }
 
-fn resolve(context: &Context<'_>) -> Group {
+fn resolve(context: &Context<'_>, check: &mut Check<'_>) -> io::Result<Group> {
     let tables = match members(context.format.version()) {
         Ok(tables) => tables,
-        Err(failure) => return Group::failed(failure),
+        Err(failure) => return Ok(Group::failed(failure)),
     };
     let stored = match allocation::collect_vec(tables.iter().map(|_| OnceCell::new())) {
         Ok(stored) => stored,
-        Err(failure) => return Group::failed(failure),
+        Err(failure) => return Ok(Group::failed(failure)),
     };
     let mut state = match State::new(context, &tables, &stored) {
         Ok(state) => state,
-        Err(failure) => return Group::failed(failure),
+        Err(failure) => return Ok(Group::failed(failure)),
     };
-    state.run();
-    let group = match state.outcomes() {
+    state.run(check)?;
+    let group = match state.outcomes(check) {
         Ok(resolved) => Group {
             resolved,
             failure: None,
         },
+        Err(failure) if check.failed() => return Err(failure),
         Err(failure) => Group::failed(failure),
     };
     #[cfg(test)]
     verify(context, &group);
-    group
+    Ok(group)
 }
 
-/// Allocation failures never retry through the original raw reader.
-fn raw_column(context: &Context<'_>, table: TableId) -> io::Result<RawColumn> {
-    raw_stage(context, table, true).or_else(|error| {
-        if allocation::is_allocation_error(&error) {
+/// Allocation failures and caller stops never retry through the original raw reader.
+fn raw_column(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<RawColumn> {
+    raw_stage(context, table, true, check).or_else(|error| {
+        if check.failed() || allocation::is_allocation_error(&error) {
             Err(error)
         } else {
-            raw_stage(context, table, false)
+            raw_stage(context, table, false, check)
         }
     })
 }
@@ -312,23 +340,31 @@ impl<'c, 'm> State<'c, 'm> {
         })
     }
 
-    fn run(&mut self) {
+    fn run(&mut self, check: &mut Check<'_>) -> io::Result<()> {
         let context = self.context;
         for member in 0..self.members.len() {
+            check.run()?;
             if decodes(context, self.members[member].table) {
-                self.start(member);
+                self.start(member, check)?;
             }
         }
         for at in 0..context.hours.len() {
+            check.run()?;
             for member in 0..self.members.len() {
+                check.run()?;
                 if matches!(&self.members[member].run, Run::Resolving(resolving) if resolving.next == at)
                 {
                     // A member that stops keeps why.
-                    let _ = self.hour(member);
+                    if let Err(error) = self.hour(member, check)
+                        && check.failed()
+                    {
+                        return Err(error);
+                    }
                 }
             }
         }
         for member in &mut self.members {
+            check.run()?;
             member.run = match std::mem::replace(&mut member.run, Run::Idle) {
                 Run::Resolving(resolving) => {
                     let Resolving {
@@ -342,27 +378,32 @@ impl<'c, 'm> State<'c, 'm> {
                 run => run,
             };
         }
+        Ok(())
     }
 
-    fn start(&mut self, member: usize) {
+    fn start(&mut self, member: usize, check: &mut Check<'_>) -> io::Result<()> {
+        check.run()?;
         let table = self.members[member].table;
         let run = match decoded(self.context, table) {
             Some(column) => Run::Decoded(column),
-            None => self
-                .raw(member)
-                .unwrap_or_else(|error| Run::Done(Err(error), Vec::new())),
+            None => match self.raw(member, check) {
+                Ok(run) => run,
+                Err(error) if check.failed() => return Err(error),
+                Err(error) => Run::Done(Err(error), Vec::new()),
+            },
         };
         self.members[member].run = run;
+        Ok(())
     }
 
-    fn raw(&mut self, member: usize) -> io::Result<Run<'m>> {
+    fn raw(&mut self, member: usize, check: &mut Check<'_>) -> io::Result<Run<'m>> {
         let context = self.context;
         let table = self.members[member].table;
         let RawColumn {
             updates,
             key_marks,
             later,
-        } = raw_column(context, table)?;
+        } = raw_column(context, table, check)?;
         let Some(key) = key_marks else {
             // Stored without marks, its raw column is its column.
             return Ok(Run::Done(Ok(Updates::new(updates)?), Vec::new()));
@@ -385,7 +426,8 @@ impl<'c, 'm> State<'c, 'm> {
     }
 
     /// Check keyframe refusals before columns; member failures are ordered in `outcomes`.
-    fn source(&mut self, source: TableId) -> io::Result<Origin> {
+    fn source(&mut self, source: TableId, check: &mut Check<'_>) -> io::Result<Origin> {
+        check.run()?;
         let context = self.context;
         if let Some(update) = keyframe_refusal(
             context.directory,
@@ -408,7 +450,7 @@ impl<'c, 'm> State<'c, 'm> {
                 return Ok(Origin::Plain(plain));
             }
             allocation::reserve(&mut self.plains, 1)?;
-            let column = table_updates_admitted(context, source)?;
+            let column = table_updates_admitted(context, source, check)?;
             self.plains.push(Plain {
                 table: source,
                 column,
@@ -417,7 +459,7 @@ impl<'c, 'm> State<'c, 'm> {
             return Ok(Origin::Plain(self.plains.len() - 1));
         };
         if matches!(self.members[member].run, Run::Idle) {
-            self.start(member);
+            self.start(member, check)?;
         }
         Ok(match &self.members[member].run {
             Run::Decoded(column) | Run::Done(Ok(column), _) => Origin::Column(column.clone()),
@@ -425,7 +467,7 @@ impl<'c, 'm> State<'c, 'm> {
         })
     }
 
-    fn pull(&mut self, member: usize, at: usize) -> io::Result<()> {
+    fn pull(&mut self, member: usize, at: usize, check: &mut Check<'_>) -> io::Result<()> {
         loop {
             let next = match &self.members[member].run {
                 Run::Resolving(resolving) => resolving.next,
@@ -436,12 +478,18 @@ impl<'c, 'm> State<'c, 'm> {
             if next > at {
                 return Ok(());
             }
-            self.hour(member)?;
+            self.hour(member, check)?;
         }
     }
 
     /// Resolve `member`'s next hour; an error when it stops.
-    fn hour(&mut self, member: usize) -> io::Result<()> {
+    fn hour(&mut self, member: usize, check: &mut Check<'_>) -> io::Result<()> {
+        #[cfg(test)]
+        let _step = super::super::check::Scope::enter(super::super::check::Step::Group(
+            self.members[member].table,
+            self.next(member),
+        ));
+        check.run()?;
         let table = self.members[member].table;
         let Run::Resolving(mut resolving) =
             std::mem::replace(&mut self.members[member].run, Run::Busy)
@@ -467,7 +515,9 @@ impl<'c, 'm> State<'c, 'm> {
                 entries: &mut resolving.entries,
                 table,
             };
-            let result = resolving.resolution.hour(hours, at, raw, &mut sources);
+            let result = resolving
+                .resolution
+                .hour(hours, at, raw, &mut sources, check);
             // The source views this hour read go, so each advances in place.
             resolving.resolution.release();
             result
@@ -478,6 +528,7 @@ impl<'c, 'm> State<'c, 'm> {
                 self.members[member].run = Run::Resolving(resolving);
                 Ok(())
             }
+            Err(error) if check.failed() => Err(error),
             Err(error) => {
                 self.members[member].run = Run::Done(Err(error), released(resolving.entries));
                 Err(stopped())
@@ -510,9 +561,10 @@ impl<'c, 'm> State<'c, 'm> {
     }
 
     /// Preserve the first loaded source failure, not whichever member happened to finish first.
-    fn outcomes(self) -> io::Result<Vec<Outcome>> {
+    fn outcomes(self, check: &mut Check<'_>) -> io::Result<Vec<Outcome>> {
         let mut resolved: Vec<Outcome> = allocation::vec(self.members.len())?;
         for member in self.members {
+            check.run()?;
             let Run::Done(own, entries) = member.run else {
                 continue;
             };
@@ -562,9 +614,9 @@ impl Supply for Sources<'_, '_, '_> {
         self.entries.iter().position(|entry| entry.table == source)
     }
 
-    fn load(&mut self, source: TableId, _at: usize) -> io::Result<usize> {
+    fn load(&mut self, source: TableId, _at: usize, check: &mut Check<'_>) -> io::Result<usize> {
         allocation::reserve(self.entries, 1)?;
-        let from = self.state.source(source)?;
+        let from = self.state.source(source, check)?;
         self.entries.push(Entry {
             table: source,
             from,
@@ -574,21 +626,30 @@ impl Supply for Sources<'_, '_, '_> {
         Ok(self.entries.len() - 1)
     }
 
-    fn changed_keys(&mut self, index: usize, at: usize, keys: &mut Vec<u128>) -> io::Result<bool> {
+    fn changed_keys(
+        &mut self,
+        index: usize,
+        at: usize,
+        keys: &mut Vec<u128>,
+        check: &mut Check<'_>,
+    ) -> io::Result<bool> {
         let entry = &self.entries[index];
         match &entry.from {
-            Origin::Column(column) => entry.followed.changed_keys(column, at, keys),
+            Origin::Column(column) => entry.followed.changed_keys(column, at, keys, check),
             Origin::Plain(plain) => {
                 entry
                     .followed
-                    .changed_keys(&self.state.plains[*plain].column, at, keys)
+                    .changed_keys(&self.state.plains[*plain].column, at, keys, check)
             }
             Origin::Member(member) => {
                 let member = *member;
-                self.state.pull(member, at)?;
-                self.entries[index]
-                    .followed
-                    .changed_keys(self.state.updates(member), at, keys)
+                self.state.pull(member, at, check)?;
+                self.entries[index].followed.changed_keys(
+                    self.state.updates(member),
+                    at,
+                    keys,
+                    check,
+                )
             }
         }
     }
@@ -603,7 +664,13 @@ impl Supply for Sources<'_, '_, '_> {
         self.entries[index].followed.members(keys, out)
     }
 
-    fn catch_up(&mut self, index: usize, hours: &[Hour], at: usize) -> io::Result<()> {
+    fn catch_up(
+        &mut self,
+        index: usize,
+        hours: &[Hour],
+        at: usize,
+        check: &mut Check<'_>,
+    ) -> io::Result<()> {
         if self.entries[index].followed.source_at > at {
             return Ok(());
         }
@@ -615,7 +682,7 @@ impl Supply for Sources<'_, '_, '_> {
             Origin::Member(member) => (Some(*member), None),
         };
         if let Some(member) = source {
-            self.state.pull(member, at)?;
+            self.state.pull(member, at, check)?;
             if !alone && self.state.next(member) == at + 1 {
                 let complete = matches!(&**self.state.resolved(member), TableView::Complete(_));
                 self.entries[index].share(at, complete);
@@ -623,16 +690,21 @@ impl Supply for Sources<'_, '_, '_> {
             }
             let entry = &mut self.entries[index];
             entry.alone();
-            return entry
-                .followed
-                .catch_up(entry.table, self.state.updates(member), hours, at);
+            return entry.followed.catch_up(
+                entry.table,
+                self.state.updates(member),
+                hours,
+                at,
+                check,
+            );
         }
         if let Some(plain) = plain_column {
             let shared = &mut self.state.plains[plain];
             if !alone && shared.view.source_at <= at + 1 {
-                if let Err(error) = shared
-                    .view
-                    .catch_up(shared.table, &shared.column, hours, at)
+                if let Err(error) =
+                    shared
+                        .view
+                        .catch_up(shared.table, &shared.column, hours, at, check)
                 {
                     // A failed advance loses its view; the next reader must rebuild from the first hour.
                     shared.view = Followed::default();
@@ -646,13 +718,15 @@ impl Supply for Sources<'_, '_, '_> {
             entry.alone();
             return entry
                 .followed
-                .catch_up(entry.table, &shared.column, hours, at);
+                .catch_up(entry.table, &shared.column, hours, at, check);
         }
         let entry = &mut self.entries[index];
         let Origin::Column(column) = &entry.from else {
             unreachable!("a column source")
         };
-        entry.followed.catch_up(entry.table, column, hours, at)
+        entry
+            .followed
+            .catch_up(entry.table, column, hours, at, check)
     }
 
     fn view(&self, index: usize) -> SharedView {
@@ -694,7 +768,7 @@ fn verify(context: &Context<'_>, group: &Group) {
     }
     let in_group = grouped(context.format.version());
     for (table, result) in &group.resolved {
-        let alone = raw_column(context, *table)
+        let alone = raw_column(context, *table, &mut Check::disabled())
             .and_then(|raw| {
                 private::resolve(
                     *table,
@@ -714,7 +788,7 @@ fn verify(context: &Context<'_>, group: &Group) {
                             return Updates::repeat(update, context.hours.len());
                         }
                         if !in_group[source.index()] {
-                            return table_updates_admitted(context, source);
+                            return table_updates_admitted(context, source, &mut Check::disabled());
                         }
                         group
                             .outcome(source)

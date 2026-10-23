@@ -478,11 +478,11 @@ impl<'a> BlockDecoder<'a> {
             None => (
                 vec![BlockRead {
                     tables: tables.to_vec(),
-                    frames: Arc::new(
-                        source
-                            .replay_ref()
-                            .read_block_recorded_selected(index, tables)?,
-                    ),
+                    frames: Arc::new(source.replay_ref().read_block_recorded_selected_with(
+                        index,
+                        tables,
+                        || check_cancel(cancelled),
+                    )?),
                 }],
                 None,
             ),
@@ -983,9 +983,19 @@ fn leased_block<'a>(
         }
     });
     count(source, 1, 0);
-    let frames = source
+    let frames = match source
         .replay_ref()
-        .read_block_recorded_selected(block, &added);
+        .read_block_recorded_selected_with(block, &added, || check_cancel(cancelled))
+    {
+        Err(error)
+            if error.kind() == io::ErrorKind::Interrupted
+                && cancelled.load(std::sync::atomic::Ordering::Acquire) =>
+        {
+            publish(source, key, &slot, reading, None);
+            return Err(error);
+        }
+        result => result,
+    };
     #[cfg(test)]
     let frames = frames.and_then(|frames| {
         match UNCACHEABLE
@@ -1011,6 +1021,10 @@ fn leased_block<'a>(
         publish(source, key, &slot, reading, None);
         return Ok(None);
     };
+    if let Err(error) = check_cancel(cancelled) {
+        publish(source, key, &slot, reading, None);
+        return Err(error);
+    }
     let bytes = frames_bytes(&frames);
     let mut reads = (*held).clone();
     reads.push(BlockRead {

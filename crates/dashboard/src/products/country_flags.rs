@@ -884,14 +884,17 @@ impl FlagContext {
         if cancelled.load(Ordering::Acquire) {
             return Err(invalid("Flag request cancelled"));
         }
-        let frame = match replay.seek_selected(branch, request.hour, Some(&CHOICE_TABLES))? {
-            SeekResult::Frame(frame) => frame,
-            SeekResult::Gap { reason, .. } => {
-                return Err(invalid(format!(
-                    "Flag identities unavailable at this hour: {reason}"
-                )));
-            }
-        };
+        let frame =
+            match replay.seek_selected_with(branch, request.hour, Some(&CHOICE_TABLES), || {
+                crate::metadata::check_cancel(cancelled)
+            })? {
+                SeekResult::Frame(frame) => frame,
+                SeekResult::Gap { reason, .. } => {
+                    return Err(invalid(format!(
+                        "Flag identities unavailable at this hour: {reason}"
+                    )));
+                }
+            };
         let mut by_tag = HashMap::new();
         for choice in choices(&frame)? {
             by_tag.entry(choice.tag.clone()).or_insert(choice);

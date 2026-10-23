@@ -2,7 +2,7 @@
 //! thread observes every block hour by hour on the block read alone
 //! ([`super::Own::shared_tables`]).
 //!
-//! Each such block is read once ([`Replay::read_block_kept`]) for every
+//! Each such block is read once ([`Replay::read_block_kept_coarse`]) for every
 //! table those families may still read in that block, on reader threads
 //! ahead of the families, and each family reconstructs its own tables on its
 //! thread with a decoder of its own ([`Replay::reconstruct_alone`]), at its
@@ -391,9 +391,10 @@ impl Inner {
             if self.lock().failing {
                 return Err(io::Error::other("injected shared read failure"));
             }
-            self.replay.read_block_kept(index, &tables, || {
+            self.replay.read_block_kept_coarse(index, &tables, || {
                 #[cfg(test)]
                 {
+                    TEST_CHECKS.set(TEST_CHECKS.get() + 1);
                     // Taken before waiting, so no lock is held at the gate.
                     let gate = if std::mem::replace(&mut gated, true) {
                         None
@@ -1017,6 +1018,7 @@ thread_local! {
     static TEST_GATE: std::cell::RefCell<Option<Arc<tests::Gate>>> =
         const { std::cell::RefCell::new(None) };
     static TEST_FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1087,6 +1089,70 @@ mod tests {
                 .unwrap();
         }
         replay
+    }
+
+    #[test]
+    fn shared_preparation_keeps_its_original_table_and_frame_check_cadence() {
+        for hours in [4, 16] {
+            for tables in [&[TableId::Countries][..], &TableId::ALL[..]] {
+                let replay = Arc::new(
+                    Replay::from_records(
+                        CAMPAIGN.into(),
+                        &[records(
+                            1,
+                            (1..=hours)
+                                .map(|hour| source(1, hour, Some(i64::from(hour) * 1000)))
+                                .collect(),
+                        )],
+                    )
+                    .unwrap(),
+                );
+                let index = &replay.index[0];
+                assert_eq!(index.last_hour - index.first_hour + 1, hours);
+                with_test_readers(0, || {
+                    let shared = Shared::start(Arc::clone(&replay), &[(tables, 0)], true).unwrap();
+                    for _ in 0..2 {
+                        let before = TEST_CHECKS.get();
+                        let Ended::Read(frames, _) = shared.inner.read(0) else {
+                            panic!("the shared preparation caller must complete its real read");
+                        };
+                        assert_eq!(frames.len(), hours as usize);
+                        assert_eq!(
+                            TEST_CHECKS.get() - before,
+                            1 + TABLE_COUNT + frames.len(),
+                            "only entry, each table, and each returned frame, cold or warm"
+                        );
+                        let mut actual = Vec::new();
+                        assert!(
+                            replay
+                                .reconstruct_alone(
+                                    &frames,
+                                    tables,
+                                    |_, frame| {
+                                        actual.push(frame.clone());
+                                        Ok(())
+                                    },
+                                    || Ok(()),
+                                )
+                                .unwrap()
+                        );
+                        let mut expected = Vec::new();
+                        replay
+                            .read_block_alone(
+                                index,
+                                tables,
+                                |_, frame| {
+                                    expected.push(frame.clone());
+                                    Ok(())
+                                },
+                                || Ok(()),
+                            )
+                            .unwrap();
+                        assert_eq!(actual, expected);
+                    }
+                });
+            }
+        }
     }
 
     #[test]

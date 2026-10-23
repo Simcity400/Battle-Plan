@@ -110,6 +110,12 @@ thread_local! {
     static DECODE_REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
+#[cfg(test)]
+thread_local! {
+    static ON_UNCACHED_READ: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Runs `query` without decoding recorded blocks: a sampled read that would
 /// ([`tail`] or [`state_tail`] with blocks to read, [`frame_at`] at an hour the
 /// source's [frame cache](super::frames) does not hold) fails instead, and the
@@ -2009,14 +2015,22 @@ fn sample_blocks_recorded(
                     match super::frames::block(source, block, tables, cancelled)? {
                         Some(reads) => reads,
                         None => {
+                            #[cfg(test)]
+                            ON_UNCACHED_READ.with_borrow(|hook| {
+                                if let Some(hook) = hook {
+                                    hook();
+                                }
+                            });
                             let mut selected = tables.to_vec();
                             selected.sort_unstable();
                             selected.dedup();
                             super::frames::LeasedReads::uncached(vec![super::frames::BlockRead {
                                 tables: selected,
-                                frames: Arc::new(
-                                    replay.read_block_recorded_selected(block, tables)?,
-                                ),
+                                frames: Arc::new(replay.read_block_recorded_selected_with(
+                                    block,
+                                    tables,
+                                    || check_cancel(cancelled),
+                                )?),
                             }])
                         }
                     },
@@ -2898,6 +2912,154 @@ mod tests {
         drop((second, third));
         assert_eq!(frames::held_bytes(source), 0);
         assert!(frames::accounted(source));
+    }
+
+    #[test]
+    fn cancelling_a_leased_block_read_interrupts_without_caching_or_falling_back() {
+        use super::super::frames;
+        use std::sync::{atomic::Ordering, mpsc::channel};
+        let source = varied_source();
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap();
+        let tables = crate::prepared_measure::TABLES;
+        let flag = AtomicBool::new(false);
+        source.replay_ref().log_section_decodes();
+        let (arrived, at_read) = channel();
+        let (release, released) = channel();
+        let result = std::thread::scope(|scope| {
+            let source = &source;
+            let flag = &flag;
+            let worker = scope.spawn(move || {
+                frames::ON_READ.set(Some(Box::new(move || {
+                    arrived.send(()).unwrap();
+                    released.recv().unwrap();
+                })));
+                let result = frames::block(source, block, tables, flag);
+                frames::ON_READ.set(None);
+                result
+            });
+            at_read.recv().unwrap();
+            flag.store(true, Ordering::Release);
+            release.send(()).unwrap();
+            worker.join().unwrap()
+        });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("cancellation must not become an uncacheable-read fallback"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(frames::reads(&source).0, 1);
+        assert!(
+            source.replay_ref().section_decodes().is_empty(),
+            "the token must reach the replay reader before it decodes any table"
+        );
+        assert_eq!(frames::held_bytes(&source), 0);
+        assert!(frames::accounted(&source));
+        flag.store(false, Ordering::Release);
+        let following = frames::block(&source, block, tables, &flag)
+            .unwrap()
+            .expect("the following read must fill the abandoned cache slot");
+        assert!(!following.is_empty());
+        assert_eq!(frames::reads(&source).0, 2);
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn cancelling_an_uncacheable_exact_read_stops_at_the_fallback_boundary() {
+        use super::super::frames;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let source = Arc::new(varied_source());
+        let replay = source.replay_ref();
+        let block = &replay.index[0];
+        let tables = [TableId::Campaign, TableId::Countries];
+        let flag = Arc::new(AtomicBool::new(false));
+        let samples = std::cell::RefCell::new(Vec::new());
+        let sample =
+            |frame: &DecodedFrame, _: Option<&Recorded<'_>>, _: Option<&[(String, String)]>| {
+                samples.borrow_mut().push(frame.hour);
+                Ok(Samples::new())
+            };
+        let read = || {
+            sample_blocks_recorded(
+                &source,
+                block.branch,
+                &tables,
+                &[],
+                (i64::from(block.first_hour), block.last_hour),
+                vec![block],
+                &sample,
+                None,
+                true,
+                &flag,
+            )
+        };
+        replay.cache_decoded_sections(false);
+        replay.log_section_decodes();
+        frames::UNCACHEABLE.set(vec![TableId::Countries]);
+        let boundaries = Arc::new(AtomicUsize::new(0));
+        let at_boundary = Arc::new(AtomicUsize::new(0));
+        for cancel in [false, true] {
+            replay.log_section_decodes();
+            samples.borrow_mut().clear();
+            boundaries.store(0, Ordering::Release);
+            {
+                let source = Arc::clone(&source);
+                let flag = Arc::clone(&flag);
+                let boundaries = Arc::clone(&boundaries);
+                let at_boundary = Arc::clone(&at_boundary);
+                ON_UNCACHED_READ.set(Some(Box::new(move || {
+                    boundaries.fetch_add(1, Ordering::AcqRel);
+                    let decoded = source.replay_ref().wire_decodes().len();
+                    assert!(decoded > 0, "the first cache read must actually decode");
+                    at_boundary.store(decoded, Ordering::Release);
+                    if cancel {
+                        flag.store(true, Ordering::Release);
+                    }
+                })));
+            }
+            let result = read();
+            ON_UNCACHED_READ.set(None);
+            assert_eq!(
+                boundaries.load(Ordering::Acquire),
+                1,
+                "Ok(None) must be reached"
+            );
+            let before = at_boundary.load(Ordering::Acquire);
+            let after = replay.wire_decodes().len();
+            if cancel {
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+                assert_eq!(error.to_string(), "Dashboard request cancelled");
+                assert_eq!(after, before, "the cancelled fallback must decode no table");
+                assert!(samples.borrow().is_empty());
+            } else {
+                result.unwrap();
+                assert!(
+                    after > before,
+                    "the uncancelled probe must decode the fallback"
+                );
+                assert_eq!(
+                    *samples.borrow(),
+                    (block.first_hour..=block.last_hour).collect::<Vec<_>>()
+                );
+            }
+            assert_eq!(frames::held_bytes(&source), 0);
+            assert!(frames::accounted(&source));
+        }
+        flag.store(false, Ordering::Release);
+        samples.borrow_mut().clear();
+        read().unwrap();
+        frames::UNCACHEABLE.set(Vec::new());
+        assert_eq!(
+            *samples.borrow(),
+            (block.first_hour..=block.last_hour).collect::<Vec<_>>()
+        );
+        assert_eq!(frames::reads(&source).0, 3);
+        assert!(frames::accounted(&source));
     }
 
     #[test]

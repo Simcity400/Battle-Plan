@@ -1,7 +1,7 @@
 //! Compare grouped reads with independent standalone resolution across prefixes and failures.
 use super::super::direct_tests::{LAYOUTS, alias_fixture};
 use super::super::{
-    BlockIndex, Context, Directory, HEADER, Layout, Parallel, Present, Replay, read_header,
+    BlockIndex, Check, Context, Directory, HEADER, Layout, Parallel, Present, Replay, read_header,
     table_updates,
 };
 use super::{Key, private, rebuild, same};
@@ -64,7 +64,7 @@ impl Block {
         };
         tables
             .iter()
-            .map(|&table| table_updates(&context, table))
+            .map(|&table| table_updates(&context, table, &mut Check::disabled()))
             .collect()
     }
 }

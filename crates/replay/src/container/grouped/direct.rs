@@ -8,12 +8,16 @@ use engine_allocation as allocation;
 /// decoding, with fresh frame-before patch bases, predictors and budget. That
 /// route owns refusal precedence and may succeed where direct validation failed.
 /// Allocation failures and stops are not refusals: they propagate unchanged.
-pub(super) fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
-    super::table_updates_body(context, table, true).or_else(|error| {
-        if allocation::is_allocation_error(&error) {
+pub(super) fn table_updates(
+    context: &Context<'_>,
+    table: TableId,
+    check: &mut Check<'_>,
+) -> io::Result<Vec<TableUpdate>> {
+    super::table_updates_body(context, table, true, check).or_else(|error| {
+        if check.failed() || allocation::is_allocation_error(&error) {
             Err(error)
         } else {
-            super::table_updates_body(context, table, false)
+            super::table_updates_body(context, table, false, check)
         }
     })
 }
