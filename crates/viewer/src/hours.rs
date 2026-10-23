@@ -66,6 +66,7 @@ use viewer_foundation::worker_priority::background_priority;
 
 use replay::container::Replay;
 use replay_data::{BranchId, Hour};
+use viewer_world::map::map_buildings::BuildingsBase;
 
 use {
     crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
@@ -658,6 +659,7 @@ struct Slots {
     borders: Arc<Slot<Borders>>,
     rails: Arc<Slot<Rails>>,
     buildings: Arc<Slot<Shared<PreparedBuildings>>>,
+    buildings_state: Arc<Slot<BuildingsBase>>,
 }
 
 impl Slots {
@@ -667,7 +669,13 @@ impl Slots {
             borders: Slot::new(),
             rails: Slot::new(),
             buildings: Slot::new(),
+            buildings_state: Slot::new(),
         }
+    }
+
+    // Reused hours submit no building job, so explicitly release successor waits.
+    fn without_buildings_state(&self) {
+        Fill(Arc::clone(&self.buildings_state)).set(None);
     }
 }
 
@@ -681,7 +689,7 @@ struct Memos {
     /// areas it changed.
     placed: PlacedAreas,
     /// The railway, by the recorded network it is drawn from.
-    rails: Recent<RailNetwork, Rails>,
+    rails: Recent<Arc<RailNetwork>, Rails>,
     /// Equal snow grids share an allocation even when the weather table changes identity.
     snow_shared: Settled<SnowMud>,
     /// The intel map, by the viewing country's rebuilt province bytes.
@@ -1537,6 +1545,7 @@ impl coordinator::BuildTarget for Coordinator {
         }
         let slots = Slots::new();
         if let Some(parts) = &reusable {
+            slots.without_buildings_state();
             Fill(Arc::clone(&slots.rails)).set(Some(Arc::clone(&parts.rails)));
             Fill(Arc::clone(&slots.buildings)).set(Some(Arc::clone(&parts.buildings.0)));
         }
@@ -1608,7 +1617,9 @@ impl coordinator::BuildTarget for Coordinator {
             // Carry from the preceding built hour, including the mode-only
             // refreshes of skipped recorded hours. With no predecessor the
             // first shown hour starts cold, as a seek does.
-            let previous = previous.map(|(_, slot)| slot);
+            let previous = previous
+                .as_ref()
+                .map(|(_, slots)| Arc::clone(&slots.political));
             submit(
                 "political",
                 Box::new(move |view, _spans| {
@@ -1752,11 +1763,17 @@ impl coordinator::BuildTarget for Coordinator {
                 "rails",
                 Box::new(move |view, _spans| {
                     Part::Rails(RailNetwork::read(view.frame).and_then(|network| {
-                        let rails = memo_after_neighbours(&memos.rails, network.clone(), || wait_all(near), |near| {
-                            let mesh = view.rail_mesh_of(&network);
-                            let bridges = view.bridges.field(&mesh);
-                            Rails::share(near, (mesh, bridges), device.get())
-                        })?;
+                        let network = Arc::new(network);
+                        let rails = memo_after_neighbours(
+                            &memos.rails,
+                            Arc::clone(&network),
+                            || wait_all(near),
+                            |near| {
+                                let mesh = view.rail_mesh_of(&network)?;
+                                let bridges = view.bridges.field(&mesh);
+                                Rails::share(near, (mesh, bridges), device.get())
+                            },
+                        )?;
                         fill.set(Some(Arc::clone(&rails)));
                         Ok(rails)
                     }))
@@ -1765,23 +1782,32 @@ impl coordinator::BuildTarget for Coordinator {
         }
         {
             let fill = Fill(Arc::clone(&slots.buildings));
+            let fill_state = Fill(Arc::clone(&slots.buildings_state));
             let near = slots_of(&neighbours, |slots| &slots.buildings);
+            // The predecessor was dispatched first, so this wait cannot form a cycle.
+            let base = previous
+                .as_ref()
+                .map(|(_, slots)| Arc::clone(&slots.buildings_state));
             let building_perspective = want.perspective.clone();
             submit(
                 "buildings",
                 Box::new(move |view, spans| {
-                    Part::Buildings(
-                        view.map_building_field_profiled(&building_perspective, spans)
-                            .map(|(field, summary)| {
-                                let near = spans.measure("buildings.share_wait", |_| wait_all(near));
-                                let buildings = spans
-                                    .measure("buildings.share", |_| Shared::share(near, field));
-                                fill.set(Some(Arc::clone(&buildings)));
-                                let warnings =
-                                    spans.measure("buildings.warnings", |_| summary.warnings());
-                                (buildings, warnings)
-                            }),
-                    )
+                    let base =
+                        spans.measure("buildings.base_wait", |_| base.and_then(|slot| slot.wait()));
+                    let field = view
+                        .map_building_field_patched(&building_perspective, base.as_deref(), spans)
+                        .map(|(field, summary, state)| {
+                            fill_state.set(Some(Arc::new(state)));
+                            (field, summary)
+                        });
+                    Part::Buildings(field.map(|(field, summary)| {
+                        let near = spans.measure("buildings.share_wait", |_| wait_all(near));
+                        let buildings =
+                            spans.measure("buildings.share", |_| Shared::share(near, field));
+                        fill.set(Some(Arc::clone(&buildings)));
+                        let warnings = spans.measure("buildings.warnings", |_| summary.warnings());
+                        (buildings, warnings)
+                    }))
                 }),
             );
         }

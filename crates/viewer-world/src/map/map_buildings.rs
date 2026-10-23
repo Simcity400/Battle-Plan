@@ -31,6 +31,10 @@ use replay_data::{
 };
 use replay_frame::frame::DecodedFrame;
 
+mod incremental;
+pub use incremental::{BuildPath, BuildingsBase};
+use incremental::{Chunked, Tally};
+
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
 use {
     super::{
@@ -194,7 +198,7 @@ pub struct PreparedBuildings {
     hour: replay_data::Hour,
     shrink_distance: f32,
     popup_speed: f32,
-    slots: Arc<[PreparedSlot]>,
+    slots: Chunked<PreparedSlot>,
     /// The slots of each province, which the camera admits together.
     groups: Arc<[ProvinceSlots]>,
     pub city_damage: Arc<super::sprawl::Damage>,
@@ -732,6 +736,9 @@ pub struct MapBuildingAssets {
     /// the ordinary slots'.
     floating: Vec<(BuildingPosition, u32)>,
     floating_mesh: Option<usize>,
+    id: u64,
+    sites: std::sync::OnceLock<incremental::Sites>,
+    last_tokens: std::sync::Mutex<Option<(DecodedFrame, Arc<TokenTypes>)>>,
 }
 impl std::fmt::Debug for MapBuildingAssets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1114,12 +1121,15 @@ impl MapBuildingAssets {
             tokens: Keyed::new(TOKEN_TABLES, 4),
             floating: Vec::new(),
             floating_mesh: None,
+            id: incremental::next_assets(),
+            sites: std::sync::OnceLock::new(),
+            last_tokens: std::sync::Mutex::new(None),
         }
     }
 
     /// Admitted slots, for reporting.
     pub fn slot_count(&self) -> usize {
-        self.slots.values().map(Vec::len).sum::<usize>() + self.floating.len()
+        self.ordinary_slot_count() + self.floating.len()
     }
 
     /// This hour's slot targets.
@@ -1149,10 +1159,39 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         spans: &mut viewer_foundation::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary)> {
+        let built = self.build(frame, vision, city, Err("no base was offered"), spans)?;
+        Ok((built.prepared, built.summary))
+    }
+
+    pub fn field_patched(
+        &self,
+        frame: &DecodedFrame,
+        vision: &Arc<Vision>,
+        city: &CityTerrain<'_>,
+        base: Option<&BuildingsBase>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<(PreparedBuildings, MapBuildingSummary, BuildingsBase)> {
+        let base = match base {
+            Some(base) => Ok(base),
+            None => Err("no earlier built hour"),
+        };
+        let mut built = self.build(frame, vision, city, base, spans)?;
+        let city_bits = built.city.take().unwrap_or_else(|| self.city_bits(city));
+        let next = built.base(self, frame, vision, city_bits);
+        Ok((built.prepared, built.summary, next))
+    }
+
+    fn build(
+        &self,
+        frame: &DecodedFrame,
+        vision: &Vision,
+        city: &CityTerrain<'_>,
+        base: Result<&BuildingsBase, &'static str>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<incremental::Built> {
         let tokens = spans.measure("buildings.tokens", |_| {
-            self.tokens.get_or_build(frame, (), |projected| {
-                token_types(projected, &self.facts.keys, &self.facts.index).map(Arc::new)
-            })
+            self.tokens
+                .get_or_build(frame, (), |projected| self.token_map(projected))
         })?;
         // Read only when a row's token names no building type, to word why.
         let mut names = None;
@@ -1246,47 +1285,78 @@ impl MapBuildingAssets {
             }
             Ok::<_, io::Error>(available)
         })?;
-        let mut slots = spans.measure("buildings.slots", |_| {
-            let mut slots = Vec::with_capacity(self.slot_count());
-            for ((_, bucket), positions) in &self.slots {
-                let candidates = self.candidates.get(bucket).map_or(&[][..], Vec::as_slice);
-                for (ordinal, (position, province)) in positions.iter().enumerate() {
-                    // The game takes the bucket's first candidate, in database
-                    // order, with a positive level at this slot's location.
-                    let selected = candidates.iter().find_map(|&index| {
-                        let building = &self.facts.ordered[index];
-                        let location = if building.provincial() {
-                            (*province)?
-                        } else {
-                            position.state
-                        };
-                        let row = available.get(&(building.provincial(), location, index))?;
-                        (row.level > 0).then_some((index, *row))
-                    });
-                    let mut prepared = PreparedSlot {
-                        id: slots.len() as u32,
-                        drawn_at_distance: selected
-                            .map(|(index, _)| self.facts.ordered[index].drawn_at_distance),
-                        entity: None,
-                    };
-                    if let Some((index, row)) = selected {
-                        let gates = Gates {
-                            vision,
-                            city,
-                            detection: &detection,
-                            naval_bases: &naval_base_provinces,
-                            naval_bases_complete: naval_bases.is_complete(),
-                            ordinal,
-                            seed: prepared.id,
-                        };
-                        prepared.entity =
-                            self.entity(index, row, position, *province, &mut summary, gates);
-                    }
-                    slots.push(prepared);
-                }
-            }
-            slots
+        let city_damage = spans.measure("buildings.city_damage", |spans| {
+            super::sprawl::Damage::read_profiled(frame, &self.facts.ordered, &available, spans)
         });
+        let damage_refused = city_damage.refused.is_some();
+        let context = SlotContext {
+            vision,
+            city,
+            detection: &detection,
+            naval_bases: &naval_base_provinces,
+            naval_bases_complete: naval_bases.is_complete(),
+            available: &available,
+        };
+        let mut hour_city = None;
+        let plan = base.and_then(|base| {
+            spans.measure("buildings.patch.plan", |_| {
+                let city_bits = self.city_bits(city);
+                let hour = incremental::Inputs {
+                    frame,
+                    vision,
+                    detection: &detection,
+                    naval_bases: &naval_base_provinces,
+                    tokens: &tokens,
+                    city: &city_bits,
+                    damage_refused,
+                };
+                let plan = self
+                    .affected(base, &hour)
+                    .map(|affected| (base, affected.slots));
+                hour_city = Some(city_bits);
+                plan
+            })
+        });
+        let ordinary_slots = self.ordinary_slot_count();
+        let ordinary = match plan {
+            Ok((base, affected)) => spans.measure("buildings.patch.slots", |_| {
+                let (slots, tallies, totals) =
+                    incremental::patch(base, &affected, &self.facts.ordered, |id| {
+                        let (key, ordinal, position, province) = self.site(id);
+                        let candidates = self.bucket_candidates(&key.1);
+                        self.slot(id, ordinal, position, province, candidates, &context)
+                    });
+                incremental::Ordinary::Patched {
+                    base,
+                    slots,
+                    tallies,
+                    totals,
+                }
+            }),
+            Err(reason) => spans.measure("buildings.slots", |_| {
+                let mut slots = Vec::with_capacity(self.slot_count());
+                let mut tallies = Vec::with_capacity(ordinary_slots);
+                let mut totals = incremental::SlotSummary::default();
+                for ((_, bucket), positions) in &self.slots {
+                    let candidates = self.bucket_candidates(bucket);
+                    for (ordinal, (position, province)) in positions.iter().enumerate() {
+                        let id = slots.len() as u32;
+                        let (slot, tally) =
+                            self.slot(id, ordinal, position, *province, candidates, &context);
+                        totals.add(tally, &self.facts.ordered);
+                        tallies.push(tally);
+                        slots.push(slot);
+                    }
+                }
+                incremental::Ordinary::Full {
+                    slots,
+                    tallies,
+                    totals,
+                    reason,
+                }
+            }),
+        };
+        let mut harbors = Vec::with_capacity(self.floating.len());
         let (supply, deployments, supply_by_province) =
             spans.measure("buildings.supply", |_| {
                 let supply = rows::<tables::ProvinceSupply>(frame)?;
@@ -1300,7 +1370,7 @@ impl MapBuildingAssets {
             })?;
         spans.measure("buildings.floating", |_| {
             for (position, _) in &self.floating {
-                let id = slots.len() as u32;
+                let id = (ordinary_slots + harbors.len()) as u32;
                 let entity = (|| {
                     // The seventh field must be a positive province: the fog byte and the
                     // deployment are that province's.
@@ -1366,7 +1436,7 @@ impl MapBuildingAssets {
                         },
                     })
                 })();
-                slots.push(PreparedSlot {
+                harbors.push(PreparedSlot {
                     id,
                     // The reserved slot copies no template's distance flag.
                     drawn_at_distance: Some(false),
@@ -1374,27 +1444,84 @@ impl MapBuildingAssets {
                 });
             }
         });
-        let city_damage = spans.measure("buildings.city_damage", |spans| {
-            super::sprawl::Damage::read_profiled(frame, &self.facts.ordered, &available, spans)
-        });
         if let Some(reason) = &city_damage.refused {
             summary.unknown_city_damage.insert(
                 reason.clone(),
                 rows::<tables::Provinces>(frame)?.rows().len(),
             );
         }
-        Ok((
-            PreparedBuildings {
+        let (slots, tallies, totals, path) = ordinary.finish(harbors, ordinary_slots);
+        totals.apply(&mut summary);
+        Ok(incremental::Built {
+            prepared: PreparedBuildings {
                 branch: frame.branch,
                 hour: frame.hour,
                 shrink_distance: self.defines.shrink_distance,
                 popup_speed: self.defines.popup_speed,
-                slots: slots.into(),
+                slots,
                 groups: Arc::clone(&self.groups),
                 city_damage: Arc::new(city_damage),
             },
             summary,
-        ))
+            tallies,
+            totals,
+            path,
+            damage_refused,
+            tokens,
+            gates: Arc::new(incremental::GateInputs {
+                ports: naval_base_provinces,
+                provinces: detection.provinces,
+                states: detection.states,
+            }),
+            city: hour_city,
+        })
+    }
+
+    fn bucket_candidates(&self, bucket: &str) -> &[usize] {
+        self.candidates.get(bucket).map_or(&[][..], Vec::as_slice)
+    }
+
+    fn slot(
+        &self,
+        id: u32,
+        ordinal: usize,
+        position: &BuildingPosition,
+        province: Option<u32>,
+        candidates: &[usize],
+        context: &SlotContext<'_>,
+    ) -> (PreparedSlot, Tally) {
+        let selected = candidates.iter().find_map(|&index| {
+            let building = &self.facts.ordered[index];
+            let location = if building.provincial() {
+                province?
+            } else {
+                position.state
+            };
+            let row = context
+                .available
+                .get(&(building.provincial(), location, index))?;
+            (row.level > 0).then_some((index, *row))
+        });
+        let mut prepared = PreparedSlot {
+            id,
+            drawn_at_distance: selected
+                .map(|(index, _)| self.facts.ordered[index].drawn_at_distance),
+            entity: None,
+        };
+        let mut tally = Tally::default();
+        if let Some((index, row)) = selected {
+            let gates = Gates {
+                vision: context.vision,
+                city: context.city,
+                detection: context.detection,
+                naval_bases: context.naval_bases,
+                naval_bases_complete: context.naval_bases_complete,
+                ordinal,
+                seed: id,
+            };
+            prepared.entity = self.entity(index, row, position, province, &mut tally, gates);
+        }
+        (prepared, tally)
     }
 
     /// One selected slot's entity, or `None` where a gate hides it.
@@ -1404,7 +1531,7 @@ impl MapBuildingAssets {
         row: &BuildingRow,
         position: &BuildingPosition,
         province: Option<u32>,
-        summary: &mut MapBuildingSummary,
+        tally: &mut Tally,
         gates: Gates<'_>,
     ) -> Option<PreparedEntity> {
         let building = &self.facts.ordered[index];
@@ -1419,16 +1546,20 @@ impl MapBuildingAssets {
         }
         // A province with no recorded byte, or a slot over no province, cannot
         // be decided and keeps its building.
+        if province.is_some() && !building.always_shown {
+            tally.mark(Tally::READ_FOG);
+        }
         if province.is_some_and(|province| {
             gates
                 .vision
                 .sees_province_object(province, building.always_shown)
                 == Some(false)
         }) {
-            summary.fogged += 1;
+            tally.mark(Tally::FOGGED);
             return None;
         }
         if building.supply_node {
+            tally.mark(Tally::READ_HUB);
             let on_city = gates.city.at(position.x, position.z);
             match hub_left_to_another_layer(
                 province,
@@ -1437,20 +1568,21 @@ impl MapBuildingAssets {
                 on_city,
             ) {
                 Some(true) => {
-                    summary.hubs_left_to_another_layer += 1;
+                    tally.mark(Tally::HUB_LEFT);
                     return None;
                 }
                 Some(false) => {}
-                None => summary.unknown_hub_membership += 1,
+                None => tally.mark(Tally::HUB_UNKNOWN),
             }
         }
         if !building.always_shown && building.need_detection {
+            tally.mark(Tally::READ_DETECTION);
             match gates.detection.detected(row) {
                 Some(false) => {
-                    summary.undetected += 1;
+                    tally.mark(Tally::UNDETECTED);
                     return None;
                 }
-                None => summary.unknown_detection += 1,
+                None => tally.mark(Tally::DETECTION_UNKNOWN),
                 Some(true) => {}
             }
         }
@@ -1479,10 +1611,7 @@ impl MapBuildingAssets {
         let normal = resolve(variant);
         let destroyed_mesh = resolve(usize::MAX).or_else(|| resolve(ruined_variant));
         let Some(any) = normal.or(destroyed_mesh) else {
-            *summary
-                .unresolved_by_type
-                .entry(building.name.clone())
-                .or_default() += 1;
+            tally.unresolved(index);
             return None;
         };
         let entity = PreparedEntity {
@@ -1513,11 +1642,14 @@ impl MapBuildingAssets {
                 ..ModelInstance::default()
             },
         };
-        summary.placed += usize::from(if destroyed {
+        let admitted = if destroyed {
             entity.ruined.admitted
         } else {
             entity.healthy.admitted
-        });
+        };
+        if admitted {
+            tally.mark(Tally::PLACED);
+        }
         Some(entity)
     }
 }
@@ -1552,6 +1684,15 @@ fn floating_harbor_deployed(
     )
 }
 
+struct SlotContext<'a> {
+    vision: &'a Vision,
+    city: &'a CityTerrain<'a>,
+    detection: &'a Detection<'a>,
+    naval_bases: &'a BTreeSet<u32>,
+    naval_bases_complete: bool,
+    available: &'a BTreeMap<(bool, u32, usize), &'a BuildingRow>,
+}
+
 /// The per-slot inputs of [`MapBuildingAssets::entity`].
 struct Gates<'a> {
     vision: &'a Vision,
@@ -1584,6 +1725,35 @@ fn hub_left_to_another_layer(
 /// A building's status scope: type token, location, status flags, owner override.
 type Scope = (u32, u32, u32, u32);
 
+fn raid_targets(frame: &DecodedFrame) -> Option<BTreeMap<Scope, &[u8]>> {
+    frame
+        .complete::<tables::RaidTargetStatuses>()
+        .ok()
+        .map(|rows| {
+            let mut ordered: Vec<_> = rows
+                .iter()
+                .filter(|row| row.scope.building_type != 0)
+                .collect();
+            ordered.sort_by_key(|row| row.ordinal);
+            // A later duplicate scope replaces an earlier one, as the loader does.
+            ordered
+                .into_iter()
+                .map(|row| {
+                    let scope = &row.scope;
+                    (
+                        (
+                            scope.building_type,
+                            scope.building_location,
+                            scope.building_flags,
+                            scope.building_country as u32,
+                        ),
+                        row.detected.as_slice(),
+                    )
+                })
+                .collect()
+        })
+}
+
 /// A foreign `need_detection` building is drawn only once the
 /// viewer's bit is set in its raid target status. Fog does not change it.
 struct Detection<'a> {
@@ -1597,32 +1767,7 @@ struct Detection<'a> {
 
 impl<'a> Detection<'a> {
     fn read(frame: &'a DecodedFrame, links: &'a BTreeMap<u32, u32>, ours: u32) -> io::Result<Self> {
-        let targets = frame
-            .complete::<tables::RaidTargetStatuses>()
-            .ok()
-            .map(|rows| {
-                let mut ordered: Vec<_> = rows
-                    .iter()
-                    .filter(|row| row.scope.building_type != 0)
-                    .collect();
-                // A later duplicate scope replaces an earlier one, as the loader does.
-                ordered.sort_by_key(|row| row.ordinal);
-                ordered
-                    .into_iter()
-                    .map(|row| {
-                        let scope = &row.scope;
-                        (
-                            (
-                                scope.building_type,
-                                scope.building_location,
-                                scope.building_flags,
-                                scope.building_country as u32,
-                            ),
-                            row.detected.as_slice(),
-                        )
-                    })
-                    .collect()
-            });
+        let targets = raid_targets(frame);
         Ok(Self {
             links,
             ours,
@@ -1689,7 +1834,15 @@ fn token_types(
     keys: &TokenKeys,
     index: &BTreeMap<String, usize>,
 ) -> io::Result<TokenTypes> {
-    Ok(TokenNames::new(frame)?
+    Ok(named_types(&TokenNames::new(frame)?, keys, index))
+}
+
+fn named_types(
+    names: &TokenNames<'_>,
+    keys: &TokenKeys,
+    index: &BTreeMap<String, usize>,
+) -> TokenTypes {
+    names
         .iter()
         .filter_map(|(token, spelling)| {
             let named = match keys.resolve(spelling) {
@@ -1698,7 +1851,7 @@ fn token_types(
             };
             Some((token, named))
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]

@@ -667,10 +667,11 @@ fn real_driver_native_colour_folds_release_each_frame_and_match_collected_refere
         // An already accepted predecessor is captured by plan(), not newly
         // requested from the source. Its empty slot terminates as a refused
         // predecessor; the colour starts cold, exactly as before.
-        let slot = Slot::new();
-        Fill(slot.clone()).set(None);
+        let slots = Slots::new();
+        Fill(slots.political.clone()).set(None);
+        slots.without_buildings_state();
         let plan = f.driver.decode.as_mut().unwrap();
-        plan.previous = Some((99, slot));
+        plan.previous = Some((99, slots));
         plan.next_source = 100;
         if refuse {
             plan.colour = Some(Err(io::Error::other("first colour refusal")));

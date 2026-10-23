@@ -1015,3 +1015,97 @@ fn railway_neighbour_wait_precedes_single_flight_ownership_after_reversed_worker
     earlier.join().unwrap();
     later.join().unwrap();
 }
+
+#[test]
+fn shared_rail_keys_follow_expected_networks_hour_by_hour() {
+    use replay_data::rows::{NavalBaseRow, ProvinceSupplyRow, RailEdgeRow, TableId, TableRows};
+    use replay_frame::{frame::DecodedFrame, frame::Metrics, frame::TableView};
+    let edge = |from, to, level| RailEdgeRow { from, to, level };
+    let frame = |hour, edges: Vec<RailEdgeRow>, complete: bool| {
+        let mut tables = std::array::from_fn(|_| TableView::Unavailable {
+            reason: "not needed".into(),
+        });
+        tables[TableId::RailEdges.index()] = TableView::Complete(TableRows::RailEdges(edges));
+        tables[TableId::ProvinceSupply.index()] =
+            TableView::Complete(TableRows::ProvinceSupply(vec![ProvinceSupplyRow {
+                province: 2,
+                supply_node_level: 1,
+                ..Default::default()
+            }]));
+        let bases = TableRows::NavalBases(vec![NavalBaseRow {
+            province: 3,
+            ..Default::default()
+        }]);
+        tables[TableId::NavalBases.index()] = if complete {
+            TableView::Complete(bases)
+        } else {
+            TableView::Truncated {
+                rows: bases,
+                missing: 1,
+            }
+        };
+        DecodedFrame {
+            branch: 1,
+            hour,
+            tables: tables.map(Into::into),
+            metrics: Metrics::default(),
+        }
+    };
+    let line = vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 2)];
+    let hours = [
+        frame(1, line.clone(), true),
+        frame(2, line.clone(), true),
+        frame(3, vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 1)], true),
+        frame(
+            4,
+            vec![edge(1, 2, 3), edge(2, 1, 3), edge(2, 3, 5), edge(2, 3, 1)],
+            true,
+        ),
+        frame(
+            5,
+            [line.clone(), vec![edge(3, 4, 0), edge(4, 4, 2)]].concat(),
+            true,
+        ),
+        frame(6, line.clone(), false),
+        frame(7, vec![edge(5, 6, 1)], false),
+        frame(8, line.clone(), true),
+    ];
+    let run = || {
+        let memo = Recent::<Arc<RailNetwork>, usize>::new(MEMO_ENTRIES);
+        let mut built = Vec::new();
+        let answers: Vec<usize> = hours
+            .iter()
+            .map(|frame| {
+                let network = Arc::new(RailNetwork::read(frame).unwrap());
+                *memo_after_neighbours(
+                    &memo,
+                    Arc::clone(&network),
+                    Vec::<Arc<()>>::new,
+                    |_| -> io::Result<_> {
+                        built.push(RailNetwork::clone(&network));
+                        Ok(Arc::new(built.len()))
+                    },
+                )
+                .unwrap()
+            })
+            .collect();
+        (answers, built)
+    };
+    let new = run();
+    assert_eq!(new.0, [1, 1, 2, 2, 1, 3, 3, 1]);
+    assert_eq!(new.1[0], RailNetwork::read(&hours[0]).unwrap());
+    assert_eq!(new.1[2], RailNetwork::new(&[], &[], &[]));
+}
+
+#[test]
+fn a_reused_hour_leaves_its_successor_no_buildings_state_to_wait_for() {
+    let slots = Slots::new();
+    let (done, waited) = mpsc::channel();
+    let successor = {
+        let state = Arc::clone(&slots.buildings_state);
+        thread::spawn(move || done.send(state.wait().is_none()).unwrap())
+    };
+    slots.without_buildings_state();
+    assert!(waited.recv_timeout(TEST_HANG_GUARD).unwrap());
+    successor.join().unwrap();
+}

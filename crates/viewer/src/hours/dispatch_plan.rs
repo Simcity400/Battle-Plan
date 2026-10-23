@@ -8,7 +8,7 @@ pub(super) struct DispatchPlan {
     pub hour: Hour,
     pub started: Instant,
     pub trace: trace::TargetTrace,
-    pub previous: Option<(Hour, Arc<Slot<Political>>)>,
+    pub previous: Option<(Hour, Slots)>,
     pub neighbours: Vec<Slots>,
     // Only sequential colour state survives a native-hour fold, never its frame.
     pub colour: Option<io::Result<Colour>>,
@@ -47,7 +47,10 @@ impl DispatchPlan {
         + Send
         + 'static,
     ) -> Box<dyn FnOnce() + Send> {
-        let previous = self.previous.as_ref().map(|(_, slot)| slot.clone());
+        let previous = self
+            .previous
+            .as_ref()
+            .map(|(_, slots)| Arc::clone(&slots.political));
         let colour = self.colour.take();
         let ticket = self.ticket;
         let key = (self.want.branch, self.next_source);
@@ -116,7 +119,7 @@ impl CoordinatorState {
         let previous = nearby
             .iter()
             .find(|(key, _)| key.1 < hour)
-            .map(|(key, slots)| (key.1, Arc::clone(&slots.political)));
+            .map(|(key, slots)| (key.1, Slots::clone(slots)));
         let neighbours: Vec<Slots> = nearby.into_iter().map(|(_, slots)| slots.clone()).collect();
         trace.ticket(ticket);
         let next_source = if matches!(

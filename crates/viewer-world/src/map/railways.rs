@@ -12,8 +12,8 @@ use eframe::wgpu;
 use installed_content_core::{
     ResolvedLayers, buildings::Buildings, map::MapData, positions::BuildingPosition,
 };
-use installed_content_image::dds;
 use installed_content_image::native::Decode;
+use installed_content_image::{IndexedImage, dds};
 use replay_data::{rows::NavalBaseRow, rows::ProvinceSupplyRow, rows::RailEdgeRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     ops::Range,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use viewer_foundation::map::province_geometry::sort_edge_pixels;
 use viewer_foundation::map::tables::rows;
@@ -188,11 +188,70 @@ type RiverPoint = ([f32; 2], [f32; 2]);
 
 /// Static map input, cached once; per-hour work scales with that hour's edges.
 pub struct RailGeometry {
+    identity: Arc<()>,
+    heightmap: Arc<IndexedImage>,
     defines: RailDefines,
     anchors: BTreeMap<u32, [f32; 3]>,
     ports: BTreeMap<u32, [f32; 3]>,
     boundaries: BTreeMap<(u32, u32), Boundary>,
     river_points: BTreeMap<u32, Vec<RiverPoint>>,
+    last: Mutex<Option<Arc<RailBase>>>,
+}
+
+type Graph = BTreeMap<u32, BTreeMap<u32, i32>>;
+
+fn changed_provinces(old: &Graph, new: &Graph) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    let (mut olds, mut news) = (old.iter(), new.iter());
+    let (mut a, mut b) = (olds.next(), news.next());
+    loop {
+        match (a, b) {
+            (Some((x, old)), Some((y, new))) => match x.cmp(y) {
+                std::cmp::Ordering::Less => {
+                    out.insert(*x);
+                    a = olds.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    out.insert(*y);
+                    b = news.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    if old != new {
+                        out.insert(*x);
+                    }
+                    a = olds.next();
+                    b = news.next();
+                }
+            },
+            (Some((x, _)), None) => {
+                out.insert(*x);
+                a = olds.next();
+            }
+            (None, Some((y, _))) => {
+                out.insert(*y);
+                b = news.next();
+            }
+            (None, None) => return out,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ProvinceRun {
+    province: u32,
+    vertices: Arc<Vec<[f32; 6]>>,
+    segments: usize,
+    unanchored: usize,
+    samples: usize,
+    #[cfg(test)]
+    test: Arc<(Vec<RailVertex>, Vec<u32>)>,
+}
+
+pub struct RailBase {
+    owner: Arc<()>,
+    network: Arc<RailNetwork>,
+    runs: Vec<ProvinceRun>,
+    bridges: Vec<((u32, u32), Bridge)>,
 }
 
 fn pair(a: u32, b: u32) -> (u32, u32) {
@@ -395,9 +454,14 @@ impl RailGeometry {
         buildings: &[BuildingPosition],
         types: &Buildings,
         rivers: &installed_content_image::IndexedImage,
-        heights: &HeightField<'_>,
+        heightmap: Arc<IndexedImage>,
         defines: RailDefines,
     ) -> io::Result<Self> {
+        let heights = &HeightField {
+            width: heightmap.width,
+            height: heightmap.height,
+            values: &heightmap.indices,
+        };
         if rivers.width != map.width
             || rivers.height != map.height
             || heights.width != map.width
@@ -586,12 +650,314 @@ impl RailGeometry {
             }
         }
         Ok(Self {
+            identity: Arc::new(()),
+            heightmap,
             defines,
             anchors,
             ports,
             boundaries,
             river_points,
+            last: Mutex::new(None),
         })
+    }
+
+    fn pair_crossing(
+        &self,
+        network: &RailNetwork,
+        key: (u32, u32),
+        heights: &HeightField<'_>,
+    ) -> Option<Crossing> {
+        let (Some(&a), Some(&b)) = (self.anchor(network, key.0), self.anchor(network, key.1))
+        else {
+            return None;
+        };
+        Some(self.crossing(key, a, b, heights))
+    }
+
+    fn bridge_at(&self, key: (u32, u32), c: &Crossing) -> Option<Bridge> {
+        let kind = self
+            .boundaries
+            .get(&key)
+            .map_or(BridgeKind::None, |boundary| boundary.kind);
+        (kind != BridgeKind::None).then(|| Bridge {
+            position: add(c.position, [0.0, 1.0, 0.0], self.defines.bridge_y_offset),
+            rotation: c.direction[2].atan2(c.direction[0]) + std::f32::consts::FRAC_PI_2,
+            kind,
+        })
+    }
+
+    fn pair_bridge(
+        &self,
+        network: &RailNetwork,
+        key: (u32, u32),
+        heights: &HeightField<'_>,
+    ) -> Option<((u32, u32), Bridge)> {
+        let c = self.pair_crossing(network, key, heights)?;
+        self.bridge_at(key, &c).map(|bridge| (key, bridge))
+    }
+
+    fn emit_province(
+        &self,
+        network: &RailNetwork,
+        province: u32,
+        neighbors: &BTreeMap<u32, i32>,
+        crossing: impl Fn(u32) -> Option<Crossing>,
+        mesh: &mut RailMesh,
+        heights: &HeightField<'_>,
+    ) -> io::Result<()> {
+        let first = mesh.native_vertices.len() as u32;
+        let ns: Vec<_> = engine_native::allocation::collect_vec(neighbors.iter())?;
+        for (i, &(&a, &level)) in ns.iter().enumerate() {
+            let start = crossing(a).map(|mut c| {
+                if a > province {
+                    c.direction = c.direction.map(|v| -v);
+                }
+                c
+            });
+            for &(&b, &other_level) in &ns[i + 1..] {
+                if network.graph.get(&b).is_some_and(|n| n.contains_key(&a)) {
+                    continue;
+                }
+                let end = crossing(b).map(|mut c| {
+                    if b > province {
+                        c.direction = c.direction.map(|v| -v);
+                    }
+                    c
+                });
+                mesh.segments += 1;
+                if let (Some(start), Some(end)) = (start, end) {
+                    Curve::new(start, end).emit(
+                        mesh,
+                        level.min(other_level),
+                        heights,
+                        &self.defines,
+                    )?;
+                } else {
+                    mesh.unanchored += 1;
+                }
+            }
+            if ns.len() == 1 || network.sources.contains(&province) {
+                mesh.segments += 1;
+                if let (Some(start), Some(&center)) = (start, self.anchor(network, province)) {
+                    stub(start, center).emit(mesh, level, heights, &self.defines)?;
+                } else {
+                    mesh.unanchored += 1;
+                }
+            }
+        }
+        let end = mesh.native_vertices.len() as u32;
+        if first != end {
+            engine_native::allocation::reserve(&mut mesh.native_runs, 1)?;
+            mesh.native_runs.push(first..end);
+        }
+        Ok(())
+    }
+
+    fn province_run(
+        &self,
+        network: &RailNetwork,
+        province: u32,
+        neighbors: &BTreeMap<u32, i32>,
+        heights: &HeightField<'_>,
+    ) -> io::Result<ProvinceRun> {
+        let crossings: BTreeMap<u32, Crossing> = neighbors
+            .keys()
+            .filter_map(|&other| {
+                self.pair_crossing(network, pair(other, province), heights)
+                    .map(|c| (other, c))
+            })
+            .collect();
+        let mut mesh = RailMesh::default();
+        self.emit_province(
+            network,
+            province,
+            neighbors,
+            |other| crossings.get(&other).copied(),
+            &mut mesh,
+            heights,
+        )?;
+        Ok(ProvinceRun {
+            province,
+            vertices: Arc::new(mesh.native_vertices),
+            segments: mesh.segments,
+            unanchored: mesh.unanchored,
+            samples: mesh.samples,
+            #[cfg(test)]
+            test: Arc::new((mesh.vertices, mesh.indices)),
+        })
+    }
+
+    fn heights(&self) -> HeightField<'_> {
+        HeightField {
+            width: self.heightmap.width,
+            height: self.heightmap.height,
+            values: &self.heightmap.indices,
+        }
+    }
+
+    // The last writer wins; building never holds the base slot's lock.
+    pub fn build(&self, network: &Arc<RailNetwork>) -> io::Result<RailMesh> {
+        let base = self.last_base();
+        let (mesh, next) = self.build_base(base.as_deref(), network)?;
+        self.keep_base(Arc::new(next));
+        Ok(mesh)
+    }
+
+    fn last_base(&self) -> Option<Arc<RailBase>> {
+        self.last.lock().ok().and_then(|last| last.clone())
+    }
+
+    fn keep_base(&self, base: Arc<RailBase>) {
+        if !Arc::ptr_eq(&base.owner, &self.identity) {
+            return;
+        }
+        if let Ok(mut last) = self.last.lock() {
+            *last = Some(base);
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn build_from(
+        &self,
+        base: Option<&RailBase>,
+        network: &Arc<RailNetwork>,
+    ) -> io::Result<(RailMesh, RailBase)> {
+        self.build_base(base, network)
+    }
+
+    fn build_base(
+        &self,
+        base: Option<&RailBase>,
+        network: &Arc<RailNetwork>,
+    ) -> io::Result<(RailMesh, RailBase)> {
+        use engine_native::allocation;
+        let heights = &self.heights();
+        let base = base.filter(|base| Arc::ptr_eq(&base.owner, &self.identity));
+        let graph = &network.graph;
+        let (changed, sources, ports): (BTreeSet<u32>, BTreeSet<u32>, BTreeSet<u32>) = match base {
+            Some(base) => {
+                let old = &base.network;
+                (
+                    changed_provinces(&old.graph, graph),
+                    old.sources
+                        .symmetric_difference(&network.sources)
+                        .copied()
+                        .collect(),
+                    old.ports
+                        .symmetric_difference(&network.ports)
+                        .copied()
+                        .collect(),
+                )
+            }
+            None => Default::default(),
+        };
+        // Runs also read neighbour maps for triangles and neighbour port anchors.
+        let reach: BTreeSet<u32> = changed.union(&ports).copied().collect();
+        let mut runs: Vec<ProvinceRun> = allocation::vec(graph.len())?;
+        let mut touched = BTreeSet::new();
+        let mut olds = base
+            .map_or(&[][..], |base| base.runs.as_slice())
+            .iter()
+            .peekable();
+        for (&province, neighbors) in graph {
+            while olds.next_if(|run| run.province < province).is_some() {}
+            let old = olds.next_if(|run| run.province == province);
+            let mut dirty = base.is_none()
+                || changed.contains(&province)
+                || sources.contains(&province)
+                || ports.contains(&province);
+            if !reach.is_empty() {
+                for &neighbour in neighbors.keys() {
+                    let near = reach.contains(&neighbour);
+                    dirty |= near;
+                    if near || reach.contains(&province) {
+                        touched.insert(pair(province, neighbour));
+                    }
+                }
+            }
+            let run = match old {
+                Some(old) if !dirty => old.clone(),
+                _ => self.province_run(network, province, neighbors, heights)?,
+            };
+            runs.push(run);
+        }
+        let bridges = match base {
+            Some(base) => {
+                let mut bridges = allocation::collect_vec(
+                    base.bridges
+                        .iter()
+                        .filter(|(key, _)| !reach.contains(&key.0) && !reach.contains(&key.1))
+                        .copied(),
+                )?;
+                allocation::reserve(&mut bridges, touched.len())?;
+                bridges.extend(
+                    touched
+                        .iter()
+                        .filter_map(|&key| self.pair_bridge(network, key, heights)),
+                );
+                bridges.sort_unstable_by_key(|(key, _)| *key);
+                bridges
+            }
+            None => {
+                let every: BTreeSet<(u32, u32)> = graph
+                    .iter()
+                    .flat_map(|(&from, ns)| ns.keys().map(move |&to| pair(from, to)))
+                    .collect();
+                allocation::collect_vec(
+                    every
+                        .into_iter()
+                        .filter_map(|key| self.pair_bridge(network, key, heights)),
+                )?
+            }
+        };
+        let total = runs.iter().map(|run| run.vertices.len()).sum();
+        let drawn = runs.iter().filter(|run| !run.vertices.is_empty()).count();
+        let mut mesh = RailMesh {
+            native_vertices: allocation::vec(total)?,
+            native_runs: allocation::vec(drawn)?,
+            bridges: allocation::vec(bridges.len())?,
+            ..RailMesh::default()
+        };
+        for run in &runs {
+            mesh.segments += run.segments;
+            mesh.unanchored += run.unanchored;
+            mesh.samples += run.samples;
+            if !run.vertices.is_empty() {
+                let first = mesh.native_vertices.len() as u32;
+                mesh.native_vertices.extend_from_slice(&run.vertices);
+                mesh.native_runs
+                    .push(first..mesh.native_vertices.len() as u32);
+            }
+            #[cfg(test)]
+            {
+                let offset = mesh.vertices.len() as u32;
+                mesh.vertices.extend_from_slice(&run.test.0);
+                mesh.indices
+                    .extend(run.test.1.iter().map(|index| index + offset));
+            }
+        }
+        // Fold bounds in the full build's vertex emission order.
+        mesh.bounds = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for vertex in &mesh.native_vertices {
+            mesh.bounds[0] = mesh.bounds[0].min(vertex[0]);
+            mesh.bounds[1] = mesh.bounds[1].min(vertex[2]);
+            mesh.bounds[2] = mesh.bounds[2].max(vertex[0]);
+            mesh.bounds[3] = mesh.bounds[3].max(vertex[2]);
+        }
+        if mesh.native_vertices.is_empty() {
+            mesh.bounds = [0.0; 4];
+        }
+        mesh.bridges
+            .extend(bridges.iter().map(|(_, bridge)| *bridge));
+        Ok((
+            mesh,
+            RailBase {
+                owner: Arc::clone(&self.identity),
+                network: Arc::clone(network),
+                runs,
+                bridges,
+            },
+        ))
     }
 
     /// Where the rail crosses the boundary between the pair `key`, and the
@@ -740,14 +1106,15 @@ impl RailGeometry {
         edges: &[RailEdgeRow],
         supply: &[ProvinceSupplyRow],
         naval_bases: &[NavalBaseRow],
-        heights: &HeightField<'_>,
     ) -> RailMesh {
-        self.build_network(&RailNetwork::new(edges, supply, naval_bases), heights)
+        self.build_network(&RailNetwork::new(edges, supply, naval_bases))
+            .expect("the test railway grows")
     }
 
     /// The railway of one hour's network.
-    pub fn build_network(&self, network: &RailNetwork, heights: &HeightField<'_>) -> RailMesh {
-        let RailNetwork { graph, sources, .. } = network;
+    pub fn build_network(&self, network: &RailNetwork) -> io::Result<RailMesh> {
+        let heights = &self.heights();
+        let RailNetwork { graph, .. } = network;
         let anchor = |id: u32| self.anchor(network, id);
         let mut crossings = BTreeMap::new();
         for (&from, neighbors) in graph {
@@ -766,72 +1133,64 @@ impl RailGeometry {
             bounds: [f32::MAX, f32::MAX, f32::MIN, f32::MIN],
             ..Default::default()
         };
-        for (&(a, b), c) in &crossings {
-            let kind = self
-                .boundaries
-                .get(&(a, b))
-                .map_or(BridgeKind::None, |boundary| boundary.kind);
-            if kind != BridgeKind::None
-                && (graph.get(&a).is_some_and(|n| n.contains_key(&b))
-                    || graph.get(&b).is_some_and(|n| n.contains_key(&a)))
+        engine_native::allocation::reserve(&mut mesh.bridges, crossings.len())?;
+        engine_native::allocation::reserve(&mut mesh.native_runs, graph.len())?;
+        for (&key, c) in &crossings {
+            if (graph.get(&key.0).is_some_and(|n| n.contains_key(&key.1))
+                || graph.get(&key.1).is_some_and(|n| n.contains_key(&key.0)))
+                && let Some(bridge) = self.bridge_at(key, c)
             {
-                mesh.bridges.push(Bridge {
-                    position: add(c.position, [0.0, 1.0, 0.0], self.defines.bridge_y_offset),
-                    rotation: c.direction[2].atan2(c.direction[0]) + std::f32::consts::FRAC_PI_2,
-                    kind,
-                });
+                mesh.bridges.push(bridge);
             }
         }
         for (&province, neighbors) in graph {
-            let first = mesh.native_vertices.len() as u32;
-            let ns: Vec<_> = neighbors.iter().collect();
-            for (i, &(&a, &level)) in ns.iter().enumerate() {
-                let start = crossings.get(&pair(a, province)).copied().map(|mut c| {
-                    if a > province {
-                        c.direction = c.direction.map(|v| -v);
-                    }
-                    c
-                });
-                for &(&b, &other_level) in &ns[i + 1..] {
-                    if graph.get(&b).is_some_and(|n| n.contains_key(&a)) {
-                        continue;
-                    }
-                    let end = crossings.get(&pair(b, province)).copied().map(|mut c| {
-                        if b > province {
-                            c.direction = c.direction.map(|v| -v);
-                        }
-                        c
-                    });
-                    mesh.segments += 1;
-                    if let (Some(start), Some(end)) = (start, end) {
-                        Curve::new(start, end).emit(
-                            &mut mesh,
-                            level.min(other_level),
-                            heights,
-                            &self.defines,
-                        );
-                    } else {
-                        mesh.unanchored += 1;
-                    }
-                }
-                if ns.len() == 1 || sources.contains(&province) {
-                    mesh.segments += 1;
-                    if let (Some(start), Some(&center)) = (start, anchor(province)) {
-                        stub(start, center).emit(&mut mesh, level, heights, &self.defines);
-                    } else {
-                        mesh.unanchored += 1;
-                    }
-                }
-            }
-            let end = mesh.native_vertices.len() as u32;
-            if first != end {
-                mesh.native_runs.push(first..end);
-            }
+            self.emit_province(
+                network,
+                province,
+                neighbors,
+                |other| crossings.get(&pair(other, province)).copied(),
+                &mut mesh,
+                heights,
+            )?;
         }
         if mesh.native_vertices.is_empty() {
             mesh.bounds = [0.0; 4];
         }
-        mesh
+        Ok(mesh)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl RailMesh {
+    pub fn bit_eq(&self, other: &Self) -> bool {
+        let floats = |a: &[f32], b: &[f32]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+        };
+        let bridge = |a: &Bridge, b: &Bridge| {
+            floats(&a.position, &b.position)
+                && a.rotation.to_bits() == b.rotation.to_bits()
+                && a.kind == b.kind
+        };
+        #[cfg(test)]
+        let test = bytemuck::cast_slice::<RailVertex, u8>(&self.vertices)
+            == bytemuck::cast_slice::<RailVertex, u8>(&other.vertices)
+            && self.indices == other.indices;
+        #[cfg(not(test))]
+        let test = true;
+        test && (self.segments, self.unanchored, self.samples)
+            == (other.segments, other.unanchored, other.samples)
+            && floats(&self.bounds, &other.bounds)
+            && self.native_runs == other.native_runs
+            && floats(
+                self.native_vertices.as_flattened(),
+                other.native_vertices.as_flattened(),
+            )
+            && self.bridges.len() == other.bridges.len()
+            && self
+                .bridges
+                .iter()
+                .zip(&other.bridges)
+                .all(|(a, b)| bridge(a, b))
     }
 }
 
@@ -952,15 +1311,16 @@ impl Curve {
         level: i32,
         heights: &HeightField<'_>,
         defines: &RailDefines,
-    ) {
+    ) -> io::Result<()> {
         if self.length < 1e-5 || self.curve_length < 1e-5 {
-            return;
+            return Ok(());
         }
         let inv = 1.0 / self.length;
         let begin = self.start.half_width * inv;
         let curved = self.curve_length * inv;
         let ts = self.samples();
-        let mut vertices = Vec::new();
+        let mut vertices =
+            engine_native::allocation::vec(engine_native::allocation::mul(ts.len(), 2)?)?;
         let repeats = self.length.round().max(1.0);
         let levels = defines.levels as i32;
         let band = (level.clamp(1, levels) - 1) as f32 / levels as f32;
@@ -1005,6 +1365,7 @@ impl Curve {
                 v.uv[1],
             ]
         };
+        engine_native::allocation::reserve(&mut mesh.native_vertices, vertices.len() + 4)?;
         mesh.native_vertices.extend([pack(&vertices[0]); 2]);
         mesh.native_vertices.extend(vertices.iter().map(pack));
         mesh.native_vertices
@@ -1020,6 +1381,7 @@ impl Curve {
                     .extend_from_slice(&[q, q + 1, q + 2, q + 2, q + 1, q + 3]);
             }
         }
+        Ok(())
     }
 }
 

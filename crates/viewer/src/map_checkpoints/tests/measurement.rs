@@ -11,8 +11,10 @@ use std::{
 
 mod aircraft_resolve;
 mod attribution;
+mod buildings_patch;
 mod prefix_walk;
 mod prefixes;
+mod rails_patch;
 mod recording;
 mod resources;
 

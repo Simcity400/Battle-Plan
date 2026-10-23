@@ -57,7 +57,19 @@ const HEIGHT_SCALE: f32 = 0.1;
 /// The province adjacency graph the component grouping walks.
 #[derive(Clone, Debug, Default)]
 pub struct ProvinceGraph {
-    neighbours: HashMap<u32, Vec<u32>>,
+    ids: Vec<u32>,
+    rows: Vec<usize>,
+    flat: Vec<usize>,
+    edges: usize,
+}
+
+fn mark(bits: &mut [u64], id: usize) {
+    bits[id / 64] |= 1u64 << (id % 64);
+}
+
+fn marked(bits: &[u64], id: usize) -> bool {
+    bits.get(id / 64)
+        .is_some_and(|word| *word & (1u64 << (id % 64)) != 0)
 }
 
 impl ProvinceGraph {
@@ -85,17 +97,37 @@ impl ProvinceGraph {
                 pairs.insert((a.min(b), a.max(b)));
             }
         };
-        for (id, list) in installed_content_core::movement::raster_neighbours(w, h, ids)?
-            .iter()
-            .enumerate()
-        {
-            for &neighbour in list {
-                add(id as u32, neighbour);
+        let at = |x: usize, y: usize| ids[y * w + x];
+        for y in (0..h).rev() {
+            for x in 0..w {
+                let source = at(x, y);
+                if source == 0 {
+                    continue;
+                }
+                let right_x = if x + 1 == w { 0 } else { x + 1 };
+                let left_x = if x == 0 { w - 1 } else { x - 1 };
+                let right = at(right_x, y);
+                let next = if y > 0 { at(x, y - 1) } else { 0 };
+                let left = at(left_x, y);
+                let previous = if y + 1 < h { at(x, y + 1) } else { 0 };
+                for target in [right, next, left, previous] {
+                    if target != 0 {
+                        add(source, target);
+                    }
+                }
+                let diagonal = if y > 0 { at(right_x, y - 1) } else { 0 };
+                let four = [source, right, next, diagonal];
+                if four.iter().all(|&id| id != 0)
+                    && (0..4).all(|a| (a + 1..4).all(|b| four[a] != four[b]))
+                {
+                    add(source, diagonal);
+                }
             }
         }
         for row in rows {
             add(row.from, row.to);
         }
+        let edges = pairs.len();
         let mut neighbours: HashMap<u32, Vec<u32>> = HashMap::new();
         for (a, b) in pairs {
             neighbours.entry(a).or_default().push(b);
@@ -104,7 +136,24 @@ impl ProvinceGraph {
         for list in neighbours.values_mut() {
             list.sort_unstable();
         }
-        Ok(Self { neighbours })
+        let mut ids = engine_native::allocation::collect_vec(neighbours.keys().copied())?;
+        ids.sort_unstable();
+        let mut rows = engine_native::allocation::vec(ids.len() + 1)?;
+        let mut flat = engine_native::allocation::vec(neighbours.values().map(Vec::len).sum())?;
+        rows.push(0);
+        for id in &ids {
+            flat.extend(neighbours[id].iter().map(|next| {
+                ids.binary_search(next)
+                    .expect("every endpoint has an ordinal")
+            }));
+            rows.push(flat.len());
+        }
+        Ok(Self {
+            ids,
+            rows,
+            flat,
+            edges,
+        })
     }
 
     /// Splits `members` into connected components, each sorted ascending.
@@ -112,22 +161,34 @@ impl ProvinceGraph {
     /// The components come back in ascending order of their smallest member, so
     /// a headless render always lays the same areas out in the same order.
     pub fn components(&self, members: &BTreeSet<u32>) -> Vec<Vec<u32>> {
-        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        if members.is_empty() {
+            return Vec::new();
+        }
+        let words = self.ids.len().div_ceil(64);
+        let mut member = vec![0u64; words];
+        for id in members {
+            if let Ok(ordinal) = self.ids.binary_search(id) {
+                mark(&mut member, ordinal);
+            }
+        }
+        let mut seen = vec![0u64; words];
         let mut out = Vec::new();
         for &start in members {
-            if !seen.insert(start) {
+            let Ok(ordinal) = self.ids.binary_search(&start) else {
+                out.push(vec![start]);
+                continue;
+            };
+            if marked(&seen, ordinal) {
                 continue;
             }
+            mark(&mut seen, ordinal);
             let mut component = vec![start];
-            let mut stack = vec![start];
+            let mut stack = vec![ordinal];
             while let Some(province) = stack.pop() {
-                for &next in self
-                    .neighbours
-                    .get(&province)
-                    .map_or(&[][..], Vec::as_slice)
-                {
-                    if members.contains(&next) && seen.insert(next) {
-                        component.push(next);
+                for &next in self.row(province) {
+                    if marked(&member, next) && !marked(&seen, next) {
+                        mark(&mut seen, next);
+                        component.push(self.ids[next]);
                         stack.push(next);
                     }
                 }
@@ -138,9 +199,13 @@ impl ProvinceGraph {
         out
     }
 
+    fn row(&self, ordinal: usize) -> &[usize] {
+        &self.flat[self.rows[ordinal]..self.rows[ordinal + 1]]
+    }
+
     /// Distinct adjacent province pairs the graph holds, for reporting.
     pub fn edge_count(&self) -> usize {
-        self.neighbours.values().map(Vec::len).sum::<usize>() / 2
+        self.edges
     }
 }
 

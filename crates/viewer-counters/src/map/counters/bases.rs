@@ -72,6 +72,29 @@ pub struct BuildingIconContent {
     /// The first record the loader admits of each anchoring bucket in each province, in
     /// source order.
     records: BTreeMap<(u32, String), [f32; 3]>,
+    tokens: TokenMemo,
+}
+
+type BuildingTokens = (BTreeMap<String, u32>, BTreeSet<String>);
+
+const TOKEN_TABLES: &[replay_data::rows::TableId] = &[replay_data::rows::TableId::LexicalTokens];
+
+#[derive(Clone)]
+struct TokenMemo(Arc<viewer_foundation::map::memo::Keyed<BuildingTokens>>);
+
+impl Default for TokenMemo {
+    fn default() -> Self {
+        Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
+            TOKEN_TABLES,
+            4,
+        )))
+    }
+}
+
+impl std::fmt::Debug for TokenMemo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenMemo")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -193,6 +216,7 @@ impl BuildingIconContent {
             refused_facilities,
             keys,
             records,
+            tokens: TokenMemo::default(),
         }
     }
 
@@ -219,6 +243,13 @@ impl BuildingIconContent {
             .chain(self.refused_headquarters.keys().map(String::as_str))
             .chain(self.facility_names())
             .collect()
+    }
+
+    // Refusals are not cached: each hour keeps its own error context.
+    fn tokens(&self, frame: &DecodedFrame) -> io::Result<Arc<BuildingTokens>> {
+        self.tokens.0.get_or_build(frame, (), |projected| {
+            building_tokens(projected, &self.keys, &self.names()).map(Arc::new)
+        })
     }
 
     /// The facility and refused facility template names.
@@ -682,8 +713,9 @@ impl BaseIcons {
             ..
         } = context;
         let icons = &content.building_icons;
-        let (tokens, refused) = building_tokens(frame, &icons.keys, &icons.names())?;
-        self.refused = refused;
+        let built = icons.tokens(frame)?;
+        let (tokens, refused) = &*built;
+        self.refused = refused.clone();
         let names: BTreeMap<u32, &str> = icons
             .facility_names()
             .filter_map(|name| Some((*tokens.get(name)?, name)))
@@ -715,7 +747,7 @@ impl BaseIcons {
                 break;
             }
             let decided = icons
-                .headquarter_rows(rows.iter(), &tokens)
+                .headquarter_rows(rows.iter(), tokens)
                 .and_then(|found| {
                     let Some((template, row)) = found else {
                         return Ok(None);
@@ -746,7 +778,7 @@ impl BaseIcons {
 
         // Every facility template must be named this hour, or an unnamed building row could
         // be one of them.
-        let unnamed_facility = icons.unnamed_facility(&tokens);
+        let unnamed_facility = icons.unnamed_facility(tokens);
         for flag in rows::<tables::FacilityMapFlags>(frame)?.rows() {
             let Some(province) = provinces.get(&flag.province) else {
                 continue;

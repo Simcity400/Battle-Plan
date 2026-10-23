@@ -800,3 +800,159 @@ fn strategic_region_switch_resets_the_fade_only_on_the_hover_path() {
     assert_eq!(reset.step(camera, 0.25).0, 0.25);
     assert_eq!(reset.step(camera, 1.5).0, 1.0);
 }
+
+#[test]
+fn dense_components_equal_the_lookup_walk() {
+    let ids = [
+        1, 1, 2, 2, 0, 5, 5, 9, //
+        1, 3, 3, 2, 0, 5, 12, 9, //
+        40, 40, 3, 0, 0, 0, 12, 12,
+    ];
+    let rows = [link(40, 5, SEA_CROSSING)];
+    let graph = ProvinceGraph::build(8, 3, &ids, &rows).unwrap();
+    let lookup = lookup_graph(8, 3, &ids, &rows);
+    let pool = [0, 1, 2, 3, 5, 9, 12, 40, 77];
+    for mask in 0u32..1 << pool.len() {
+        let members: BTreeSet<u32> = pool
+            .iter()
+            .enumerate()
+            .filter(|(bit, _)| mask & (1u32 << bit) != 0)
+            .map(|(_, &id)| id)
+            .collect();
+        assert_eq!(
+            graph.components(&members),
+            lookup_components(&lookup, &members),
+            "{members:?}"
+        );
+    }
+    for step in [
+        &[1][..],
+        &[1, 3],
+        &[1, 3, 12, 40],
+        &[3, 12],
+        &[12, 40, 9, 77],
+        &[5],
+        &[],
+    ] {
+        let area = members(step);
+        assert_eq!(
+            graph.components(&area),
+            lookup_components(&lookup, &area),
+            "{step:?}"
+        );
+    }
+}
+
+fn lookup_graph(
+    width: usize,
+    height: usize,
+    ids: &[u32],
+    rows: &[Adjacency],
+) -> HashMap<u32, Vec<u32>> {
+    let mut graph: HashMap<u32, BTreeSet<u32>> = HashMap::new();
+    let mut add = |a: u32, b: u32| {
+        if a != b {
+            graph.entry(a).or_default().insert(b);
+            graph.entry(b).or_default().insert(a);
+        }
+    };
+    for (id, neighbours) in installed_content_core::movement::raster_neighbours(width, height, ids)
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        for &next in neighbours {
+            add(id as u32, next);
+        }
+    }
+    for row in rows {
+        add(row.from, row.to);
+    }
+    graph
+        .into_iter()
+        .map(|(id, neighbours)| (id, neighbours.into_iter().collect()))
+        .collect()
+}
+
+fn lookup_components(graph: &HashMap<u32, Vec<u32>>, members: &BTreeSet<u32>) -> Vec<Vec<u32>> {
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    let mut out = Vec::new();
+    for &start in members {
+        if !seen.insert(start) {
+            continue;
+        }
+        let mut component = vec![start];
+        let mut stack = vec![start];
+        while let Some(province) = stack.pop() {
+            for &next in graph.get(&province).map_or(&[][..], Vec::as_slice) {
+                if members.contains(&next) && seen.insert(next) {
+                    component.push(next);
+                    stack.push(next);
+                }
+            }
+        }
+        component.sort_unstable();
+        out.push(component);
+    }
+    out
+}
+
+#[test]
+fn sparse_authored_ids_and_absent_members_use_compact_ordinals() {
+    let huge = i32::MAX as u32;
+    let ids = [1, 2];
+    let rows = [
+        link(1, huge, SEA_CROSSING),
+        link(huge, 1_000_000, IMPASSABLE),
+        link(huge, 1, 0),
+        link(huge, huge, 0),
+    ];
+    let graph = ProvinceGraph::build(2, 1, &ids, &rows).unwrap();
+    let lookup = lookup_graph(2, 1, &ids, &rows);
+    assert_eq!(graph.ids, [1, 2, 1_000_000, huge]);
+    assert_eq!(graph.rows.len(), 5);
+    assert_eq!(graph.flat.len(), 6);
+    assert_eq!(graph.edge_count(), 3);
+    let pool = [0, 1, 2, 77, 1_000_000, huge - 1, huge, u32::MAX];
+    for mask in 0u32..1 << pool.len() {
+        let area = pool
+            .iter()
+            .enumerate()
+            .filter(|(bit, _)| mask & (1u32 << bit) != 0)
+            .map(|(_, &id)| id)
+            .collect();
+        assert_eq!(
+            graph.components(&area),
+            lookup_components(&lookup, &area),
+            "{area:?}"
+        );
+    }
+    assert_eq!(
+        graph.components(&members(&pool)),
+        vec![
+            vec![0],
+            vec![1, 2, 1_000_000, huge],
+            vec![77],
+            vec![huge - 1],
+            vec![u32::MAX]
+        ]
+    );
+    let sparse_raster = ProvinceGraph::build(2, 1, &[1, huge], &rows).unwrap();
+    assert_eq!(sparse_raster.ids, [1, 1_000_000, huge]);
+    assert_eq!(sparse_raster.edge_count(), 2);
+    let mut raster_lookup = lookup.clone();
+    raster_lookup.remove(&2);
+    raster_lookup.get_mut(&1).unwrap().retain(|&id| id != 2);
+    for area in [members(&pool), members(&[huge, 77]), members(&[1, huge])] {
+        assert_eq!(
+            sparse_raster.components(&area),
+            lookup_components(&raster_lookup, &area)
+        );
+    }
+    let empty = ProvinceGraph::build(1, 1, &[1], &[]).unwrap();
+    assert!(empty.ids.is_empty());
+    assert_eq!(
+        empty.components(&members(&[huge, 1, 0])),
+        vec![vec![0], vec![1], vec![huge]]
+    );
+}

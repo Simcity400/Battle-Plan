@@ -9,6 +9,14 @@ fn heights() -> HeightField<'static> {
         values: &[100; 1024],
     }
 }
+fn heightmap(byte: u8) -> Arc<IndexedImage> {
+    Arc::new(IndexedImage {
+        width: 32,
+        height: 32,
+        indices: vec![byte; 1024],
+        palette: [[0; 4]; 256],
+    })
+}
 fn defines() -> RailDefines {
     RailDefines {
         y_offset: 0.9,
@@ -20,6 +28,8 @@ fn defines() -> RailDefines {
 }
 fn geography() -> RailGeometry {
     RailGeometry {
+        identity: Arc::new(()),
+        heightmap: heightmap(100),
         defines: defines(),
         anchors: BTreeMap::from([
             (1, [4.0, 10.0, 8.0]),
@@ -28,6 +38,7 @@ fn geography() -> RailGeometry {
         ]),
         ports: BTreeMap::new(),
         river_points: BTreeMap::new(),
+        last: Mutex::new(None),
         boundaries: BTreeMap::from([
             (
                 (1, 2),
@@ -97,7 +108,7 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
         installed_content_core::positions::parse_buildings(b"1;hUB;4;5;6;0;0\n1;hARBOUR;7;8;9;0;0\n")
             .unwrap();
     let geometry =
-        RailGeometry::new(&map, &positions, &types, &rivers, &heights(), defines()).unwrap();
+        RailGeometry::new(&map, &positions, &types, &rivers, heightmap(100), defines()).unwrap();
     assert_eq!(geometry.anchors[&1], [4.0, 5.0, 6.0]);
     assert_eq!(geometry.ports[&1], [7.0, 8.0, 9.0]);
     let ambiguous = installed_content_core::buildings::parse(
@@ -105,7 +116,7 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
     )
     .unwrap();
     let geometry =
-        RailGeometry::new(&map, &positions, &ambiguous, &rivers, &heights(), defines()).unwrap();
+        RailGeometry::new(&map, &positions, &ambiguous, &rivers, heightmap(100), defines()).unwrap();
     assert_ne!(geometry.anchors[&1], [4.0, 5.0, 6.0]);
     assert!(geometry.ports.is_empty());
 }
@@ -114,7 +125,7 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
 fn native_strips_preserve_triangles_and_do_not_join_provinces() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mesh = geography().build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[], &heights());
+    let mesh = geography().build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[]);
     let pack = |v: RailVertex| {
         [
             v.position[0],
@@ -164,15 +175,14 @@ fn native_strips_preserve_triangles_and_do_not_join_provinces() {
 #[test]
 fn building_and_losing_edges_changes_the_current_network() {
     let geo = geography();
-    let h = heights();
-    assert!(geo.build_rows(&[], &[], &[], &h).vertices.is_empty());
-    let one = geo.build_rows(&edges(&[(1, 2, 2)]), &[], &[], &h);
+    assert!(geo.build_rows(&[], &[], &[]).vertices.is_empty());
+    let one = geo.build_rows(&edges(&[(1, 2, 2)]), &[], &[]);
     assert_eq!(one.segments, 2);
-    let two = geo.build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[], &h);
+    let two = geo.build_rows(&edges(&[(1, 2, 2), (2, 3, 4)]), &[], &[]);
     assert_eq!(two.segments, 3);
     assert_ne!(one.vertices, two.vertices);
-    assert_eq!(geo.build_rows(&edges(&[(1, 2, 2)]), &[], &[], &h), one);
-    assert!(geo.build_rows(&[], &[], &[], &h).vertices.is_empty());
+    assert_eq!(geo.build_rows(&edges(&[(1, 2, 2)]), &[], &[]), one);
+    assert!(geo.build_rows(&[], &[], &[]).vertices.is_empty());
 }
 #[test]
 fn a_train_route_runs_over_the_boundary_crossings_and_out_of_its_first_province() {
@@ -221,9 +231,8 @@ fn a_route_ends_before_a_province_whose_railway_lacks_its_segment() {
 #[test]
 fn triangles_are_skipped_but_supply_sources_receive_terminal_spurs() {
     let geo = geography();
-    let h = heights();
     let triangle = edges(&[(1, 2, 2), (2, 3, 4), (1, 3, 3)]);
-    assert!(geo.build_rows(&triangle, &[], &[], &h).vertices.is_empty());
+    assert!(geo.build_rows(&triangle, &[], &[]).vertices.is_empty());
     for source in [
         ProvinceSupplyRow {
             province: 2,
@@ -246,7 +255,7 @@ fn triangles_are_skipped_but_supply_sources_receive_terminal_spurs() {
             ..Default::default()
         },
     ] {
-        assert_eq!(geo.build_rows(&triangle, &[source], &[], &h).segments, 2);
+        assert_eq!(geo.build_rows(&triangle, &[source], &[]).segments, 2);
     }
 }
 #[test]
@@ -267,7 +276,7 @@ fn bridge_kind_selects_gap_and_leadin() {
         };
         let curve = Curve::new(start, end);
         let mut mesh = RailMesh::default();
-        curve.emit(&mut mesh, 3, &heights(), &defines());
+        curve.emit(&mut mesh, 3, &heights(), &defines()).unwrap();
         assert!((mesh.vertices[0].position[0] - (4.0 + gap / 2.0)).abs() < 1e-5);
         assert!((mesh.vertices[2].position[0] - (4.0 + width / 2.0)).abs() < 1e-5);
         assert!((mesh.vertices.last().unwrap().position[0] - (20.0 - gap / 2.0)).abs() < 1e-5);
@@ -344,7 +353,6 @@ fn truncated_directed_edges_are_not_completed_from_authored_content() {
         }],
         &[],
         &[],
-        &heights(),
     );
     assert_eq!(mesh.segments, 1);
     let end = &mesh.vertices[mesh.vertices.len() - 2..];
@@ -412,7 +420,7 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
             if hour % 3 != 0 {
                 graph.extend(edges(&[(2, 3, 3)]));
             }
-            geography().build_rows(&graph, &[], &[], &heights())
+            geography().build_rows(&graph, &[], &[])
         };
         let prepared = std::thread::scope(|scope| {
             scope
@@ -460,4 +468,251 @@ fn rail_geometry_install_without_prepared_bank_preserves_bytes_and_runs_across_h
         previous = actual;
         previous_runs = mesh.native_runs;
     }
+}
+
+fn boundary(point: [i32; 2], kind: BridgeKind) -> Boundary {
+    Boundary {
+        points: vec![point],
+        kind,
+    }
+}
+
+fn wide() -> RailGeometry {
+    RailGeometry {
+        identity: Arc::new(()),
+        heightmap: heightmap(100),
+        defines: defines(),
+        anchors: BTreeMap::from([
+            (1, [4.0, 10.0, 8.0]),
+            (2, [12.0, 10.0, 8.0]),
+            (3, [20.0, 10.0, 8.0]),
+            (4, [28.0, 10.0, 8.0]),
+            (5, [12.0, 10.0, 20.0]),
+            (6, [20.0, 10.0, 20.0]),
+        ]),
+        ports: BTreeMap::from([(3, [21.0, 10.0, 9.0])]),
+        river_points: BTreeMap::new(),
+        boundaries: BTreeMap::from([
+            ((1, 2), boundary([8, 8], BridgeKind::None)),
+            ((2, 3), boundary([16, 8], BridgeKind::Small)),
+            ((3, 4), boundary([24, 8], BridgeKind::None)),
+            ((2, 5), boundary([12, 14], BridgeKind::None)),
+            ((3, 6), boundary([20, 14], BridgeKind::Large)),
+            ((5, 6), boundary([16, 20], BridgeKind::None)),
+            ((2, 6), boundary([16, 14], BridgeKind::None)),
+        ]),
+        last: Mutex::new(None),
+    }
+}
+
+fn network(pairs: &[(u32, u32, i32)], sources: &[u32], ports: &[u32]) -> Arc<RailNetwork> {
+    let supply: Vec<_> = sources
+        .iter()
+        .map(|&province| ProvinceSupplyRow {
+            province,
+            supply_node_level: 1,
+            ..Default::default()
+        })
+        .collect();
+    let bases: Vec<_> = ports
+        .iter()
+        .map(|&province| NavalBaseRow {
+            province,
+            ..Default::default()
+        })
+        .collect();
+    Arc::new(RailNetwork::new(&edges(pairs), &supply, &bases))
+}
+
+#[test]
+fn patched_railways_equal_full_builds_step_by_step() {
+    let geo = wide();
+    let line = [(1, 2, 2), (2, 3, 3)];
+    let longer = [(1, 2, 2), (2, 3, 3), (3, 4, 1)];
+    let raised = [(1, 2, 2), (2, 3, 5), (3, 4, 1)];
+    let triangle = [(1, 2, 2), (2, 3, 5), (3, 4, 1), (2, 6, 2), (3, 6, 2)];
+    let broken = [(1, 2, 2), (2, 3, 5), (3, 4, 1), (2, 6, 2)];
+    let unanchored = [(1, 2, 2), (2, 3, 5), (3, 4, 1), (2, 6, 2), (4, 7, 2)];
+    let bridged = [
+        (1, 2, 2),
+        (2, 3, 5),
+        (3, 4, 1),
+        (2, 6, 2),
+        (4, 7, 2),
+        (5, 6, 1),
+        (2, 5, 1),
+        (3, 6, 4),
+    ];
+    let bare = [
+        (1, 2, 2),
+        (2, 3, 5),
+        (2, 6, 2),
+        (5, 6, 1),
+        (2, 5, 1),
+        (3, 6, 4),
+    ];
+    let steps = [
+        network(&[], &[], &[]),
+        network(&line, &[], &[]),
+        network(&longer, &[], &[]),
+        network(&raised, &[], &[]),
+        network(&triangle, &[], &[]),
+        network(&broken, &[], &[]),
+        network(&broken, &[], &[]),
+        network(&broken, &[4], &[]),
+        network(&broken, &[], &[3]),
+        network(&unanchored, &[], &[3]),
+        network(&bridged, &[], &[3]),
+        network(&bridged, &[], &[]),
+        network(&bare, &[], &[]),
+        network(&[], &[], &[]),
+    ];
+    let mut bases: Vec<Arc<RailBase>> = Vec::new();
+    for (step, network) in steps.iter().enumerate() {
+        let full = geo.build_network(network).unwrap();
+        let (mesh, next) = geo
+            .build_from(bases.last().map(|base| &**base), network)
+            .unwrap();
+        assert!(mesh.bit_eq(&full), "step {step}");
+        match step {
+            1 => assert!(!full.native_vertices.is_empty() && !full.bridges.is_empty()),
+            6 | 7 => {
+                let previous = bases.last().unwrap();
+                let changed: Vec<_> = next
+                    .runs
+                    .iter()
+                    .zip(&previous.runs)
+                    .filter(|(new, old)| !Arc::ptr_eq(&new.vertices, &old.vertices))
+                    .map(|(new, _)| new.province)
+                    .collect();
+                assert_eq!(changed, if step == 6 { vec![] } else { vec![4] });
+            }
+            9 => assert!(full.unanchored > 0),
+            _ => {}
+        }
+        bases.push(Arc::new(next));
+    }
+    for (from, to) in [(10, 3), (12, 4), (8, 1)] {
+        let (mesh, _) = geo.build_from(Some(&bases[from]), &steps[to]).unwrap();
+        assert!(
+            mesh.bit_eq(&geo.build_network(&steps[to]).unwrap()),
+            "{from} to {to}"
+        );
+    }
+}
+
+#[test]
+fn concurrent_patches_from_one_base_stay_exact_and_the_last_writer_wins() {
+    let geo = wide();
+    let start = network(&[(1, 2, 2), (2, 3, 3)], &[], &[]);
+    let a = network(&[(1, 2, 2), (2, 3, 3), (3, 4, 1)], &[], &[3]);
+    let b = network(&[(1, 2, 4), (2, 6, 2)], &[2], &[]);
+    let c = network(&[(2, 3, 3), (3, 6, 4), (5, 6, 1)], &[], &[3]);
+    let (_, first) = geo.build_from(None, &start).unwrap();
+    geo.keep_base(Arc::new(first));
+    let taken_a = geo.last_base();
+    let taken_b = geo.last_base();
+    assert!(Arc::ptr_eq(
+        taken_a.as_ref().unwrap(),
+        taken_b.as_ref().unwrap()
+    ));
+    let (mesh_a, base_a) = geo.build_from(taken_a.as_deref(), &a).unwrap();
+    let (mesh_b, base_b) = geo.build_from(taken_b.as_deref(), &b).unwrap();
+    assert!(mesh_a.bit_eq(&geo.build_network(&a).unwrap()));
+    assert!(mesh_b.bit_eq(&geo.build_network(&b).unwrap()));
+    geo.keep_base(Arc::new(base_b));
+    geo.keep_base(Arc::new(base_a));
+    let last = geo.last_base().unwrap();
+    assert!(Arc::ptr_eq(&last.network, &a));
+    let (mesh_c, _) = geo.build_from(Some(&last), &c).unwrap();
+    assert!(mesh_c.bit_eq(&geo.build_network(&c).unwrap()));
+    for network in [&a, &b, &c, &start, &a] {
+        let full = geo.build_network(network).unwrap();
+        assert!(geo.build(network).unwrap().bit_eq(&full));
+        assert!(Arc::ptr_eq(&geo.last_base().unwrap().network, network));
+    }
+}
+
+#[test]
+fn a_foreign_base_rebuilds_the_owners_anchors_defines_and_bridges() {
+    let first = wide();
+    let mut second = wide();
+    second.anchors.insert(2, [13.0, 10.0, 7.0]);
+    second.defines.y_offset += 1.0;
+    second.boundaries.get_mut(&(2, 3)).unwrap().kind = BridgeKind::Large;
+    let network = network(&[(1, 2, 2), (2, 3, 3)], &[], &[]);
+    let (old, base) = first.build_from(None, &network).unwrap();
+    let full = second.build_network(&network).unwrap();
+    assert!(!old.native_vertices.is_empty() && !old.bridges.is_empty());
+    assert!(!old.bit_eq(&full));
+    let (mesh, next) = second.build_from(Some(&base), &network).unwrap();
+    assert!(mesh.bit_eq(&full));
+    assert!(Arc::ptr_eq(&next.owner, &second.identity));
+    assert!(
+        next.runs
+            .iter()
+            .zip(&base.runs)
+            .all(|(new, old)| !Arc::ptr_eq(&new.vertices, &old.vertices))
+    );
+    second.keep_base(Arc::new(base));
+    assert!(second.last_base().is_none());
+    second.keep_base(Arc::new(next));
+    assert!(second.build(&network).unwrap().bit_eq(&full));
+}
+
+#[test]
+fn construction_keeps_immutable_heights_and_rejects_a_different_height_owner() {
+    let map = MapData {
+        width: 32,
+        height: 32,
+        province_ids: (0..1024)
+            .map(|pixel| if pixel % 32 < 16 { 1 } else { 2 })
+            .collect(),
+        definitions: BTreeMap::new(),
+        country_colors: Default::default(),
+    };
+    let rivers = installed_content_image::IndexedImage {
+        width: 32,
+        height: 32,
+        indices: vec![255; 1024],
+        palette: [[0; 4]; 256],
+    };
+    let types = Buildings::default();
+    let mut image = heightmap(100);
+    let make = |heightmap| {
+        RailGeometry::new(&map, &[], &types, &rivers, heightmap, defines()).unwrap()
+    };
+    let first = make(Arc::clone(&image));
+    assert!(Arc::ptr_eq(&first.heightmap, &image));
+    let network = network(&[(1, 2, 2)], &[], &[]);
+    let before = first.build_network(&network).unwrap();
+    assert!(!before.native_vertices.is_empty());
+    assert!(first.build(&network).unwrap().bit_eq(&before));
+    let base = first.last_base().unwrap();
+    image = heightmap(200);
+    let second = make(Arc::clone(&image));
+    assert!(Arc::ptr_eq(&second.heightmap, &image));
+    assert!(!Arc::ptr_eq(&first.heightmap, &second.heightmap));
+    assert!(!Arc::ptr_eq(&first.identity, &second.identity));
+    assert!(first.build(&network).unwrap().bit_eq(&before));
+    let full = second.build_network(&network).unwrap();
+    assert!(!before.bit_eq(&full));
+    let (mesh, next) = second.build_from(Some(&base), &network).unwrap();
+    assert!(mesh.bit_eq(&full));
+    assert!(Arc::ptr_eq(&next.owner, &second.identity));
+    assert!(
+        next.runs
+            .iter()
+            .zip(&base.runs)
+            .all(|(new, old)| !Arc::ptr_eq(&new.vertices, &old.vertices))
+    );
+    let (patched, repeated) = second.build_from(Some(&next), &network).unwrap();
+    assert!(patched.bit_eq(&full));
+    assert!(
+        repeated
+            .runs
+            .iter()
+            .zip(&next.runs)
+            .all(|(new, old)| Arc::ptr_eq(&new.vertices, &old.vertices))
+    );
 }

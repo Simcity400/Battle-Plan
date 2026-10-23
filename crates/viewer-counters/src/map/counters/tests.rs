@@ -1629,6 +1629,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         kinds: Arc::new(Default::default()),
         bounds: Default::default(),
         geography: geography::Memo::default(),
+        template_icons: TemplateIconMemo::default(),
         region_of: Default::default(),
         region_provinces: Default::default(),
         region_icons: Default::default(),
@@ -5745,6 +5746,101 @@ fn the_navy_mode_draws_armies_at_its_opacity_and_railway_guns_whole() {
     assert_eq!(land::plate_opacity(&navy, false), 0.5);
     assert_eq!(land::plate_opacity(&navy, true), 1.0);
     assert_eq!(land::plate_opacity(&Visibility::POLITICAL, false), 1.0);
+}
+
+#[test]
+fn memoized_template_icons_equal_a_fresh_read_hour_by_hour() {
+    let icon = |template, name: &str, custom_icon| replay_data::rows::DivisionTemplateIconRow {
+        template,
+        priority_unit: 7,
+        priority_unit_name: name.as_bytes().to_vec(),
+        custom_icon,
+        ..Default::default()
+    };
+    let frame = |hour, view: TableView| {
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour,
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "not needed".into(),
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::DivisionTemplateIcons.index()] = view;
+        frame
+    };
+    let complete = |rows| TableView::Complete(TableRows::DivisionTemplateIcons(rows));
+    let at = |frame: &DecodedFrame, hour| DecodedFrame {
+        hour,
+        ..frame.clone()
+    };
+    let first = frame(1, complete(vec![icon(50, "infantry", -1), icon(60, "", 3)]));
+    let other = frame(8, TableView::Complete(TableRows::Countries(Vec::new())));
+    let hours = [
+        at(&first, 1),
+        at(&first, 2),
+        frame(3, complete(vec![icon(50, "infantry", -1), icon(60, "", 3)])),
+        frame(4, complete(vec![icon(50, "armor", -1), icon(60, "", 3)])),
+        frame(
+            5,
+            complete(vec![icon(50, "infantry", -1), icon(50, "armor", 2)]),
+        ),
+        frame(
+            6,
+            TableView::Truncated {
+                rows: TableRows::DivisionTemplateIcons(vec![icon(70, "cavalry", -1)]),
+                missing: 3,
+            },
+        ),
+        frame(
+            7,
+            TableView::Unavailable {
+                reason: "not read this hour".into(),
+            },
+        ),
+        at(&other, 8),
+        at(&other, 9),
+    ];
+    let read = |icons: &io::Result<Arc<TemplateIcons>>| match icons {
+        Ok(icons) => Ok((
+            icons.by_template.clone(),
+            icons.grouping.clone(),
+            icons.priorities.clone(),
+        )),
+        Err(error) => Err(error.to_string()),
+    };
+    let memo = TemplateIconMemo::default();
+    let kept: Vec<_> = hours
+        .iter()
+        .map(|frame| {
+            let fresh = TemplateIcons::read(frame).map(Arc::new);
+            let kept = memo.read(frame);
+            assert_eq!(read(&kept), read(&fresh), "hour {}", frame.hour);
+            kept
+        })
+        .collect();
+    let value = |hour: usize| kept[hour - 1].as_ref().unwrap();
+    assert!(Arc::ptr_eq(value(1), value(2)));
+    assert!(!Arc::ptr_eq(value(1), value(3)));
+    assert_eq!(read(&kept[0]), read(&kept[2]));
+    assert_eq!(value(4).by_template[&50].name, "armor");
+    assert_eq!(
+        (
+            value(5).by_template[&50].name.as_str(),
+            value(5).by_template[&50].custom_icon
+        ),
+        ("armor", 2)
+    );
+    assert_eq!(value(6).priorities.keys().collect::<Vec<_>>(), [&70]);
+    assert!(value(7).by_template.is_empty());
+    for hour in [8, 9] {
+        let Err(refusal) = &kept[hour - 1] else {
+            panic!("hour {hour} is not refused");
+        };
+        let refusal = refusal.to_string();
+        assert!(refusal.contains(&format!("hour {hour} ")), "{refusal}");
+    }
 }
 
 mod capture_scope;

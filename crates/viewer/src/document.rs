@@ -2228,7 +2228,7 @@ impl Document {
                     &buildings_read,
                     &building_types,
                     &assets.rivers,
-                    &heights,
+                    Arc::clone(&assets.heightmap),
                     rail_defines,
                 )?;
                 Ok((rail_geometry, started.elapsed()))
@@ -3272,19 +3272,26 @@ impl<'a> Hour<'a> {
 
     /// Build only the current hour's railway graph; static geography is cached.
     pub fn rail_mesh(&self) -> io::Result<RailMesh> {
-        Ok(self.rail_mesh_of(&rail_layer::RailNetwork::read(self.frame)?))
+        self.rail_mesh_of(&Arc::new(rail_layer::RailNetwork::read(self.frame)?))
     }
 
     /// The railway of a network read from an hour ([`rail_layer::RailNetwork::read`]).
-    pub fn rail_mesh_of(&self, network: &rail_layer::RailNetwork) -> RailMesh {
-        self.rail_geometry.build_network(
-            network,
-            &HeightField {
-                width: self.assets.heightmap.width,
-                height: self.assets.heightmap.height,
-                values: self.assets.heightmap_texels(),
-            },
-        )
+    pub fn rail_mesh_of(&self, network: &Arc<rail_layer::RailNetwork>) -> io::Result<RailMesh> {
+        self.rail_geometry.build(network)
+    }
+
+    #[cfg(test)]
+    pub fn rail_mesh_full_of(&self, network: &rail_layer::RailNetwork) -> io::Result<RailMesh> {
+        self.rail_geometry.build_network(network)
+    }
+
+    #[cfg(test)]
+    pub fn rail_mesh_from(
+        &self,
+        base: Option<&rail_layer::RailBase>,
+        network: &Arc<rail_layer::RailNetwork>,
+    ) -> io::Result<(RailMesh, rail_layer::RailBase)> {
+        self.rail_geometry.build_from(base, network)
     }
 
     // orders: the viewing country's battle plan
@@ -3704,6 +3711,30 @@ impl<'a> Hour<'a> {
                 height: self.map.height,
                 spawn_city: &self.assets.spawn_city,
             },
+            spans,
+        )
+    }
+
+    pub fn map_building_field_patched(
+        &self,
+        perspective: &perspective::Choice,
+        base: Option<&viewer_world::map::map_buildings::BuildingsBase>,
+        spans: &mut viewer_foundation::profiling::BuilderSpans,
+    ) -> io::Result<(
+        viewer_world::map::map_buildings::PreparedBuildings,
+        viewer_world::map::map_buildings::MapBuildingSummary,
+        viewer_world::map::map_buildings::BuildingsBase,
+    )> {
+        let vision = spans.measure("buildings.vision", |_| self.vision(perspective))?;
+        self.map_buildings.field_patched(
+            self.frame,
+            &vision,
+            &viewer_world::map::map_buildings::CityTerrain {
+                width: self.map.width,
+                height: self.map.height,
+                spawn_city: &self.assets.spawn_city,
+            },
+            base,
             spans,
         )
     }

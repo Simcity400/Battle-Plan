@@ -322,7 +322,7 @@ pub struct Vision {
     /// The viewer's modifier 0x24B.
     unit_modifier: i64,
     /// Rebuilt province bytes for this country (fog on only).
-    visibility: BTreeMap<u32, u8>,
+    visibility: Arc<BTreeMap<u32, u8>>,
     /// The input the province rebuild lacked, when it failed.
     visibility_gap: Option<&'static str>,
     /// A land unit invading from sea takes intel from its landing province.
@@ -448,7 +448,7 @@ impl Vision {
             });
             match rebuilt {
                 Ok((bytes, sight)) => {
-                    vision.visibility = bytes;
+                    vision.visibility = Arc::new(bytes);
                     vision.sight_provinces = sight;
                 }
                 Err(reason) => vision.visibility_gap = Some(reason),
@@ -519,6 +519,10 @@ impl Vision {
 
     /// The province bytes for the intel texture, or `None` when no fog is drawn.
     pub fn province_fog(&self) -> Option<&BTreeMap<u32, u8>> {
+        (self.fog && self.visibility_gap.is_none()).then_some(self.visibility.as_ref())
+    }
+
+    pub fn shared_province_fog(&self) -> Option<&Arc<BTreeMap<u32, u8>>> {
         (self.fog && self.visibility_gap.is_none()).then_some(&self.visibility)
     }
 
@@ -565,7 +569,7 @@ impl Vision {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_visibility(&mut self, bytes: impl IntoIterator<Item = (u32, u8)>) {
-        self.visibility = bytes.into_iter().collect();
+        self.visibility = Arc::new(bytes.into_iter().collect());
         self.visibility_gap = None;
     }
 

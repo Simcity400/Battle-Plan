@@ -83,6 +83,7 @@ pub(super) fn anchors() -> CounterContent {
         kinds: Arc::new(BTreeMap::new()),
         bounds: Arc::new(BTreeMap::new()),
         geography: geography::Memo::default(),
+        template_icons: TemplateIconMemo::default(),
         region_of: Arc::new([(1, 1), (2, 2)].into()),
         region_provinces: [(1, vec![1]), (2, vec![2])].into(),
         region_icons: BTreeMap::new(),

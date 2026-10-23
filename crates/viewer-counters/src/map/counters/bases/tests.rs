@@ -559,3 +559,88 @@ fn cached_base_joins_equal_fresh_hour_derivations() {
         },
     );
 }
+
+#[test]
+fn memoized_building_tokens_equal_a_fresh_build_hour_by_hour() {
+    use replay_data::{rows::LexicalTokenRow, rows::TableRows};
+    use replay_frame::frame::TableView;
+    let registry = ["naval_hq", "facility", "dock"].map(String::from);
+    let template = |name: &str| IconTemplate {
+        name: name.into(),
+        anchor: None,
+        ambiguous: false,
+    };
+    let icons = BuildingIconContent {
+        headquarters: vec![template("naval_hq")],
+        facilities: BTreeMap::from([(
+            "facility".to_owned(),
+            ("specialization_naval".to_owned(), template("facility")),
+        )]),
+        keys: TokenKeys::new(&registry),
+        ..Default::default()
+    };
+    let at = |frame: &DecodedFrame, hour| DecodedFrame {
+        hour,
+        ..frame.clone()
+    };
+    let rows = |literals: &[(u32, &str)]| {
+        TableRows::LexicalTokens(
+            literals
+                .iter()
+                .map(|&(token, literal)| LexicalTokenRow {
+                    token,
+                    literal: literal.as_bytes().to_vec(),
+                })
+                .collect(),
+        )
+    };
+    let with = |view: TableView| {
+        let mut frame = token_frame(&[]);
+        *frame.tables[replay_data::rows::TableId::LexicalTokens.index()] = view;
+        frame
+    };
+    let first = token_frame(&[(3, "Naval_HQ"), (5, "facility"), (8, "FACILITY")]);
+    let unsorted = token_frame(&[(8, "FACILITY"), (3, "Naval_HQ")]);
+    let hours = [
+        at(&first, 1),
+        at(&first, 2),
+        token_frame(&[(3, "Naval_HQ"), (5, "facility"), (8, "FACILITY")]),
+        token_frame(&[(3, "Naval_HQ"), (5, "facility")]),
+        at(&unsorted, 5),
+        at(&unsorted, 6),
+        with(TableView::Unavailable {
+            reason: "not read this hour".into(),
+        }),
+        with(TableView::Truncated {
+            rows: rows(&[(3, "naval_hq")]),
+            missing: 2,
+        }),
+        at(&first, 9),
+    ];
+    let answer = |built: &io::Result<Arc<BuildingTokens>>| match built {
+        Ok(built) => Ok(BuildingTokens::clone(built)),
+        Err(error) => Err(error.to_string()),
+    };
+    let mut kept: Vec<Arc<BuildingTokens>> = Vec::new();
+    for (index, frame) in hours.iter().enumerate() {
+        let fresh = building_tokens(frame, &icons.keys, &icons.names()).map(Arc::new);
+        let memo = icons.tokens(frame);
+        assert_eq!(answer(&memo), answer(&fresh), "hour {index}");
+        if let Ok(memo) = memo {
+            kept.push(memo);
+        }
+    }
+    assert!(Arc::ptr_eq(&kept[0], &kept[1]));
+    assert!(!Arc::ptr_eq(&kept[0], &kept[2]));
+    assert_eq!(kept[0], kept[2]);
+    assert_eq!(
+        kept[0].0,
+        BTreeMap::from([("naval_hq".to_owned(), 3)]),
+        "the refused facility has no token"
+    );
+    assert_eq!(kept[3].0.get("facility"), Some(&5));
+    for hour in [5, 6] {
+        let refusal = answer(&icons.tokens(&hours[hour - 1])).unwrap_err();
+        assert!(refusal.contains(&format!("hour {hour} ")), "{refusal}");
+    }
+}

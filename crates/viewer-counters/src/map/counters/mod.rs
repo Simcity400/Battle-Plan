@@ -1241,6 +1241,7 @@ pub struct CounterContent {
     pub bounds: Arc<BTreeMap<u32, Bounds>>,
     /// Recent immutable grouping products, keyed by their ordered state projection and content.
     geography: geography::Memo,
+    template_icons: TemplateIconMemo,
     /// Province to strategic region, from `map/strategicregions/*.txt`.
     pub region_of: Arc<BTreeMap<u32, u32>>,
     /// Each strategic region's provinces in file order. Repeated provinces are logged
@@ -1421,6 +1422,7 @@ impl CounterContent {
             ),
             bounds: Arc::new(province_boxes(&provinces)),
             geography: geography::Memo::default(),
+            template_icons: TemplateIconMemo::default(),
             region_of: Arc::new(region_of),
             region_provinces,
             region_icons: BTreeMap::new(),
@@ -3390,7 +3392,7 @@ pub fn hour_tables_profiled(
             order,
             native,
             orders: counter_inputs::OrdersIndex::read(frame)?,
-            icons: Arc::new(TemplateIcons::read(frame)?),
+            icons: content.template_icons.read(frame)?,
             status: DivisionStatuses::read(frame)?,
             movement,
             actions,

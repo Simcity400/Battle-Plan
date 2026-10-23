@@ -62,7 +62,7 @@ pub struct MapAssets {
     pub world_normal: Rgba8Image,
     /// `map/heightmap.bmp` bytes, rows top-down: vertex heights and the water
     /// pass's `HeightTexture`.
-    pub heightmap: IndexedImage,
+    pub heightmap: Arc<IndexedImage>,
     /// The heightmap texture the passes sample (its size and `Unorm` payload) when it is not
     /// [`Self::heightmap`] as it is, as under `force_pow2_textures` ([`sampled_heights`]).
     pub height_texture: Option<([u32; 2], Vec<u8>)>,

@@ -1237,6 +1237,30 @@ pub(super) struct TemplateIcons {
     pub(super) priorities: BTreeMap<u64, u32>,
 }
 
+const TEMPLATE_ICON_TABLES: &[replay_data::rows::TableId] =
+    &[replay_data::rows::TableId::DivisionTemplateIcons];
+
+#[derive(Clone)]
+pub(super) struct TemplateIconMemo(Arc<viewer_foundation::map::memo::Keyed<TemplateIcons>>);
+
+impl Default for TemplateIconMemo {
+    fn default() -> Self {
+        Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
+            TEMPLATE_ICON_TABLES,
+            4,
+        )))
+    }
+}
+
+impl TemplateIconMemo {
+    // Refusals are not cached: each hour keeps its own error context.
+    pub(super) fn read(&self, frame: &DecodedFrame) -> io::Result<Arc<TemplateIcons>> {
+        self.0.get_or_build(frame, (), |projected| {
+            TemplateIcons::read(projected).map(Arc::new)
+        })
+    }
+}
+
 impl TemplateIcons {
     /// `DivisionTemplateIcons` is keyed by the full u64 template handle held by
     /// `Divisions.template`. `priority_unit` is the recorded counter sub-unit.

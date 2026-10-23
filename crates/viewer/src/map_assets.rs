@@ -2,7 +2,7 @@
 
 use installed_content_core::{ResolvedLayers, terrain::DefaultMap, terrain::TerrainDefinitions};
 use installed_content_image::{bmp, native::Decode};
-use std::io;
+use std::{io, sync::Arc};
 use viewer_world::map::scene_content::MapAssets;
 use {
     viewer_foundation::errors::invalid, viewer_foundation::map::camera::MapSize,
@@ -174,7 +174,7 @@ pub fn load(
         ice_noise: texture(&format!("ice_noise_{quality}.dds"), ColorSpace::Linear)?,
         fow_noise: texture(&format!("fow_noise_{quality}.dds"), ColorSpace::Linear)?,
         world_normal,
-        heightmap,
+        heightmap: Arc::new(heightmap),
         height_texture,
         terrain_ids,
         // colour
