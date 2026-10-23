@@ -13,12 +13,15 @@ use std::{
         fs::{FileExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 use uuid::Uuid;
 use windows_sys::Win32::{
-    Foundation::GENERIC_WRITE,
+    Foundation::{ERROR_SHARING_VIOLATION, GENERIC_WRITE},
     Storage::FileSystem::{DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
 };
 
@@ -53,6 +56,22 @@ pub fn local_space() -> io::Result<(u64, u64)> {
     Ok((free, total))
 }
 const LOCK: &str = "writer.lock";
+
+#[derive(Debug)]
+struct WriterBusy;
+
+impl std::fmt::Display for WriterBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("writer busy")
+    }
+}
+
+impl std::error::Error for WriterBusy {}
+
+pub fn is_writer_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        && error.get_ref().is_some_and(|inner| inner.is::<WriterBusy>())
+}
 /// The manifest is a small root naming each section's runs of entries in
 /// append-only entry logs, with the section names in a names file. Manifests
 /// of an older layout (one flat file of every entry, or one file per range)
@@ -95,6 +114,9 @@ pub struct SourceKey {
     content: Arc<Vec<Stamp>>,
     #[serde(skip)]
     binding: Arc<Mutex<Option<(PathBuf, Uuid, bool)>>>,
+    /// A commit rejected these inputs, not merely a different saved manifest.
+    #[serde(skip)]
+    rejected: Arc<AtomicBool>,
     /// When the content stamps were last read and found current, shared by
     /// the key's clones.
     #[serde(skip)]
@@ -184,6 +206,18 @@ fn stamps(
 }
 
 impl SourceKey {
+    /// Refresh only the saved manifest identity, never a rejected binding.
+    pub fn refresh_saved_binding(&self, saved: &Self) {
+        if self != saved {
+            return;
+        }
+        let saved = saved.binding.lock().unwrap().clone();
+        let mut binding = self.binding.lock().unwrap();
+        if !self.rejected.load(Ordering::Acquire) {
+            *binding = saved;
+        }
+    }
+
     pub fn recording_size(&self) -> u64 {
         self.recording.size
     }
@@ -193,6 +227,7 @@ impl SourceKey {
             recording: Stamp::capture(recording)?,
             content: Arc::new(stamps(content, |path| Stamp::capture(path))?),
             binding: Arc::default(),
+            rejected: Arc::default(),
             checked: Arc::new(Mutex::new(Some(Instant::now()))),
         })
     }
@@ -208,6 +243,7 @@ impl SourceKey {
             recording: Stamp::read(self.recording.path.clone())?,
             content: Arc::new(stamps(&paths, |path| Stamp::read(path.clone()))?),
             binding: Arc::default(),
+            rejected: Arc::default(),
             checked: Arc::new(Mutex::new(Some(Instant::now()))),
         };
         Ok(if current == *self {
@@ -252,6 +288,7 @@ impl SourceKey {
             recording,
             content: Arc::clone(&self.content),
             binding: Arc::default(),
+            rejected: Arc::default(),
             checked: Arc::clone(&self.checked),
         })
     }
@@ -692,6 +729,13 @@ impl Store {
             .truncate(false)
             .share_mode(0)
             .open(self.directory.join(LOCK))
+            .map_err(|error| {
+                if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) {
+                    io::Error::new(io::ErrorKind::WouldBlock, WriterBusy)
+                } else {
+                    error
+                }
+            })
     }
 
     /// Keeps the lock, the manifest, its source stamps, its names file and the
@@ -2692,10 +2736,11 @@ impl Writer {
             ));
         }
         let valid = self.key.current_for_commit();
-        if !matches!(&valid, Ok(true))
-            && let Some((_, _, accepted)) = self.key.binding.lock().unwrap().as_mut()
-        {
-            *accepted = false;
+        if !matches!(&valid, Ok(true)) {
+            self.key.rejected.store(true, Ordering::Release);
+            if let Some((_, _, accepted)) = self.key.binding.lock().unwrap().as_mut() {
+                *accepted = false;
+            }
         }
         if !valid? {
             return Err(invalid("sources changed during preparation"));
@@ -3004,6 +3049,7 @@ impl Writer {
         let _ = written;
         publish(&self.directory.join(MANIFEST), |file| file.write_all(&root))?;
         *self.key.binding.lock().unwrap() = Some((self.directory.clone(), source, true));
+        self.key.rejected.store(false, Ordering::Release);
         Ok(())
     }
 

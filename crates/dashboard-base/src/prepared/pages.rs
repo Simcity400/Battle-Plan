@@ -14,6 +14,11 @@ use std::{
 /// The production publication budget, shared by independent family folds.
 pub const BATCH_BYTES: usize = 64 * 1024 * 1024;
 
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub static TEST_BATCH_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(BATCH_BYTES) };
+}
+
 /// Whether this block publishes the family's pending rows and held pages.
 pub fn publication_due(
     continues: bool,
@@ -23,7 +28,11 @@ pub fn publication_due(
 ) -> bool {
     !continues || measured || full || {
         let (pending, held) = bytes();
-        pending.saturating_add(held) >= BATCH_BYTES
+        #[cfg(any(test, feature = "test-support"))]
+        let budget = TEST_BATCH_BYTES.get();
+        #[cfg(not(any(test, feature = "test-support")))]
+        let budget = BATCH_BYTES;
+        pending.saturating_add(held) >= budget
     }
 }
 

@@ -1057,7 +1057,7 @@ pub fn field_key(tag: &str, measure: &str) -> String {
     serde_json::to_string(&(tag, measure)).expect("string keys")
 }
 
-fn catalogue_section(family: &str, branch: u64) -> String {
+pub fn catalogue_section(family: &str, branch: u64) -> String {
     format!("{family}-{branch}-catalogue")
 }
 fn parse_catalogue<T: DeserializeOwned>(text: Option<Vec<u8>>) -> io::Result<Option<Catalogue<T>>> {

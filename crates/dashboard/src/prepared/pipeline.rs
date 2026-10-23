@@ -19,11 +19,9 @@ use replay_data::identity::IdentityCodec;
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use std::io::Read;
 use std::{
     collections::BTreeMap,
-    io,
+    io::{self, Read},
     num::NonZeroU32,
     sync::atomic::AtomicBool,
     time::{Duration, Instant},
@@ -111,6 +109,7 @@ fn batch_blocks() -> usize {
 #[cfg(test)]
 thread_local! {
     static TEST_BATCH_BLOCKS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static TEST_REPLANS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 /// Run `run` with batches of at most `blocks` blocks of a branch, for the
@@ -1636,20 +1635,63 @@ fn block_selected(resources_hourly: bool, army_hourly: bool) -> Vec<TableId> {
         .collect()
 }
 
+fn zero_checkpoint(replay: &Replay, content: Option<&ContentOptions>) -> io::Result<Checkpoint> {
+    Ok(Checkpoint {
+        schema: SCHEMA,
+        cursor: Cursor {
+            next_block: 0,
+            previous: None,
+        },
+        selected: selected().iter().map(|table| *table as u16).collect(),
+        header: header(replay)?,
+        index: replay.index.iter().map(Block::from).collect(),
+        sessions: sessions(replay)?,
+        branches: branches(replay)?,
+        gaps: gaps(replay)?,
+        map: Default::default(),
+        content: content.map(|content| content.allow_unverified),
+        display_error: None,
+        display_failures: 0,
+        refused: BTreeMap::new(),
+        independent: independent::names()
+            .iter()
+            .map(|&name| (name.to_owned(), independent::Progress::default()))
+            .collect(),
+        newest: BTreeMap::new(),
+        bytes: 0,
+    })
+}
+
+fn checkpoint_bytes(
+    store: &store::Store,
+    key: &store::SourceKey,
+    saved: Option<&store::SourceKey>,
+) -> io::Result<Option<Vec<u8>>> {
+    let file = match saved {
+        Some(previous) if previous != key => store.read_prefix(previous, key, CHECKPOINT, 0)?,
+        _ => store.read(key, CHECKPOINT, 0)?,
+    };
+    file.map(|mut file| {
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+    .transpose()
+}
+
 fn checkpoint(
     store: &store::Store,
     key: &store::SourceKey,
     saved: Option<&store::SourceKey>,
 ) -> io::Result<Option<(Checkpoint, u64)>> {
-    let file = match saved {
-        Some(previous) if previous != key => store.read_prefix(previous, key, CHECKPOINT, 0)?,
-        _ => store.read(key, CHECKPOINT, 0)?,
-    };
-    let Some(file) = file else {
+    parse_checkpoint(checkpoint_bytes(store, key, saved)?.as_deref())
+}
+
+fn parse_checkpoint(packet: Option<&[u8]>) -> io::Result<Option<(Checkpoint, u64)>> {
+    let Some(packet) = packet else {
         return Ok(None);
     };
-    let own_bytes = file.len();
-    let state: Checkpoint = match serde_json::from_reader(io::BufReader::new(file)) {
+    let state: Checkpoint = match serde_json::from_slice(packet) {
         Ok(state) => state,
         Err(_) => return Ok(None),
     };
@@ -1658,7 +1700,7 @@ fn checkpoint(
     }
     let bytes = state
         .bytes
-        .checked_add(own_bytes)
+        .checked_add(packet.len() as u64)
         .ok_or_else(|| invalid("prepared byte count overflow"))?;
     Ok(Some((state, bytes)))
 }
@@ -2123,6 +2165,7 @@ macro_rules! time_family {
     }};
 }
 
+pub mod external;
 mod flush;
 mod independent;
 mod lanes;
@@ -2280,8 +2323,56 @@ fn run_checked(
     )
 }
 
-// Compile the preparation engine once, independently of caller callback types.
-#[inline(never)]
+fn writer_busy(error: &io::Error) -> bool {
+    store::is_writer_busy(error)
+}
+
+fn writer_checkpoint_matches(
+    writer: &mut store::Writer,
+    expected: Option<&[u8]>,
+) -> io::Result<bool> {
+    let current = dashboard_base::prepared::pages::Pages::read_at(writer, CHECKPOINT, 0)?;
+    Ok(current.as_deref() == expected)
+}
+
+fn wait_for_writer(
+    mut open: impl FnMut() -> io::Result<store::Writer>,
+    cancelled: &AtomicBool,
+    published: &Accepted,
+    accepted: &mut dyn FnMut(&Accepted),
+) -> io::Result<store::Writer> {
+    let mut waiting = false;
+    loop {
+        check_cancel(cancelled)?;
+        match open() {
+            Ok(writer) => {
+                if waiting {
+                    accepted(published);
+                }
+                return Ok(writer);
+            }
+            Err(error) if writer_busy(&error) => {
+                if !waiting {
+                    let mut status = published.clone();
+                    status.sections.push(Section {
+                        id: "writer".into(),
+                        label: "Waiting for another writer".into(),
+                        state: State::Preparing,
+                        done: "0".into(),
+                        total: None,
+                        error: None,
+                    });
+                    accepted(&status);
+                    waiting = true;
+                }
+                check_cancel(cancelled)?;
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn run_inner(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -2290,6 +2381,36 @@ fn run_inner(
     before_commit: &mut dyn FnMut(usize) -> io::Result<()>,
     mut measurement: Option<&mut Measurement<'_>>,
 ) -> io::Result<Accepted> {
+    loop {
+        check_cancel(cancelled)?;
+        if let Some(result) = run_planned(
+            source,
+            content,
+            cancelled,
+            accepted,
+            before_commit,
+            measurement.as_deref_mut(),
+        )? {
+            return Ok(result);
+        }
+        #[cfg(test)]
+        if let Some(replans) = TEST_REPLANS.get() {
+            TEST_REPLANS.set(Some(replans + 1));
+            panic!("Unexpected preparation re-plan");
+        }
+    }
+}
+
+// Compile the preparation engine once, independently of caller callback types.
+#[inline(never)]
+fn run_planned(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+    accepted: &mut dyn FnMut(&Accepted),
+    before_commit: &mut dyn FnMut(usize) -> io::Result<()>,
+    mut measurement: Option<&mut Measurement<'_>>,
+) -> io::Result<Option<Accepted>> {
     let mut family_timings: Option<BTreeMap<&'static str, FamilyTimings>> =
         measurement.is_some().then(BTreeMap::new);
     let mut lane_timings = measurement.is_some().then(BTreeMap::new);
@@ -2303,6 +2424,7 @@ fn run_inner(
         observe,
         super::files(source, content)
     )?;
+    let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key)?;
     let replay = source.replay_ref();
     let shared_replay = source.replay();
     let mut saved = time_family!(
@@ -2315,16 +2437,18 @@ fn run_inner(
     let reuse = saved.as_ref().is_some_and(|previous| {
         previous == &key || previous.recording_size() < key.recording_size() || key.renames(previous)
     });
-    let loaded = if reuse {
+    let planned_checkpoint = if reuse {
         time_family!(
             family_timings,
             "resume.checkpoint",
             observe,
-            checkpoint(&store, &key, saved.as_ref())
+            checkpoint_bytes(&store, &key, saved.as_ref())
         )?
     } else {
         None
     };
+    let loaded = parse_checkpoint(planned_checkpoint.as_deref())?;
+    let planned_saved = saved.clone();
     let loaded = match loaded {
         Some(pair)
             if time_family!(
@@ -2423,7 +2547,7 @@ fn run_inner(
                 measurement.timings.families = family_timings;
                 measurement.cleanup_started = Some(Instant::now());
             }
-            return Ok(result);
+            return Ok(Some(result));
         }
         let resume = match saved.as_ref() {
             Some(previous) if previous != &key => time_family!(
@@ -2466,30 +2590,7 @@ fn run_inner(
     } else {
         saved = None;
         (
-            Checkpoint {
-                schema: SCHEMA,
-                cursor: Cursor {
-                    next_block: 0,
-                    previous: None,
-                },
-                selected: selected().iter().map(|table| *table as u16).collect(),
-                header: header(replay)?,
-                index: replay.index.iter().map(Block::from).collect(),
-                sessions: sessions(replay)?,
-                branches: branches(replay)?,
-                gaps: gaps(replay)?,
-                map: Default::default(),
-                content: content.map(|content| content.allow_unverified),
-                display_error: None,
-                display_failures: 0,
-                refused: BTreeMap::new(),
-                independent: independent::names()
-                    .iter()
-                    .map(|&name| (name.to_owned(), independent::Progress::default()))
-                    .collect(),
-                newest: BTreeMap::new(),
-                bytes: 0,
-            },
+            zero_checkpoint(replay, content)?,
             0,
             time_family!(
                 family_timings,
@@ -2743,29 +2844,67 @@ fn run_inner(
             measurement.timings.families = family_timings;
             measurement.cleanup_started = Some(Instant::now());
         }
-        return Ok(published);
+        return Ok(Some(published));
     }
     let mut metadata_dirty = true;
-    let mut writer = match saved.as_ref() {
-        Some(previous) if previous != &key => time_family!(
-            family_timings,
-            "publication.open",
-            observe,
-            store.append(previous, key.clone())
-        )?,
-        Some(_) => time_family!(
-            family_timings,
-            "publication.open",
-            observe,
-            store.extend(&key)
-        )?,
-        None => time_family!(
-            family_timings,
-            "publication.open",
-            observe,
-            store.replace(key.clone())
-        )?,
+    let opened = time_family!(
+        family_timings,
+        "publication.open",
+        observe,
+        wait_for_writer(
+            || match saved.as_ref() {
+                Some(previous) if previous != &key => store.append(previous, key.clone()),
+                Some(_) => store.extend(&key),
+                None => store.replace(key.clone()),
+            },
+            cancelled,
+            &published,
+            accepted,
+        )
+    );
+    let mut writer = match opened {
+        Ok(writer) => writer,
+        Err(error) => {
+            let current = store.saved_key()?;
+            if current != planned_saved {
+                return Ok(None);
+            }
+            let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key.clone())?;
+            if key.refresh_recording(source.path())? != key
+                || (current.as_ref() == Some(&key) && !store.is_reusable(&key)?)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Recording changed; reopen it before preparing the current content",
+                ));
+            }
+            if reuse && checkpoint_bytes(&store, &key, current.as_ref())? != planned_checkpoint {
+                return Ok(None);
+            }
+            return Err(error);
+        }
     };
+    let current_saved = store.saved_key()?;
+    if current_saved != planned_saved {
+        return Ok(None);
+    }
+    let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key)?;
+    if key.refresh_recording(source.path())? != key
+        || (current_saved.as_ref() == Some(&key) && !store.is_reusable(&key)?)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Recording changed; reopen it before preparing the current content",
+        ));
+    }
+    let current_checkpoint = if reuse {
+        checkpoint_bytes(&store, &key, current_saved.as_ref())?
+    } else {
+        None
+    };
+    if current_checkpoint != planned_checkpoint {
+        return Ok(None);
+    }
     if metadata_dirty {
         time_family!(
             family_timings,
@@ -2804,15 +2943,15 @@ fn run_inner(
             write_checkpoint(&mut writer, &mut state, replay, &map, bytes)
         )?;
         check_cancel(cancelled)?;
+        let committed_checkpoint =
+            dashboard_base::prepared::pages::Pages::read_at(&mut writer, CHECKPOINT, 0)?;
         time_family!(family_timings, "store_commit", flush, writer.commit())?;
         metadata_dirty = false;
         saved = Some(key.clone());
-        writer = time_family!(
-            family_timings,
-            "publication.open",
-            observe,
-            store.extend(&key)
-        )?;
+        writer = wait_for_writer(|| store.extend(&key), cancelled, &published, accepted)?;
+        if !writer_checkpoint_matches(&mut writer, committed_checkpoint.as_deref())? {
+            return Ok(None);
+        }
     }
     // What each family's newest windows did, reported in status rows of
     // their own with every accepted commit while preparation runs.
@@ -2852,10 +2991,15 @@ fn run_inner(
         // precedes the side publishers' first commit (or there are no jobs).
         bytes = write_checkpoint_state(&mut writer, &mut state, replay, bytes)?;
         check_cancel(cancelled)?;
+        let committed_checkpoint =
+            dashboard_base::prepared::pages::Pages::read_at(&mut writer, CHECKPOINT, 0)?;
         writer.commit()?;
         metadata_dirty = false;
         saved = Some(key.clone());
-        writer = store.extend(&key)?;
+        writer = wait_for_writer(|| store.extend(&key), cancelled, &published, &mut accepted)?;
+        if !writer_checkpoint_matches(&mut writer, committed_checkpoint.as_deref())? {
+            return Ok(None);
+        }
     }
     let mut committed_state = state.clone();
     let mut committed_saved = saved.clone();
@@ -5372,7 +5516,7 @@ fn run_inner(
         measurement.lane_families = lane_timings;
         measurement.cleanup_started = Some(Instant::now());
     }
-    Ok(published)
+    Ok(Some(published))
 }
 /// Records the current recording's metadata and the accepted cursor as the checkpoint,
 /// returning the stored byte total including the new checkpoint file.

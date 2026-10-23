@@ -826,8 +826,24 @@ fn writer_is_exclusive_and_clear_cannot_split_the_lock() {
     let fixture = Fixture::new();
     let key = fixture.save(b"prepared");
     let held = fixture.store.replace(key.clone()).unwrap();
-    assert!(fixture.store.replace(key.clone()).is_err());
-    assert!(fixture.store.clear().is_err());
+    assert!(is_writer_busy(
+        &fixture.store.replace(key.clone()).err().unwrap()
+    ));
+    assert!(is_writer_busy(&fixture.store.clear().unwrap_err()));
+    assert!(!is_writer_busy(&io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "another reason"
+    )));
+    assert!(!is_writer_busy(&io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "writer busy"
+    )));
+    assert!(!is_writer_busy(&io::Error::from_raw_os_error(
+        ERROR_SHARING_VIOLATION as i32
+    )));
+    assert!(!is_writer_busy(&io::Error::from_raw_os_error(
+        windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION as i32
+    )));
     assert!(fixture.store.is_reusable(&key).unwrap());
     drop(held);
     fixture.store.clear().unwrap();
@@ -858,14 +874,54 @@ fn commit_refuses_sources_changed_during_preparation() {
     let fixture = Fixture::new();
     let key = fixture.save(b"committed");
     let manifest_before = fs::read(fixture.store.directory.join(MANIFEST)).unwrap();
-    let mut writer = fixture.store.replace(key).unwrap();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
     writer.write("countries", &b"new"[..]).unwrap();
     fs::write(&fixture.content[0], b"changed content").unwrap();
     assert!(writer.commit().is_err());
+    let saved = fixture.store.saved_key().unwrap().unwrap();
+    assert_eq!(saved, key);
+    let checked = *key.checked.lock().unwrap();
+    key.refresh_saved_binding(&saved);
+    assert!(!fixture.store.is_reusable(&key).unwrap());
+    assert_eq!(*key.checked.lock().unwrap(), checked);
     assert_eq!(
         fs::read(fixture.store.directory.join(MANIFEST)).unwrap(),
         manifest_before
     );
+}
+
+#[test]
+fn successful_commit_clears_rejection_and_allows_saved_binding_refresh() {
+    let fixture = Fixture::new();
+    let key = fixture.save(b"committed");
+    let shared = key.clone();
+    let content = &fixture.content[0];
+    let original = fs::read(content).unwrap();
+    let modified = fs::metadata(content).unwrap().modified().unwrap();
+    let writer = fixture.store.replace(key.clone()).unwrap();
+    fs::write(content, b"changed content").unwrap();
+    assert!(writer.commit().is_err());
+    assert!(shared.rejected.load(Ordering::Acquire));
+
+    fs::write(content, original).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(content)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(key.current().unwrap());
+    let mut writer = fixture.store.replace(key).unwrap();
+    writer.write("countries", &b"recovered"[..]).unwrap();
+    writer.commit().unwrap();
+    assert!(!shared.rejected.load(Ordering::Acquire));
+    assert!(fixture.store.is_reusable(&shared).unwrap());
+
+    let saved = fixture.store.saved_key().unwrap().unwrap();
+    assert!(shared.binding.lock().unwrap().take().is_some());
+    shared.refresh_saved_binding(&saved);
+    assert_eq!(*shared.binding.lock().unwrap(), *saved.binding.lock().unwrap());
+    assert!(fixture.store.is_reusable(&shared).unwrap());
 }
 
 #[test]

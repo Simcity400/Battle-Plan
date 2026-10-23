@@ -2491,7 +2491,7 @@ pub(super) fn coverages(
 }
 
 /// The family's accepted extent of one branch, with its refusals there.
-fn save_coverage(
+pub(super) fn save_coverage(
     writer: &mut store::Writer,
     phase: &Phase<'_>,
     family: &str,

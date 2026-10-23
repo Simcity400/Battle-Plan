@@ -549,9 +549,9 @@ impl<O: Observer> Scan<O> {
     }
 
     /// Publish the batch and the catalogue (this scan).
-    pub fn flush(
+    pub fn flush<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        writer: &mut store::Writer,
+        writer: &mut W,
         branch: u64,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {

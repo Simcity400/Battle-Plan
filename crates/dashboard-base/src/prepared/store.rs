@@ -4,17 +4,18 @@
 use crate::Source;
 use std::{path::Path, sync::Arc};
 
+type Cached = Option<(
+    Option<(crate::content::ContentKey, std::path::PathBuf)>,
+    Arc<store::Store>,
+    store::SourceKey,
+)>;
+
 /// The cache belongs to this recording path, even when another recording shares
 /// its campaign identity. Every content input comes from the recorded stack.
 pub fn files(
     source: &Source,
     content: Option<&crate::products::ContentOptions>,
 ) -> std::io::Result<(Arc<store::Store>, store::SourceKey)> {
-    type Cached = Option<(
-        Option<(crate::content::ContentKey, std::path::PathBuf)>,
-        Arc<store::Store>,
-        store::SourceKey,
-    )>;
     let cache = source.state::<Cached>();
     let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
     let options = content.map(|value| {
@@ -64,6 +65,23 @@ pub fn files(
     store.is_reusable(&key)?;
     *cache = Some((options, Arc::clone(&store), key.clone()));
     Ok((store, key))
+}
+
+pub fn refresh_saved_binding(
+    source: &Source,
+    store: &store::Store,
+    key: store::SourceKey,
+) -> std::io::Result<store::SourceKey> {
+    let cache = source.state::<Cached>();
+    let mut cache = cache.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some((_, _, current)) = cache.as_mut()
+        && *current == key
+        && let Some(saved) = store.saved_key()?.filter(|saved| saved == &key)
+    {
+        current.refresh_saved_binding(&saved);
+        return Ok(current.clone());
+    }
+    Ok(key)
 }
 
 /// Shared host/native directory identity for every revision of one recording.
