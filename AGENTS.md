@@ -39,7 +39,8 @@
 
 ## Tests
 
-- Run only the tests for what you changed: `cargo nextest run -p <crate> [filter]`. No full-suite runs, clippy or extra builds unless asked.
+- Don't run tests, not even before merging. Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00.
+- Read the last run in `captures\ci\latest.md`. If it fails in something you changed, fix it in a new PR; the next daily run checks the fix. No clippy.
 - Each test sets up everything it needs. Never rely on another test or on timing.
 - No tests behind features. Use `#[ignore]` only for benchmarks and tests that need special hardware.
 - Use synthetic data. Tests that need the real game read `BATTLE_PLAN_GAME_DIR`.
@@ -47,6 +48,7 @@
 ## Sharing this machine
 
 - Don't start builds while a `BENCH_RUNNING` file exists under `captures`.
+- Don't start benchmarks while `captures\ci\TESTS_RUNNING` exists: the daily tests hold it, and wait for running benchmarks to end first. One older than 20 hours is stale.
 - A fresh checkout can start from the shared build: `python tools/warm_target.py warm --root warm-start\seed`.
 - Only stop processes you started. Never touch other sessions' work.
 - Put captures and scratch files in `captures\<name>\`, never in Git.
