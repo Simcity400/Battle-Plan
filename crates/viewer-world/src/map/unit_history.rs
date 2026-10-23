@@ -639,16 +639,7 @@ impl History {
             self.bounds = bounds;
             changed = true;
         }
-        for id in self.targets.0.provinces.keys() {
-            if !targets.0.provinces.contains_key(id) {
-                self.provinces.get_mut(id).unwrap().lands = Arc::default();
-            }
-        }
-        changed |= self.provinces.ensure(targets.0.provinces.keys().copied());
-        for (&id, prepared) in &targets.0.provinces {
-            let province = self.provinces.get_mut(&id).unwrap();
-            province.lands = Arc::clone(&prepared.lands);
-        }
+        changed |= self.provinces.install_targets(&self.targets, &targets);
         self.targets = targets;
         if join {
             let _join_span = viewer_foundation::profiling::span("units_join_prepared");

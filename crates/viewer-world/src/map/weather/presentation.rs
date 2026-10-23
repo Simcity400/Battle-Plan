@@ -22,12 +22,13 @@ impl Presentation {
     pub fn set_shared(&mut self, snow: &Arc<SnowMud>, continuity: Continuity) -> bool {
         let size = [snow.width, snow.height];
         let reset = continuity == Continuity::Reset || self.size != size || self.texels.is_empty();
-        let same = self
-            .shared_pending
-            .as_ref()
-            .is_some_and(|had| Arc::ptr_eq(had, snow))
-            || self.pending_texels() == snow.texels;
-        let changed = !same || self.refresh != snow.refresh;
+        let changed = reset
+            || self.refresh != snow.refresh
+            || !(self
+                .shared_pending
+                .as_ref()
+                .is_some_and(|had| Arc::ptr_eq(had, snow))
+                || self.pending_texels() == snow.texels);
         if !reset && !changed {
             return false;
         }
@@ -264,6 +265,111 @@ mod tests {
             assert!(!player.advance(base + 0.75, 0.5));
             assert_eq!(player.fade().to_bits(), 0.0f32.to_bits());
         }
+    }
+
+    // Frozen texel-first install reference, independent of the production refresh-first path.
+    fn set_reference(
+        player: &mut Presentation,
+        snow: &Arc<SnowMud>,
+        continuity: Continuity,
+    ) -> bool {
+        let size = [snow.width, snow.height];
+        let reset =
+            continuity == Continuity::Reset || player.size != size || player.texels.is_empty();
+        let same = player
+            .shared_pending
+            .as_ref()
+            .is_some_and(|had| Arc::ptr_eq(had, snow))
+            || player.pending_texels() == snow.texels;
+        let changed = !same || player.refresh != snow.refresh;
+        if !reset && !changed {
+            return false;
+        }
+        player.size = size;
+        player.shared_pending = Some(Arc::clone(snow));
+        player.refresh = snow.refresh;
+        if reset || player.refresh.is_none() {
+            player.texels.clone_from(&snow.texels);
+            player.dirty = false;
+            player.fade = 0.0;
+            if reset {
+                player.last_time = None;
+                player.last_refresh = 0.0;
+            }
+            return true;
+        }
+        player.dirty = true;
+        false
+    }
+
+    #[test]
+    fn shared_snapshots_and_refresh_first_keep_every_hour_and_frame_equal() {
+        let snapshot = |hour: u32, branch: u32| {
+            let width = 1 + branch;
+            let bytes = (hour / 3 % 4) as u8 * 30;
+            let texels = (0..width * 4).map(|index| bytes + index as u8).collect();
+            SnowMud {
+                width,
+                height: 1,
+                texels,
+                province_snow: vec![],
+                post_factors: None,
+                build: std::time::Duration::from_micros(u64::from(hour)),
+                summary: Default::default(),
+                refresh: (hour % 11 != 10).then(|| Refresh {
+                    interval: 25_000,
+                    identity: u64::from(hour / 5),
+                }),
+            }
+        };
+        let mut arms: [Presentation; 2] = Default::default();
+        let mut interned: Vec<Arc<SnowMud>> = Vec::new();
+        let mut time = 0.0f32;
+        let mut shared = 0;
+        for hour in 0..600u32 {
+            let branch = hour / 97 % 2;
+            let continuity = if hour % 97 == 0 || hour % 41 == 17 {
+                Continuity::Reset
+            } else {
+                Continuity::Continue
+            };
+            let fresh = Arc::new(snapshot(hour, branch));
+            let held = match interned.iter().find(|held| ***held == *fresh) {
+                Some(held) => {
+                    shared += 1;
+                    Arc::clone(held)
+                }
+                None => {
+                    interned.insert(0, Arc::new(snapshot(hour, branch)));
+                    interned.truncate(8);
+                    Arc::clone(&interned[0])
+                }
+            };
+            let installed = [
+                set_reference(&mut arms[0], &fresh, continuity),
+                arms[1].set_shared(&held, continuity),
+            ];
+            assert_eq!(installed[0], installed[1], "hour {hour}");
+            for frame in 0..1 + hour % 3 {
+                time += [0.125, 0.0, 0.5][(hour + frame) as usize % 3];
+                let delta = [0.125, 0.0, 0.25][(hour + frame) as usize % 3];
+                let refreshed = arms.each_mut().map(|arm| arm.advance(time, delta));
+                assert_eq!(refreshed[0], refreshed[1], "hour {hour} frame {frame}");
+                let [old, new] = &arms;
+                assert_eq!(old.size, new.size);
+                assert_eq!(old.texels, new.texels);
+                assert_eq!(old.pending_texels(), new.pending_texels());
+                assert_eq!(old.dirty, new.dirty);
+                assert_eq!(old.refresh, new.refresh);
+                assert_eq!(
+                    old.last_time.map(f32::to_bits),
+                    new.last_time.map(f32::to_bits)
+                );
+                assert_eq!(old.last_refresh.to_bits(), new.last_refresh.to_bits());
+                assert_eq!(old.fade.to_bits(), new.fade.to_bits(), "hour {hour}");
+            }
+        }
+        assert!(shared > 100, "{shared} shared snapshots");
     }
 
     fn steady_render_delta() -> super::super::RenderDelta {

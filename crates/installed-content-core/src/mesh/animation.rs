@@ -21,6 +21,15 @@ pub struct Animation {
 }
 
 impl Animation {
+    /// Retained sample slices and capacities, in translation, rotation and scale order.
+    pub fn sample_storage(&self) -> [(&[f32], usize); 3] {
+        [
+            (&self.translations, self.translations.capacity()),
+            (&self.rotations, self.rotations.capacity()),
+            (&self.scales, self.scales.capacity()),
+        ]
+    }
+
     /// The rest pose of one joint, as a transform in its parent's space.
     ///
     /// This is the `[info]` block's own `t`, `q` and `s`, read verbatim. It is

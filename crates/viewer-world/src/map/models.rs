@@ -766,7 +766,7 @@ impl ModelLibrary {
     /// Merges a shard baked on another thread. Shards hold contiguous name
     /// ranges merged in order, so first-seen dedup matches the serial loop
     /// and every rebased index lands exactly where the serial bake put it.
-    pub fn merge(&mut self, shard: ModelLibrary) {
+    pub fn merge(&mut self, mut shard: ModelLibrary) {
         if self.layers.is_none() {
             self.layers = shard.layers.clone();
             self.decode = shard.decode;
@@ -777,14 +777,15 @@ impl ModelLibrary {
         for (key, slot) in &shard.paths {
             texture_keys[*slot] = Some(key);
         }
-        let mut texture_map = Vec::with_capacity(shard.textures.len());
-        for (slot, texture) in shard.textures.iter().enumerate() {
+        let textures = std::mem::take(&mut shard.textures);
+        let mut texture_map = Vec::with_capacity(textures.len());
+        for (slot, texture) in textures.into_iter().enumerate() {
             let key = texture_keys[slot].expect("every texture has its path key");
             texture_map.push(match self.paths.get(key) {
                 Some(&global) => global,
                 None => {
                     let global = self.textures.len();
-                    self.textures.push(texture.clone());
+                    self.textures.push(texture);
                     self.spaces.push(shard.spaces[slot]);
                     self.paths.insert(key.clone(), global);
                     global

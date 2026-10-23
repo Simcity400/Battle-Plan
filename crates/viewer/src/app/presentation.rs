@@ -114,6 +114,18 @@ fn child_lap_lines(laps: &[BuilderSpan]) -> (String, String) {
     (wall, cpu)
 }
 
+/// Cheap refresh and size checks precede the snow content the window uploads.
+fn same_snow_content(
+    had: &viewer_world::map::weather::SnowMud,
+    snow: &viewer_world::map::weather::SnowMud,
+) -> bool {
+    had.refresh == snow.refresh
+        && had.width == snow.width
+        && had.height == snow.height
+        && had.province_snow == snow.province_snow
+        && had.texels == snow.texels
+}
+
 impl Viewer {
     // hours
     /// Whether the map can show `hour` of `branch` on the next frame: it is on
@@ -752,14 +764,10 @@ impl Viewer {
         }
         laps.lap("border_classes");
         // Equal snapshots preserve local refresh history; discontinuities reset it.
-        let same_snow = uploaded.snow_mud.as_ref().is_some_and(|had| {
-            Arc::ptr_eq(had, &snow_mud)
-                || had.width == snow_mud.width
-                    && had.height == snow_mud.height
-                    && had.texels == snow_mud.texels
-                    && had.province_snow == snow_mud.province_snow
-                    && had.refresh == snow_mud.refresh
-        });
+        let same_snow = uploaded
+            .snow_mud
+            .as_ref()
+            .is_some_and(|had| Arc::ptr_eq(had, &snow_mud) || same_snow_content(had, &snow_mud));
         if !same_snow || continuity == Continuity::Reset {
             scene.apply(
                 &state.device,
@@ -903,6 +911,54 @@ impl Viewer {
 mod tests {
     use super::*;
     use viewer_world::map::strike_effects::{Impact, Impacts};
+
+    #[test]
+    fn snow_content_comparison_keeps_its_value_in_either_order() {
+        use viewer_world::map::weather::{Refresh, SnowMud};
+        let snow = || SnowMud {
+            width: 2,
+            height: 1,
+            texels: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            province_snow: vec![None, Some(3)],
+            post_factors: None,
+            build: Default::default(),
+            summary: Default::default(),
+            refresh: Some(Refresh {
+                interval: 25_000,
+                identity: 7,
+            }),
+        };
+        let original = |had: &SnowMud, snow: &SnowMud| {
+            had.width == snow.width
+                && had.height == snow.height
+                && had.texels == snow.texels
+                && had.province_snow == snow.province_snow
+                && had.refresh == snow.refresh
+        };
+        let base = snow();
+        let changes: [fn(&mut SnowMud); 6] = [
+            |_| {},
+            |snow| snow.width = 3,
+            |snow| snow.height = 2,
+            |snow| snow.texels[7] = 0,
+            |snow| snow.province_snow[1] = None,
+            |snow| snow.refresh = None,
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let mut other = snow();
+            change(&mut other);
+            assert_eq!(
+                same_snow_content(&base, &other),
+                original(&base, &other),
+                "change {index}"
+            );
+        }
+        // Report-only fields stay outside the comparison, as before.
+        let mut reported = snow();
+        reported.summary.with_snow = 4;
+        reported.build = std::time::Duration::from_millis(9);
+        assert!(same_snow_content(&base, &reported));
+    }
 
     #[test]
     fn shown_stamps_preserve_wall_time_and_installed_identity_only_when_enabled() {

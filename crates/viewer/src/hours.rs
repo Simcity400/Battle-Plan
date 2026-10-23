@@ -71,7 +71,7 @@ use {
     crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
     crate::document::PreparedOverlay, crate::engaged_index::EngagedIndex, crate::playback::Current,
     crate::playback::Playback, viewer_foundation::blocks::BlockReader,
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::memo::Keyed,
+    viewer_foundation::map::camera::Camera, viewer_foundation::map::memo::Settled,
     viewer_foundation::map::memo::Recent, viewer_foundation::map::name_draw::Placements,
     viewer_foundation::map::perspective, viewer_foundation::map::ribbon_content::OrderField,
     viewer_foundation::map::tables::Limitations,
@@ -682,8 +682,8 @@ struct Memos {
     placed: PlacedAreas,
     /// The railway, by the recorded network it is drawn from.
     rails: Recent<RailNetwork, Rails>,
-    /// The snow and mud grid, by the `WeatherProvinces` table it rasterises.
-    snow: Keyed<SnowMud>,
+    /// Equal snow grids share an allocation even when the weather table changes identity.
+    snow_shared: Settled<SnowMud>,
     /// The intel map, by the viewing country's rebuilt province bytes.
     intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
 }
@@ -698,7 +698,7 @@ impl Memos {
             names: Recent::new(MEMO_ENTRIES),
             placed: PlacedAreas::default(),
             rails: Recent::new(MEMO_ENTRIES),
-            snow: Keyed::new(weather::TABLES, MEMO_ENTRIES),
+            snow_shared: Settled::new(weather::TABLES, MEMO_ENTRIES),
             intel: Recent::new(MEMO_ENTRIES),
         }
     }
@@ -1880,10 +1880,10 @@ impl coordinator::BuildTarget for Coordinator {
             "snow",
             Box::new(move |view, _spans| {
                 Part::Snow(view.snow_cells().and_then(|cells| {
-                    memos.snow.get_or_build(view.frame, (), |projected| {
+                    memos.snow_shared.get_or_build(view.frame, |projected| {
                         weather::grid_from_cells(cells, projected).map(|mut snow| {
                             snow.prepare_post(&view.assets.post.volumes);
-                            Arc::new(snow)
+                            snow
                         })
                     })
                 }))

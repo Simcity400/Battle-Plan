@@ -2556,8 +2556,7 @@ impl UncoveredMemo {
     }
 }
 
-/// The Windows PhysFS read open: ordinary CreateFileW,
-/// GENERIC_READ, share read/write, OPEN_EXISTING. Read and identify through the same handle.
+/// Read and identify through one Windows handle, sharing reads, writes and deletion.
 #[cfg(windows)]
 fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     use std::{
@@ -2570,8 +2569,8 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
     use windows_sys::Win32::{
         Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
         Storage::FileSystem::{
-            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            GetFinalPathNameByHandleW, OPEN_EXISTING,
+            CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, GetFinalPathNameByHandleW, OPEN_EXISTING,
         },
     };
 
@@ -2587,7 +2586,7 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
         CreateFileW(
             name.as_ptr(),
             GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
@@ -3614,3 +3613,6 @@ mod tests;
 
 #[cfg(test)]
 mod hash_cache_tests;
+
+#[cfg(all(test, windows))]
+mod sharing_tests;

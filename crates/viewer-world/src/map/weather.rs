@@ -52,6 +52,25 @@ impl SnowMud {
     }
 }
 
+/// Build time is report-only; retained winter factors must compare by bits.
+impl PartialEq for SnowMud {
+    fn eq(&self, other: &Self) -> bool {
+        let bits = |factors: &super::post::SnowFactors| {
+            factors
+                .iter()
+                .map(|factor| factor.map(f32::to_bits))
+                .collect::<Vec<_>>()
+        };
+        self.width == other.width
+            && self.height == other.height
+            && self.refresh == other.refresh
+            && self.summary == other.summary
+            && self.province_snow == other.province_snow
+            && self.post_factors.as_ref().map(bits) == other.post_factors.as_ref().map(bits)
+            && self.texels == other.texels
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refresh {
     pub interval: i64,
@@ -381,6 +400,64 @@ mod tests {
     use super::*;
     use replay_data::{rows::TableId, rows::TableRows};
     use replay_frame::{frame::Metrics, frame::TableView};
+
+    #[test]
+    fn snow_snapshots_are_equal_in_every_read_field_but_not_their_build_time() {
+        let snapshot = || SnowMud {
+            width: 2,
+            height: 1,
+            texels: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            province_snow: vec![None, Some(7)],
+            post_factors: Some(std::sync::Arc::from([Some(0.0f32), None])),
+            build: Duration::from_millis(3),
+            summary: Summary::default(),
+            refresh: Some(Refresh {
+                interval: 25_000,
+                identity: 4,
+            }),
+        };
+        let base = snapshot();
+        assert!(base == snapshot());
+        assert!(
+            base == SnowMud {
+                build: Duration::from_millis(90),
+                ..snapshot()
+            },
+            "the build time is a report"
+        );
+        let changes: [fn(&mut SnowMud); 8] = [
+            |snow| snow.width = 8,
+            |snow| snow.height = 4,
+            |snow| snow.texels[7] = 9,
+            |snow| snow.province_snow[1] = Some(8),
+            |snow| snow.post_factors = None,
+            // Bitwise, so negative zero is a different factor.
+            |snow| snow.post_factors = Some(std::sync::Arc::from([Some(-0.0f32), None])),
+            |snow| snow.summary.with_snow = 1,
+            |snow| snow.refresh = None,
+        ];
+        for (index, change) in changes.into_iter().enumerate() {
+            let mut changed = snapshot();
+            change(&mut changed);
+            assert!(base != changed, "change {index}");
+        }
+        let mut left = snapshot();
+        let mut right = snapshot();
+        left.post_factors = Some(std::sync::Arc::from([
+            Some(f32::from_bits(0x7fc0_1234)),
+            None,
+        ]));
+        right.post_factors = Some(std::sync::Arc::from([
+            Some(f32::from_bits(0x7fc0_1234)),
+            None,
+        ]));
+        assert!(left == right, "equal NaN payloads settle together");
+        right.post_factors = Some(std::sync::Arc::from([
+            Some(f32::from_bits(0x7fc0_4321)),
+            None,
+        ]));
+        assert!(left != right, "different NaN payloads must not share");
+    }
 
     /// A 12 x 12 province image of four-pixel bands: province 30 north, 20
     /// and 21 (the right third) in the middle, 10 south.

@@ -342,8 +342,23 @@ impl History {
         assert_eq!(self.combat, other.combat);
     }
 
+    #[cfg(test)]
     pub(super) fn has_candidates(&self, province: u32) -> bool {
         self.candidates.get(&province).is_some_and(|c| !c.is_empty())
+    }
+
+    /// Provinces with nonempty candidate lists, in ascending province order.
+    pub(super) fn candidate_provinces(&self) -> impl Iterator<Item = u32> + '_ {
+        self.candidates
+            .iter()
+            .filter(|(_, c)| !c.is_empty())
+            .map(|(&province, _)| province)
+    }
+
+    /// An empty occupant list, which installs never leave, so joins can prove the predicate.
+    #[cfg(test)]
+    pub(super) fn empty_candidates_for_test(&mut self, province: u32) {
+        self.candidates.insert(province, Vec::new());
     }
 
     /// An empty representative walk leaves the shared combat scratch clear.
@@ -596,6 +611,36 @@ mod tests {
         skipped.clear_combat_selection();
         assert_eq!(walked.representatives(42, frame(0.25)).count(), 0);
         skipped.assert_same_state(&walked);
+    }
+
+    #[test]
+    fn candidate_provinces_ascend_under_the_point_lookup_predicate() {
+        let mut history = History::default();
+        let at = |province, identity, ordinal| Candidate {
+            province,
+            ordinal,
+            ..candidate(identity, 3, true)
+        };
+        history.install(sources(vec![
+            at(u32::MAX, 1, 0),
+            at(9206, 2, 1),
+            at(0, 3, 2),
+            at(9206, 4, 3),
+            at(u32::MAX - 1, 5, 4),
+            at(17, 6, 5),
+        ]));
+        history.empty_candidates_for_test(17);
+        history.empty_candidates_for_test(40);
+        let provinces: Vec<_> = history.candidate_provinces().collect();
+        assert_eq!(provinces, [0, 9206, u32::MAX - 1, u32::MAX]);
+        let probes = [0, 1, 17, 40, 9205, 9206, 9207, u32::MAX - 1, u32::MAX];
+        assert_eq!(
+            probes
+                .into_iter()
+                .filter(|&province| history.has_candidates(province))
+                .collect::<Vec<_>>(),
+            provinces
+        );
     }
 
     #[test]
