@@ -53,17 +53,27 @@ impl<'a> Names<'a> {
 }
 
 type Temperatures = Result<Arc<[i64]>, String>;
-type Ready = (Weak<DecodedFrame>, Temperatures);
+/// A frame's identity, its branch and hour, and its result.
+type Ready = (Weak<DecodedFrame>, (u64, i32), Temperatures);
 
 /// Successful results certify the entire map, including the checksum, not just
 /// the hovered slot. Errors are immutable inputs too. Weak frame identities keep
 /// results only while their exact decoded frames remain alive; a copied frame
 /// falls back to the same derivation rather than borrowing another hour's proof.
-#[derive(Default)]
 pub(super) struct TemperaturesByFrame {
     worker: Mutex<Memo>,
     fallback: Mutex<Memo>,
     ready: Mutex<Vec<Ready>>,
+}
+
+impl Default for TemperaturesByFrame {
+    fn default() -> Self {
+        Self {
+            worker: Mutex::new(Memo::holding()),
+            fallback: Mutex::default(),
+            ready: Mutex::default(),
+        }
+    }
 }
 
 impl TemperaturesByFrame {
@@ -72,7 +82,7 @@ impl TemperaturesByFrame {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
-            .find_map(|(key, value)| {
+            .find_map(|(key, _, value)| {
                 // Do not upgrade unrelated keys: their last owner might be
                 // retiring now, leaving this lookup to drop a whole frame.
                 std::ptr::eq(key.as_ptr(), frame)
@@ -112,8 +122,10 @@ impl TemperaturesByFrame {
             .ready
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        ready.retain(|(key, _)| key.strong_count() != 0);
-        ready.push((Arc::downgrade(frame), result));
+        ready.retain(|(key, _, _)| key.strong_count() != 0);
+        ready.push((Arc::downgrade(frame), (frame.branch, frame.hour), result));
+        // Held derivations follow the frames' lifetimes; the synchronous fallback holds none.
+        memo.retain_held(|branch, hour| ready.iter().any(|(_, at, _)| *at == (branch, hour)));
     }
 
     pub(super) fn at(

@@ -9,6 +9,7 @@ use std::{
     time::Instant,
 };
 
+mod aircraft_resolve;
 mod attribution;
 mod prefixes;
 mod recording;

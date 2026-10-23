@@ -633,6 +633,626 @@ fn recorded_mesh_retries_and_draw_counterparts_keep_the_planes_declaration_check
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// Declaration and file failures must be cached just like successful cold bakes.
+const CLAIMED_PLANES: &[u8] = br#"entity = { name = plane pdxmesh = body state = { name = idle } }
+    entity = { name = lazy_one clone = plane }
+    entity = { name = lazy_two clone = plane }
+    entity = { name = odd_plane
+        attach = { left = AbsentFlap }
+        attach = { right = AbsentFlap }
+        state = { name = idle } }
+    entity = { name = stalled_plane pdxmesh = body
+        state = { name = idle animation_speed = 0 } }
+    entity = { name = unreadable_plane pdxmesh = hull state = { name = idle } }"#;
+
+/// Each name resolved, the last one declared nowhere.
+const RESOLVED: [&str; 7] = [
+    "plane",
+    "lazy_one",
+    "lazy_two",
+    "odd_plane",
+    "stalled_plane",
+    "unreadable_plane",
+    "absent_plane",
+];
+
+fn claimed_stack(name: &str) -> (std::path::PathBuf, ResolvedLayers) {
+    use crate::map::models::tests::{MESHES_GFX, triangle_mesh, visual_stack};
+
+    visual_stack(
+        name,
+        &[
+            ("base/gfx/models/meshes.gfx", MESHES_GFX),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            ("base/gfx/entities/planes.asset", CLAIMED_PLANES),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(1.)),
+        ],
+    )
+}
+
+/// A resolve's outcome by entity rather than slot: slots follow the order bakes merge in.
+fn named(
+    assets: &AircraftAssets,
+    resolved: Result<usize, Unresolved>,
+) -> Result<String, Unresolved> {
+    resolved.map(|slot| assets.library().meshes[slot].name.clone())
+}
+
+// The reference is a fresh asset set resolved once per entity by one worker.
+#[test]
+fn concurrent_resolves_bake_each_plane_once_and_equal_single_worker_claims() {
+    let (root, layers) = claimed_stack("aircraft_claimed_resolves");
+    let presentation = layers.presentation();
+    let mut serial = aircraft_with_planes(presentation, &["plane".to_owned()]);
+    let expected: Vec<_> = RESOLVED
+        .iter()
+        .map(|entity| named(&serial, serial.resolve(entity)))
+        .collect();
+    for (at, entity) in [
+        (0, "plane"),
+        (1, "lazy_one"),
+        (2, "lazy_two"),
+        (3, "odd_plane"),
+    ] {
+        assert_eq!(expected[at], Ok(entity.to_owned()));
+    }
+    assert!(
+        matches!(&expected[4], Err(Unresolved::Refused { entity, .. }) if entity == "stalled_plane"),
+        "{:?}",
+        expected[4]
+    );
+    for at in [5, 6] {
+        assert!(
+            matches!(&expected[at], Err(Unresolved::Refused { entity, reason })
+                if entity == RESOLVED[at] && reason.contains(NOT_LOADED)),
+            "{:?}",
+            expected[at]
+        );
+    }
+    assert!(
+        serial
+            .lazy_diagnostics()
+            .iter()
+            .any(|(_, line)| line.contains("odd_plane -> AbsentFlap")),
+        "{:?}",
+        serial.lazy_diagnostics()
+    );
+    for (entity, outcome) in RESOLVED.iter().zip(&expected) {
+        assert_eq!(&named(&serial, serial.resolve(entity)), outcome, "{entity}");
+    }
+    let mut claimed = aircraft_with_planes(presentation, &["plane".to_owned()]);
+    let threads = 8;
+    let start = std::sync::Barrier::new(threads);
+    let outcomes: Vec<Vec<_>> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|thread| {
+                let (claimed, start) = (&claimed, &start);
+                scope.spawn(move || {
+                    start.wait();
+                    (0..2 * RESOLVED.len())
+                        .map(|step| {
+                            let at = (thread + step) % RESOLVED.len();
+                            (at, named(claimed, claimed.resolve(RESOLVED[at])))
+                        })
+                        .collect()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    for (at, outcome) in outcomes.into_iter().flatten() {
+        assert_eq!(outcome, expected[at], "{}", RESOLVED[at]);
+    }
+    let sorted = |mut lines: Vec<String>| {
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(claimed.refusals()), sorted(serial.refusals()));
+    let lazy = |assets: &AircraftAssets| {
+        sorted(
+            assets
+                .lazy_diagnostics()
+                .into_iter()
+                .map(|(kind, line)| format!("{kind:?} {line}"))
+                .collect(),
+        )
+    };
+    assert_eq!(lazy(&claimed), lazy(&serial));
+    let baked = |assets: &AircraftAssets| {
+        let library = assets.library();
+        let meshes: BTreeMap<_, _> = library
+            .meshes
+            .iter()
+            .map(|mesh| (mesh.asset.clone(), mesh.clone()))
+            .collect();
+        assert_eq!(meshes.len(), library.meshes.len(), "each asset bakes once");
+        for (name, slot) in &library.index {
+            assert_eq!(name, &library.meshes[*slot].name);
+        }
+        let counterparts: BTreeMap<_, _> = library
+            .alternatives
+            .iter()
+            .map(|(&from, &to)| {
+                (
+                    library.meshes[from].asset.clone(),
+                    library.meshes[to].asset.clone(),
+                )
+            })
+            .collect();
+        (
+            meshes,
+            counterparts,
+            library.failed.clone(),
+            library.animation_refusals.clone(),
+        )
+    };
+    assert_eq!(baked(&claimed), baked(&serial));
+    for assets in [&claimed, &serial] {
+        assert!(assets.bakes.lock().unwrap().is_empty());
+    }
+    let reports = |assets: &mut AircraftAssets| {
+        let (mut plan, rigs) = one_run(
+            vec![height(3.), height(4.)],
+            1.,
+            false,
+            false,
+            Explode::Absent,
+        );
+        assets.rigs = rigs;
+        let prototype = plan.flights[0].clone();
+        plan.flights = ["lazy_two", "plane", "lazy_one", "lazy_one"]
+            .into_iter()
+            .map(|name| Flight {
+                mesh: assets.library().slot(name).unwrap(),
+                ..prototype.clone()
+            })
+            .collect();
+        plan.runs.clear();
+        let lines = plan.plan_report(assets);
+        let tied: Vec<_> = lines
+            .iter()
+            .filter(|line| line.starts_with("Aircraft wing "))
+            .collect();
+        assert_eq!(tied.len(), 3);
+        for (line, name) in tied.iter().zip(["lazy_two", "plane", "lazy_one"]) {
+            assert!(line.contains(&format!(", {name}, ")), "{line}");
+        }
+        assert!(tied[2].contains("2 slots"));
+        let report = plan.report(assets);
+        assert_eq!(&report[..lines.len()], lines.as_slice());
+        assert_eq!(
+            sorted(report[lines.len()..].to_vec()),
+            sorted(
+                assets
+                    .lazy_diagnostics()
+                    .into_iter()
+                    .map(|(_, line)| line)
+                    .collect()
+            ),
+        );
+        lines
+    };
+    assert_eq!(reports(&mut claimed), reports(&mut serial));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ResolvePoint {
+    Cold,
+    Claimed,
+    Waiting,
+    Acquired,
+    Reused,
+    Bake,
+    Baked,
+    BeforeMerge,
+    DecisionWaiting,
+}
+
+type ResolveHook = dyn Fn(&str, ResolvePoint) -> io::Result<()> + Send + Sync;
+
+#[derive(Default)]
+pub(super) struct ResolveHooks(Option<Arc<ResolveHook>>);
+
+impl std::fmt::Debug for ResolveHooks {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ResolveHooks")
+    }
+}
+
+impl ResolveHooks {
+    fn new(hook: impl Fn(&str, ResolvePoint) -> io::Result<()> + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(hook)))
+    }
+
+    pub(super) fn reach(&self, entity: &str, point: ResolvePoint) {
+        self.bake(entity, point).unwrap();
+    }
+
+    pub(super) fn bake(&self, entity: &str, point: ResolvePoint) -> io::Result<()> {
+        self.0.as_ref().map_or(Ok(()), |hook| hook(entity, point))
+    }
+}
+
+fn gate() -> (
+    std::sync::mpsc::Sender<()>,
+    Mutex<std::sync::mpsc::Receiver<()>>,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    (sender, Mutex::new(receiver))
+}
+
+#[test]
+fn a_refusal_cannot_escape_before_its_failed_shard_is_merged() {
+    use std::sync::mpsc;
+
+    let (root, layers) = claimed_stack("aircraft_refusal_commit");
+    let mut assets = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    let (merging, at_merge) = mpsc::channel();
+    let (waiting, at_wait) = mpsc::channel();
+    let (release, resume) = gate();
+    assets.resolve_hooks = ResolveHooks::new(move |name, point| {
+        if name == "unreadable_plane" {
+            match point {
+                ResolvePoint::BeforeMerge => {
+                    merging.send(()).unwrap();
+                    resume.lock().unwrap().recv().unwrap();
+                }
+                ResolvePoint::DecisionWaiting => waiting.send(()).unwrap(),
+                _ => {}
+            }
+        }
+        Ok(())
+    });
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| assets.resolve("unreadable_plane"));
+        at_merge.recv().unwrap();
+        assert!(matches!(
+            assets.unusable.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        assert!(!assets.library().failed.contains_key("unreadable_plane"));
+        let (finished, result) = mpsc::channel();
+        let observer = {
+            let assets = &assets;
+            scope.spawn(move || {
+                finished.send(assets.resolve("unreadable_plane")).unwrap();
+            })
+        };
+        at_wait.recv().unwrap();
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        release.send(()).unwrap();
+        let expected = first.join().unwrap();
+        assert!(
+            matches!(&expected, Err(Unresolved::Refused { entity, reason })
+            if entity == "unreadable_plane" && reason.contains(NOT_LOADED))
+        );
+        assert_eq!(result.recv().unwrap(), expected);
+        observer.join().unwrap();
+    });
+    assert!(assets.library().failed.contains_key("unreadable_plane"));
+    assert!(assets.bakes.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+fn rendezvoused_retirement(entity: &'static str) {
+    use std::sync::mpsc;
+
+    let (root, layers) = claimed_stack(&format!("aircraft_claim_in_flight_{entity}"));
+    let mut assets = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    assert!(matches!(
+        assets.resolve("stalled_plane"),
+        Err(Unresolved::Refused { .. })
+    ));
+    let counts = Arc::new(Mutex::new(BTreeMap::<ResolvePoint, usize>::new()));
+    let observed = Arc::clone(&counts);
+    let (baking, at_bake) = mpsc::channel();
+    let (waiting, at_wait) = mpsc::channel();
+    let (late, at_late) = mpsc::channel();
+    let (old_acquired, at_old) = mpsc::channel();
+    let (fresh_claimed, at_fresh) = mpsc::channel();
+    let (release_bake, resume_bake) = gate();
+    let (release_late, resume_late) = gate();
+    let (release_old, resume_old) = gate();
+    let (release_fresh, resume_fresh) = gate();
+    assets.resolve_hooks = ResolveHooks::new(move |name, point| {
+        if name != entity {
+            return Ok(());
+        }
+        let count = {
+            let mut counts = observed.lock().unwrap();
+            let count = counts.entry(point).or_default();
+            *count += 1;
+            *count
+        };
+        match (point, count) {
+            (ResolvePoint::Bake, _) => {
+                assert_eq!(
+                    count, 1,
+                    "a second claim holder must re-read instead of baking"
+                );
+                baking.send(()).unwrap();
+                resume_bake.lock().unwrap().recv().unwrap();
+            }
+            (ResolvePoint::Waiting, _) => waiting.send(()).unwrap(),
+            (ResolvePoint::Cold, 3) => {
+                late.send(()).unwrap();
+                resume_late.lock().unwrap().recv().unwrap();
+            }
+            (ResolvePoint::Acquired, 2) => {
+                old_acquired.send(()).unwrap();
+                resume_old.lock().unwrap().recv().unwrap();
+            }
+            (ResolvePoint::Claimed, 3) => {
+                fresh_claimed.send(()).unwrap();
+                resume_fresh.lock().unwrap().recv().unwrap();
+            }
+            _ => {}
+        }
+        Ok(())
+    });
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| assets.resolve(entity));
+        at_bake.recv().unwrap();
+        let old_claim = assets.claim(entity);
+        let waiter = scope.spawn(|| assets.resolve(entity));
+        at_wait.recv().unwrap();
+        let late = scope.spawn(|| assets.resolve(entity));
+        at_late.recv().unwrap();
+        assert_eq!(named(&assets, assets.resolve("plane")), Ok("plane".into()));
+        assert_eq!(
+            named(&assets, assets.resolve("lazy_two")),
+            Ok("lazy_two".into())
+        );
+        assert!(matches!(
+            assets.resolve("stalled_plane"),
+            Err(Unresolved::Refused { .. })
+        ));
+        {
+            let counts = counts.lock().unwrap();
+            assert_eq!(counts[&ResolvePoint::Acquired], 1);
+            assert_eq!(counts[&ResolvePoint::Waiting], 1);
+            assert_eq!(counts[&ResolvePoint::Bake], 1);
+            assert!(!counts.contains_key(&ResolvePoint::BeforeMerge));
+        }
+        release_bake.send(()).unwrap();
+        let committed = first.join().unwrap();
+        match entity {
+            "lazy_one" => assert!(committed.is_ok()),
+            "unreadable_plane" => {
+                assert!(matches!(&committed, Err(Unresolved::Refused { reason, .. })
+                if reason.contains(NOT_LOADED)))
+            }
+            _ => unreachable!(),
+        }
+        at_old.recv().unwrap();
+        assert!(
+            old_claim.try_lock().is_err(),
+            "the real waiter holds the retired Arc"
+        );
+        assert!(assets.bakes.lock().unwrap().is_empty());
+        release_late.send(()).unwrap();
+        at_fresh.recv().unwrap();
+        let fresh_claim = assets.claim(entity);
+        assert!(!Arc::ptr_eq(&old_claim, &fresh_claim));
+        release_fresh.send(()).unwrap();
+        assert_eq!(late.join().unwrap(), committed);
+        assert!(assets.bakes.lock().unwrap().is_empty());
+        release_old.send(()).unwrap();
+        assert_eq!(waiter.join().unwrap(), committed);
+        let diagnostics = assets.lazy_diagnostics();
+        assert_eq!(assets.resolve(entity), committed);
+        assert_eq!(assets.lazy_diagnostics(), diagnostics);
+    });
+    let counts = counts.lock().unwrap();
+    assert_eq!(counts[&ResolvePoint::Cold], 3);
+    assert_eq!(counts[&ResolvePoint::Waiting], 1);
+    assert_eq!(counts[&ResolvePoint::Bake], 1);
+    assert_eq!(counts[&ResolvePoint::Baked], 1);
+    assert_eq!(counts[&ResolvePoint::Reused], 2);
+    assert!(assets.bakes.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn claim_waiters_recheck_after_retirement_while_unrelated_entities_progress() {
+    rendezvoused_retirement("lazy_one");
+}
+
+#[test]
+fn refusal_claim_waiters_recheck_after_retirement_without_another_bake() {
+    rendezvoused_retirement("unreadable_plane");
+}
+
+#[test]
+fn completed_player_claims_do_not_accumulate_for_distinct_or_repeated_missing_names() {
+    let (root, layers) = claimed_stack("aircraft_missing_player_claims");
+    let mut assets = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    let meshes = assets.library().meshes.len();
+    let counts = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
+    let observed = Arc::clone(&counts);
+    assets.resolve_hooks = ResolveHooks::new(move |name, point| {
+        if point == ResolvePoint::Bake {
+            *observed.lock().unwrap().entry(name.to_owned()).or_default() += 1;
+        }
+        Ok(())
+    });
+    let names: Vec<_> = (0..192)
+        .map(|index| format!("missing_player_{index}"))
+        .collect();
+    for _ in 0..3 {
+        for name in &names {
+            assert!(assets.player(name).is_err());
+            assert!(assets.bakes.lock().unwrap().is_empty());
+        }
+    }
+    assert_eq!(
+        *counts.lock().unwrap(),
+        names.iter().cloned().map(|name| (name, 1)).collect()
+    );
+    assert_eq!(assets.unusable.lock().unwrap().len(), names.len());
+    assert_eq!(assets.library().meshes.len(), meshes);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_transient_bake_read_keeps_its_claim_and_warnings_but_no_decision_or_merge() {
+    use std::sync::mpsc;
+
+    let (root, layers) = claimed_stack("aircraft_transient_bake_read");
+    let reference = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    reference.resolve("odd_plane").unwrap();
+    let once = reference.lazy_diagnostics();
+    assert!(!once.is_empty());
+    assert_eq!(once.len(), 2);
+    assert_eq!(
+        once.iter()
+            .filter(
+                |(kind, line)| *kind == installed_content_core::DiagnosticKind::Refused
+                    && line.contains("odd_plane -> AbsentFlap")
+                    && line.contains("(2)")
+            )
+            .count(),
+        1
+    );
+    assert_eq!(
+        once.iter()
+            .filter(
+                |(kind, line)| *kind == installed_content_core::DiagnosticKind::Warning
+                    && line.contains("1 geometry-less entities")
+            )
+            .count(),
+        1
+    );
+    let mut assets = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    let before = {
+        let library = assets.library();
+        (
+            library.meshes.clone(),
+            library.palette.clone(),
+            library.materials.clone(),
+            library.textures.clone(),
+            library.index.clone(),
+            library.failed.clone(),
+        )
+    };
+    let counts = Arc::new(Mutex::new(BTreeMap::<ResolvePoint, usize>::new()));
+    let observed = Arc::clone(&counts);
+    let (baked, at_baked) = mpsc::channel();
+    let (waiting, at_wait) = mpsc::channel();
+    let (acquired, at_retry) = mpsc::channel();
+    let (release_error, resume_error) = gate();
+    let (release_retry, resume_retry) = gate();
+    assets.resolve_hooks = ResolveHooks::new(move |name, point| {
+        if name != "odd_plane" {
+            return Ok(());
+        }
+        let count = {
+            let mut counts = observed.lock().unwrap();
+            let count = counts.entry(point).or_default();
+            *count += 1;
+            *count
+        };
+        match (point, count) {
+            (ResolvePoint::Baked, 1) => {
+                baked.send(()).unwrap();
+                resume_error.lock().unwrap().recv().unwrap();
+                return Err(io::Error::other("synthetic transient aircraft read"));
+            }
+            (ResolvePoint::Waiting, _) => waiting.send(()).unwrap(),
+            (ResolvePoint::Acquired, 2) => {
+                acquired.send(()).unwrap();
+                resume_retry.lock().unwrap().recv().unwrap();
+            }
+            _ => {}
+        }
+        Ok(())
+    });
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| assets.resolve("odd_plane"));
+        at_baked.recv().unwrap();
+        let claim = assets.claim("odd_plane");
+        let waiter = scope.spawn(|| assets.resolve("odd_plane"));
+        at_wait.recv().unwrap();
+        release_error.send(()).unwrap();
+        assert!(
+            matches!(first.join().unwrap(), Err(Unresolved::Refused { reason, .. })
+            if reason == "synthetic transient aircraft read")
+        );
+        at_retry.recv().unwrap();
+        assert_eq!(assets.known("odd_plane"), None);
+        assert_eq!(assets.lazy_diagnostics(), once);
+        assert!(Arc::ptr_eq(&claim, &assets.claim("odd_plane")));
+        {
+            let library = assets.library();
+            assert_eq!(
+                (
+                    library.meshes.clone(),
+                    library.palette.clone(),
+                    library.materials.clone(),
+                    library.textures.clone(),
+                    library.index.clone(),
+                    library.failed.clone()
+                ),
+                before
+            );
+        }
+        release_retry.send(()).unwrap();
+        let slot = waiter.join().unwrap().unwrap();
+        let twice: Vec<_> = once.iter().cloned().chain(once.iter().cloned()).collect();
+        assert_eq!(assets.lazy_diagnostics(), twice);
+        assert_eq!(assets.resolve("odd_plane"), Ok(slot));
+        assert_eq!(assets.lazy_diagnostics(), twice);
+    });
+    let counts = counts.lock().unwrap();
+    assert_eq!(counts[&ResolvePoint::Waiting], 1);
+    assert_eq!(counts[&ResolvePoint::Bake], 2);
+    assert_eq!(counts[&ResolvePoint::Baked], 2);
+    assert_eq!(counts[&ResolvePoint::BeforeMerge], 1);
+    assert!(assets.bakes.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_abandoned_resolve_owned_bake_can_be_retried_after_its_worker_panics() {
+    let (root, layers) = claimed_stack("aircraft_poisoned_claim");
+    let mut assets = aircraft_with_planes(layers.presentation(), &["plane".to_owned()]);
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = Arc::clone(&attempts);
+    assets.resolve_hooks = ResolveHooks::new(move |name, point| {
+        if name == "lazy_one"
+            && point == ResolvePoint::Bake
+            && observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+        {
+            panic!("synthetic interrupted resolve-owned bake");
+        }
+        Ok(())
+    });
+    let claim = assets.claim("lazy_one");
+    std::thread::scope(|scope| {
+        assert!(scope.spawn(|| assets.resolve("lazy_one")).join().is_err());
+    });
+    assert!(claim.is_poisoned());
+    assert_eq!(assets.known("lazy_one"), None);
+    assert!(Arc::ptr_eq(&claim, &assets.claim("lazy_one")));
+    assert_eq!(
+        named(&assets, assets.resolve("lazy_two")),
+        Ok("lazy_two".into())
+    );
+    let slot = assets.resolve("lazy_one").unwrap();
+    let count = assets.library().meshes.len();
+    let diagnostics = assets.lazy_diagnostics();
+    assert_eq!(assets.resolve("lazy_one"), Ok(slot));
+    assert_eq!(assets.library().meshes.len(), count);
+    assert_eq!(assets.lazy_diagnostics(), diagnostics);
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert!(assets.bakes.lock().unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn why() -> String {
     format!("may be declared in {BROKEN}, which does not parse")
 }

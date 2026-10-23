@@ -575,6 +575,10 @@ pub struct AircraftAssets {
     /// Candidate entities the game would find that cannot be drawn here,
     /// with the reason.
     unusable: Mutex<BTreeMap<String, String>>,
+    // Cold resolves of the same entity share one bake; unrelated entities never wait on it.
+    bakes: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    #[cfg(test)]
+    resolve_hooks: tests::ResolveHooks,
     /// Asset-load diagnostics from successful or refused lazy bakes.
     lazy_diagnostics: Mutex<Vec<installed_content_core::Diagnostic>>,
     /// Equipment names by the lexer's token identity.
@@ -1484,6 +1488,9 @@ impl AircraftAssets {
             roster: Arc::clone(&roster),
             layers: layers.clone(),
             unusable: Mutex::new(unusable),
+            bakes: Default::default(),
+            #[cfg(test)]
+            resolve_hooks: Default::default(),
             lazy_diagnostics: Default::default(),
             keys: TokenKeys::new(equipment.keys()),
             rigs,
@@ -1524,30 +1531,52 @@ impl AircraftAssets {
     /// suffix. Bake them from the same authenticated roster on first use;
     /// a failed selected entity is remembered and never replaced.
     fn resolve(&self, entity: &str) -> Result<usize, Unresolved> {
+        if let Some(known) = self.known(entity) {
+            return known;
+        }
+        #[cfg(test)]
+        self.resolve_hooks.reach(entity, tests::ResolvePoint::Cold);
+        let claim = self.claim(entity);
+        #[cfg(test)]
+        {
+            self.resolve_hooks
+                .reach(entity, tests::ResolvePoint::Claimed);
+            if matches!(claim.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+                self.resolve_hooks
+                    .reach(entity, tests::ResolvePoint::Waiting);
+            }
+        }
+        let _bake = claim
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(test)]
+        self.resolve_hooks
+            .reach(entity, tests::ResolvePoint::Acquired);
+        // Retired claims can still have waiters, so every holder re-reads the committed decision.
+        if let Some(known) = self.known(entity) {
+            self.retire(entity, &claim);
+            #[cfg(test)]
+            self.resolve_hooks
+                .reach(entity, tests::ResolvePoint::Reused);
+            return known;
+        }
+        let name = entity.to_owned();
+        let mut warnings = Vec::new();
+        let decode = self.library().decode();
+        let baked = (|| {
+            #[cfg(test)]
+            self.resolve_hooks.bake(entity, tests::ResolvePoint::Bake)?;
+            let baked = plane_library(&self.layers, decode, &self.roster, [&name], &mut warnings)?;
+            #[cfg(test)]
+            self.resolve_hooks
+                .bake(entity, tests::ResolvePoint::Baked)?;
+            Ok::<_, io::Error>(baked)
+        })();
         let mut unusable = self
             .unusable
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(reason) = unusable.get(entity) {
-            return Err(Unresolved::Refused {
-                entity: entity.to_owned(),
-                reason: reason.clone(),
-            });
-        }
-        if let Some(slot) = self.library().slot(entity) {
-            return Ok(slot);
-        }
-        let name = entity.to_owned();
-        let mut warnings = Vec::new();
-        let baked = plane_library(
-            &self.layers,
-            self.library().decode(),
-            &self.roster,
-            [&name],
-            &mut warnings,
-        );
-        // Usable actors can still omit attachments.
-        // Keep the loader's diagnostic kinds, names and occurrence counts.
+        // Usable actors can still omit attachments; preserve warning kinds and occurrences.
         self.lazy_diagnostics
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1557,16 +1586,71 @@ impl AircraftAssets {
             reason: error.to_string(),
         })?;
         unusable.extend(refused);
+        #[cfg(test)]
+        self.resolve_hooks
+            .reach(entity, tests::ResolvePoint::BeforeMerge);
         self.library
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .merge(shard);
-        resolve_entity(
+        let resolved = resolve_entity(
             std::slice::from_ref(&name),
             |entity| self.library().slot(entity),
             &unusable,
-        )?
-        .ok_or(Unresolved::Missing(name))
+        )
+        .and_then(|slot| slot.ok_or(Unresolved::Missing(name)));
+        if resolved.is_ok() || unusable.contains_key(entity) {
+            self.retire(entity, &claim);
+        }
+        resolved
+    }
+
+    // A remembered refusal takes precedence over a library slot, as in the cold resolve.
+    fn known(&self, entity: &str) -> Option<Result<usize, Unresolved>> {
+        #[cfg(test)]
+        if matches!(
+            self.unusable.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ) {
+            self.resolve_hooks
+                .reach(entity, tests::ResolvePoint::DecisionWaiting);
+        }
+        if let Some(reason) = self
+            .unusable
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(entity)
+        {
+            return Some(Err(Unresolved::Refused {
+                entity: entity.to_owned(),
+                reason: reason.clone(),
+            }));
+        }
+        self.library().slot(entity).map(Ok)
+    }
+
+    fn retire(&self, entity: &str, claim: &Arc<Mutex<()>>) {
+        let mut bakes = self
+            .bakes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if bakes
+            .get(entity)
+            .is_some_and(|current| Arc::ptr_eq(current, claim))
+        {
+            bakes.remove(entity);
+        }
+    }
+
+    /// The claim `entity`'s first bake holds ([`Self::resolve`]).
+    fn claim(&self, entity: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.bakes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(entity.to_owned())
+                .or_default(),
+        )
     }
 }
 
@@ -4319,6 +4403,18 @@ impl AircraftPlan {
     }
 
     pub fn report(&self, assets: &AircraftAssets) -> Vec<String> {
+        let mut lines = self.plan_report(assets);
+        lines.extend(
+            assets
+                .lazy_diagnostics()
+                .into_iter()
+                .map(|(_, reason)| reason),
+        );
+        lines
+    }
+
+    // Asset diagnostics can grow while another plan bakes; these lines belong only to this plan.
+    pub fn plan_report(&self, assets: &AircraftAssets) -> Vec<String> {
         let mut lines = vec![format!(
             "Aircraft: {} generated flight slots, {} at time zero, seed 0x{SEED:08x}; live presentation phase is unrecorded",
             self.flights.len(),
@@ -4423,12 +4519,6 @@ impl AircraftPlan {
             ));
         }
         lines.extend(self.diagnostics.iter().cloned());
-        lines.extend(
-            assets
-                .lazy_diagnostics()
-                .into_iter()
-                .map(|(_, reason)| reason),
-        );
         lines
     }
 }

@@ -331,3 +331,45 @@ fn demand_local_country_names_keep_aliases_overlords_reserved_zero_and_refusals(
         assert_eq!(names.name(0), Ok("Zero".into()));
     }
 }
+
+#[test]
+fn out_of_order_frames_resume_held_derivations_only_while_their_frames_live() {
+    let content = temperature_content();
+    let sequence = [
+        (Some(10), [0, 200, 300]),
+        (None, [0, 200, 300]),
+        (Some(20), [0, 200, 250]),
+        (Some(30), [0, 200, 250]),
+        (Some(40), [0, 225, 250]),
+    ];
+    let hours: Vec<Option<u32>> = sequence.iter().map(|(seed, _)| *seed).collect();
+    let frames: Vec<_> = (1..=sequence.len())
+        .map(|count| weather(&hours[..count], &sequence[count - 1].1))
+        .collect();
+    let inputs = TemperaturesByFrame::default();
+    for index in [4, 1, 3, 0, 2, 4] {
+        inputs.prepare(&frames[index], Ok(&content));
+        assert_eq!(
+            &*inputs.ready(&frames[index]).unwrap().unwrap(),
+            &sequence[index].1[..]
+        );
+        let held = inputs.worker.lock().unwrap().held();
+        assert!((1..=frames.len()).contains(&held));
+        let copied = (*frames[index]).clone();
+        let rows = copied.complete::<tables::WeatherProvinces>().unwrap();
+        assert_eq!(
+            inputs.at(&copied, rows, Ok(&content), 1),
+            Ok(sequence[index].1[1])
+        );
+        let fallback = inputs.fallback.lock().unwrap();
+        assert_eq!((fallback.held(), fallback.held_bytes()), (0, 0));
+    }
+    // A dropped frame's derivation goes at the next preparation.
+    let kept = Arc::clone(&frames[2]);
+    drop(frames);
+    let again = weather(&hours[..2], &sequence[1].1);
+    inputs.prepare(&again, Ok(&content));
+    assert_eq!(&*inputs.ready(&again).unwrap().unwrap(), &sequence[1].1[..]);
+    assert!(inputs.worker.lock().unwrap().held() <= 2);
+    assert_eq!(&*inputs.ready(&kept).unwrap().unwrap(), &sequence[2].1[..]);
+}

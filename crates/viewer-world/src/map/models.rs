@@ -11,6 +11,7 @@ use viewer_foundation::debug_fields;
 use viewer_foundation::map::textures::load_file;
 use viewer_foundation::profiling::BuilderSpans;
 mod animation_dispatch;
+mod draw_snapshot;
 mod identity;
 #[cfg(test)]
 pub(crate) mod order_tests;
@@ -761,6 +762,11 @@ impl ModelLibrary {
             .native
             .iter()
             .any(|descriptor| descriptor.lods.iter().any(|lod| !lod.is_empty()))
+    }
+
+    // Canonical draw bytes retain authored order and replace merge-local slots with texture identities.
+    pub fn native_draw_snapshot(&self, slot: usize, texture_identities: &[String]) -> Vec<u8> {
+        draw_snapshot::snapshot(self, slot, texture_identities)
     }
 
     /// Merges a shard baked on another thread. Shards hold contiguous name

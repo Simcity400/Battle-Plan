@@ -323,3 +323,213 @@ fn the_window_span_counts_what_the_window_lists() {
         }
     }
 }
+
+#[test]
+fn held_derivations_resume_exactly_in_any_order() {
+    let content = content();
+    let anchor = date(1936, 100, 7);
+    let anchored = [
+        state(0, 0, 0, 0),
+        state(1_234_567, 250_000, 1_234_567, 250_000),
+        state(800_000, -120_000, 800_000, -120_000),
+        state(-50_000, 600_000, 999, 7),
+        state(2_000_000, 10, 1_500_000, -40_000),
+    ];
+    let seeds: Vec<Option<u32>> = (0..12u32)
+        .map(|at| (at % 5 != 3).then(|| 0x9e37_79b9_u32.wrapping_mul(at + 1)))
+        .collect();
+    // The reference: one walk from the anchor, every hour's words.
+    let mut reference = vec![Simulation::new(anchor, 1, anchored.to_vec())];
+    for &seed in &seeds {
+        let mut next = reference.last().unwrap().clone();
+        next.advance(&content, seed).unwrap();
+        reference.push(next);
+    }
+    let frame = |steps: usize, checksum: u64| {
+        rows(
+            &anchored,
+            Some(crate::rows::TemperaturePass {
+                anchor,
+                cursor: 1,
+                anchor_seed: None,
+                hours: seeds[..steps].to_vec(),
+                checksum,
+            }),
+        )
+    };
+    let derive = |memo: &mut Memo, steps: usize, checksum: u64| {
+        memo.states(
+            1,
+            anchor + steps as i32,
+            &frame(steps, checksum),
+            Ok(&content),
+        )
+        .map(<[State]>::to_vec)
+    };
+    // A default memo holds nothing on an in-order walk, and stays exact out of order.
+    let mut plain = Memo::default();
+    for steps in (0..=12).chain([5, 12, 0]) {
+        let right = reference[steps].checksum();
+        assert_eq!(
+            derive(&mut plain, steps, right),
+            Ok(reference[steps].states.clone())
+        );
+        assert_eq!((plain.held(), plain.held_bytes()), (0, 0));
+    }
+    let mut memo = Memo::holding();
+    for steps in [3, 10, 7, 12, 0, 1, 11, 6, 6, 5, 9, 2] {
+        let right = reference[steps].checksum();
+        let expected = Ok(reference[steps].states.clone());
+        assert_eq!(derive(&mut memo, steps, right), expected, "{steps}");
+        assert_eq!(derive(&mut Memo::default(), steps, right), expected);
+        // A wrong checksum refuses alike and leaves the derivations exact.
+        let wrong = right ^ 1;
+        assert_eq!(
+            derive(&mut memo, steps, wrong),
+            derive(&mut Memo::default(), steps, wrong)
+        );
+    }
+    // Only the hours named alive stay held; the count never exceeds the frames alive.
+    memo.retain_held(|branch, hour| branch == 1 && (hour - anchor) % 2 == 0);
+    assert!(memo.held.iter().all(|held| (held.hour - anchor) % 2 == 0));
+    let window = 3;
+    for steps in (0..=12).rev().chain(0..=12) {
+        let right = reference[steps].checksum();
+        assert_eq!(
+            derive(&mut memo, steps, right),
+            Ok(reference[steps].states.clone())
+        );
+        let alive = |_: u64, hour: i32| (hour - anchor - steps as i32).abs() < window;
+        memo.retain_held(alive);
+        assert!(memo.held() < 2 * window as usize);
+        assert_eq!(
+            memo.held_bytes(),
+            memo.held() * anchored.len() * std::mem::size_of::<State>()
+        );
+    }
+    memo.retain_held(|_, _| false);
+    assert_eq!((memo.held(), memo.held_bytes()), (0, 0));
+    assert_eq!(memo.simulation(), reference.last());
+    // Another branch and missing content refuse or start again exactly as a fresh memo.
+    let right = reference[4].checksum();
+    let other = memo
+        .states(2, anchor + 4, &frame(4, right), Ok(&content))
+        .map(<[State]>::to_vec);
+    assert_eq!(other, Ok(reference[4].states.clone()));
+    assert_eq!(
+        memo.states(2, anchor + 4, &frame(4, right), Err("unread"))
+            .map(<[State]>::to_vec),
+        Memo::default()
+            .states(2, anchor + 4, &frame(4, right), Err("unread"))
+            .map(<[State]>::to_vec)
+    );
+    // Builders on several threads sharing one memo, in whatever order they lock it.
+    let shared = std::sync::Mutex::new(Memo::holding());
+    std::thread::scope(|scope| {
+        for first in 0..4 {
+            let (shared, reference, derive) = (&shared, &reference, &derive);
+            scope.spawn(move || {
+                for steps in (first..13).step_by(4).rev() {
+                    let mut memo = shared.lock().unwrap();
+                    let right = reference[steps].checksum();
+                    assert_eq!(
+                        derive(&mut memo, steps, right),
+                        Ok(reference[steps].states.clone())
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn held_derivations_require_the_same_branch_anchor_cursor_words_and_seed_prefix() {
+    let content = content();
+    let anchor = date(1936, 100, 7);
+    let seeds = [Some(10), None, Some(20), Some(30)];
+    let different = [Some(10), Some(99), Some(20), Some(30)];
+    let mut memo = Memo::holding();
+    for (branch, shift, cursor, temperature, hours) in [
+        (1, 0, 1, 100, &seeds[..2]),
+        (1, 0, 1, 100, &seeds[..]),
+        (1, 0, 1, 100, &different[..]),
+        (1, 0, 1, 100, &seeds[..3]),
+        (2, 0, 1, 100, &seeds[..]),
+        (2, 3, 1, 100, &seeds[..]),
+        (2, 3, 2, 100, &seeds[..]),
+        (2, 3, 2, 900, &seeds[..]),
+    ] {
+        let anchored = vec![state(temperature, 0, temperature, 0); content.provinces.len()];
+        let mut reference = Simulation::new(anchor + shift, cursor, anchored.clone());
+        for &seed in hours {
+            reference.advance(&content, seed).unwrap();
+        }
+        let frame = rows(
+            &anchored,
+            Some(crate::rows::TemperaturePass {
+                anchor: anchor + shift,
+                cursor,
+                anchor_seed: None,
+                hours: hours.to_vec(),
+                checksum: reference.checksum(),
+            }),
+        );
+        assert_eq!(
+            memo.states(branch, reference.hour, &frame, Ok(&content))
+                .unwrap(),
+            reference.states,
+        );
+        assert_eq!(memo.simulation(), Some(&reference));
+        for held in &memo.held {
+            let mut prefix = Simulation::new(anchor + shift, cursor, anchored.clone());
+            for &seed in &hours[..(held.hour - anchor - shift) as usize] {
+                prefix.advance(&content, seed).unwrap();
+            }
+            assert_eq!(held, &prefix);
+        }
+    }
+}
+
+#[test]
+fn an_advance_refusal_clears_held_derivations_and_allows_a_fresh_retry() {
+    let content = content();
+    let anchor = date(1936, 100, 7);
+    let anchored = vec![state(100, 0, 100, 0); content.provinces.len()];
+    let mut memo = Memo::holding();
+    let initial = rows(
+        &anchored,
+        Some(crate::rows::TemperaturePass {
+            anchor,
+            cursor: 1,
+            anchor_seed: None,
+            hours: vec![],
+            checksum: checksum(anchored.iter().map(|state| state.temperature)),
+        }),
+    );
+    memo.states(1, anchor, &initial, Ok(&content)).unwrap();
+    assert_eq!(memo.held(), 1);
+    let mut broken = self::content();
+    broken.provinces[1].terrain = Err("synthetic unreadable terrain".into());
+    let frame = rows(
+        &anchored,
+        Some(crate::rows::TemperaturePass {
+            anchor,
+            cursor: 1,
+            anchor_seed: None,
+            hours: vec![Some(10)],
+            checksum: 0,
+        }),
+    );
+    let mut reference = Simulation::new(anchor, 1, anchored.clone());
+    assert_eq!(
+        memo.states(1, anchor + 1, &frame, Ok(&broken)).unwrap_err(),
+        reference.advance(&broken, Some(10)).unwrap_err(),
+    );
+    assert!(memo.simulation().is_none());
+    assert_eq!((memo.held(), memo.held_bytes()), (0, 0));
+    assert_eq!(
+        memo.states(1, anchor, &initial, Ok(&content)).unwrap(),
+        anchored
+    );
+    assert_eq!(memo.held(), 1);
+}

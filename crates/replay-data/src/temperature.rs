@@ -374,17 +374,30 @@ impl Simulation {
 
 /// Every province record's words at a frame's hour, as its WeatherProvinces rows establish
 /// them, keeping the last derivation so that the next hour of the same anchor steps once.
+/// Holding is opt-in and follows the owner's live frames, not a separate cache limit.
 #[derive(Debug, Default)]
 pub struct Memo {
+    hold: bool,
     branch: u64,
-    /// The anchor hour and cursor of the kept derivation.
+    /// The anchor hour and cursor of the kept pass.
     anchor: Option<(i32, i32)>,
     anchored: Vec<State>,
+    /// The kept pass's hour entries, from the anchor, that every held derivation agrees with.
     consumed: Vec<Option<u32>>,
     simulation: Option<Simulation>,
+    /// Derivations of the kept pass, at most one per hour; always empty unless holding.
+    held: Vec<Simulation>,
 }
 
 impl Memo {
+    /// The owner must trim held derivations to its live frames with [`Self::retain_held`].
+    pub fn holding() -> Self {
+        Self {
+            hold: true,
+            ..Self::default()
+        }
+    }
+
     /// Every slot's words at the frame's hour. Formats 93 to 101 recorded each temperature at
     /// its hour, which this returns with no other word. From format 102 the rows hold the words
     /// at the frame's anchor and slot zero the pass since; the derivation
@@ -419,6 +432,7 @@ impl Memo {
                 return Err("WeatherProvinces mixes anchored and hourly temperatures".into());
             }
             self.anchor = None;
+            self.held.clear();
             self.simulation = Some(Simulation::new(hour, 0, recorded));
             return Ok(&self.simulation.as_ref().unwrap().states);
         }
@@ -437,26 +451,80 @@ impl Memo {
             ));
         }
         let content = content.map_err(|reason| format!("temperature content: {reason}"))?;
-        let reuse = self.branch == branch
-            && self.anchor == Some((pass.anchor, pass.cursor))
-            && self.anchored == anchored
-            && pass.hours.starts_with(&self.consumed)
-            && self.simulation.is_some();
-        if !reuse {
+        if self.branch != branch
+            || self.anchor != Some((pass.anchor, pass.cursor))
+            || self.anchored != anchored
+        {
             self.branch = branch;
             self.anchor = Some((pass.anchor, pass.cursor));
             self.consumed.clear();
-            self.simulation = Some(Simulation::new(pass.anchor, pass.cursor, anchored.clone()));
+            self.simulation = None;
+            self.held.clear();
             self.anchored = anchored;
         }
-        for &entry in &pass.hours[self.consumed.len()..] {
+        // Derivations past the shared seed prefix cannot certify this frame.
+        let agreed = self
+            .consumed
+            .iter()
+            .zip(&pass.hours)
+            .take_while(|(kept, entry)| kept == entry)
+            .count();
+        self.consumed.truncate(agreed);
+        let steps = |simulation: &Simulation| {
+            (i64::from(simulation.hour) - i64::from(pass.anchor)) as usize
+        };
+        self.held.retain(|held| steps(held) <= agreed);
+        if self
+            .simulation
+            .as_ref()
+            .is_some_and(|simulation| steps(simulation) > agreed)
+        {
+            self.simulation = None;
+        }
+        // Resume only from the shared prefix, never from a later hour.
+        let reach = pass.hours.len();
+        let kept = self
+            .simulation
+            .as_ref()
+            .filter(|simulation| steps(simulation) <= reach)
+            .map(|simulation| simulation.hour);
+        let held = self
+            .held
+            .iter()
+            .filter(|held| steps(held) <= reach)
+            .max_by_key(|held| held.hour);
+        let start = match (kept, held) {
+            (Some(kept), Some(held)) if held.hour > kept => Some(held.clone()),
+            (Some(_), _) => None,
+            (None, Some(held)) => Some(held.clone()),
+            (None, None) => Some(Simulation::new(
+                pass.anchor,
+                pass.cursor,
+                self.anchored.clone(),
+            )),
+        };
+        if let Some(start) = start {
+            if let Some(previous) = self.simulation.take()
+                && self.hold
+                && !self.held.iter().any(|held| held.hour == previous.hour)
+            {
+                self.held.push(previous);
+            }
+            self.simulation = Some(start);
+        }
+        let from = steps(self.simulation.as_ref().unwrap());
+        for at in from..reach {
+            let entry = pass.hours[at];
             let simulation = self.simulation.as_mut().unwrap();
             if let Err(reason) = simulation.advance(content, entry) {
                 self.anchor = None;
                 self.simulation = None;
+                self.held.clear();
                 return Err(reason);
             }
-            self.consumed.push(entry);
+            if self.consumed.len() == at {
+                self.consumed.push(entry);
+            }
         }
         let simulation = self.simulation.as_ref().unwrap();
         if simulation.checksum() != pass.checksum {
@@ -464,7 +532,27 @@ impl Memo {
                 "derived temperatures at hour {hour} differ from the recorded checksum"
             ));
         }
+        if self.hold && !self.held.iter().any(|held| held.hour == simulation.hour) {
+            self.held.push(simulation.clone());
+        }
         Ok(&simulation.states)
+    }
+
+    /// Trims held derivations by branch and hour without discarding the last simulation.
+    pub fn retain_held(&mut self, mut alive: impl FnMut(u64, i32) -> bool) {
+        let branch = self.branch;
+        self.held.retain(|held| alive(branch, held.hour));
+    }
+
+    pub fn held(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn held_bytes(&self) -> usize {
+        self.held
+            .iter()
+            .map(|held| std::mem::size_of_val(held.states.as_slice()))
+            .sum()
     }
 
     /// The kept derivation, at the hour of the last successful call.
