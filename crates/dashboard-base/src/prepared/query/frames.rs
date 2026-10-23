@@ -108,12 +108,43 @@ thread_local! {
     /// Run on this thread each time one of its reads is released.
     pub(crate) static ON_RELEASE: std::cell::RefCell<Option<Box<dyn Fn()>>> =
         const { std::cell::RefCell::new(None) };
+    /// Run on this thread each time it starts waiting on another request's read.
+    pub(crate) static ON_WAIT: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Tables whose block decodes on this thread fail as damaged, the first selected one named.
+    pub(crate) static DAMAGED: std::cell::RefCell<Vec<TableId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Tables whose block reads on this thread cannot be kept, as an unreadable block's.
+    pub(crate) static UNCACHEABLE: std::cell::RefCell<Vec<TableId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// Run on this thread each time it has leased a block's entry, before using it.
+    pub(crate) static ON_LEASED: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Run on this thread each time it starts reading a block itself.
+    pub(crate) static ON_READ: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Marks `hour`'s entry as read by another request until dropped.
 #[cfg(test)]
 pub(crate) fn hold_hour(source: &Source, branch: u64, hour: i32) -> impl Drop + '_ {
-    let key = Key::Hour { branch, hour };
+    hold(source, Key::Hour { branch, hour })
+}
+
+/// Marks `block`'s entry as read by another request until dropped.
+#[cfg(test)]
+pub(crate) fn hold_block<'a>(source: &'a Source, block: &BlockIndex) -> impl Drop + 'a {
+    hold(
+        source,
+        Key::Block {
+            branch: block.branch,
+            offset: block.offset,
+        },
+    )
+}
+
+#[cfg(test)]
+fn hold(source: &Source, key: Key) -> Reading<'_> {
     let slot = slot(source, key).expect("this thread may decode");
     lock(&slot.state).reading = true;
     Reading { source, key, slot }
@@ -141,6 +172,53 @@ struct Entry {
     slot: Arc<Slot>,
     used: u64,
     bytes: usize,
+    /// Requests using its value meanwhile ([`Lease`]); a leased entry is not evicted.
+    leases: usize,
+}
+
+/// A request's use of an entry's value: the entry stays held and accounted until it ends.
+struct Lease<'a> {
+    source: &'a Source,
+    key: Key,
+    slot: Arc<Slot>,
+}
+
+impl<'a> Lease<'a> {
+    /// A lease on `key`'s entry as it is now, if there is one.
+    fn of(source: &'a Source, key: Key) -> Option<Self> {
+        let cache = source.state::<FrameCache>();
+        let mut cache = lock(&cache);
+        let entry = cache.entries.get_mut(&key)?;
+        entry.leases += 1;
+        Some(Self {
+            source,
+            key,
+            slot: Arc::clone(&entry.slot),
+        })
+    }
+}
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        let cache = self.source.state::<FrameCache>();
+        let mut cache = lock(&cache);
+        if let Some(entry) = cache
+            .entries
+            .get_mut(&self.key)
+            .filter(|entry| Arc::ptr_eq(&entry.slot, &self.slot))
+        {
+            entry.leases -= 1;
+            // The last lease of an entry left empty takes it, as its read's end would have.
+            if entry.leases == 0 {
+                let state = lock(&self.slot.state);
+                if state.value.is_none() && !state.reading {
+                    drop(state);
+                    cache.entries.remove(&self.key);
+                }
+            }
+        }
+        trim(&mut cache);
+    }
 }
 
 #[derive(Default)]
@@ -204,19 +282,14 @@ pub fn hours(
                     decoders.clear();
                     active = Some(block.offset);
                 }
-                seek_with(source, branch, hour, tables, cancelled, |tables| {
-                    let tables = sorted(&[tables, &[TableId::Campaign]].concat());
-                    if !decoders.contains_key(&tables) {
-                        decoders.insert(
-                            tables.clone(),
-                            BlockDecoder::new(source, block, &tables, cancelled)?,
-                        );
-                    }
-                    decoders
-                        .get_mut(&tables)
-                        .expect("selected decoder")
-                        .at(source, hour, cancelled)
-                })?
+                seek_with(
+                    source,
+                    branch,
+                    hour,
+                    tables,
+                    cancelled,
+                    &mut Decoders::new(source, block, hour, &mut decoders, cancelled),
+                )?
             }
             None => seek(source, branch, hour, tables, cancelled)?,
         };
@@ -250,17 +323,14 @@ pub fn window(
             {
                 continue;
             }
-            let frame = seek_with(source, branch, hour, tables, cancelled, |tables| {
-                let tables = sorted(&[tables, &[TableId::Campaign]].concat());
-                if !decoders.contains_key(&tables) {
-                    let decoder = BlockDecoder::new(source, block, &tables, cancelled)?;
-                    decoders.insert(tables.clone(), decoder);
-                }
-                decoders
-                    .get_mut(&tables)
-                    .expect("selected decoder")
-                    .at(source, hour, cancelled)
-            })?;
+            let frame = seek_with(
+                source,
+                branch,
+                hour,
+                tables,
+                cancelled,
+                &mut Decoders::new(source, block, hour, &mut decoders, cancelled),
+            )?;
             if let SeekResult::Frame(frame) = frame {
                 result.push(*frame);
             }
@@ -269,9 +339,115 @@ pub fn window(
     Ok(result)
 }
 
+/// How one hour's entry reads the tables it lacks.
+trait HourRead {
+    /// Whether reading `tables` waits on no other entry.
+    fn ready(&self, tables: &[TableId]) -> bool;
+    /// Called holding no entry, so its waits never keep others from the hour.
+    fn prepare(&mut self, tables: &[TableId]) -> io::Result<()>;
+    fn read(&mut self, tables: &[TableId]) -> io::Result<SeekResult>;
+}
+
+/// An hour sought from its block's keyframe: it waits on no other entry.
+struct Direct<'a> {
+    source: &'a Source,
+    branch: u64,
+    hour: i32,
+    cancelled: &'a AtomicBool,
+}
+
+impl HourRead for Direct<'_> {
+    fn ready(&self, _: &[TableId]) -> bool {
+        true
+    }
+
+    fn prepare(&mut self, _: &[TableId]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn read(&mut self, tables: &[TableId]) -> io::Result<SeekResult> {
+        count(self.source, 0, 1);
+        let cancelled = self.cancelled;
+        self.source
+            .replay_ref()
+            .seek_selected_with(self.branch, self.hour, Some(tables), || {
+                check_cancel(cancelled)
+            })
+    }
+}
+
+/// A walk's decoders of one block, one per selection; making one waits on the block's entry.
+struct Decoders<'a, 'd> {
+    source: &'a Source,
+    block: &'a BlockIndex,
+    hour: i32,
+    decoders: &'d mut BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
+    /// Preparations that failed, each answered where its read would have been made.
+    failed: BTreeMap<Vec<TableId>, io::Error>,
+    cancelled: &'a AtomicBool,
+}
+
+impl<'a, 'd> Decoders<'a, 'd> {
+    fn new(
+        source: &'a Source,
+        block: &'a BlockIndex,
+        hour: i32,
+        decoders: &'d mut BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
+        cancelled: &'a AtomicBool,
+    ) -> Self {
+        Self {
+            source,
+            block,
+            hour,
+            decoders,
+            failed: BTreeMap::new(),
+            cancelled,
+        }
+    }
+}
+
+impl HourRead for Decoders<'_, '_> {
+    fn ready(&self, tables: &[TableId]) -> bool {
+        let tables = sorted(&[tables, &[TableId::Campaign]].concat());
+        self.decoders.contains_key(&tables) || self.failed.contains_key(&tables)
+    }
+
+    fn prepare(&mut self, tables: &[TableId]) -> io::Result<()> {
+        let tables = sorted(&[tables, &[TableId::Campaign]].concat());
+        if !self.decoders.contains_key(&tables) && !self.failed.contains_key(&tables) {
+            match BlockDecoder::new(self.source, self.block, &tables, self.cancelled) {
+                Ok(decoder) => {
+                    self.decoders.insert(tables, decoder);
+                }
+                Err(error) => {
+                    self.failed.insert(tables, error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, tables: &[TableId]) -> io::Result<SeekResult> {
+        let tables = sorted(&[tables, &[TableId::Campaign]].concat());
+        if let Some(error) = self.failed.remove(&tables) {
+            return Err(error);
+        }
+        if !self.decoders.contains_key(&tables) {
+            let decoder = BlockDecoder::new(self.source, self.block, &tables, self.cancelled)?;
+            self.decoders.insert(tables.clone(), decoder);
+        }
+        self.decoders
+            .get_mut(&tables)
+            .expect("selected decoder")
+            .at(self.source, self.hour, self.cancelled)
+    }
+}
+
 /// Request-local decoder state; reconstructed hours are retained only by the
 /// shared hour cache. Different windows never lock each other's block walk.
-struct BlockDecoder {
+struct BlockDecoder<'a> {
+    /// Keeps the block's entry held and accounted while this decoder reads it.
+    _lease: Option<Lease<'a>>,
     branch: u64,
     reads: Vec<BlockRead>,
     decoders: Vec<(FrameDecoder, Vec<TableId>)>,
@@ -281,23 +457,35 @@ struct BlockDecoder {
     mismatch: Option<String>,
 }
 
-impl BlockDecoder {
+impl<'a> BlockDecoder<'a> {
     fn new(
-        source: &Source,
+        source: &'a Source,
         index: &BlockIndex,
         tables: &[TableId],
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
-        let reads = match block(source, index, tables, cancelled)? {
-            Some(reads) => reads,
-            None => vec![BlockRead {
-                tables: tables.to_vec(),
-                frames: Arc::new(
-                    source
-                        .replay_ref()
-                        .read_block_recorded_selected(index, tables)?,
-                ),
-            }],
+        #[cfg(test)]
+        if let Some(table) = DAMAGED
+            .with_borrow(|damaged| tables.iter().find(|table| damaged.contains(table)).copied())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("damaged {table:?}"),
+            ));
+        }
+        let (reads, lease) = match leased_block(source, index, tables, cancelled)? {
+            Some((reads, lease)) => (reads, Some(lease)),
+            None => (
+                vec![BlockRead {
+                    tables: tables.to_vec(),
+                    frames: Arc::new(
+                        source
+                            .replay_ref()
+                            .read_block_recorded_selected(index, tables)?,
+                    ),
+                }],
+                None,
+            ),
         };
         let decoders = reads
             .iter()
@@ -312,6 +500,7 @@ impl BlockDecoder {
             })
             .collect();
         Ok(Self {
+            _lease: lease,
             branch: index.branch,
             reads,
             decoders,
@@ -409,6 +598,11 @@ fn joined(held: &[TableId], added: &[TableId]) -> Vec<TableId> {
 fn slot(source: &Source, key: Key) -> io::Result<Arc<Slot>> {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
+    Ok(Arc::clone(&used(&mut cache, key)?.slot))
+}
+
+/// `key`'s entry, made when there is none, marked used now.
+fn used(cache: &mut FrameCache, key: Key) -> io::Result<&mut Entry> {
     cache.clock += 1;
     let clock = cache.clock;
     if !cache.entries.contains_key(&key) {
@@ -418,18 +612,34 @@ fn slot(source: &Source, key: Key) -> io::Result<Arc<Slot>> {
         slot: Arc::default(),
         used: 0,
         bytes: 0,
+        leases: 0,
     });
     entry.used = clock;
-    Ok(Arc::clone(&entry.slot))
+    Ok(entry)
 }
 
-/// Remove `key`'s entry when it is `slot` and neither holds a value nor is
-/// being read, so no empty entry outlives the request that made it.
+/// [`slot`], leased under the same lock, so no other request's release can evict it first.
+fn leased_slot(source: &Source, key: Key) -> io::Result<(Arc<Slot>, Lease<'_>)> {
+    let cache = source.state::<FrameCache>();
+    let mut cache = lock(&cache);
+    let entry = used(&mut cache, key)?;
+    entry.leases += 1;
+    let slot = Arc::clone(&entry.slot);
+    let lease = Lease {
+        source,
+        key,
+        slot: Arc::clone(&slot),
+    };
+    Ok((slot, lease))
+}
+
+/// Remove `key`'s entry when it is `slot`, unleased, and neither holds a value
+/// nor is being read, so no empty entry outlives the requests using it.
 fn discard(source: &Source, key: Key, slot: &Arc<Slot>) {
     let cache = source.state::<FrameCache>();
     let mut cache = lock(&cache);
     let empty = cache.entries.get(&key).is_some_and(|entry| {
-        Arc::ptr_eq(&entry.slot, slot) && {
+        Arc::ptr_eq(&entry.slot, slot) && entry.leases == 0 && {
             let state = lock(&slot.state);
             state.value.is_none() && !state.reading
         }
@@ -458,15 +668,22 @@ fn settle(source: &Source, key: Key, slot: &Arc<Slot>, bytes: Option<usize>) {
             entry.bytes = bytes;
             cache.bytes += bytes;
         }
+        // Requests still using a leased entry find it again; their last release removes it.
+        None if entry.leases > 0 => entry.bytes = 0,
         None => {
             cache.entries.remove(&key);
         }
     }
+    trim(cache);
+}
+
+/// Evict least recently used entries beyond the budget; a leased entry stays until released.
+fn trim(cache: &mut FrameCache) {
     while cache.bytes > cache.budget {
         let Some((&oldest, _)) = cache
             .entries
             .iter()
-            .filter(|(_, entry)| entry.bytes > 0)
+            .filter(|(_, entry)| entry.bytes > 0 && entry.leases == 0)
             .min_by_key(|(_, entry)| entry.used)
         else {
             break;
@@ -557,6 +774,12 @@ fn wait_or_read<'a, T>(
             if !state.reading {
                 break;
             }
+            #[cfg(test)]
+            ON_WAIT.with_borrow(|hook| {
+                if let Some(hook) = hook {
+                    hook();
+                }
+            });
             state = slot
                 .filled
                 .wait_timeout(state, WAIT_CHECK)
@@ -642,18 +865,76 @@ fn independent_keyframe(frame: &Frame) -> bool {
 /// as `Replay::read_block_selected(block, read tables)` returned them. Every
 /// read holds the block's frames in order; together the reads hold `tables`.
 /// `None` when the cache cannot answer exactly and the caller reads directly.
-pub fn block(
-    source: &Source,
+/// The answer keeps the block's entry held and counted until it is dropped.
+pub fn block<'a>(
+    source: &'a Source,
     block: &BlockIndex,
     tables: &[TableId],
     cancelled: &AtomicBool,
-) -> io::Result<Option<Vec<BlockRead>>> {
+) -> io::Result<Option<LeasedReads<'a>>> {
+    Ok(
+        leased_block(source, block, tables, cancelled)?.map(|(reads, lease)| LeasedReads {
+            reads,
+            _lease: Some(lease),
+        }),
+    )
+}
+
+/// A block's reads, and for the cache's answer the lease that keeps its entry held and
+/// counted while they are used.
+pub struct LeasedReads<'a> {
+    reads: Vec<BlockRead>,
+    _lease: Option<Lease<'a>>,
+}
+
+impl LeasedReads<'_> {
+    /// Reads made outside the cache, which keeps nothing for them.
+    pub fn uncached(reads: Vec<BlockRead>) -> Self {
+        Self {
+            reads,
+            _lease: None,
+        }
+    }
+}
+
+impl std::ops::Deref for LeasedReads<'_> {
+    type Target = [BlockRead];
+
+    fn deref(&self) -> &[BlockRead] {
+        &self.reads
+    }
+}
+
+/// [`block`]'s reads with the lease keeping its entry, for a test to hold or release.
+#[cfg(test)]
+pub(crate) fn leased<'a>(
+    source: &'a Source,
+    block: &BlockIndex,
+    tables: &[TableId],
+) -> io::Result<Option<impl Drop + Send + use<'a>>> {
+    Ok(leased_block(source, block, tables, &AtomicBool::new(false))?.map(|(_, lease)| lease))
+}
+
+/// [`block`], its entry leased to the caller so it stays held and accounted while used.
+fn leased_block<'a>(
+    source: &'a Source,
+    block: &BlockIndex,
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+) -> io::Result<Option<(Vec<BlockRead>, Lease<'a>)>> {
     let wanted = sorted(tables);
     let key = Key::Block {
         branch: block.branch,
         offset: block.offset,
     };
-    let slot = slot(source, key)?;
+    // Held from the start, so a block being read or answered stays found and accounted.
+    let (slot, lease) = leased_slot(source, key)?;
+    #[cfg(test)]
+    ON_LEASED.with_borrow(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
     let covering = |reads: &[BlockRead]| {
         let held = reads
             .iter()
@@ -681,7 +962,7 @@ pub fn block(
         },
         cancelled,
     )? {
-        Ok(reads) => return Ok(Some(reads)),
+        Ok(reads) => return Ok(Some((reads, lease))),
         Err(read) => read,
     };
     let held = match held {
@@ -693,10 +974,25 @@ pub fn block(
         .flat_map(|read| read.tables.iter().copied())
         .collect::<Vec<_>>();
     let added = missing(&sorted(&have), &wanted);
+    #[cfg(test)]
+    ON_READ.with_borrow(|hook| {
+        if let Some(hook) = hook {
+            hook();
+        }
+    });
     count(source, 1, 0);
     let frames = source
         .replay_ref()
         .read_block_recorded_selected(block, &added);
+    #[cfg(test)]
+    let frames = frames.and_then(|frames| {
+        match UNCACHEABLE
+            .with_borrow(|tables| added.iter().find(|table| tables.contains(table)).copied())
+        {
+            Some(table) => Err(io::Error::other(format!("unreadable {table:?}"))),
+            None => Ok(frames),
+        }
+    });
     // Every read lists the same frames; a keyframe the decoder would refuse
     // with these tables selected is read with the request's tables alone.
     let usable = frames.ok().filter(|frames| {
@@ -732,7 +1028,7 @@ pub fn block(
     let value_bytes = held_bytes.saturating_sub(held_containers) + bytes + block_containers(&reads);
     let value = (Value::Block(Arc::new(reads)), value_bytes);
     publish(source, key, &slot, reading, Some(value));
-    Ok(Some(answer))
+    Ok(Some((answer, lease)))
 }
 
 /// One hour's frame reconstructed with `tables`, exactly as
@@ -744,36 +1040,97 @@ pub fn seek(
     tables: &[TableId],
     cancelled: &AtomicBool,
 ) -> io::Result<SeekResult> {
-    seek_with(source, branch, hour, tables, cancelled, |tables| {
-        count(source, 0, 1);
-        source
-            .replay_ref()
-            .seek_selected_with(branch, hour, Some(tables), || check_cancel(cancelled))
-    })
+    seek_with(
+        source,
+        branch,
+        hour,
+        tables,
+        cancelled,
+        &mut Direct {
+            source,
+            branch,
+            hour,
+            cancelled,
+        },
+    )
+}
+
+/// What a read at `key`'s entry, as it is now, would select (none: it reads no block), whether
+/// another request is reading it, and a lease keeping its held frame for the join.
+fn lacking<'a>(
+    source: &'a Source,
+    key: Key,
+    tables: &[TableId],
+    wanted: &[TableId],
+) -> (Option<Vec<TableId>>, bool, Option<Lease<'a>>) {
+    let Some(lease) = Lease::of(source, key) else {
+        return (Some(tables.to_vec()), false, None);
+    };
+    let state = lock(&lease.slot.state);
+    let (lacks, reading, held) = match &state.value {
+        Some(Value::Hour(held)) => {
+            let added = missing(&held.tables, wanted);
+            ((!added.is_empty()).then_some(added), state.reading, true)
+        }
+        _ => (Some(tables.to_vec()), state.reading, false),
+    };
+    drop(state);
+    (lacks, reading, held.then_some(lease))
 }
 
 /// Coalesce one hour's reconstruction, join only missing tables and publish
-/// before releasing its slot. The supplied reader may advance a window decoder.
+/// before releasing its slot. A read never waits on its block holding the hour.
 fn seek_with(
     source: &Source,
     branch: u64,
     hour: i32,
     tables: &[TableId],
     cancelled: &AtomicBool,
-    mut read: impl FnMut(&[TableId]) -> io::Result<SeekResult>,
+    reader: &mut impl HourRead,
 ) -> io::Result<SeekResult> {
     // A seek reconstructs the campaign with every selection.
     let wanted = sorted(&[tables, &[TableId::Campaign]].concat());
     let key = Key::Hour { branch, hour };
-    let slot = slot(source, key)?;
-    let covered = |value: &Value| match value {
-        Value::Hour(held) if missing(&held.tables, &wanted).is_empty() => masked(held, &wanted),
-        _ => None,
+    // Without block decodes a request takes what is held or is refused; it prepares nothing.
+    let prepares = !super::progressive::block_decodes_disabled();
+    // Keeps the hour's held frame for the join while this request prepares.
+    let mut _lease = None;
+    let (slot, reading, held) = loop {
+        if prepares {
+            let (lacks, reading, lease) = lacking(source, key, tables, &wanted);
+            _lease = lease;
+            // A request the hour's reader may answer waits for it before reading the block.
+            if let Some(lacks) = lacks
+                && !reading
+                && !reader.ready(&lacks)
+            {
+                reader.prepare(&lacks)?;
+            }
+        }
+        let slot = slot(source, key)?;
+        let covered = |value: &Value| match value {
+            Value::Hour(held) if missing(&held.tables, &wanted).is_empty() => masked(held, &wanted),
+            _ => None,
+        };
+        let (reading, held) =
+            match wait_or_read(source, key, Arc::clone(&slot), covered, cancelled)? {
+                Ok(frame) => return Ok(SeekResult::Frame(Box::new(frame))),
+                Err(read) => read,
+            };
+        let lacks = match &held {
+            Some(Value::Hour(held)) => {
+                let added = missing(&held.tables, &wanted);
+                (!added.is_empty()).then_some(added)
+            }
+            _ => Some(tables.to_vec()),
+        };
+        match lacks {
+            // Another read changed what the hour lacks while this one waited.
+            Some(lacks) if prepares && !reader.ready(&lacks) => drop(reading),
+            _ => break (slot, reading, held),
+        }
     };
-    let (reading, held) = match wait_or_read(source, key, Arc::clone(&slot), covered, cancelled)? {
-        Ok(frame) => return Ok(SeekResult::Frame(Box::new(frame))),
-        Err(read) => read,
-    };
+    let mut read = |tables: &[TableId]| reader.read(tables);
     let Some(Value::Hour(held)) = held else {
         // Nothing held: this read is the request's own.
         let result = read(tables);

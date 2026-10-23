@@ -1999,8 +1999,9 @@ fn sample_blocks_recorded(
     if exact {
         // Blocks are read ahead on spare cores (or found in the source's frame
         // cache) while their hours are decoded and sampled here, in block order.
+        // A read held ahead keeps its cache entry leased, so it stays counted until used.
         let read =
-            |block: &replay::container::BlockIndex| -> io::Result<Vec<super::frames::BlockRead>> {
+            |block: &replay::container::BlockIndex| -> io::Result<super::frames::LeasedReads<'_>> {
                 if let Some(position) = replay.block_position(block) {
                     consumer.reading(position);
                 }
@@ -2011,12 +2012,12 @@ fn sample_blocks_recorded(
                             let mut selected = tables.to_vec();
                             selected.sort_unstable();
                             selected.dedup();
-                            vec![super::frames::BlockRead {
+                            super::frames::LeasedReads::uncached(vec![super::frames::BlockRead {
                                 tables: selected,
                                 frames: Arc::new(
                                     replay.read_block_recorded_selected(block, tables)?,
                                 ),
-                            }]
+                            }])
                         }
                     },
                 )
@@ -2613,6 +2614,366 @@ mod tests {
         );
         assert_eq!(frames::held_bytes(&source), 0);
         assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn a_window_waiting_for_its_block_does_not_hold_the_first_hour() {
+        use super::super::frames;
+        use std::sync::mpsc::channel;
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap();
+        let first = block.first_hour;
+        let measure = crate::prepared_measure::TABLES;
+        let (source, flag) = (&source, &flag);
+        std::thread::scope(|scope| {
+            // Another request is reading the first block.
+            let held = Released(Some(frames::hold_block(source, block)));
+            let (waiting, waits) = channel();
+            let window = scope.spawn(move || {
+                frames::ON_WAIT.set(Some(Box::new(move || {
+                    let _ = waiting.send(());
+                })));
+                let frames = read_window(source, 1, first, first, measure, flag);
+                frames::ON_WAIT.set(None);
+                frames
+            });
+            // The window now waits for the block (the only entry anyone holds).
+            waits.recv().unwrap();
+            // Answers while the window waits, without waiting: the window holds no slot of
+            // the hour. Were it held, this fails here and the release lets the window end.
+            frames::ON_WAIT.set(Some(Box::new(|| {
+                panic!("the first hour waited on the window waiting for its block")
+            })));
+            let frame = frame_at(source, 1, first, &[TableId::Countries], flag)
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame.hour, first);
+            drop(held);
+            let frames = window.join().unwrap().unwrap();
+            assert_eq!(
+                frames.iter().map(|frame| frame.hour).collect::<Vec<_>>(),
+                [first]
+            );
+            // The window's tables are exactly what a seek alone reads.
+            let alone = source
+                .replay_ref()
+                .seek_selected(1, first, Some(measure))
+                .unwrap();
+            let replay::container::SeekResult::Frame(alone) = alone else {
+                panic!("the first hour is recorded");
+            };
+            for table in measure {
+                assert_eq!(
+                    frames[0].tables[table.index()],
+                    alone.tables[table.index()],
+                    "{table:?}"
+                );
+            }
+        });
+        assert!(frames::accounted(source));
+    }
+
+    /// Ends a hold and this thread's wait hook however a test ends, so a request waiting
+    /// on the hold finishes and a regression fails rather than hangs.
+    struct Released<H>(Option<H>);
+
+    impl<H> Drop for Released<H> {
+        fn drop(&mut self) {
+            super::super::frames::ON_WAIT.set(None);
+            self.0.take();
+        }
+    }
+
+    #[test]
+    fn preparing_a_join_keeps_the_hour_it_joins_under_eviction() {
+        use super::super::frames;
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let (a, b) = (TableId::Countries, TableId::CountryLinks);
+        let tables = [TableId::Campaign, a, b];
+        // The hour holds A, sought on its own.
+        frame_at(&source, 1, 5, &[TableId::Campaign, a], &flag)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frames::reads(&source), (0, 1));
+        // Nothing fits, so publishing the block read for B would evict the hour; and A is
+        // damaged after the hour, so only a join onto the held A answers.
+        frames::set_budget(&source, 0);
+        frames::DAMAGED.set(vec![a]);
+        let read = read_window(&source, 1, 5, 5, &tables, &flag);
+        frames::DAMAGED.set(Vec::new());
+        let SeekResult::Frame(expected) = source
+            .replay_ref()
+            .seek_selected(1, 5, Some(&tables))
+            .unwrap()
+        else {
+            panic!("a recorded hour");
+        };
+        assert_eq!(read.unwrap(), [*expected]);
+        assert_eq!(
+            frames::reads(&source),
+            (1, 1),
+            "one block read, for B alone, joined to the held A"
+        );
+        assert_eq!(frames::held_bytes(&source), 0);
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn a_failed_join_reports_what_reading_the_whole_selection_reports() {
+        use super::super::frames;
+        let source = varied_source();
+        let flag = AtomicBool::new(false);
+        let (a, b) = (TableId::Countries, TableId::CountryLinks);
+        assert!(a < b, "A is decoded first");
+        frame_at(&source, 1, 5, &[TableId::Campaign, a], &flag)
+            .unwrap()
+            .unwrap();
+        // Both are damaged after the hour: the join's read of B fails, and the whole selection,
+        // read again as when the read was made holding the hour, fails at A first.
+        frames::DAMAGED.set(vec![a, b]);
+        let read = read_window(&source, 1, 5, 5, &[TableId::Campaign, a, b], &flag);
+        frames::DAMAGED.set(Vec::new());
+        assert_eq!(read.unwrap_err().to_string(), format!("damaged {a:?}"));
+        // The held hour stays as it was.
+        frame_at(&source, 1, 5, &[TableId::Campaign, a], &flag)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frames::reads(&source), (0, 1));
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn concurrent_windows_over_budget_share_one_accounted_block_read() {
+        use super::super::frames;
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let source = Arc::new(varied_source());
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap()
+            .clone();
+        let hour = block.first_hour + 1;
+        let tables = crate::prepared_measure::TABLES;
+        let SeekResult::Frame(expected) = source
+            .replay_ref()
+            .seek_selected(1, hour, Some(tables))
+            .unwrap()
+        else {
+            panic!("a recorded hour");
+        };
+        // Nothing fits: whatever the windows share is over budget while they use it.
+        frames::set_budget(&source, 0);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            // Another request is reading the block until both windows wait for it.
+            let held = Released(Some(frames::hold_block(&source, &block)));
+            let (waiting, waits) = channel();
+            let windows = (0..2)
+                .map(|_| {
+                    let (waiting, source, seen) =
+                        (waiting.clone(), Arc::clone(&source), Arc::clone(&seen));
+                    scope.spawn(move || {
+                        let sent = std::cell::Cell::new(false);
+                        frames::ON_WAIT.set(Some(Box::new(move || {
+                            if !sent.replace(true) {
+                                let _ = waiting.send(());
+                            }
+                        })));
+                        {
+                            let source = Arc::clone(&source);
+                            frames::ON_RELEASE.set(Some(Box::new(move || {
+                                seen.lock().unwrap().push(frames::held_bytes(&source));
+                            })));
+                        }
+                        let read =
+                            read_window(&source, 1, hour, hour, tables, &AtomicBool::new(false));
+                        frames::ON_WAIT.set(None);
+                        frames::ON_RELEASE.set(None);
+                        read
+                    })
+                })
+                .collect::<Vec<_>>();
+            for _ in 0..2 {
+                waits
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("both windows wait for the block");
+            }
+            drop(held);
+            for window in windows {
+                assert_eq!(window.join().unwrap().unwrap(), [(*expected).clone()]);
+            }
+        });
+        assert_eq!(
+            frames::reads(&source).0,
+            1,
+            "one block read for both windows"
+        );
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter().any(|&bytes| bytes > 0),
+            "the block read stayed held and counted while the windows used it: {seen:?}"
+        );
+        assert_eq!(frames::held_bytes(&source), 0, "released, the budget holds");
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn a_held_block_answer_stays_counted_and_answers_the_next_request() {
+        use super::super::frames;
+        let source = varied_source();
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap();
+        let tables = crate::prepared_measure::TABLES;
+        let flag = AtomicBool::new(false);
+        // Nothing fits: only the answer being held keeps the block.
+        frames::set_budget(&source, 0);
+        let held = frames::block(&source, block, tables, &flag)
+            .unwrap()
+            .expect("a kept block read");
+        assert!(frames::held_bytes(&source) > 0, "counted while held");
+        let again = frames::block(&source, block, tables, &flag)
+            .unwrap()
+            .expect("a kept block read");
+        assert_eq!(frames::reads(&source).0, 1, "the held read answers again");
+        assert_eq!(held.len(), again.len());
+        drop((held, again));
+        assert_eq!(frames::held_bytes(&source), 0);
+        assert!(frames::accounted(&source));
+    }
+
+    #[test]
+    fn a_block_leased_as_its_last_other_lease_ends_stays_held_and_counted() {
+        use super::super::frames;
+        let source: &'static Source = Box::leak(Box::new(varied_source()));
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap();
+        let tables = crate::prepared_measure::TABLES;
+        // Nothing fits: only a lease keeps the block.
+        frames::set_budget(source, 0);
+        let first = frames::leased(source, block, tables)
+            .unwrap()
+            .expect("a kept block read");
+        assert_eq!(frames::reads(source).0, 1);
+        // The only other lease ends just as this request has found the entry.
+        let first = std::rc::Rc::new(std::cell::RefCell::new(Some(first)));
+        {
+            let first = std::rc::Rc::clone(&first);
+            frames::ON_LEASED.set(Some(Box::new(move || drop(first.borrow_mut().take()))));
+        }
+        let second = frames::leased(source, block, tables);
+        frames::ON_LEASED.set(None);
+        let second = second.unwrap().expect("a kept block read");
+        assert!(
+            first.borrow().is_none(),
+            "the first lease ended in the second's lookup"
+        );
+        assert_eq!(frames::reads(source).0, 1, "answered from the held read");
+        assert!(
+            frames::held_bytes(source) > 0,
+            "held and counted while leased, over budget"
+        );
+        // A later request finds it rather than reading the block again.
+        let third = frames::leased(source, block, tables)
+            .unwrap()
+            .expect("a kept block read");
+        assert_eq!(frames::reads(source).0, 1);
+        drop((second, third));
+        assert_eq!(frames::held_bytes(source), 0);
+        assert!(frames::accounted(source));
+    }
+
+    #[test]
+    fn a_failed_first_block_read_keeps_its_entry_for_the_requests_queued_on_it() {
+        use super::super::frames;
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let source: &'static Source = Box::leak(Box::new(varied_source()));
+        let block = source
+            .replay_ref()
+            .index
+            .iter()
+            .find(|block| block.branch == 1)
+            .unwrap();
+        let failing_tables = [TableId::Campaign, TableId::Countries];
+        let kept_tables = [TableId::Campaign, TableId::CountryLinks];
+        frames::set_budget(source, 0);
+        std::thread::scope(|scope| {
+            let (reading, read) = channel();
+            let (go, proceed) = channel::<()>();
+            // The first request reads the empty entry, and cannot keep what it reads.
+            let failing = scope.spawn(move || {
+                frames::UNCACHEABLE.set(vec![TableId::Countries]);
+                frames::ON_READ.set(Some(Box::new(move || {
+                    let _ = reading.send(());
+                    let _ = proceed.recv();
+                })));
+                let result = frames::block(source, block, &failing_tables, &AtomicBool::new(false));
+                frames::ON_READ.set(None);
+                result.map(|reads| reads.is_none())
+            });
+            read.recv_timeout(Duration::from_secs(10))
+                .expect("the first request reads the block");
+            // Another request queues on that read.
+            let (waiting, waits) = channel();
+            let queued = scope.spawn(move || {
+                let sent = std::cell::Cell::new(false);
+                frames::ON_WAIT.set(Some(Box::new(move || {
+                    if !sent.replace(true) {
+                        let _ = waiting.send(());
+                    }
+                })));
+                let lease = frames::leased(source, block, &kept_tables);
+                frames::ON_WAIT.set(None);
+                lease
+            });
+            waits
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the second request waits on the first's read");
+            go.send(()).unwrap();
+            assert!(
+                failing.join().unwrap().unwrap(),
+                "the failed read keeps nothing"
+            );
+            let lease = queued
+                .join()
+                .unwrap()
+                .unwrap()
+                .expect("the queued selection is read and kept");
+            assert!(
+                frames::held_bytes(source) > 0,
+                "the queued read is held and counted in the entry it waited on"
+            );
+            assert!(frames::accounted(source));
+            let again = frames::leased(source, block, &kept_tables)
+                .unwrap()
+                .expect("a kept block read");
+            assert_eq!(
+                frames::reads(source).0,
+                2,
+                "the failed read and the queued one; a later request finds the kept one"
+            );
+            drop((lease, again));
+        });
+        assert_eq!(frames::held_bytes(source), 0);
+        assert!(frames::accounted(source));
     }
 
     #[test]
