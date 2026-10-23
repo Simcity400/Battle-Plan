@@ -41,20 +41,20 @@ impl Background {
         let failure = state.clone();
         let failed_epoch = Arc::clone(&epoch);
         let spawn = std::thread::Builder::new()
-            .name("snow-export-bind".into())
+            .name("map-export-bind".into())
             .spawn(move || {
                 let check = || {
                     let Some(state) = state.upgrade() else {
                         return Err(io::Error::new(
                             io::ErrorKind::Interrupted,
-                            "snow content retired",
+                            "map export content retired",
                         ));
                     };
                     let state = state.lock().unwrap_or_else(|error| error.into_inner());
                     if !Arc::ptr_eq(&state.epoch, &epoch) {
                         return Err(io::Error::new(
                             io::ErrorKind::Interrupted,
-                            "snow source epoch retired",
+                            "map export source epoch retired",
                         ));
                     }
                     Ok(())
@@ -88,11 +88,11 @@ impl Background {
     pub fn reader(&self, replay: &Arc<Replay>) -> Result<Reader, String> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if !state.source.ptr_eq(&Arc::downgrade(replay)) {
-            return Err("snow export: source epoch differs".into());
+            return Err("map export: source epoch differs".into());
         }
         state
             .reader
             .clone()
-            .unwrap_or_else(|| Err("snow export: binding pending".into()))
+            .unwrap_or_else(|| Err("map export: binding pending".into()))
     }
 }

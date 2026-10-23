@@ -282,8 +282,9 @@ pub struct Content {
     /// from; `None` when they are unreadable, which leaves the maps silent.
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
-    pub snow_export: dashboard_base::snow_export::Background,
-    snow_export_visual_mods: bool,
+    pub map_export: dashboard_base::map_export::Background,
+    map_export_visual_mods: bool,
+    map_export_layers: installed_content_core::ResolvedLayers,
     // borders
     /// `map/terrain/border_*_0.dds` and `strait.dds`.
     pub border_assets: BorderAssets,
@@ -2657,8 +2658,9 @@ impl Document {
         let snow_cells = weather::SnowCells::new(&map, &assets.perm_snow)
             .map_err(|error| (error.kind(), error.to_string()));
         let content = Content {
-            snow_export: Default::default(),
-            snow_export_visual_mods: content.layers.presentation().shows_visual_mods(),
+            map_export: Default::default(),
+            map_export_visual_mods: content.layers.presentation().shows_visual_mods(),
+            map_export_layers: content.layers.clone(),
             radar_centers,
             resource_icons,
             adjacency_icons,
@@ -2745,7 +2747,7 @@ impl Document {
             province_geometry_build,
         };
         let content = Arc::new(content);
-        Self::bind_snow_export(&content, &playback.replay_handle());
+        Self::bind_map_export(&content, &playback.replay_handle());
         Ok(Self {
             content,
             playback,
@@ -2757,7 +2759,7 @@ impl Document {
     /// Presentation state over verified content; the coordinator supplies the
     /// first decoded frame without synchronous work on the UI thread.
     pub fn from_content(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
-        Self::bind_snow_export(&content, &replay);
+        Self::bind_map_export(&content, &replay);
         Ok(Self {
             content,
             playback: Playback::unloaded(replay)?,
@@ -2773,7 +2775,7 @@ impl Document {
         replay: Arc<Replay>,
         initial: &InitialHour,
     ) -> io::Result<Self> {
-        Self::bind_snow_export(&content, &replay);
+        Self::bind_map_export(&content, &replay);
         Ok(Self {
             content,
             playback: Self::initial_playback(replay, initial)?,
@@ -2782,17 +2784,17 @@ impl Document {
         })
     }
 
-    fn bind_snow_export(content: &Arc<Content>, replay: &Arc<Replay>) {
+    fn bind_map_export(content: &Arc<Content>, replay: &Arc<Replay>) {
         let weak = Arc::downgrade(content);
         let _ = content
-            .snow_export
+            .map_export
             .start(Arc::clone(replay), move |replay, check| {
                 check()?;
                 let (key, limits, path) = {
                     let content = weak.upgrade().ok_or_else(|| {
                         io::Error::new(io::ErrorKind::Interrupted, "snow content retired")
                     })?;
-                    if content.snow_export_visual_mods {
+                    if content.map_export_visual_mods {
                         return Err(invalid(
                             "snow export: visual-mod post-processing is unsupported",
                         ));
@@ -2804,23 +2806,31 @@ impl Document {
                         .as_ref()
                         .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))?;
                     let winter = content.assets.post.volumes.winter();
-                    let key = dashboard_base::snow_export::Key::for_inputs(
-                        Ok((cells, &winter)),
-                        dashboard_base::snow_export::PRODUCER_VERSION,
+                    let inputs =
+                        dashboard_base::map_export::Inputs::load(&content.map_export_layers)?;
+                    let key = dashboard_base::map_export::Key::for_loaded_inputs(
+                        &inputs,
+                        dashboard_base::map_export::PRODUCER_VERSION,
                     )?;
+                    let live_key = dashboard_base::map_export::Key::for_inputs(
+                        Ok((cells, &winter)),
+                        dashboard_base::map_export::PRODUCER_VERSION,
+                    )?;
+                    if key.inputs != live_key.inputs {
+                        return Err(invalid(
+                            "map export snow content differs from the loaded viewer",
+                        ));
+                    }
                     (
                         key,
-                        dashboard_base::snow_export::Limits::new(cells, &winter),
+                        dashboard_base::map_export::Limits::new(cells, &winter),
                         content.source_path.clone(),
                     )
                 };
-                let key = key.bind_recording(replay, check)?;
+                let store = dashboard_base::prepared::recording_store(&path)?;
+                let key = key.bind_store_recording(replay, &store, check)?;
                 check()?;
-                Ok(dashboard_base::snow_export::Reader::new(
-                    dashboard_base::prepared::recording_store(&path)?,
-                    key,
-                    limits,
-                ))
+                dashboard_base::map_export::Reader::bind(store, key, limits, check)
             });
     }
 

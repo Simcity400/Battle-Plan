@@ -2631,6 +2631,17 @@ impl Writer {
         id.open(&self.directory).map(Some)
     }
 
+    pub fn ensure_section(&mut self, section: &str) -> io::Result<()> {
+        if section.is_empty() {
+            return Err(invalid("empty section name"));
+        }
+        if self.position(section).is_none() {
+            self.sections.push(PendingSection::new(section));
+            self.record(|_| Operation::Create(section.to_owned()));
+        }
+        Ok(())
+    }
+
     /// Replaces one logical range with a new whole range, or appends the next.
     /// The old bytes and manifest remain untouched until manifest publication.
     pub fn write_at(&mut self, section: &str, range: u64, mut data: impl Read) -> io::Result<()> {
@@ -2682,17 +2693,8 @@ impl Writer {
     /// Streams a whole, immutable range; no existing range is modified.
     /// Ranges are consecutive per section, with boundaries defined by its producer.
     pub fn write(&mut self, section: &str, mut data: impl Read) -> io::Result<u64> {
-        if section.is_empty() {
-            return Err(invalid("empty section name"));
-        }
-        let index = match self.position(section) {
-            Some(index) => index,
-            None => {
-                self.sections.push(PendingSection::new(section));
-                self.record(|_| Operation::Create(section.to_owned()));
-                self.sections.len() - 1
-            }
-        };
+        self.ensure_section(section)?;
+        let index = self.position(section).unwrap();
         let range = self.sections[index].count()?;
         let id = self.append(&mut data)?;
         self.bytes_written = self

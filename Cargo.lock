@@ -2716,6 +2716,7 @@ dependencies = [
  "once_cell",
  "png 0.18.1",
  "proc-macro2",
+ "product-codec",
  "replay",
  "replay-data",
  "replay-derive",
@@ -6549,6 +6550,7 @@ dependencies = [
  "installed-content-core",
  "installed-content-image",
  "installed-content-regions",
+ "product-codec",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -7703,6 +7705,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "product-codec"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "engine-native",
+ "replay-data",
+ "replay-identity",
+ "sha2",
+ "test-unify",
 ]
 
 [[package]]

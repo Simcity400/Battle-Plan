@@ -26,7 +26,7 @@ pub mod products;
 pub mod ranking;
 pub mod read_runs;
 pub mod research_dto;
-pub mod snow_export;
+pub mod map_export;
 pub mod source;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;

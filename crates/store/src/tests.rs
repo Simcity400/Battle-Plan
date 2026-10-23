@@ -2775,3 +2775,47 @@ fn ordinary_batches_cannot_cross_a_stage_boundary() {
     drop(stage);
     writer.commit().unwrap();
 }
+
+#[test]
+fn empty_sections_publish_without_placeholder_ranges_and_preserve_fork_adoption() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    {
+        let mut abandoned = fixture.store.replace(key.clone()).unwrap();
+        abandoned.ensure_section("abandoned").unwrap();
+    }
+    assert_eq!(fixture.store.range_count(&key, "abandoned").unwrap(), None);
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    assert!(writer.ensure_section("").is_err());
+    writer.ensure_section("tables").unwrap();
+    writer.ensure_section("tables").unwrap();
+    let mut fork = writer.fork().unwrap();
+    fork.ensure_section("index/empty").unwrap();
+    for staged in fork.into_staged().unwrap() {
+        writer.adopt(staged).unwrap();
+    }
+    assert_eq!(writer.bytes_written(), 0);
+    writer.commit().unwrap();
+    assert_eq!(fixture.store.range_count(&key, "tables").unwrap(), Some(0));
+    assert_eq!(
+        fixture.store.range_count(&key, "index/empty").unwrap(),
+        Some(0)
+    );
+    assert!(fixture.store.read(&key, "tables", 0).unwrap().is_none());
+    let mut writer = fixture.store.extend(&key).unwrap();
+    writer.ensure_section("tables").unwrap();
+    assert_eq!(
+        writer.write("tables", &b"first exact table"[..]).unwrap(),
+        0
+    );
+    writer.commit().unwrap();
+    assert_eq!(fixture.store.range_count(&key, "tables").unwrap(), Some(1));
+    assert_eq!(
+        bytes(fixture.store.read(&key, "tables", 0).unwrap().unwrap()),
+        b"first exact table"
+    );
+    assert_eq!(
+        fixture.store.range_count(&key, "index/empty").unwrap(),
+        Some(0)
+    );
+}

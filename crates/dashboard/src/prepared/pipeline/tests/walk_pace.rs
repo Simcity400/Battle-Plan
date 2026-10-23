@@ -146,7 +146,7 @@ fn paced_families_publish_the_serial_unpaced_payloads_in_every_mode() {
         assert!(
             expected
                 .keys()
-                .any(|(section, _)| section == "map-export-snow-v1/endpoints/1")
+                .any(|(section, _)| section == "map-export-v2/endpoints/1")
         );
         let actual = prepared(&mut fixture, |run| run());
         assert_payloads_equal(&actual, &expected, "paced vs serial observation");

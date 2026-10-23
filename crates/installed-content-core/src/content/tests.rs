@@ -196,7 +196,10 @@ fn held_reader_central_directory_edit_is_detected_on_the_next_open() {
     overwrite_preserving_timestamps(&path, (central + 46) as u64, b"common/one.txt");
     let layer = archive_layer("synthetic", &path, &[]);
     assert_eq!(
-        layer.archive_open(b"common/one.txt").unwrap().unwrap(),
+        layer
+            .archive_open(b"common/one.txt", &mut ReadObservation::default())
+            .unwrap()
+            .unwrap(),
         b"unchanged payload"
     );
     let usn = file_usn(&reader);
@@ -208,9 +211,13 @@ fn held_reader_central_directory_edit_is_detected_on_the_next_open() {
     let edited = fs::read(&path).unwrap();
     assert_eq!(&edited[..central], &bytes[..central]);
     for result in [
-        layer.archive_open(b"common/one.txt").map(|_| ()),
+        layer
+            .archive_open(b"common/one.txt", &mut ReadObservation::default())
+            .map(|_| ()),
         layer.archive_exists(b"common/two.txt").map(|_| ()),
-        layer.archive_open(b"outside/absent").map(|_| ()),
+        layer
+            .archive_open(b"outside/absent", &mut ReadObservation::default())
+            .map(|_| ()),
     ] {
         let error = result.unwrap_err().to_string();
         assert!(
@@ -253,6 +260,84 @@ fn derived_caches_share_a_resolved_stack_and_reset_for_another_roster() {
     let changed = layers.derived::<AtomicUsize>();
     assert!(!Arc::ptr_eq(&first, &changed));
     assert_eq!(changed.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn tracing_scopes_and_named_readers_isolate_lazy_caches_while_retained_clones_share_them() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let layers = ResolvedLayers::default();
+    let original = layers.derived::<AtomicUsize>();
+    original.store(7, Ordering::Relaxed);
+    let traced = layers.with_read_trace(Arc::new(|_| {}));
+    assert!(!Arc::ptr_eq(&original, &traced.derived::<AtomicUsize>()));
+    assert!(!Arc::ptr_eq(&layers.key_names, &traced.key_names));
+    assert!(!Arc::ptr_eq(
+        &layers.faction_templates,
+        &traced.faction_templates
+    ));
+    let a = traced.with_read_purpose("a");
+    let b = traced.with_read_purpose("b");
+    let cache = a.derived::<AtomicUsize>();
+    cache.store(11, Ordering::Relaxed);
+    assert!(Arc::ptr_eq(&cache, &a.clone().derived::<AtomicUsize>()));
+    assert!(!Arc::ptr_eq(&cache, &b.derived::<AtomicUsize>()));
+    assert!(!Arc::ptr_eq(&a.key_names, &b.key_names));
+    assert_eq!(b.derived::<AtomicUsize>().load(Ordering::Relaxed), 0);
+    assert_eq!(original.load(Ordering::Relaxed), 7);
+}
+
+#[test]
+fn traced_archive_verification_failures_keep_the_read_payload_and_original_error() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-archive-verification-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("synthetic.zip");
+    let mut payloads = Vec::new();
+    for bytes in [b"invalid1", b"invalid2"] {
+        fs::write(&path, raw_zip(&[(b"common/one.txt", 0, bytes)])).unwrap();
+        let mut layer = archive_layer("synthetic", &path, &[]);
+        Arc::make_mut(&mut layer.hashes).insert(b"common/one.txt".to_vec(), [0; 32]);
+        let layers = ResolvedLayers::from_test_layers(vec![layer]).unwrap();
+        let original = layers.read("common/one.txt").unwrap_err();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let log = reads.clone();
+        let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+        let error = traced.read_prefix("common/one.txt", 2).unwrap_err();
+        assert_eq!(error.kind(), original.kind());
+        assert_eq!(error.to_string(), original.to_string());
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "content file changed since verification: common/one.txt"
+        );
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].path, b"common/one.txt");
+        assert_eq!(reads[0].layer, Some(0));
+        match &reads[0].outcome {
+            ReadOutcome::Error {
+                kind,
+                message,
+                payload: Some(payload),
+            } => {
+                assert_eq!(kind, "InvalidData");
+                assert_eq!(message, &error.to_string());
+                assert_eq!(payload.length, bytes.len() as u64);
+                assert_eq!(payload.digest, <[u8; 32]>::from(Sha256::digest(bytes)));
+                payloads.push(payload.clone());
+            }
+            outcome => panic!("expected rejected byte evidence, got {outcome:?}"),
+        }
+    }
+    assert_eq!(payloads[0].length, payloads[1].length);
+    assert_ne!(payloads[0].digest, payloads[1].digest);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1227,6 +1312,7 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         key_names: Default::default(),
         faction_templates: Default::default(),
         derived: Default::default(),
+        read_trace: None,
         above_mods: 0,
         presentation: None,
         presentation_defines: None,
@@ -1256,6 +1342,7 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
         key_names: Default::default(),
         faction_templates: Default::default(),
         derived: Default::default(),
+        read_trace: None,
         above_mods: 0,
         presentation: None,
         presentation_defines: None,
@@ -3070,4 +3157,384 @@ fn has_file_replace_path_stops_fallthrough_without_payload_reads() {
 thread_local! {
     /// Payload reads on this thread, for tests that existence probes load no bytes.
     pub(super) static LOADS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+thread_local! {
+    pub(super) static PAYLOAD_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct PartialFailure {
+    bytes: &'static [u8],
+    calls: usize,
+}
+impl Read for PartialFailure {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        self.calls += 1;
+        if self.bytes.is_empty() {
+            return Err(io::Error::from_raw_os_error(12345));
+        }
+        let count = out.len().min(self.bytes.len());
+        out[..count].copy_from_slice(&self.bytes[..count]);
+        self.bytes = &self.bytes[count..];
+        Ok(count)
+    }
+}
+
+#[test]
+fn finish_read_formats_failures_only_when_traced_and_returns_the_original_error() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Debug)]
+    struct CountedError(Arc<AtomicUsize>);
+    impl std::fmt::Display for CountedError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            formatter.write_str("synthetic read failure")
+        }
+    }
+    impl std::error::Error for CountedError {}
+
+    for traced in [false, true] {
+        let layers = ResolvedLayers::default();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let log = reads.clone();
+        let layers = if traced {
+            layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)))
+        } else {
+            layers
+        };
+        let displays = Arc::new(AtomicUsize::new(0));
+        let payload = ReadPayload {
+            length: 13,
+            digest: Sha256::digest(b"actual prefix").into(),
+        };
+        let mut observed = layers.observation();
+        observed.at(0);
+        let error = layers
+            .finish_read::<Vec<u8>>(
+                b"map/read.txt",
+                observed,
+                Err(ReadFailure {
+                    error: io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        CountedError(displays.clone()),
+                    ),
+                    payload: Some(payload.clone()),
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(displays.load(Ordering::Relaxed), usize::from(traced));
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        let original = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<CountedError>()
+            .unwrap();
+        assert!(Arc::ptr_eq(&original.0, &displays));
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.len(), usize::from(traced));
+        if traced {
+            assert_eq!(reads[0].path, b"map/read.txt");
+            assert_eq!(reads[0].purpose, "");
+            assert_eq!(reads[0].layer, Some(0));
+            assert_eq!(
+                reads[0].outcome,
+                ReadOutcome::Error {
+                    kind: "PermissionDenied".to_owned(),
+                    message: "synthetic read failure".to_owned(),
+                    payload: Some(payload),
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn partial_folder_failures_hash_only_when_traced_and_success_reuses_the_covered_hash() {
+    let mut layer = folder_layer("synthetic", Path::new("unused"), Vec::new());
+    std::sync::Arc::make_mut(&mut layer.hashes)
+        .insert(b"map/read.txt".to_vec(), Sha256::digest(b"complete").into());
+    for traced in [false, true] {
+        let observed = ReadObservation {
+            enabled: traced,
+            layer: Some(0),
+        };
+        let mut reader = PartialFailure {
+            bytes: b"actual prefix",
+            calls: 0,
+        };
+        PAYLOAD_HASHES.set(0);
+        let failure = layer
+            .folder_read_from(b"map/read.txt", &mut reader, &observed)
+            .unwrap_err();
+        assert_eq!(failure.error.raw_os_error(), Some(12345));
+        assert_eq!(reader.calls, 2);
+        assert_eq!(PAYLOAD_HASHES.get(), usize::from(traced));
+        assert_eq!(
+            failure.payload,
+            traced.then(|| ReadPayload {
+                length: 13,
+                digest: Sha256::digest(b"actual prefix").into(),
+            })
+        );
+        PAYLOAD_HASHES.set(0);
+        let value = layer
+            .folder_read_from(b"map/read.txt", &b"complete"[..], &observed)
+            .unwrap();
+        assert_eq!(PAYLOAD_HASHES.get(), 1);
+        match value {
+            ReadSuccess::Traced { value, payload } => {
+                assert!(traced);
+                assert_eq!(value, b"complete");
+                assert_eq!(payload.length, 8);
+                assert_eq!(
+                    payload.digest,
+                    <[u8; 32]>::from(Sha256::digest(b"complete"))
+                );
+            }
+            ReadSuccess::Untraced(value) => {
+                assert!(!traced);
+                assert_eq!(value, b"complete");
+            }
+        }
+    }
+}
+
+#[test]
+fn archive_input_evidence_keeps_a_partial_read_and_the_original_error_without_retrying() {
+    let mut original = PartialFailure {
+        bytes: b"archive prefix",
+        calls: 0,
+    };
+    let mut bytes = [0xA5; 32];
+    let error = original.read_exact(&mut bytes).unwrap_err();
+    let mut traced = PartialFailure {
+        bytes: b"archive prefix",
+        calls: 0,
+    };
+    let mut evidence = ReadEvidence::default();
+    let traced_error = EvidenceReader {
+        reader: &mut traced,
+        evidence: &mut evidence,
+    }
+    .read_exact(&mut bytes)
+    .unwrap_err();
+    assert_eq!(traced.calls, original.calls);
+    assert_eq!(traced.calls, 2);
+    assert_eq!(traced_error.raw_os_error(), error.raw_os_error());
+    assert_eq!(traced_error.kind(), error.kind());
+    assert_eq!(traced_error.to_string(), error.to_string());
+    assert_eq!(
+        evidence.finish(),
+        ReadPayload {
+            length: 14,
+            digest: Sha256::digest(b"archive prefix").into(),
+        }
+    );
+}
+
+fn stored_deflate_fixture(name: &[u8]) -> Vec<u8> {
+    let mut bytes = raw_zip(&[(
+        name,
+        0,
+        &[1, 6, 0, 249, 255, b'v', b'a', b'l', b'i', b'd', b'!'],
+    )]);
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    bytes[8..10].copy_from_slice(&8u16.to_le_bytes());
+    bytes[22..26].copy_from_slice(&6u32.to_le_bytes());
+    bytes[central + 10..central + 12].copy_from_slice(&8u16.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&6u32.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn malformed_deflate_reads_keep_distinct_archive_input_evidence_and_identical_errors() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-deflate-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("synthetic.zip");
+    let name = b"common/one.txt";
+    let valid = stored_deflate_fixture(name);
+    fs::write(&path, &valid).unwrap();
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("synthetic", &path, &[])]).unwrap();
+    assert_eq!(layers.read("common/one.txt").unwrap(), b"valid!");
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let mut payloads = Vec::new();
+    let mut errors = Vec::new();
+    for byte in [b'A', b'B'] {
+        let mut damaged = valid.clone();
+        let body = [1, 1, 0, 254, 255, byte, 0, 0, 0, 0, 0];
+        damaged[30 + name.len()..30 + name.len() + body.len()].copy_from_slice(&body);
+        fs::write(&path, &damaged).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let original = layers.read("common/one.txt").unwrap_err();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let log = reads.clone();
+        let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+        for mode in 0..3 {
+            let error = match mode {
+                0 => traced.read("common/one.txt"),
+                1 => traced
+                    .read_prefix("common/one.txt", 1)
+                    .map(|(bytes, _)| bytes),
+                _ => traced.read_uncovered("common/one.txt"),
+            }
+            .unwrap_err();
+            assert_eq!(error.kind(), original.kind());
+            assert_eq!(error.to_string(), original.to_string());
+        }
+        let expected = [&valid[..30], &body].concat();
+        let reads = reads.lock().unwrap();
+        assert_eq!(reads.len(), 3);
+        for read in reads.iter() {
+            assert_eq!(read.layer, Some(0));
+            assert_eq!(
+                read.outcome,
+                ReadOutcome::Error {
+                    kind: "InvalidData".into(),
+                    message: original.to_string(),
+                    payload: Some(ReadPayload {
+                        length: expected.len() as u64,
+                        digest: Sha256::digest(&expected).into()
+                    }),
+                }
+            );
+        }
+        payloads.push(reads[0].outcome.clone());
+        errors.push(original.to_string());
+    }
+    assert_eq!(errors[0], errors[1]);
+    assert!(errors[0].contains("it inflates to fewer bytes than its uncompressed size"));
+    assert_ne!(payloads[0], payloads[1]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn password_decode_failure_records_its_own_input_not_the_prior_verification_read() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-password-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("synthetic.zip");
+    let mut bytes = include_bytes!("testdata/zipcrypto_deflated.zip").to_vec();
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    let size = u32::from_le_bytes(bytes[central + 24..central + 28].try_into().unwrap()) + 1;
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("synthetic", &path, &[])]).unwrap();
+    let original = layers.read("gfx/fonts/x.fnt$secret").unwrap_err();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+    let error = traced.read_prefix("gfx/fonts/x.fnt$secret", 2).unwrap_err();
+    assert_eq!(error.kind(), original.kind());
+    assert_eq!(error.to_string(), original.to_string());
+    assert!(
+        error
+            .to_string()
+            .contains("it inflates to fewer bytes than its uncompressed size")
+    );
+    let data = 30
+        + u16::from_le_bytes(bytes[26..28].try_into().unwrap()) as usize
+        + u16::from_le_bytes(bytes[28..30].try_into().unwrap()) as usize;
+    let compressed =
+        u32::from_le_bytes(bytes[central + 20..central + 24].try_into().unwrap()) as usize;
+    let expected = [&bytes[..30], &bytes[data..data + 12 + compressed]].concat();
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(
+        reads[0].outcome,
+        ReadOutcome::Error {
+            kind: "InvalidData".into(),
+            message: error.to_string(),
+            payload: Some(ReadPayload {
+                length: expected.len() as u64,
+                digest: Sha256::digest(&expected).into()
+            }),
+        }
+    );
+    drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_paths() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-success-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    fs::create_dir_all(root.join("map")).unwrap();
+    fs::create_dir_all(root.join("gfx/custom")).unwrap();
+    for path in ["map/read.txt", "gfx/custom/read.bin"] {
+        fs::write(root.join(path), b"full evidence").unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+    assert_eq!(traced.read("map/read.txt").unwrap(), b"full evidence");
+    assert_eq!(
+        traced.read_prefix("map/read.txt", 0).unwrap(),
+        (Vec::new(), 13)
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            traced.read_uncovered("gfx/custom/read.bin").unwrap(),
+            b"full evidence"
+        );
+    }
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.len(), 4);
+    for read in reads.iter() {
+        assert_eq!(read.layer, Some(0));
+        assert_eq!(
+            read.outcome,
+            ReadOutcome::Bytes {
+                length: 13,
+                digest: Sha256::digest(b"full evidence").into()
+            }
+        );
+    }
+    drop(reads);
+    let archive_path = root.join("synthetic.zip");
+    fs::write(&archive_path, stored_deflate_fixture(b"common/one.txt")).unwrap();
+    let archive_layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("synthetic", &archive_path, &[])])
+            .unwrap();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced =
+        archive_layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+    assert_eq!(
+        traced.read_prefix("common/one.txt", 0).unwrap(),
+        (Vec::new(), 6)
+    );
+    assert_eq!(
+        reads.lock().unwrap()[0].outcome,
+        ReadOutcome::Bytes {
+            length: 6,
+            digest: Sha256::digest(b"valid!").into()
+        }
+    );
+    fs::remove_dir_all(root).unwrap();
 }

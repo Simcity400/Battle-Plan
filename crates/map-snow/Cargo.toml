@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+product-codec.workspace = true
 installed-content-core.workspace = true
 installed-content-image.workspace = true
 installed-content-regions.workspace = true

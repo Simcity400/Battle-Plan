@@ -33,7 +33,7 @@ use miniz_oxide::{
     inflate::stream::{InflateState, inflate},
 };
 
-use super::{LayerPath, invalid};
+use super::{EvidenceReader, LayerPath, ObservedResult, ReadEvidence, ReadFailure, invalid};
 
 const LOCAL_SIGNATURE: u32 = 0x0403_4B50;
 const CENTRAL_SIGNATURE: u32 = 0x0201_4B50;
@@ -86,6 +86,7 @@ impl Archive {
                 len,
                 pos: 0,
                 at: 0,
+                evidence: None,
             },
         })
     }
@@ -207,6 +208,39 @@ impl Archive {
             io.inflate(entry.compressed, entry.size, keys.as_mut())?
         };
         Ok(Some(bytes))
+    }
+
+    pub(super) fn read_observed(
+        &mut self,
+        entry: &Entry,
+        password: Option<&[u8]>,
+        traced: bool,
+    ) -> ObservedResult<Option<Vec<u8>>> {
+        self.io.evidence = traced.then(ReadEvidence::default);
+        let result = self.read(entry, password);
+        let evidence = self.io.evidence.take();
+        result.map_err(|error| ReadFailure {
+            error,
+            payload: evidence
+                .filter(|evidence| evidence.length != 0)
+                .map(ReadEvidence::finish),
+        })
+    }
+
+    pub(super) fn stored_observed(
+        &mut self,
+        entry: &Entry,
+        traced: bool,
+    ) -> ObservedResult<Vec<u8>> {
+        self.io.evidence = traced.then(ReadEvidence::default);
+        let result = self.stored(entry);
+        let evidence = self.io.evidence.take();
+        result.map_err(|error| ReadFailure {
+            error,
+            payload: evidence
+                .filter(|evidence| evidence.length != 0)
+                .map(ReadEvidence::finish),
+        })
     }
 
     /// Where the record's data starts, or `None` when its local header does not agree
@@ -721,6 +755,7 @@ struct Cursor {
     pos: u64,
     /// Where `file` stands.
     at: u64,
+    evidence: Option<ReadEvidence>,
 }
 
 impl Cursor {
@@ -751,7 +786,15 @@ impl Cursor {
                 }
             }
         }
-        self.file.read_exact(buffer)?;
+        if let Some(evidence) = &mut self.evidence {
+            EvidenceReader {
+                reader: &mut self.file,
+                evidence,
+            }
+            .read_exact(buffer)?;
+        } else {
+            self.file.read_exact(buffer)?;
+        }
         self.pos += n;
         self.at = self.pos;
         Ok(())

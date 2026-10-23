@@ -86,6 +86,18 @@ pub struct Summary {
     pub missing_edges: usize,
 }
 
+product_codec::product! {
+    impl Refresh { interval: i64, identity: u64 } default {}
+    impl Summary {
+        provinces: usize, with_snow: usize, shown_snow: usize,
+        shown_mud: usize, missing_edges: usize, complete: bool,
+    } default {}
+    impl SnowMud {
+        width: u32, height: u32, texels: Vec<u8>, province_snow: Vec<Option<i64>>,
+        post_factors: Option<winter::SnowFactors>, refresh: Option<Refresh>, summary: Summary,
+    } default { build: Duration::ZERO }
+}
+
 impl Summary {
     /// One line for the status bar and the headless dump.
     pub fn line(&self) -> String {

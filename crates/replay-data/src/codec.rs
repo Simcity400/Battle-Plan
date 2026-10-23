@@ -108,6 +108,22 @@ fn spool_validation_worker_details_do_not_enable_callback_diagnostics() {
     );
 }
 
+pub fn put_fixed(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
+    engine_allocation::reserve(out, bytes.len())?;
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+pub fn put_count64(out: &mut Vec<u8>, count: usize) -> io::Result<()> {
+    let count = u64::try_from(count).map_err(|_| invalid_static("count exceeds u64"))?;
+    put_fixed(out, &count.to_le_bytes())
+}
+
+pub fn put_bytes64(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
+    put_count64(out, bytes.len())?;
+    put_fixed(out, bytes)
+}
+
 pub fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> io::Result<()> {
     let length =
         u32::try_from(bytes.len()).map_err(|_| invalid_static("byte field exceeds u32"))?;
@@ -180,6 +196,10 @@ impl<'a> Decoder<'a> {
             Err(invalid_static("trailing bytes"))
         }
     }
+    number!(i8, i8);
+    number!(i16, i16);
+    number!(u128, u128);
+    number!(i128, i128);
     number!(u8, u8);
     number!(u16, u16);
     number!(u32, u32);
@@ -234,6 +254,23 @@ impl<'a> Decoder<'a> {
             ));
         }
         Ok(n)
+    }
+    pub fn count64(&mut self, minimum_item_bytes: usize) -> io::Result<usize> {
+        let n = usize::try_from(self.u64()?)
+            .map_err(|_| invalid_static("collection length exceeds address space"))?;
+        if minimum_item_bytes == 0 || n > self.remaining() / minimum_item_bytes {
+            return Err(invalid_static(
+                "collection length exceeds remaining payload",
+            ));
+        }
+        Ok(n)
+    }
+    pub fn bytes64(&mut self) -> io::Result<Vec<u8>> {
+        let n = self.count64(1)?;
+        engine_allocation::copy_vec(self.take(n)?)
+    }
+    pub fn string64(&mut self) -> io::Result<String> {
+        String::from_utf8(self.bytes64()?).map_err(|_| invalid_static("invalid UTF-8 string"))
     }
     pub fn bytes(&mut self) -> io::Result<Vec<u8>> {
         let n = self.u32()? as usize;

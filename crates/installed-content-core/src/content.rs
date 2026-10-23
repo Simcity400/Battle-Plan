@@ -143,7 +143,7 @@ pub enum LayerSource {
 /// A layer path as the game's virtual file system compares it: raw bytes. PhysFS keys a ZIP
 /// member by its central-directory name bytes, without code-page conversion (see
 /// [`physfs_zip`]), and looks it up by the requested bytes with a djb2 hash and byte comparison,
-/// without case folding (see [`ResolvedLayer::archive_open`]). Folder paths are their file names'
+/// without case folding (see [`ResolvedLayer::archive_open_observed`]). Folder paths are their file names'
 /// UTF-8. Every layer
 /// index, `replace_path` and lookup keeps these bytes; text is only a view of them.
 pub type LayerPath = Vec<u8>;
@@ -464,8 +464,180 @@ fn display(path: &[u8]) -> String {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadPayload {
+    pub length: u64,
+    pub digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadOutcome {
+    Bytes {
+        length: u64,
+        digest: [u8; 32],
+    },
+    Probe(bool),
+    Error {
+        kind: String,
+        message: String,
+        payload: Option<ReadPayload>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct ContentRead {
+    pub path: LayerPath,
+    pub purpose: String,
+    pub layer: Option<usize>,
+    pub outcome: ReadOutcome,
+}
+
+#[derive(Clone)]
+struct ReadTrace {
+    callback: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
+    purpose: String,
+}
+
+#[derive(Debug)]
+enum ReadSuccess<T> {
+    Untraced(T),
+    Traced { value: T, payload: ReadPayload },
+}
+impl<T> ReadSuccess<T> {
+    fn into_value(self) -> T {
+        match self {
+            Self::Untraced(value) | Self::Traced { value, .. } => value,
+        }
+    }
+
+    fn map<U>(self, map: impl FnOnce(T) -> U) -> ReadSuccess<U> {
+        match self {
+            Self::Untraced(value) => ReadSuccess::Untraced(map(value)),
+            Self::Traced { value, payload } => ReadSuccess::Traced {
+                value: map(value),
+                payload,
+            },
+        }
+    }
+
+    fn verified(self, result: io::Result<()>) -> ObservedResult<Self> {
+        match result {
+            Ok(()) => Ok(self),
+            Err(error) => Err(ReadFailure {
+                error,
+                payload: match self {
+                    Self::Untraced(_) => None,
+                    Self::Traced { payload, .. } => Some(payload),
+                },
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReadFailure {
+    error: io::Error,
+    payload: Option<ReadPayload>,
+}
+type ObservedResult<T> = Result<T, ReadFailure>;
+impl From<io::Error> for ReadFailure {
+    fn from(error: io::Error) -> Self {
+        Self {
+            error,
+            payload: None,
+        }
+    }
+}
+impl ReadFailure {
+    fn outcome(&self) -> ReadOutcome {
+        ReadOutcome::Error {
+            kind: format!("{:?}", self.error.kind()),
+            message: self.error.to_string(),
+            payload: self.payload.clone(),
+        }
+    }
+
+    fn context(mut self, context: impl FnOnce(io::Error) -> io::Error) -> Self {
+        self.error = context(self.error);
+        self
+    }
+}
+
+#[derive(Default)]
+struct ReadEvidence {
+    length: u64,
+    digest: Sha256,
+}
+impl ReadEvidence {
+    fn update(&mut self, bytes: &[u8]) {
+        self.length += bytes.len() as u64;
+        self.digest.update(bytes);
+    }
+
+    fn finish(self) -> ReadPayload {
+        ReadPayload {
+            length: self.length,
+            digest: self.digest.finalize().into(),
+        }
+    }
+}
+
+struct EvidenceReader<'a, R> {
+    reader: &'a mut R,
+    evidence: &'a mut ReadEvidence,
+}
+impl<R: Read> Read for EvidenceReader<'_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = self.reader.read(bytes)?;
+        self.evidence.update(&bytes[..count]);
+        Ok(count)
+    }
+}
+
+#[derive(Default)]
+struct ReadObservation {
+    enabled: bool,
+    layer: Option<usize>,
+}
+impl ReadObservation {
+    fn at(&mut self, layer: usize) {
+        self.layer = Some(layer);
+    }
+
+    fn bytes<T>(&self, value: T, bytes: &[u8]) -> ReadSuccess<T> {
+        if self.enabled {
+            self.hashed(value, bytes.len() as u64, payload_digest(bytes))
+        } else {
+            ReadSuccess::Untraced(value)
+        }
+    }
+
+    fn hashed<T>(&self, value: T, length: u64, digest: [u8; 32]) -> ReadSuccess<T> {
+        if self.enabled {
+            ReadSuccess::Traced {
+                value,
+                payload: ReadPayload { length, digest },
+            }
+        } else {
+            ReadSuccess::Untraced(value)
+        }
+    }
+}
+
+fn payload_digest(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    tests::PAYLOAD_HASHES.with(|hashes| hashes.set(hashes.get() + 1));
+    Sha256::digest(bytes).into()
+}
+impl std::fmt::Debug for ReadTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadTrace")
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedLayers {
+    read_trace: Option<ReadTrace>,
     coverage: CoveragePolicy,
     pub layers: Vec<ResolvedLayer>,
     /// Built-in layers the engine mounts above every mod (the tweaker assets): visual mods
@@ -538,7 +710,7 @@ struct UncoveredMemo {
 }
 
 /// Where one uncovered path resolved: a folder file, or an archive layer, which answers it again
-/// through its one verified lookup ([`ResolvedLayer::archive_open`]).
+/// through its one verified lookup ([`ResolvedLayer::archive_open_observed`]).
 #[derive(Clone, Debug)]
 enum UncoveredHit {
     /// The folder layer at the index, and the opened file's real relative path.
@@ -722,19 +894,34 @@ fn record_digest(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
 ) -> io::Result<([u8; 32], Option<Vec<u8>>, u64)> {
+    record_digest_observed(archive, entry, &mut ReadObservation::default())
+        .map(ReadSuccess::into_value)
+        .map_err(|failure| failure.error)
+}
+
+fn record_digest_observed(
+    archive: &mut physfs_zip::Archive,
+    entry: &physfs_zip::Entry,
+    observed: &ReadObservation,
+) -> ObservedResult<ReadSuccess<([u8; 32], Option<Vec<u8>>, u64)>> {
     #[cfg(test)]
     tests::LOADS.with(|loads| loads.set(loads.get() + 1));
-    Ok(match archive.read(entry, None)? {
-        Some(bytes) => (Sha256::digest(&bytes).into(), Some(bytes), entry.size),
+    let result = match archive.read_observed(entry, None, observed.enabled)? {
+        Some(bytes) => {
+            let digest = payload_digest(&bytes);
+            observed.hashed((digest, Some(bytes), entry.size), entry.size, digest)
+        }
         None => {
-            let stored = archive.stored(entry)?;
+            let stored = archive.stored_observed(entry, observed.enabled)?;
             let mut hash = Sha256::new();
             hash.update(b"\0unopened archive record\0");
             hash.update(entry.opening());
             hash.update(&stored);
-            (hash.finalize().into(), None, stored.len() as u64)
+            let length = stored.len() as u64;
+            observed.bytes((hash.finalize().into(), None, length), &stored)
         }
-    })
+    };
+    Ok(result)
 }
 
 /// The files of `listed` directly in `directory` whose name ends in `suffix`
@@ -1160,22 +1347,54 @@ impl ResolvedLayer {
     }
 
     /// Reads and verifies the real spelling through the handle that resolved it.
-    fn folder_read(&self, real: &[u8], mut file: File) -> io::Result<Vec<u8>> {
+    fn folder_read(
+        &self,
+        real: &[u8],
+        file: impl Read,
+        observed: &ReadObservation,
+    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
         #[cfg(test)]
         tests::LOADS.with(|loads| loads.set(loads.get() + 1));
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        if self.coverage.covered_path(real) {
-            self.verify(real, &Sha256::digest(&bytes).into())?;
-        }
-        Ok(bytes)
+        self.folder_read_from(real, file, observed)
     }
 
-    fn folder_open(&self, relative: &[u8]) -> io::Result<Option<(LayerPath, Vec<u8>)>> {
+    fn folder_read_from(
+        &self,
+        real: &[u8],
+        mut file: impl Read,
+        observed: &ReadObservation,
+    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
+        let mut bytes = Vec::new();
+        if let Err(error) = file.read_to_end(&mut bytes) {
+            return Err(ReadFailure {
+                error,
+                payload: observed.enabled.then(|| ReadPayload {
+                    length: bytes.len() as u64,
+                    digest: payload_digest(&bytes),
+                }),
+            });
+        }
+        if self.coverage.covered_path(real) {
+            let length = bytes.len() as u64;
+            let digest = payload_digest(&bytes);
+            observed
+                .hashed(bytes, length, digest)
+                .verified(self.verify(real, &digest))
+        } else {
+            let result = observed.bytes((), &bytes);
+            Ok(result.map(|()| bytes))
+        }
+    }
+
+    fn folder_open(
+        &self,
+        relative: &[u8],
+        observed: &ReadObservation,
+    ) -> ObservedResult<Option<(LayerPath, ReadSuccess<Vec<u8>>)>> {
         let Some((real, file)) = self.folder_lookup(relative)? else {
             return Ok(None);
         };
-        let bytes = self.folder_read(&real, file)?;
+        let bytes = self.folder_read(&real, file, observed)?;
         Ok(Some((real, bytes)))
     }
 
@@ -1194,7 +1413,7 @@ impl ResolvedLayer {
     /// encrypted record (the `$` split), and whether a password opens it (the
     /// central time under flag 8, as [`record_digest`] describes). A difference is "changed since
     /// verification". The records' payloads are verified where a lookup names one
-    /// ([`Self::archive_open`]).
+    /// ([`Self::archive_open_observed`]).
     fn verified_archive(&self) -> io::Result<(physfs_zip::Archive, physfs_zip::Mounted)> {
         let LayerSource::Archive(path) = &self.source else {
             return Err(invalid(format!("layer {} is not an archive", self.id)));
@@ -1246,20 +1465,52 @@ impl ResolvedLayer {
     /// so that it no longer opens is "changed since verification", never a silent pass to the
     /// layers below. `None` when the game's open fails, and its search goes on
     /// (see [`ResolvedLayers::lookup_path`]).
-    fn archive_open(&self, request: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    #[cfg(test)]
+    fn archive_open(
+        &self,
+        request: &[u8],
+        observed: &mut ReadObservation,
+    ) -> io::Result<Option<Vec<u8>>> {
+        self.archive_open_observed(request, observed)
+            .map(|bytes| bytes.map(ReadSuccess::into_value))
+            .map_err(|failure| failure.error)
+    }
+
+    fn archive_open_observed(
+        &self,
+        request: &[u8],
+        observed: &ReadObservation,
+    ) -> ObservedResult<Option<ReadSuccess<Vec<u8>>>> {
         let (mut archive, mounted) = self.verified_archive()?;
         let Some((entry, password)) = mounted.lookup(request) else {
             return Ok(None);
         };
         let context = |error: io::Error| invalid(format!("{}: {error}", display(request)));
         if self.verifies() && self.files.contains_key(&entry.name) {
-            let (digest, bytes, _) = record_digest(&mut archive, entry).map_err(context)?;
-            self.verify(&entry.name, &digest)?;
+            let record = record_digest_observed(&mut archive, entry, observed)
+                .map_err(|failure| failure.context(context))?;
+            let digest = match &record {
+                ReadSuccess::Untraced((digest, _, _))
+                | ReadSuccess::Traced {
+                    value: (digest, _, _),
+                    ..
+                } => *digest,
+            };
+            let record = record.verified(self.verify(&entry.name, &digest))?;
             if password.is_none() {
-                return Ok(bytes);
+                return Ok(match record {
+                    ReadSuccess::Untraced((_, bytes, _)) => bytes.map(ReadSuccess::Untraced),
+                    ReadSuccess::Traced {
+                        value: (_, bytes, _),
+                        payload,
+                    } => bytes.map(|value| ReadSuccess::Traced { value, payload }),
+                });
             }
         }
-        archive.read(entry, password).map_err(context)
+        let bytes = archive
+            .read_observed(entry, password, observed.enabled)
+            .map_err(|failure| failure.context(context))?;
+        Ok(bytes.map(|bytes| observed.bytes((), &bytes).map(|()| bytes)))
     }
 
     fn archive_exists(&self, request: &[u8]) -> io::Result<bool> {
@@ -1271,23 +1522,23 @@ impl ResolvedLayer {
     }
 
     /// A lookup this layer answers nothing to, verified as one it answered would be: an archive
-    /// layer's by its one lookup ([`Self::archive_open`], which must still answer nothing), a
+    /// layer's by its one lookup ([`Self::archive_open_observed`], which must still answer nothing), a
     /// folder layer's by no covered file having appeared under the request's Windows aliases.
     /// An uncovered folder file is not verified, as the uncovered reads say.
-    fn verify_miss(&self, relative: &[u8]) -> io::Result<()> {
+    fn verify_miss(&self, relative: &[u8], observed: &mut ReadObservation) -> ObservedResult<()> {
         if !self.verifies() {
             return Ok(());
         }
         match &self.source {
-            LayerSource::Archive(_) => match self.archive_open(relative)? {
-                Some(_) => Err(changed(relative)),
+            LayerSource::Archive(_) => match self.archive_open_observed(relative, observed)? {
+                Some(bytes) => bytes.verified(Err(changed(relative))).map(|_| ()),
                 None => Ok(()),
             },
             LayerSource::Folder(_) => {
                 if let Some((real, _)) = self.folder_lookup(relative)?
                     && self.coverage.covered_path(&real)
                 {
-                    return Err(changed(&real));
+                    return Err(changed(&real).into());
                 }
                 Ok(())
             }
@@ -1325,6 +1576,86 @@ fn not_found(relative: &[u8]) -> io::Error {
 }
 
 impl ResolvedLayers {
+    pub fn tracing_reads(&self) -> bool {
+        self.read_trace.is_some()
+    }
+
+    /// Starts a fresh tracing scope whose callback and caches support parallel retained readers.
+    pub fn with_read_trace(
+        &self,
+        trace: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
+    ) -> Self {
+        Self {
+            read_trace: Some(ReadTrace {
+                callback: trace,
+                purpose: String::new(),
+            }),
+            derived: Default::default(),
+            key_names: Default::default(),
+            texture_index: Default::default(),
+            descriptor_roster: Default::default(),
+            recorded_descriptor_roster: Default::default(),
+            faction_templates: Default::default(),
+            ..self.clone()
+        }
+    }
+
+    /// Isolates a named reader's lazy caches so scheduling cannot change their traced purpose.
+    pub fn with_read_purpose(&self, purpose: impl Into<String>) -> Self {
+        let Some(trace) = &self.read_trace else {
+            return self.clone();
+        };
+        let mut layers = self.with_read_trace(trace.callback.clone());
+        layers.read_trace.as_mut().expect("traced clone").purpose = purpose.into();
+        layers
+    }
+
+    fn observation(&self) -> ReadObservation {
+        ReadObservation {
+            enabled: self.tracing_reads(),
+            ..Default::default()
+        }
+    }
+
+    fn finish_read<T>(
+        &self,
+        path: &[u8],
+        observed: ReadObservation,
+        result: ObservedResult<ReadSuccess<T>>,
+    ) -> io::Result<T> {
+        match result {
+            Ok(ReadSuccess::Untraced(value)) => Ok(value),
+            Ok(ReadSuccess::Traced { value, payload }) => {
+                self.trace_read(
+                    path,
+                    observed.layer,
+                    ReadOutcome::Bytes {
+                        length: payload.length,
+                        digest: payload.digest,
+                    },
+                );
+                Ok(value)
+            }
+            Err(failure) => {
+                if self.tracing_reads() {
+                    self.trace_read(path, observed.layer, failure.outcome());
+                }
+                Err(failure.error)
+            }
+        }
+    }
+
+    fn trace_read(&self, path: &[u8], layer: Option<usize>, outcome: ReadOutcome) {
+        if let Some(trace) = &self.read_trace {
+            (trace.callback)(ContentRead {
+                path: path.to_vec(),
+                purpose: trace.purpose.clone(),
+                layer,
+                outcome,
+            });
+        }
+    }
+
     /// Physical inputs in recorded layer order for plain metadata cache reuse.
     /// Archive members share their archive stamp; folder files keep their own.
     pub fn recorded_source_files(&self) -> io::Result<Vec<PathBuf>> {
@@ -1803,11 +2134,30 @@ impl ResolvedLayers {
     /// Whether the native lookup opens `relative` (folder metadata and archive opening
     /// headers, without reading the payload; loading still verifies the covered bytes).
     pub fn has_file(&self, relative: &str) -> io::Result<bool> {
+        let mut observed = self.observation();
+        let result = self.has_file_untraced(relative, &mut observed);
+        if self.tracing_reads() {
+            let outcome = match &result {
+                Ok(value) => ReadOutcome::Probe(*value),
+                Err(error) => error.outcome(),
+            };
+            self.trace_read(relative.as_bytes(), observed.layer, outcome);
+        }
+        result.map_err(|failure| failure.error)
+    }
+
+    fn has_file_untraced(
+        &self,
+        relative: &str,
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<bool> {
         let Some(relative) = sanitize(relative.as_bytes()) else {
             return Ok(false);
         };
         if self.covered_path(&relative) {
-            return Ok(self.lookup_path(&relative)?.is_some());
+            let hit = self.lookup_path(&relative)?;
+            observed.layer = hit.as_ref().map(|hit| hit.layer);
+            return Ok(hit.is_some());
         }
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
         let memo = self
@@ -1819,20 +2169,29 @@ impl ResolvedLayers {
             let answered = hit.as_ref().map(|hit| match hit {
                 UncoveredHit::Folder(i, _) | UncoveredHit::Archive(i) => *i,
             });
-            self.verify_passed(&relative, answered)?;
+            self.verify_passed(&relative, answered, observed)?;
             match hit {
-                None => return Ok(false),
+                None => {
+                    observed.layer = None;
+                    return Ok(false);
+                }
                 Some(UncoveredHit::Folder(index, path)) => {
                     if self.layers[index].folder_lookup(&path)?.is_some() {
+                        observed.layer = Some(index);
                         return Ok(true);
                     }
                 }
                 Some(UncoveredHit::Archive(index)) => {
-                    return self.layers[index].archive_exists(&relative);
+                    let present = self.layers[index].archive_exists(&relative)?;
+                    observed.layer = present.then_some(index);
+                    return Ok(present);
                 }
             }
         }
-        let found = self.scan_uncovered_with(&relative, false)?;
+        let found = self.scan_uncovered_with(&relative, false, observed)?;
+        observed.layer = found.as_ref().map(|(_, hit, _)| match hit {
+            UncoveredHit::Folder(index, _) | UncoveredHit::Archive(index) => *index,
+        });
         self.uncovered_memo
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1860,18 +2219,41 @@ impl ResolvedLayers {
     /// assets stream through a fixed buffer; archive assets share their
     /// normal reader. The returned length is the verified payload's full length.
     pub fn read_prefix(&self, relative: &str, limit: usize) -> io::Result<(Vec<u8>, u64)> {
+        let mut observed = self.observation();
+        let result = self.read_prefix_observed(relative, limit, &mut observed);
+        self.finish_read(relative.as_bytes(), observed, result)
+    }
+
+    fn read_prefix_observed(
+        &self,
+        relative: &str,
+        limit: usize,
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<ReadSuccess<(Vec<u8>, u64)>> {
         let path = sanitize(relative.as_bytes()).ok_or_else(|| not_found(relative.as_bytes()))?;
         if self.covered_path(&path)
             && let Some(mut hit) = self.lookup_path(&path)?
             && let Some(mut file) = hit.folder.take()
         {
-            self.verify_passed(&path, Some(hit.layer))?;
+            self.verify_passed(&path, Some(hit.layer), observed)?;
+            observed.at(hit.layer);
             let mut digest = Sha256::new();
             let mut prefix = Vec::new();
             let mut length = 0;
             let mut buffer = [0; 64 * 1024];
             loop {
-                let count = file.read(&mut buffer)?;
+                let count = match file.read(&mut buffer) {
+                    Ok(count) => count,
+                    Err(error) => {
+                        return Err(ReadFailure {
+                            error,
+                            payload: observed.enabled.then(|| ReadPayload {
+                                length,
+                                digest: digest.finalize().into(),
+                            }),
+                        });
+                    }
+                };
                 if count == 0 {
                     break;
                 }
@@ -1881,26 +2263,44 @@ impl ResolvedLayers {
                 prefix.extend_from_slice(&buffer[..kept]);
             }
             let digest: [u8; 32] = digest.finalize().into();
-            self.layers[hit.layer].verify(&hit.path, &digest)?;
+            let result = observed
+                .hashed((prefix, length), length, digest)
+                .verified(self.layers[hit.layer].verify(&hit.path, &digest))?;
             self.note_overlay(hit.layer, &hit.path);
-            return Ok((prefix, length));
+            return Ok(result);
         }
-        let mut bytes = self.read(relative)?;
-        let length = bytes.len() as u64;
-        bytes.truncate(limit);
-        Ok((bytes, length))
+        self.read_path_untraced(relative.as_bytes(), observed)
+            .map(|bytes| {
+                bytes.map(|mut bytes| {
+                    let length = bytes.len() as u64;
+                    bytes.truncate(limit);
+                    (bytes, length)
+                })
+            })
     }
 
     /// A file by its path's bytes, sanitized and resolved by [`Self::lookup_path`].
     /// Covered bytes are verified. Uncovered reads require a reporting consumer
     /// to retain the shared diagnostics from [`Self::report_uncovered_reads`].
     pub fn read_path(&self, relative: &[u8]) -> io::Result<Vec<u8>> {
+        let mut observed = self.observation();
+        let result = self.read_path_untraced(relative, &mut observed);
+        self.finish_read(relative, observed, result)
+    }
+
+    fn read_path_untraced(
+        &self,
+        relative: &[u8],
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
         let Some(relative) = sanitize(relative) else {
-            return Err(not_found(relative));
+            return Err(not_found(relative).into());
         };
         match self.lookup_path(&relative)? {
             Some(file) => {
-                self.verify_passed(&relative, Some(file.layer))?;
+                observed.layer = Some(file.layer);
+                self.verify_passed(&relative, Some(file.layer), observed)?;
+                observed.at(file.layer);
                 let layer = &self.layers[file.layer];
                 let path = layer
                     .lookup
@@ -1921,13 +2321,13 @@ impl ResolvedLayers {
                         "content file is outside recorded coverage policy {} and this reader does not report uncovered reads: {}",
                         self.coverage.0,
                         display(path)
-                    )));
+                    )).into());
                 }
                 let bytes = match file.folder {
-                    Some(handle) => layer.folder_read(&file.path, handle),
+                    Some(handle) => layer.folder_read(&file.path, handle, observed),
                     None => layer
-                        .archive_open(&file.path)?
-                        .ok_or_else(|| changed(&relative)),
+                        .archive_open_observed(&file.path, observed)?
+                        .ok_or_else(|| ReadFailure::from(changed(&relative))),
                 }?;
                 self.note_overlay(file.layer, path);
                 if uncovered
@@ -1942,10 +2342,11 @@ impl ResolvedLayers {
                 return Ok(bytes);
             }
             None => {
-                self.verify_passed(&relative, None)?;
+                self.verify_passed(&relative, None, observed)?;
+                observed.layer = None;
             }
         }
-        Err(not_found(&relative))
+        Err(not_found(&relative).into())
     }
 
     /// Every path read as [`Self::read_path`] reads it, each result in its path's place. The
@@ -2119,7 +2520,7 @@ impl ResolvedLayers {
                 .flatten()
                 .map(|hit| hit.layer)
         } else {
-            self.uncovered_answer(&relative)
+            self.uncovered_answer(&relative, &mut ReadObservation::default())
                 .ok()
                 .map(|(_, layer)| layer)
         };
@@ -2352,15 +2753,25 @@ impl ResolvedLayers {
 
     /// [`Self::read_uncovered`] by a path's bytes, looked up as [`Self::read_path`] looks up.
     pub fn read_uncovered_path(&self, relative: &[u8]) -> io::Result<Vec<u8>> {
+        let mut observed = self.observation();
+        let result = self.read_uncovered_observed(relative, &mut observed);
+        self.finish_read(relative, observed, result)
+    }
+
+    fn read_uncovered_observed(
+        &self,
+        relative: &[u8],
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
         let Some(relative) = sanitize(relative) else {
-            return Err(not_found(relative));
+            return Err(not_found(relative).into());
         };
         if self.covered_path(&relative) {
-            return self.read_path(&relative);
+            return self.read_path_untraced(&relative, observed);
         }
         // A file a visual mod answered is counted as that mod's; every other attempt, missing
         // or failed included, is an uncovered recorded read.
-        let answer = self.uncovered_answer(&relative);
+        let answer = self.uncovered_answer(&relative, observed);
         match &answer {
             Ok((_, layer)) if self.layers[*layer].overlay.is_some() => {
                 self.note_overlay(*layer, &relative)
@@ -2381,7 +2792,11 @@ impl ResolvedLayers {
 
     /// [`Self::read_uncovered_path`]'s lookup of an uncovered path: its bytes and the layer that
     /// answered.
-    fn uncovered_answer(&self, relative: &[u8]) -> io::Result<(Vec<u8>, usize)> {
+    fn uncovered_answer(
+        &self,
+        relative: &[u8],
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<(ReadSuccess<Vec<u8>>, usize)> {
         let relative = relative.to_vec();
         let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
         if let Some(memo) = self
@@ -2395,18 +2810,19 @@ impl ResolvedLayers {
             match memo {
                 Some(hit) => {
                     let (UncoveredHit::Folder(layer, _) | UncoveredHit::Archive(layer)) = hit;
-                    self.verify_passed(&relative, Some(layer))?;
-                    if let Some(bytes) = self.read_hit(&hit, &relative)? {
+                    self.verify_passed(&relative, Some(layer), observed)?;
+                    if let Some(bytes) = self.read_hit(&hit, &relative, observed)? {
                         return Ok((bytes, layer));
                     }
                 }
                 None => {
-                    self.verify_passed(&relative, None)?;
-                    return Err(not_found(&relative));
+                    self.verify_passed(&relative, None, observed)?;
+                    observed.layer = None;
+                    return Err(not_found(&relative).into());
                 }
             }
         }
-        let found = self.scan_uncovered(&relative)?;
+        let found = self.scan_uncovered(&relative, observed)?;
         self.uncovered_memo
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -2417,7 +2833,10 @@ impl ResolvedLayers {
             );
         match found {
             Some((layer, _, bytes)) => Ok((bytes, layer)),
-            None => Err(not_found(&relative)),
+            None => {
+                observed.layer = None;
+                Err(not_found(&relative).into())
+            }
         }
     }
 
@@ -2429,15 +2848,17 @@ impl ResolvedLayers {
     fn scan_uncovered(
         &self,
         relative: &[u8],
-    ) -> io::Result<Option<(usize, UncoveredHit, Vec<u8>)>> {
-        self.scan_uncovered_with(relative, true)
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<Option<(usize, UncoveredHit, ReadSuccess<Vec<u8>>)>> {
+        self.scan_uncovered_with(relative, true, observed)
     }
 
     fn scan_uncovered_with(
         &self,
         relative: &[u8],
         load: bool,
-    ) -> io::Result<Option<(usize, UncoveredHit, Vec<u8>)>> {
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<Option<(usize, UncoveredHit, ReadSuccess<Vec<u8>>)>> {
         let lower = relative.to_ascii_lowercase();
         for (index, layer) in self.layers.iter().enumerate().rev() {
             if self.hides(layer, &lower) {
@@ -2448,9 +2869,10 @@ impl ResolvedLayers {
                 LayerSource::Folder(_) => {
                     if let Some((real, handle)) = layer.folder_lookup(relative)? {
                         let bytes = if load {
-                            layer.folder_read(&real, handle)?
+                            observed.at(index);
+                            layer.folder_read(&real, handle, observed)?
                         } else {
-                            Vec::new()
+                            ReadSuccess::Untraced(Vec::new())
                         };
                         return Ok(Some((index, UncoveredHit::Folder(index, real), bytes)));
                     }
@@ -2459,9 +2881,12 @@ impl ResolvedLayers {
                 // layer's one verified lookup, as it is for covered paths.
                 LayerSource::Archive(_) => {
                     let opened = if load {
-                        layer.archive_open(relative)?
+                        observed.at(index);
+                        layer.archive_open_observed(relative, observed)?
                     } else {
-                        layer.archive_exists(relative)?.then(Vec::new)
+                        layer
+                            .archive_exists(relative)?
+                            .then(|| ReadSuccess::Untraced(Vec::new()))
                     };
                     if let Some(bytes) = opened {
                         return Ok(Some((index, UncoveredHit::Archive(index), bytes)));
@@ -2469,7 +2894,8 @@ impl ResolvedLayers {
                 }
             }
             if !load {
-                layer.verify_miss(relative)?;
+                observed.at(index);
+                layer.verify_miss(relative, observed)?;
             }
             if layer
                 .replace_paths
@@ -2488,24 +2914,35 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative.as_bytes()) else {
             return Ok(false);
         };
-        Ok(matches!(self.scan_uncovered(&relative)?, Some((0, _, _))))
+        Ok(matches!(
+            self.scan_uncovered(&relative, &mut ReadObservation::default())
+                .map_err(|failure| failure.error)?,
+            Some((0, _, _))
+        ))
     }
 
     /// Reads a memoized hit of `relative`: a folder file by its real spelling (verified if covered),
-    /// an archive layer through its one verified lookup ([`ResolvedLayer::archive_open`]).
+    /// an archive layer through its one verified lookup ([`ResolvedLayer::archive_open_observed`]).
     /// `Ok(None)` means the hit is stale and the caller rescans; `Err` is a hard error, which
     /// aborts exactly like the scan.
-    fn read_hit(&self, hit: &UncoveredHit, relative: &[u8]) -> io::Result<Option<Vec<u8>>> {
+    fn read_hit(
+        &self,
+        hit: &UncoveredHit,
+        relative: &[u8],
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<Option<ReadSuccess<Vec<u8>>>> {
         match hit {
-            UncoveredHit::Folder(layer, path) => match self.layers.get(*layer) {
+            UncoveredHit::Folder(index, path) => match self.layers.get(*index) {
                 Some(layer) if matches!(layer.source, LayerSource::Folder(_)) => {
-                    Ok(layer.folder_open(path)?.map(|(_, bytes)| bytes))
+                    observed.at(*index);
+                    Ok(layer.folder_open(path, observed)?.map(|(_, bytes)| bytes))
                 }
                 _ => Ok(None),
             },
-            UncoveredHit::Archive(layer) => match self.layers.get(*layer) {
+            UncoveredHit::Archive(index) => match self.layers.get(*index) {
                 Some(layer) if matches!(layer.source, LayerSource::Archive(_)) => {
-                    layer.archive_open(relative)
+                    observed.at(*index);
+                    layer.archive_open_observed(relative, observed)
                 }
                 // The layer at this index is no longer an archive: stale.
                 _ => Ok(None),
@@ -2518,7 +2955,12 @@ impl ResolvedLayers {
     /// `replace_path`, for a miss): the check every memoized answer goes through, so it
     /// never skips a layer the scan would verify
     /// ([`ResolvedLayer::verify_miss`]).
-    fn verify_passed(&self, relative: &[u8], answered: Option<usize>) -> io::Result<()> {
+    fn verify_passed(
+        &self,
+        relative: &[u8],
+        answered: Option<usize>,
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<()> {
         let lower = relative.to_ascii_lowercase();
         for (index, layer) in self.layers.iter().enumerate().rev() {
             if Some(index) == answered {
@@ -2527,7 +2969,8 @@ impl ResolvedLayers {
             if self.hides(layer, &lower) {
                 continue;
             }
-            layer.verify_miss(relative)?;
+            observed.at(index);
+            layer.verify_miss(relative, observed)?;
             if layer
                 .replace_paths
                 .iter()
@@ -3337,6 +3780,7 @@ fn gather_selected(
             key_names: Default::default(),
             faction_templates: Default::default(),
             derived: Default::default(),
+            read_trace: None,
             above_mods: 0,
             presentation: None,
             presentation_defines: None,

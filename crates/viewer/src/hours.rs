@@ -2306,9 +2306,17 @@ impl coordinator::BuildTarget for Coordinator {
                         })
                     })
                 };
-                Part::Snow(match view.snow_export.reader(&snow_replay) {
+                Part::Snow(match view.map_export.reader(&snow_replay) {
                     Ok(exports) => {
-                        exports.build_or_restore(view.frame.branch, view.frame.hour, live)
+                        exports.build_or_restore_admitted(
+                            view.frame.branch,
+                            view.frame.hour,
+                            dashboard_base::map_export::Headroom {
+                                available: memory_pressure::available(),
+                                low: memory_pressure::system_low(),
+                            },
+                            live,
+                        )
                     }
                     Err(reason) => {
                         println!(

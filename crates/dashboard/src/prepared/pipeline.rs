@@ -2105,13 +2105,13 @@ fn snow_session(
     source: &Source,
     content: Option<&ContentOptions>,
     cancelled: &AtomicBool,
-) -> io::Result<dashboard_base::snow_export::Session> {
+) -> io::Result<dashboard_base::map_export::Session> {
     check_cancel(cancelled)?;
     let layers = content
         .map(|options| source.content(&options.options))
         .transpose()?;
     let (store, key) = super::files(source, content)?;
-    dashboard_base::snow_export::Session::bind(
+    dashboard_base::map_export::Session::bind(
         source.replay_ref(),
         layers.as_ref().map(|content| &content.layers),
         source
@@ -2490,9 +2490,9 @@ fn run_planned(
     let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key)?;
     let replay = source.replay_ref();
     let shared_replay = source.replay();
-    let snow_export = time_family!(
+    let map_export = time_family!(
         family_timings,
-        "snow_export.bind",
+        "map_export.bind",
         observe,
         snow_session(source, content, cancelled)
     )?;
@@ -2572,7 +2572,7 @@ fn run_planned(
         false,
     );
     let snow_unstarted = match loaded.as_ref() {
-        Some((state, _)) if !state.accepted_walk() => !snow_export.has_history(
+        Some((state, _)) if !state.accepted_walk() => !map_export.has_history(
             &store,
             &key,
             replay.branches.iter().map(|branch| branch.id),
@@ -2580,11 +2580,27 @@ fn run_planned(
         )?,
         _ => false,
     };
+    let snow_frontiers: Vec<_> = replay
+        .branches
+        .iter()
+        .map(|branch| {
+            let cursor = loaded
+                .as_ref()
+                .and_then(|(state, _)| state.map.branches.get(&branch.id))
+                .and_then(|progress| {
+                    progress.last_hour.map(|hour| dashboard_base::map_export::Cursor {
+                        hour,
+                        block: progress.last_block.map(|block| block as u64),
+                    })
+                });
+            (branch.id, cursor)
+        })
+        .collect();
     let snow_bound = !snow_unstarted
-        && snow_export.reusable(
+        && map_export.reusable(
             &store,
             &key,
-            replay.branches.iter().map(|branch| branch.id),
+            snow_frontiers.iter().cloned(),
             || snow_check(cancelled, "validate"),
         )?;
     let loaded = match loaded {
@@ -2593,10 +2609,10 @@ fn run_planned(
                 && (snow_unstarted
                     || snow_bound
                     || match saved.as_ref() {
-                        Some(_) => snow_export.can_inherit(
+                        Some(_) => map_export.can_inherit(
                             &store,
                             &key,
-                            replay.branches.iter().map(|branch| branch.id),
+                            snow_frontiers.iter().cloned(),
                             || snow_check(cancelled, "validate"),
                         )?,
                         None => false,
@@ -3015,9 +3031,9 @@ fn run_planned(
     }
     if metadata_dirty {
         if snow_unstarted {
-            snow_export.initialise(&mut writer)?;
+            map_export.initialise(&mut writer)?;
         } else {
-            snow_export.inherit(&mut writer)?;
+            map_export.inherit(&mut writer)?;
         }
         time_family!(
             family_timings,
@@ -4245,9 +4261,9 @@ fn run_planned(
                             coordinator_order = 49;
                             time_family!(
                                 family_timings,
-                                "snow_export.observe",
+                                "map_export.observe",
                                 observe,
-                                snow_export.observe_after(
+                                map_export.observe_in_block_after(
                                     &mut writer,
                                     frame,
                                     replay.index[*last_blocks
@@ -4257,7 +4273,8 @@ fn run_planned(
                                     map.progress()
                                         .branches
                                         .get(&frame.branch)
-                                        .and_then(|progress| progress.last_hour)
+                                        .and_then(|progress| progress.last_hour),
+                                    Some(block as u64),
                                 )
                             )?;
                             time_family!(family_timings, "map", observe, {

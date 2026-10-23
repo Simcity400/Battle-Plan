@@ -1,5 +1,5 @@
 use super::*;
-use dashboard_base::snow_export::{Limits, Reader, Restore, Session};
+use dashboard_base::map_export::{Limits, Reader, Restore, Session};
 
 #[test]
 fn ordinary_walk_commits_snow_status_endpoints_and_preparation_rebuilds_a_corrupt_binding() {
@@ -35,7 +35,7 @@ fn ordinary_walk_commits_snow_status_endpoints_and_preparation_rebuilds_a_corrup
     }
     assert!(restore(&source, None, &flag).unwrap().is_some());
     let mut stale = session.key.clone();
-    stale.version += 1;
+    stale.producers.get_mut(&1).unwrap().version += 1;
     let mut writer = store.extend(&key).unwrap();
     writer
         .write_at(&stale.section("binding"), 0, stale.bytes().as_slice())
@@ -88,24 +88,21 @@ fn content_fixture(frames: Vec<DecodedFrame>) -> (Fixture, Replay, ContentOption
 }
 
 fn viewer_reader(source: &Source, content: &ContentOptions) -> Reader {
-    use dashboard_base::snow_export::{Inputs, Key, PRODUCER_VERSION};
+    use dashboard_base::map_export::{Inputs, Key, PRODUCER_VERSION};
     let resolved = source.content(&content.options).unwrap();
     let inputs = Inputs::load(&resolved.layers).unwrap();
-    let key = Key::for_inputs(Ok((&inputs.cells, &inputs.winter)), PRODUCER_VERSION)
+    let store = dashboard_base::prepared::recording_store(source.path()).unwrap();
+    let key = Key::for_loaded_inputs(&inputs, PRODUCER_VERSION)
         .unwrap()
-        .bind_recording(source.replay_ref(), || Ok(()))
+        .bind_store_recording(source.replay_ref(), &store, || Ok(()))
         .unwrap();
-    Reader::new(
-        dashboard_base::prepared::recording_store(source.path()).unwrap(),
-        key,
-        inputs.limits(),
-    )
+    Reader::new(store, key, inputs.limits())
 }
 
 fn corrupt_snow_range(source: &Source, content: &ContentOptions, suffix: &str, body: bool) {
     use std::io::Read;
     let (store, key) = super::super::super::files(source, Some(content)).unwrap();
-    let section = format!("map-export-snow-v1/{suffix}");
+    let section = format!("map-export-v2/{suffix}");
     let mut range = store.read(&key, &section, 0).unwrap().unwrap();
     let mut bytes = Vec::new();
     range.read_to_end(&mut bytes).unwrap();
@@ -118,7 +115,7 @@ fn corrupt_snow_range(source: &Source, content: &ContentOptions, suffix: &str, b
 
 #[test]
 fn ordinary_walk_available_endpoints_match_live_runtime_inputs_and_the_viewer_binding() {
-    use dashboard_base::snow_export::Inputs;
+    use dashboard_base::map_export::Inputs;
     let frames = vec![snowy_frame(0), snowy_frame(1)];
     let (mut fixture, _, content) = content_fixture(frames.clone());
     let source = fixture.source("snow-available");
@@ -167,7 +164,7 @@ fn corrupt_snow_payload_before_resume_rejects_the_checkpoint_and_rewalks_cleanly
         let (prefix, _) =
             run_measured(&source, Some(&content), &flag, true, Duration::ZERO, |_| {}).unwrap();
         assert_eq!(prefix.next_block, 1);
-        corrupt_snow_range(&source, &content, "payloads", body);
+        corrupt_snow_range(&source, &content, "layer/1", body);
         let (prefix, _) =
             run_measured(&source, Some(&content), &flag, true, Duration::ZERO, |_| {}).unwrap();
         assert_eq!(
@@ -186,7 +183,7 @@ fn corrupt_snow_payload_before_resume_rejects_the_checkpoint_and_rewalks_cleanly
 
 #[test]
 fn corrupt_snow_payload_or_status_before_append_rebuilds_in_a_clean_transaction() {
-    for suffix in ["payloads", "endpoints/1"] {
+    for suffix in ["layer/1", "endpoints/1"] {
         let mut first_frames = vec![snowy_frame(0), snowy_frame(1)];
         if suffix == "endpoints/1" {
             first_frames[0].tables[TableId::WeatherProvinces.index()] = TableView::Unavailable {
@@ -223,7 +220,7 @@ fn corrupt_snow_payload_or_status_before_append_rebuilds_in_a_clean_transaction(
 
 #[test]
 fn over_geometry_diagnostics_are_named_refusals_that_remain_inheritable_on_append() {
-    use dashboard_base::snow_export::Inputs;
+    use dashboard_base::map_export::Inputs;
     use std::io::Read;
     let mut frames = vec![snowy_frame(0), snowy_frame(1)];
     let reason = "weather unavailable with a synthetic diagnostic ".repeat(256);
@@ -247,7 +244,7 @@ fn over_geometry_diagnostics_are_named_refusals_that_remain_inheritable_on_appen
         _ => panic!("long diagnostic must not become an available empty product"),
     }
     let (store, previous) = super::super::super::files(&source, Some(&content)).unwrap();
-    let section = "map-export-snow-v1/endpoints/1";
+    let section = "map-export-v2/endpoints/1";
     let mut before = Vec::new();
     store
         .read(&previous, section, 0)
@@ -321,10 +318,7 @@ fn completed_restore_answers_the_ordinary_checkpoint_without_binding_or_validati
     let expected = restore(&source, None, &flag).unwrap().unwrap();
     let (store, key) = super::super::super::files(&source, None).unwrap();
     let mut writer = store.extend(&key).unwrap();
-    for section in [
-        "map-export-snow-v1/binding",
-        "map-export-snow-v1/endpoints/1",
-    ] {
+    for section in ["map-export-v2/binding", "map-export-v2/endpoints/1"] {
         writer
             .write_at(section, 0, b"invalid snow".as_slice())
             .unwrap();
@@ -398,7 +392,7 @@ fn cancelling_preparation_snow_validation_preserves_the_accepted_checkpoint() {
     assert!(
         before
             .keys()
-            .any(|(section, _)| section == "map-export-snow-v1/payloads")
+            .any(|(section, _)| section == "map-export-v2/layer/1")
     );
     let signal = Arc::clone(&cancelled);
     let checks = Rc::new(Cell::new(0));
@@ -408,7 +402,7 @@ fn cancelling_preparation_snow_validation_preserves_the_accepted_checkpoint() {
         move |stage| {
             if stage == "validate" {
                 counted.set(counted.get() + 1);
-                // The sixth check follows the first available product's validation.
+                // The sixth check interrupts streamed validation before any new publication.
                 if counted.get() == 6 {
                     signal.store(true, Ordering::Release);
                 }
@@ -530,12 +524,12 @@ fn zero_walk_checkpoint_without_snow_preserves_completed_independent_air_work() 
                 zero.bytes = payloads
                     .iter()
                     .filter(|((name, _), _)| {
-                        name != CHECKPOINT && !name.starts_with("map-export-snow-v1/")
+                        name != CHECKPOINT && !name.starts_with("map-export-v2/")
                     })
                     .map(|(_, bytes)| bytes.len() as u64)
                     .sum();
                 for ((name, ordinal), bytes) in &payloads {
-                    if !name.starts_with("map-export-snow-v1/") && name != CHECKPOINT {
+                    if !name.starts_with("map-export-v2/") && name != CHECKPOINT {
                         writer.write_at(name, *ordinal, bytes.as_slice()).unwrap();
                     }
                 }
@@ -546,7 +540,7 @@ fn zero_walk_checkpoint_without_snow_preserves_completed_independent_air_work() 
                 assert!(metadata_prefix(&zero, &replay, None).unwrap());
                 assert!(
                     store
-                        .read(&key, "map-export-snow-v1/binding", 0)
+                        .read(&key, "map-export-v2/binding", 0)
                         .unwrap()
                         .is_none()
                 );
@@ -700,7 +694,7 @@ fn external_first_zero_walk_resumes_on_the_ordinary_snow_writer_without_reextrac
             assert!(
                 !before
                     .keys()
-                    .any(|(name, _)| name.starts_with("map-export-snow-v1/"))
+                    .any(|(name, _)| name.starts_with("map-export-v2/"))
             );
             let air = external_air_sections(&before);
             assert!(
@@ -760,7 +754,7 @@ fn external_first_zero_walk_resumes_on_the_ordinary_snow_writer_without_reextrac
                 (coverage.first, coverage.last, coverage.endpoints),
                 (0, 1, 2)
             );
-            let inputs = dashboard_base::snow_export::Inputs::load(
+            let inputs = dashboard_base::map_export::Inputs::load(
                 &app.content(&content.options).unwrap().layers,
             )
             .unwrap();
@@ -788,7 +782,7 @@ fn external_first_zero_walk_resumes_on_the_ordinary_snow_writer_without_reextrac
             let snow = |payloads: &BTreeMap<(String, u64), Vec<u8>>| -> BTreeMap<_, _> {
                 payloads
                     .iter()
-                    .filter(|((name, _), _)| name.starts_with("map-export-snow-v1/"))
+                    .filter(|((name, _), _)| name.starts_with("map-export-v2/"))
                     .map(|(key, bytes)| (key.clone(), bytes.clone()))
                     .collect()
             };
@@ -868,7 +862,7 @@ fn snow_rebinds_after_external_writer_replanning_and_cancellation_publishes_noth
                                 assert!(
                                     !payloads
                                         .keys()
-                                        .any(|(name, _)| name.starts_with("map-export-snow-v1/"))
+                                        .any(|(name, _)| name.starts_with("map-export-v2/"))
                                 );
                                 external = Some(payloads);
                                 published.set(true);
@@ -918,12 +912,125 @@ fn snow_rebinds_after_external_writer_replanning_and_cancellation_publishes_noth
             for section in ["binding", "cursor/1"] {
                 assert_eq!(
                     store
-                        .range_count(&key, &format!("map-export-snow-v1/{section}"))
+                        .range_count(&key, &format!("map-export-v2/{section}"))
                         .unwrap(),
                     Some(1)
                 );
             }
             assert!(restore(&app, Some(&content), &cancelled).unwrap().is_some());
         }
+    }
+}
+
+#[test]
+fn a_decodable_upward_cursor_edit_rebuilds_before_an_immediate_grid_endpoint() {
+    use dashboard_base::map_export::Cursor as ExportCursor;
+    use std::io::Read;
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![super::frame(1, 38, 2), super::frame(1, 39, 2)],
+        )],
+    )
+    .unwrap();
+    for append in [false, true] {
+        let replay = first
+            .append(&[continuation_records(
+                &first,
+                1,
+                vec![super::frame(1, 40, 2)],
+            )])
+            .unwrap();
+        let mut fixture = Fixture::new(if append { &first } else { &replay });
+        let source = fixture.source("cursor-corruption-before");
+        let flag = AtomicBool::new(false);
+        if append {
+            run(&source, None, &flag, |_| {}).unwrap();
+        } else {
+            let (accepted, _) = run_measured_through(
+                &source,
+                None,
+                &flag,
+                true,
+                Duration::ZERO,
+                Some(2),
+                |_| Ok(()),
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(accepted.next_block, 1);
+            assert_eq!(accepted.new_blocks, 1);
+        }
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let session = super::super::snow_session(&source, None, &flag).unwrap();
+        let section = session.key.section("cursor/1");
+        let mut range = store.read(&key, &section, 0).unwrap().unwrap();
+        let accepted = ExportCursor::read(range.clone(), &session.key, 1).unwrap();
+        assert_eq!(
+            accepted,
+            ExportCursor {
+                hour: 39,
+                block: Some(0)
+            }
+        );
+        let mut bytes = Vec::new();
+        range.read_to_end(&mut bytes).unwrap();
+        let at = bytes.len() - 32 - (4 + 1 + 8);
+        bytes[at..at + 4].copy_from_slice(&400i32.to_le_bytes());
+        assert_eq!(
+            i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()),
+            400
+        );
+        assert_eq!(bytes[at + 4], 1);
+        assert_eq!(
+            u64::from_le_bytes(bytes[at + 5..at + 13].try_into().unwrap()),
+            0
+        );
+        let mut writer = store.extend(&key).unwrap();
+        writer.write_at(&section, 0, bytes.as_slice()).unwrap();
+        writer.commit().unwrap();
+        drop(source);
+        if append {
+            fixture.replace(&replay);
+        }
+        let source = fixture.source("cursor-corruption-after");
+        let accepted = run(&source, None, &flag, |_| {}).unwrap();
+        assert_eq!(
+            accepted.new_blocks, 2,
+            "corrupt cursor must invalidate, not fail at grid hour 40"
+        );
+        assert!(restore(&source, None, &flag).unwrap().is_some());
+        let (store, key) = super::super::super::files(&source, None).unwrap();
+        let session = super::super::snow_session(&source, None, &flag).unwrap();
+        let cursor = ExportCursor::read(
+            store.read(&key, &section, 0).unwrap().unwrap(),
+            &session.key,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            cursor,
+            ExportCursor {
+                hour: 40,
+                block: Some(1)
+            }
+        );
+        assert_eq!(
+            Reader::new(
+                store,
+                session.key,
+                Limits {
+                    dimensions: [1, 1],
+                    provinces: 0,
+                    factors: 0
+                }
+            )
+            .coverage(1)
+            .unwrap()
+            .unwrap()
+            .last,
+            40
+        );
     }
 }
