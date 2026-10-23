@@ -211,6 +211,7 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("intel-network-coverage", "Intel network coverage"),
         ("naval-repairs", "Naval repairs"),
         ("naval-refits", "Refits"),
+        ("division-equipment", "Division equipment"),
     ]
     .into_iter()
     .map(|(id, label)| Section {
@@ -297,6 +298,12 @@ const FAMILIES: &[Family] = &[
         sections: &["naval-refits"],
         dependents: &[],
         queries: &["naval-refits"],
+    },
+    Family {
+        name: "division-equipment",
+        sections: &["division-equipment"],
+        dependents: &[],
+        queries: &["division-equipment-history"],
     },
     Family {
         name: "faction_state",

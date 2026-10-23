@@ -142,6 +142,7 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "intel-network-coverage" => "queries:intel-network-coverage",
         "naval-repairs" => "queries:naval-repairs",
         "naval-refits" => "queries:naval-refits",
+        "division-equipment-history" => "queries:division-equipment-history",
         "faction-state" => "queries:faction-state",
         "diplomacy-state" => "queries:diplomacy-state",
         "fuel-branches" => "queries:fuel-branches",
@@ -309,6 +310,7 @@ fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::
         "intel-network-coverage" => intel_coverage::query(query),
         "naval-repairs" => naval_repairs::query(query),
         "naval-refits" => naval_refits::query(query),
+        "division-equipment-history" => crate::products::division_equipment::history::query(query),
         _ => Err(crate::invalid("Unknown keyed product")),
     }
 }
@@ -1084,7 +1086,8 @@ fn query_data(
         | "occupation-reserve-manpower"
         | "intel-network-coverage"
         | "naval-repairs"
-        | "naval-refits") => {
+        | "naval-refits"
+        | "division-equipment-history") => {
             let id = request
                 .params
                 .get("branchId")
@@ -2912,6 +2915,13 @@ pub fn query(
     append_stack_warnings(source, &request.product, name, &mut data);
     let lines = served_lines(source, content, &answer.fallbacks);
     append_lines(&request.product, name, lines, &mut data);
+    // A history's replies add the lines a served reply adds as of each serving.
+    if request.product == crate::products::division_equipment::history::QUERY
+        && let Some(fields) = data.as_object_mut()
+    {
+        let served = crate::products::division_equipment::history::served_lines(source, content);
+        fields.insert("served".into(), Value::from(served));
+    }
     bounded_json(
         &Reply {
             source_id: &request.source_id,

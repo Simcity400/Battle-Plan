@@ -2646,6 +2646,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-forces",
+ "dashboard-keyed",
  "dashboard-land-battles",
  "dashboard-text",
  "engine-executable",

@@ -258,6 +258,7 @@ pub static PRODUCTS: &[Registered] = &[
     register::<division_careers::DivisionRecord>(),
     register::<division_templates::DivisionTemplates>(),
     register::<division_equipment::DivisionEquipment>(),
+    register_prepared::<division_equipment::history::DivisionEquipmentHistory>(),
     register::<training_queue::TrainingQueue>(),
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),

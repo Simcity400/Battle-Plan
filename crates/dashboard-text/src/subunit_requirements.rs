@@ -569,15 +569,55 @@ pub enum Definition {
 /// The hour's tables a template's definitions resolve through.
 pub struct Sources<'a> {
     pub tokens: TokenNames<'a>,
+    index: Arc<SourceIndex>,
+}
+
+/// The hour's country links and local sub-unit overrides, as [`Sources`] reads them.
+pub struct SourceIndex {
     links: BTreeMap<u32, u32>,
     /// (canonical country, token) -> the override's (archetype token, amount).
     local: BTreeMap<(u32, u32), Vec<(u32, i64)>>,
     local_complete: bool,
 }
 
+impl SourceIndex {
+    /// Its links and overrides.
+    pub fn len(&self) -> usize {
+        self.links.len() + self.local.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 impl<'a> Sources<'a> {
     pub fn read(frame: &'a DecodedFrame) -> io::Result<Self> {
         let tokens = TokenNames::new(frame)?;
+        Ok(Self {
+            tokens,
+            index: Arc::new(SourceIndex::read(frame)?),
+        })
+    }
+
+    /// The sources of an hour whose links, local sub-units and tokens are those an earlier
+    /// [`Self::read`] read `index` with: its tokens are taken as that read checked them.
+    pub fn reuse(frame: &'a DecodedFrame, index: Arc<SourceIndex>) -> io::Result<Self> {
+        let tokens = rows::<tables::LexicalTokens>(frame)?;
+        Ok(Self {
+            tokens: TokenNames::from_rows(tokens.rows(), tokens.is_complete()),
+            index,
+        })
+    }
+
+    /// Its links and overrides, kept for [`Self::reuse`].
+    pub fn index(&self) -> &Arc<SourceIndex> {
+        &self.index
+    }
+}
+
+impl SourceIndex {
+    fn read(frame: &DecodedFrame) -> io::Result<Self> {
         let links: BTreeMap<u32, u32> = frame
             .complete::<tables::CountryLinks>()?
             .iter()
@@ -605,12 +645,14 @@ impl<'a> Sources<'a> {
             }
         }
         Ok(Self {
-            tokens,
             links,
             local,
             local_complete: local_rows.is_complete(),
         })
     }
+}
+
+impl Sources<'_> {
 
     fn identity(
         &self,
@@ -623,7 +665,7 @@ impl<'a> Sources<'a> {
         }
         let country = u32::try_from(template.country)
             .ok()
-            .and_then(|raw| self.links.get(&raw))
+            .and_then(|raw| self.index.links.get(&raw))
             .ok_or_else(|| {
                 invalid(format!(
                     "template {} country {} names no country for its local sub-units",
@@ -672,9 +714,9 @@ impl Content {
         let Definition::Local { country, token } = identity else {
             return Ok(Cow::Borrowed(&subunit.requirements));
         };
-        let Some(entries) = sources.local.get(&(country, token)) else {
+        let Some(entries) = sources.index.local.get(&(country, token)) else {
             // A complete table names every clone that differs.
-            return if sources.local_complete {
+            return if sources.index.local_complete {
                 Ok(Cow::Borrowed(&subunit.requirements))
             } else {
                 Err(invalid(format!(

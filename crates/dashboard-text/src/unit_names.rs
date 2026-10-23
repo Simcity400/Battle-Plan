@@ -135,19 +135,29 @@ pub fn template_name(
     raw_country: i32,
     localise_for_country: impl FnOnce(i32, &[u8]) -> Result<String, String>,
 ) -> Result<String, String> {
+    template_name_with(parts, raw_country, |text| text, localise_for_country)
+}
+
+/// [`template_name`], its copied and localised text each made into `T`.
+pub fn template_name_with<T>(
+    parts: replay_data::rows::TemplateDisplayNameParts<'_>,
+    raw_country: i32,
+    text: impl FnOnce(String) -> T,
+    localise_for_country: impl FnOnce(i32, &[u8]) -> Result<T, String>,
+) -> Result<T, String> {
     if !parts.literal.is_empty() {
         if parts.fallback_key.is_some() {
             return Err("template display fallback demand is noncanonical".into());
         }
         return std::str::from_utf8(parts.literal)
-            .map(str::to_owned)
+            .map(|literal| text(literal.to_owned()))
             .map_err(|_| "template literal name is not UTF-8".into());
     }
     let key = parts
         .fallback_key
         .ok_or("template empty literal lacks fallback-key observation")?;
     if key.is_empty() {
-        return Ok(String::new());
+        return Ok(text(String::new()));
     }
     localise_for_country(raw_country, key)
 }

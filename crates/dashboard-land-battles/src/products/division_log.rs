@@ -1045,6 +1045,17 @@ pub fn template_icon(
     icon(source, cat, row.priority_unit, row.custom_icon, &row.priority_unit_name)
 }
 
+/// [`template_icon`] from a row's drawing operands.
+pub fn template_icon_of(
+    source: &Source,
+    cat: &Arc<Catalogue>,
+    priority_unit: u32,
+    custom: i32,
+    unit: &[u8],
+) -> Result<String, String> {
+    icon(source, cat, priority_unit, custom, unit)
+}
+
 fn icon_key(
     priority_unit: u32,
     custom: i32,

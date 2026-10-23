@@ -5,6 +5,7 @@ use dashboard_core::config::LoadContext;
 use dashboard_text::{
     catalogue::{Catalogue, View},
     metadata::{TaggedCountry, link_slot, tagged_country},
+    template_facts::TemplateNaming,
 };
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -15,7 +16,7 @@ use std::{
 };
 
 /// Each refused name or artwork, counted, for the reply's warnings.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Refusals(BTreeMap<String, usize>);
 impl Refusals {
     pub fn note(&mut self, reason: impl Into<String>) {
@@ -30,6 +31,16 @@ impl Refusals {
                 (None, Some(reason))
             }
         }
+    }
+    /// Note `reason` `times` times.
+    pub fn note_times(&mut self, reason: impl Into<String>, times: usize) {
+        if times > 0 {
+            *self.0.entry(reason.into()).or_default() += times;
+        }
+    }
+    /// Each reason with how many times it was noted, in reason order.
+    pub fn counted(self) -> Vec<(String, usize)> {
+        self.0.into_iter().collect()
     }
     pub fn lines(self) -> Vec<String> {
         self.0
@@ -82,6 +93,51 @@ pub fn holder(frame: &DecodedFrame, tag: &str) -> io::Result<Option<Holder>> {
     }
 }
 
+/// Every listed tag's [`holder`] in one pass; a listed tag without one has no resolved identity.
+pub fn holders(frame: &DecodedFrame) -> io::Result<BTreeMap<Vec<u8>, Option<Holder>>> {
+    let countries = frame.complete::<tables::Countries>()?;
+    let links = frame.complete::<tables::CountryLinks>()?;
+    Ok(dashboard_text::metadata::tagged_countries(countries, links)
+        .into_iter()
+        .map(|(tag, country)| {
+            let holder = match country {
+                TaggedCountry::Found(row, slot) => Some(Holder { slot, id: row.id }),
+                _ => None,
+            };
+            (tag.to_vec(), holder)
+        })
+        .collect())
+}
+
+/// [`holder`] of `tag` from the hour's [`holders`].
+pub fn holder_in(holders: &BTreeMap<Vec<u8>, Option<Holder>>, tag: &str) -> io::Result<Option<Holder>> {
+    match holders.get(tag.as_bytes()) {
+        None => Ok(None),
+        Some(Some(holder)) => Ok(Some(*holder)),
+        Some(None) => Err(io::Error::other(format!("{tag} has no resolved country identity at this hour"))),
+    }
+}
+
+/// Each slot's country id in a read, as [`same_holder`] finds it (the slot's first row).
+pub fn read_identities(read: &DecodedFrame) -> Result<BTreeMap<u32, u32>, ()> {
+    let rows = read.complete::<tables::Countries>().map_err(|_| ())?;
+    let mut ids = BTreeMap::new();
+    for row in rows {
+        ids.entry(row.canonical_slot).or_insert(row.id);
+    }
+    Ok(ids)
+}
+
+/// [`same_holder`] from the read's [`read_identities`].
+pub fn same_holder_in(ids: &Result<BTreeMap<u32, u32>, ()>, holder: Holder) -> Result<(), &'static str> {
+    let id = ids
+        .as_ref()
+        .ok()
+        .and_then(|ids| ids.get(&holder.slot))
+        .ok_or("its country identity was not recorded")?;
+    if *id == holder.id { Ok(()) } else { Err("it belongs to another country identity") }
+}
+
 /// The canonical slot of the country holding `tag` at the frame's hour; none
 /// when no country holds it.
 pub fn country_slot(frame: &DecodedFrame, tag: &str) -> io::Result<Option<u32>> {
@@ -126,8 +182,34 @@ impl<'a> Countries<'a> {
 /// A template's in-game name: its literal, else its key localised for its
 /// composition country.
 pub fn template_name(frame: &DecodedFrame, handle: u64, cat: Option<&Arc<Catalogue>>) -> Result<String, String> {
+    template_name_of(&template_naming(frame, handle), cat)
+}
+
+/// What [`template_name`] names a template from at the frame's hour.
+pub fn template_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNaming, String> {
+    dashboard_text::template_facts::display_naming(frame, handle)
+}
+
+/// Whether a template's naming operands were sampled for this hour only.
+pub fn template_naming_hourly(frame: &DecodedFrame, handle: u64) -> bool {
+    frame
+        .complete::<tables::DivisionTemplateIcons>()
+        .ok()
+        .and_then(|rows| {
+            let at = rows.binary_search_by_key(&handle, |row| row.template).ok()?;
+            rows.get(at)
+        })
+        .is_some_and(|row| {
+            matches!(&row.display_name, replay_data::rows::Recorded::Value(Some(name)) if name.sample_hour.stamp().is_some())
+        })
+}
+
+/// [`template_name`] from its operands.
+pub fn template_name_of(naming: &Result<TemplateNaming, String>, cat: Option<&Arc<Catalogue>>) -> Result<String, String> {
     let cat = cat.ok_or("Template name needs the recorded content stack")?;
-    dashboard_text::template_facts::display_name(frame, handle, &cat.localisation)
+    naming
+        .clone()
+        .and_then(|naming| naming.localise(&cat.localisation))
         .and_then(|name| catalogue::plain_text(&name))
         .map_err(|why| format!("Template name unavailable: {why}"))
 }
@@ -139,16 +221,52 @@ pub fn template_icon(
     handle: u64,
     cat: Option<&Arc<Catalogue>>,
 ) -> Result<String, String> {
-    let cat = cat.ok_or("Template artwork needs the recorded content stack")?;
+    template_icon_of(source, &template_artwork(frame, handle), cat)
+}
+
+/// How an artwork refused for its unreadable icons table starts.
+pub const ARTWORK_UNAVAILABLE: &str = "Template artwork unavailable: ";
+
+/// What [`template_icon`] draws a template from at the frame's hour.
+pub fn template_artwork(frame: &DecodedFrame, handle: u64) -> Result<TemplateArtwork, String> {
     let rows = frame
         .complete::<tables::DivisionTemplateIcons>()
-        .map_err(|why| format!("Template artwork unavailable: {why}"))?;
+        .map_err(|why| format!("{ARTWORK_UNAVAILABLE}{why}"))?;
     let row = rows
         .binary_search_by_key(&handle, |row| row.template)
         .ok()
         .map(|at| &rows[at])
         .ok_or("Template artwork operands not recorded")?;
-    dashboard_land_battles::products::division_log::template_icon(source, cat, row)
+    Ok(TemplateArtwork {
+        priority_unit: row.priority_unit,
+        custom_icon: row.custom_icon,
+        unit: row.priority_unit_name.clone(),
+    })
+}
+
+/// A template icon's drawing operands ([`template_artwork`]).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct TemplateArtwork {
+    pub priority_unit: u32,
+    pub custom_icon: i32,
+    pub unit: Vec<u8>,
+}
+
+/// [`template_icon`] from its operands.
+pub fn template_icon_of(
+    source: &Source,
+    artwork: &Result<TemplateArtwork, String>,
+    cat: Option<&Arc<Catalogue>>,
+) -> Result<String, String> {
+    let cat = cat.ok_or("Template artwork needs the recorded content stack")?;
+    let artwork = artwork.as_ref().map_err(Clone::clone)?;
+    dashboard_land_battles::products::division_log::template_icon_of(
+        source,
+        cat,
+        artwork.priority_unit,
+        artwork.custom_icon,
+        &artwork.unit,
+    )
 }
 
 /// A lexical token's literal: the key of the content definition it names.
@@ -214,19 +332,33 @@ impl<'a> Designs<'a> {
         }
     }
     pub fn design(&self, variant: u64, refusals: &mut Refusals) -> Design {
+        let Some(operand) = self.operand(variant, refusals) else {
+            return Design::default();
+        };
+        let name = self.name(&operand.raw);
+        if name.is_none() {
+            refusals.note(UNNAMED_DESIGN);
+        }
+        let archetype_name = operand.archetype.as_ref().and_then(|key| localised(self.cat, key).ok());
+        Design {
+            name,
+            archetype: operand.archetype,
+            archetype_name,
+        }
+    }
+
+    /// A design's naming operands and archetype; none, noted, when its definition was not read.
+    /// the reason noted, when its definitions were not read or do not hold it.
+    pub fn operand(&self, variant: u64, refusals: &mut Refusals) -> Option<DesignOperand> {
         let Some((read, tags, definitions, lexical)) = &self.read else {
             refusals.note("Equipment designs were not read at or before this hour");
-            return Design::default();
+            return None;
         };
         let Ok(at) = definitions.binary_search_by_key(&variant, |row| row.id) else {
             refusals.note("An equipment design has no recorded definition");
-            return Design::default();
+            return None;
         };
         let raw = equipment::raw_variant(&definitions[at], read.hour, tags, lexical);
-        let (name, _) = equipment::variant_names(&raw, self.cat.map(|c| c.as_ref() as &dyn equipment::Texts));
-        if name.is_none() {
-            refusals.note("An equipment design has no resolved name");
-        }
         let archetype = match self
             .types
             .as_ref()
@@ -239,13 +371,28 @@ impl<'a> Designs<'a> {
                 None
             }
         };
-        let archetype_name = archetype.as_ref().and_then(|key| localised(self.cat, key).ok());
-        Design {
-            name,
-            archetype,
-            archetype_name,
-        }
+        Some(DesignOperand { raw, archetype })
     }
+
+    /// A design's name from its naming operands.
+    pub fn name(&self, raw: &equipment::RawVariant) -> Option<String> {
+        design_name(raw, self.cat)
+    }
+}
+
+/// Why a design read with its operands is shown without a name.
+pub const UNNAMED_DESIGN: &str = "An equipment design has no resolved name";
+
+/// A design's name from its naming operands, in the catalogue's language.
+pub fn design_name(raw: &equipment::RawVariant, cat: Option<&Arc<Catalogue>>) -> Option<String> {
+    equipment::variant_names(raw, cat.map(|c| c.as_ref() as &dyn equipment::Texts)).0
+}
+
+/// A design's naming operands and archetype key, as its read of the definitions records them.
+#[derive(Clone, Debug)]
+pub struct DesignOperand {
+    pub raw: equipment::RawVariant,
+    pub archetype: Option<String>,
 }
 
 /// The game's name for a template's stored priority: the designer's heading for

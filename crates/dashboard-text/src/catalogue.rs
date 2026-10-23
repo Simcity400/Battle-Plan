@@ -557,6 +557,11 @@ impl OwnRefusals {
     pub fn fallback_line(&self) -> Option<String> {
         installed_content_core::content::overlay_refusal_line(&self.fallbacks)
     }
+
+    /// What the consumer drew in the recording's style, each named with why.
+    pub fn fallbacks(&self) -> &BTreeSet<String> {
+        &self.fallbacks
+    }
 }
 
 /// One consumer scope on this thread. A capture ([`capture`]) collects

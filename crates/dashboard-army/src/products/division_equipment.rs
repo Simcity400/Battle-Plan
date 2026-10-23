@@ -272,6 +272,7 @@ impl Product for DivisionEquipment {
                         icon: &|handle| {
                             army_content::template_icon(source, &frame, handle, cat.as_ref())
                         },
+                        labels: Labels::Named,
                     },
                     &mut refusals,
                     cancelled,
@@ -392,11 +393,243 @@ pub struct Context<'a> {
     pub daily: Option<&'a DecodedFrame>,
     pub stock: Option<&'a DecodedFrame>,
     pub cat: Option<&'a Arc<Catalogue>>,
-    pub designs: &'a army_content::Designs<'a>,
-    pub stock_designs: &'a army_content::Designs<'a>,
-    pub needs: &'a Needs<'a>,
+    pub designs: &'a dyn DesignsOf,
+    pub stock_designs: &'a dyn DesignsOf,
+    pub needs: &'a dyn NeedsOf,
     pub names: Option<Result<&'a installed_content_division_names::division_names::Database, String>>,
     pub icon: &'a dyn Fn(u64) -> Result<String, String>,
+    pub labels: Labels,
+}
+
+/// What a reply reads its templates' needs from ([`Needs`]).
+pub trait NeedsOf {
+    fn warnings(&self) -> Vec<&str>;
+    fn template(&self, frame: &DecodedFrame, handle: u64) -> Result<Vec<(String, i64)>, String>;
+}
+
+impl NeedsOf for Needs<'_> {
+    fn warnings(&self) -> Vec<&str> {
+        Needs::warnings(self).collect()
+    }
+
+    fn template(&self, frame: &DecodedFrame, handle: u64) -> Result<Vec<(String, i64)>, String> {
+        Needs::template(self, frame, handle)
+    }
+}
+
+/// What a reply reads its designs from ([`army_content::Designs`]).
+pub trait DesignsOf {
+    fn operand(&self, variant: u64, refusals: &mut Refusals)
+    -> Option<army_content::DesignOperand>;
+    fn name(&self, raw: &dashboard_base::products::equipment::RawVariant) -> Option<String>;
+}
+
+impl DesignsOf for army_content::Designs<'_> {
+    fn operand(
+        &self,
+        variant: u64,
+        refusals: &mut Refusals,
+    ) -> Option<army_content::DesignOperand> {
+        army_content::Designs::operand(self, variant, refusals)
+    }
+
+    fn name(&self, raw: &dashboard_base::products::equipment::RawVariant) -> Option<String> {
+        army_content::Designs::name(self, raw)
+    }
+}
+
+/// Whether a reply names templates, archetypes and designs, or leaves them to its reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Labels {
+    Named,
+    Kept,
+}
+
+/// What a prepared history's replies at one hour share across its countries.
+#[derive(Default)]
+pub(crate) struct Shared {
+    /// Each template's need ([`Needs::template`]).
+    pub(crate) needs: BTreeMap<u64, Result<Vec<(String, i64)>, String>>,
+    /// Each design's operands, with the notes reading them made, from the hour's designs.
+    pub(crate) designs: BTreeMap<u64, Looked>,
+    /// The same from the designs as of the stockpile's read.
+    pub(crate) stock_designs: BTreeMap<u64, Looked>,
+    /// The hour's counted divisions by attribution and canonical slot.
+    pub(crate) members: Option<Members>,
+    /// The stockpile read's rows by canonical slot; Err where they or its links were not recorded.
+    pub(crate) stock: Option<Result<Grouped, ()>>,
+    /// The stockpile read's country identities ([`army_content::read_identities`]).
+    pub(crate) stock_ids: Option<Result<BTreeMap<u32, u32>, ()>>,
+    /// The hour's holder of every tag ([`army_content::holders`]).
+    pub(crate) holders: Option<BTreeMap<Vec<u8>, Option<army_content::Holder>>>,
+}
+
+/// Row indices by their country's canonical slot, and the rows with no linked country.
+#[derive(Default)]
+pub(crate) struct Grouped {
+    pub(crate) rows: BTreeMap<u32, Vec<usize>>,
+    pub(crate) unlinked: usize,
+}
+
+/// One design's lookup: the notes it made and its operands, when read.
+#[derive(Clone)]
+pub(crate) struct Looked {
+    pub(crate) notes: Vec<(String, usize)>,
+    pub(crate) operand: Option<army_content::DesignOperand>,
+}
+
+/// Counted divisions by attribution (owner, host) and slot, as [`members`] selects them.
+#[derive(Clone, Default)]
+pub(crate) struct Members {
+    pub(crate) slots: [BTreeMap<u32, BTreeSet<u64>>; 2],
+    pub(crate) unlinked: [usize; 2],
+}
+
+/// Where a counted division is listed: its slot under each attribution and its template.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Placed {
+    pub(crate) slots: [Option<u32>; 2],
+    pub(crate) template: u64,
+}
+
+impl Members {
+    pub(crate) fn place(
+        row: &DivisionRow,
+        links: &[replay_data::rows::CountryLinkRow],
+    ) -> Option<Placed> {
+        (row.reveal_skip == 0).then(|| Placed {
+            slots: [ArmyAttribution::Owner, ArmyAttribution::Host].map(|attribution| {
+                dashboard_text::metadata::link_slot(links, attributed(row, attribution))
+            }),
+            template: row.template,
+        })
+    }
+
+    pub(crate) fn add(&mut self, id: u64, placed: Placed) {
+        for (at, slot) in placed.slots.into_iter().enumerate() {
+            match slot {
+                Some(slot) => {
+                    self.slots[at].entry(slot).or_default().insert(id);
+                }
+                None => self.unlinked[at] += 1,
+            }
+        }
+    }
+
+    pub(crate) fn remove(&mut self, id: u64, placed: Placed) {
+        for (at, slot) in placed.slots.into_iter().enumerate() {
+            match slot {
+                Some(slot) => {
+                    if let Some(ids) = self.slots[at].get_mut(&slot) {
+                        ids.remove(&id);
+                        if ids.is_empty() {
+                            self.slots[at].remove(&slot);
+                        }
+                    }
+                }
+                None => self.unlinked[at] -= 1,
+            }
+        }
+    }
+}
+
+impl Shared {
+    /// A stockpile read's rows grouped as [`stock_totals`] reads them.
+    pub(crate) fn group_stock(stock: &DecodedFrame) -> Result<Grouped, ()> {
+        let (Ok(countries), Ok(rows)) = (
+            army_content::Countries::read(stock),
+            stock.complete::<tables::Stockpiles>(),
+        ) else {
+            return Err(());
+        };
+        let mut grouped = Grouped::default();
+        for (at, row) in rows.iter().enumerate() {
+            match countries.slot(row.country) {
+                None => grouped.unlinked += 1,
+                Some(slot) => grouped.rows.entry(slot).or_default().push(at),
+            }
+        }
+        Ok(grouped)
+    }
+}
+
+/// One reply's design lookups: each design read once, its notes counted once.
+struct Lookups<'c> {
+    designs: &'c dyn DesignsOf,
+    labels: Labels,
+    shared: Option<&'c mut BTreeMap<u64, Looked>>,
+    seen: BTreeMap<u64, army_content::Design>,
+}
+
+impl<'c> Lookups<'c> {
+    fn new(
+        designs: &'c dyn DesignsOf,
+        labels: Labels,
+        shared: Option<&'c mut BTreeMap<u64, Looked>>,
+    ) -> Self {
+        Self {
+            designs,
+            labels,
+            shared,
+            seen: BTreeMap::new(),
+        }
+    }
+
+    fn design(&mut self, variant: u64, refusals: &mut Refusals) -> &army_content::Design {
+        if !self.seen.contains_key(&variant) {
+            let looked = match self.shared.as_deref_mut() {
+                Some(shared) => shared
+                    .entry(variant)
+                    .or_insert_with(|| {
+                        let mut notes = Refusals::default();
+                        let operand = self.designs.operand(variant, &mut notes);
+                        Looked {
+                            notes: notes.counted(),
+                            operand,
+                        }
+                    })
+                    .clone(),
+                None => {
+                    let mut notes = Refusals::default();
+                    let operand = self.designs.operand(variant, &mut notes);
+                    Looked {
+                        notes: notes.counted(),
+                        operand,
+                    }
+                }
+            };
+            for (note, times) in looked.notes {
+                refusals.note_times(note, times);
+            }
+            let design = match looked.operand {
+                None => army_content::Design::default(),
+                Some(operand) => {
+                    let name = match self.labels {
+                        Labels::Named => {
+                            let name = self.designs.name(&operand.raw);
+                            if name.is_none() {
+                                refusals.note(army_content::UNNAMED_DESIGN);
+                            }
+                            name
+                        }
+                        Labels::Kept => Some(String::new()),
+                    };
+                    army_content::Design {
+                        name,
+                        archetype: operand.archetype,
+                        archetype_name: None,
+                    }
+                }
+            };
+            self.seen.insert(variant, design);
+        }
+        &self.seen[&variant]
+    }
+
+    /// The designs looked up, in handle order.
+    fn handles(&self) -> impl Iterator<Item = u64> + '_ {
+        self.seen.keys().copied()
+    }
 }
 
 fn count(value: usize) -> io::Result<u32> {
@@ -500,7 +733,11 @@ impl TypeTotals {
     fn hold(&mut self, held: &HeldType) -> io::Result<()> {
         self.held.held = sum(self.held.held, held.held)?;
         for (variant, (name, amount)) in &held.variants {
-            let entry = self.held.variants.entry(*variant).or_insert((name.clone(), 0));
+            let entry = self
+                .held
+                .variants
+                .entry(*variant)
+                .or_insert((name.clone(), 0));
             entry.1 = sum(entry.1, *amount)?;
         }
         Ok(())
@@ -558,6 +795,8 @@ fn division_name(
 #[cfg(test)]
 mod tests;
 
+pub mod history;
+
 /// One division's own facts and its comparison of pool against need.
 struct Division<'a> {
     row: &'a DivisionRow,
@@ -599,7 +838,12 @@ fn compare(
         .map(|(key, amount)| (Some(key.clone()), i128::from(*amount)))
         .collect();
     let mut keys: Vec<Option<String>> = need.iter().map(|(key, _)| key.clone()).collect();
-    keys.extend(held.keys().filter(|key| !keys.contains(key)).cloned().collect::<Vec<_>>());
+    keys.extend(
+        held.keys()
+            .filter(|key| !keys.contains(key))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let mut compared = Compared {
         types: Vec::new(),
         needed: 0,
@@ -631,31 +875,61 @@ fn compare(
     Ok(compared)
 }
 
+/// The note of a division whose country is not linked.
+const UNLINKED_DIVISION: &str = "A division's country has no recorded link; it is left out";
+
 /// The divisions counted for the country, narrowed to a template or a division.
 /// A division whose country is not linked is left out and counted.
 fn members<'a>(
     frame: &'a DecodedFrame,
     p: &DivisionEquipmentParams,
     slot: u32,
-    countries: &army_content::Countries<'_>,
+    countries: Option<&army_content::Countries<'_>>,
+    grouped: Option<&Members>,
     refusals: &mut Refusals,
 ) -> io::Result<Vec<&'a DivisionRow>> {
-    let template = p.template.as_ref().and_then(|handle| handle.parse::<u64>().ok());
-    let division = p.division.as_ref().and_then(|handle| handle.parse::<u64>().ok());
+    let template = p
+        .template
+        .as_ref()
+        .and_then(|handle| handle.parse::<u64>().ok());
+    let division = p
+        .division
+        .as_ref()
+        .and_then(|handle| handle.parse::<u64>().ok());
+    let rows = frame.complete::<tables::Divisions>()?;
     let mut members = Vec::new();
-    for row in frame.complete::<tables::Divisions>()? {
-        if row.reveal_skip != 0 {
-            continue;
-        }
-        match countries.slot(attributed(row, p.count_for)) {
-            None => refusals.note("A division's country has no recorded link; it is left out"),
-            Some(owner) if owner == slot
-                && template.is_none_or(|handle| row.template == handle)
-                && division.is_none_or(|handle| row.id == handle) =>
+    if let Some(grouped) = grouped {
+        let at = usize::from(p.count_for == ArmyAttribution::Host);
+        refusals.note_times(UNLINKED_DIVISION, grouped.unlinked[at]);
+        for &id in grouped.slots[at].get(&slot).into_iter().flatten() {
+            let row = rows
+                .binary_search_by_key(&id, |row| row.id)
+                .map(|found| &rows[found])
+                .map_err(|_| io::Error::other("Division index is not the hour's divisions"))?;
+            if template.is_none_or(|handle| row.template == handle)
+                && division.is_none_or(|handle| row.id == handle)
             {
                 members.push(row);
             }
-            Some(_) => {}
+        }
+    } else {
+        let countries =
+            countries.ok_or_else(|| io::Error::other("Division countries were not read"))?;
+        for row in rows {
+            if row.reveal_skip != 0 {
+                continue;
+            }
+            match countries.slot(attributed(row, p.count_for)) {
+                None => refusals.note(UNLINKED_DIVISION),
+                Some(owner)
+                    if owner == slot
+                        && template.is_none_or(|handle| row.template == handle)
+                        && division.is_none_or(|handle| row.id == handle) =>
+                {
+                    members.push(row);
+                }
+                Some(_) => {}
+            }
         }
     }
     if division.is_some() && members.is_empty() {
@@ -679,17 +953,41 @@ fn division<'a>(
     pools: &Pools<'a>,
     context: &Context<'_>,
     needs: &mut BTreeMap<u64, Result<Vec<(String, i64)>, String>>,
-    designs: &mut BTreeMap<u64, army_content::Design>,
+    designs: &mut Lookups<'_>,
     refusals: &mut Refusals,
 ) -> io::Result<Division<'a>> {
-    let status = find(frame.complete::<tables::DivisionStatus>().ok(), row.id, |row| row.division);
-    let manpower = find(frame.complete::<tables::DivisionLandInputs>().ok(), row.id, |row| row.division)
-        .map(|land| i64::from(land.manpower.iter().fold(0i32, |total, part| total.wrapping_add(part.amount))));
+    let status = find(
+        frame.complete::<tables::DivisionStatus>().ok(),
+        row.id,
+        |row| row.division,
+    );
+    let manpower = find(
+        frame.complete::<tables::DivisionLandInputs>().ok(),
+        row.id,
+        |row| row.division,
+    )
+    .map(|land| {
+        i64::from(
+            land.manpower
+                .iter()
+                .fold(0i32, |total, part| total.wrapping_add(part.amount)),
+        )
+    });
     if manpower.is_none() {
         refusals.note("Division manpower was not recorded");
     }
-    let required = find(frame.complete::<tables::DivisionTemplateIcons>().ok(), row.template, |row| row.template)
-        .and_then(|icon| icon.settings.require("template settings").ok()?.as_ref().map(|settings| i64::from(settings.total_manpower)));
+    let required = find(
+        frame.complete::<tables::DivisionTemplateIcons>().ok(),
+        row.template,
+        |row| row.template,
+    )
+    .and_then(|icon| {
+        icon.settings
+            .require("template settings")
+            .ok()?
+            .as_ref()
+            .map(|settings| i64::from(settings.total_manpower))
+    });
     if required.is_none() {
         refusals.note("Template required manpower was not recorded");
     }
@@ -710,11 +1008,11 @@ fn division<'a>(
     }
     let mut held = BTreeMap::<Option<String>, HeldType>::new();
     for entry in pool.unwrap_or_default() {
-        let design = designs
-            .entry(entry.variant_handle)
-            .or_insert_with(|| context.designs.design(entry.variant_handle, refusals));
+        let design = designs.design(entry.variant_handle, refusals);
         if design.archetype.is_none() {
-            refusals.note("Division equipment design has no resolved archetype; holdings are unclassified");
+            refusals.note(
+                "Division equipment design has no resolved archetype; holdings are unclassified",
+            );
         }
         held.entry(design.archetype.clone())
             .or_default()
@@ -747,6 +1045,25 @@ pub fn build(
     refusals: &mut Refusals,
     cancelled: &AtomicBool,
 ) -> io::Result<DivisionEquipmentReply> {
+    Ok(build_in(frame, p, context, None, refusals, cancelled)?.reply)
+}
+
+/// A reply and the designs its stockpile context looked up.
+pub(crate) struct Built {
+    pub(crate) reply: DivisionEquipmentReply,
+    /// The stockpile's designs looked up, by handle.
+    pub(crate) stock_designs: Vec<u64>,
+}
+
+/// [`build`], sharing what every country's reply at the hour shares when `shared` is given.
+pub(crate) fn build_in(
+    frame: &DecodedFrame,
+    p: &DivisionEquipmentParams,
+    context: &Context<'_>,
+    mut shared: Option<&mut Shared>,
+    refusals: &mut Refusals,
+    cancelled: &AtomicBool,
+) -> io::Result<Built> {
     DivisionEquipment::validate(p).map_err(io::Error::other)?;
     let pools = Pools::read(frame, context.daily);
     let mut reply = DivisionEquipmentReply {
@@ -765,27 +1082,49 @@ pub fn build(
         pool: None,
         warnings: Vec::new(),
     };
-    let Some(holder) = army_content::holder(frame, &p.tag)? else {
+    let holder = match shared.as_ref().and_then(|shared| shared.holders.as_ref()) {
+        Some(holders) => army_content::holder_in(holders, &p.tag)?,
+        None => army_content::holder(frame, &p.tag)?,
+    };
+    let Some(holder) = holder else {
         reply.absent = true;
-        return Ok(reply);
+        return Ok(Built {
+            reply,
+            stock_designs: Vec::new(),
+        });
     };
     let slot = holder.slot;
-    let countries = army_content::Countries::read(frame)?;
+    let grouped = shared.as_ref().and_then(|shared| shared.members.as_ref());
+    // A shared index of the hour's divisions has resolved their countries already.
+    let countries = match grouped {
+        Some(_) => None,
+        None => Some(army_content::Countries::read(frame)?),
+    };
     for warning in context.needs.warnings() {
         refusals.note(warning);
     }
-    let members = members(frame, p, slot, &countries, refusals)?;
+    let members = members(frame, p, slot, countries.as_ref(), grouped, refusals)?;
     reply.divisions = count(members.len())?;
     let mut types = BTreeMap::<Option<String>, TypeTotals>::new();
     let mut templates = BTreeMap::<u64, TemplateTotals>::new();
-    let mut needs = BTreeMap::new();
-    let mut designs = BTreeMap::new();
+    let mut local_needs = BTreeMap::new();
+    let (needs, designs_shared, stock_shared, stock_rows, stock_ids) = match shared.as_mut() {
+        Some(shared) => (
+            &mut shared.needs,
+            Some(&mut shared.designs),
+            Some(&mut shared.stock_designs),
+            shared.stock.as_ref(),
+            shared.stock_ids.as_ref(),
+        ),
+        None => (&mut local_needs, None, None, None, None),
+    };
+    let mut designs = Lookups::new(context.designs, context.labels, designs_shared);
     // An unknown comparison can involve any type, including one first reached
     // later in this census, so it is counted against every type at the end.
     let mut unknown = BTreeSet::new();
     for row in members {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let division = division(frame, row, &pools, context, &mut needs, &mut designs, refusals)?;
+        let division = division(frame, row, &pools, context, needs, &mut designs, refusals)?;
         // What a read pool holds counts whether or not its comparison is known.
         for (key, held) in &division.held {
             types.entry(key.clone()).or_default().hold(held)?;
@@ -812,12 +1151,18 @@ pub fn build(
         }
         // `new` starts every total at zero; `Default` leaves them unknown.
         #[allow(clippy::unwrap_or_default)]
-        let total = templates.entry(row.template).or_insert_with(TemplateTotals::new);
+        let total = templates
+            .entry(row.template)
+            .or_insert_with(TemplateTotals::new);
         total.divisions += 1;
         total.unknown += u32::from(division.compared.is_none());
         add_optional(&mut total.manpower, division.manpower, i64::checked_add);
         add_optional(&mut total.required, division.required, i64::checked_add);
-        add_optional(&mut total.hp, Some(i128::from(row.hit_points)), i128::checked_add);
+        add_optional(
+            &mut total.hp,
+            Some(i128::from(row.hit_points)),
+            i128::checked_add,
+        );
         add_optional(&mut total.hp_max, division.hp_max, i128::checked_add);
         if let Some(compared) = &division.compared {
             total.needed = Some(sum(total.needed.unwrap_or(0), compared.needed)?);
@@ -831,16 +1176,30 @@ pub fn build(
             reply.pool = Some(pool(frame, &division, context, refusals)?);
         }
     }
-    let stocks = stock_totals(holder, context, refusals, cancelled)?;
+    let mut stock_designs = Lookups::new(context.stock_designs, context.labels, stock_shared);
+    let stocks = stock_totals(
+        holder,
+        context,
+        stock_rows,
+        stock_ids,
+        &mut stock_designs,
+        refusals,
+        cancelled,
+    )?;
+    let stock_handles = stock_designs.handles().collect();
     for (key, mut total) in types {
         total.unknown.extend(&unknown);
         let (name, name_missing) = match &key {
-            Some(key) => refusals.keep(army_content::localised(context.cat, key)),
+            Some(key) => match context.labels {
+                Labels::Named => refusals.keep(army_content::localised(context.cat, key)),
+                Labels::Kept => (None, None),
+            },
             None => (None, Some("Equipment archetype is unclassified".into())),
         };
-        let stock = stocks
-            .as_ref()
-            .and_then(|stocks| key.as_ref().map(|key| stocks.get(key).copied().unwrap_or(0)));
+        let stock = stocks.as_ref().and_then(|stocks| {
+            key.as_ref()
+                .map(|key| stocks.get(key).copied().unwrap_or(0))
+        });
         reply.types.push(EquipmentType {
             archetype: key,
             name,
@@ -858,9 +1217,13 @@ pub fn build(
     }
     for (handle, total) in templates {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let (name, name_missing) =
-            refusals.keep(army_content::template_name(frame, handle, context.cat));
-        let (icon, icon_missing) = refusals.keep((context.icon)(handle));
+        let ((name, name_missing), (icon, icon_missing)) = match context.labels {
+            Labels::Named => (
+                refusals.keep(army_content::template_name(frame, handle, context.cat)),
+                refusals.keep((context.icon)(handle)),
+            ),
+            Labels::Kept => ((None, None), (None, None)),
+        };
         reply.templates.push(EquipmentTemplate {
             template: handle.to_string(),
             name,
@@ -878,7 +1241,10 @@ pub fn build(
             unknown_divisions: total.unknown,
         });
     }
-    Ok(reply)
+    Ok(Built {
+        reply,
+        stock_designs: stock_handles,
+    })
 }
 
 /// A row of a template's divisions.
@@ -891,12 +1257,20 @@ fn division_row(
     let (name, name_missing) = refusals.keep(division_name(division.status, context));
     let converting_from = match division
         .status
-        .and_then(|row| row.pending_template.require("DivisionStatus.pending_template").ok())
+        .and_then(|row| {
+            row.pending_template
+                .require("DivisionStatus.pending_template")
+                .ok()
+        })
         .copied()
         .flatten()
     {
         Some(0) => None,
-        Some(previous) => refusals.keep(army_content::template_name(frame, previous, context.cat)).0,
+        Some(previous) => {
+            refusals
+                .keep(army_content::template_name(frame, previous, context.cat))
+                .0
+        }
         None => {
             refusals.note("Division conversion context was not recorded");
             None
@@ -910,8 +1284,14 @@ fn division_row(
         manpower_required: division.required.map(|value| value.to_string()),
         hp_raw: Some(division.row.hit_points.to_string()),
         hp_max_raw: division.hp_max.map(|amount| amount.to_string()),
-        needed_raw: division.compared.as_ref().map(|compared| compared.needed.to_string()),
-        held_raw: division.compared.as_ref().map(|compared| compared.filled.to_string()),
+        needed_raw: division
+            .compared
+            .as_ref()
+            .map(|compared| compared.needed.to_string()),
+        held_raw: division
+            .compared
+            .as_ref()
+            .map(|compared| compared.filled.to_string()),
         types_short: division
             .compared
             .as_ref()
@@ -937,7 +1317,14 @@ fn pool(
         .as_ref()
         .map(|need| need.iter().map(|(key, _)| Some(key.clone())).collect())
         .unwrap_or_default();
-    keys.extend(division.held.keys().filter(|key| !keys.contains(key)).cloned().collect::<Vec<_>>());
+    keys.extend(
+        division
+            .held
+            .keys()
+            .filter(|key| !keys.contains(key))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     for key in keys {
         let compared = division
             .compared
@@ -945,11 +1332,17 @@ fn pool(
             .and_then(|compared| compared.types.iter().find(|kind| kind.key == key));
         let needed = division.need.as_ref().ok().and_then(|need| {
             let key = key.as_ref()?;
-            Some(need.iter().find(|(archetype, _)| archetype == key).map_or(0, |(_, amount)| i128::from(*amount)))
+            Some(
+                need.iter()
+                    .find(|(archetype, _)| archetype == key)
+                    .map_or(0, |(_, amount)| i128::from(*amount)),
+            )
         });
         let held = division.held.get(&key);
         types.push(DivisionPoolType {
-            name: key.as_ref().and_then(|key| refusals.keep(army_content::localised(context.cat, key)).0),
+            name: key
+                .as_ref()
+                .and_then(|key| refusals.keep(army_content::localised(context.cat, key)).0),
             archetype: key,
             held_raw: division
                 .pool_known
@@ -964,7 +1357,13 @@ fn pool(
         division: division.row.id.to_string(),
         name,
         template: division.row.template.to_string(),
-        template_name: refusals.keep(army_content::template_name(frame, division.row.template, context.cat)).0,
+        template_name: refusals
+            .keep(army_content::template_name(
+                frame,
+                division.row.template,
+                context.cat,
+            ))
+            .0,
         manpower: division.manpower.map(|value| value.to_string()),
         manpower_required: division.required.map(|value| value.to_string()),
         hp_raw: Some(division.row.hit_points.to_string()),
@@ -979,6 +1378,9 @@ fn pool(
 fn stock_totals(
     holder: army_content::Holder,
     context: &Context<'_>,
+    grouped: Option<&Result<Grouped, ()>>,
+    ids: Option<&Result<BTreeMap<u32, u32>, ()>>,
+    designs: &mut Lookups<'_>,
     refusals: &mut Refusals,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<BTreeMap<String, i128>>> {
@@ -986,40 +1388,69 @@ fn stock_totals(
         refusals.note("National equipment stockpile was not read within a day of this hour");
         return Ok(None);
     };
-    if let Err(why) = army_content::same_holder(stock, holder) {
-        refusals.note(format!("National equipment stockpile is left out: {why} at its read"));
+    let same = match ids {
+        Some(ids) => army_content::same_holder_in(ids, holder),
+        None => army_content::same_holder(stock, holder),
+    };
+    if let Err(why) = same {
+        refusals.note(format!(
+            "National equipment stockpile is left out: {why} at its read"
+        ));
         return Ok(None);
     }
     let slot = holder.slot;
-    let (Ok(countries), Ok(rows)) = (
-        army_content::Countries::read(stock),
-        stock.complete::<tables::Stockpiles>(),
-    ) else {
-        refusals.note("National equipment stockpile or its country links were not recorded");
-        return Ok(None);
-    };
+    let unread = "National equipment stockpile or its country links were not recorded";
     let mut totals = BTreeMap::new();
-    let mut designs = BTreeMap::<u64, army_content::Design>::new();
     let mut complete = true;
-    for row in rows {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let Some(country) = countries.slot(row.country) else {
-            refusals.note("Stockpile country has no recorded link");
-            complete = false;
-            continue;
-        };
-        if country != slot {
-            continue;
-        }
-        let design = designs
-            .entry(row.variant_handle)
-            .or_insert_with(|| context.stock_designs.design(row.variant_handle, refusals));
+    let mut add = |row: &replay_data::rows::StockpileRow,
+                   refusals: &mut Refusals,
+                   totals: &mut BTreeMap<String, i128>|
+     -> io::Result<bool> {
+        let design = designs.design(row.variant_handle, refusals);
         if let Some(key) = &design.archetype {
             let amount = totals.entry(key.clone()).or_default();
             *amount = sum(*amount, i128::from(row.amount_raw))?;
+            Ok(true)
         } else {
             refusals.note("National stockpile design has no resolved archetype");
-            complete = false;
+            Ok(false)
+        }
+    };
+    match grouped {
+        Some(grouped) => {
+            let (Ok(grouped), Ok(rows)) = (grouped, stock.complete::<tables::Stockpiles>()) else {
+                refusals.note(unread);
+                return Ok(None);
+            };
+            if grouped.unlinked > 0 {
+                refusals.note_times("Stockpile country has no recorded link", grouped.unlinked);
+                complete = false;
+            }
+            for &at in grouped.rows.get(&slot).into_iter().flatten() {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                complete &= add(&rows[at], refusals, &mut totals)?;
+            }
+        }
+        None => {
+            let (Ok(countries), Ok(rows)) = (
+                army_content::Countries::read(stock),
+                stock.complete::<tables::Stockpiles>(),
+            ) else {
+                refusals.note(unread);
+                return Ok(None);
+            };
+            for row in rows {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                let Some(country) = countries.slot(row.country) else {
+                    refusals.note("Stockpile country has no recorded link");
+                    complete = false;
+                    continue;
+                };
+                if country != slot {
+                    continue;
+                }
+                complete &= add(row, refusals, &mut totals)?;
+            }
         }
     }
     Ok(complete.then_some(totals))

@@ -23,10 +23,12 @@ replay-frame.workspace = true
 dashboard-base.workspace = true
 dashboard-core.workspace = true
 dashboard-forces.workspace = true
+dashboard-keyed = { path = "../dashboard-keyed" }
 dashboard-land-battles.workspace = true
 dashboard-text.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
+store = { path = "../store" }
 ts-rs = "11.1"
 
 [dev-dependencies]

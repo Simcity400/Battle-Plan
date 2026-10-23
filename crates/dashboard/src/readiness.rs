@@ -99,6 +99,7 @@ pub const UI_PREPARED_ROUTES: &[&str] = &[
     "intel-network-coverage",
     "naval-repairs",
     "naval-refits",
+    "division-equipment-history",
 ];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

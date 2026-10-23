@@ -24,44 +24,76 @@ pub fn display_name(
     handle: u64,
     loc: &Localisation,
 ) -> Result<String, String> {
+    display_naming(frame, handle)?.localise(loc)
+}
+
+/// A template's display name before localisation: its text, or a key and its tag.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum TemplateNaming {
+    Text(String),
+    Localised { tag: String, key: String },
+}
+
+impl TemplateNaming {
+    /// The name in `loc`'s language.
+    pub fn localise(&self, loc: &Localisation) -> Result<String, String> {
+        match self {
+            Self::Text(text) => Ok(text.clone()),
+            Self::Localised { tag, key } => {
+                let qualified = format!("{tag}_{key}");
+                loc.localise_with(
+                    if loc.get(&qualified).is_some() {
+                        qualified.as_bytes()
+                    } else {
+                        key.as_bytes()
+                    },
+                    &[],
+                )
+                .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+/// [`display_name`]'s operands at the frame's hour.
+pub fn display_naming(frame: &DecodedFrame, handle: u64) -> Result<TemplateNaming, String> {
     let dictionaries = frame
         .complete::<tables::DivisionTemplates>()
         .map_err(|e| e.to_string())?;
+    // Complete rows are in key order: templates by handle, countries by id.
     let dictionary = dictionaries
-        .iter()
-        .find(|r| r.template == handle)
+        .binary_search_by_key(&handle, |r| r.template)
+        .ok()
+        .map(|at| &dictionaries[at])
         .ok_or_else(|| format!("template {handle} dictionary missing"))?;
     let icons = frame
         .complete::<tables::DivisionTemplateIcons>()
         .map_err(|e| e.to_string())?;
     let icon = icons
-        .iter()
-        .find(|r| r.template == handle)
+        .binary_search_by_key(&handle, |r| r.template)
+        .ok()
+        .map(|at| &icons[at])
         .ok_or_else(|| format!("template {handle} naming operands missing"))?;
-    crate::unit_names::template_name(
+    crate::unit_names::template_name_with(
         icon.display_name_inputs(frame.hour, Some(dictionary))?,
         icon.country,
+        TemplateNaming::Text,
         |raw, key| {
             let countries = frame
                 .complete::<tables::Countries>()
                 .map_err(|e| e.to_string())?;
             let country = countries
-                .iter()
-                .find(|r| r.id as i32 == raw)
+                .binary_search_by_key(&(raw as u32), |r| r.id)
+                .ok()
+                .map(|at| &countries[at])
                 .ok_or_else(|| format!("template country {raw} missing"))?;
             let tag = std::str::from_utf8(&country.tag)
                 .map_err(|_| "template country tag is not UTF-8")?;
             let key = std::str::from_utf8(key).map_err(|_| "template name key is not UTF-8")?;
-            let qualified = format!("{tag}_{key}");
-            loc.localise_with(
-                if loc.get(&qualified).is_some() {
-                    qualified.as_bytes()
-                } else {
-                    key.as_bytes()
-                },
-                &[],
-            )
-            .map_err(|e| e.to_string())
+            Ok(TemplateNaming::Localised {
+                tag: tag.to_owned(),
+                key: key.to_owned(),
+            })
         },
     )
 }

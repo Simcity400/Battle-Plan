@@ -56,9 +56,11 @@ fn sources(local: &Overrides) -> Sources<'static> {
     );
     Sources {
         tokens: TokenNames::from_rows(tokens, true),
-        links: [(10, 7)].into(),
-        local: local.iter().cloned().collect(),
-        local_complete: true,
+        index: Arc::new(SourceIndex {
+            links: [(10, 7)].into(),
+            local: local.iter().cloned().collect(),
+            local_complete: true,
+        }),
     }
 }
 
@@ -327,9 +329,14 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
         Template::first_requirement(equal.representative.as_ref().unwrap()),
         Some("rifles")
     );
+    let complete = sources(&[]);
     let incomplete = Sources {
-        local_complete: false,
-        ..sources(&[])
+        index: Arc::new(SourceIndex {
+            links: complete.index.links.clone(),
+            local: complete.index.local.clone(),
+            local_complete: false,
+        }),
+        ..complete
     };
     assert!(content.template(&row((1, 1), &[]), &incomplete).is_err());
     // Two tokens resolving to one archetype cannot come from a native pool.

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useContentRevision } from '../../dashboard/contentRevision';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import WidgetState from '../../components/WidgetState';
@@ -21,7 +22,9 @@ import ReachedCountryChoice from '../../dashboard/ReachedCountryChoice';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { OPTIONS, VIEWS } from './definition';
 import { divisionName, fill, items, percent, share, templateName, templateTooltip, typeFill, typeKey, typeName, typeTooltip, validateDivisionEquipment } from './divisionEquipmentData';
-import type { DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType } from './divisionEquipmentData';
+import type { DivisionEquipmentReply, DivisionPoolType, EquipmentDivision, EquipmentTemplate, EquipmentType } from './divisionEquipmentData';
+import { historyAnswer } from './divisionEquipmentHistory';
+import { partAt, useDivisionEquipmentHistory } from './useDivisionEquipmentHistory';
 import './divisionEquipment.css';
 
 type Drill = { kind: 'type'; key: string } | { kind: 'template'; template: string } | { kind: 'division'; division: string; template: string | null };
@@ -56,12 +59,22 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const bars = options.cellBars === true;
   const subject = JSON.stringify([track?.branch.id, country.chosen, countFor]);
   const base = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-equipment' } : null;
+  // Only an hour the prepared history does not hold is asked of the reached product.
+  const history = useDivisionEquipmentHistory(runtime.client, track, tag, countFor, active);
+  const part = partAt(history.parts, hour);
+  const { held, asked } = useMemo(() => historyAnswer(history.prepared, part ?? { error: 'no range' }, hour), [history.prepared, part, hour]);
   const state = useReachedProduct(runtime.client, track?.source, base && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor } },
-    subject, active, validateDivisionEquipment);
+    subject, active && asked, validateDivisionEquipment);
+  // The last reply drawn for this client, recording, content and subject stays while the next hour's loads.
+  const content = useContentRevision(runtime.client);
+  const owner = JSON.stringify([track?.source.id, track?.source.revision, subject, content]);
+  const drawn = useRef<{ client: typeof runtime.client; owner: string; data: DivisionEquipmentReply } | null>(null);
+  const kept = drawn.current?.client === runtime.client && drawn.current.owner === owner ? drawn.current.data : undefined;
+  const data = held ?? (state.current || !kept ? state.data : kept);
+  if (data) drawn.current = { client: runtime.client, owner, data };
   const drillParams = drill?.kind === 'template' ? { template: drill.template } : drill?.kind === 'division' ? { division: drill.division } : null;
   const detail = useReachedProduct(runtime.client, track?.source, base && drillParams && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor, ...drillParams } },
     JSON.stringify([subject, drillParams]), active && drillParams !== null, validateDivisionEquipment);
-  const data = state.data;
   const viewportHeight = useViewportHeight();
   const anchor = useRef<HTMLDivElement>(null);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
@@ -128,7 +141,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   else if (country.reason) main = <WidgetState kind="unavailable" message={country.reason} />;
   else if (country.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
   else if (!tag) main = <WidgetState kind="loading" label="Loading division equipment…" />;
-  else if (state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
+  else if (!held && state.error) main = <WidgetState kind="error" detail={state.error} onRetry={state.retry} />;
   else if (!data) main = <WidgetState kind="loading" label="Loading division equipment…" />;
   else if (data.absent) main = <WidgetState kind="unavailable" message={`${countryName} does not exist at this date.`} />;
   else if (!data.divisions) main = <WidgetState kind="empty" message={`${countryName} has no divisions at this date.`} />;

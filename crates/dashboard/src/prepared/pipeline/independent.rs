@@ -442,6 +442,7 @@ static REGISTRY: &[&dyn Own] = &[
     &sampled::POLITICS,
     &sampled::TRADE,
     &sampled::TERRITORY,
+    &sampled::DIVISION_EQUIPMENT,
     &keyed::AIR_MISSIONS,
     &keyed::AIR_STATISTICS,
     &keyed::WEATHER,

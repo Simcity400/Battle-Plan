@@ -516,7 +516,10 @@
         {"product": "country-groups", "route": "prepared", "firstView": "b", "params": {"branchId": "$branch"}},
         {"product": "division-equipment", "route": "product", "firstView": "a", "params": {"branchId": "$branch", "hour": "$first", "tag": "$tag", "countFor": "owner"}}
       ],
-      "note": "The country binds through its recorded identity history at the hour shown, then one reached-hour reply answers from that hour's frame."
+      "auxiliary": [
+        {"product": "division-equipment-history", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag", "countFor": "owner", "firstHour": null, "lastHour": null}}
+      ],
+      "note": "The country binds through its recorded identity history at the hour shown. The prepared history answers every hour it holds; an hour it does not yet hold is one reached-hour reply from that hour's frame, which is what this table gates on."
     },
     {
       "kind": "land-battles",

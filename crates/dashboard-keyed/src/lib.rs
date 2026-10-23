@@ -55,7 +55,7 @@ pub const READ: u64 = 0;
 /// The series key holding 1 at every hour whose inputs the observer read.
 pub const KNOWN: u64 = 1;
 /// The first key a name is numbered with.
-const FIRST: u64 = 2;
+pub const FIRST: u64 = 2;
 /// About what one held value differing from its publication adds to the next catalogue.
 const CHANGE_BYTES: usize = 2 * size_of::<u64>() + size_of::<i128>();
 

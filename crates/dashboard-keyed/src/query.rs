@@ -37,6 +37,58 @@ pub struct KeyedWindow {
     pub series: Vec<KeyedSeries>,
 }
 
+/// The window `from..=to` of `keyed` series, read only through `through`.
+pub fn window(
+    reader: &mut Reader<'_>,
+    keyed: impl IntoIterator<Item = (String, u64)>,
+    from: i32,
+    to: i32,
+    through: Option<i32>,
+    cancelled: &AtomicBool,
+) -> io::Result<KeyedWindow> {
+    let mut window = KeyedWindow {
+        first_hour: from,
+        last_hour: to,
+        ..Default::default()
+    };
+    if from > to {
+        return Ok(window);
+    }
+    for run in clipped(reader.runs(KNOWN, from, to)?, through) {
+        match window.known.last_mut() {
+            Some(span) if span.last_hour.checked_add(1) == Some(run.first_hour) => {
+                span.last_hour = run.last_hour;
+            }
+            _ => window.known.push(HourSpan {
+                first_hour: run.first_hour,
+                last_hour: run.last_hour,
+            }),
+        }
+    }
+    for run in clipped(reader.runs(READ, from, to)?, through) {
+        let hour = i32::try_from(run.value)
+            .map_err(|_| io::Error::other("Invalid supplying read hour"))?;
+        window.reads.push((run.first_hour, run.last_hour, hour));
+    }
+    for (name, key) in keyed {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let runs: Vec<KeyedRun> = clipped(reader.runs(key, from, to)?, through)
+            .map(|run| {
+                (
+                    run.first_hour,
+                    run.last_hour,
+                    run.value.to_string(),
+                    run.break_before,
+                )
+            })
+            .collect();
+        if !runs.is_empty() {
+            window.series.push(KeyedSeries { name, runs });
+        }
+    }
+    Ok(window)
+}
+
 /// A keyed family's published catalogue and a reader of its series.
 pub struct Opened<'a, O> {
     pub scan: Scan<O>,
@@ -84,53 +136,13 @@ impl<O: Observer> Opened<'_, O> {
         through: Option<i32>,
         mut select: impl FnMut(&str) -> bool,
     ) -> io::Result<KeyedWindow> {
-        let mut window = KeyedWindow {
-            first_hour: from,
-            last_hour: to,
-            ..Default::default()
-        };
-        if from > to {
-            return Ok(window);
-        }
-        for run in clipped(self.reader.runs(KNOWN, from, to)?, through) {
-            match window.known.last_mut() {
-                Some(span) if span.last_hour.checked_add(1) == Some(run.first_hour) => {
-                    span.last_hour = run.last_hour;
-                }
-                _ => window.known.push(HourSpan {
-                    first_hour: run.first_hour,
-                    last_hour: run.last_hour,
-                }),
-            }
-        }
-        for run in clipped(self.reader.runs(READ, from, to)?, through) {
-            let hour = i32::try_from(run.value)
-                .map_err(|_| io::Error::other("Invalid supplying read hour"))?;
-            window.reads.push((run.first_hour, run.last_hour, hour));
-        }
         let keyed: Vec<(String, u64)> = self
             .scan
             .keyed()
             .filter(|(name, _)| select(name))
             .map(|(name, key)| (name.to_owned(), key))
             .collect();
-        for (name, key) in keyed {
-            dashboard_text::metadata::check_cancel(self.cancelled)?;
-            let runs: Vec<KeyedRun> = clipped(self.reader.runs(key, from, to)?, through)
-                .map(|run| {
-                    (
-                        run.first_hour,
-                        run.last_hour,
-                        run.value.to_string(),
-                        run.break_before,
-                    )
-                })
-                .collect();
-            if !runs.is_empty() {
-                window.series.push(KeyedSeries { name, runs });
-            }
-        }
-        Ok(window)
+        window(&mut self.reader, keyed, from, to, through, self.cancelled)
     }
 
     /// The values of `keys` at `hour`, None where a key holds none then.
