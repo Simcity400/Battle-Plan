@@ -243,8 +243,16 @@ impl UnitModelAssets {
         definition: Option<(u32, u32)>,
         hour: Option<&Hour<'_>>,
     ) -> Result<Option<(usize, String)>, String> {
-        let selected = selection::name(self, tag, row, graphics, definition, hour);
-        let Some(name) = selected? else {
+        let selected = selection::name(self, tag, row, graphics, definition, hour)?;
+        self.ship_slot_selected(selected, hour)
+    }
+
+    fn ship_slot_selected(
+        &self,
+        selected: Option<String>,
+        hour: Option<&Hour<'_>>,
+    ) -> Result<Option<(usize, String)>, String> {
+        let Some(name) = selected else {
             return Ok(None);
         };
         let slot = self.bake_slot_for_hour(&name, hour).ok_or_else(|| {
@@ -293,6 +301,25 @@ impl UnitModelAssets {
         hour: Option<&Hour<'_>>,
         report: &mut ModelReport,
         spans: &mut BuilderSpans,
+    ) -> io::Result<Sources> {
+        let mut names = selection::Pass::new(self, frame, hour);
+        self.prepare_naval_with_names(
+            frame, vision, anchor, world, places, hour, report, spans, &mut names,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_naval_with_names<'rows>(
+        &self,
+        frame: &'rows DecodedFrame,
+        vision: &Vision,
+        anchor: &dyn Fn(u32, u32) -> Option<[f32; 3]>,
+        world: Option<&counter_move::RouteWorld<'_>>,
+        places: &ShipPlaces<'_>,
+        hour: Option<&Hour<'_>>,
+        report: &mut ModelReport,
+        spans: &mut BuilderSpans,
+        names: &mut impl selection::Names<'rows>,
     ) -> io::Result<Sources> {
         let inputs = spans.measure("units.naval.inputs", |_| -> io::Result<_> {
             let models = rows::<tables::ShipModels>(frame)?;
@@ -490,7 +517,7 @@ impl UnitModelAssets {
                     let definition = classes
                         .get(&model.ship)
                         .map(|&class| (force.roster_owner, class));
-                    let model_slot = match self.ship_slot(
+                    let selected = names.name(
                         || {
                             // The game reads this country only after the primary
                             // model missed. The logical owner remains the visibility key above.
@@ -508,8 +535,10 @@ impl UnitModelAssets {
                         model,
                         &graphics,
                         definition,
-                        hour,
-                    ) {
+                    );
+                    let model_slot = match selected
+                        .and_then(|name| self.ship_slot_selected(name, hour))
+                    {
                         Ok(Some(slot)) => Some(slot),
                         Ok(None) => {
                             report.error("naval_formation_entity: no hull candidate or placeholder is registered");

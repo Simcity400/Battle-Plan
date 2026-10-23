@@ -872,3 +872,5 @@ fn rosters_hide_port_hulls_and_share_one_slot_at_sea() {
         );
     }
 }
+
+mod name_pass;
