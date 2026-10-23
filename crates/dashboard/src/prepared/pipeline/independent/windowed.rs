@@ -74,6 +74,9 @@ fn before(block: &Block<'_>) -> io::Result<Option<DecodedFrame>> {
     else {
         return Ok(None);
     };
+    let _reader = block
+        .replay
+        .section_block_reader(position - 1, None, "windowed family resume");
     Ok(
         match block.replay.seek(previous.branch, previous.last_hour)? {
             SeekResult::Frame(frame) => Some(*frame),
@@ -91,6 +94,25 @@ fn ordinal(block: &Block<'_>) -> io::Result<usize> {
         .filter(|at| at.branch == block.index.branch)
         .position(|at| at.first_hour == block.index.first_hour)
         .ok_or_else(|| io::Error::other("A block is not in its branch"))
+}
+
+fn held_census(
+    family: &str,
+    branch: u64,
+    json: usize,
+    parts: impl FnOnce(
+        dashboard_base::prepared::state_census::Line,
+    ) -> dashboard_base::prepared::state_census::Line,
+) {
+    if dashboard_base::prepared::state_census::on() {
+        parts(
+            dashboard_base::prepared::state_census::Line::new("held")
+                .field("family", family)
+                .field("branch", branch)
+                .field("json", json),
+        )
+        .print();
+    }
 }
 
 /// A branch's saved scan, compressed JSON, as one section.
@@ -221,7 +243,11 @@ impl Branch for DivisionsBranch {
     }
 
     fn save_state(&self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
-        write_state(writer, &divisions_state(branch), &self.own.state_json()?)
+        let json = self.own.state_json()?;
+        held_census("divisions", branch, json.len(), |line| {
+            self.own.state_census(line)
+        });
+        write_state(writer, &divisions_state(branch), &json)
     }
 }
 
@@ -687,10 +713,10 @@ impl Branch for NavalBranch {
         if let Some(position) = self.published {
             NAVAL_SAVES.with(|saves| saves.borrow_mut().push(position + 1));
         }
-        write_state(
-            writer,
-            &naval_state(branch),
-            &serde_json::to_vec(&*self.scan)?,
-        )
+        let json = serde_json::to_vec(&*self.scan)?;
+        held_census("naval", branch, json.len(), |line| {
+            self.scan.state_census(line)
+        });
+        write_state(writer, &naval_state(branch), &json)
     }
 }

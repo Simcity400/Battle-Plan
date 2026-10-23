@@ -21,6 +21,7 @@
 //! parked until first-view jobs release it.
 
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
+use super::pace::WalkPace;
 pub(crate) use dashboard_base::prepared::prepass::{Bound, Extract, Family, Folded};
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::{
@@ -95,6 +96,7 @@ pub(crate) fn workers(parallelism: usize) -> usize {
 #[derive(Clone, Default)]
 pub(crate) struct Knobs {
     pub budget: Option<u64>,
+    pub pace: Option<Arc<WalkPace>>,
     #[cfg(test)]
     pub hook: Option<Hook>,
     #[cfg(test)]
@@ -109,6 +111,7 @@ impl Knobs {
     pub(crate) fn current() -> Self {
         Self {
             budget: None,
+            pace: None,
             #[cfg(test)]
             hook: TEST_HOOK.with(|hook| hook.borrow().clone()),
             #[cfg(test)]
@@ -245,7 +248,11 @@ impl PrePass {
         workers: usize,
         knobs: Knobs,
     ) -> Self {
-        let section_consumer = replay.section_consumer(from);
+        let tables: Vec<_> = families
+            .iter()
+            .flat_map(|family| family.tables.iter().copied())
+            .collect();
+        let section_consumer = replay.section_reader(from, &tables, "walk pre-pass");
         let count = workers.max(1);
         let shared = Arc::new(Shared {
             section_consumer,
@@ -478,6 +485,9 @@ struct PoolState {
     lanes: Vec<Lane>,
     /// The walk's extracts share one serial downstream chain.
     walk: Option<std::ops::Range<usize>>,
+    /// The walk's obligation, told each block the walk's lanes claim.
+    pace: Option<Arc<WalkPace>>,
+    paced_lanes: bool,
     /// Each lane's blocks are claimed at most this far beyond the one it
     /// takes next.
     ahead: usize,
@@ -517,6 +527,22 @@ impl PoolState {
             && lane.next < lane.handed + self.ahead
             && (lane.next == lane.handed
                 || self.in_flight + self.raw(lane.next) + lane.expected() <= self.budget)
+    }
+
+    fn within_walk(&self, position: usize, block: usize) -> bool {
+        !self.paced_lanes
+            || self
+                .walk
+                .as_ref()
+                .is_some_and(|walk| walk.contains(&position))
+            || self.pace.as_ref().is_none_or(|pace| pace.permits(block))
+    }
+
+    fn held_by_walk(&self) -> bool {
+        self.paced_lanes
+            && self.lanes.iter().enumerate().any(|(position, lane)| {
+                !lane.retired && self.reaches(lane) && !self.within_walk(position, lane.next)
+            })
     }
 
     /// How many tasks to split a block into: one, unless fewer blocks are
@@ -565,7 +591,7 @@ impl PoolState {
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, lane)| self.reaches(lane))
+            .filter(|(position, lane)| self.reaches(lane) && self.within_walk(*position, lane.next))
             .min_by_key(|(position, lane)| {
                 (std::cmp::Reverse(cost(*position)), lane.next, *position)
             })?
@@ -578,6 +604,7 @@ impl PoolState {
                     && lane.next == block
                     && lane.next < lane.end
                     && lane.next < lane.handed + self.ahead
+                    && self.within_walk(position, block)
             })
             .collect();
         wanting.sort_by_key(|&position| std::cmp::Reverse(cost(position)));
@@ -664,13 +691,39 @@ impl PoolShared {
                     task.members
                         .push((position, lane.family, lane.bound.clone()));
                 }
+                if let (Some(walk), Some(pace)) = (&state.walk, &state.pace)
+                    && task.members.iter().any(|(lane, ..)| walk.contains(lane))
+                {
+                    pace.claimed(block);
+                    if state.paced_lanes {
+                        self.changed.notify_all();
+                    }
+                }
+                #[cfg(test)]
+                if let Some(pace) = &state.pace {
+                    let walk = state.walk.clone().unwrap_or(0..0);
+                    let mut claims = pace
+                        .family_claims
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    for (lane, ..) in &task.members {
+                        if !walk.contains(lane) {
+                            claims.push((block, pace.snapshot()));
+                        }
+                    }
+                }
                 state.busy += 1;
                 return Some(task);
             }
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(|error| error.into_inner());
+            state = if state.held_by_walk() {
+                self.changed
+                    .wait_timeout(state, super::pace::POLL)
+                    .map_or_else(|error| error.into_inner().0, |(state, _)| state)
+            } else {
+                self.changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner())
+            };
         }
     }
 
@@ -769,10 +822,13 @@ impl Pool {
         let shared = Arc::new(PoolShared {
             state: Mutex::new(PoolState {
                 walk,
+                pace: knobs.pace.clone(),
+                paced_lanes: knobs.pace.is_some(),
                 lanes: lanes
                     .into_iter()
                     .map(|(family, from, binding)| Lane {
-                        section_consumer: (from < end).then(|| replay.section_consumer(from)),
+                        section_consumer: (from < end)
+                            .then(|| replay.section_reader(from, family.tables, family.name)),
                         family,
                         bound: None,
                         binding,
@@ -810,8 +866,12 @@ impl Pool {
             let replay = Arc::clone(&replay);
             let knobs = knobs.clone();
             let priority = JobPriority::current();
-            // A worker that cannot start leaves its blocks to the others or,
-            // with none, to hourly observation.
+            // A refused worker drops its unstarted closure, leaving work to others or hourly observation.
+            #[cfg(test)]
+            if worker < TEST_REFUSED_WORKERS.with(std::cell::Cell::get) {
+                drop((alive, replay, knobs, priority));
+                continue;
+            }
             if let Ok(handle) = std::thread::Builder::new()
                 .name(format!("preparation family pre-pass {worker}"))
                 .spawn(move || {
@@ -850,6 +910,10 @@ impl Pool {
             workers: Vec::new(),
             pooled: Some((Arc::clone(&self.shared), lanes)),
         })
+    }
+
+    pub(crate) fn pace_walk(&self, pace: Arc<WalkPace>) {
+        self.shared.lock().pace = Some(pace);
     }
 
     pub(crate) fn walk_folded(&self, took: Duration) {
@@ -1681,6 +1745,7 @@ pub(crate) type Hook = Arc<dyn Fn(&str, &DecodedFrame) -> Fault + Send + Sync>;
 thread_local! {
     static TEST_SEQUENTIAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_WORKERS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static TEST_REFUSED_WORKERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static TEST_HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) };
     static TEST_ALONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -1692,6 +1757,7 @@ pub(crate) struct TestContext {
     knobs: Knobs,
     workers: Option<usize>,
     sequential: bool,
+    refused_workers: usize,
 }
 
 #[cfg(test)]
@@ -1701,6 +1767,7 @@ impl TestContext {
             knobs: Knobs::current(),
             workers: TEST_WORKERS.with(std::cell::Cell::get),
             sequential: TEST_SEQUENTIAL.with(std::cell::Cell::get),
+            refused_workers: TEST_REFUSED_WORKERS.with(std::cell::Cell::get),
         }
     }
 
@@ -1712,6 +1779,7 @@ impl TestContext {
                 TEST_ALONE.with(|v| v.set(self.0.knobs.alone));
                 TEST_WORKERS.with(|v| v.set(self.0.workers));
                 TEST_SEQUENTIAL.with(|v| v.set(self.0.sequential));
+                TEST_REFUSED_WORKERS.with(|v| v.set(self.0.refused_workers));
             }
         }
         let reset = Reset(Self::capture());
@@ -1719,6 +1787,7 @@ impl TestContext {
         TEST_ALONE.with(|v| v.set(self.knobs.alone));
         TEST_WORKERS.with(|v| v.set(self.workers));
         TEST_SEQUENTIAL.with(|v| v.set(self.sequential));
+        TEST_REFUSED_WORKERS.with(|v| v.set(self.refused_workers));
         reset
     }
 }
@@ -1740,6 +1809,23 @@ pub(crate) fn with_test_sequential<T>(run: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 pub(crate) fn with_test_alone<T>(run: impl FnOnce() -> T) -> T {
     crate::prepared::with_test_cell(&TEST_ALONE, true, run)
+}
+
+#[cfg(test)]
+pub(crate) fn take_family_claims() -> Vec<(usize, super::pace::Snapshot)> {
+    super::pace::started().map_or_else(Vec::new, |pace| {
+        std::mem::take(
+            &mut *pace
+                .family_claims
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_refused_workers<T>(refused: usize, run: impl FnOnce() -> T) -> T {
+    crate::prepared::with_test_cell(&TEST_REFUSED_WORKERS, refused, run)
 }
 
 /// Run `run` with `workers` pre-pass workers and an extract fault hook.

@@ -2170,6 +2170,11 @@ pub fn restore(
     }))
 }
 
+/// Acceptance accounting only; the window and lifecycle come from one walk snapshot.
+pub fn walk_window() -> Option<(&'static str, Option<(usize, usize)>)> {
+    super::pace::current().map(|snapshot| (snapshot.lifecycle.name(), snapshot.window()))
+}
+
 pub fn run(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -2223,11 +2228,13 @@ macro_rules! time_family {
 
 pub mod external;
 mod flush;
-mod independent;
+pub(crate) mod independent;
 mod lanes;
 mod newest;
 mod production_scans;
 mod side;
+/// Measurement only: the hourly walk's part of the state census.
+mod state_census;
 pub(crate) use newest::gate as newest_gate;
 
 /// One completed manifest commit, emitted before any next block is admitted.
@@ -3072,6 +3079,8 @@ fn run_planned(
     // checkpoints merge only accepted progress, and keep their sections disjoint.
     state.map = map.progress().clone();
     let ranges = state.map.ranges.clone();
+    let (walk_pace, walk_ended) =
+        super::pace::WalkPace::start(stream.cursor().next_block, replay.index.len());
     let phase = independent::Phase {
         source,
         replay,
@@ -3083,6 +3092,7 @@ fn run_planned(
         batches: &batches,
         measured: measurement.is_some(),
         cancelled,
+        walk_pace: &walk_pace,
     };
     let mut side = side::load(&store, &key, saved.as_ref())?.unwrap_or_default();
     let mut beside = newest::jobs(&phase, &state, &saved, &reports, &side.pending)?;
@@ -3114,6 +3124,7 @@ fn run_planned(
     let walk = |walk: &mut independent::Walk<'_, '_>,
                 accepted: &mut dyn FnMut(&Accepted)|
      -> io::Result<()> {
+        let _walk_ended = walk_ended;
         if stream.cursor().next_block == replay.index.len() && !metadata_dirty {
             return Ok(());
         }
@@ -3159,7 +3170,8 @@ fn run_planned(
         if state.cursor.next_block == replay.index.len() && saved.as_ref() == Some(&key) {
             return Ok(());
         }
-        let section_consumer = replay.section_consumer(stream.cursor().next_block);
+        let section_consumer =
+            replay.section_reader(stream.cursor().next_block, selected(), "walk");
         let mut writer = walk.open(accepted)?;
         // First views publish before this walk and its pre-pass compete for CPU.
         let prepass = prepass::enabled().then(|| {
@@ -3184,6 +3196,7 @@ fn run_planned(
             check_cancel(cancelled)?;
             let block = stream.cursor().next_block;
             section_consumer.at(block);
+            walk_pace.at(block, replay.index.len());
             if block == replay.index.len() && !metadata_dirty {
                 finish_timing(&mut family_timings, block_started, "block.overhead", false);
                 break;
@@ -3329,6 +3342,7 @@ fn run_planned(
             let hourly = |name: &str| !folds.iter().any(|(family, _)| family.name == name);
             let (resources_hourly, army_hourly) = (hourly("resources"), hourly("army"));
             let block_tables = block_selected(resources_hourly, army_hourly);
+            section_consumer.declare(replay, &block_tables);
             if block_tables != stream_tables {
                 stream = ReplayStream::resume(
                     &block_tables,
@@ -5347,12 +5361,16 @@ fn run_planned(
                         frame.hour,
                     )?;
                 }
+                let census = dashboard_base::prepared::state_census::Marks::start(&writer, || {
+                    state_census::walk_state(frame.branch, frame.hour, &branch)
+                });
                 time_family!(
                     family_timings,
                     "branch_state",
                     flush,
                     save_branch(&mut writer, frame.branch, &branch)
                 )?;
+                census.print("saved", &writer);
                 time_family!(
                     family_timings,
                     "map",

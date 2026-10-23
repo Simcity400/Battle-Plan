@@ -445,6 +445,7 @@ impl<'a> ExternalFamily<'a> {
         };
         let last_blocks = last_blocks(replay);
         let batches = &pending.batches;
+        let walk_pace = crate::prepared::pace::WalkPace::terminal(replay.index.len());
         let phase = independent::Phase {
             source: self.binding.source,
             replay,
@@ -456,6 +457,7 @@ impl<'a> ExternalFamily<'a> {
             batches,
             measured: false,
             cancelled: &cancelled,
+            walk_pace: &walk_pace,
         };
         independent::save_coverage(
             &mut writer,
@@ -836,7 +838,10 @@ mod tests {
         reference.unreadable(&replay, 3);
         external.unreadable(&replay, 3);
         assert!(run(&other, None, &AtomicBool::new(false), |_| {}).is_err());
-        let consumer = source.replay_ref().section_consumer(2);
+        let consumer =
+            source
+                .replay_ref()
+                .section_reader(2, &TableId::ALL, "external failure fixture");
         consumer.at(3);
         let failed = source.replay_ref().read_block_alone(
             &source.replay_ref().index[3],
@@ -1440,9 +1445,16 @@ mod tests {
                 }
                 prepass::Fault::Continue
             });
+            let (before_pace, ended) =
+                crate::prepared::pace::WalkPace::start(replay.index.len(), replay.index.len());
+            drop(ended);
             prepass::with_test_prepass(1, Some(hook), || {
                 run(&source, None, &AtomicBool::new(false), |accepted| {
                     if accepted.sections.iter().any(|row| row.id == "writer") && !published {
+                        assert!(Arc::ptr_eq(
+                            &crate::prepared::pace::started().unwrap(),
+                            &before_pace
+                        ));
                         drop(holder.take());
                         assert_eq!(family.publish_saved().unwrap(), Publication::Published);
                         published = true;
@@ -1451,6 +1463,12 @@ mod tests {
             })
             .unwrap();
             assert!(published);
+            let ended_pace = crate::prepared::pace::started().unwrap();
+            assert!(!Arc::ptr_eq(&ended_pace, &before_pace));
+            assert_eq!(
+                ended_pace.snapshot().lifecycle,
+                crate::prepared::pace::Lifecycle::Terminal
+            );
             let binding = BoundSource::open(&source, None).unwrap();
             assert!(binding.store.is_reusable(&binding.key).unwrap());
             let (_, cached) = super::super::super::files(&source, None).unwrap();

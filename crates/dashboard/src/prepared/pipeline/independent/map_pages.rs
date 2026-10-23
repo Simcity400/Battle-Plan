@@ -20,6 +20,9 @@ impl Own for MapPages {
     fn gates(&self) -> &'static [&'static str] {
         &[]
     }
+    fn paced(&self) -> bool {
+        true
+    }
     fn load(&self, load: &Load<'_>, branch: u64) -> io::Result<Box<dyn Branch>> {
         let committed = load
             .read(&pages::progress_section(branch))?

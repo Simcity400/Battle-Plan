@@ -1642,5 +1642,30 @@ impl Product for NavalBattlesRanking {
     }
 }
 
+impl Scan {
+    pub fn state_census(
+        &self,
+        line: dashboard_base::prepared::state_census::Line,
+    ) -> dashboard_base::prepared::state_census::Line {
+        let (window_keys, window_active) = self.windows.census_keys();
+        line.field("naval_episodes", self.episodes.len())
+            .json("naval_episodes_json", &self.episodes)
+            .field("naval_results", self.results.len())
+            .field("naval_combats", self.combats.len())
+            .field("naval_result_observations", self.result_observations.len())
+            .field("naval_source_combats", self.source_combats.len())
+            .field("naval_recorded_hours", self.recorded_hours.len())
+            .field("naval_combat_hours", self.combat_hours.len())
+            .field("naval_result_hours", self.result_hours.len())
+            .field("naval_tag_identity", self.tag_identity.len())
+            .field("naval_refusals", self.refusals.len())
+            .json("naval_details_json", &self.details)
+            .field("naval_pages", self.pages.len())
+            .field("naval_window_keys", window_keys)
+            .field("naval_window_active", window_active)
+            .json("naval_windows_json", &self.windows)
+    }
+}
+
 #[cfg(test)]
 mod tests;

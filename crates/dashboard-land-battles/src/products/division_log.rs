@@ -1433,6 +1433,22 @@ impl Product for DivisionLogTotals {
     }
 }
 
+impl Scan {
+    pub fn state_census(
+        &self,
+        line: dashboard_base::prepared::state_census::Line,
+    ) -> dashboard_base::prepared::state_census::Line {
+        line.field("divisions_events", self.events.len())
+            .json("divisions_events_json", &self.events)
+            .field("divisions_seen", self.seen.len())
+            .field("divisions_live", self.live.len())
+            .field("divisions_deletions", self.deletions.len())
+            .field("divisions_warnings", self.warnings.len())
+            .json("divisions_counts_json", &self.counts)
+            .json("divisions_presentation_json", &self.presentation)
+    }
+}
+
 #[cfg(test)]
 #[path = "division_log/tests.rs"]
 mod tests;

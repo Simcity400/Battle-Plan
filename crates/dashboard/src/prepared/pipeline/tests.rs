@@ -54,6 +54,7 @@ mod reply_gates;
 mod serialization_order;
 mod snow_export;
 mod stability_progressive;
+mod walk_pace;
 mod walk_selection;
 
 #[test]

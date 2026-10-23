@@ -4,6 +4,7 @@
 //! store's files, manifest and sections are exactly those of serial flushing.
 use super::{FamilyTimings, Refused, finish_timing, refuses, start_timing};
 use dashboard_base::prepared::priority::{JobPriority, Level};
+use dashboard_base::prepared::state_census::{Line, Marks};
 use std::{
     any::Any,
     collections::BTreeMap,
@@ -90,7 +91,10 @@ fn serial(
         if refused.live(family) {
             #[cfg(test)]
             knobs.record(_position, hour);
-            if let Some(result) = (tasks[task].run)(step, writer, timings)? {
+            let census = Marks::start(writer, || walk_step(family, hour));
+            let ran = (tasks[task].run)(step, writer, timings)?;
+            census.print("flush", writer);
+            if let Some(result) = ran {
                 #[cfg(test)]
                 let result = knobs.refuse(family, hour, result);
                 refused.check(family, hour, result)?;
@@ -168,7 +172,10 @@ fn parallel(
                     #[cfg(test)]
                     knobs.record(position, hour);
                     let ran = catch_unwind(AssertUnwindSafe(|| {
-                        (task.run)(step, &mut fork, &mut step_timings)
+                        let census = Marks::start(&fork, || walk_step(family, hour));
+                        let ran = (task.run)(step, &mut fork, &mut step_timings);
+                        census.print("flush", &fork);
+                        ran
                     }));
                     match ran {
                         Ok(Ok(Some(result))) => {
@@ -276,6 +283,13 @@ fn with_injected<T>(injected: &[(&'static str, i32)], run: impl FnOnce() -> T) -
 #[cfg(not(test))]
 fn with_injected<T>(_: &[(&'static str, i32)], run: impl FnOnce() -> T) -> T {
     run()
+}
+
+/// Measurement only: the state census line of a walk flush step.
+fn walk_step(family: &str, hour: i32) -> Line {
+    Line::new("walk-step")
+        .field("family", family)
+        .field("hour", hour)
 }
 
 /// A task's own refusal record disagreed with serial order: a refusal reached

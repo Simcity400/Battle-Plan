@@ -133,6 +133,7 @@ struct Hours {
     /// A section it writes at every commit beside its own.
     overlap: Option<&'static str>,
     on_fold: Option<fn(i32)>,
+    on_flush: Option<fn()>,
 }
 
 /// Each fold's family key, thread and observed hours.
@@ -169,6 +170,7 @@ struct HoursBranch {
     /// each a page of its own, as hourly preparation publishes per block.
     ended: Vec<i32>,
     on_fold: Option<fn(i32)>,
+    on_flush: Option<fn()>,
 }
 
 impl HoursBranch {
@@ -293,6 +295,9 @@ impl Branch for HoursBranch {
     ) -> io::Result<()> {
         // The hours so far, whatever the batches: a run resumed after a
         // cancellation at any commit publishes what an uncancelled one does.
+        if let Some(flush) = self.on_flush {
+            flush();
+        }
         let hours = serde_json::to_vec(&self.saved.hours.len())?;
         writer.write_at(
             &format!("synthetic-{}-count-{branch}", self.name),
@@ -356,6 +361,7 @@ impl Own for Hours {
             saved,
             ended: Vec::new(),
             on_fold: self.on_fold,
+            on_flush: self.on_flush,
         }))
     }
 }
@@ -378,6 +384,7 @@ const fn hours(
         fail_commit: None,
         overlap: None,
         on_fold: None,
+        on_flush: None,
     }
 }
 
@@ -1598,4 +1605,112 @@ fn runner_walk_progresses_at_family_priority_while_a_family_is_still_running() {
     assert_eq!(OVERLAP.0.lock().unwrap().folds, 3);
     OVERLAP.0.lock().unwrap().enabled = false;
     clear(source);
+}
+
+#[derive(Default)]
+struct FirstIncrement {
+    slow_flushing: bool,
+    fast_published: bool,
+}
+
+static FIRST_INCREMENT: (Mutex<FirstIncrement>, std::sync::Condvar) = (
+    Mutex::new(FirstIncrement {
+        slow_flushing: false,
+        fast_published: false,
+    }),
+    std::sync::Condvar::new(),
+);
+
+fn hold_first_flush() {
+    let (state, changed) = &FIRST_INCREMENT;
+    let mut state = state.lock().unwrap();
+    state.slow_flushing = true;
+    changed.notify_all();
+    while !state.fast_published {
+        state = changed.wait(state).unwrap();
+    }
+}
+
+fn wait_for_first_flush() {
+    let (state, changed) = &FIRST_INCREMENT;
+    let mut state = state.lock().unwrap();
+    while !state.slow_flushing {
+        state = changed.wait(state).unwrap();
+    }
+}
+
+static FIRST_SLOW: Hours = Hours {
+    on_flush: Some(hold_first_flush),
+    ..hours(&ALPHA, "independent.alpha", &[], "first-slow")
+};
+static FIRST_FAST: Hours = Hours {
+    on_flush: Some(wait_for_first_flush),
+    ..hours(&BETA, "independent.beta", &[], "first-fast")
+};
+
+#[test]
+fn a_familys_first_increment_publishes_while_another_family_is_still_flushing() {
+    let _test = OVERLAP_TEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    *FIRST_INCREMENT.0.lock().unwrap() = FirstIncrement::default();
+    let replay = recording(1, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("independent-first-increments");
+    independent::with_test_families(&registered(&[&FIRST_SLOW, &FIRST_FAST]), || {
+        independent::with_test_on_publish(
+            |family, next| {
+                if family == "beta" {
+                    assert_eq!(next, 1);
+                    let (state, changed) = &FIRST_INCREMENT;
+                    let mut state = state.lock().unwrap();
+                    assert!(state.slow_flushing);
+                    state.fast_published = true;
+                    changed.notify_all();
+                }
+            },
+            || run(&source, None, &AtomicBool::new(false), |_| {}),
+        )
+        .unwrap();
+    });
+    assert!(FIRST_INCREMENT.0.lock().unwrap().fast_published);
+    let actual = payloads(&source, None);
+    for family in ["alpha", "beta"] {
+        assert_eq!(
+            page(&actual, &format!("synthetic-{family}-1")),
+            [100, 101, 102, 103]
+        );
+        let coverage = family_coverage(&actual, family, 1).unwrap().coverage;
+        assert_eq!(
+            (coverage.first_hour, coverage.last_hour, coverage.complete),
+            (100, 103, true)
+        );
+    }
+}
+
+#[test]
+fn a_declared_paced_family_runs_after_the_walk_in_serial_preparation() {
+    let replay = recording(2, false);
+    let mut fixture = Fixture::new(&replay);
+    let source = fixture.source("serial-declared-pace");
+    static SERIAL_BETA: Hours = hours(&BETA, "independent.beta", &[], "serial-paced-beta");
+    independent::with_test_families(&registered(&[&SERIAL_BETA]), || {
+        independent::with_test_paced(&["beta"], || {
+            independent::with_test_one_after_another(|| {
+                run(&source, None, &AtomicBool::new(false), |_| {})
+            })
+        })
+    })
+    .unwrap();
+    let reads = independent::take_test_reads();
+    assert!(reads.unpaced.is_empty());
+    assert_eq!(reads.paced.len(), 2);
+    assert!(
+        reads.paced.iter().all(|(_, pace, laned)| !laned
+            && pace.lifecycle == crate::prepared::pace::Lifecycle::Terminal)
+    );
+    assert_eq!(
+        page(&payloads(&source, None), "synthetic-beta-1"),
+        [100, 101, 102, 103, 104, 105, 106, 107]
+    );
 }

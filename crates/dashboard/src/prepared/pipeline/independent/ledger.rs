@@ -304,6 +304,9 @@ fn before(block: &Block<'_>) -> io::Result<Option<DecodedFrame>> {
     else {
         return Ok(None);
     };
+    let _reader = block
+        .replay
+        .section_block_reader(position - 1, None, "politics ledger resume");
     Ok(
         match block.replay.seek(previous.branch, previous.last_hour)? {
             SeekResult::Frame(frame) => Some(*frame),

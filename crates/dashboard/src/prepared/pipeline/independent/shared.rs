@@ -73,6 +73,7 @@
 //! hardware threads, each reading one block at a time. A family that refused
 //! a block's branch wants nothing.
 
+use crate::prepared::pace::WalkPace;
 use crate::prepared::prepass;
 use dashboard_base::prepared::priority::{JobPriority, Level};
 use replay::container::Replay;
@@ -161,7 +162,6 @@ enum Entry {
     /// A reader or a pool task is reading it.
     Reading,
     Read(Arc<Frames>),
-    /// Its read failed: each family reads it alone.
     Alone,
 }
 
@@ -215,6 +215,11 @@ struct State {
     alone_blocks: Vec<usize>,
     #[cfg(test)]
     gate: Option<Arc<tests::Gate>>,
+    /// Whether every read for every family fails, in tests.
+    #[cfg(test)]
+    failing: bool,
+    #[cfg(test)]
+    claims: Vec<(usize, crate::prepared::pace::Snapshot)>,
 }
 
 impl State {
@@ -257,6 +262,7 @@ struct Inner {
     state: Mutex<State>,
     changed: Condvar,
     stop: AtomicBool,
+    pace: Option<Arc<WalkPace>>,
 }
 
 impl Inner {
@@ -287,6 +293,19 @@ impl Inner {
             .filter(|table| chosen[table.index()])
             .collect();
         (tables, chosen)
+    }
+
+    fn reach(&self) -> usize {
+        usize::try_from(self.budget / self.share)
+            .unwrap_or(usize::MAX)
+            .max(AHEAD)
+    }
+
+    fn near(&self, state: &State, block: usize) -> bool {
+        let reach = self.reach();
+        state
+            .reading()
+            .any(|consumer| (consumer.next..=consumer.next.saturating_add(reach)).contains(&block))
     }
 
     /// What is charged: the blocks alive and each read under way's share.
@@ -328,20 +347,26 @@ impl Inner {
                     .flat_map(|consumer| {
                         (0..=AHEAD).map(move |distance| (distance, consumer.next + distance))
                     })
-                    .filter(|&(_, block)| block < end && !state.entries.contains_key(&block))
+                    .filter(|&(_, block)| {
+                        block < end
+                            && !state.entries.contains_key(&block)
+                            && self.pace.as_ref().is_none_or(|pace| pace.permits(block))
+                    })
                     .min()
                     .map(|(_, block)| block);
                 if let Some(block) = next {
                     self.begin(&mut state, block);
+                    #[cfg(test)]
+                    if let Some(pace) = &self.pace {
+                        state.claims.push((block, pace.snapshot()));
+                    }
                     state.busy_readers += 1;
                     return Some(block);
                 }
             }
-            // A block dropped by its last holder frees room unsignalled;
-            // look again shortly.
             state = self
                 .changed
-                .wait_timeout(state, Duration::from_millis(25))
+                .wait_timeout(state, crate::prepared::pace::POLL)
                 .map_or_else(|error| error.into_inner().0, |(state, _)| state);
         }
     }
@@ -355,10 +380,17 @@ impl Inner {
         let started = Instant::now();
         let index = &self.replay.index[block];
         let (tables, chosen) = self.selection(&self.lock(), block);
+        let _consumer = self
+            .replay
+            .section_block_reader(block, Some(&tables), "shared families");
         let mut given_up = false;
         #[cfg(test)]
         let mut gated = false;
         let read = catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(test)]
+            if self.lock().failing {
+                return Err(io::Error::other("injected shared read failure"));
+            }
             self.replay.read_block_kept(index, &tables, || {
                 #[cfg(test)]
                 {
@@ -437,17 +469,15 @@ impl Inner {
         self.changed.notify_all();
     }
 
-    /// Release what no family will take (or everything, once the source is
-    /// read standalone), then kept blocks while what is charged passes the
-    /// budget, furthest from the family taking them first. A released block
-    /// stays charged while a family still holds it.
+    /// Failed reads survive only near members; releasing held blocks never removes their charge.
     fn prune(&self, state: &mut State) {
         let released: Vec<usize> = state
             .entries
             .iter()
-            .filter(|(block, entry)| {
-                !matches!(entry, Entry::Reading)
-                    && (!state.sharing || state.behind(**block).is_none())
+            .filter(|(block, entry)| match entry {
+                Entry::Reading => false,
+                Entry::Alone => !state.sharing || !self.near(state, **block),
+                Entry::Read(_) => !state.sharing || state.behind(**block).is_none(),
             })
             .map(|(block, _)| *block)
             .collect();
@@ -485,15 +515,12 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-    /// The reader of `consumers` (each family's tables, empty for one that
-    /// does not read through it, and its first block), none when no family
-    /// does. With `live`, every member reads from the start; otherwise each
-    /// from [`Self::member`] with `join`, as families prepared one after
-    /// another do.
-    pub(super) fn start(
+    /// Gate declared readers' claims before charging them; `live` joins every member at startup.
+    pub(super) fn start_paced(
         replay: Arc<Replay>,
         consumers: &[(&[TableId], usize)],
         live: bool,
+        pace: Option<Arc<WalkPace>>,
     ) -> Option<Self> {
         #[cfg(test)]
         if TEST_UNSHARED.with(std::cell::Cell::get) {
@@ -560,6 +587,10 @@ impl Shared {
                 alone_blocks: Vec::new(),
                 #[cfg(test)]
                 gate: TEST_GATE.with(|gate| gate.borrow().clone()),
+                #[cfg(test)]
+                failing: TEST_FAILING.with(std::cell::Cell::get),
+                #[cfg(test)]
+                claims: Vec::new(),
             }),
             replay,
             chosen,
@@ -570,6 +601,7 @@ impl Shared {
             readers: AtomicUsize::new(0),
             changed: Condvar::new(),
             stop: AtomicBool::new(false),
+            pace,
         });
         let mut readers = Vec::with_capacity(count);
         for reader in 0..count {
@@ -599,6 +631,16 @@ impl Shared {
             }
         }
         Some(Self { inner, readers })
+    }
+
+    /// [`Self::start_paced`] unpaced, as tests start it.
+    #[cfg(test)]
+    pub(super) fn start(
+        replay: Arc<Replay>,
+        consumers: &[(&[TableId], usize)],
+        live: bool,
+    ) -> Option<Self> {
+        Self::start_paced(replay, consumers, live, None)
     }
 
     /// Family `consumer`'s membership while it prepares, None when it does
@@ -690,6 +732,11 @@ impl Shared {
         self.inner.lock().read_blocks.clone()
     }
 
+    #[cfg(test)]
+    fn claims(&self) -> Vec<(usize, crate::prepared::pace::Snapshot)> {
+        self.inner.lock().claims.clone()
+    }
+
     /// Each read given up, in order.
     #[cfg(test)]
     fn dropped(&self) -> Vec<usize> {
@@ -700,6 +747,11 @@ impl Shared {
     #[cfg(test)]
     fn alone_blocks(&self) -> Vec<usize> {
         self.inner.lock().alone_blocks.clone()
+    }
+
+    #[cfg(test)]
+    fn entries(&self) -> (usize, usize) {
+        (self.inner.lock().entries.len(), self.inner.reach())
     }
 }
 
@@ -731,13 +783,11 @@ impl prepass::Depot for Depot {
     fn offer(&self, block: usize) -> Option<Vec<TableId>> {
         let inner = &self.0;
         let mut state = inner.lock();
-        let reach = usize::try_from(inner.budget / inner.share).unwrap_or(usize::MAX);
-        let near = state
-            .reading()
-            .any(|consumer| (consumer.next..=consumer.next.saturating_add(reach)).contains(&block));
+        let near = inner.near(&state, block);
         if inner.stop.load(Ordering::Acquire)
             || state.entries.contains_key(&block)
             || !near
+            || inner.pace.as_ref().is_some_and(|pace| !pace.permits(block))
             || !inner.admits(&state)
         {
             return None;
@@ -917,6 +967,13 @@ pub(super) fn read_last(
     tables: &[TableId],
 ) -> io::Result<Option<DecodedFrame>> {
     let mut last = None;
+    let _reader = replay.section_block_reader(
+        replay
+            .block_position(index)
+            .ok_or_else(|| io::Error::other("A family boundary block is not in the recording"))?,
+        Some(tables),
+        "family boundary",
+    );
     replay.read_block_recorded_alone(
         index,
         tables,
@@ -959,6 +1016,19 @@ thread_local! {
     static TEST_READERS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     static TEST_GATE: std::cell::RefCell<Option<Arc<tests::Gate>>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_FAILING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn with_test_failing_reads<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_FAILING.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_FAILING.with(|value| value.replace(true)));
+    run()
 }
 
 /// Run `run` with every read waiting at `gate` before it decodes anything.
@@ -1198,6 +1268,59 @@ mod tests {
             self.state.lock().unwrap().1 = true;
             self.changed.notify_all();
         }
+    }
+
+    #[test]
+    fn paced_shared_readers_claim_nothing_beyond_the_walks_window() {
+        let blocks = 4;
+        let replay = Arc::new(recording(blocks));
+        let tables = [TableId::Countries];
+        with_test_readers(1, || {
+            let (pace, ended) = WalkPace::start(0, blocks as usize);
+            let shared = Shared::start_paced(
+                Arc::clone(&replay),
+                &[(&tables[..], 0)],
+                true,
+                Some(Arc::clone(&pace)),
+            )
+            .unwrap();
+            let member = shared.member(0, false).unwrap();
+            member.at(0, true);
+            exact(&replay, &member, 0, &tables);
+            pace.at(0, blocks as usize);
+            for block in 1..blocks as usize {
+                pace.claimed(block);
+                member.at(block, true);
+                exact(&replay, &member, block, &tables);
+            }
+            drop(member);
+            let claims = shared.claims();
+            assert!(!claims.is_empty(), "the reader read blocks for the member");
+            for (block, snapshot) in &claims {
+                assert!(
+                    snapshot.window().is_none_or(|(_, last)| *block <= last),
+                    "block {block} claimed beyond the walk's window {snapshot:?}"
+                );
+            }
+            drop(shared);
+            drop(ended);
+            // Unpaced, the same reader reads ahead of a pending walk.
+            let (pending, _ended) = WalkPace::start(0, blocks as usize);
+            let shared = Shared::start(Arc::clone(&replay), &[(&tables[..], 0)], true).unwrap();
+            let member = shared.member(0, false).unwrap();
+            member.at(0, true);
+            let mut state = shared.inner.lock();
+            while !state.read_blocks.contains(&1) {
+                state = shared
+                    .inner
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(|error| error.into_inner());
+            }
+            drop(state);
+            assert_eq!(pending.snapshot().window(), Some((0, 0)));
+            drop(member);
+        });
     }
 
     /// A family stalled at the first block and a faster one taking every
@@ -1802,5 +1925,42 @@ mod tests {
                 assert_eq!(shared.alive_bytes(), 0, "every block released once dropped");
             })
         });
+    }
+
+    #[test]
+    fn failed_reads_are_remembered_only_near_the_members() {
+        let tables = [TableId::Countries];
+        for blocks in [12, 24, 48] {
+            let replay = Arc::new(recording(blocks));
+            with_test_readers(1, || {
+                with_test_failing_reads(|| {
+                    let shared = Shared::start(
+                        Arc::clone(&replay),
+                        &[(&tables[..], 0), (&tables[..], 0)],
+                        true,
+                    )
+                    .unwrap();
+                    let stalled = shared.member(0, false).unwrap();
+                    stalled.at(0, true);
+                    let fast = shared.member(1, false).unwrap();
+                    let mut most = 0;
+                    for block in 0..blocks as usize {
+                        fast.at(block, true);
+                        exact(&replay, &fast, block, &tables);
+                        let (entries, reach) = shared.entries();
+                        most = most.max(entries);
+                        assert!(
+                            entries <= reach + 1 + AHEAD + 1,
+                            "{blocks} blocks, at {block}: {entries} entries, reach {reach}"
+                        );
+                        assert_eq!(shared.alive_bytes(), 0, "nothing charged");
+                    }
+                    assert!(most > 0, "failed reads are remembered near the members");
+                    assert!(shared.sharing());
+                    drop(fast);
+                    drop(stalled);
+                })
+            });
+        }
     }
 }

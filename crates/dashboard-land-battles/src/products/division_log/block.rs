@@ -662,6 +662,13 @@ impl OwnBranch {
     pub fn state_json(&self) -> io::Result<Vec<u8>> {
         Ok(serde_json::to_vec(&*self.scan)?)
     }
+
+    pub fn state_census(
+        &self,
+        line: dashboard_base::prepared::state_census::Line,
+    ) -> dashboard_base::prepared::state_census::Line {
+        self.scan.state_census(line)
+    }
 }
 
 #[cfg(test)]

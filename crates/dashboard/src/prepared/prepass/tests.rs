@@ -221,6 +221,8 @@ fn pool_state(
     PoolShared {
         state: Mutex::new(PoolState {
             walk: None,
+            pace: None,
+            paced_lanes: false,
             lanes,
             ahead: 8,
             sizes: vec![1; 100],
@@ -1381,4 +1383,334 @@ fn walk_prepass_uses_the_registered_pool_and_keeps_extract_outputs_exact() {
             .iter()
             .all(|lane| lane.retired)
     );
+}
+
+#[test]
+fn map_page_extracts_report_their_lanes_states_and_steps() {
+    use dashboard_base::prepared::prepass::HeldBytes;
+    use dashboard_base::prepared_map::pages::{self, BlockPages};
+    let measure = |hours: std::ops::RangeInclusive<i32>| -> (u64, BlockPages) {
+        let frames = hours
+            .map(|hour| crate::test_fixtures::scale_frame(1, hour, 3))
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let (outcome, _, bytes) = extract_block_measured(
+            &replay,
+            &replay.index[0],
+            &[&*pages::FAMILY],
+            &AtomicBool::new(false),
+            &Knobs::default(),
+        )
+        .outcomes
+        .pop()
+        .unwrap();
+        let Outcome::Facts(facts) = outcome else {
+            panic!("map pages extracted the block");
+        };
+        (bytes, *facts.downcast::<BlockPages>().unwrap())
+    };
+    let (none, empty) = measure(1..=19);
+    let (one, single) = measure(15..=30);
+    let (many, full) = measure(1..=100);
+    for (bytes, facts) in [(none, &empty), (one, &single), (many, &full)] {
+        assert_eq!(bytes, HeldBytes::default().value(facts).total());
+    }
+    assert!(
+        none >= (size_of::<BlockPages>() + 4 * size_of::<Option<DecodedFrame>>()) as u64,
+        "lanes without a chain point hold their inline states: {none}"
+    );
+    let state = single.head(20).unwrap();
+    assert_eq!(single.last(20).map(|last| last.hour), Some(20));
+    assert_eq!(
+        one - none,
+        HeldBytes::default().heap(state).total(),
+        "a block's first and last state, one frame, counted once"
+    );
+    assert!(many > one, "{many} for many chain points, {one} for one");
+    let pool = Pool {
+        shared: Arc::new(pool_state(
+            vec![Lane {
+                end: 10,
+                ..lane(1, 0, 0, 0)
+            }],
+            1,
+            1,
+            &[0],
+            1 + 2 * many,
+        )),
+        workers: Vec::new(),
+    };
+    let (task, measured) = finished(0, 0, Outcome::Facts(Box::new(full)), Duration::ZERO, many);
+    pool.shared.finish(task, measured);
+    {
+        let state = pool.shared.lock();
+        assert_eq!(state.in_flight, 1 + many);
+        assert!(state.pick().is_none(), "its facts hold the next claim back");
+    }
+    pool.take(0, 0, &AtomicBool::new(false)).unwrap();
+    assert_eq!(pool.shared.lock().in_flight, 0);
+}
+
+#[test]
+fn a_pending_walk_reports_its_first_block_while_its_released_lanes_claim_ahead() {
+    use crate::prepared::pace::Lifecycle;
+    let replay = recording(5);
+    let blocks = replay.index.len();
+    let flag = AtomicBool::new(false);
+    // A family's lane from block 0, and the walk resumed at block 1.
+    let pool = Pool::start_with_walk(
+        Arc::clone(&replay),
+        vec![(&HOURS, 0, false)],
+        2,
+        Knobs::default(),
+        None,
+        Some(1),
+    );
+    let (pace, ended) = WalkPace::start(1, blocks);
+    pool.pace_walk(Arc::clone(&pace));
+    let until = |what: &str, done: &dyn Fn(&PoolState) -> bool| {
+        let mut state = pool.shared.lock();
+        let failure = loop {
+            if done(&state) {
+                break None;
+            }
+            if state.alive == 0 {
+                break Some("every worker left");
+            }
+            state = pool
+                .shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        };
+        drop(state);
+        if let Some(failure) = failure {
+            panic!("waiting for {what}: {failure}");
+        }
+    };
+    until("the family's claims", &|state| state.lanes[0].next >= 3);
+    assert_eq!(
+        pace.snapshot().claimed,
+        None,
+        "a family's claims are not the walk's"
+    );
+    let walk = pool.walk().unwrap();
+    // Under the pool's lock, then the obligation's, as claims take them.
+    until("the walk's claims", &|_| {
+        pace.snapshot().claimed.is_some_and(|claimed| claimed > 1)
+    });
+    let pending = pace.snapshot();
+    assert_eq!(pending.lifecycle, Lifecycle::Pending);
+    assert_eq!(pending.window(), Some((1, 1)), "only its first block");
+    pace.at(1, blocks);
+    let running = pace.snapshot();
+    assert_eq!(running.window(), Some((1, running.claimed.unwrap())));
+    for block in 0..blocks {
+        facts(pool.take(0, block, &flag).unwrap().0);
+    }
+    for block in 1..blocks {
+        pace.at(block, blocks);
+        walk.take(block, &flag).unwrap();
+    }
+    assert!(
+        pace.snapshot()
+            .claimed
+            .is_some_and(|claimed| (1..blocks).contains(&claimed)),
+        "claims are absolute blocks of the recording"
+    );
+    pace.at(blocks, blocks);
+    assert_eq!(
+        pace.snapshot().window(),
+        None,
+        "past its last block it reads none"
+    );
+    drop(walk);
+    drop(ended);
+    assert_eq!(
+        pace.history(),
+        [Lifecycle::Pending, Lifecycle::Running, Lifecycle::Terminal]
+    );
+}
+
+#[test]
+fn a_walk_with_no_pool_worker_observes_hourly_within_its_cursor_alone() {
+    use crate::prepared::pace::Lifecycle;
+    let flag = AtomicBool::new(false);
+    let blocks = 3;
+    let mut shared = pool_state(
+        vec![Lane {
+            end: blocks,
+            ..lane(0, 0, 0, 0)
+        }],
+        0,
+        0,
+        &[],
+        u64::MAX,
+    );
+    shared
+        .state
+        .get_mut()
+        .unwrap_or_else(|error| error.into_inner())
+        .walk = Some(0..1);
+    let pool = Pool {
+        shared: Arc::new(shared),
+        workers: Vec::new(),
+    };
+    let (pace, ended) = WalkPace::start(0, blocks);
+    pool.pace_walk(Arc::clone(&pace));
+    let walk = pool.walk().unwrap();
+    assert_eq!(pace.snapshot().window(), Some((0, 0)), "pending");
+    for block in 0..blocks {
+        pace.at(block, blocks);
+        let outcomes = walk.take(block, &flag).unwrap();
+        assert!(
+            matches!(outcomes.as_slice(), [(Outcome::Sequential, _)]),
+            "block {block} is observed hour by hour"
+        );
+        assert_eq!(pace.snapshot().window(), Some((block, block)));
+    }
+    assert_eq!(pace.snapshot().claimed, None, "nothing was claimed");
+    pace.at(blocks, blocks);
+    drop(walk);
+    drop(ended);
+    assert_eq!(
+        pace.history(),
+        [Lifecycle::Pending, Lifecycle::Running, Lifecycle::Terminal]
+    );
+}
+
+fn until(pool: &Pool, what: &str, done: &dyn Fn(&PoolState) -> bool) {
+    let mut state = pool.shared.lock();
+    let failure = loop {
+        if done(&state) {
+            break None;
+        }
+        if state.alive == 0 {
+            break Some("every worker left");
+        }
+        state = pool
+            .shared
+            .changed
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
+    };
+    drop(state);
+    if let Some(failure) = failure {
+        panic!("waiting for {what}: {failure}");
+    }
+}
+
+#[test]
+fn paced_family_lanes_claim_nothing_beyond_the_walks_window_from_their_workers_start() {
+    let replay = recording(5);
+    let blocks = replay.index.len();
+    let flag = AtomicBool::new(false);
+    let _ = take_family_claims();
+    let (pace, ended) = WalkPace::start(0, blocks);
+    let pool = Pool::start_with_walk(
+        Arc::clone(&replay),
+        vec![(&HOURS, 0, false)],
+        4,
+        Knobs {
+            pace: Some(Arc::clone(&pace)),
+            ..Knobs::default()
+        },
+        None,
+        None,
+    );
+    let extracted = |through: usize| {
+        move |state: &PoolState| (0..=through).all(|block| state.lanes[0].done.contains_key(&block))
+    };
+    until(&pool, "block 0's extract", &extracted(0));
+    assert_eq!(
+        pool.shared.lock().lanes[0].next,
+        1,
+        "a pending walk admits its first block alone"
+    );
+    pace.at(0, blocks);
+    pace.claimed(2);
+    until(&pool, "blocks 1 and 2's extracts", &extracted(2));
+    assert_eq!(
+        pool.shared.lock().lanes[0].next,
+        3,
+        "a running walk admits its cursor through its lanes' claims"
+    );
+    drop(ended);
+    until(&pool, "every block's extract", &extracted(blocks - 1));
+    for block in 0..blocks {
+        facts(pool.take(0, block, &flag).unwrap().0);
+    }
+    drop(pool);
+    let claims = take_family_claims();
+    assert_eq!(claims.len(), blocks, "each block claimed once");
+    for (block, snapshot) in &claims {
+        assert!(
+            snapshot.window().is_none_or(|(_, last)| *block <= last),
+            "block {block} claimed beyond the walk's window {snapshot:?}"
+        );
+    }
+    // Unpaced, the same pool claims ahead of a pending walk.
+    let (pending, _ended) = WalkPace::start(0, blocks);
+    let pool = Pool::start_with_walk(
+        Arc::clone(&replay),
+        vec![(&HOURS, 0, false)],
+        4,
+        Knobs::default(),
+        None,
+        None,
+    );
+    until(&pool, "the unpaced lane's claims", &|state| {
+        state.lanes[0].next == blocks
+    });
+    assert_eq!(pending.snapshot().window(), Some((0, 0)));
+    for block in 0..blocks {
+        facts(pool.take(0, block, &flag).unwrap().0);
+    }
+}
+
+#[test]
+fn a_walk_behind_every_paced_family_lane_keeps_the_pool() {
+    let replay = recording(6);
+    let blocks = replay.index.len();
+    let flag = AtomicBool::new(false);
+    let _ = take_family_claims();
+    let (pace, ended) = WalkPace::start(0, blocks);
+    let pool = Pool::start_with_walk(
+        Arc::clone(&replay),
+        vec![(&HOURS, 3, false), (&HOURS, 3, false)],
+        2,
+        Knobs {
+            pace: Some(Arc::clone(&pace)),
+            ..Knobs::default()
+        },
+        None,
+        Some(0),
+    );
+    pool.pace_walk(Arc::clone(&pace));
+    let walk = pool.walk().unwrap();
+    for block in 0..blocks {
+        pace.at(block, blocks);
+        walk.take(block, &flag).unwrap();
+    }
+    pace.at(blocks, blocks);
+    drop(walk);
+    for lane in 0..2 {
+        for block in 3..blocks {
+            facts(pool.take(lane, block, &flag).unwrap().0);
+        }
+    }
+    drop(pool);
+    drop(ended);
+    let claims = take_family_claims();
+    assert_eq!(
+        claims.len(),
+        2 * (blocks - 3),
+        "each family block claimed once"
+    );
+    for (block, snapshot) in &claims {
+        assert!(
+            snapshot.window().is_none_or(|(_, last)| *block <= last),
+            "block {block} claimed beyond the walk's window {snapshot:?}"
+        );
+    }
 }

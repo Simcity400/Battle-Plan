@@ -729,6 +729,9 @@ impl Accumulator {
     pub fn bytes(&self) -> usize {
         self.batch.bytes()
     }
+    pub fn census_keys(&self) -> (usize, usize) {
+        (self.states.len(), self.active.len())
+    }
     pub fn flush<W: super::pages::Pages + ?Sized>(
         &mut self,
         writer: &mut W,
@@ -1470,6 +1473,8 @@ impl Batch {
         cancelled: &AtomicBool,
         mut encoding: Encoding<'_>,
     ) -> io::Result<()> {
+        let count = keys.len();
+        let mut empty_keys = 0_usize;
         let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
         put(&mut bytes, 0, &first.to_le_bytes());
         put(&mut bytes, 4, &last.to_le_bytes());
@@ -1504,6 +1509,7 @@ impl Batch {
                 && events.is_empty()
                 && state.partial.iter().all(Option::is_none)
             {
+                empty_keys += 1;
                 let offset = bytes.len();
                 if let Some((start, length)) = empty {
                     bytes.extend_from_within(start..start + length);
@@ -1655,6 +1661,15 @@ impl Batch {
         check_cancel(cancelled)?;
         let _cpu = ::replay_frame::cpu::scope_phase("series:write_page");
         writer.write(section, bytes.as_slice())?;
+        if super::state_census::on() {
+            super::state_census::Line::new("series")
+                .field("section", section)
+                .field("hours", format_args!("{first}..={last}"))
+                .field("keys", count)
+                .field("empty", empty_keys)
+                .field("page_bytes", bytes.len())
+                .print();
+        }
         Ok(())
     }
 }

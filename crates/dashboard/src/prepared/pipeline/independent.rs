@@ -13,8 +13,7 @@
 //! family's blocks, over the source's one opened recording, so each block is
 //! verified once. Each family folds its blocks in order on a thread of its
 //! own and commits on its own, through one store writer. While other families
-//! run, a family writes its batch into a fork of the open transaction on its
-//! own thread and queues it; one family's thread adopts every queued batch,
+//! run, it queues only flushed stages; one thread adopts all queued batches,
 //! each whole or not at all, and publishes them in one store commit (a group
 //! commit, [`commit`]), so families reaching their commits together share one
 //! manifest rewrite and one set of flushes. Each family learns its own
@@ -104,8 +103,7 @@ pub(super) struct Publish<'p> {
 }
 
 impl Publish<'_> {
-    /// Writes the batch (`write`) into a fork of the open transaction and
-    /// returns once a group commit published it, or with its error.
+    /// Stage a detached batch, then return its group publication's outcome.
     pub(super) fn commit(
         &mut self,
         write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
@@ -198,6 +196,16 @@ pub(super) trait Own: Sync {
     fn shared_tables(&self, phase: &Phase<'_>) -> &'static [TableId] {
         let _ = phase;
         &[]
+    }
+    fn paced(&self) -> bool {
+        #[cfg(test)]
+        if TEST_PACED
+            .with(std::cell::Cell::get)
+            .contains(&self.family().name)
+        {
+            return true;
+        }
+        false
     }
     /// One branch's state as `load` last committed it, or new without a
     /// commit to read.
@@ -1098,6 +1106,7 @@ pub(super) struct Phase<'a> {
     pub batches: &'a Batches,
     pub measured: bool,
     pub cancelled: &'a AtomicBool,
+    pub walk_pace: &'a std::sync::Arc<crate::prepared::pace::WalkPace>,
 }
 
 /// Count a block the family observed hour by hour, or a fold that fell back.
@@ -1122,8 +1131,7 @@ struct Commits<'s> {
     saved: &'s mut Option<store::SourceKey>,
     bytes: &'s mut u64,
     committed: bool,
-    /// Forks of the open transaction a family is still writing: it joins the
-    /// group that publishes the transaction.
+    /// Ready batches joining the open transaction before its leader collects them.
     forked: usize,
     /// Family publications waiting to stage their batch get the next writer
     /// before the walk starts another batch.
@@ -1176,9 +1184,16 @@ struct Queued {
 struct Group<'s> {
     commits: Mutex<Commits<'s>>,
     changed: Condvar,
+    alone: Mutex<()>,
 }
 
 impl<'s> Group<'s> {
+    // Forced single-member groups serialize staging too, including deliberate conflicting test writers.
+    fn alone(&self) -> Option<MutexGuard<'_, ()>> {
+        let alone = lock(self).grouping == Grouping::Alone;
+        alone.then(|| self.alone.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
     fn wait<'m>(&'m self, guard: MutexGuard<'m, Commits<'s>>) -> MutexGuard<'m, Commits<'s>> {
         self.changed
             .wait(guard)
@@ -1194,9 +1209,7 @@ fn lock<'m, 's>(group: &'m Group<'s>) -> MutexGuard<'m, Commits<'s>> {
 /// queued while a group forms; tests also force groupings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Grouping {
-    /// A group holds the batches queued and being written when its leader
-    /// queued its own; families reaching their commits while it publishes
-    /// join the next.
+    /// A group holds ready batches; batches still flushing join a later group.
     Natural,
     /// Every family commits alone, one after another.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1237,8 +1250,7 @@ impl Commits<'_> {
     }
 }
 
-/// A family's fork of the open transaction, counted until its batch is queued
-/// or given up, however its write ends.
+/// A ready batch's group membership, released even if queueing unwinds.
 struct Forked<'m, 's> {
     group: &'m Group<'s>,
     armed: bool,
@@ -1370,6 +1382,7 @@ impl Walk<'_, '_> {
         // Writing and flushing the detached batch never closes the family's
         // transaction. Only the ready batch joins the group that adopts it.
         let staged = writer.into_staged()?;
+        let _alone = self.group.alone();
         let forked;
         {
             let mut guard = lock(self.group);
@@ -1404,6 +1417,27 @@ impl Walk<'_, '_> {
         )?;
         let guard = lock(self.group);
         Ok((guard.snapshot.clone(), accepted_now(&guard, self.phase)))
+    }
+}
+
+// Together groups must not wait for a family that needs the walk to advance.
+struct Parked<'m, 's>(&'m Group<'s>);
+
+impl<'m, 's> Parked<'m, 's> {
+    fn new(group: &'m Group<'s>) -> Self {
+        let mut guard = lock(group);
+        debug_assert!(guard.running > 0, "a parked family is running");
+        guard.running = guard.running.saturating_sub(1);
+        drop(guard);
+        group.changed.notify_all();
+        Self(group)
+    }
+}
+
+impl Drop for Parked<'_, '_> {
+    fn drop(&mut self) {
+        lock(self.0).running += 1;
+        self.0.changed.notify_all();
     }
 }
 
@@ -1506,6 +1540,10 @@ pub(super) fn prepare(
         }
     }
     let at_once = !one_after_another();
+    let pace_all = at_once;
+    if pace_all {
+        knobs.pace = Some(Arc::clone(phase.walk_pace));
+    }
     // The families observing every block hour by hour read each block once,
     // together, each from its own first block: all from the start when they
     // prepare at once, each from its own start otherwise.
@@ -1513,15 +1551,30 @@ pub(super) fn prepare(
         .iter()
         .map(|run| (run.own.shared_tables(phase), run.progress.next_block))
         .collect();
-    // Register every family before the pool can read ahead of its startup.
-    let section_consumers: Vec<_> = runs
+    let reader = |run: &Run| {
+        let tables: Vec<_> = run
+            .own
+            .family()
+            .tables
+            .iter()
+            .chain(consumers[run.lane].0)
+            .copied()
+            .collect();
+        replay.section_reader(run.progress.next_block, &tables, run.own.family().name)
+    };
+    let section_consumers: Vec<Option<replay::container::SectionConsumer>> = runs
         .iter()
-        .map(|run| replay.section_consumer(run.progress.next_block))
+        .map(|run| (at_once || !run.own.paced()).then(|| reader(run)))
         .collect();
     let shared = if runs.is_empty() {
         None
     } else {
-        shared::Shared::start(phase.source.replay(), &consumers, at_once)
+        shared::Shared::start_paced(
+            phase.source.replay(),
+            &consumers,
+            at_once,
+            pace_all.then(|| Arc::clone(phase.walk_pace)),
+        )
     };
     // Every family's blocks from its own first one, on one set of workers,
     // which read the shared reader's blocks with theirs.
@@ -1531,7 +1584,7 @@ pub(super) fn prepare(
         let lanes = runs
             .iter()
             .map(|run| {
-                let from = if run.own.laned() {
+                let from = if run.own.laned() && !run.own.paced() {
                     run.progress.next_block
                 } else {
                     replay.index.len()
@@ -1557,6 +1610,9 @@ pub(super) fn prepare(
             ),
         }
     });
+    if let Some(pool) = &pool {
+        pool.pace_walk(std::sync::Arc::clone(phase.walk_pace));
+    }
     let families = runs.len();
     let walk_lane = families + beside.len();
     let commits = Group {
@@ -1592,6 +1648,7 @@ pub(super) fn prepare(
             published: (0, 0),
         }),
         changed: Condvar::new(),
+        alone: Mutex::new(()),
     };
     let local = || -> (Timings, Timings) {
         (
@@ -1674,31 +1731,44 @@ pub(super) fn prepare(
             );
         }
         let ran: Vec<std::thread::Result<Ran>> = if !at_once {
-            let mut ran = Vec::with_capacity(runs.len());
-            for (run, section_consumer) in runs.into_iter().zip(section_consumers) {
-                let (mut own_timings, mut own_workers) = local();
-                let member = shared
-                    .as_ref()
-                    .and_then(|shared| shared.member(run.lane, true));
-                let result = prepare_family(
-                    phase,
-                    pool.as_ref().expect("the families' pool"),
-                    member,
-                    section_consumer,
-                    run,
-                    &commits,
-                    &mut own_timings,
-                    &mut own_workers,
-                    &mut |next| {
-                        // What the work beside committed first is reported
-                        // first.
-                        for earlier in receiver.try_iter() {
-                            accepted(&earlier);
-                        }
-                        accepted(&next);
-                    },
-                );
-                ran.push(Ok((result, own_timings, own_workers, Counts::default())));
+            let accepted = std::cell::RefCell::new(&mut *accepted);
+            let report = |next: &Accepted| (*accepted.borrow_mut())(next);
+            let mut ran: Vec<Option<std::thread::Result<Ran>>> =
+                runs.iter().map(|_| None).collect();
+            let (paced, unpaced): (Vec<_>, Vec<_>) = runs
+                .into_iter()
+                .zip(section_consumers)
+                .partition(|(run, _)| run.own.paced());
+            let prepare_one =
+                |run: Run, section_consumer: Option<replay::container::SectionConsumer>| -> Ran {
+                    let (mut own_timings, mut own_workers) = local();
+                    // A paced family's reader is registered as it starts.
+                    let section_consumer = section_consumer.unwrap_or_else(|| reader(&run));
+                    let member = shared
+                        .as_ref()
+                        .and_then(|shared| shared.member(run.lane, true));
+                    let result = prepare_family(
+                        phase,
+                        pool.as_ref().expect("the families' pool"),
+                        member,
+                        section_consumer,
+                        run,
+                        pace_all,
+                        &commits,
+                        &mut own_timings,
+                        &mut own_workers,
+                        &mut |next| {
+                            for earlier in receiver.try_iter() {
+                                report(&earlier);
+                            }
+                            report(&next);
+                        },
+                    );
+                    (result, own_timings, own_workers, Counts::default())
+                };
+            for (run, section_consumer) in unpaced {
+                let lane = run.lane;
+                ran[lane] = Some(Ok(prepare_one(run, section_consumer)));
             }
             // No group waits for the families once they have finished.
             drop(Finished(&commits));
@@ -1713,19 +1783,31 @@ pub(super) fn prepare(
                 &mut |_| {
                     for _ in receiver.try_iter() {}
                     let current = accepted_now(&lock(&commits), phase);
-                    accepted(&current);
+                    report(&current);
                 },
             );
             walk_wall = walk_started.elapsed();
+            if !paced.is_empty() {
+                lock(&commits).running += 1;
+                for (run, section_consumer) in paced {
+                    let lane = run.lane;
+                    ran[lane] = Some(Ok(prepare_one(run, section_consumer)));
+                }
+                drop(Finished(&commits));
+            }
             drop(sender);
             for _ in receiver.iter() {
                 let current = accepted_now(&lock(&commits), phase);
-                accepted(&current);
+                report(&current);
             }
-            ran
+            ran.into_iter()
+                .map(|ran| ran.expect("every family prepared"))
+                .collect()
         } else {
             let mut started = Vec::with_capacity(runs.len());
             for (run, section_consumer) in runs.into_iter().zip(section_consumers) {
+                // Every reader is registered up front at once.
+                let section_consumer = section_consumer.unwrap_or_else(|| reader(&run));
                 let sender = sender.clone();
                 let (pool, commits) = (pool.as_ref().expect("the families' pool"), &commits);
                 let (mut own_timings, mut own_workers) = local();
@@ -1753,6 +1835,7 @@ pub(super) fn prepare(
                         member,
                         section_consumer,
                         run,
+                        pace_all,
                         commits,
                         &mut own_timings,
                         &mut own_workers,
@@ -1927,8 +2010,7 @@ impl Drop for Retire<'_> {
     }
 }
 
-/// One family's preparation: every block from its next, folded in order,
-/// committed by the hourly batch rules.
+/// Wait before claiming or reading each block, then fold and commit in family order.
 #[allow(clippy::too_many_arguments)]
 fn prepare_family(
     phase: &Phase<'_>,
@@ -1936,6 +2018,7 @@ fn prepare_family(
     member: Option<shared::Member<'_>>,
     section_consumer: replay::container::SectionConsumer,
     run: Run,
+    pace_all: bool,
     commits: &Group<'_>,
     timings: &mut Timings,
     workers: &mut Timings,
@@ -1953,12 +2036,14 @@ fn prepare_family(
     let _cpu = ::replay_frame::cpu::scope("fold", Some(name));
     let laned = {
         let _cpu = ::replay_frame::cpu::scope("fold binds", None);
-        let laned = own.laned();
+        // A paced family reads alone, never on the pool.
+        let laned = own.laned() && !own.paced();
         if laned && own.binds() {
             pool.bind(lane, own.bound(phase));
         }
         laned
     };
+    let paced = own.paced() || pace_all;
     let started = super::start_timing(timings);
     let mut held: Option<(u64, Box<dyn Branch>)> = None;
     // The pages its blocks published since its last commit.
@@ -1967,6 +2052,29 @@ fn prepare_family(
     for block in progress.next_block..replay.index.len() {
         section_consumer.at(block);
         check_cancel(phase.cancelled)?;
+        if paced {
+            #[cfg(test)]
+            if !phase.walk_pace.permits(block) {
+                note_test_read(
+                    phase.walk_pace,
+                    TestReadKind::Wait,
+                    block,
+                    phase.walk_pace.snapshot(),
+                    laned,
+                );
+            }
+            phase
+                .walk_pace
+                .wait_for(block, phase.cancelled, || Parked::new(commits))?;
+            #[cfg(test)]
+            note_test_read(
+                phase.walk_pace,
+                TestReadKind::Paced,
+                block,
+                phase.walk_pace.snapshot(),
+                laned,
+            );
+        }
         let index = &replay.index[block];
         let branch = index.branch;
         if let Some(member) = &member {
@@ -2007,6 +2115,17 @@ fn prepare_family(
         } else {
             None
         };
+        // An unpaced read once its block is in hand, a lane's claim before it.
+        #[cfg(test)]
+        if !paced {
+            note_test_read(
+                phase.walk_pace,
+                TestReadKind::Unpaced,
+                block,
+                phase.walk_pace.snapshot(),
+                laned,
+            );
+        }
         let folded_started = std::time::Instant::now();
         let refused = progress.refused.entry(branch).or_default();
         let mut reached = None;
@@ -2101,6 +2220,15 @@ fn prepare_family(
         let cpu_commit = ::replay_frame::cpu::scope("commit", None);
         let next = commit(commits, phase, lane, name, workers, |writer| {
             let write_started = std::time::Instant::now();
+            // Measurement only: what each part of the commit writes.
+            let mut census = dashboard_base::prepared::state_census::Marks::start(writer, || {
+                dashboard_base::prepared::state_census::Line::new("own")
+                    .field("family", name)
+                    .field("branch", branch)
+                    .field("block", block)
+                    .field("hour", hour)
+                    .field("pending", state.pending())
+            });
             let refused = progress.refused.entry(branch).or_default();
             // The pages of the blocks it went through, refused since or
             // not: those each block published, then those it holds.
@@ -2109,6 +2237,7 @@ fn prepare_family(
                 pages.write(writer)?;
                 state.publish(writer, branch, phase.cancelled)
             };
+            census.mark("pages", writer);
             refused.check(name, hour, result)?;
             if refused.open(name) {
                 let result = {
@@ -2117,6 +2246,7 @@ fn prepare_family(
                 };
                 refused.check(name, hour, result)?;
             }
+            census.mark("flush", writer);
             if refused.open(name) {
                 let result = {
                     let _cpu = ::replay_frame::cpu::scope("fold save", None);
@@ -2124,15 +2254,18 @@ fn prepare_family(
                 };
                 refused.check(name, hour, result)?;
             }
+            census.mark("save", writer);
             if refused.open(name) {
                 let _cpu = ::replay_frame::cpu::scope("fold continuation", None);
                 state.save_state(writer, branch)?;
             }
+            census.mark("state", writer);
             progress.next_block = block + 1;
             progress.refused.retain(|_, refused| !refused.0.is_empty());
             for &branch in &touched {
                 save_coverage(writer, phase, name, &progress, branch)?;
             }
+            census.print("coverage", writer);
             pool.published(lane, write_started.elapsed());
             Ok(Publication::Family(progress.clone()))
         })?;
@@ -2148,25 +2281,7 @@ fn prepare_family(
     Ok(())
 }
 
-/// Commits a batch and the publication metadata returned by `write`, then
-/// opens the next transaction. Family progress and proven newest-window
-/// extents enter the checkpoint with their pages. Returns what was accepted.
-///
-/// The family forks the open transaction, writes its batch into the fork on
-/// its own thread and queues
-/// it. The first family to queue while no group forms leads one: it closes
-/// the transaction to new forks, waits for the forks still being written,
-/// adopts every queued batch (in lane order, each whole or not at all) and
-/// publishes them in one store commit. A family reaching its commit while a
-/// group publishes forks the next transaction once that is open, and joins
-/// the next group. A family's own write and adoption errors are its own: its
-/// batch is never listed, and the others' batches commit without it. An
-/// error of the joint publication (sources changed, cancellation, the
-/// checkpoint or the store's own writes) belongs to no family's batch and
-/// would fail any of them alone; it is every member's, and loses the writer
-/// as a failed commit always has. A family's pages, ranges and progress are
-/// what it writes whoever it commits with: each section is one family's, its
-/// ranges numbered by that family's writes alone.
+/// Only ready, disjoint batches join a group; each batch's adoption remains atomic.
 #[allow(clippy::too_many_arguments)]
 fn commit(
     group: &Group<'_>,
@@ -2176,35 +2291,60 @@ fn commit(
     workers: &mut Timings,
     write: impl FnOnce(&mut store::Writer) -> io::Result<Publication>,
 ) -> io::Result<Accepted> {
-    // Declared first, dropped last: the fork, and its duplicate of the
-    // writer's lock, close before the fork stops counting.
-    let forked;
-    let mut fork;
-    {
+    let _alone = group.alone();
+    let mut fork = {
         let mut guard = lock(group);
         guard.waiting += 1;
-        while !guard.admits() {
+        loop {
             if guard.lost {
                 guard.waiting -= 1;
                 group.changed.notify_all();
                 return Err(lost_to(phase));
             }
-            guard = group.wait(guard);
+            if guard.admits() {
+                guard.waiting -= 1;
+                group.changed.notify_all();
+                break guard.writer.as_mut().expect("an open writer").stage()?;
+            }
+            if let Err(error) = check_cancel(phase.cancelled) {
+                guard.waiting -= 1;
+                group.changed.notify_all();
+                return Err(error);
+            }
+            guard = group
+                .changed
+                .wait_timeout(guard, crate::prepared::pace::POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
-        let opened = guard.writer.as_mut().expect("an open writer").fork();
-        guard.waiting -= 1;
-        group.changed.notify_all();
-        fork = opened?;
-        guard.forked += 1;
-        forked = Forked { group, armed: true };
-    }
-    let written = write(&mut fork)
-        .and_then(|publication| fork.into_staged().map(|staged| (publication, staged)));
-    let (publication, staged) = match written {
-        Ok(written) => written,
-        Err(error) => {
-            drop(forked.finish(None));
-            return Err(error);
+    };
+    // Join only after flushing: another family's ready increment must not wait for this batch.
+    let publication = write(&mut fork)?;
+    let staged = fork.into_staged()?;
+    let forked = {
+        let mut guard = lock(group);
+        guard.waiting += 1;
+        loop {
+            if guard.lost {
+                guard.waiting -= 1;
+                group.changed.notify_all();
+                return Err(lost_to(phase));
+            }
+            if guard.admits() {
+                guard.waiting -= 1;
+                guard.forked += 1;
+                break Forked { group, armed: true };
+            }
+            if let Err(error) = check_cancel(phase.cancelled) {
+                guard.waiting -= 1;
+                group.changed.notify_all();
+                return Err(error);
+            }
+            guard = group
+                .changed
+                .wait_timeout(guard, crate::prepared::pace::POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
     };
     queued(
@@ -2605,6 +2745,7 @@ struct TestContext {
 pub(super) struct TestRegistry {
     families: Option<&'static [&'static dyn Own]>,
     hourly: bool,
+    paced: &'static [&'static str],
 }
 
 /// This thread's registry settings, to install on another thread.
@@ -2613,6 +2754,7 @@ pub(super) fn test_registry() -> TestRegistry {
     TestRegistry {
         families: TEST_FAMILIES.with(std::cell::Cell::get),
         hourly: TEST_HOURLY.with(std::cell::Cell::get),
+        paced: TEST_PACED.with(std::cell::Cell::get),
     }
 }
 
@@ -2622,6 +2764,7 @@ impl TestRegistry {
     pub(super) fn install(self) {
         TEST_FAMILIES.with(|families| families.set(self.families));
         TEST_HOURLY.with(|hourly| hourly.set(self.hourly));
+        TEST_PACED.with(|paced| paced.set(self.paced));
     }
 }
 
@@ -2725,6 +2868,7 @@ thread_local! {
     static TEST_GROUPING: std::cell::Cell<Grouping> = const { std::cell::Cell::new(Grouping::Natural) };
     static TEST_PUBLISHED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
     static TEST_HOURLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_PACED: std::cell::Cell<&'static [&'static str]> = const { std::cell::Cell::new(&[]) };
     static TEST_FAMILIES: std::cell::Cell<Option<&'static [&'static dyn Own]>> =
         const { std::cell::Cell::new(None) };
     static TEST_ONE_AFTER_ANOTHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -2758,6 +2902,80 @@ fn install_observation_hook(hook: Option<lanes::Hook>) -> impl Drop {
         }
     }
     Reset(TEST_OBSERVATION_HOOK.with(|value| value.replace(hook)))
+}
+
+/// A read's block, pace snapshot and pool-lane membership, isolated to its preparation.
+#[cfg(test)]
+pub(super) type TestRead = (usize, crate::prepared::pace::Snapshot, bool);
+
+/// The family reads and the waits for the walk recorded in this process.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestReads {
+    pub(super) paced: Vec<TestRead>,
+    pub(super) unpaced: Vec<TestRead>,
+    pub(super) waits: Vec<TestRead>,
+}
+
+/// Which record a family read goes to.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum TestReadKind {
+    Paced,
+    Unpaced,
+    Wait,
+}
+
+#[cfg(test)]
+fn note_test_read(
+    pace: &crate::prepared::pace::WalkPace,
+    kind: TestReadKind,
+    block: usize,
+    snapshot: crate::prepared::pace::Snapshot,
+    laned: bool,
+) {
+    let mut reads = pace.reads.0.lock().unwrap_or_else(PoisonError::into_inner);
+    match kind {
+        TestReadKind::Paced => &mut reads.paced,
+        TestReadKind::Unpaced => &mut reads.unpaced,
+        TestReadKind::Wait => &mut reads.waits,
+    }
+    .push((block, snapshot, laned));
+    drop(reads);
+    pace.reads.1.notify_all();
+}
+
+#[cfg(test)]
+pub(super) fn take_test_reads() -> TestReads {
+    crate::prepared::pace::started().map_or_else(TestReads::default, |pace| {
+        std::mem::take(&mut *pace.reads.0.lock().unwrap_or_else(PoisonError::into_inner))
+    })
+}
+
+#[cfg(test)]
+pub(super) fn wait_for_test_reads(done: impl Fn(&TestReads) -> bool) {
+    let pace = crate::prepared::pace::started().expect("a walk obligation");
+    let mut reads = pace.reads.0.lock().unwrap_or_else(PoisonError::into_inner);
+    while !done(&reads) {
+        reads = pace
+            .reads
+            .1
+            .wait(reads)
+            .unwrap_or_else(PoisonError::into_inner);
+    }
+}
+
+/// Run `run` with the families named `names` paced against the walk.
+#[cfg(test)]
+pub(super) fn with_test_paced<T>(names: &'static [&'static str], run: impl FnOnce() -> T) -> T {
+    struct Reset(&'static [&'static str]);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_PACED.with(|value| value.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_PACED.with(|value| value.replace(names)));
+    run()
 }
 
 /// Run `run` with every family prepared hour by hour, as before.

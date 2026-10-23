@@ -475,19 +475,40 @@ fn prepare(
     label: &str,
 ) -> io::Result<Value> {
     evidence.phase(&format!("prepare/{label}"))?;
-    let started = Instant::now();
     let mut publications = Vec::new();
-    let accepted = prepared::pipeline::run(
-        source,
-        context.content.as_ref(),
-        &AtomicBool::new(false),
-        |accepted| {
-            publications.push(json!({"sections": accepted.sections, "bytes": accepted.bytes.to_string(),
-                                 "nextBlock": accepted.next_block, "newBlocks": accepted.new_blocks}));
-        },
-    )?;
+    let samples = std::env::var_os("BATTLE_PLAN_ACCEPTANCE_MEMORY_SAMPLES").or_else(|| std::env::var_os("HOI4_ACCEPTANCE_MEMORY_SAMPLES"))
+        .map(|_| evidence.path.join("memory-samples.jsonl"));
+    let replay = source.replay_ref();
+    let sample = |full: bool| -> Value {
+        if !full {
+            return json!({"cacheBytes": replay.decoded_section_cache_bytes().to_string()});
+        }
+        let walk_millis = unix_millis();
+        let walk = prepared::pipeline::walk_window();
+        let census = replay.decoded_section_census(walk.and_then(|(_, window)| window));
+        json!({
+            "cacheBytes": census.bytes.to_string(),
+            "walk": walk.map(|(state, window)| json!({
+                "unixMillis": walk_millis, "state": state,
+                "first": window.map(|(first, _)| first), "last": window.map(|(_, last)| last)
+            })),
+            "census": census_json(&census, unix_millis())
+        })
+    };
+    let (accepted, elapsed) = with_memory_samples(samples.as_deref(), label, &sample, || {
+        prepared::pipeline::run(
+            source,
+            context.content.as_ref(),
+            &AtomicBool::new(false),
+            |accepted| {
+                publications.push(json!({"sections": accepted.sections, "bytes": accepted.bytes.to_string(),
+                                         "nextBlock": accepted.next_block, "newBlocks": accepted.new_blocks,
+                                         "unixMillis": unix_millis()}));
+            },
+        )
+    })?;
     let result = json!({
-        "elapsedMs": started.elapsed().as_secs_f64() * 1000.0,
+        "elapsedMs": elapsed.as_secs_f64() * 1000.0,
         "blocks": source.replay_ref().index.len(), "publications": publications,
         "sections": accepted.sections, "preparedBytes": accepted.bytes.to_string(),
         "nextBlock": accepted.next_block, "newBlocks": accepted.new_blocks
@@ -497,6 +518,214 @@ fn prepare(
         &json!({"label": label, "preparation": result}),
     )?;
     Ok(result)
+}
+
+/// Milliseconds since the Unix epoch, as phases are stamped.
+fn unix_millis() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |at| at.as_millis())
+        .to_string()
+}
+
+fn census_json(census: &replay::container::SectionCacheCensus, unix_millis: String) -> Value {
+    let tables: Vec<Value> = TableId::ALL
+        .into_iter()
+        .filter_map(|table| {
+            let at = table.index();
+            let held = [
+                census.largest[at],
+                census.needed[at],
+                census.obsolete[at],
+                census.behind[at],
+                census.window[at],
+                census.beyond[at],
+            ];
+            held.iter().any(|&bytes| bytes != 0).then(|| {
+                json!({
+                    "table": format!("{table:?}"), "largest": census.largest[at],
+                    "needed": census.needed[at], "obsolete": census.obsolete[at],
+                    "behind": census.behind[at], "window": census.window[at],
+                    "beyond": census.beyond[at], "earliestReader": census.retaining[at]
+                })
+            })
+        })
+        .collect();
+    json!({
+        "unixMillis": unix_millis, "bytes": census.bytes.to_string(),
+        "budget": census.budget.to_string(), "readers": census.readers,
+        "first": census.frontier.map(|(first, _)| first),
+        "last": census.frontier.map(|(_, last)| last), "tables": tables,
+        "earliestReaderMeans": "a live reader of the table at the least next block among its \
+            readers: one representative of overlapping obligations, not the owner of every \
+            byte listed"
+    })
+}
+
+/// A sampled preparation's state, which its sampler follows.
+const SAMPLING: u8 = 0;
+const RAN: u8 = 1;
+const FAILED: u8 = 2;
+const UNWOUND: u8 = 3;
+
+struct Sampling {
+    state: std::sync::Mutex<u8>,
+    changed: std::sync::Condvar,
+}
+
+impl Sampling {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(SAMPLING),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn finish(&self, state: u8) {
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = state;
+        self.changed.notify_all();
+    }
+}
+
+struct Ended<'a>(&'a Sampling);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *state == SAMPLING {
+            *state = UNWOUND;
+        }
+        drop(state);
+        self.0.changed.notify_all();
+    }
+}
+
+fn with_memory_samples<T>(
+    path: Option<&Path>,
+    label: &str,
+    sample: &(dyn Fn(bool) -> Value + Sync),
+    run: impl FnOnce() -> io::Result<T>,
+) -> io::Result<(T, Duration)> {
+    with_memory_samples_using(path, label, sample, run, |outcome| {
+        let state = outcome
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _wait =
+            outcome
+                .changed
+                .wait_timeout_while(state, Duration::from_millis(100), |state| {
+                    *state == SAMPLING
+                });
+    })
+}
+
+fn with_memory_samples_using<T>(
+    path: Option<&Path>,
+    label: &str,
+    sample: &(dyn Fn(bool) -> Value + Sync),
+    run: impl FnOnce() -> io::Result<T>,
+    tick: fn(&Sampling),
+) -> io::Result<(T, Duration)> {
+    let started = Instant::now();
+    let Some(path) = path else {
+        let ran = run()?;
+        return Ok((ran, started.elapsed()));
+    };
+    let outcome = &Sampling::new();
+    std::thread::scope(|scope| {
+        let (ready, sampled_start) = std::sync::mpsc::channel();
+        let sampler = std::thread::Builder::new()
+            .name("acceptance memory sampler".into())
+            .spawn_scoped(scope, move || {
+                sample_memory_with_ticks(
+                    path,
+                    label,
+                    sample,
+                    outcome,
+                    || tick(outcome),
+                    || {
+                        let _ = ready.send(());
+                    },
+                )
+            })?;
+        if sampled_start.recv().is_err() {
+            return sampler
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("Memory sampler panicked")))
+                .and_then(|()| {
+                    Err(io::Error::other(
+                        "Memory sampler did not write its start row",
+                    ))
+                });
+        }
+        let ended = Ended(outcome);
+        let ran = run();
+        let elapsed = started.elapsed();
+        outcome.finish(if ran.is_ok() { RAN } else { FAILED });
+        drop(ended);
+        let sampled = sampler
+            .join()
+            .unwrap_or_else(|_| Err(io::Error::other("Memory sampler panicked")));
+        let ran = ran?;
+        sampled.map(|()| (ran, elapsed))
+    })
+}
+
+fn full_row(ordinal: u64, ended: bool) -> bool {
+    ordinal.is_multiple_of(10) || ended
+}
+
+fn sample_memory_with_ticks(
+    path: &Path,
+    label: &str,
+    sample: &(dyn Fn(bool) -> Value + Sync),
+    outcome: &Sampling,
+    mut tick: impl FnMut(),
+    started: impl FnOnce(),
+) -> io::Result<()> {
+    let mut out = BufWriter::new(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?,
+    );
+    let mut ordinal: u64 = 0;
+    let mut write = |at: &str, ended: Option<&str>| -> io::Result<()> {
+        let mut row =
+            json!({"label": label, "unixMillis": unix_millis(), "at": at, "outcome": ended});
+        let full = full_row(ordinal, ended.is_some());
+        if let (Some(row), Value::Object(fields)) = (row.as_object_mut(), sample(full)) {
+            row.extend(fields);
+        }
+        ordinal += 1;
+        Evidence::row(&mut out, &row)?;
+        out.flush()
+    };
+    write("start", None)?;
+    started();
+    loop {
+        tick();
+        // Read before sampling, so the end row follows the preparation's end.
+        let ended = match *outcome
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            RAN => Some("ok"),
+            FAILED => Some("error"),
+            UNWOUND => Some("unwound"),
+            _ => None,
+        };
+        match ended {
+            Some(_) => return write("end", ended),
+            None => write("running", None)?,
+        }
+    }
 }
 
 fn requests(source: &Source, path: Option<&Path>) -> io::Result<Requests> {
@@ -2259,5 +2488,193 @@ mod progressive_tests {
         let blocks: Vec<_> = (0..20).map(|i| (i * 10, i * 10 + 9)).collect();
         assert_eq!(progressive_zoom(&blocks, 34).unwrap(), (40, 169));
         assert!(progressive_zoom(&blocks, 79).is_err());
+    }
+}
+
+#[cfg(test)]
+mod memory_sample_tests {
+    use super::*;
+
+    fn sampled<T>(
+        path: Option<&Path>,
+        label: &str,
+        sample: &(dyn Fn(bool) -> Value + Sync),
+        run: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<(T, Duration)> {
+        with_memory_samples_using(path, label, sample, run, |outcome| {
+            let state = outcome
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let _wait = outcome
+                .changed
+                .wait_while(state, |state| *state == SAMPLING);
+        })
+    }
+
+    /// This test's samples file in this process, removed first.
+    fn samples(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "hoi4-acceptance-memory-samples-{}-{name}.jsonl",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    /// The rows written to `path`, which is then removed.
+    fn read_rows(path: &Path) -> Vec<Value> {
+        let rows = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        fs::remove_file(path).unwrap();
+        rows
+    }
+
+    #[test]
+    fn a_sampled_preparation_that_unwinds_ends_its_sampler_and_records_the_end() {
+        let path = samples("unwinds");
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sampled(
+                Some(path.as_path()),
+                "test",
+                &|_: bool| json!({"cacheBytes": "7"}),
+                || -> io::Result<()> { panic!("injected preparation panic") },
+            )
+        }));
+        assert!(unwound.is_err(), "the preparation's panic propagates");
+        let rows = read_rows(&path);
+        assert_eq!(rows[0]["at"], "start");
+        let last = rows.last().unwrap();
+        assert_eq!(
+            (&last["at"], &last["outcome"]),
+            (&json!("end"), &json!("unwound"))
+        );
+        assert!(rows.iter().all(|row| row["cacheBytes"] == "7"));
+    }
+
+    #[test]
+    fn a_sampled_preparation_returns_its_result_or_error_and_records_it() {
+        let path = samples("returns");
+        let started = AtomicBool::new(false);
+        let (value, _) = sampled(
+            Some(path.as_path()),
+            "test",
+            &|_: bool| {
+                started.store(true, std::sync::atomic::Ordering::Release);
+                json!({"cacheBytes": "1"})
+            },
+            || {
+                assert!(started.load(std::sync::atomic::Ordering::Acquire));
+                Ok(5)
+            },
+        )
+        .unwrap();
+        assert_eq!(value, 5);
+        let rows = read_rows(&path);
+        assert_eq!(rows[0]["at"], "start");
+        assert_eq!(rows.last().unwrap()["outcome"], "ok");
+        let path = samples("fails");
+        let error = sampled(
+            Some(path.as_path()),
+            "test",
+            &|_: bool| json!({"cacheBytes": "1"}),
+            || -> io::Result<()> { Err(io::Error::other("injected preparation error")) },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected preparation error");
+        assert_eq!(read_rows(&path).last().unwrap()["outcome"], "error");
+        // Without a path nothing is sampled.
+        let (value, _) = sampled(None, "test", &|_: bool| -> Value { unreachable!() }, || {
+            Ok(3)
+        })
+        .unwrap();
+        assert_eq!(value, 3);
+    }
+
+    #[test]
+    fn a_sampler_that_cannot_write_its_start_row_never_starts_preparation() {
+        let path = samples("missing-parent").join("samples.jsonl");
+        let error = sampled(Some(&path), "test", &|_| json!({}), || -> io::Result<()> {
+            panic!("preparation started without memory evidence")
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn a_census_row_names_the_earliest_reader_of_each_table_it_lists() {
+        const TABLES: usize = replay_data::rows::TABLE_COUNT;
+        let mut census = replay::container::SectionCacheCensus {
+            bytes: 30,
+            budget: 60,
+            frontier: Some((1, 4)),
+            readers: 3,
+            largest: [0; TABLES],
+            needed: [0; TABLES],
+            obsolete: [0; TABLES],
+            behind: [0; TABLES],
+            window: [0; TABLES],
+            beyond: [0; TABLES],
+            retaining: [None; TABLES],
+        };
+        let (countries, clock, campaign) = (
+            TableId::Countries.index(),
+            TableId::Clock.index(),
+            TableId::Campaign.index(),
+        );
+        census.needed[countries] = 10;
+        census.retaining[countries] = Some("walk");
+        census.obsolete[clock] = 20;
+        census.retaining[clock] = Some("groups");
+        census.retaining[campaign] = Some("pages");
+        let row = census_json(&census, "7".into());
+        let listed: BTreeMap<String, Value> = row["tables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|table| (table["table"].as_str().unwrap().to_owned(), table.clone()))
+            .collect();
+        assert_eq!(listed["Countries"]["earliestReader"], "walk");
+        assert_eq!(listed["Clock"]["earliestReader"], "groups");
+        assert_eq!(listed.len(), 2, "a table holding nothing is not listed");
+        assert!(
+            row["earliestReaderMeans"]
+                .as_str()
+                .unwrap()
+                .contains("not the owner")
+        );
+    }
+
+    #[test]
+    fn the_start_every_tenth_and_the_end_row_carry_the_full_sample() {
+        assert!(full_row(0, false) && full_row(10, false) && full_row(13, true));
+        assert!(!full_row(1, false) && !full_row(13, false));
+        let path = samples("full");
+        let outcome = Sampling::new();
+        let mut ticks = 0;
+        sample_memory_with_ticks(
+            &path,
+            "test",
+            &|full| json!({"cacheBytes": "1", "full": full}),
+            &outcome,
+            || {
+                ticks += 1;
+                if ticks == 12 {
+                    outcome.finish(RAN);
+                }
+            },
+            || {},
+        )
+        .unwrap();
+        let rows = read_rows(&path);
+        let last = rows.len() - 1;
+        assert_eq!(rows[last]["at"], "end");
+        for (at, row) in rows.iter().enumerate() {
+            let full = full_row(at as u64, at == last);
+            assert_eq!(row["full"], full, "row {at} of {last}");
+        }
     }
 }

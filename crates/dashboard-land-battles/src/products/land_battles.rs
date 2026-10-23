@@ -1610,5 +1610,33 @@ impl Product for LandBattleCourses {
         census(source, branch, cancelled, context)?.course(&params.id)
     }
 }
+impl Census {
+    pub fn state_census(
+        &self,
+        line: dashboard_base::prepared::state_census::Line,
+    ) -> dashboard_base::prepared::state_census::Line {
+        let (window_keys, window_active) = self.windows.census_keys();
+        let (read_keys, read_active) = self.reads.census_keys();
+        line.field("land_episodes", self.episodes.len())
+            .json("land_episodes_json", &self.episodes)
+            .field("land_open", self.open.len())
+            .field("land_latest", self.latest.len())
+            .field("land_observed", self.observed.len())
+            .field("land_warnings", self.warnings.len())
+            .field("land_live_warnings", self.live_warnings.len())
+            .field("land_content_warnings", self.content_warnings.len())
+            .json("land_links_json", &self.links)
+            .json("land_variants_json", &self.variants)
+            .json("land_designs_json", &self.designs)
+            .field("land_pages", self.pages.len())
+            .json("land_pages_json", &self.pages)
+            .field("land_window_keys", window_keys)
+            .field("land_window_active", window_active)
+            .json("land_windows_json", &self.windows)
+            .field("land_read_keys", read_keys)
+            .field("land_read_active", read_active)
+            .json("land_reads_json", &self.reads)
+    }
+}
 #[cfg(test)]
 mod tests;

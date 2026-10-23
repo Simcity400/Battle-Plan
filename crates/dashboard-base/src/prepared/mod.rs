@@ -16,6 +16,7 @@ pub mod prefix;
 pub mod prepass;
 pub use job_priority as priority;
 pub mod series;
+pub mod state_census;
 mod store;
 pub mod timing;
 
