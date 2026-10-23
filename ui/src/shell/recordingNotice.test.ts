@@ -8,9 +8,7 @@ import { formatDateTime } from '../dashboard/calendar.ts';
 // Node strips TypeScript but needs the UI toolchain to compile JSX.
 const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null } });
 const { RecordingNotice, PartialRecordingBadge, partialRecordingText } =
-  await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx') as typeof import('./recordingNotice.tsx');
-const { saveRecordingNames, setRecordingName } =
-  await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts').finally(() => vite.close()) as typeof import('../dashboard/recordingNames.ts');
+  await vite.ssrLoadModule('/ui/src/shell/recordingNotice.tsx').finally(() => vite.close()) as typeof import('./recordingNotice.tsx');
 
 test('partial recording has a persistent warning notice naming the failure and known hour', () => {
   const partial = { sessionId: '7', reason: 'collector allocation failed', failedHour: 1000 };
@@ -65,14 +63,10 @@ test('damage and partial status share one banner and one Damaged pill with techn
   assert.match(badge, /Partial recording · collector allocation failed/);
 });
 
-test('the recording notice shows the display name and falls back to the file name when cleared', () => {
-  const path = 'C:/Original.battleplan', partial = { sessionId: '7', reason: 'The game closed.', failedHour: null };
-  const markup = () => renderToStaticMarkup(createElement(RecordingNotice, { partial, path }));
-  saveRecordingNames(setRecordingName({}, path, 'Weekend campaign'), { getItem: () => null, setItem() {} });
-  assert.match(markup(), /<strong[^>]*>Weekend campaign<\/strong>/);
-  assert.match(markup(), /data-tooltip="Weekend campaign · Original.battleplan"/);
-  assert.match(markup(), /Partial recording · The game closed\./);
-  saveRecordingNames({}, { getItem: () => null, setItem() {} });
-  assert.match(markup(), /<strong[^>]*>Original<\/strong>/);
-  assert.doesNotMatch(markup(), /Weekend campaign/);
+test('the recording notice names the recording by its file name', () => {
+  const path = 'C:/Germany 1936–1941.battleplan', partial = { sessionId: '7', reason: 'The game closed.', failedHour: null };
+  const markup = renderToStaticMarkup(createElement(RecordingNotice, { partial, path }));
+  assert.match(markup, /<strong[^>]*>Germany 1936–1941<\/strong>/);
+  assert.match(markup, /data-tooltip="Germany 1936–1941.battleplan"/);
+  assert.match(markup, /Partial recording · The game closed\./);
 });

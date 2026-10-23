@@ -234,9 +234,17 @@ impl SourceKey {
         }
     }
 
-    /// Refresh recording-only metadata without validating the content binding.
-    pub fn refresh_recording(&self) -> io::Result<Self> {
-        let recording = Stamp::read(self.recording.path.clone())?;
+    /// The same recording under another name: a rename keeps its size, time and content.
+    pub fn renames(&self, previous: &SourceKey) -> bool {
+        self.recording.path != previous.recording.path
+            && self.recording.size == previous.recording.size
+            && self.recording.modified == previous.recording.modified
+            && self.content == previous.content
+    }
+
+    /// Refresh recording-only metadata at its current path, without validating the content binding.
+    pub fn refresh_recording(&self, recording: &Path) -> io::Result<Self> {
+        let recording = Stamp::capture(recording)?;
         if recording == self.recording {
             return Ok(self.clone());
         }
@@ -597,8 +605,8 @@ impl Store {
     /// The store checks growth and content metadata, not byte identity. Ordinary
     /// reopen never accepts an unequal key; this operation publishes a new key last.
     pub fn append(&self, previous: &SourceKey, key: SourceKey) -> io::Result<Writer> {
-        if key.recording.path != previous.recording.path
-            || key.recording.size <= previous.recording.size
+        // The store is its recording's identity, so a renamed recording appends, or rebinds unchanged.
+        if (key.recording.size <= previous.recording.size && !key.renames(previous))
             || key.content != previous.content
         {
             return Err(invalid(
@@ -903,9 +911,9 @@ pub mod counters {
     }
 }
 
+/// A store is its recording's identity, so a renamed recording continues its prefix.
 fn prefix_inputs(previous: &SourceKey, current: &SourceKey) -> io::Result<bool> {
-    Ok(current.recording.path == previous.recording.path
-        && current.recording.size >= previous.recording.size
+    Ok(current.recording.size >= previous.recording.size
         && current.content == previous.content
         && current.recording_current()?)
 }

@@ -10,7 +10,7 @@ use crate::{
 use recorder::controller::{
     self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, Stage,
 };
-use replay::{container::Replay, recorder_settings::RecorderSettings};
+use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
 use serde_json::Value;
 use std::{
     cell::{Cell, RefCell},
@@ -50,8 +50,12 @@ struct Inner {
     seen: bool,
     /// Hours the collector has processed this session.
     hours: u64,
-    /// Bytes of the earlier recording this session continues, by campaign.
-    earlier: Option<(String, Option<u64>)>,
+    /// The earlier recording this session continues and its size, by campaign.
+    earlier: Option<(String, Option<PathBuf>, Option<u64>)>,
+    /// The loaded campaign's recording while not recording it.
+    idle_recording: targets::RecordingCache,
+    /// The saved recording the panel still shows, found again if renamed.
+    saved_recording: targets::RecordingCache,
     /// The campaign and flag keys whose flag was last asked for this session.
     flag_keys: Option<(String, Vec<String>)>,
     /// This session's game and Paradox user folders, for its content stack.
@@ -110,6 +114,11 @@ fn request_flag(
     if let Err(error) = spawned {
         eprintln!("The flag could not be resolved: {error}");
     }
+}
+
+/// A recording's name as both apps show it: its file name.
+fn file_name(path: &Path) -> Option<String> {
+    path.file_stem()?.to_str().map(str::to_owned)
 }
 
 fn now_ms() -> u64 {
@@ -550,13 +559,29 @@ impl Recorder {
         let named = loaded.and_then(|loaded| {
             let root = save_root(settings).ok()?;
             let folder = targets::current_folder(settings, &root, &loaded.campaign);
-            let recording = targets::recording_path(&folder, &loaded.campaign);
+            let recording = self.lock().idle_recording.get(&folder, &loaded.campaign);
             Some((loaded.clone(), recording))
         });
+        let saved = {
+            let mut guard = self.lock();
+            let inner = &mut *guard;
+            let snapshot = &inner.snapshot;
+            match (inner.result, &snapshot.recording, snapshot.campaign.clone()) {
+                (true, Some(recording), Some(campaign)) => Path::new(recording)
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .and_then(|folder| inner.saved_recording.get(&folder, &campaign)),
+                _ => None,
+            }
+        };
         self.update(app, |inner| {
             let automatic = settings.record_every_campaign;
             if inner.result {
                 inner.snapshot.automatic = automatic;
+                if let Some(saved) = saved {
+                    inner.snapshot.name = file_name(&saved);
+                    inner.snapshot.recording = Some(saved.display().to_string());
+                }
                 return;
             }
             inner.snapshot = Snapshot {
@@ -570,10 +595,11 @@ impl Recorder {
                 ..Snapshot::default()
             };
             if let Some((loaded, recording)) = named {
-                inner.snapshot.continued = recording.exists();
+                inner.snapshot.continued = recording.is_some();
                 inner.snapshot.flag = inner.last_flags.get(&loaded.campaign).cloned();
                 inner.snapshot.campaign = Some(loaded.campaign);
-                inner.snapshot.recording = Some(recording.display().to_string());
+                inner.snapshot.name = recording.as_deref().and_then(file_name);
+                inner.snapshot.recording = recording.map(|path| path.display().to_string());
                 inner.snapshot.hour = Some(loaded.hour);
             }
         });
@@ -620,8 +646,11 @@ impl Recorder {
         self.control.reset();
         let automatic = settings.record_every_campaign;
         let opening = loaded.as_ref().map(|loaded| {
-            let recording = targets::recording_path(&target, &loaded.campaign);
-            let bytes = fs::metadata(&recording).ok().map(|metadata| metadata.len());
+            let recording = targets::recording(&target, &loaded.campaign);
+            let bytes = recording
+                .as_ref()
+                .and_then(|recording| fs::metadata(recording).ok())
+                .map(|metadata| metadata.len());
             (loaded.clone(), recording, bytes)
         });
         let flag_folders = probe
@@ -644,14 +673,15 @@ impl Recorder {
             // A loaded campaign is recording from attachment; its first hour
             // follows when the game runs.
             if let Some((loaded, recording, bytes)) = opening {
-                inner.earlier = Some((loaded.campaign.clone(), bytes));
+                inner.earlier = Some((loaded.campaign.clone(), recording.clone(), bytes));
                 inner.snapshot.flag = inner.last_flags.get(&loaded.campaign).cloned();
                 let snapshot = &mut inner.snapshot;
                 snapshot.phase = Phase::Recording;
                 snapshot.started_at = Some(now_ms());
                 snapshot.campaign = Some(loaded.campaign);
-                snapshot.recording = Some(recording.display().to_string());
-                snapshot.continued = bytes.is_some();
+                snapshot.name = recording.as_deref().and_then(file_name);
+                snapshot.continued = recording.is_some();
+                snapshot.recording = recording.map(|path| path.display().to_string());
                 snapshot.hour = Some(loaded.hour);
                 snapshot.bytes = bytes;
             }
@@ -687,13 +717,17 @@ impl Recorder {
         let started = Cell::new(false);
         let stage = |stage: Stage<'_>| match stage {
             Stage::Preparing => {}
-            Stage::Recording { session, status } => {
+            Stage::Recording {
+                session,
+                status,
+                names,
+            } => {
                 started.set(true);
                 session_dir
                     .borrow_mut()
                     .get_or_insert_with(|| session.to_path_buf());
                 if !self.control.stopping() {
-                    self.live(app, &target, session, status, probe);
+                    self.live(app, &target, session, status, names, probe);
                 }
             }
             Stage::Saving { records } => self.update(app, |inner| {
@@ -716,6 +750,7 @@ impl Recorder {
             opening: loaded
                 .as_ref()
                 .map(|loaded| (loaded.campaign.as_str(), loaded.load)),
+            names_wanted: &|| self.lock().panel_open,
         };
         let result = controller::record(pid, &recording, &self.control, &stage);
         let mut ended = self.finish(app, result, started.get());
@@ -733,6 +768,7 @@ impl Recorder {
         target: &Path,
         session: &Path,
         status: Option<&Value>,
+        names: &BTreeMap<String, String>,
         probe: Option<&Probe>,
     ) {
         let mut live = status.map(snapshot::read_live).unwrap_or_default();
@@ -742,25 +778,33 @@ impl Recorder {
             live.campaign = Some(loaded.campaign);
             live.hour = live.hour.or(Some(loaded.hour));
         }
-        let recording = live
-            .campaign
-            .as_ref()
-            .map(|campaign| targets::recording_path(target, campaign));
-        // The earlier recording is not written until this session saves, so its
-        // size is read once per campaign.
-        let earlier = match (&live.campaign, &recording) {
-            (Some(campaign), Some(path)) => {
+        // Held unchanged until this session saves, so found once per campaign.
+        let (recording, earlier) = match &live.campaign {
+            Some(campaign) => {
                 let cached = self.lock().earlier.clone();
                 match cached {
-                    Some((id, bytes)) if &id == campaign => bytes,
+                    Some((id, recording, bytes)) if &id == campaign => (recording, bytes),
                     _ => {
-                        let bytes = fs::metadata(path).ok().map(|metadata| metadata.len());
-                        self.lock().earlier = Some((campaign.clone(), bytes));
-                        bytes
+                        let recording = targets::recording(target, campaign);
+                        let bytes = recording
+                            .as_ref()
+                            .and_then(|recording| fs::metadata(recording).ok())
+                            .map(|metadata| metadata.len());
+                        self.lock().earlier = Some((campaign.clone(), recording.clone(), bytes));
+                        (recording, bytes)
                     }
                 }
             }
-            _ => None,
+            None => (None, None),
+        };
+        let name = match (&recording, &live.campaign) {
+            (Some(recording), _) => file_name(recording),
+            (None, Some(campaign)) => names
+                .get(campaign)
+                .and_then(|stem| recording_files::unique_path(target, stem, None).ok())
+                .as_deref()
+                .and_then(file_name),
+            (None, None) => None,
         };
         // A new set of flag keys (another country, cosmetic tag or ruling group)
         // or another campaign asks for its flag once.
@@ -800,8 +844,9 @@ impl Recorder {
                     snapshot.flag = inner.last_flags.get(&campaign).cloned();
                 }
                 snapshot.campaign = Some(campaign);
+                snapshot.name = name;
+                snapshot.continued = recording.is_some();
                 snapshot.recording = recording.map(|path| path.display().to_string());
-                snapshot.continued = earlier.is_some();
                 snapshot.hour = live.hour.or(snapshot.hour);
                 snapshot.bytes = Some(earlier.unwrap_or(0) + live.spool_bytes);
             }
@@ -836,17 +881,23 @@ impl Recorder {
             return ended;
         }
         let campaign = self.lock().snapshot.campaign.clone();
+        let campaign_of = |path: &Path| {
+            recording_files::campaign_of(path)
+                .ok()
+                .flatten()
+                .and_then(|id| String::from_utf8(id).ok())
+        };
         let saved = outcome
             .replays
             .iter()
-            .find(|path| {
-                campaign.as_deref().is_some_and(|campaign| {
-                    path.file_stem().and_then(|stem| stem.to_str()) == Some(campaign)
-                })
-            })
+            .find(|path| campaign.is_some() && campaign_of(path) == campaign)
             .or(outcome.replays.last())
             .cloned();
         let omitted = omitted_loads(&outcome.omitted);
+        let unrenamed = (!outcome.unrenamed.is_empty()).then(|| Problem {
+            text: "Saved, but the file kept its old name. It's renamed at the next save.".into(),
+            detail: outcome.unrenamed.join("\n"),
+        });
         match saved {
             Some(path) => {
                 let span = Replay::read_hour_span(&path).ok().flatten();
@@ -857,18 +908,15 @@ impl Recorder {
                     let snapshot = &mut inner.snapshot;
                     snapshot.phase = Phase::Saved;
                     snapshot.omitted = omitted;
-                    snapshot.campaign = path
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .map(str::to_owned)
-                        .or(snapshot.campaign.take());
+                    snapshot.campaign = campaign_of(&path).or(snapshot.campaign.take());
+                    snapshot.name = file_name(&path);
                     snapshot.recording = Some(path.display().to_string());
                     snapshot.first_hour = span.map(|(first, _)| first);
                     snapshot.hour = span.map(|(_, last)| last).or(snapshot.hour);
                     snapshot.bytes = bytes;
                     snapshot.stopping = false;
                     snapshot.progress = None;
-                    snapshot.problem = None;
+                    snapshot.problem = unrenamed;
                 });
             }
             // Nothing was saved: nothing reached the spool (the game closed at
@@ -1010,11 +1058,9 @@ mod tests {
         let scratch = scratch("new-file");
         let settings = scratch.join("settings.json");
         let root = scratch.join("recordings");
-        fs::write(
-            targets::recording_path(&root, CAMPAIGN),
-            b"earlier recording",
-        )
-        .unwrap();
+        let earlier = root.join("Germany 1936–1941.battleplan");
+        targets::tests::recording_file(&earlier, CAMPAIGN);
+        let contents = fs::read(&earlier).unwrap();
         RecorderSettings::update_at(&settings, |settings| {
             settings.campaigns.entry(CAMPAIGN.into()).or_default().next = NextLoad::NewFile;
         })
@@ -1035,10 +1081,7 @@ mod tests {
             saved.campaigns[CAMPAIGN].folder.as_deref(),
             Some(&*format!("{CAMPAIGN} (2)"))
         );
-        assert_eq!(
-            fs::read(targets::recording_path(&root, CAMPAIGN)).unwrap(),
-            b"earlier recording"
-        );
+        assert_eq!(fs::read(&earlier).unwrap(), contents);
         fs::remove_dir_all(scratch).unwrap();
     }
 
@@ -1066,7 +1109,7 @@ mod tests {
         .unwrap();
         // The first recording of the campaign is still only this session's
         // spool; New file then a reload must not join the two loads.
-        assert!(!targets::recording_path(&root, CAMPAIGN).exists());
+        assert_eq!(targets::recording(&root, CAMPAIGN), None);
         let session = admission(&settings, &root, &root, false);
         assert_eq!(session.admit(CAMPAIGN, true), Err(Refusal::Elsewhere));
         let saved = RecorderSettings::load_from(&settings).unwrap();

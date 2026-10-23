@@ -7,12 +7,11 @@ import type { PanelActions, PanelViewProps } from './RecorderPanel';
 import type { RecorderSettings, Snapshot } from './status';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
-const PATH = `C:\\Recordings\\${CAMPAIGN}.battleplan`;
+const PATH = `C:\\Recordings\\Germany 1936–1943.battleplan`;
 const STARTED = Date.UTC(2026, 9, 12, 12, 0);
 const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-  operationOutcomes: true, politics: true, campaigns: {}, recordingNames: { [`c:/recordings/${CAMPAIGN}.battleplan`]: 'Operation Barbarossa' },
-  effectiveSaveFolder: 'C:\\Recordings' };
-const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, continued: true, hour: 59_000_000, firstHour: null,
+  operationOutcomes: true, politics: true, campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
+const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000, firstHour: null,
   bytes: 380 * 2 ** 20, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true, session: null, flag: null };
 const actions = new Proxy({}, { get: () => () => {} }) as PanelActions;
 const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/&#x27;/g, '\'').replace(/\s+/g, ' ');
@@ -26,11 +25,11 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
       snapshot: recording, settings, view: 'main', asking: false, error: null, now: STARTED + (2 * 60 + 14) * 60_000, actions, ...props } as never));
 
     const recordingPanel = render({});
-    assert.match(text(recordingPanel), /Operation Barbarossa Recording/);
+    assert.match(text(recordingPanel), /Germany 1936–1943 Recording/);
     assert.doesNotMatch(recordingPanel, /recorder-flag/, 'no flag is drawn when none resolved');
     const flagged = render({ snapshot: { ...recording, flag: { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] } } });
     assert.match(flagged, /<span class="recorder-flag"><canvas class="country-flag country-flag-art" width="2" height="1"/);
-    assert.match(flagged, /recorder-flag[\s\S]*Operation Barbarossa/, 'the flag leads the head');
+    assert.match(flagged, /recorder-flag[\s\S]*Germany 1936–1943/, 'the flag leads the head');
     assert.match(text(recordingPanel), / Stop /);
     assert.match(text(recordingPanel), /This campaign Record automatically Next time it loads Continue New file/);
     assert.match(text(recordingPanel), /Open Battle Plan/);

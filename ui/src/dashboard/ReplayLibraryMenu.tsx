@@ -2,9 +2,9 @@ import CampaignPreparation from '../shell/preparation/PreparationView';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { DashboardClient, ReplayFile } from './client';
-import type { Campaign } from './campaigns';
-import { campaignSlots, sameCampaignPath } from './campaigns';
-import { recordingDisplayName, recordingFilename, recordingNameMatches, recordingNameTooltip, saveRecordingNames, setRecordingName, useRecordingNames } from './recordingNames';
+import type { Campaign, Relocation } from './campaigns';
+import { campaignSlots, followRelocations, sameCampaignPath } from './campaigns';
+import { recordingDisplayName, recordingFilename, recordingNameMatches } from './recordingNames';
 import type { SourceBinding } from './sources';
 import type { ReplayLibraryState } from './replayLibrary';
 import { Icon } from '../components/Icons';
@@ -21,16 +21,30 @@ const ARCHIVE_OPEN_KEY = 'hoi4-replay.sidebar.archive-open';
 const ARCHIVE_FIRST_PAGE = 10;
 const ARCHIVE_PAGE = 25;
 
-export default function ReplayLibraryMenu({ library, client, campaigns, bindings, defaultId, countryTags, onLoad, onUnload, onDefault, onOpenReady, slots, errors }: {
+export default function ReplayLibraryMenu({ library, client, campaigns, bindings, defaultId, countryTags, onLoad, onUnload, onDefault, onRenamed, relocations, onOpenReady, slots, errors }: {
   library: ReplayLibraryState; client: DashboardClient; campaigns: Campaign[]; bindings: Record<string, SourceBinding>; defaultId: string | null;
   /** The country each campaign shows: the chosen one, else the recorded player. */
   countryTags: Record<string, string | null>;
   onLoad: (path: string, label: string, slotId: string) => void; onUnload: (id: string) => void; onDefault: (id: string) => void;
+  /** A recording's file was renamed: what is kept by its path follows it. */
+  onRenamed: (from: string, to: string) => void;
+  /** Every rename of an open recording the dashboard followed, oldest first. */
+  relocations: readonly Relocation[];
   slots: ReturnType<typeof campaignSlots>; errors: Record<string, string>;
   onOpenReady?: (open: (() => void) | null) => void;
 }) {
   const [query, setQuery] = useState('');
   const [pickedFiles, setPickedFiles] = useState<ReplayFile[]>([]);
+  // Each rename the dashboard followed, by either app or in Explorer: a picked file follows it too.
+  const followed = useRef(0);
+  useEffect(() => {
+    const fresh = relocations.slice(followed.current);
+    followed.current = relocations.length;
+    if (fresh.length) setPickedFiles(files => files.map(file => {
+      const path = followRelocations(file.path, fresh);
+      return path === file.path ? file : { ...file, path, name: recordingFilename(path) };
+    }));
+  }, [relocations]);
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -44,17 +58,26 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const preparationSource = preparationCampaign ? bindings[preparationCampaign.id]?.source ?? null : null;
   const [flagCampaign, setFlagCampaign] = useState<string | null>(null);
   const flags = useCampaignFlags();
-  const names = useRecordingNames();
-  const displayName = (path: string) => recordingDisplayName(path, names);
+  const displayName = recordingDisplayName;
   const flagSource = flagCampaign ? bindings[flagCampaign]?.source : null;
+  // A recording still opening keeps its name until it has opened.
+  const opening = (path: string) => campaigns.some(campaign => campaign.loading && sameCampaignPath(campaign.path, path));
   const beginRename = (path: string) => {
+    if (!client.renameRecording || opening(path)) return;
     setActionError(null); editingPath.current = path; setRenaming(path);
   };
   const cancelRename = () => { editingPath.current = null; setRenaming(null); };
+  // The name is the file's: renaming renames the file, and later saves keep the name.
   const commitRename = (path: string, draft: string) => {
     if (!editingPath.current || !sameCampaignPath(editingPath.current, path)) return;
     cancelRename();
-    setActionError(saveRecordingNames(setRecordingName(names, path, draft), undefined, setActionError));
+    const name = draft.trim();
+    if (!name || name === displayName(path) || !client.renameRecording || opening(path)) return;
+    void client.renameRecording(path, name).then(renamed => {
+      setPickedFiles(files => files.map(file => sameCampaignPath(file.path, path) ? { ...file, path: renamed, name: recordingFilename(renamed) } : file));
+      onRenamed(path, renamed);
+      void library.refresh();
+    }, (error: unknown) => setActionError(error instanceof Error ? error.message : String(error)));
   };
   const renameInput = (path: string) => <input className="campaign-rename" aria-label="Recording name" defaultValue={displayName(path)} autoFocus
     onFocus={event => event.currentTarget.select()} onBlur={event => commitRename(path, event.currentTarget.value)}
@@ -66,7 +89,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   const actions = (path: string, campaign?: Campaign, button?: HTMLButtonElement): MenuItem[] => {
     const source = campaign ? bindings[campaign.id]?.source : null;
     return [
-      { label: 'Rename', icon: 'edit', run: () => beginRename(path) },
+      ...(client.renameRecording && !campaign?.loading ? [{ label: 'Rename', icon: 'edit' as const, run: () => beginRename(path) }] : []),
       ...(client.preparationStatus ? [{ label: 'Preparation and storage', run: () => {
         setPreparationPath(path);
         const rect = button?.getBoundingClientRect() ?? { left: 16, right: 240, top: 48, bottom: 72 };
@@ -119,13 +142,13 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
   }
   const visible = campaigns.filter(campaign => bindings[campaign.id]?.source || campaign.loading);
   const needle = query.trim().toLowerCase();
-  const shown = visible.filter(campaign => recordingNameMatches(campaign.path, needle, names));
+  const shown = visible.filter(campaign => recordingNameMatches(campaign.path, needle));
   const archived = files.filter(file => !visible.some(campaign => sameCampaignPath(file.path, campaign.path)));
-  const found = needle ? archived.filter(file => recordingNameMatches(file.path, needle, names) || file.folder.toLowerCase().includes(needle)) : [];
+  const found = needle ? archived.filter(file => recordingNameMatches(file.path, needle) || file.folder.toLowerCase().includes(needle)) : [];
   const loadRow = (file: ReplayFile) => {
     const error = Object.entries(errors).find(([path]) => sameCampaignPath(path, file.path))?.[1];
     return <div className="loaded-campaign" role="listitem" key={file.path}>
-      {renaming && sameCampaignPath(renaming, file.path) ? renameInput(file.path) : <button type="button" className="sidebar-row" data-tooltip={[recordingNameTooltip(file.path, names), error].filter(Boolean).join(' · ')}
+      {renaming && sameCampaignPath(renaming, file.path) ? renameInput(file.path) : <button type="button" className="sidebar-row" data-tooltip={[recordingFilename(file.path), error].filter(Boolean).join(' · ')}
         aria-label={`Load ${displayName(file.path)}`} onKeyDown={event => rowKey(event, file.path)}
         onContextMenu={event => { const items = actions(file.path); if (items.length) { event.preventDefault(); event.stopPropagation(); contextMenu.open(event.clientX, event.clientY, items); } }}
         onClick={() => { onLoad(file.path, recordingFilename(file.path), slotId); setQuery(''); }}><Icon name="file" /><span>{displayName(file.path)}</span></button>}
@@ -154,7 +177,7 @@ export default function ReplayLibraryMenu({ library, client, campaigns, bindings
             onKeyDown={event => rowKey(event, campaign.path, campaign)}
             onContextMenu={event => { event.preventDefault(); event.stopPropagation(); contextMenu.open(event.clientX, event.clientY, actions(campaign.path, campaign, event.currentTarget)); }}
             aria-label={`${isDefault ? `${displayName(campaign.path)}, shown campaign` : `Show ${displayName(campaign.path)}`}${partial ? ', partial recording' : ''}`}
-            data-tooltip={[recordingNameTooltip(campaign.path, names), country, partial && partialRecordingText(partial)].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
+            data-tooltip={[recordingFilename(campaign.path), country, partial && partialRecordingText(partial)].filter(Boolean).join(' · ')} onClick={() => onDefault(campaign.id)}>
             {source ? <SourceFlag client={client} source={source} tag={tag} /> : <span className="campaign-loading"><span className="spinner" /></span>}
             <span>{displayName(campaign.path)}</span>
             <PartialRecordingBadge partial={partial} damaged={damaged} />

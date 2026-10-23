@@ -106,7 +106,7 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
     </div>;
   }
 
-  const shown = head(snapshot, settings?.recordingNames ?? {});
+  const shown = head(snapshot);
   const prompt = stopPromptVisible(asking, snapshot);
   const campaign = snapshot.campaign;
   return <div ref={root} className="recorder">

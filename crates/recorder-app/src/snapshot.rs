@@ -55,8 +55,10 @@ pub struct Snapshot {
     pub phase: Phase,
     /// Recorded campaign id, when known.
     pub campaign: Option<String>,
-    /// The recording this campaign saves into, or was saved to.
+    /// The recording this campaign saves into, or was saved to, once it exists.
     pub recording: Option<String>,
+    /// Its file name; before its first save, the name its file will get.
+    pub name: Option<String>,
     /// That recording already held an earlier recording when this session began.
     pub continued: bool,
     /// The current (or last saved) game hour.

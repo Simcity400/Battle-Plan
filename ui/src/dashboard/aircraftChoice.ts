@@ -4,19 +4,19 @@ const PREFIX = 'battle-plan:fly-aircraft:';
 
 type ChoiceStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
-/** The aircraft chosen for the recording at `path`, or none; storage that cannot be read keeps none. */
-export function loadAircraftChoice(path: string, storage?: ChoiceStorage): string | null {
+/** The aircraft chosen for the recording `recordingKey` names, or none; storage that cannot be read keeps none. */
+export function loadAircraftChoice(recording: string, storage?: ChoiceStorage): string | null {
   try {
-    const name = (storage ?? localStorage).getItem(PREFIX + path);
+    const name = (storage ?? localStorage).getItem(PREFIX + recording);
     return name ? name : null;
   } catch { return null; }
 }
 
 /** Keeps or forgets the recording's choice; whether this device keeps it changes nothing about the map. */
-export function saveAircraftChoice(path: string, aircraft: string | null, storage?: ChoiceStorage): void {
+export function saveAircraftChoice(recording: string, aircraft: string | null, storage?: ChoiceStorage): void {
   try {
     const target = storage ?? localStorage;
-    if (aircraft) target.setItem(PREFIX + path, aircraft);
-    else target.removeItem(PREFIX + path);
+    if (aircraft) target.setItem(PREFIX + recording, aircraft);
+    else target.removeItem(PREFIX + recording);
   } catch { /* The choice still applies for this session. */ }
 }

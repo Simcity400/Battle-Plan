@@ -6,71 +6,71 @@ import type { RecorderSettings, Snapshot } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Users\\Example\\Battle Plan\\${CAMPAIGN}.battleplan`;
-const names = { [`c:/users/Example/Battle Plan/${CAMPAIGN}.battleplan`]: 'Operation Barbarossa' };
 const hour = (year: number, month: number, day: number) => engineHour({ year, month, day, hour: 1 })!;
 const MB = 2 ** 20;
 
 function snapshot(change: Partial<Snapshot>): Snapshot {
-  return { phase: 'waiting', campaign: null, recording: null, continued: false, hour: null, firstHour: null, bytes: null, progress: null,
+  return { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null, bytes: null, progress: null,
     startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, ...change };
 }
-const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, hour: hour(1943, 6, 12), bytes: 380 * MB, ...change });
+const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', hour: hour(1943, 6, 12), bytes: 380 * MB, ...change });
 
 test('every panel state reads as the approved design', () => {
-  assert.deepEqual(head(snapshot({}), names), { glyph: true, flag: null, title: 'Waiting for the game', dot: null, label: null,
+  assert.deepEqual(head(snapshot({})), { glyph: true, flag: null, title: 'Waiting for the game', dot: null, label: null,
     detail: 'Records when you load a campaign', action: null, campaign: false, footer: true });
-  assert.deepEqual(head(recording(), names), { glyph: false, flag: null, title: 'Operation Barbarossa', dot: 'red', label: 'Recording',
+  assert.deepEqual(head(recording()), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'red', label: 'Recording',
     detail: '12 Jun 1943 · 380 MB', action: 'stop', campaign: true, footer: true });
-  assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), bytes: null }), names), { glyph: false, flag: null, title: 'Operation Barbarossa',
+  assert.deepEqual(head(recording({ phase: 'notRecording', hour: hour(1938, 2, 3), bytes: null })), { glyph: false, flag: null, title: 'Germany 1936–1943',
     dot: 'grey', label: null, detail: 'Not recording · 3 Feb 1938', action: 'record', campaign: true, footer: true });
-  assert.deepEqual(head(recording({ phase: 'saving', progress: 0.35 }), names), { glyph: false, flag: null, title: 'Operation Barbarossa', dot: 'spin',
+  assert.deepEqual(head(recording({ phase: 'saving', progress: 0.35 })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'spin',
     label: 'Saving recording…', detail: null, action: null, campaign: false, footer: false, bar: 0.35 });
-  assert.deepEqual(head(recording({ phase: 'saved', firstHour: hour(1936, 1, 1), bytes: 412 * MB }), names), { glyph: false, flag: null,
-    title: 'Operation Barbarossa', dot: 'green', label: 'Saved', detail: '1936 – Jun 1943 · 412 MB', action: 'open', campaign: false, footer: true });
-  assert.deepEqual(head(recording({ phase: 'discarded' }), names), { glyph: false, flag: null, title: 'Operation Barbarossa', dot: 'grey', label: null,
+  assert.deepEqual(head(recording({ phase: 'saved', firstHour: hour(1936, 1, 1), bytes: 412 * MB })), { glyph: false, flag: null,
+    title: 'Germany 1936–1943', dot: 'green', label: 'Saved', detail: '1936 – Jun 1943 · 412 MB', action: 'open', campaign: false, footer: true });
+  assert.deepEqual(head(recording({ phase: 'discarded' })), { glyph: false, flag: null, title: 'Germany 1936–1943', dot: 'grey', label: null,
     detail: 'Session discarded', action: 'record', campaign: false, footer: false });
 });
 
 test('loads a session left out are said in one plain line, in place of the usual status text', () => {
   const saved = recording({ phase: 'saved', firstHour: hour(1936, 1, 1), bytes: 412 * MB });
-  assert.deepEqual(head({ ...saved, omitted: { loads: 1, reason: 'off' } }, names), { glyph: false, flag: null, title: 'Operation Barbarossa',
+  assert.deepEqual(head({ ...saved, omitted: { loads: 1, reason: 'off' } }), { glyph: false, flag: null, title: 'Germany 1936–1943',
     dot: 'green', label: 'Saved', detail: '1 load not recorded (Record automatically was off)', action: 'open', campaign: false, footer: true });
-  assert.equal(head({ ...saved, omitted: { loads: 2, reason: 'elsewhere' } }, names).detail, '2 loads not recorded (they belong in another file)');
-  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'notAdmitted' } }, names).detail, '1 load not recorded (it was not identified)');
-  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'settings' } }, names).detail, "1 load not recorded (the recorder's settings couldn't be read)");
-  assert.equal(head({ ...saved, omitted: { loads: 3, reason: null } }, names).detail, '3 loads not recorded');
+  assert.equal(head({ ...saved, omitted: { loads: 2, reason: 'elsewhere' } }).detail, '2 loads not recorded (they belong in another file)');
+  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'notAdmitted' } }).detail, '1 load not recorded (it was not identified)');
+  assert.equal(head({ ...saved, omitted: { loads: 1, reason: 'settings' } }).detail, "1 load not recorded (the recorder's settings couldn't be read)");
+  assert.equal(head({ ...saved, omitted: { loads: 3, reason: null } }).detail, '3 loads not recorded');
   // Nothing saved because every load was left out.
-  assert.equal(head(recording({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } }), names).detail,
+  assert.equal(head(recording({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
     '1 load not recorded (Record automatically was off)');
-  assert.equal(head(snapshot({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } }), names).detail,
+  assert.equal(head(snapshot({ phase: 'notRecording', omitted: { loads: 1, reason: 'off' } })).detail,
     '1 load not recorded (Record automatically was off)');
   // Nothing left out: the usual text.
-  assert.equal(head({ ...saved, omitted: null }, names).detail, '1936 – Jun 1943 · 412 MB');
+  assert.equal(head({ ...saved, omitted: null }).detail, '1936 – Jun 1943 · 412 MB');
 });
 
 test('a resolved flag stands beside the campaign in every state that names it', () => {
   const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
   for (const phase of ['recording', 'notRecording', 'saving', 'saved', 'discarded'] as const)
-    assert.deepEqual(head(recording({ phase, flag }), names).flag, flag, phase);
+    assert.deepEqual(head(recording({ phase, flag })).flag, flag, phase);
   // Waiting names no campaign, so no flag; none resolved means none drawn.
-  assert.equal(head(snapshot({ flag }), names).flag, null);
-  assert.equal(head(recording({ flag: null }), names).flag, null);
+  assert.equal(head(snapshot({ flag })).flag, null);
+  assert.equal(head(recording({ flag: null })).flag, null);
 });
 
 test('unknown parts are left out rather than guessed', () => {
   // Before the first recorded hour there is no date or size.
-  assert.equal(head(recording({ hour: null, bytes: null }), names).detail, null);
-  // Without a display name the recording's file name names it.
-  assert.equal(head(recording(), {}).title, CAMPAIGN);
+  assert.equal(head(recording({ hour: null, bytes: null })).detail, null);
+  // A recording not named yet shows no name, never the campaign's id.
+  assert.equal(head(recording({ recording: null, name: null })).title, '');
+  assert.equal(head(recording({ recording: null, name: null })).glyph, true);
   // Saving with no measure of the remaining work.
-  assert.equal(head(recording({ phase: 'saving', progress: null }), names).bar, null);
+  assert.equal(head(recording({ phase: 'saving', progress: null })).bar, null);
   // A game whose campaign is unknown.
-  assert.deepEqual(head(snapshot({ phase: 'notRecording' }), names), { glyph: true, flag: null, title: 'Not recording', dot: null, label: null,
+  assert.deepEqual(head(snapshot({ phase: 'notRecording' })), { glyph: true, flag: null, title: 'Not recording', dot: null, label: null,
     detail: null, action: 'record', campaign: false, footer: true });
   // With automatic recording off, Waiting does not promise a recording.
-  assert.equal(head(snapshot({ automatic: false }), names).detail, null);
+  assert.equal(head(snapshot({ automatic: false })).detail, null);
   // A stop in progress takes the Stop button away.
-  assert.equal(head(recording({ stopping: true }), names).action, null);
+  assert.equal(head(recording({ stopping: true })).action, null);
   assert.equal(spanText(null, hour(1943, 6, 12)), '12 Jun 1943');
   assert.equal(spanText(null, null), null);
 });
@@ -98,7 +98,7 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
 
 test('campaign choices follow the global default until set', () => {
   const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-    operationOutcomes: true, politics: true, campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, recordingNames: {}, effectiveSaveFolder: 'C:\\r' };
+    operationOutcomes: true, politics: true, campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
   assert.equal(recordsAutomatically(settings, CAMPAIGN), false);
   assert.equal(nextLoad(settings, CAMPAIGN), 'newFile');
   assert.equal(recordsAutomatically(settings, 'other'), true);

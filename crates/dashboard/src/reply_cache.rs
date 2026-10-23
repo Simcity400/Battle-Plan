@@ -178,8 +178,7 @@ fn build() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Held files use the canonical path and opened metadata revision. Synthetic
-/// resident recordings retain their byte identity without a recording file read.
+/// Held files use the recording's identity and opened revision; resident ones their bytes.
 fn recording(source: &Source) -> String {
     #[derive(Default)]
     struct Fingerprint(Option<String>);
@@ -190,10 +189,10 @@ fn recording(source: &Source) -> String {
         .0
         .get_or_insert_with(|| {
             if replay.is_file_backed() {
-                let path = std::fs::canonicalize(source.path())
-                    .unwrap_or_else(|_| source.path().to_owned());
+                let identity = dashboard_base::prepared::recording_identity(source.path())
+                    .map_or_else(|_| source.path().display().to_string(), |id| id.to_string());
                 let mut hash = blake3::Hasher::new();
-                hash.update(path.as_os_str().as_encoded_bytes());
+                hash.update(identity.as_bytes());
                 hash.update(&[0]);
                 hash.update(source.key().revision.as_bytes());
                 hash.finalize().to_hex().to_string()

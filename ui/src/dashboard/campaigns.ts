@@ -37,6 +37,29 @@ export function defaultAfterUnload(current: string | null, removed: string, load
 export const normalizeCampaignPath = (path: string) => path.replaceAll('\\', '/').toLowerCase()
   .replace(/^\/\/\?\/unc\//, '//').replace(/^\/\/\?\//, '');
 
+/** Whether a campaign key (the header's campaign id in hex) names a campaign UUID. */
+const namesCampaign = (campaignKey: string) => /^(?:[0-9a-f]{2})*$/i.test(campaignKey)
+  && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    campaignKey.replace(/../g, pair => String.fromCharCode(parseInt(pair, 16))));
+
+/** A recording as this device keeps things about it: its folder and campaign, which a rename keeps; else its path. */
+export const recordingKey = (path: string, campaignKey: string) => namesCampaign(campaignKey)
+  ? `${normalizeCampaignPath(path).replace(/\/[^/]*$/, '')}\n${campaignKey}`
+  : normalizeCampaignPath(path);
+
 export function sameCampaignPath(first: string, second: string): boolean {
   return normalizeCampaignPath(first) === normalizeCampaignPath(second);
+}
+
+/** A rename the dashboard followed: from, to, and the open campaign renamed. */
+export type Relocation = readonly [string, string, string];
+
+/** Where `path` is after `relocations`, oldest first: the first that moves it names the recording,
+ * and only that recording's later renames move it on. Another recording taking its old name is not. */
+export function followRelocations(path: string, relocations: readonly Relocation[]): string {
+  const first = relocations.findIndex(([from]) => sameCampaignPath(from, path));
+  if (first < 0) return path;
+  const identity = relocations[first][2];
+  return relocations.slice(first).filter(([, , recording]) => recording === identity)
+    .reduce((at, [from, to]) => sameCampaignPath(from, at) ? to : at, path);
 }

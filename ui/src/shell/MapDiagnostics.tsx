@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { desktopAvailable, errorMessage, mapAction } from './api';
-import { recordingDisplayName, recordingNameTooltip, useRecordingNames } from '../dashboard/recordingNames';
+import { recordingDisplayName, recordingFilename } from '../dashboard/recordingNames';
 import type { DesktopState, ReplayMetadata } from './api';
 import type { BranchChoice } from '../dashboard/Dashboard';
 import { formatDateTime } from '../dashboard/calendar';
@@ -43,7 +43,6 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
 /** The recording's span and status, one coverage row per branch (several can be played
  * from here), and its notes folded away. */
 function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: BranchChoice | null }) {
-  const names = useRecordingNames();
   const branches = metadata.branches;
   const labels = branchLabels(branches);
   const first = Math.min(...branches.map(branch => branch.firstHour)), last = Math.max(...branches.map(branch => branch.lastHour));
@@ -52,7 +51,7 @@ function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: Branc
   const status = metadata.partial ? { tone: 'warning', label: 'Stopped early' } : gaps ? { tone: 'warning', label: `${gaps} ${gaps === 1 ? 'gap' : 'gaps'}` }
     : { tone: 'positive', label: 'Complete' };
   return <>
-    <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={`${recordingNameTooltip(metadata.path, names)}\n${metadata.path}`}>{recordingDisplayName(metadata.path, names)}</strong>
+    <div className="settings-row"><span className="settings-row-text"><strong data-tooltip={`${recordingFilename(metadata.path)}\n${metadata.path}`}>{recordingDisplayName(metadata.path)}</strong>
       <small>{branches.length ? `${formatDateTime(first)} – ${formatDateTime(last)}` : 'No recorded time'}</small></span>
       <span className={`pill ${status.tone}`}>{status.label}</span></div>
     {metadata.partial && <div className="settings-row"><span className="settings-row-text"><strong>Stopped early</strong>

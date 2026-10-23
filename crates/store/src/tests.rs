@@ -533,6 +533,50 @@ fn resume_refuses_changed_inputs_and_retains_prior_key_for_prefix_decisions() {
 }
 
 #[test]
+fn a_renamed_recording_continues_its_prepared_prefix() {
+    let fixture = Fixture::new();
+    let previous = fixture.save(b"accepted accumulator");
+    // Renamed, then saved again with more hours.
+    let renamed = fixture.root.join("renamed recording");
+    fs::rename(&fixture.recording, &renamed).unwrap();
+    fs::write(&renamed, b"synthetic appended tail").unwrap();
+    let current = SourceKey::capture(&renamed, &fixture.content).unwrap();
+    assert_eq!(
+        bytes(
+            fixture
+                .store
+                .read_prefix(&previous, &current, "countries", 0)
+                .unwrap()
+                .unwrap()
+        ),
+        b"accepted accumulator"
+    );
+    fixture.store.append(&previous, current).unwrap();
+}
+
+#[test]
+fn a_recording_renamed_unchanged_rebinds_its_prepared_store() {
+    let fixture = Fixture::new();
+    let previous = fixture.save(b"accepted accumulator");
+    let renamed = fixture.root.join("renamed recording");
+    fs::rename(&fixture.recording, &renamed).unwrap();
+    let current = SourceKey::capture(&renamed, &fixture.content).unwrap();
+    assert!(current.renames(&previous));
+    assert!(!previous.renames(&previous));
+    assert_eq!(
+        bytes(
+            fixture
+                .store
+                .read_prefix(&previous, &current, "countries", 0)
+                .unwrap()
+                .unwrap()
+        ),
+        b"accepted accumulator"
+    );
+    fixture.store.append(&previous, current).unwrap();
+}
+
+#[test]
 fn a_verified_appended_prefix_can_restore_its_accepted_accumulator() {
     let fixture = Fixture::new();
     let previous = fixture.save(b"accepted accumulator");

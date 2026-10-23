@@ -27,7 +27,12 @@ use replay_frame::{
     frame::TableUpdate, frame::TableView,
 };
 
-use crate::windows;
+use crate::{recording_name::RecordingName, recording_name::SpoolName, windows};
+use installed_content_localisation::localisation::Localisation;
+use replay::{
+    recorder_settings::RecorderSettings, recording_files, recording_files::NamesLock,
+    spool::Placement,
+};
 use serde_json::{Value, json};
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -111,9 +116,17 @@ pub fn write_json(path: &Path, value: &Value) -> Result<()> {
 }
 
 type Result<T> = std::result::Result<T, String>;
-/// The replay a campaign published, if any, and each load left out with its
-/// load signal and recorded hours.
-type CampaignOutcome = (Option<PathBuf>, Vec<(Option<i64>, u64)>);
+
+/// What finalizing one campaign published and left out.
+#[derive(Debug, Default)]
+struct CampaignOutcome {
+    /// The recording; `None` when no admitted load recorded an hour.
+    replay: Option<PathBuf>,
+    /// Why the recording kept a name its contents no longer give.
+    unrenamed: Option<String>,
+    /// Each load left out, with its load signal and recorded hours.
+    omitted: Vec<(Option<i64>, u64)>,
+}
 
 const ALLOCATION_GAP_REASON: &str = "collector allocation failed";
 
@@ -154,6 +167,8 @@ struct CampaignAhead {
     written: Option<(replay::container::Ahead, Box<Summary>)>,
     /// It could not go on; finalization writes every block.
     stopped: bool,
+    /// Fed in spool order: `grow` reads on one thread.
+    naming: std::sync::Mutex<SpoolName>,
 }
 
 impl Ahead {
@@ -162,8 +177,18 @@ impl Ahead {
         let mut grew = false;
         for name in spooled_campaigns(session_dir)? {
             let campaign_dir = session_dir.join(&name);
-            let campaign = self.campaigns.entry(campaign_dir.clone()).or_default();
+            let campaign = &mut **self.campaigns.entry(campaign_dir.clone()).or_default();
+            let naming = &campaign.naming;
             for (number, path) in segment_paths(&campaign_dir)? {
+                let keep = |record: Record, placement: Placement| {
+                    if let Record::Frame(frame) = &record {
+                        naming
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .observe(number, placement, frame);
+                    }
+                    Recovered::keep(record, placement)
+                };
                 let (_, tail) = campaign
                     .tails
                     .entry(number)
@@ -175,7 +200,7 @@ impl Ahead {
                     .len();
                 let length = usize::try_from(length).map_err(|error| failure(&path, error))?;
                 let read = tail.records().len();
-                tail.grow(&mut std::io::BufReader::new(file), length, Recovered::keep)
+                tail.grow(&mut std::io::BufReader::new(file), length, keep)
                     .map_err(|error| failure(&path, error))?;
                 let clock = campaign
                     .clock
@@ -201,6 +226,28 @@ impl Ahead {
             }
         }
         Ok(grew)
+    }
+
+    /// Each campaign's name so far, by spool folder, as a save names a new recording.
+    pub fn names(&self, localisation: Option<&Localisation>) -> BTreeMap<String, RecordingName> {
+        self.campaigns
+            .iter()
+            .filter_map(|(directory, campaign)| {
+                let name = directory.file_name()?.to_str()?.to_owned();
+                let read = |segment: u32, placement: Placement| {
+                    let (path, tail) = campaign
+                        .tails
+                        .get(&segment)
+                        .ok_or_else(|| std::io::Error::other("spool segment is gone"))?;
+                    read_frame_at(&mut fs::File::open(path)?, placement, tail.valid_bytes())
+                };
+                let mut naming = campaign
+                    .naming
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                Some((name, naming.name(read, localisation)?))
+            })
+            .collect()
     }
 
     pub fn speed(&self) -> Option<i32> {
@@ -245,9 +292,10 @@ impl Ahead {
                 continue;
             }
             if campaign.written.is_none() {
-                let destination = replay_dir.join(format!("{name}.battleplan"));
-                let existing = if destination.exists() {
-                    match open(&destination) {
+                let sessions = spooled_sessions(segments.iter().flat_map(|(_, records)| *records));
+                let existing = match continued_recording(session_dir, replay_dir, &id, &sessions) {
+                    Ok(None) => None,
+                    Ok(Some(destination)) => match open(&destination) {
                         Ok(previous)
                             if previous.require_undamaged().is_ok()
                                 && previous.campaign_id == id =>
@@ -258,12 +306,14 @@ impl Ahead {
                             campaign.stopped = true;
                             continue;
                         }
+                    },
+                    Err(_) => {
+                        campaign.stopped = true;
+                        continue;
                     }
-                } else {
-                    None
                 };
                 let ahead = replay::container::Ahead::new(existing)
-                    .map_err(|error| failure(&destination, error))?;
+                    .map_err(|error| failure(replay_dir, error))?;
                 campaign.written = Some((ahead, Box::default()));
             }
             let frames = FinalizationFrames {
@@ -518,6 +568,199 @@ fn campaign_filename(id: &[u8]) -> Result<&str> {
         );
     }
     std::str::from_utf8(id).map_err(|error| error.to_string())
+}
+
+/// The recordings a session may continue, as their folder held them when it started.
+pub const RECORDINGS_FILE: &str = "recordings.json";
+
+/// Noted before the collector starts; one that cannot be read refuses the session.
+pub fn select_recordings(session_dir: &Path, replay_dir: &Path) -> Result<()> {
+    // Created now, so the folder noted is the one a save canonicalises.
+    fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let found = recording_files::recordings(replay_dir).map_err(|error| error.to_string())?;
+    write_selection(
+        session_dir,
+        &Selection {
+            folder: folder_key(replay_dir).map_err(|error| failure(replay_dir, error))?,
+            recordings: found
+                .into_iter()
+                .map(|(campaign, paths)| (String::from_utf8_lossy(&campaign).into_owned(), paths))
+                .collect(),
+        },
+    )
+}
+
+struct Selection {
+    /// The folder the recordings were noted in; another folder ignores them.
+    folder: PathBuf,
+    recordings: BTreeMap<String, Vec<PathBuf>>,
+}
+
+fn folder_key(folder: &Path) -> std::io::Result<PathBuf> {
+    match fs::canonicalize(folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(folder.to_path_buf()),
+        canonical => canonical,
+    }
+}
+
+fn write_selection(session_dir: &Path, selection: &Selection) -> Result<()> {
+    write_json(
+        &session_dir.join(RECORDINGS_FILE),
+        &json!({ "folder": selection.folder, "recordings": selection.recordings }),
+    )
+}
+
+fn selected_recordings(session_dir: &Path) -> Result<Option<Selection>> {
+    let path = session_dir.join(RECORDINGS_FILE);
+    let bytes = match fs::read(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        bytes => bytes.map_err(|error| failure(&path, error))?,
+    };
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| failure(&path, error))?;
+    Ok(Some(Selection {
+        folder: serde_json::from_value(value["folder"].clone())
+            .map_err(|error| failure(&path, error))?,
+        recordings: serde_json::from_value(value["recordings"].clone())
+            .map_err(|error| failure(&path, error))?,
+    }))
+}
+
+/// The ids of the sessions a campaign's spool records.
+fn spooled_sessions<'a>(records: impl IntoIterator<Item = &'a Recovered>) -> Vec<u64> {
+    records
+        .into_iter()
+        .filter_map(|record| match record {
+            Recovered::SessionStart(session) => Some(session.id),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The recording this session continues, found again if renamed, within `replay_dir` only.
+fn continued_recording(
+    session_dir: &Path,
+    replay_dir: &Path,
+    campaign: &[u8],
+    sessions: &[u64],
+) -> Result<Option<PathBuf>> {
+    let look = || {
+        recording_files::recording_of(replay_dir, campaign)
+            .map_err(|error| failure(replay_dir, error))
+    };
+    let folder = folder_key(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let Some(selection) = selected_recordings(session_dir)?
+        .filter(|selection| folder_key(&selection.folder).is_ok_and(|selected| selected == folder))
+    else {
+        return look();
+    };
+    let key = String::from_utf8_lossy(campaign).to_ascii_lowercase();
+    match selection.recordings.get(&key).map(Vec::as_slice) {
+        // A recording that appeared since is this session's own only if it holds one of its sessions.
+        None | Some([]) => match look()? {
+            None => Ok(None),
+            Some(path) => {
+                let found = open(&path)?;
+                if found
+                    .sessions
+                    .iter()
+                    .any(|session| sessions.contains(&session.id))
+                {
+                    Ok(Some(path))
+                } else {
+                    Err(failure(
+                        &path,
+                        "a recording of this campaign appeared after the session started; move it, then save again; spool retained",
+                    ))
+                }
+            }
+        },
+        Some([path]) => {
+            // Only a file really in the locked folder: a link repointed since cannot lead elsewhere.
+            let within = match fs::canonicalize(path) {
+                Ok(real) if real.parent() == Some(folder.as_path()) => {
+                    real.file_name().map(|name| replay_dir.join(name))
+                }
+                Ok(_) => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(failure(path, error)),
+            };
+            let found = within
+                .as_deref()
+                .map(recording_files::campaign_of)
+                .transpose();
+            match found {
+                Ok(Some(Some(found))) if found.eq_ignore_ascii_case(campaign) => Ok(within),
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(failure(path, error))
+                }
+                _ => look()?.map(Some).ok_or_else(|| {
+                    failure(
+                        path,
+                        "the recording this session continues left its folder; nothing published; spool retained",
+                    )
+                }),
+            }
+        }
+        Some(paths) => Err(failure(
+            replay_dir,
+            format!(
+                "{} recordings of this campaign were there when the session started; keep one and move the others",
+                paths.len()
+            ),
+        )),
+    }
+}
+
+/// Each saved file's multiplayer hour by its size and time, so its rosters are read once.
+static ROSTERS: std::sync::Mutex<BTreeMap<PathBuf, (u64, std::time::SystemTime, bool)>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
+fn roster_stamp(path: &Path) -> std::io::Result<(PathBuf, u64, std::time::SystemTime)> {
+    let metadata = fs::metadata(path)?;
+    Ok((
+        fs::canonicalize(path)?,
+        metadata.len(),
+        metadata.modified()?,
+    ))
+}
+
+fn known_roster(path: &Path) -> std::io::Result<Option<bool>> {
+    let (path, length, modified) = roster_stamp(path)?;
+    let rosters = ROSTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Ok(rosters
+        .get(&path)
+        .filter(|(known_length, known_modified, _)| {
+            (*known_length, *known_modified) == (length, modified)
+        })
+        .map(|(_, _, multiplayer)| *multiplayer))
+}
+
+fn remember_roster(path: &Path, multiplayer: bool) -> std::io::Result<()> {
+    let (path, length, modified) = roster_stamp(path)?;
+    ROSTERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path, (length, modified, multiplayer));
+    Ok(())
+}
+
+/// Note the recording a save published, so saving the session again continues it.
+fn record_recording(session_dir: &Path, campaign: &[u8], path: &Path) -> Result<()> {
+    let Some(mut selection) = selected_recordings(session_dir)? else {
+        return Ok(());
+    };
+    let noted = folder_key(&selection.folder).map_err(|error| failure(path, error))?;
+    let published = path.parent().map(folder_key).transpose();
+    if published.map_err(|error| failure(path, error))? != Some(noted) {
+        return Ok(());
+    }
+    selection.recordings.insert(
+        String::from_utf8_lossy(campaign).to_ascii_lowercase(),
+        vec![path.to_path_buf()],
+    );
+    write_selection(session_dir, &selection)
 }
 
 /// The campaign folders of a session that hold spool segments.
@@ -904,6 +1147,8 @@ pub struct Finalized {
     pub errors: Vec<String>,
     /// Loads a Battle Plan Recorder session left out, with their hours and why.
     pub omitted: Vec<Omission>,
+    /// Recordings saved under their old name because renaming failed.
+    pub unrenamed: Vec<String>,
 }
 
 #[cfg(test)]
@@ -936,7 +1181,21 @@ pub fn finalize_session_outcome_with_progress(
     replay_dir: &Path,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<Finalized> {
-    finalize_session_ahead(session_dir, replay_dir, progress, Ahead::default())
+    let settings = RecorderSettings::path();
+    let naming = Naming {
+        localisation: None,
+        settings: &settings,
+    };
+    finalize_session_ahead(session_dir, replay_dir, progress, Ahead::default(), naming)
+}
+
+/// How a save names recordings.
+#[derive(Clone, Copy)]
+pub struct Naming<'a> {
+    /// The recording's own localisation; without it countries are named by tag.
+    pub localisation: Option<&'a Localisation>,
+    /// The recorder settings that keep the names users chose.
+    pub settings: &'a Path,
 }
 
 /// Finalizes taking over the recovery and blocks written ahead where they still hold.
@@ -945,6 +1204,7 @@ pub fn finalize_session_ahead(
     replay_dir: &Path,
     progress: &dyn Fn() -> std::io::Result<()>,
     mut ahead: Ahead,
+    naming: Naming<'_>,
 ) -> Result<Finalized> {
     progress().map_err(|error| failure(session_dir, error))?;
     let admissions = session_admissions(session_dir)?;
@@ -1017,12 +1277,15 @@ pub fn finalize_session_ahead(
             admitted,
             progress,
             ahead,
+            naming,
         ) {
-            Ok((path, omitted)) => {
-                finalized.replays.extend(path);
+            Ok(outcome) => {
+                finalized.replays.extend(outcome.replay);
+                finalized.unrenamed.extend(outcome.unrenamed);
                 if let (Some(admissions), Some(name)) = (&admissions, &name) {
                     finalized.omitted.extend(
-                        omitted
+                        outcome
+                            .omitted
                             .into_iter()
                             .map(|(load, hours)| admissions.omission(name, load, hours)),
                     );
@@ -1049,12 +1312,14 @@ pub fn finalize_session_ahead(
             omission.refusal.map_or("not admitted", Refusal::as_str)
         );
     }
+    for unrenamed in &finalized.unrenamed {
+        println!("{unrenamed}");
+    }
     Ok(finalized)
 }
 
-/// Publish one campaign's spool: every load, or with `admitted` (a the game
-/// Recorder session) only those loads. Returns the recording (`None` when no
-/// admitted load recorded an hour) and each load left out with its hours.
+/// Publish one campaign's spool (with `admitted`, only those loads) into its recording, and name it.
+#[allow(clippy::too_many_arguments)]
 fn finalize_campaign(
     campaign_dir: &Path,
     paths: &[(u32, PathBuf)],
@@ -1064,6 +1329,7 @@ fn finalize_campaign(
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
     ahead: Option<Box<CampaignAhead>>,
+    naming: Naming<'_>,
 ) -> Result<CampaignOutcome> {
     finalize_campaign_with_publisher(
         campaign_dir,
@@ -1074,7 +1340,9 @@ fn finalize_campaign(
         admitted,
         progress,
         ahead,
+        naming,
         |replay, destination| replay.write_atomic_with(destination, |_| progress()),
+        recording_files::rename,
     )
 }
 
@@ -1088,7 +1356,9 @@ fn finalize_campaign_with_publisher(
     admitted: Option<&BTreeSet<i64>>,
     progress: &dyn Fn() -> std::io::Result<()>,
     ahead: Option<Box<CampaignAhead>>,
+    naming: Naming<'_>,
     publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
+    rename: impl FnOnce(&Path, &str) -> std::io::Result<PathBuf>,
 ) -> Result<CampaignOutcome> {
     let (mut tails, written) =
         ahead.map_or_else(Default::default, |ahead| (ahead.tails, ahead.written));
@@ -1281,7 +1551,10 @@ fn finalize_campaign_with_publisher(
                 "{}: no admitted load recorded an hour; nothing published",
                 campaign_dir.display()
             );
-            return Ok((None, omitted));
+            return Ok(CampaignOutcome {
+                omitted,
+                ..CampaignOutcome::default()
+            });
         }
         failure_published = last_branch.is_none_or(|branch| !dropped.contains(&branch))
             && (!failing_campaign
@@ -1295,21 +1568,31 @@ fn finalize_campaign_with_publisher(
         apply_failure_witness(&mut segments, witness, failing_campaign)
             .map_err(|error| failure(campaign_dir, error))?;
     }
-    let destination = replay_dir.join(format!("{name}.battleplan"));
-    let previous = if destination.exists() {
-        let previous = open(&destination)?;
-        previous
-            .require_undamaged()
-            .map_err(|error| failure(&destination, error))?;
-        if previous.campaign_id != id {
-            return Err(failure(
-                &destination,
-                "existing replay belongs to a different campaign",
-            ));
+    let session_dir = campaign_dir.parent().unwrap_or(campaign_dir);
+    // Held until the recording has its name, so no user rename slips in between.
+    let lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let sessions = spooled_sessions(segments.iter().flat_map(|(_, recovery)| &recovery.records));
+    let existing = continued_recording(session_dir, replay_dir, &id, &sessions)?;
+    let previous = match &existing {
+        Some(destination) => {
+            let previous = open(destination)?;
+            previous
+                .require_undamaged()
+                .map_err(|error| failure(destination, error))?;
+            if previous.campaign_id != id {
+                return Err(failure(
+                    destination,
+                    "existing replay belongs to a different campaign",
+                ));
+            }
+            Some(previous)
         }
-        Some(previous)
-    } else {
-        None
+        None => None,
+    };
+    let existing_blocks = previous.as_ref().map_or(0, |previous| previous.index.len());
+    let existing_roster = match &existing {
+        Some(path) => known_roster(path).map_err(|error| failure(path, error))?,
+        None => Some(false),
     };
     let mut sorted: Vec<_> = segments
         .iter()
@@ -1346,20 +1629,79 @@ fn finalize_campaign_with_publisher(
         } else {
             previous
                 .append_recovered_with_reader(&segments, read, progress, observe, ahead)
-                .map_err(|error| failure(&destination, error))?
+                .map_err(|error| failure(existing.as_deref().unwrap_or(replay_dir), error))?
         }
     } else {
-        Replay::from_recovered_with_reader(id, &segments, read, progress, observe, ahead)
-            .map_err(|error| failure(&destination, error))?
+        Replay::from_recovered_with_reader(id.clone(), &segments, read, progress, observe, ahead)
+            .map_err(|error| failure(campaign_dir, error))?
     };
-    if unchanged {
-        // Matching bytes can survive a rename whose durability flush failed.
-        replay::publication::sync_file(&destination)
-            .map_err(|error| failure(&destination, error))?;
+    let checked = if unchanged {
+        replay.index.len()
     } else {
-        publish(&replay, &destination).map_err(|error| failure(&destination, error))?;
-    }
-    progress().map_err(|error| failure(&destination, error))?;
+        existing_blocks
+    };
+    let multiplayer = summary.multiplayer
+        || match existing_roster {
+            Some(known) if !unchanged => known,
+            _ => crate::recording_name::multiplayer(&replay, checked)
+                .map_err(|error| failure(campaign_dir, error))?,
+        };
+    let stem = crate::recording_name::recording_name(&replay, naming.localisation, multiplayer)
+        .map_err(|error| failure(campaign_dir, error))?
+        .stem();
+    let folder = fs::canonicalize(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let campaign = String::from_utf8_lossy(&id).into_owned();
+    let settings = RecorderSettings::load_from(naming.settings)
+        .map_err(|error| failure(naming.settings, error))?;
+    let mut outcome = CampaignOutcome {
+        omitted,
+        ..CampaignOutcome::default()
+    };
+    let destination = match &existing {
+        Some(destination) => {
+            if unchanged {
+                // Matching bytes can survive a rename whose durability flush failed.
+                replay::publication::sync_file(destination)
+            } else {
+                publish(&replay, destination)
+            }
+            .map_err(|error| failure(destination, error))?;
+            progress().map_err(|error| failure(destination, error))?;
+            let current = destination
+                .file_stem()
+                .and_then(|current| current.to_str())
+                .unwrap_or_default();
+            if recording_files::stem_is(current, &stem) || settings.name_chosen(&folder, &id) {
+                destination.clone()
+            } else {
+                // Renamed once its contents are durable; a failure keeps the old name.
+                rename(destination, &stem).unwrap_or_else(|error| {
+                    outcome.unrenamed = Some(format!(
+                        "{}: saved, but not renamed to {stem} ({error}); the next save tries again",
+                        destination.display()
+                    ));
+                    destination.clone()
+                })
+            }
+        }
+        None => {
+            // A new recording is named by its contents until the user names it.
+            if settings.name_chosen(&folder, &id) {
+                RecorderSettings::update_at(naming.settings, |settings| {
+                    settings.choose_name(&folder, &campaign, false)
+                })
+                .map_err(|error| failure(naming.settings, error))?;
+            }
+            let published =
+                recording_files::publish_new(&replay, replay_dir, &stem, |_| progress())
+                    .map_err(|error| failure(replay_dir, error))?;
+            progress().map_err(|error| failure(&published, error))?;
+            published
+        }
+    };
+    record_recording(session_dir, &id, &destination)?;
+    remember_roster(&destination, multiplayer).map_err(|error| failure(&destination, error))?;
+    drop(lock);
     let ready_seconds = started.elapsed().as_secs_f64();
     println!(
         "{}{}",
@@ -1426,7 +1768,10 @@ fn finalize_campaign_with_publisher(
             );
         }
     }
-    Ok((Some(destination), omitted))
+    Ok(CampaignOutcome {
+        replay: Some(destination),
+        ..outcome
+    })
 }
 
 fn apply_failure_witness(
@@ -2327,6 +2672,8 @@ struct Summary {
     issues: [Vec<Issue>; TABLE_COUNT],
     /// The hour [`Summary::observe`] observed last.
     previous: Option<Observed>,
+    /// An observed hour's roster held more than one human.
+    multiplayer: bool,
 }
 
 impl Default for Summary {
@@ -2343,6 +2690,7 @@ impl Default for Summary {
             hours: BTreeMap::new(),
             issues: std::array::from_fn(|_| Vec::new()),
             previous: None,
+            multiplayer: false,
         }
     }
 }
@@ -2364,6 +2712,7 @@ impl Summary {
     }
 
     fn observe_hour(&mut self, hour: &Observed) -> Result<()> {
+        self.multiplayer |= hour.players > 1;
         self.totals.push(hour.metrics.total_ns);
         self.max_pool = self.max_pool.max(hour.metrics.pool_bytes);
         self.max_dropped = self.max_dropped.max(hour.metrics.dropped_frames);
@@ -2572,6 +2921,20 @@ fn print_throughput<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Names by tag, with no name chosen.
+    fn unnamed() -> Naming<'static> {
+        static SETTINGS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        Naming {
+            localisation: None,
+            settings: SETTINGS.get_or_init(|| {
+                std::env::temp_dir().join(format!(
+                    "hoi4-unwritten-settings-{}.json",
+                    std::process::id()
+                ))
+            }),
+        }
+    }
     use replay::spool::recover_prefix;
     use replay_frame::{branches::BranchReason, branches::BranchStart};
 
@@ -2992,6 +3355,7 @@ mod tests {
             None,
             &|| Ok(()),
             None,
+            unnamed(),
             |replay, path| {
                 replay.publish_with(
                     &mut FailPostRenameFlush {
@@ -3001,6 +3365,7 @@ mod tests {
                     |_| Ok(()),
                 )
             },
+            |_, _| unreachable!("a failed publication is never renamed"),
         )
         .unwrap_err();
         assert!(error.contains("injected post-rename flush failure"));
@@ -3029,15 +3394,15 @@ mod tests {
             assert!(!temporary.exists());
             drop(held);
         }
+        // Once durable, the unchanged recording takes the name its contents give.
+        let named = output.join("Campaign.battleplan");
         assert_eq!(
             finalize_session(&session, &output).unwrap(),
-            vec![destination.clone()],
+            vec![named.clone()],
         );
-        assert_eq!(fs::read(&destination).unwrap(), bytes);
-        assert_eq!(
-            fs::metadata(&destination).unwrap().modified().unwrap(),
-            modified
-        );
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&named).unwrap(), bytes);
+        assert_eq!(fs::metadata(&named).unwrap().modified().unwrap(), modified);
         assert_eq!(fs::read(&spool_path).unwrap(), spool);
         assert!(!temporary.exists());
         fs::remove_dir_all(directory).unwrap();
@@ -3191,7 +3556,8 @@ mod tests {
         assert_eq!(ahead.hours(), 10);
         assert_eq!(ahead.frames_read(), 20);
         assert_eq!(ahead.speed(), Some(0));
-        let with = finalize_session_ahead(&session, &ahead_dir, &|| Ok(()), ahead).unwrap();
+        let with =
+            finalize_session_ahead(&session, &ahead_dir, &|| Ok(()), ahead, unnamed()).unwrap();
         let without = finalize_session(&session, &directory.join("plain")).unwrap();
         assert_eq!(
             fs::read(&with.replays[0]).unwrap(),
@@ -3210,9 +3576,14 @@ mod tests {
             .flat_map(|record| replay::spool::encode_record(record).unwrap())
             .collect();
         fs::write(&path, spool).unwrap();
-        let changed =
-            finalize_session_ahead(&session, &directory.join("changed"), &|| Ok(()), ahead)
-                .unwrap();
+        let changed = finalize_session_ahead(
+            &session,
+            &directory.join("changed"),
+            &|| Ok(()),
+            ahead,
+            unnamed(),
+        )
+        .unwrap();
         let plain = finalize_session(&session, &directory.join("changed-plain")).unwrap();
         assert_eq!(
             fs::read(&changed.replays[0]).unwrap(),
@@ -3227,9 +3598,14 @@ mod tests {
         assert!(ahead.written() > 0);
         let spool = fs::read(&path).unwrap();
         fs::write(&path, &spool[..spool.len() * 2 / 3]).unwrap();
-        let truncated =
-            finalize_session_ahead(&session, &directory.join("truncated"), &|| Ok(()), ahead)
-                .unwrap();
+        let truncated = finalize_session_ahead(
+            &session,
+            &directory.join("truncated"),
+            &|| Ok(()),
+            ahead,
+            unnamed(),
+        )
+        .unwrap();
         let plain = finalize_session(&session, &directory.join("truncated-plain")).unwrap();
         assert_eq!(
             fs::read(&truncated.replays[0]).unwrap(),
@@ -4806,3 +5182,6 @@ mod tests {
         assert!(missing_ranges(Hour::MAX, &[Hour::MAX].into_iter().collect()).is_empty());
     }
 }
+
+#[cfg(test)]
+mod naming_tests;

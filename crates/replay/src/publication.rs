@@ -142,6 +142,17 @@ pub fn sync_file(destination: &Path) -> io::Result<()> {
     directory.sync_all()
 }
 
+/// Durably rename within a volume, never replacing `target`; refused while `source` is held unshared.
+pub fn rename_new(source: &Path, target: &Path) -> io::Result<()> {
+    let (from, to) = (wide(source), wide(target));
+    // Both paths stay alive and NUL-terminated for the call.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn publication_directory(destination: &Path) -> io::Result<File> {
     let parent = destination.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "missing publication directory")

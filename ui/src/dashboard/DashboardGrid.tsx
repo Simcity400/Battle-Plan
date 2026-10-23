@@ -11,7 +11,7 @@ import WidgetState from '../components/WidgetState';
 import type { MapOptions } from '../shell/api';
 import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
-import { recordingDisplayName, useRecordingNames } from './recordingNames';
+import { recordingDisplayName } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
@@ -92,7 +92,6 @@ const Body = memo(WidgetBody);
 
 /** Common chrome for every widget: header, drag grip, settings and the scaled body. */
 function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: Omit<Props, 'onLayouts'> & { widget: WidgetSpec }) {
-  const names = useRecordingNames();
   const element = useRef<HTMLElement>(null);
   // Null until the body mounts in its turn, then whether the widget is near the viewport.
   // Server rendering has no observer and renders the body at once.
@@ -164,7 +163,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
           icons.openMenu(widget.kind, event.currentTarget, definition.title, event.clientX, event.clientY);
         }}><StyledIcon icon={icon.icon} fallback={definition?.icon ?? 'grid'} /></span>
       <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={slots.header} /></h2>
-        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path, names)}</span>}</div>
+        {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}</div>
       {definition?.data !== false && definition?.countrySelection !== false && <WidgetCountryControl widget={widget} template={template} runtime={runtime} onApply={onApply}>
         <CountryChip widget={widget} runtime={runtime} active={active === true} onSlot={slots.country} /></WidgetCountryControl>}
       <div className="dash-widget-actions">

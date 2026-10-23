@@ -30,9 +30,10 @@ import type { ReplayLibraryState } from './replayLibrary';
 import DashboardGrid from './DashboardGrid';
 import './dashboard.css';
 import WidgetPicker from './WidgetPicker';
-import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, sameCampaignPath } from './campaigns';
+import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, recordingKey, sameCampaignPath } from './campaigns';
 import { hasMapOverlay, isMapOverlay } from '../shell/mapOverlays';
-import type { Campaign } from './campaigns';
+import type { Campaign, Relocation } from './campaigns';
+import { recordingFilename } from './recordingNames';
 import { followMapPlayback } from './mapPlayback';
 import type { ParityHost } from './parityFixture';
 
@@ -321,8 +322,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   };
 
   /** Opens a recording into a campaign slot; resolves to the campaign's id once it is loaded. */
-  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false): Promise<string | null> => {
-    const known = campaignsRef.current.find((item) => sameCampaignPath(item.path, chosen));
+  const openCampaign = useCallback(async (chosen: string, label = recordingName(chosen), slotId?: string, reconnect = false, campaignId?: string): Promise<string | null> => {
+    // A rename reconnects its own campaign by id: another may briefly share the path.
+    const known = campaignId === undefined
+      ? campaignsRef.current.find((item) => sameCampaignPath(item.path, chosen))
+      : campaignsRef.current.find((item) => item.id === campaignId);
+    if (campaignId !== undefined && !known) return null;
     if (known && !reconnect) return known.loading ? null : known.id;
     if (known?.loading) return null;
     const slots = campaignSlots(draftTemplate, campaignsRef.current);
@@ -403,6 +408,45 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       : 'That recording could not be opened. The notice above the dashboard or the sidebar shows why.');
   }, [update, openCampaign, persistView]);
 
+  const bindingsRef = useRef(roles.bindings);
+  bindingsRef.current = roles.bindings;
+  const [relocations, setRelocations] = useState<Relocation[]>([]);
+  /** A recording's file was renamed, by either app or in Explorer: an open campaign reconnects by its new name. */
+  const relocate = useCallback((from: string, to: string) => {
+    setLoadErrors(current => Object.fromEntries(Object.entries(current).map(([path, error]) => [sameCampaignPath(path, from) ? to : path, error])));
+    const campaign = campaignsRef.current.find(item => sameCampaignPath(item.path, from));
+    // One still opening keeps the path it opens; a rename waits for it.
+    if (!campaign || campaign.loading) return;
+    campaignsRef.current = campaignsRef.current.map(item => item === campaign ? { ...item, path: to } : item);
+    setCampaigns(campaignsRef.current);
+    // The open campaign names the recording through all its renames, whatever its header or folder.
+    setRelocations(current => [...current, [from, to, campaign.id]]);
+    void openCampaign(to, campaign.label, undefined, true, campaign.id);
+  }, [openCampaign]);
+  const shownRecordings = useCallback(() => campaignsRef.current.flatMap(campaign => {
+    const source = campaign.loading ? null : bindingsRef.current[campaign.id]?.source;
+    return source ? [{ path: campaign.path, campaignKey: source.metadata.campaignKey }] : [];
+  }), []);
+  // Each open recording is found again by its folder and campaign, so a rename shows at once.
+  useEffect(() => {
+    if (!client.locateRecordings) return;
+    let live = true;
+    const timer = setInterval(() => {
+      const shown = shownRecordings();
+      if (!shown.length) return;
+      void client.locateRecordings!(shown).then(located => {
+        if (!live) return;
+        let moved = false;
+        // A new name, or the same one with different capitals.
+        located.forEach((path, at) => {
+          if (path && (!sameCampaignPath(path, shown[at].path) || recordingFilename(path) !== recordingFilename(shown[at].path))) { relocate(shown[at].path, path); moved = true; }
+        });
+        if (moved) void replayLibrary.refresh();
+      }, () => {});
+    }, 2000);
+    return () => { live = false; clearInterval(timer); };
+  }, [client, relocate, shownRecordings, replayLibrary]);
+
   const unloadCampaign = async (id: string) => {
     const campaign = campaignsRef.current.find(campaign => campaign.id === id);
     if (!campaign || campaign.loading) return;
@@ -460,13 +504,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   // Fly mode's aircraft belongs to the campaign the map shows: a name of its content, kept on
   // this device, with none as the start. Sent again whenever a map becomes ready, as a restarted
   // viewer flies none.
-  const aircraftPath = defaultSource?.path ?? null;
+  const aircraftRecording = defaultSource ? recordingKey(defaultSource.path, defaultSource.metadata.campaignKey) : null;
   const [aircraft, setAircraft] = useState<string | null>(null);
-  useEffect(() => setAircraft(aircraftPath ? loadAircraftChoice(aircraftPath) : null), [aircraftPath]);
+  useEffect(() => setAircraft(aircraftRecording ? loadAircraftChoice(aircraftRecording) : null), [aircraftRecording]);
   const chooseAircraft = useCallback((name: string | null) => {
     setAircraft(name);
-    if (aircraftPath) saveAircraftChoice(aircraftPath, name);
-  }, [aircraftPath]);
+    if (aircraftRecording) saveAircraftChoice(aircraftRecording, name);
+  }, [aircraftRecording]);
   useEffect(() => {
     if (!mapActive || !mapReady || !desktopAvailable) return;
     let current = true;
@@ -523,14 +567,24 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }, [client]);
   }
 
+  /** Opens a campaign's recording again, found by its folder and campaign first. */
+  const reconnect = async (campaign: Campaign) => {
+    const source = bindingsRef.current[campaign.id]?.source;
+    const [located] = source && client.locateRecordings
+      ? await client.locateRecordings([{ path: campaign.path, campaignKey: source.metadata.campaignKey }]).catch(() => [null]) : [null];
+    // Renamed, the relocation reconnects it; either way only this campaign, by its id.
+    if (located && (!sameCampaignPath(located, campaign.path) || recordingFilename(located) !== recordingFilename(campaign.path))) relocate(campaign.path, located);
+    else void openCampaign(campaign.path, campaign.label, undefined, true, campaign.id);
+  };
+
   return <div className="dashboard">
     {campaignHost && createPortal(<ReplayLibraryMenu library={replayLibrary} client={client} campaigns={campaigns} bindings={roles.bindings} defaultId={defaultRoleId} countryTags={countryTags}
       slots={campaignSlots(draftTemplate, campaigns)} errors={loadErrors} onLoad={(path, label, slotId) => { void openCampaign(path, label, slotId); }}
-      onUnload={unloadCampaign} onDefault={setDefaultRoleId} onOpenReady={onOpenReady} />, campaignHost)}
+      onUnload={unloadCampaign} onDefault={setDefaultRoleId} onRenamed={relocate} relocations={relocations} onOpenReady={onOpenReady} />, campaignHost)}
     {(active || mapActive) && playbackHost && createPortal(<div className="header-workspace-bar">
     <PlaybackCountryPicker clock={clock} track={tracks.find(track => track.roleId === defaultRoleId)} source={defaultSource} client={client} onCountries={roles.observeCountries} onReconnect={() => {
       const campaign = campaignsRef.current.find(campaign => campaign.id === defaultRoleId);
-      if (campaign) void openCampaign(campaign.path, campaign.label, undefined, true);
+      if (campaign) void reconnect(campaign);
     }} countries={defaultSource?.metadata.countries ?? []} playerCountryId={defaultSource?.metadata.playerCountryId ?? null}
       selectedTag={template.roles.find((role) => role.id === defaultRoleId)?.selectedTag ?? null}
       onChange={(tag) => { if (defaultRoleId) setSelectedCountries((previous) => ({ ...previous, [defaultRoleId]: tag })); }} />

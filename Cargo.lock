@@ -8782,6 +8782,8 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-native",
+ "installed-content-country-names",
+ "installed-content-localisation",
  "recorder-metrics",
  "recorder-platform",
  "recorder-test-support",
@@ -8791,6 +8793,7 @@ dependencies = [
  "replay-identity",
  "serde_json",
  "test-unify",
+ "weather-period",
  "windows-sys 0.61.2",
 ]
 

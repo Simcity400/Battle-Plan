@@ -23,11 +23,44 @@ pub(super) fn scan_with(
     folder: &Path,
     mut checkpoint: impl FnMut() -> Result<(), String>,
 ) -> Result<ReplayLibrary, String> {
+    let mut files = Vec::new();
+    let root = walk(folder, &mut checkpoint, |root, directory, path, _| {
+        files.push(ReplayFile {
+            partial: dashboard::metadata::read_partial_recording(path)
+                .ok()
+                .flatten(),
+            path: path.to_string_lossy().into_owned(),
+            name: path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            folder: directory
+                .strip_prefix(root)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/"),
+        });
+        Ok(())
+    })?;
+    checkpoint()?;
+    files.sort_by_cached_key(|file| format!("{}/{}", file.folder, file.name).to_lowercase());
+    Ok(ReplayLibrary {
+        folder: Some(root.to_string_lossy().into_owned()),
+        files,
+    })
+}
+
+/// Each recording the library lists, with its folder; returns the canonical root.
+fn walk(
+    folder: &Path,
+    checkpoint: &mut impl FnMut() -> Result<(), String>,
+    mut each: impl FnMut(&Path, &Path, &Path, &std::fs::Metadata) -> Result<(), String>,
+) -> Result<PathBuf, String> {
     checkpoint()?;
     let root =
         std::fs::canonicalize(folder).map_err(|e| format!("Cannot read replay folder: {e}"))?;
     let mut pending = vec![root.clone()];
-    let mut files = Vec::new();
     let mut visited = 0;
     while let Some(directory) = pending.pop() {
         checkpoint()?;
@@ -44,9 +77,10 @@ pub(super) fn scan_with(
                 );
             }
             let kind = entry.file_type().map_err(|e| e.to_string())?;
+            let metadata = entry.metadata().map_err(|e| e.to_string())?;
             if kind.is_symlink()
                 || entry.file_name().to_string_lossy().starts_with('.')
-                || hidden(&entry)?
+                || hidden(&metadata)
             {
                 continue;
             }
@@ -59,39 +93,18 @@ pub(super) fn scan_with(
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("battleplan") || ext.eq_ignore_ascii_case("hoi4replay"))
             {
                 checkpoint()?;
-                files.push(ReplayFile {
-                    partial: dashboard::metadata::read_partial_recording(&path)
-                        .ok()
-                        .flatten(),
-                    path: path.to_string_lossy().into_owned(),
-                    name: path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    folder: directory
-                        .strip_prefix(&root)
-                        .map_err(|e| e.to_string())?
-                        .to_string_lossy()
-                        .replace('\\', "/"),
-                });
+                each(&root, &directory, &path, &metadata)?;
             }
         }
     }
-    checkpoint()?;
-    files.sort_by_cached_key(|file| format!("{}/{}", file.folder, file.name).to_lowercase());
-    Ok(ReplayLibrary {
-        folder: Some(root.to_string_lossy().into_owned()),
-        files,
-    })
+    Ok(root)
 }
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 
-fn hidden(entry: &std::fs::DirEntry) -> Result<bool, String> {
+fn hidden(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    let metadata = entry.metadata().map_err(|e| e.to_string())?;
-    Ok(metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0)
+    metadata.file_attributes() & FILE_ATTRIBUTE_HIDDEN != 0
 }
 
 /// The recorder's save folder, shared through its settings.
@@ -110,6 +123,28 @@ pub async fn replay_library() -> Result<ReplayLibrary, String> {
             std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         }
         scan(&folder)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Changes when a recording the library lists is added, removed, renamed or rewritten; opens no file.
+#[tauri::command]
+pub async fn replay_library_stamp() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::hash::DefaultHasher::new();
+        walk(
+            &configured_folder()?,
+            &mut || Ok(()),
+            |_, _, path, metadata| {
+                path.hash(&mut hash);
+                metadata.len().hash(&mut hash);
+                metadata.modified().ok().hash(&mut hash);
+                Ok(())
+            },
+        )?;
+        Ok(format!("{:016x}", hash.finish()))
     })
     .await
     .map_err(|e| e.to_string())?

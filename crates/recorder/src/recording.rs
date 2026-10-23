@@ -6,19 +6,21 @@ use crate::{
     windows::{self, Event, Process},
 };
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
-use installed_content_core::{content::GatherOptions, content::gather};
+use installed_content_core::{content::GatherOptions, content::GatheredContent, content::gather};
+use installed_content_localisation::localisation::Localisation;
+use replay::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
 use replay_data::identity::SessionStart;
 use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::{self, File},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -36,16 +38,25 @@ fn writes_ahead(speed: Option<i32>) -> bool {
     speed.is_some_and(|speed| speed < FASTEST_SPEED)
 }
 
-/// Finalizes a growing spool ahead while the game runs below its fastest speed, on one background thread.
+type AheadResult = (replay_io::Ahead, Option<Localisation>, Duration, Duration);
+
+/// Finalizes a growing spool ahead below the fastest speed, and names it when asked, on one thread.
 struct FinalizingAhead {
     stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<(replay_io::Ahead, Duration, Duration)>>,
+    thread: Option<std::thread::JoinHandle<AheadResult>>,
+    asked: Arc<AtomicBool>,
+    /// The name each campaign's recording would get so far, by campaign.
+    names: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl FinalizingAhead {
-    fn start(session: &Path, target: &Path) -> Self {
+    fn start(session: &Path, target: &Path, content: &GatheredContent) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (session, target, stopping) = (session.to_owned(), target.to_owned(), stop.clone());
+        let (layers, language) = (content.layers.clone(), content.language.clone());
+        let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
+        let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
+        let asking = Arc::clone(&asked);
         let thread = std::thread::Builder::new()
             .name("finalize ahead".into())
             .spawn(move || {
@@ -54,6 +65,13 @@ impl FinalizingAhead {
                 };
                 // SAFETY: the calling thread's own pseudo-handle.
                 unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
+                // The session's own content stack names its countries as the game does.
+                let localisation = installed_content_localisation::localisation::read(&layers, &language)
+                    .inspect_err(|error| {
+                        eprintln!("Countries are named by tag: the localisation could not be read: {error}");
+                    })
+                    .ok();
+                drop(layers);
                 let stopped = || stopping.load(Ordering::Acquire);
                 let mut ahead = replay_io::Ahead::default();
                 let (mut reading, mut writing) = (Duration::ZERO, Duration::ZERO);
@@ -67,6 +85,16 @@ impl FinalizingAhead {
                     let before = thread_cpu();
                     if let Err(error) = ahead.read(&session) {
                         fail(error);
+                    }
+                    if asking.swap(false, Ordering::AcqRel) {
+                        let named = ahead
+                            .names(localisation.as_ref())
+                            .into_iter()
+                            .map(|(campaign, name)| (campaign, name.stem()))
+                            .collect();
+                        *published
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = named;
                     }
                     reading += thread_cpu() - before;
                     if writes_ahead(ahead.speed()) {
@@ -88,16 +116,34 @@ impl FinalizingAhead {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
-                (ahead, reading, writing)
+                (ahead, localisation, reading, writing)
             })
             .ok();
-        Self { stop, thread }
+        Self {
+            stop,
+            thread,
+            asked,
+            names,
+        }
     }
 
-    fn finish(mut self) -> replay_io::Ahead {
+    /// Names are worked out only while someone shows them.
+    fn ask_names(&self) {
+        self.asked.store(true, Ordering::Release);
+    }
+
+    fn names(&self) -> BTreeMap<String, String> {
+        self.names
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// What was written ahead, and the localisation that names the countries.
+    fn finish(mut self) -> (replay_io::Ahead, Option<Localisation>) {
         self.stop.store(true, Ordering::Release);
         match self.thread.take().map(std::thread::JoinHandle::join) {
-            Some(Ok((ahead, reading, writing))) => {
+            Some(Ok((ahead, localisation, reading, writing))) => {
                 let (read, written) = (ahead.frames_read(), ahead.written());
                 let per =
                     |cpu: Duration, hours: usize| cpu.as_secs_f64() * 1e3 / hours.max(1) as f64;
@@ -108,9 +154,9 @@ impl FinalizingAhead {
                     per(writing, written),
                     per(writing, read),
                 );
-                ahead
+                (ahead, localisation)
             }
-            _ => replay_io::Ahead::default(),
+            _ => (replay_io::Ahead::default(), None),
         }
     }
 }
@@ -188,6 +234,8 @@ pub enum Stage<'a> {
     Recording {
         session: &'a Path,
         status: Option<&'a Value>,
+        /// The name each campaign's recording would get so far, while asked for.
+        names: &'a BTreeMap<String, String>,
     },
     /// Collector absence or game exit is proven and the spool is being
     /// finalized. `records` counts finalization work done so far.
@@ -211,6 +259,8 @@ pub struct CaptureOutcome {
     /// Loads the session left out of its recordings; their hours stay in the
     /// session folder.
     pub omitted: Vec<Omission>,
+    /// Recordings saved under their old name because renaming them failed.
+    pub unrenamed: Vec<String>,
 }
 
 /// Asks whether a load of a campaign is recorded; the flag says this session's
@@ -465,8 +515,12 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
                     process_exited,
                 );
             }
-            replay_io::finalize_session(&session, &options.output)?;
-            Ok(())
+            let finalized = replay_io::finalize_session_outcome(&session, &options.output)?;
+            if finalized.errors.is_empty() {
+                Ok(())
+            } else {
+                Err(finalized.errors.join("\n"))
+            }
         }
         _ => Err(usage()),
     }
@@ -627,6 +681,8 @@ pub(crate) struct CaptureOptions<'a> {
     /// The load this session attaches for, already chosen by the controller:
     /// admitted before the collector starts.
     pub opening: Option<(&'a str, i64)>,
+    /// Whether the names recordings would get are shown now.
+    pub names_wanted: Option<&'a dyn Fn() -> bool>,
     #[cfg(feature = "alloc-fault-injection")]
     pub alloc_fault: Option<&'a AllocationFault>,
 }
@@ -646,6 +702,7 @@ fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
         admit: None,
         loaded: None,
         opening: None,
+        names_wanted: None,
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: options.alloc_fault.as_ref(),
     }
@@ -803,6 +860,7 @@ pub(crate) fn capture(
         admit,
         loaded,
         opening,
+        names_wanted,
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault,
     } = *options;
@@ -933,6 +991,7 @@ pub(crate) fn capture(
     let expected_mounts = &content.expected_mounts;
     let scripted_maps = scripted_map_demand::read(&content.layers, &content.language)
         .map_err(|error| format!("scripted map capture demand: {error}"))?;
+    replay_io::select_recordings(&directory, target)?;
     create_failure_witness(&directory, session.id, session.process_start_time)?;
     let mut admission = Admission::new(&directory, target);
     if admit.is_some() {
@@ -1019,11 +1078,12 @@ pub(crate) fn capture(
         &json!({"recorder_pid":std::process::id(),"game_pid":pid,"session_id":session.id,"process_start_time":process.start_time,"session_dir":directory,"dll":dll,"detach_event":detach_name,"done_event":done_name}),
     )?;
     println!("Recording process {pid}. Spool: {}", directory.display());
-    let ahead = FinalizingAhead::start(&directory, target);
+    let ahead = FinalizingAhead::start(&directory, target, &content);
     let status_path = directory.join("status.json");
     stage(Stage::Recording {
         session: &directory,
         status: None,
+        names: &BTreeMap::new(),
     });
     let mut status_reads = StatusReads::new(live_status, Instant::now());
     let mut admission_failures = Vec::new();
@@ -1097,9 +1157,13 @@ pub(crate) fn capture(
                     break;
                 }
             }
+            if names_wanted.is_some_and(|wanted| wanted()) {
+                ahead.ask_names();
+            }
             stage(Stage::Recording {
                 session: &directory,
                 status: status.as_ref(),
+                names: &ahead.names(),
             });
             status_reads.live_read(Instant::now());
         }
@@ -1168,6 +1232,7 @@ pub(crate) fn capture(
             discarded: true,
             rerouted,
             omitted: Vec::new(),
+            unrenamed: Vec::new(),
         });
     }
     // Saving, with the game no longer captured: a load that recorded and ended
@@ -1245,14 +1310,15 @@ pub(crate) fn capture(
             discarded: false,
             rerouted,
             omitted: Vec::new(),
+            unrenamed: Vec::new(),
         });
     }
     let _lock = finalization_lock(target)?;
     stage(Stage::Saving { records: 0 });
     let saving = |records| stage(Stage::Saving { records });
     let progress = FinalizationProgress::new(&directory, &saving);
-    let ahead = ahead.finish();
-    let (finalized, omitted) = match outcome.recovery_allowed.then(|| {
+    let (ahead, localisation) = ahead.finish();
+    let (finalized, omitted, unrenamed) = match outcome.recovery_allowed.then(|| {
         replay_io::finalize_session_ahead(
             &directory,
             target,
@@ -1261,6 +1327,10 @@ pub(crate) fn capture(
                 Ok(())
             },
             ahead,
+            replay_io::Naming {
+                localisation: localisation.as_ref(),
+                settings: &RecorderSettings::path(),
+            },
         )
     }) {
         Some(Ok(done)) => {
@@ -1269,16 +1339,17 @@ pub(crate) fn capture(
                     .into_iter()
                     .map(|error| format!("replay finalization failed: {error}")),
             );
-            (done.replays, done.omitted)
+            (done.replays, done.omitted, done.unrenamed)
         }
         Some(Err(error)) => {
             outcome
                 .issues
                 .push(format!("replay finalization failed: {error}"));
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         }
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
+    drop(localisation);
     let completed = json!({
         "replays":finalized,
         "omitted":omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
@@ -1309,6 +1380,7 @@ pub(crate) fn capture(
         discarded: false,
         rerouted,
         omitted,
+        unrenamed,
     })
 }
 
@@ -3132,8 +3204,8 @@ mod tests {
             .unwrap();
         // Each `finalize` rewrites the completion record; the admitted load,
         // and only it, publishes every time, unchanged, and the record keeps
-        // the load it left out.
-        let recording = output.join(format!("{name}.battleplan"));
+        // the load it left out. Its hours have no country or date to name it by.
+        let recording = output.join("Campaign.battleplan");
         let mut published: Option<Vec<u8>> = None;
         for _ in 0..2 {
             let error = finalize_failed_session(&session, &output, &witness, true).unwrap_err();

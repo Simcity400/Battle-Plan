@@ -142,7 +142,7 @@ pub(super) fn read(
     };
     // Raw catalogue metadata depends on the recording. Named metadata is checked
     // against the complete resolved input list when the content binding is made.
-    let current = key.refresh_recording()?;
+    let current = key.refresh_recording(path)?;
     let file = if current == key {
         store.read(&key, SECTION, 0)?
     } else {

@@ -1,0 +1,592 @@
+//! Recording files: a recording is its folder and the campaign its header names.
+
+use crate::container::{AtomicPublisher, PublishStage, Replay};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    io,
+    os::windows::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+};
+
+pub const EXTENSION: &str = "battleplan";
+pub const LEGACY_EXTENSION: &str = "hoi4replay";
+const LOCK: &str = "recording-names.lock";
+/// Windows' limit for one path component, in UTF-16 units.
+const MAX_COMPONENT: usize = 255;
+/// Room in a file name for `.battleplan` and the longest ` (n)` suffix.
+pub const MAX_STEM: usize = MAX_COMPONENT - ".battleplan".len() - " (18446744073709551615)".len();
+
+pub fn is_recording(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(EXTENSION) || extension.eq_ignore_ascii_case(LEGACY_EXTENSION))
+}
+
+fn at(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
+/// The campaign a recording's header names; `None` for an identity that names no campaign.
+pub fn campaign_of(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    File::open(path)
+        .and_then(|mut file| Replay::read_campaign_uuid(&mut file))
+        .map_err(|error| at(path, error))
+}
+
+/// Recordings by the campaign their header names, in lower case.
+pub type Found = BTreeMap<Vec<u8>, Vec<PathBuf>>;
+
+/// The recordings directly in `folder`; one that cannot be read is an error, never an absence.
+pub fn recordings(folder: &Path) -> io::Result<Found> {
+    let mut found = BTreeMap::<_, Vec<_>>::new();
+    let entries = match fs::read_dir(folder) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(found),
+        entries => entries.map_err(|error| at(folder, error))?,
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| at(folder, error))?;
+        let path = entry.path();
+        if entry
+            .file_type()
+            .map_err(|error| at(&path, error))?
+            .is_file()
+            && is_recording(&path)
+            && let Some(campaign) = campaign_of(&path)?
+        {
+            found
+                .entry(campaign.to_ascii_lowercase())
+                .or_default()
+                .push(path);
+        }
+    }
+    found.values_mut().for_each(|paths| paths.sort());
+    Ok(found)
+}
+
+/// Each recording file directly in `folder` with its size and time, read without opening any.
+pub fn listing(folder: &Path) -> io::Result<Vec<(PathBuf, u64, std::time::SystemTime)>> {
+    let mut listed = Vec::new();
+    let entries = match fs::read_dir(folder) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(listed),
+        entries => entries.map_err(|error| at(folder, error))?,
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| at(folder, error))?;
+        let metadata = entry.metadata().map_err(|error| at(&entry.path(), error))?;
+        if metadata.is_file() && is_recording(&entry.path()) {
+            listed.push((entry.path(), metadata.len(), metadata.modified()?));
+        }
+    }
+    listed.sort();
+    Ok(listed)
+}
+
+pub fn recordings_of(folder: &Path, campaign: &[u8]) -> io::Result<Vec<PathBuf>> {
+    Ok(recordings(folder)?
+        .remove(&campaign.to_ascii_lowercase())
+        .unwrap_or_default())
+}
+
+/// Several recordings of one campaign in a folder are refused, never one guessed.
+pub fn one_recording(
+    folder: &Path,
+    campaign: &[u8],
+    found: Vec<PathBuf>,
+) -> io::Result<Option<PathBuf>> {
+    if found.len() > 1 {
+        let names: Vec<_> = found
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| name.to_string_lossy())
+            .collect();
+        return Err(io::Error::other(format!(
+            "{} holds {} recordings of campaign {} ({}); keep one there and move the others",
+            folder.display(),
+            found.len(),
+            String::from_utf8_lossy(campaign),
+            names.join(", ")
+        )));
+    }
+    Ok(found.into_iter().next())
+}
+
+/// The campaign's recording in `folder`, if it has one.
+pub fn recording_of(folder: &Path, campaign: &[u8]) -> io::Result<Option<PathBuf>> {
+    one_recording(folder, campaign, recordings_of(folder, campaign)?)
+}
+
+pub fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
+/// The longest prefix of `text` within `units` UTF-16 units.
+pub fn truncate(text: &str, units: usize) -> &str {
+    let mut used = 0;
+    for (at, character) in text.char_indices() {
+        used += character.len_utf16();
+        if used > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
+const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+
+/// Windows reserves these names for devices, whatever follows a dot.
+fn device_name(base: &str) -> bool {
+    let base = base.trim_end_matches(' ');
+    if DEVICES
+        .iter()
+        .any(|device| base.eq_ignore_ascii_case(device))
+    {
+        return true;
+    }
+    let mut characters = base.chars();
+    let prefix: String = characters.by_ref().take(3).collect();
+    let rest: String = characters.collect();
+    (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+        && matches!(
+            rest.as_str(),
+            "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+        )
+}
+
+/// `text` as a Windows file name stem with room for a ` (n)` suffix; `None` if nothing is left.
+pub fn file_stem(text: &str) -> Option<String> {
+    let spaced: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() || "<>:\"/\\|?*".contains(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let joined = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut stem = truncate(&joined, MAX_STEM)
+        .trim_end_matches([' ', '.'])
+        .to_owned();
+    if stem.is_empty() {
+        return None;
+    }
+    let base = stem.split('.').next().unwrap_or_default().len();
+    if device_name(&stem[..base]) {
+        stem.insert(base, '_');
+    }
+    Some(stem)
+}
+
+/// `stem`, or with ` (n)` as Windows numbers copies.
+fn numbered(folder: &Path, stem: &str, number: u64) -> PathBuf {
+    folder.join(if number == 1 {
+        format!("{stem}.{EXTENSION}")
+    } else {
+        format!("{stem} ({number}).{EXTENSION}")
+    })
+}
+
+/// The first of `stem`, `stem (2)` and so on in `folder` that names no file, or names `own`.
+pub fn unique_path(folder: &Path, stem: &str, own: Option<&Path>) -> io::Result<PathBuf> {
+    let own = own.map(fs::canonicalize).transpose()?;
+    for number in 1_u64.. {
+        let path = numbered(folder, stem, number);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Err(error) => return Err(at(&path, error)),
+            Ok(_) if own.is_some() && own == Some(fs::canonicalize(&path)?) => return Ok(path),
+            Ok(_) => {}
+        }
+    }
+    Err(io::Error::other("no free recording name"))
+}
+
+/// Whether `stem` is `wanted`, or `wanted` with a ` (n)` suffix a collision gave it.
+pub fn stem_is(stem: &str, wanted: &str) -> bool {
+    stem == wanted
+        || stem
+            .strip_prefix(wanted)
+            .and_then(|rest| rest.strip_prefix(" ("))
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|number| {
+                number.parse::<u64>().is_ok_and(|number| number >= 2) && !number.starts_with('0')
+            })
+}
+
+/// Rename `from` to a free name for `stem` in its folder, never replacing a file.
+pub fn rename(from: &Path, stem: &str) -> io::Result<PathBuf> {
+    let folder = from
+        .parent()
+        .ok_or_else(|| io::Error::other("recording has no folder"))?;
+    loop {
+        let to = unique_path(folder, stem, Some(from))?;
+        if to.file_name() == from.file_name() {
+            return Ok(to);
+        }
+        match crate::publication::rename_new(from, &to) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            result => return result.map(|()| to),
+        }
+    }
+}
+
+/// Publishes a synced sibling under the first free name, never replacing a file.
+struct NewPublisher<'a> {
+    folder: &'a Path,
+    stem: &'a str,
+    temporary: PathBuf,
+    published: Option<PathBuf>,
+}
+
+impl AtomicPublisher for NewPublisher<'_> {
+    type Writer = File;
+    fn create(&mut self) -> io::Result<File> {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.temporary)
+    }
+    fn sync(&mut self, writer: &mut File) -> io::Result<()> {
+        writer.sync_all()
+    }
+    fn replace(&mut self, writer: File) -> io::Result<()> {
+        drop(writer);
+        for number in 1_u64.. {
+            let target = numbered(self.folder, self.stem, number);
+            match crate::publication::rename_new(&self.temporary, &target) {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                result => {
+                    self.published = Some(target);
+                    return result;
+                }
+            }
+        }
+        Err(io::Error::other("no free recording name"))
+    }
+}
+
+/// Publish a new recording as `stem` in `folder`, numbered past any file there.
+pub fn publish_new(
+    replay: &Replay,
+    folder: &Path,
+    stem: &str,
+    checkpoint: impl FnMut(PublishStage) -> io::Result<()>,
+) -> io::Result<PathBuf> {
+    let mut publisher = NewPublisher {
+        folder,
+        stem,
+        temporary: folder.join(format!("{stem}.{EXTENSION}.{}.tmp", std::process::id())),
+        published: None,
+    };
+    let result = replay.publish_with(&mut publisher, checkpoint);
+    match (result, publisher.published) {
+        (Ok(()), Some(published)) => Ok(published),
+        (result, _) => {
+            let _ = fs::remove_file(&publisher.temporary);
+            result.and(Err(io::Error::other("recording was not published")))
+        }
+    }
+}
+
+/// A folder's naming lock, held by a save from finding a recording to renaming it, and by a user rename.
+pub struct NamesLock {
+    _held: File,
+}
+
+impl NamesLock {
+    fn open(folder: &Path) -> io::Result<File> {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+        fs::create_dir_all(folder)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .attributes(FILE_ATTRIBUTE_HIDDEN)
+            .open(folder.join(LOCK))
+    }
+
+    pub fn wait(folder: &Path) -> io::Result<Self> {
+        let lock = Self::open(folder)?;
+        lock.lock()?;
+        Ok(Self { _held: lock })
+    }
+
+    /// `None` while another program holds it.
+    pub fn try_now(folder: &Path) -> io::Result<Option<Self>> {
+        let lock = Self::open(folder)?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Some(Self { _held: lock })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-recording-files-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// A file with a recording's header naming `campaign`; nothing after it.
+    fn header(path: &Path, campaign: &str) {
+        let mut bytes = b"H4RP".to_vec();
+        bytes.extend_from_slice(&crate::FORMAT_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&crate::KEYFRAME_INTERVAL.to_le_bytes());
+        bytes.extend_from_slice(&(campaign.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(campaign.as_bytes());
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn names_become_safe_windows_file_names() {
+        assert_eq!(file_stem("Germany 1936–1941").unwrap(), "Germany 1936–1941");
+        assert_eq!(
+            file_stem(" Kingdom: of <the> \"North\"/South|?* \t1936 ").unwrap(),
+            "Kingdom of the North South 1936"
+        );
+        assert_eq!(
+            file_stem("Name with\u{7}control").unwrap(),
+            "Name with control"
+        );
+        assert_eq!(file_stem("Trailing dots... ").unwrap(), "Trailing dots");
+        for device in ["CON", "nul", "Com1", "LPT9", "COM¹", "aux.backup", "PRN "] {
+            let stem = file_stem(device).unwrap();
+            let base = stem.split('.').next().unwrap();
+            assert!(!device_name(base), "{device} became {stem}");
+        }
+        assert_eq!(file_stem("aux.backup").unwrap(), "aux_.backup");
+        assert_eq!(file_stem("CONSOLE 1936").unwrap(), "CONSOLE 1936");
+        assert_eq!(file_stem("COM10").unwrap(), "COM10");
+        for empty in ["", "  ", "...", "?*:", "\u{0}"] {
+            assert_eq!(file_stem(empty), None, "{empty:?}");
+        }
+        // Long names keep room for a suffix and the extension, never splitting a character.
+        let long = "Ж".repeat(400) + "😀";
+        let stem = file_stem(&long).unwrap();
+        assert_eq!(utf16_len(&stem), MAX_STEM);
+        let name = format!("{stem} (18446744073709551615).{EXTENSION}");
+        assert!(utf16_len(&name) <= MAX_COMPONENT);
+        assert_eq!(truncate("a😀b", 2), "a");
+        assert_eq!(truncate("a😀b", 3), "a😀");
+    }
+
+    #[test]
+    fn a_taken_name_gets_the_next_number_as_windows_names_copies() {
+        let folder = scratch("unique");
+        assert_eq!(
+            unique_path(&folder, "Germany 1936", None).unwrap(),
+            folder.join("Germany 1936.battleplan")
+        );
+        fs::write(folder.join("Germany 1936.battleplan"), b"").unwrap();
+        fs::write(folder.join("germany 1936 (2).battleplan"), b"").unwrap();
+        assert_eq!(
+            unique_path(&folder, "Germany 1936", None).unwrap(),
+            folder.join("Germany 1936 (3).battleplan")
+        );
+        // A recording keeps its own name.
+        let own = folder.join("germany 1936 (2).battleplan");
+        assert_eq!(
+            unique_path(&folder, "Germany 1936", Some(&own)).unwrap(),
+            folder.join("Germany 1936 (2).battleplan")
+        );
+        // A name that cannot be checked is an error, not a free name.
+        let error = unique_path(&folder, "bad\0name", None).unwrap_err();
+        assert_ne!(error.kind(), io::ErrorKind::NotFound);
+        assert!(stem_is("Germany 1936", "Germany 1936"));
+        assert!(stem_is("Germany 1936 (2)", "Germany 1936"));
+        assert!(stem_is("Germany 1936 (17)", "Germany 1936"));
+        for other in [
+            "Germany 1936 (1)",
+            "Germany 1936 (02)",
+            "Germany 1936 (x)",
+            "Germany 1937",
+            "Germany 1936 (2) (2)",
+        ] {
+            assert!(!stem_is(other, "Germany 1936"), "{other}");
+        }
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_rename_never_replaces_another_file() {
+        let folder = scratch("rename");
+        let from = folder.join("a.battleplan");
+        fs::write(&from, b"recording").unwrap();
+        fs::write(folder.join("Germany 1936.battleplan"), b"another").unwrap();
+        let to = rename(&from, "Germany 1936").unwrap();
+        assert_eq!(to, folder.join("Germany 1936 (2).battleplan"));
+        assert_eq!(fs::read(&to).unwrap(), b"recording");
+        assert_eq!(
+            fs::read(folder.join("Germany 1936.battleplan")).unwrap(),
+            b"another"
+        );
+        assert!(!from.exists());
+        // Renaming to its own name, or only its case, keeps the one file.
+        assert_eq!(rename(&to, "Germany 1936").unwrap(), to);
+        let cased = rename(&to, "GERMANY 1936 (2)").unwrap();
+        assert_eq!(cased.file_name().unwrap(), "GERMANY 1936 (2).battleplan");
+        assert_eq!(fs::read(&cased).unwrap(), b"recording");
+        let error = crate::publication::rename_new(&cased, &folder.join("Germany 1936.battleplan"))
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_new_recording_never_replaces_a_file_at_its_name() {
+        let folder = scratch("publish");
+        let replay = Replay::from_records(
+            b"00000000-0000-4000-8000-000000000000".to_vec(),
+            &[vec![crate::spool::Record::SessionStart(
+                crate::identity::SessionStart {
+                    id: 1,
+                    process_id: 1,
+                    process_start_time: 1,
+                    qpc_frequency: 1,
+                    sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+                    identity: crate::identity::Identity {
+                        game_version: "synthetic".into(),
+                        exe_hash: [1; 32],
+                        exe_size: 1,
+                        vanilla_hash: [2; 32],
+                        dlc: vec![],
+                        mods: vec![],
+                        coverage_policy: 1,
+                        language: "english".into(),
+                        recorder_version: "synthetic".into(),
+                        collector_hash: [3; 32],
+                        verification: crate::identity::Verification::Unchecked,
+                    },
+                },
+            )]],
+        )
+        .unwrap();
+        // Another file takes the name after it was found free.
+        let published = publish_new(&replay, &folder, "Germany 1936", |stage| {
+            if stage == PublishStage::BeforeReplace {
+                fs::write(folder.join("Germany 1936.battleplan"), b"another")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(published, folder.join("Germany 1936 (2).battleplan"));
+        assert_eq!(fs::read(&published).unwrap(), replay.bytes());
+        assert_eq!(
+            fs::read(folder.join("Germany 1936.battleplan")).unwrap(),
+            b"another"
+        );
+        let left: Vec<_> = fs::read_dir(&folder).unwrap().collect();
+        assert_eq!(left.len(), 2, "no temporary file is left");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_held_recording_keeps_its_name() {
+        let folder = scratch("held");
+        let from = folder.join("a.battleplan");
+        fs::write(&from, b"recording").unwrap();
+        // A reader that does not share deletion blocks renaming.
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .open(&from)
+            .unwrap();
+        assert!(rename(&from, "Germany 1936").is_err());
+        assert!(from.exists() && !folder.join("Germany 1936.battleplan").exists());
+        drop(held);
+        assert!(rename(&from, "Germany 1936").is_ok());
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_campaigns_recording_is_found_by_its_header_not_its_name() {
+        let folder = scratch("find");
+        let campaign = "00000000-0000-4000-8000-000000000000";
+        let other = "00000000-0000-4000-8000-000000000001";
+        assert_eq!(recording_of(&folder, campaign.as_bytes()).unwrap(), None);
+        assert_eq!(
+            recording_of(&folder.join("missing"), campaign.as_bytes()).unwrap(),
+            None
+        );
+        header(&folder.join("Germany 1936–1941.battleplan"), campaign);
+        header(&folder.join(format!("{other}.battleplan")), other);
+        header(&folder.join("same header.txt"), campaign);
+        header(&folder.join("not a campaign.battleplan"), "a save name");
+        fs::create_dir_all(folder.join("Germany (2)")).unwrap();
+        header(
+            &folder.join("Germany (2)").join("Germany 1940.battleplan"),
+            campaign,
+        );
+        assert_eq!(
+            recording_of(&folder, campaign.as_bytes()).unwrap(),
+            Some(folder.join("Germany 1936–1941.battleplan"))
+        );
+        assert_eq!(
+            recording_of(&folder, campaign.to_uppercase().as_bytes()).unwrap(),
+            Some(folder.join("Germany 1936–1941.battleplan"))
+        );
+        // A copy beside it makes the campaign's recording ambiguous: refused.
+        header(
+            &folder.join("Germany 1936–1941 - Copy.battleplan"),
+            campaign,
+        );
+        let error = recording_of(&folder, campaign.as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("2 recordings"), "{error}");
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_recording_that_cannot_be_read_is_an_error_not_an_absence() {
+        let folder = scratch("unreadable");
+        let campaign = b"00000000-0000-4000-8000-000000000000";
+        fs::write(folder.join("damaged.battleplan"), b"junk").unwrap();
+        let error = recording_of(&folder, campaign).unwrap_err().to_string();
+        assert!(error.contains("damaged.battleplan"), "{error}");
+        fs::remove_file(folder.join("damaged.battleplan")).unwrap();
+        // Held without read sharing, as another program may.
+        let held_path = folder.join("held.battleplan");
+        header(&held_path, "00000000-0000-4000-8000-000000000000");
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&held_path)
+            .unwrap();
+        assert!(recording_of(&folder, campaign).is_err());
+        drop(held);
+        assert_eq!(recording_of(&folder, campaign).unwrap(), Some(held_path));
+        fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn the_naming_lock_is_one_holder_at_a_time_and_hidden() {
+        use std::os::windows::fs::MetadataExt;
+        let folder = scratch("lock");
+        let lock = NamesLock::wait(&folder).unwrap();
+        assert!(NamesLock::try_now(&folder).unwrap().is_none());
+        let attributes = fs::metadata(folder.join(LOCK)).unwrap().file_attributes();
+        assert_ne!(
+            attributes & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN,
+            0
+        );
+        drop(lock);
+        assert!(NamesLock::try_now(&folder).unwrap().is_some());
+        fs::remove_dir_all(folder).unwrap();
+    }
+}

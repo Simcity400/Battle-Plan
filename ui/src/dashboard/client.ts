@@ -121,9 +121,15 @@ export interface DashboardClient {
   chooseContentFolder?(kind: 'game' | 'user', initial: string): Promise<string | null>;
   setContentFolders?(game: string, user: string): Promise<ContentFolders>;
   replayLibrary?(signal: AbortSignal): Promise<ReplayLibrary>;
+  /** Changes when the library's recordings change; reads no recording. */
+  replayLibraryStamp?(): Promise<string>;
   setReplayFolder?(folder: string): Promise<ReplayLibrary>;
   chooseReplayFolder?(initial?: string): Promise<string | null>;
   chooseRecording?(): Promise<string | null>;
+  /** Rename a recording's file to the name the user chose; resolves to its new path. */
+  renameRecording?(path: string, name: string): Promise<string>;
+  /** Where each recording is now, by its folder and campaign; null when not found alone. */
+  locateRecordings?(recordings: { path: string; campaignKey: string }[]): Promise<(string | null)[]>;
   recorderSettings?(): Promise<RecorderSettings>;
   setMapViews(views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;

@@ -92,6 +92,8 @@ pub struct Observed {
     pub sizes: [usize; TABLE_COUNT],
     pub incomplete: Vec<(TableId, Incomplete)>,
     pub field_gaps: Vec<(TableId, &'static str, usize)>,
+    /// Humans in the hour's recorded roster; zero when it was not recorded.
+    pub players: usize,
 }
 
 impl Observed {
@@ -162,6 +164,10 @@ impl Observed {
             sizes,
             incomplete,
             field_gaps,
+            players: match &*decoded.tables[TableId::Players.index()] {
+                TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
+                TableView::Unavailable { .. } => 0,
+            },
         })
     }
 
@@ -480,6 +486,20 @@ impl Replay {
         length: u64,
     ) -> io::Result<Option<ControlRecord>> {
         Ok(Self::read_trailer_summary(file, length)?.0)
+    }
+
+    /// The campaign UUID a recording's header names, from its first bytes; `None` for another identity.
+    pub fn read_campaign_uuid(input: &mut impl Read) -> io::Result<Option<Vec<u8>>> {
+        let mut prefix = [0; 14];
+        input.read_exact(&mut prefix)?;
+        expect_magic(&mut Decoder::new(&prefix[..4]), HEADER_MAGIC)?;
+        FormatVersion::read(u16::from_le_bytes([prefix[4], prefix[5]]))?;
+        let mut id = [0; 36];
+        if u32::from_le_bytes(prefix[10..].try_into().unwrap()) as usize != id.len() {
+            return Ok(None);
+        }
+        input.read_exact(&mut id)?;
+        Ok(crate::identity::is_campaign_uuid(&id).then(|| id.to_vec()))
     }
 
     /// The first and last recorded hours across every branch, from the

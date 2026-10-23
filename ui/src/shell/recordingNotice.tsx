@@ -1,6 +1,6 @@
 import type { DamagedRecording, PartialRecording } from '../generated/dashboard';
 import { formatDateTime } from '../dashboard/calendar';
-import { recordingDisplayName, recordingNameTooltip, useRecordingNames } from '../dashboard/recordingNames';
+import { recordingDisplayName, recordingFilename } from '../dashboard/recordingNames';
 
 export function partialRecordingText(partial: PartialRecording): string {
   const failed = partial.failedHour === null ? '' : ` · ${formatDateTime(partial.failedHour)} not recorded`;
@@ -20,10 +20,9 @@ type NoticeProps = { partial?: PartialRecording | null; damaged?: DamagedRecordi
 
 /** The loaded recording's notice stays visible through playback and tab changes. */
 export function RecordingNotice({ partial, damaged, path }: NoticeProps & { path?: string }) {
-  const names = useRecordingNames();
   const text = [damaged && damagedRecordingText(damaged), partial && partialRecordingText(partial)].filter(Boolean).join(' · ');
   return text ? <div className="notice warning shell-recording-notice" role="status">
-    <span>{path && <><strong data-tooltip={recordingNameTooltip(path, names)}>{recordingDisplayName(path, names)}</strong> · </>}{text}</span>
+    <span>{path && <><strong data-tooltip={recordingFilename(path)}>{recordingDisplayName(path)}</strong> · </>}{text}</span>
   </div> : null;
 }
 

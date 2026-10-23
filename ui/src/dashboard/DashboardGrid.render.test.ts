@@ -32,7 +32,6 @@ test('frame subtitles identify only campaigns different from the sidebar and war
   const vite = await frameServer();
   try {
     const { default: Grid } = await vite.ssrLoadModule('/ui/src/dashboard/DashboardGrid.tsx') as typeof import('./DashboardGrid');
-    const { saveRecordingNames, setRecordingName } = await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts') as typeof import('./recordingNames.ts');
     const tracks = syntheticTracks();
     const runtime = { tracks, campaignTracks: tracks, defaultRoleId: 'one', maps: {}, client: {}, clock: { getHour: () => 0 } } as unknown as WidgetRuntime;
     const widget: WidgetSpec = { id: 'test', kind: 'synthetic', configVersion: 1, title: 'Synthetic', campaign: 'default',
@@ -55,9 +54,6 @@ test('frame subtitles identify only campaigns different from the sidebar and war
     runtime.tracks = tracks;
     widget.trackIds = ['track-two'];
     assert.match(render(), /dash-widget-subtitle">two</);
-    saveRecordingNames(setRecordingName({}, 'TWO.battleplan', 'Weekend campaign'), { getItem: () => null, setItem() {} });
-    assert.match(render(), /dash-widget-subtitle">Weekend campaign</);
-    saveRecordingNames({}, { getItem: () => null, setItem() {} });
     assert.match(render(), /dash-widget-subtitle">two</);
     runtime.tracks = [tracks[1]];
     assert.match(render(), /dash-widget-subtitle">two</, 'a different campaign is named even when it is the only loaded track');

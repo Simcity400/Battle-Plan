@@ -74,9 +74,36 @@ pub struct RecorderSettings {
     pub politics: bool,
     #[serde(default)]
     pub campaigns: BTreeMap<String, CampaignChoice>,
-    /// Display names by normalized recording path. File names never change.
-    #[serde(default)]
-    pub recording_names: BTreeMap<String, String>,
+    /// Recordings whose name the user chose; later saves keep it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_names: Vec<RecordingId>,
+}
+
+/// A recording: its folder and the campaign its header names, whatever its file is called.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RecordingId {
+    pub folder: PathBuf,
+    pub campaign: String,
+}
+
+impl RecordingId {
+    pub fn is(&self, folder: &Path, campaign: &[u8]) -> bool {
+        same_path(&self.folder, folder) && self.campaign.as_bytes().eq_ignore_ascii_case(campaign)
+    }
+}
+
+/// The form Windows compares paths in: one separator, no verbatim prefix, any case.
+fn path_key(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\").to_lowercase();
+    if let Some(share) = text.strip_prefix(r"\\?\unc\") {
+        return format!(r"\\{share}");
+    }
+    text.strip_prefix(r"\\?\")
+        .map_or_else(|| text.clone(), str::to_owned)
+}
+
+pub fn same_path(first: &Path, second: &Path) -> bool {
+    path_key(first) == path_key(second)
 }
 
 impl Default for RecorderSettings {
@@ -91,7 +118,7 @@ impl Default for RecorderSettings {
             operation_outcomes: true,
             politics: true,
             campaigns: BTreeMap::new(),
-            recording_names: BTreeMap::new(),
+            chosen_names: Vec::new(),
         }
     }
 }
@@ -166,6 +193,24 @@ impl RecorderSettings {
         self.save_folder.clone().unwrap_or_else(default_save_folder)
     }
 
+    pub fn name_chosen(&self, folder: &Path, campaign: &[u8]) -> bool {
+        self.chosen_names.iter().any(|id| id.is(folder, campaign))
+    }
+
+    /// Whether the change was needed.
+    pub fn choose_name(&mut self, folder: &Path, campaign: &str, chosen: bool) -> bool {
+        let before = self.chosen_names.len();
+        self.chosen_names
+            .retain(|id| !id.is(folder, campaign.as_bytes()));
+        if chosen {
+            self.chosen_names.push(RecordingId {
+                folder: folder.to_path_buf(),
+                campaign: campaign.to_owned(),
+            });
+        }
+        chosen || self.chosen_names.len() != before
+    }
+
     /// Whether a campaign records automatically.
     pub fn records_campaign(&self, campaign: &str) -> bool {
         self.campaigns
@@ -232,7 +277,7 @@ mod tests {
         assert!(settings.start_with_replay && !settings.start_with_windows);
         assert!(settings.game_score && settings.operation_outcomes && settings.politics);
         assert!(settings.save_folder.is_none() && settings.user_folder.is_none());
-        assert!(settings.campaigns.is_empty() && settings.recording_names.is_empty());
+        assert!(settings.campaigns.is_empty() && settings.chosen_names.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -261,6 +306,26 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_name_belongs_to_a_recording_by_folder_and_campaign() {
+        let campaign = "00000000-0000-4000-8000-000000000000";
+        let mut settings = RecorderSettings::default();
+        assert!(!settings.choose_name(Path::new(r"C:\r"), campaign, false));
+        assert!(settings.choose_name(Path::new(r"\\?\C:\R"), campaign, true));
+        assert!(settings.name_chosen(Path::new("c:/r"), campaign.to_uppercase().as_bytes()));
+        assert!(!settings.name_chosen(Path::new(r"C:\r\Germany (2)"), campaign.as_bytes()));
+        assert!(!settings.name_chosen(Path::new(r"C:\r"), b"00000000-0000-4000-8000-000000000001"));
+        // Chosen again, it is kept once.
+        settings.choose_name(Path::new(r"C:\r"), campaign, true);
+        assert_eq!(settings.chosen_names.len(), 1);
+        assert!(settings.choose_name(Path::new("C:/r"), campaign, false));
+        assert!(settings.chosen_names.is_empty());
+        assert!(same_path(
+            Path::new(r"\\?\UNC\server\share\a.battleplan"),
+            Path::new("//server/share/A.battleplan")
+        ));
+    }
+
+    #[test]
     fn concurrent_updates_each_keep_the_other_writers_fields() {
         let root = scratch("concurrent");
         let path = root.join("settings.json");
@@ -274,9 +339,11 @@ mod tests {
                     for index in 0..25 {
                         RecorderSettings::update_at(&path, |settings| {
                             if writer == 0 {
-                                settings
-                                    .recording_names
-                                    .insert(format!("c:/{index}.battleplan"), format!("{index}"));
+                                settings.choose_name(
+                                    Path::new(&format!("c:/{index}")),
+                                    "00000000-0000-4000-8000-000000000000",
+                                    true,
+                                );
                             } else {
                                 settings
                                     .campaigns
@@ -294,7 +361,7 @@ mod tests {
             writer.join().unwrap();
         }
         let settings = RecorderSettings::load_from(&path).unwrap();
-        assert_eq!(settings.recording_names.len(), 25);
+        assert_eq!(settings.chosen_names.len(), 25);
         assert_eq!(settings.campaigns.len(), 25);
         fs::remove_dir_all(root).unwrap();
     }

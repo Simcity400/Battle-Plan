@@ -478,7 +478,8 @@ fn file_backed_reference_cache_uses_recording_path_and_opened_metadata_revision(
     )
     .unwrap();
     let left = directory.join("left.battleplan");
-    let right = directory.join("right.battleplan");
+    fs::create_dir(directory.join("elsewhere")).unwrap();
+    let right = directory.join("elsewhere").join("right.battleplan");
     fs::write(&left, replay.bytes()).unwrap();
     fs::write(&right, replay.bytes()).unwrap();
     let make = |path: PathBuf, revision: &str| {

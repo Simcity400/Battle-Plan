@@ -1,8 +1,6 @@
 // What the recorder panel shows for each recorder state. Pure, so every state
 // of the approved design is checked without a running recorder.
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
-import { recordingDisplayName } from '../dashboard/recordingNames.ts';
-import type { RecordingNames } from '../dashboard/recordingNames.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 
 export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded';
@@ -17,6 +15,8 @@ export interface Snapshot {
   phase: Phase;
   campaign: string | null;
   recording: string | null;
+  /** The recording's file name; before its first save, the name its file will get. */
+  name: string | null;
   continued: boolean;
   hour: number | null;
   firstHour: number | null;
@@ -45,7 +45,6 @@ export interface RecorderSettings {
   operationOutcomes: boolean;
   politics: boolean;
   campaigns: Record<string, CampaignChoice>;
-  recordingNames: RecordingNames;
   /** The folder recordings are saved to, the default when none is chosen. */
   effectiveSaveFolder: string;
 }
@@ -105,13 +104,13 @@ export function omittedText(omitted: OmittedLoads | null | undefined): string | 
   }
 }
 
-export function campaignTitle(snapshot: Snapshot, names: RecordingNames): string {
-  if (snapshot.recording) return recordingDisplayName(snapshot.recording, names);
-  return snapshot.campaign ?? '';
+/** The recording's name; none until it has one, never the campaign's id. */
+export function campaignTitle(snapshot: Snapshot): string {
+  return snapshot.name ?? '';
 }
 
-export function head(snapshot: Snapshot, names: RecordingNames): Head {
-  const title = campaignTitle(snapshot, names);
+export function head(snapshot: Snapshot): Head {
+  const title = campaignTitle(snapshot);
   const named = title !== '';
   const plain = { glyph: false, flag: named ? snapshot.flag : null, title, dot: null, label: null, detail: null, action: null, campaign: false, footer: true } as const;
   // Loads a finished session left out replace its usual status text until shown.

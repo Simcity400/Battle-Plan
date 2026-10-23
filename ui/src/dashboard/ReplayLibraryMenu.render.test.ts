@@ -29,17 +29,16 @@ async function fixture(run: (view: any) => Promise<void>) {
     playerCountryId: '1', branches: [],
   } };
   const state = {
-    names: {} as Record<string, string>,
-    nameSaves: 0,
     settings: { version: 1, campaigns: { ab: { factions: { 3: { colour: '#123456' } } } }, shared: {}, sets: [] } as CampaignSettings,
     useState(initial: any) { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
       return [slots[index], (value: any) => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }]; },
     useRef(initial: any) { const index = cursor++; return slots[index] ??= { current: initial }; },
-    useEffect() {},
+    useEffect(effect: () => unknown, deps?: unknown[]) { const index = cursor++; const before = slots[index];
+      if (before && deps && deps.every((value, at) => Object.is(value, before[at]))) return;
+      slots[index] = deps ?? []; effect(); },
     menu(next: MenuItem[]) { items = next; },
     openFlag() { opened++; },
     save(settings: CampaignSettings) { state.settings = settings; return null; },
-    saveNames(names: Record<string, string>) { state.names = names; state.nameSaves++; },
   };
   const host = globalThis as typeof globalThis & { __campaignMenu?: typeof state };
   host.__campaignMenu = state;
@@ -64,9 +63,6 @@ async function fixture(run: (view: any) => Promise<void>) {
           .replace('const safe = parseCampaignSettings(settings);', 'return globalThis.__campaignMenu.save(parseCampaignSettings(settings)); const safe = parseCampaignSettings(settings);');
         if (file.endsWith('/dashboard/campaignFlags.ts')) return source.replace("import { useMemo, useSyncExternalStore } from 'react';",
           'const useSyncExternalStore = (_subscribe, snapshot) => snapshot(); const useMemo = compute => compute();');
-        if (file.endsWith('/dashboard/recordingNames.ts')) return source
-          .replace("import { useSyncExternalStore } from 'react';", 'const useSyncExternalStore = () => globalThis.__campaignMenu.names;')
-          .replace('current = names;', 'globalThis.__campaignMenu.saveNames(names); current = names;');
       },
     }] });
   try {
@@ -79,7 +75,7 @@ async function fixture(run: (view: any) => Promise<void>) {
       } },
       campaigns: [{ id: 'primary', path: source.path, label: 'Loaded.battleplan' }], bindings: { primary: { source } },
       defaultId: 'primary', countryTags: { primary: 'shown-country' }, slots: { empty: [] }, errors: {},
-      onRenamed: (oldPath: string, newPath: string) => { updates.push([oldPath, newPath]); },
+      onRenamed: (oldPath: string, newPath: string) => { updates.push([oldPath, newPath]); }, relocations: [],
       onLoad: (...args: any[]) => loads.push(args), onUnload: () => { chosen++; }, onDefault() {},
     };
     let nodes: Element[] = [];
@@ -95,7 +91,7 @@ async function fixture(run: (view: any) => Promise<void>) {
     const blur = async (draft: string) => { input().props.onBlur({ currentTarget: { value: draft } }); await settle(); render(); };
     render();
     find(node => node.props.className === 'sidebar-shelf-toggle').props.onClick(); render();
-    await run({ props, state, source, render, find, loaded, archived, input, event, menu, edit, blur,
+    await run({ props, state, source, render, find, loaded, archived, input, event, menu, edit, blur, nodes: () => nodes,
       renames, updates, loads, storage, items: () => items, opened: () => opened, refreshed: () => refreshed, chosen: () => chosen, fail: () => { failure = true; } });
   } finally {
     await vite.close(); delete host.__campaignMenu;
@@ -111,64 +107,49 @@ test('loaded and archive rows offer their own actions through right-click and ke
     assert.deepEqual(view.items().map((item: MenuItem) => item.label), ['Rename', 'Change flag', 'Unload']);
   }
   view.menu().find((item: MenuItem) => item.label === 'Unload').run(); assert.equal(view.chosen(), 1);
-  delete view.props.client.renameRecording; view.render();
-  assert.deepEqual(view.menu().map((item: MenuItem) => item.label), ['Rename', 'Change flag', 'Unload']);
-  assert.deepEqual(view.menu(view.archived()).map((item: MenuItem) => item.label), ['Rename']);
-  for (const [key, shift] of [['ContextMenu', false], ['F10', true]]) {
-    view.archived().props.onKeyDown(view.event(view.archived(), key, shift));
-    assert.deepEqual(view.items().map((item: MenuItem) => item.label), ['Rename']);
-  }
   view.menu().find((item: MenuItem) => item.label === 'Rename').run(); view.render();
   assert.equal(view.input().props.defaultValue, 'Loaded');
+  // Without a host that renames files, there is nothing to rename.
+  view.input().props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); view.render();
+  delete view.props.client.renameRecording; view.render();
+  assert.deepEqual(view.menu().map((item: MenuItem) => item.label), ['Change flag', 'Unload']);
+  view.archived().props.onKeyDown(view.event(view.archived(), 'F2')); view.render();
+  assert.ok(!view.nodes().some((node: Element) => node.props['aria-label'] === 'Recording name'));
 }));
 
-test('inline rename saves a display name once on Enter or blur, without any client rename or path update', async () => fixture(async view => {
+test('inline rename renames the file once on Enter or blur, and what is kept by its path follows', async () => fixture(async view => {
   const campaigns = structuredClone(view.props.campaigns), source = structuredClone(view.source);
   const editor = view.edit(); assert.equal(editor.props.defaultValue, 'Loaded');
-  editor.props.onKeyDown({ key: 'Enter', preventDefault() {}, currentTarget: { blur: () => editor.props.onBlur({ currentTarget: { value: '  Renamed  ' } }) } });
-  editor.props.onBlur({ currentTarget: { value: 'Renamed' } });
+  editor.props.onKeyDown({ key: 'Enter', preventDefault() {}, currentTarget: { blur: () => editor.props.onBlur({ currentTarget: { value: '  Barbarossa  ' } }) } });
+  editor.props.onBlur({ currentTarget: { value: 'Barbarossa' } });
   await settle(); view.render();
-  assert.equal(view.state.nameSaves, 1);
-  assert.equal(view.loaded().props.children[1].props.children, 'Renamed');
-  assert.equal(view.loaded().props['aria-label'], 'Renamed, shown campaign');
-  assert.equal(view.loaded().props['data-tooltip'], 'Renamed · Loaded.battleplan · Shown');
-  assert.equal(view.find((node: Element) => node.props.className === 'icon-button small campaign-unload').props['aria-label'], 'Unload Renamed');
-  assert.equal(JSON.parse(view.storage.get('battle-plan.recording-names.v1'))['c:/recordings/loaded.battleplan'], 'Renamed');
-  assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
+  assert.deepEqual(view.renames, [['C:/recordings/Loaded.battleplan', 'Barbarossa']]);
+  assert.deepEqual(view.updates, [['C:/recordings/Loaded.battleplan', 'C:/recordings/Barbarossa.battleplan']]);
+  assert.equal(view.refreshed(), 1, 'the library lists the file by its new name');
+  // The dashboard owns its campaigns' paths; the menu only reports the rename.
   assert.deepEqual(view.props.campaigns, campaigns); assert.deepEqual(view.source, source);
-  assert.equal(view.refreshed(), 0);
+  assert.deepEqual([...view.storage.keys()], ['hoi4-replay.sidebar.archive-open'], 'no name is kept apart from the file');
   const cancelled = view.edit(); cancelled.props.onKeyDown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
   cancelled.props.onBlur({ currentTarget: { value: 'Should not commit' } }); await settle(); view.render();
-  assert.equal(view.state.nameSaves, 1);
-  assert.equal(view.edit().props.defaultValue, 'Renamed'); await view.blur('  ');
-  assert.equal(view.loaded().props.children[1].props.children, 'Loaded');
-  assert.deepEqual(view.state.names, {});
-  for (const ownName of ['Loaded', 'Loaded.battleplan']) {
-    view.edit(); await view.blur('Override'); view.edit(); await view.blur(ownName);
-    assert.equal(view.loaded().props.children[1].props.children, 'Loaded');
-    assert.deepEqual(view.state.names, {});
-  }
+  // A blank name, or the name it has, renames nothing.
+  for (const draft of ['  ', 'Loaded']) { view.edit(); await view.blur(draft); }
+  assert.equal(view.renames.length, 1);
   view.fail(); view.edit(); await view.blur('Blocked');
-  assert.match(view.find((node: Element) => node.props.role === 'alert').props.children, /Recording names could not be saved/);
-  assert.equal(view.loaded().props.children[1].props.children, 'Blocked', 'a refused save applies for this session');
-  assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
+  assert.equal(view.find((node: Element) => node.props.role === 'alert').props.children, 'This recording is in use.');
+  assert.equal(view.loaded().props.children[1].props.children, 'Loaded', 'a refused rename keeps the file name');
+  assert.equal(view.updates.length, 1);
 }));
 
-test('loaded and archived recordings match display and file names in search, and archive overrides clear', async () => fixture(async view => {
-  view.edit(); await view.blur('Weekend campaign');
-  view.edit(view.archived()); await view.blur('Old favourite');
-  assert.equal(view.archived().props.children[1].props.children, 'Old favourite');
-  assert.equal(view.archived().props['aria-label'], 'Load Old favourite');
-  assert.equal(view.archived().props['data-tooltip'], 'Old favourite · Archive.battleplan');
-  const search = (query: string) => { view.find((node: Element) => node.props['aria-label'] === 'Search recordings').props.onChange({ currentTarget: { value: query } }); view.render(); };
-  for (const query of ['weekend', 'LOADED.battleplan']) { search(query); assert.equal(view.loaded().props.children[1].props.children, 'Weekend campaign'); }
-  for (const query of ['favourite', 'ARCHIVE.battleplan']) { search(query); assert.equal(view.archived().props.children[1].props.children, 'Old favourite'); }
-  search('favourite'); view.archived().props.onClick(); view.render();
-  assert.deepEqual(view.loads, [['C:/recordings/Archive.battleplan', 'Archive.battleplan', 'new']], 'layout labels keep the file name');
-  view.edit(view.archived()); await view.blur('');
+test('loaded and archived recordings are named and found by their file names', async () => fixture(async view => {
   assert.equal(view.archived().props.children[1].props.children, 'Archive');
   assert.equal(view.archived().props['aria-label'], 'Load Archive');
-  assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
+  assert.equal(view.archived().props['data-tooltip'], 'Archive.battleplan');
+  assert.equal(view.loaded().props['data-tooltip'], 'Loaded.battleplan · Shown');
+  const search = (query: string) => { view.find((node: Element) => node.props['aria-label'] === 'Search recordings').props.onChange({ currentTarget: { value: query } }); view.render(); };
+  for (const query of ['loaded', 'LOADED.battleplan']) { search(query); assert.equal(view.loaded().props.children[1].props.children, 'Loaded'); }
+  for (const query of ['archive', 'ARCHIVE.battleplan']) { search(query); assert.equal(view.archived().props.children[1].props.children, 'Archive'); }
+  search('archive'); view.archived().props.onClick(); view.render();
+  assert.deepEqual(view.loads, [['C:/recordings/Archive.battleplan', 'Archive.battleplan', 'new']], 'layout labels keep the file name');
 }));
 
 test('campaign flag picker uses recorded countries, overrides the shown flag and only offers clear when set', async () => fixture(async view => {
@@ -186,15 +167,16 @@ test('campaign flag picker uses recorded countries, overrides the shown flag and
   assert.ok(!view.menu().some((item: MenuItem) => item.label === "Use the shown country's flag"));
 }));
 
-test('a manually picked recording retains its path and file name when its archive display name changes', async () => fixture(async view => {
+test('a manually picked recording follows its file when renamed', async () => fixture(async view => {
   view.find((node: Element) => node.props['aria-label'] === 'Open a recording').props.onClick(); await settle(); view.render();
-  const picked = view.find((node: Element) => node.props['data-tooltip'] === 'Picked · Picked.battleplan');
+  const picked = view.find((node: Element) => node.props['data-tooltip'] === 'Picked.battleplan');
   view.edit(picked); await view.blur('Renamed pick');
-  const renamed = view.find((node: Element) => node.props['data-tooltip'] === 'Renamed pick · Picked.battleplan');
+  const renamed = view.find((node: Element) => node.props['data-tooltip'] === 'Renamed pick.battleplan');
   assert.equal(renamed.props.children[1].props.children, 'Renamed pick');
   renamed.props.onClick(); view.render();
-  assert.deepEqual(view.loads, Array(2).fill(['C:/elsewhere/Picked.battleplan', 'Picked.battleplan', 'new']));
-  assert.deepEqual(view.renames, []); assert.deepEqual(view.updates, []);
+  assert.deepEqual(view.loads, [['C:/elsewhere/Picked.battleplan', 'Picked.battleplan', 'new'],
+    ['C:/elsewhere/Renamed pick.battleplan', 'Renamed pick.battleplan', 'new']]);
+  assert.deepEqual(view.updates, [['C:/elsewhere/Picked.battleplan', 'C:/elsewhere/Renamed pick.battleplan']]);
 }));
 
 test('loaded and archive recordings expose real preparation and storage when the client supports it', async () => fixture(async view => {
@@ -202,4 +184,19 @@ test('loaded and archive recordings expose real preparation and storage when the
   view.props.client.preparationStatus = async () => { throw new Error('Test does not request backend state'); };
   view.render();
   for (const row of [view.loaded, view.archived]) assert.ok(view.menu(row()).some((item: MenuItem) => item.label === 'Preparation and storage'));
+}));
+
+test('a picked recording follows a rename the dashboard followed, and only that', async () => fixture(async view => {
+  view.find((node: Element) => node.props['aria-label'] === 'Open a recording').props.onClick(); await settle(); view.render();
+  const picked = 'C:/elsewhere/Picked.battleplan', saved = 'C:/elsewhere/Germany 1936–1937.battleplan';
+  // Its slot reused by another recording is no rename of it.
+  view.props.campaigns = [{ ...view.props.campaigns[0], path: 'C:/elsewhere/Other.battleplan' }];
+  view.render();
+  assert.ok(view.nodes().some((node: Element) => node.props['data-tooltip'] === 'Picked.battleplan'));
+  // Battle Plan Recorder renamed its file as it saved, and the dashboard followed.
+  view.props.relocations = [[picked, saved, 'picked recording']];
+  view.render(); view.render();
+  assert.ok(!view.nodes().some((node: Element) => node.props['data-tooltip'] === 'Picked.battleplan'));
+  view.find((node: Element) => node.props['data-tooltip'] === 'Germany 1936–1937.battleplan').props.onClick(); view.render();
+  assert.deepEqual(view.loads.at(-1), [saved, 'Germany 1936–1937.battleplan', 'new']);
 }));

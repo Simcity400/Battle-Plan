@@ -1,13 +1,17 @@
-//! Battle Plan Recorder beside the replay app: starting it when this app opens, and
-//! the recording names and campaign flags both programs read from the
-//! recorder's shared settings.
-use replay::recorder_settings::RecorderSettings;
+//! Battle Plan Recorder beside the replay app: starting it, shared campaign flags, and recording files.
+use replay::{
+    recorder_settings::RecorderSettings,
+    recording_files::{self, NamesLock},
+};
 use replay_data::identity::is_campaign_uuid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     os::windows::process::CommandExt,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
+    time::SystemTime,
 };
 use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
@@ -65,15 +69,12 @@ fn campaign_id(key: &str) -> Option<String> {
 
 #[derive(Debug, Default, PartialEq, Serialize)]
 pub struct RecordingPreferences {
-    /// Display names by normalized recording path.
-    names: BTreeMap<String, String>,
     /// Chosen flag tags by campaign key.
     flags: BTreeMap<String, String>,
 }
 
 fn preferences(settings: &RecorderSettings) -> RecordingPreferences {
     RecordingPreferences {
-        names: settings.recording_names.clone(),
         flags: settings
             .campaigns
             .iter()
@@ -108,42 +109,119 @@ pub async fn recording_preferences() -> Result<RecordingPreferences, String> {
     .await
 }
 
-/// Set (or with no name, clear) individual display names by normalized
-/// recording path, leaving every other name as the file holds it.
-fn apply_name_changes(
-    names: &mut BTreeMap<String, String>,
-    changes: BTreeMap<String, Option<String>>,
-) {
-    for (path, name) in changes {
-        match name {
-            Some(name) => {
-                names.insert(path, name);
-            }
-            None => {
-                names.remove(&path);
-            }
+/// Rename a recording's file to the user's name, which later saves keep; returns its new path.
+#[tauri::command]
+pub async fn rename_recording(path: String, name: String) -> Result<String, String> {
+    blocking(move || {
+        rename(Path::new(&path), &name, &RecorderSettings::path())
+            .map(|renamed| renamed.display().to_string())
+    })
+    .await
+}
+
+/// Succeeds exactly when the file moved.
+fn rename(path: &Path, name: &str, settings: &Path) -> Result<PathBuf, String> {
+    let failed = |error: std::io::Error| format!("The recording could not be renamed: {error}");
+    let stem = recording_files::file_stem(name)
+        .ok_or("Choose a name with a letter or number Windows allows in file names.")?;
+    if !path.is_file() || !recording_files::is_recording(path) {
+        return Err("Choose a .battleplan recording to rename.".into());
+    }
+    let folder = std::fs::canonicalize(path.parent().ok_or("This recording has no folder.")?)
+        .map_err(failed)?;
+    let _lock = NamesLock::try_now(&folder)
+        .map_err(failed)?
+        .ok_or("Battle Plan Recorder is saving into this folder. Try again in a moment.")?;
+    let campaign = recording_files::campaign_of(path)
+        .map_err(failed)?
+        .and_then(|id| String::from_utf8(id).ok());
+    // The name is the user's before the file moves, so no save renames it back.
+    let added = match &campaign {
+        Some(campaign) => {
+            RecorderSettings::update_at(settings, |settings| {
+                let before = settings.name_chosen(&folder, campaign.as_bytes());
+                settings.choose_name(&folder, campaign, true);
+                !before
+            })
+            .map_err(failed)?
+            .1
         }
+        None => false,
+    };
+    recording_files::rename(path, &stem).map_err(|error| {
+        if let (true, Some(campaign)) = (added, &campaign) {
+            let _ = RecorderSettings::update_at(settings, |settings| {
+                settings.choose_name(&folder, campaign, false)
+            });
+        }
+        // Sharing violation: the recorder holds the campaign it is recording.
+        if error.raw_os_error() == Some(32) {
+            "Battle Plan Recorder is recording into this file. Rename it once the session is saved."
+                .to_owned()
+        } else {
+            failed(error)
+        }
+    })
+}
+
+/// A recording the frontend shows: where it was last, and its campaign.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shown {
+    path: String,
+    campaign_key: String,
+}
+
+type Listing = Vec<(PathBuf, u64, SystemTime)>;
+
+/// Each folder's recordings by campaign, read again only once its recordings change.
+static FOLDERS: Mutex<BTreeMap<PathBuf, (Listing, recording_files::Found)>> =
+    Mutex::new(BTreeMap::new());
+
+/// `listings` holds this request's folder listings, so each folder is listed once.
+fn located(
+    listings: &mut BTreeMap<PathBuf, Option<Listing>>,
+    path: &Path,
+    campaign_key: &str,
+) -> Option<PathBuf> {
+    let campaign = campaign_id(campaign_key)?.to_ascii_lowercase().into_bytes();
+    let folder = path.parent()?;
+    let listing = listings
+        .entry(folder.to_path_buf())
+        .or_insert_with(|| recording_files::listing(folder).ok())
+        .as_ref()?;
+    let mut folders = FOLDERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let found = match folders.get(folder) {
+        Some((known, found)) if known == listing => found,
+        _ => {
+            let found = recording_files::recordings(folder).ok()?;
+            &folders
+                .entry(folder.to_path_buf())
+                .insert_entry((listing.clone(), found))
+                .into_mut()
+                .1
+        }
+    };
+    match found.get(&campaign)?.as_slice() {
+        [one] => Some(one.clone()),
+        _ => None,
     }
 }
 
-/// Change the given display names inside one locked settings update, so a
-/// rename in either program never drops another; the frontend owns their
-/// normalization and rules.
+/// Where each recording is now, by its folder and campaign; `None` unless exactly one is there.
 #[tauri::command]
-pub async fn set_recording_names(changes: BTreeMap<String, Option<String>>) -> Result<(), String> {
-    if changes.iter().any(|(path, name)| {
-        path.is_empty()
-            || path.contains('\0')
-            || name.as_deref().is_some_and(|name| name.trim().is_empty())
-    }) {
-        return Err("Invalid recording name".into());
-    }
+pub async fn locate_recordings(recordings: Vec<Shown>) -> Result<Vec<Option<String>>, String> {
     blocking(move || {
-        RecorderSettings::update(|settings| {
-            apply_name_changes(&mut settings.recording_names, changes)
-        })
-        .map(|_| ())
-        .map_err(|error| format!("Recording names could not be saved: {error}"))
+        let mut listings = BTreeMap::new();
+        Ok(recordings
+            .iter()
+            .map(|shown| {
+                located(&mut listings, Path::new(&shown.path), &shown.campaign_key)
+                    .map(|path| path.display().to_string())
+            })
+            .collect())
     })
     .await
 }
@@ -183,57 +261,129 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_rename_changes_only_its_own_recording() {
-        let mut names = BTreeMap::from([
-            (
-                "c:/recordings/a.battleplan".to_owned(),
-                "Saved by the recorder".to_owned(),
-            ),
-            ("c:/recordings/b.battleplan".to_owned(), "Old".to_owned()),
-            (
-                "c:/recordings/c.battleplan".to_owned(),
-                "Cleared".to_owned(),
-            ),
-        ]);
-        // The app knew neither a's name nor that b changed elsewhere; it renames only b and clears c.
-        apply_name_changes(
-            &mut names,
-            BTreeMap::from([
-                (
-                    "c:/recordings/b.battleplan".to_owned(),
-                    Some("New".to_owned()),
-                ),
-                ("c:/recordings/c.battleplan".to_owned(), None),
-            ]),
+    /// A file with a recording's header naming the campaign.
+    fn recording(path: &Path) {
+        let mut bytes = b"H4RP".to_vec();
+        bytes.extend_from_slice(
+            &replay_data::format::FormatVersion::CURRENT
+                .version()
+                .to_le_bytes(),
         );
-        assert_eq!(
-            names,
-            BTreeMap::from([
-                (
-                    "c:/recordings/a.battleplan".to_owned(),
-                    "Saved by the recorder".to_owned()
-                ),
-                ("c:/recordings/b.battleplan".to_owned(), "New".to_owned()),
-            ])
-        );
+        bytes.extend_from_slice(&720_u32.to_le_bytes());
+        bytes.extend_from_slice(&(CAMPAIGN.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(CAMPAIGN.as_bytes());
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn scratch() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "battle-plan-rename-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("recordings")).unwrap();
+        root
     }
 
     #[test]
-    fn preferences_carry_names_and_flags_by_frontend_key() {
+    fn a_users_rename_renames_the_file_and_sticks() {
+        let root = scratch();
+        let settings = root.join("settings.json");
+        let folder = root.join("recordings");
+        let path = folder.join("Germany 1936–1941.battleplan");
+        recording(&path);
+        std::fs::write(folder.join("Barbarossa.battleplan"), b"another").unwrap();
+        // A taken name gets the next number; unsafe characters are dropped.
+        let renamed = rename(&path, " Barbarossa? ", &settings).unwrap();
+        assert_eq!(renamed, folder.join("Barbarossa (2).battleplan"));
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(folder.join("Barbarossa.battleplan")).unwrap(),
+            b"another"
+        );
+        // Later saves keep the name, whatever the file is called next.
+        let saved = RecorderSettings::load_from(&settings).unwrap();
+        let identity = std::fs::canonicalize(&folder).unwrap();
+        assert!(saved.name_chosen(&identity, CAMPAIGN.as_bytes()));
+        // While the recorder holds the folder, nothing changes.
+        let held = NamesLock::wait(&folder).unwrap();
+        assert!(
+            rename(&renamed, "Other", &settings)
+                .unwrap_err()
+                .contains("saving")
+        );
+        drop(held);
+        assert!(renamed.exists());
+        // A name with nothing Windows allows is refused before anything changes.
+        assert!(rename(&renamed, " ?* ", &settings).is_err());
+        assert!(renamed.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_leaves_the_name_to_the_recorder() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        let root = scratch();
+        let settings = root.join("settings.json");
+        let folder = root.join("recordings");
+        let path = folder.join("Germany 1936.battleplan");
+        recording(&path);
+        // The recorder holds the campaign it records without delete sharing.
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&path)
+            .unwrap();
+        let error = rename(&path, "Barbarossa", &settings).unwrap_err();
+        assert!(error.contains("recording into this file"), "{error}");
+        drop(lease);
+        assert!(path.exists());
+        assert!(
+            RecorderSettings::load_from(&settings)
+                .unwrap()
+                .chosen_names
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_shown_recording_is_found_again_by_its_folder_and_campaign() {
+        let root = scratch();
+        let folder = root.join("recordings");
+        let path = folder.join("Germany 1936.battleplan");
+        recording(&path);
+        let key = campaign_key(CAMPAIGN);
+        assert_eq!(
+            located(&mut BTreeMap::new(), &path, &key),
+            Some(path.clone())
+        );
+        let renamed = recording_files::rename(&path, "Germany 1936–1937").unwrap();
+        assert_eq!(
+            located(&mut BTreeMap::new(), &path, &key),
+            Some(renamed.clone())
+        );
+        // A copy beside it: neither is guessed.
+        std::fs::copy(&renamed, folder.join("Copy.battleplan")).unwrap();
+        assert_eq!(located(&mut BTreeMap::new(), &renamed, &key), None);
+        assert_eq!(
+            located(&mut BTreeMap::new(), &renamed, "not a campaign"),
+            None
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preferences_carry_flags_by_frontend_key() {
         let mut settings = RecorderSettings::default();
-        settings
-            .recording_names
-            .insert("c:/recordings/a.battleplan".into(), "Barbarossa".into());
         settings.campaigns.entry(CAMPAIGN.into()).or_default().flag = Some("GER".into());
         settings.campaigns.entry("other".into()).or_default().record = Some(false);
-        let preferences = preferences(&settings);
         assert_eq!(
-            preferences.names["c:/recordings/a.battleplan"],
-            "Barbarossa"
-        );
-        assert_eq!(
-            preferences.flags,
+            preferences(&settings).flags,
             BTreeMap::from([(campaign_key(CAMPAIGN), "GER".to_owned())])
         );
     }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate } from './model.ts';
-import { campaignSlots, defaultAfterOpen, defaultAfterUnload, includeCampaigns, resolveWidgetCampaign, sameCampaignPath } from './campaigns.ts';
+import { campaignSlots, defaultAfterOpen, defaultAfterUnload, followRelocations, includeCampaigns, resolveWidgetCampaign, sameCampaignPath } from './campaigns.ts';
 import { parseTemplate } from './storage.ts';
 import '../widgets/definitions.ts';
 
@@ -90,4 +90,15 @@ test('campaign slots survive layout restoration without persisting paths or chan
   assert.equal(parseTemplate(legacy)?.widgets[0].campaign, 'default');
   assert.equal(parseTemplate(legacy)?.widgets[1].campaign, 'tracks');
   assert.equal(parseTemplate({ ...merged, widgets: [{ ...merged.widgets[0], campaign: 'arbitrary' }] }), null);
+});
+
+test("a path follows only its own recording's renames, never another taking its old name", () => {
+  // Between checks, B became C and then A took B's name.
+  const renames = [['C:/x/A.battleplan', 'C:/x/B.battleplan', 'a'], ['C:/x/B.battleplan', 'C:/x/C.battleplan', 'b']] as const;
+  assert.equal(followRelocations('C:/x/A.battleplan', renames), 'C:/x/B.battleplan');
+  assert.equal(followRelocations('c:/X/b.battleplan', renames), 'C:/x/C.battleplan');
+  // One recording renamed twice follows both; one never renamed stays.
+  const twice = [['C:/x/A.battleplan', 'C:/x/A1.battleplan', 'a'], ['C:/x/A1.battleplan', 'C:/x/A2.battleplan', 'a']] as const;
+  assert.equal(followRelocations('C:/x/A.battleplan', twice), 'C:/x/A2.battleplan');
+  assert.equal(followRelocations('C:/x/D.battleplan', twice), 'C:/x/D.battleplan');
 });

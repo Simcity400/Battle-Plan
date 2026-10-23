@@ -156,6 +156,42 @@ fn compatibility_old_campaign_is_refused_before_recording_history_is_seeded() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn a_campaigns_recording_is_found_by_its_header_whatever_its_name() {
+    let id = "01234567-89ab-cdef-0123-456789abcdef";
+    let root = std::env::temp_dir().join(format!("hoi4_history_named_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let session = session();
+    let replay =
+        Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
+    let session = SessionStart { id: 2, ..session };
+    // A recording of the campaign appearing after preparation, under any name, is refused.
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    fs::write(root.join("Germany 1936.battleplan"), replay.bytes()).unwrap();
+    let error = prepared.take(id, &session).err().unwrap().to_string();
+    assert!(
+        error.contains("appeared after history preparation"),
+        "{error}"
+    );
+    // Prepared by its header, it is the campaign's history, held while recording.
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    let (_, lease) = prepared.take(id, &session).unwrap();
+    assert!(lease.is_some());
+    drop((lease, prepared));
+    // With a copy beside it, neither is guessed to be the campaign's.
+    fs::write(root.join("Germany 1936 - Copy.battleplan"), replay.bytes()).unwrap();
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    let error = prepared.take(id, &session).err().unwrap().to_string();
+    assert!(error.contains("more than one recording"), "{error}");
+    drop(prepared);
+    // A recording that cannot be read may be this campaign's: preparation fails.
+    fs::remove_file(root.join("Germany 1936 - Copy.battleplan")).unwrap();
+    fs::write(root.join("Damaged.battleplan"), b"junk").unwrap();
+    assert!(PreparedCampaigns::load(&root, &session, |_| Ok(())).is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
 fn session() -> SessionStart {
     SessionStart {
         id: 1,

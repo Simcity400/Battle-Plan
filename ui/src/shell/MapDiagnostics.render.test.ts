@@ -24,7 +24,6 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     }] });
   try {
     const { default: Diagnostics } = await vite.ssrLoadModule('/ui/src/shell/MapDiagnostics.tsx') as typeof import('./MapDiagnostics');
-    const { saveRecordingNames, setRecordingName } = await vite.ssrLoadModule('/ui/src/dashboard/recordingNames.ts') as typeof import('../dashboard/recordingNames.ts');
     const branch = { id: 'b1', sessionId: 's1', firstHour: 43800024, lastHour: 43800024 + 24 * 30, parentId: null, parentHour: null, sampleBoundary: 'hourly', gaps: [] };
     const metadata = { path: 'C:/recordings/GER 1936.battleplan', name: 'GER 1936.battleplan', format: 100, campaignKey: 'c', branches: [branch],
       countries: [], playerCountryId: null, contentVerified: true, partial: null, warnings: ['Provinces.attack not recorded (introduced at format 101)'], revision: '1' } as ReplayMetadata;
@@ -51,14 +50,7 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     assert.doesNotMatch(markup(two, null), /Showing|aria-label="Show /, 'without a playing campaign there is nothing to switch');
     assert.match(visible(null), /No recording open/);
     assert.match(visible(null), /Technical overlay/);
-    const original = structuredClone(metadata);
-    saveRecordingNames(setRecordingName({}, 'c:\\recordings\\GER 1936.battleplan', 'Weekend campaign'), { getItem: () => null, setItem() {} });
-    assert.match(visible(metadata), /Weekend campaign/);
-    assert.doesNotMatch(visible(metadata), /GER 1936/);
-    assert.match(markup(metadata, null), /data-tooltip="Weekend campaign · GER 1936.battleplan/);
-    assert.deepEqual(metadata, original);
-    saveRecordingNames({}, { getItem: () => null, setItem() {} });
-    assert.match(visible(metadata), /GER 1936/);
+    assert.match(markup(metadata, null), /data-tooltip="GER 1936.battleplan/);
   } finally { await vite.close(); }
 });
 

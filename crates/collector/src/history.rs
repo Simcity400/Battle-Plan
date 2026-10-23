@@ -1,7 +1,7 @@
 //! Prepare exact prior branch history before installing the hourly hook.
 
 use crate::spooling::campaign_name;
-use replay::container::Replay;
+use replay::{container::Replay, recording_files};
 use replay_data::{
     codec::invalid, format::FormatVersion, identity::Identity, identity::SessionStart,
 };
@@ -51,22 +51,18 @@ impl PreparedCampaigns {
         session: &SessionStart,
         mut progress: impl FnMut(&str) -> io::Result<()>,
     ) -> io::Result<Self> {
+        // Each recording by the campaign its header names, whatever its file name.
         let mut paths = Vec::new();
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             let path = entry.path();
-            if !entry.file_type()?.is_file()
-                || !path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("battleplan") || ext.eq_ignore_ascii_case("hoi4replay"))
-            {
+            if !entry.file_type()?.is_file() || !recording_files::is_recording(&path) {
                 continue;
             }
-            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            if let Ok(id) = campaign_name(stem.as_bytes()) {
+            // One that cannot be read may be any campaign's: preparation fails.
+            if let Some(id) =
+                recording_files::campaign_of(&path)?.and_then(|id| campaign_name(&id).ok())
+            {
                 engine_allocation::reserve(&mut paths, 1)?;
                 paths.push((id, path));
             }
@@ -112,9 +108,16 @@ impl PreparedCampaigns {
                     *maximum = (*maximum).max(prior);
                 }
             }
-            if entries.insert(id.to_ascii_lowercase(), prepared).is_some() {
-                return Err(invalid("duplicate campaign replay filename"));
+            let key = id.to_ascii_lowercase();
+            if entries.contains_key(&key) {
+                // Neither recording is guessed to be the campaign's.
+                entries.insert(
+                    key,
+                    Err("the replay folder holds more than one recording of this campaign".into()),
+                );
+                continue;
             }
+            entries.insert(key, prepared);
         }
         Ok(Self {
             directory: directory.into(),
@@ -168,9 +171,7 @@ impl PreparedCampaigns {
         let map_events = map_event_history(&replay)?;
         let history = replay.into_history()?;
         if !history.campaign_id.eq_ignore_ascii_case(name.as_bytes()) {
-            return Err(invalid(
-                "existing replay filename differs from its campaign id",
-            ));
+            return Err(invalid("existing replay changed while it was read"));
         }
         let previous_session = history
             .sessions
@@ -268,11 +269,7 @@ impl PreparedCampaigns {
                 }
             }
             None => {
-                if self
-                    .directory
-                    .join(format!("{id}.battleplan"))
-                    .try_exists()?
-                {
+                if !recording_files::recordings_of(&self.directory, id.as_bytes())?.is_empty() {
                     return Err(invalid(
                         "campaign replay appeared after history preparation; restart the recorder",
                     ));

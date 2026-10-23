@@ -40,6 +40,8 @@ pub struct Recording<'a> {
     /// The campaign and load signal this session attaches for, already chosen:
     /// admitted before the collector starts.
     pub opening: Option<(&'a str, i64)>,
+    /// Whether the names recordings would get are shown now.
+    pub names_wanted: &'a dyn Fn() -> bool,
 }
 
 /// Attach to `pid`, record until `control` stops it or the game exits, then
@@ -63,6 +65,7 @@ pub fn record(
         admit: Some(recording.admit),
         loaded: Some(recording.loaded),
         opening: recording.opening,
+        names_wanted: Some(recording.names_wanted),
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
     };

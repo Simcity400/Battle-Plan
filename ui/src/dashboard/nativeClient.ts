@@ -74,9 +74,12 @@ export const nativeDashboardClient: DashboardClient = {
   // Outside the desktop app there is no host to list or pick files.
   ...(desktopAvailable ? {
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),
+    replayLibraryStamp: () => invoke<string>('replay_library_stamp'),
     setReplayFolder: (folder: string) => invoke<ReplayLibrary>('set_replay_folder', { folder }),
     chooseReplayFolder: (initial?: string) => invoke<string | null>('choose_replay_folder', { initial: initial ?? null }),
     chooseRecording: () => invoke<string | null>('choose_recording'),
+    renameRecording: (path: string, name: string) => invoke<string>('rename_recording', { path, name }),
+    locateRecordings: (recordings: { path: string; campaignKey: string }[]) => invoke<(string | null)[]>('locate_recordings', { recordings }),
     recorderSettings: () => invoke<RecorderSettings>('recorder_settings'),
     // The host owns the content folders and sends them to its native viewer.
     contentFolders: () => invoke<ContentFolders>('content_folders'),

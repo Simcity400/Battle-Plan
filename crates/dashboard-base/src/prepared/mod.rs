@@ -19,7 +19,7 @@ pub mod series;
 mod store;
 pub mod timing;
 
-pub use store::{files, recording_store};
+pub use store::{files, recording_identity, recording_store};
 
 /// Query helpers shared by products whose reads join prepared pages with a
 /// recorded tail.
