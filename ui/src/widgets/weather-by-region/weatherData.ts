@@ -235,8 +235,10 @@ export function columnTooltip(reply: WeatherReply, region: Choice, column: numbe
   };
 }
 
-/** Every flag and modifier the region recorded at the day's hour, dated by its read. */
-export function weatherTooltip(reply: WeatherReply, region: Choice, day: KeyedDay | null, date: string, readDate: string | null): TooltipContent {
+/** Every flag and modifier the region recorded at the day's hour, dated by its read.
+ * Only the conditions view reads conditions, so only it lists them. */
+export function weatherTooltip(reply: WeatherReply, region: Choice, day: KeyedDay | null, date: string, readDate: string | null,
+  show: WeatherShow = 'conditions'): TooltipContent {
   if (!day || day.readHour === null) return { title: region.name, rows: [{ label: date }, { label: 'Not recorded' }] };
   const names = regionSeries(reply.window).get(region.id);
   const flags = reply.flags.filter(flag => { const run = runAtHour(names?.get(flag.id) ?? [], day.at); return run && run[2] !== '0'; });
@@ -248,7 +250,7 @@ export function weatherTooltip(reply: WeatherReply, region: Choice, day: KeyedDa
     title: region.name,
     rows: [
       { label: date },
-      { label: 'Conditions', value: !names ? 'Not recorded' : flags.length ? flags.map(flag => flag.name).join(', ') : 'None' },
+      ...show === 'conditions' ? [{ label: 'Conditions', value: !names ? 'Not recorded' : flags.length ? flags.map(flag => flag.name).join(', ') : 'None' }] : [],
       { label: 'Temperature (average of provinces)', value: (() => { const run = runAtHour(names?.get('temp') ?? [], day.at); return run ? temperatureText(run[2]) : 'Not available'; })() },
       ...modifiers,
       ...readDate ? [{ label: 'As of', value: readDate }] : [],

@@ -1313,10 +1313,10 @@ fn transport_budget_refuses_without_truncating_and_selection_has_no_count_cap() 
     let mut reply = scan_fixture(2, 4, 3, false);
     let leaders = reply.leaders.len();
     assert_eq!(leaders, 8);
-    assert!(reply_bytes(&reply).is_ok());
+    assert!(reply_bytes_within(&reply, MAX_REPLY_BYTES).is_ok());
     reply.warnings.push("x".repeat(MAX_REPLY_BYTES));
     assert!(
-        reply_bytes(&reply)
+        reply_bytes_within(&reply, MAX_REPLY_BYTES)
             .unwrap_err()
             .to_string()
             .contains("transport budget")

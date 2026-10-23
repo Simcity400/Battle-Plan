@@ -1127,10 +1127,6 @@ fn visible_reusing(
     value.decided().map_err(Some)
 }
 
-fn reply_bytes(reply: &UnitLeadersReply) -> io::Result<usize> {
-    reply_bytes_within(reply, MAX_REPLY_BYTES)
-}
-
 fn reply_bytes_within(reply: &UnitLeadersReply, budget: usize) -> io::Result<usize> {
     dashboard_core::transport::json_len(reply, budget).ok_or_else(|| {
         io::Error::other(
@@ -4572,7 +4568,7 @@ impl Product for UnitLeaders {
         };
         let reply = project(&scanned, params, history.as_deref());
         // Count only the projected wire reply. Remember an oversize refusal too.
-        let result = remembered(reply_bytes(&reply).map(|_| Arc::new(reply)));
+        let result = remembered(reply_bytes_within(&reply, MAX_REPLY_BYTES).map(|_| Arc::new(reply)));
         slot.remember(params, result.clone());
         recalled(result).map(UnitLeadersResponse::from)
     }

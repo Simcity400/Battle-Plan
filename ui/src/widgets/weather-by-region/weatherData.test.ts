@@ -68,6 +68,8 @@ test('theatres narrow regions and tooltips list the day', () => {
   const [, second] = keyedDays(reply.window, [0, 47], 24);
   assert.match(weatherTooltip(reply, reply.regions[0], second, 'Day 2', 'Day 2').rows.map(row => `${row.label}=${row.value}`).join(';'), /Conditions=Rain, Snow/);
   assert.equal(weatherTooltip(reply, reply.regions[0], null, 'Day 3', null).rows[1].label, 'Not recorded');
+  for (const show of ['temperature', 'modifiers'] as const)
+    assert.ok(!weatherTooltip(reply, reply.regions[0], second, 'Day 2', 'Day 2', show).rows.some(row => row.label === 'Conditions'), `a ${show} view lists no conditions`);
 });
 
 test('temperature shows each region\'s average, blank where it has none', () => {

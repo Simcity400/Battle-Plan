@@ -88,7 +88,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     if (pendingAt(preparedPrefix(exact.reply), hour)) return { ...summary, rows: [...summary.rows, { label: date, value: 'Still being prepared', divider: true }] };
     // The day reads its values; the shown history names its flags and modifiers.
     const day = weatherTooltip({ ...exact.reply, flags: data.flags, modifiers: data.modifiers }, region, exact.day, date,
-      exact.day?.readHour == null ? null : dayLabel(exact.day.readHour));
+      exact.day?.readHour == null ? null : dayLabel(exact.day.readHour), show);
     return { ...summary, rows: [...summary.rows, ...day.rows.map((item, index) => index === 0 ? { ...item, divider: true } : item)] };
   }, [data, regions, show, modifier, exactDay, days, dayHours, pending, unreached]);
   /** The hovered day's own hours: its read where one day is shown, never a folded column's. */
