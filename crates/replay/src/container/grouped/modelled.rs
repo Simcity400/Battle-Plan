@@ -27,11 +27,12 @@
 //! compresses smaller; its leading masks-column byte names the coding. A
 //! reader builds a model only for a section that chose model decisions.
 
-use super::keyed::KeySet;
+use super::keyed::{KeySet, insert_at, remove_at};
 use crate::{
     codec::{Decoder, invalid_static as invalid, put_varint},
     rows::TableId,
 };
+use engine_allocation as allocation;
 use std::{collections::HashMap, io};
 
 /// Probabilities are of a zero decision, in units of `1 / 2^PROBABILITY_BITS`.
@@ -448,15 +449,32 @@ impl Model {
         self.run = rows;
     }
 
-    /// Each held row's last mask, by its place among the held rows. A row
-    /// held when they were last indexed keeps the mask indexed for it, which
-    /// [`Self::take`] kept equal to its last mask; only the others are looked up.
-    fn index_held(&mut self, held: &KeySet) {
+    /// Follow one recorded edit by place; otherwise merge keys and reuse held masks.
+    fn index_held(&mut self, held: &KeySet) -> io::Result<()> {
         if self.held_changes == Some(held.changes()) {
-            return;
+            return Ok(());
+        }
+        if let Some(edit) = held.edit_from(self.held_changes) {
+            allocation::reserve(&mut self.held_masks, edit.added().len())?;
+            let more = held.keys().len().saturating_sub(self.held_keys.len());
+            allocation::reserve(&mut self.held_keys, more)?;
+            remove_at(&mut self.held_masks, edit.removed());
+            let (keys, added, last) = (held.keys(), edit.added(), &self.last);
+            insert_at(&mut self.held_masks, added, |index| {
+                #[cfg(test)]
+                HELD_LOOKUPS.with(|count| count.set(count.get() + 1));
+                last.get(&keys[added[index]]).copied().unwrap_or(0)
+            })?;
+            self.held_keys.clear();
+            self.held_keys.extend_from_slice(held.keys());
+            self.held_changes = Some(held.changes());
+            return Ok(());
         }
         let mut masks = std::mem::take(&mut self.spare_masks);
         masks.clear();
+        allocation::reserve(&mut masks, held.keys().len())?;
+        let more = held.keys().len().saturating_sub(self.held_keys.len());
+        allocation::reserve(&mut self.held_keys, more)?;
         let mut before = self.held_keys.iter().zip(&self.held_masks).peekable();
         for key in held.keys() {
             while before.next_if(|(before, _)| *before < key).is_some() {}
@@ -473,6 +491,7 @@ impl Model {
         self.held_keys.clear();
         self.held_keys.extend_from_slice(held.keys());
         self.held_changes = Some(held.changes());
+        Ok(())
     }
 
     /// Merge both ordered sets. Galloping over a long cold span avoids
@@ -723,7 +742,7 @@ impl Model {
             self.age(&[]);
             return Ok(Vec::new());
         }
-        self.index_held(held);
+        self.index_held(held)?;
         let held = held.keys();
         let inserted_count =
             self.inserted
@@ -944,9 +963,9 @@ mod tests {
             ),
         ] {
             let mut changes = changes;
-            held.apply(&mut changes);
+            held.apply(&mut changes).unwrap();
             let before = lookups();
-            reader.index_held(&held);
+            reader.index_held(&held).unwrap();
             assert_eq!(lookups() - before, looked_up);
             let by_key: Vec<u64> = held
                 .keys()
@@ -1001,8 +1020,9 @@ mod tests {
         held.apply(&mut super::super::keyed::KeyChanges {
             inserted: vec![12],
             deleted: vec![4],
-        });
-        reader.index_held(&held);
+        })
+        .unwrap();
+        reader.index_held(&held).unwrap();
         assert_eq!(reader.held_masks, [2, 0]);
         assert_eq!(reader.held_changes, Some(held.changes()));
         // A clear and reinsertion preserve historical masks by key without
@@ -1011,9 +1031,94 @@ mod tests {
         held.apply(&mut super::super::keyed::KeyChanges {
             inserted: vec![4, 8],
             deleted: Vec::new(),
-        });
-        reader.index_held(&held);
+        })
+        .unwrap();
+        reader.index_held(&held).unwrap();
         assert_eq!(reader.held_masks, [1, 2]);
+    }
+
+    /// Compare edit-following masks and lookup counts with a full by-key reference.
+    #[test]
+    fn held_masks_follow_recorded_changes_as_a_full_index_does() {
+        use super::super::keyed::KeyChanges;
+        let mut seed = 0x6865_6c64_u64;
+        let mut draw = |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        let mut reader = Model::new(FIELDS);
+        for key in 0..600_u128 {
+            reader.last.insert(key, 1 + key as u64 % 7);
+        }
+        let lookups = || HELD_LOOKUPS.with(std::cell::Cell::get);
+        let mut held = KeySet::default();
+        let mut indexed: Vec<u128> = Vec::new();
+        let (mut followed, mut walked) = (0, 0);
+        for step in 0..3_000 {
+            if draw(40) == 0 {
+                held.clear();
+            } else {
+                let mut changes = KeyChanges::default();
+                for _ in 0..draw(6) {
+                    let key = u128::from(draw(600));
+                    if held.keys().binary_search(&key).is_err() {
+                        changes.inserted.push(key);
+                    }
+                }
+                for _ in 0..draw(6) {
+                    if let Some(&key) = held.keys().get(draw(held.keys().len() as u64 + 1) as usize)
+                    {
+                        changes.deleted.push(key);
+                    }
+                }
+                changes.inserted.sort_unstable();
+                changes.inserted.dedup();
+                changes.deleted.sort_unstable();
+                changes.deleted.dedup();
+                held.apply(&mut changes).unwrap();
+            }
+            // Indexes skip some changes, so several can come between them.
+            if draw(3) == 0 {
+                continue;
+            }
+            if held.edit_from(reader.held_changes).is_some() {
+                followed += 1;
+            } else if reader.held_changes != Some(held.changes()) {
+                walked += 1;
+            }
+            let new = held
+                .keys()
+                .iter()
+                .filter(|key| indexed.binary_search(key).is_err())
+                .count();
+            let before = lookups();
+            reader.index_held(&held).unwrap();
+            assert_eq!(lookups() - before, new, "step {step}");
+            let full: Vec<u64> = held
+                .keys()
+                .iter()
+                .map(|key| reader.last.get(key).copied().unwrap_or(0))
+                .collect();
+            assert_eq!(reader.held_masks, full, "step {step}");
+            assert_eq!(reader.held_keys, held.keys(), "step {step}");
+            indexed = held.keys().to_vec();
+            // The reader stores new masks for some held rows, as a take does.
+            for _ in 0..draw(4) {
+                if indexed.is_empty() {
+                    break;
+                }
+                let at = draw(indexed.len() as u64) as usize;
+                let mask = 1 + draw(1 << FIELDS);
+                reader.held_masks[at] = mask;
+                reader.last.insert(indexed[at], mask);
+            }
+        }
+        assert!(
+            followed > 500 && walked > 100,
+            "{followed} followed, {walked} walked"
+        );
     }
 
     #[test]
@@ -1197,7 +1302,8 @@ mod tests {
                     live.apply(&mut super::super::keyed::KeyChanges {
                         inserted: held.keys().to_vec(),
                         deleted: Vec::new(),
-                    });
+                    })
+                    .unwrap();
                 }
                 model.take(TableId::Divisions, &live, count, &mut keys, &mut coded)
             })

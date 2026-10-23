@@ -3,6 +3,7 @@ use super::{complete, find, plain, update};
 use crate::{
     Hour,
     codec::{Decoder, invalid_static as invalid, put_varint},
+    format::FormatVersion,
     frame::{
         DecodedFrame, Frame, SharedView, TableUpdate, TableView, advance_table, recorded::Updates,
     },
@@ -40,7 +41,8 @@ pub(crate) fn stored(table: TableId, version: u16) -> bool {
             }
 }
 
-fn dependencies(table: TableId) -> &'static [TableId] {
+/// The tables `table`'s private aliases read.
+pub(crate) fn dependencies(table: TableId) -> &'static [TableId] {
     match table {
         TableId::DivisionMovement => &[TableId::DivisionPanelStats],
         TableId::DivisionStatus => &[TableId::DivisionPanelStats, TableId::SimulationFeatures],
@@ -351,285 +353,24 @@ fn transform(
     encode: bool,
     default: u16,
 ) -> io::Result<SharedView> {
-    let mut seen = 0;
     let result = match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            let mut rows = rows.try_clone_validated()?;
-            match &mut rows {
-                TableRows::LandCombatDivisions(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        for (at, candidate) in candidates(row, sources).into_iter().enumerate() {
-                            if encode {
-                                if candidate.is_some() && member_value(row, at) == candidate {
-                                    bits |= 1 << at;
-                                    set_member(row, at, 0);
-                                }
-                            } else if bits & (1 << at) != 0 {
-                                if member_value(row, at) != Some(0) {
-                                    return Err(invalid("nonzero combat member alias payload"));
-                                }
-                                set_member(
-                                    row,
-                                    at,
-                                    candidate.ok_or_else(|| {
-                                        invalid("combat member alias source unavailable")
-                                    })?,
-                                );
-                            }
-                        }
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::LandCombatDivisionModifiers(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        let candidate = find(complete::<tables::LandCombatDivisions>(sources), key)
-                            .map(|row| row.division);
-                        if encode {
-                            if candidate == Some(row.division) {
-                                bits |= 1;
-                                row.division = 0;
-                            }
-                            save_marks(marks, key, bits, default);
-                        } else if bits & 1 != 0 {
-                            if row.division != 0 {
-                                return Err(invalid(
-                                    "nonzero combat modifier identity alias payload",
-                                ));
-                            }
-                            row.division = candidate.ok_or_else(|| {
-                                invalid("combat modifier identity alias source unavailable")
-                            })?;
-                        }
-                    }
-                }
-                TableRows::Divisions(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    let members = province_members(sources)?;
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        let candidate = unique_province(&members, row.id);
-                        if encode {
-                            if candidate == Some(row.province) {
-                                bits |= 1;
-                                row.province = 0;
-                            }
-                        } else if bits & 1 != 0 {
-                            if row.province != 0 {
-                                return Err(invalid("nonzero division province alias payload"));
-                            }
-                            row.province = candidate.ok_or_else(|| {
-                                invalid("division province alias source unavailable")
-                            })?;
-                        }
-                        let organisation = find(complete::<tables::DivisionStatus>(sources), key)
-                            .and_then(|row| exact(row.organisation_exact))
-                            .map(|value| rows::DivisionRow::ORGANISATION_STEP.round(value));
-                        conditional_scalar(
-                            &mut row.organisation,
-                            organisation,
-                            2,
-                            &mut bits,
-                            encode,
-                        )?;
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::ProductionLines(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        let candidate =
-                            find(complete::<tables::ProductionLineModifiers>(sources), key)
-                                .and_then(|source| row.factory_efficiency(source));
-                        scalar(&mut row.efficiency_raw, candidate, 1, &mut bits, encode)?;
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::DivisionMovement(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let bits = row_bits(marks, key, encode, &mut seen, default);
-                        let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
-                        let speed = panel.and_then(|panel| panel.panel_stats[21]);
-                        if encode {
-                            let mut bits = 0;
-                            if u32::try_from(row.path.len()).ok() == Some(row.path_total) {
-                                bits |= 1;
-                                // The strategic-action admission check consumes this signed
-                                // predicate before the reader restores the exact path count.
-                                row.path_total = u32::from((row.path_total as i32) > 0);
-                            }
-                            match row.base_speed {
-                                Recorded::Value(Some(value)) if Some(value) == speed => {
-                                    bits |= 2;
-                                    row.base_speed = Some(0).into();
-                                }
-                                // No operand is invented: the unchanged optional tag retains
-                                // absence, and avoids marks changing with ordinary route demand.
-                                Recorded::Value(None) | Recorded::NotRecorded => bits |= 2,
-                                _ => {}
-                            }
-                            save_marks(marks, key, bits, default);
-                        } else {
-                            if bits & 1 != 0 {
-                                let count = u32::try_from(row.path.len())
-                                    .map_err(|_| invalid("aliased path count exceeds u32"))?;
-                                if row.path_total != u32::from((count as i32) > 0) {
-                                    return Err(invalid("invalid aliased path count placeholder"));
-                                }
-                                row.path_total = count;
-                            }
-                            if bits & 2 != 0
-                                && let Recorded::Value(Some(value)) = row.base_speed
-                            {
-                                if value != 0 {
-                                    return Err(invalid("nonzero aliased base speed"));
-                                }
-                                row.base_speed = Some(speed.ok_or_else(|| {
-                                    invalid("base speed alias source unavailable")
-                                })?)
-                                .into();
-                            }
-                        }
-                    }
-                }
-                TableRows::DivisionStatus(rows) => {
-                    let grace_define = grace_define(sources);
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
-                        let hp = panel.and_then(|panel| panel.panel_stats[0]).map(|value| {
-                            rows::DivisionStatusRow::MAXIMUM_STEP.round(value.max(100))
-                        });
-                        let org = panel.and_then(|panel| panel.panel_stats[1]).map(|value| {
-                            rows::DivisionStatusRow::MAXIMUM_STEP.round(value.max(100))
-                        });
-                        scalar(&mut row.maximum_hit_points, hp, 1, &mut bits, encode)?;
-                        scalar(&mut row.maximum_organisation, org, 2, &mut bits, encode)?;
-                        let ratio = exact(row.supply_ratio_exact)
-                            .map(|value| rows::DivisionStatusRow::SUPPLY_RATIO_STEP.round(value));
-                        conditional_scalar(&mut row.supply_ratio, ratio, 4, &mut bits, encode)?;
-                        if let Recorded::Value(value) = &mut row.supply_grace_remaining {
-                            let grace = exact(row.supply_grace_exact).zip(grace_define).map(
-                                |(value, define)| {
-                                    rows::DivisionStatusRow::displayed_grace(value, define)
-                                },
-                            );
-                            conditional_scalar(value, grace, 8, &mut bits, encode)?;
-                        } else if encode {
-                            bits |= 8;
-                        }
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::CombatLogObservers(rows) => {
-                    let totals = damage_totals(view)?;
-                    let complete = matches!(view, TableView::Complete(_));
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        if row.kind == rows::CombatLogObserverKind::State as u8 {
-                            let side = (u128::from(row.combat) << 1) | u128::from(row.attacker);
-                            let amount = totals
-                                .binary_search_by_key(&side, |&(key, _)| key)
-                                .map_or(0, |at| totals[at].1);
-                            scalar(&mut row.a, complete.then_some(amount), 1, &mut bits, encode)?;
-                        } else if bits != 0 {
-                            return Err(invalid("damage total mark names a non-state observer"));
-                        }
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::NavalCombatDetails(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        for (side, bit) in row.sides.iter_mut().zip([1, 2]) {
-                            let total = side
-                                .damage_history
-                                .iter()
-                                .flatten()
-                                .fold(0_i64, |sum, &value| sum.wrapping_add(value));
-                            scalar(&mut side.total_damage, Some(total), bit, &mut bits, encode)?;
-                        }
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                TableRows::CountryFuel(rows) => {
-                    if encode {
-                        allocation::reserve(marks, rows.len())?;
-                    }
-                    for row in rows {
-                        let key = row.key();
-                        let mut bits = row_bits(marks, key, encode, &mut seen, default);
-                        if let Recorded::Value(day) = &mut row.award_day
-                            && day.reason.is_empty()
-                        {
-                            let own = day
-                                .gains_raw
-                                .iter()
-                                .fold(0_i64, |sum, &value| sum.wrapping_add(value));
-                            scalar(&mut day.own_gain_raw, Some(own), 1, &mut bits, encode)?;
-                            let mut received = [0_i64; 3];
-                            for recipient in &day.recipients {
-                                if let Some(sum) = received.get_mut(recipient.kind as usize) {
-                                    *sum = sum.wrapping_add(recipient.amount_raw);
-                                }
-                            }
-                            for (at, value) in day.received_raw.iter_mut().enumerate() {
-                                scalar(value, Some(received[at]), 2 << at, &mut bits, encode)?;
-                            }
-                        } else if bits != 0 {
-                            return Err(invalid("fuel award alias has no complete day"));
-                        }
-                        if encode {
-                            save_marks(marks, key, bits, default);
-                        }
-                    }
-                }
-                _ => return Err(invalid("unknown private alias table")),
-            }
+            let rows = rows.try_clone_validated()?;
+            // The observers' state totals sum the view's own damage rows.
+            let totals = match &rows {
+                TableRows::CombatLogObservers(_) => Some(damage_totals(view)?),
+                _ => None,
+            };
+            let complete = matches!(view, TableView::Complete(_));
+            let rows = transform_rows(
+                rows,
+                complete,
+                totals.as_deref(),
+                sources,
+                marks,
+                encode,
+                default,
+            )?;
             match view {
                 TableView::Truncated { missing, .. } => TableView::Truncated {
                     rows,
@@ -638,15 +379,312 @@ fn transform(
                 _ => TableView::Complete(rows),
             }
         }
-        TableView::Unavailable { reason } => TableView::Unavailable {
-            reason: allocation::string(reason)?,
-        },
-        TableView::NotRecorded { mode } => TableView::NotRecorded { mode: *mode },
+        TableView::Unavailable { reason } => {
+            let view = TableView::Unavailable {
+                reason: allocation::string(reason)?,
+            };
+            if !encode && !marks.is_empty() {
+                return Err(invalid("alias marks name an absent row"));
+            }
+            view
+        }
+        TableView::NotRecorded { mode } => {
+            if !encode && !marks.is_empty() {
+                return Err(invalid("alias marks name an absent row"));
+            }
+            TableView::NotRecorded { mode: *mode }
+        }
     };
+    Ok(result.into())
+}
+
+/// Completeness and observer totals belong to the original view, not a candidate subset.
+#[allow(clippy::too_many_arguments)]
+fn transform_rows(
+    mut rows: TableRows,
+    complete_view: bool,
+    observer_totals: Option<&[(u128, i64)]>,
+    sources: &[(TableId, SharedView)],
+    marks: &mut Marks,
+    encode: bool,
+    default: u16,
+) -> io::Result<TableRows> {
+    let mut seen = 0;
+    match &mut rows {
+        TableRows::LandCombatDivisions(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                for (at, candidate) in candidates(row, sources).into_iter().enumerate() {
+                    if encode {
+                        if candidate.is_some() && member_value(row, at) == candidate {
+                            bits |= 1 << at;
+                            set_member(row, at, 0);
+                        }
+                    } else if bits & (1 << at) != 0 {
+                        if member_value(row, at) != Some(0) {
+                            return Err(invalid("nonzero combat member alias payload"));
+                        }
+                        set_member(
+                            row,
+                            at,
+                            candidate
+                                .ok_or_else(|| invalid("combat member alias source unavailable"))?,
+                        );
+                    }
+                }
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::LandCombatDivisionModifiers(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                let candidate = find(complete::<tables::LandCombatDivisions>(sources), key)
+                    .map(|row| row.division);
+                if encode {
+                    if candidate == Some(row.division) {
+                        bits |= 1;
+                        row.division = 0;
+                    }
+                    save_marks(marks, key, bits, default);
+                } else if bits & 1 != 0 {
+                    if row.division != 0 {
+                        return Err(invalid("nonzero combat modifier identity alias payload"));
+                    }
+                    row.division = candidate.ok_or_else(|| {
+                        invalid("combat modifier identity alias source unavailable")
+                    })?;
+                }
+            }
+        }
+        TableRows::Divisions(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            let members = province_members(sources)?;
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                let candidate = unique_province(&members, row.id);
+                if encode {
+                    if candidate == Some(row.province) {
+                        bits |= 1;
+                        row.province = 0;
+                    }
+                } else if bits & 1 != 0 {
+                    if row.province != 0 {
+                        return Err(invalid("nonzero division province alias payload"));
+                    }
+                    row.province = candidate
+                        .ok_or_else(|| invalid("division province alias source unavailable"))?;
+                }
+                let organisation = find(complete::<tables::DivisionStatus>(sources), key)
+                    .and_then(|row| exact(row.organisation_exact))
+                    .map(|value| rows::DivisionRow::ORGANISATION_STEP.round(value));
+                conditional_scalar(&mut row.organisation, organisation, 2, &mut bits, encode)?;
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::ProductionLines(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                let candidate = find(complete::<tables::ProductionLineModifiers>(sources), key)
+                    .and_then(|source| row.factory_efficiency(source));
+                scalar(&mut row.efficiency_raw, candidate, 1, &mut bits, encode)?;
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::DivisionMovement(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let bits = row_bits(marks, key, encode, &mut seen, default);
+                let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
+                let speed = panel.and_then(|panel| panel.panel_stats[21]);
+                if encode {
+                    let mut bits = 0;
+                    if u32::try_from(row.path.len()).ok() == Some(row.path_total) {
+                        bits |= 1;
+                        // The strategic-action admission check consumes this signed
+                        // predicate before the reader restores the exact path count.
+                        row.path_total = u32::from((row.path_total as i32) > 0);
+                    }
+                    match row.base_speed {
+                        Recorded::Value(Some(value)) if Some(value) == speed => {
+                            bits |= 2;
+                            row.base_speed = Some(0).into();
+                        }
+                        // No operand is invented: the unchanged optional tag retains
+                        // absence, and avoids marks changing with ordinary route demand.
+                        Recorded::Value(None) | Recorded::NotRecorded => bits |= 2,
+                        _ => {}
+                    }
+                    save_marks(marks, key, bits, default);
+                } else {
+                    if bits & 1 != 0 {
+                        let count = u32::try_from(row.path.len())
+                            .map_err(|_| invalid("aliased path count exceeds u32"))?;
+                        if row.path_total != u32::from((count as i32) > 0) {
+                            return Err(invalid("invalid aliased path count placeholder"));
+                        }
+                        row.path_total = count;
+                    }
+                    if bits & 2 != 0
+                        && let Recorded::Value(Some(value)) = row.base_speed
+                    {
+                        if value != 0 {
+                            return Err(invalid("nonzero aliased base speed"));
+                        }
+                        row.base_speed = Some(
+                            speed.ok_or_else(|| invalid("base speed alias source unavailable"))?,
+                        )
+                        .into();
+                    }
+                }
+            }
+        }
+        TableRows::DivisionStatus(rows) => {
+            let grace_define = grace_define(sources);
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                let panel = find(complete::<tables::DivisionPanelStats>(sources), key);
+                let hp = panel
+                    .and_then(|panel| panel.panel_stats[0])
+                    .map(|value| rows::DivisionStatusRow::MAXIMUM_STEP.round(value.max(100)));
+                let org = panel
+                    .and_then(|panel| panel.panel_stats[1])
+                    .map(|value| rows::DivisionStatusRow::MAXIMUM_STEP.round(value.max(100)));
+                scalar(&mut row.maximum_hit_points, hp, 1, &mut bits, encode)?;
+                scalar(&mut row.maximum_organisation, org, 2, &mut bits, encode)?;
+                let ratio = exact(row.supply_ratio_exact)
+                    .map(|value| rows::DivisionStatusRow::SUPPLY_RATIO_STEP.round(value));
+                conditional_scalar(&mut row.supply_ratio, ratio, 4, &mut bits, encode)?;
+                if let Recorded::Value(value) = &mut row.supply_grace_remaining {
+                    let grace =
+                        exact(row.supply_grace_exact)
+                            .zip(grace_define)
+                            .map(|(value, define)| {
+                                rows::DivisionStatusRow::displayed_grace(value, define)
+                            });
+                    conditional_scalar(value, grace, 8, &mut bits, encode)?;
+                } else if encode {
+                    bits |= 8;
+                }
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::CombatLogObservers(rows) => {
+            let totals = observer_totals
+                .ok_or_else(|| invalid("combat log observers need their damage totals"))?;
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                if row.kind == rows::CombatLogObserverKind::State as u8 {
+                    let side = (u128::from(row.combat) << 1) | u128::from(row.attacker);
+                    let amount = totals
+                        .binary_search_by_key(&side, |&(key, _)| key)
+                        .map_or(0, |at| totals[at].1);
+                    scalar(
+                        &mut row.a,
+                        complete_view.then_some(amount),
+                        1,
+                        &mut bits,
+                        encode,
+                    )?;
+                } else if bits != 0 {
+                    return Err(invalid("damage total mark names a non-state observer"));
+                }
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::NavalCombatDetails(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                for (side, bit) in row.sides.iter_mut().zip([1, 2]) {
+                    let total = side
+                        .damage_history
+                        .iter()
+                        .flatten()
+                        .fold(0_i64, |sum, &value| sum.wrapping_add(value));
+                    scalar(&mut side.total_damage, Some(total), bit, &mut bits, encode)?;
+                }
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        TableRows::CountryFuel(rows) => {
+            if encode {
+                allocation::reserve(marks, rows.len())?;
+            }
+            for row in rows {
+                let key = row.key();
+                let mut bits = row_bits(marks, key, encode, &mut seen, default);
+                if let Recorded::Value(day) = &mut row.award_day
+                    && day.reason.is_empty()
+                {
+                    let own = day
+                        .gains_raw
+                        .iter()
+                        .fold(0_i64, |sum, &value| sum.wrapping_add(value));
+                    scalar(&mut day.own_gain_raw, Some(own), 1, &mut bits, encode)?;
+                    let mut received = [0_i64; 3];
+                    for recipient in &day.recipients {
+                        if let Some(sum) = received.get_mut(recipient.kind as usize) {
+                            *sum = sum.wrapping_add(recipient.amount_raw);
+                        }
+                    }
+                    for (at, value) in day.received_raw.iter_mut().enumerate() {
+                        scalar(value, Some(received[at]), 2 << at, &mut bits, encode)?;
+                    }
+                } else if bits != 0 {
+                    return Err(invalid("fuel award alias has no complete day"));
+                }
+                if encode {
+                    save_marks(marks, key, bits, default);
+                }
+            }
+        }
+        _ => return Err(invalid("unknown private alias table")),
+    }
     if !encode && seen != marks.len() {
         return Err(invalid("alias marks name an absent row"));
     }
-    Ok(result.into())
+    Ok(rows)
 }
 
 // Keyframes carry their default bits and a complete map of XOR exceptions even
@@ -687,6 +725,17 @@ fn take_marks(
     previous: &[(u128, u16)],
     rows: usize,
 ) -> io::Result<Marks> {
+    take_marks_noting(table, input, previous, rows, None)
+}
+
+/// Note every named exception key, even when its bits do not change.
+fn take_marks_noting(
+    table: TableId,
+    input: &mut Decoder<'_>,
+    previous: &[(u128, u16)],
+    rows: usize,
+    noted: Option<&mut Vec<u128>>,
+) -> io::Result<Marks> {
     let count = usize::try_from(input.varint()?)
         .map_err(|_| invalid("alias count exceeds address space"))?;
     if count > input.remaining() / 2 {
@@ -711,6 +760,10 @@ fn take_marks(
             return Err(invalid("unknown private alias bits"));
         }
         changes.push((key, bits));
+    }
+    if let Some(noted) = noted {
+        allocation::reserve(noted, changes.len())?;
+        noted.extend(changes.iter().map(|&(key, _)| key));
     }
     let mut marks = allocation::vec(allocation::add(previous.len(), count)?)?;
     let mut at = 0;
@@ -842,6 +895,1024 @@ impl Encoder {
     }
 }
 
+/// Candidate rows resolve only keys that can differ from the previous hour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Resolution {
+    Whole,
+    Candidates,
+    #[cfg(test)]
+    Verify,
+}
+
+fn resolution() -> Resolution {
+    #[cfg(test)]
+    if let Some(mode) = hooks::with(|hooks| hooks.resolution) {
+        return mode;
+    }
+    Resolution::Candidates
+}
+
+/// The resolved bytes one table read may decode.
+fn resolved_limit() -> usize {
+    #[cfg(test)]
+    if let Some(limit) = hooks::with(|hooks| hooks.limit) {
+        return limit;
+    }
+    super::MAX_BLOCK_RAW_BYTES
+}
+
+/// Hooks are process-wide because a block can resolve on several decode workers.
+#[cfg(test)]
+pub(crate) mod hooks {
+    use super::*;
+
+    #[derive(Default)]
+    pub(crate) struct Hooks {
+        pub resolution: Option<Resolution>,
+        /// Resolved bytes a table read may decode, instead of the block bound.
+        pub limit: Option<usize>,
+        /// Each table read's resolved bytes so far after each hour.
+        pub budget: Vec<(TableId, usize, usize)>,
+        /// Hours resolved from candidate rows.
+        pub candidate_hours: usize,
+        /// Resolve alias tables alone, as an independent group reference.
+        pub group_old: Option<bool>,
+        /// Resolve each table a group resolved alone too, and compare.
+        pub verify_group: bool,
+        /// A group member that panics as it resolves an hour index.
+        pub group_panic: Option<(TableId, usize)>,
+        /// Table, hour index, and whether the injected failure follows source reads.
+        pub fail: Vec<(TableId, usize, bool, Failure)>,
+        /// Tables whose raw columns fail.
+        pub fail_raw: Vec<(TableId, Failure)>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) enum Failure {
+        Text,
+        Bare,
+        Os(i32),
+    }
+
+    fn injected(form: Failure, identity: std::fmt::Arguments<'_>) -> io::Error {
+        match form {
+            Failure::Text => crate::codec::invalid(identity.to_string()),
+            Failure::Bare => io::Error::from(io::ErrorKind::OutOfMemory),
+            Failure::Os(code) => io::Error::from_raw_os_error(code),
+        }
+    }
+
+    /// `table`'s injected failure at hour index `at`, if any.
+    pub(crate) fn fail(table: TableId, at: usize, after: bool) -> io::Result<()> {
+        match with(|hooks| {
+            hooks
+                .fail
+                .iter()
+                .find_map(|&(failed, hour, follows, form)| {
+                    (failed == table && hour == at && follows == after).then_some(form)
+                })
+        }) {
+            Some(form) => Err(injected(
+                form,
+                format_args!(
+                    "injected alias failure: {table:?} hour {at} {}",
+                    if after { "after" } else { "before" },
+                ),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// `table`'s injected raw column failure, if any.
+    pub(crate) fn fail_raw(table: TableId) -> io::Result<()> {
+        match with(|hooks| {
+            hooks
+                .fail_raw
+                .iter()
+                .find_map(|&(failed, form)| (failed == table).then_some(form))
+        }) {
+            Some(form) => Err(injected(
+                form,
+                format_args!("injected alias failure: {table:?} raw"),
+            )),
+            None => Ok(()),
+        }
+    }
+
+    static HOOKS: std::sync::Mutex<Option<Hooks>> = std::sync::Mutex::new(None);
+
+    pub(crate) fn with<T>(work: impl FnOnce(&mut Hooks) -> T) -> T {
+        let mut hooks = HOOKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        work(hooks.get_or_insert_with(Hooks::default))
+    }
+
+    thread_local! {
+        pub(super) static STEP: std::cell::Cell<Option<Step>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// The step of candidate-hour work running on this thread, if any.
+    pub(crate) fn step() -> Option<Step> {
+        STEP.get()
+    }
+
+    /// Restore the enclosing step after recursively resolving a source.
+    pub(super) struct Scope(Option<Step>);
+
+    impl Scope {
+        pub(super) fn enter() -> Self {
+            Self(STEP.get())
+        }
+    }
+
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            STEP.set(self.0);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Step {
+    /// The keys whose marks changed.
+    Marks,
+    /// The candidate keys from raw and source changes.
+    Keys,
+    /// Bringing a loaded source up to the hour.
+    CatchUp,
+    /// Loading a source this hour first reads.
+    Load,
+    /// Copying the candidate rows and their marks.
+    Rows,
+    /// Resolving the candidate rows.
+    Resolve,
+    /// Encoding their change from the hour before.
+    Encode,
+    /// Merging them into the hour before's resolved table.
+    Merge,
+}
+
+/// Note the candidate-hour step now running, for tests; nothing otherwise.
+#[inline]
+fn at_step(_step: Step) {
+    #[cfg(test)]
+    hooks::STEP.set(Some(_step));
+}
+
+/// Typed work on a table that resolves from candidate rows.
+trait Candidate {
+    type Output;
+    fn typed<S: rows::TableSchema>(self) -> io::Result<Self::Output>;
+}
+
+/// Observers total whole rows; combat divisions join through division identities.
+fn candidate<C: Candidate>(table: TableId, work: C) -> Option<io::Result<C::Output>> {
+    Some(match table {
+        TableId::DivisionStatus => work.typed::<tables::DivisionStatus>(),
+        TableId::DivisionMovement => work.typed::<tables::DivisionMovement>(),
+        TableId::Divisions => work.typed::<tables::Divisions>(),
+        TableId::ProductionLines => work.typed::<tables::ProductionLines>(),
+        TableId::LandCombatDivisionModifiers => work.typed::<tables::LandCombatDivisionModifiers>(),
+        TableId::NavalCombatDetails => work.typed::<tables::NavalCombatDetails>(),
+        TableId::CountryFuel => work.typed::<tables::CountryFuel>(),
+        _ => return None,
+    })
+}
+
+struct Probe;
+
+impl Candidate for Probe {
+    type Output = ();
+    fn typed<S: rows::TableSchema>(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// How a candidate table's rows read a source's rows.
+#[derive(Clone, Copy)]
+enum Feeds {
+    /// The source row with the row's own key.
+    Key,
+    /// Every occurrence of the row's key among the source rows' members.
+    Members,
+    /// Every row of the source: a change resolves the whole table.
+    Table,
+}
+
+fn feeds(table: TableId, source: TableId) -> Feeds {
+    match (table, source) {
+        (TableId::DivisionStatus, TableId::SimulationFeatures) => Feeds::Table,
+        (TableId::Divisions, TableId::ProvinceUnitOrder) => Feeds::Members,
+        _ => Feeds::Key,
+    }
+}
+
+fn row_key<T: rows::RowCodec>(row: &T) -> u128 {
+    rows::RowCodec::key(row)
+}
+
+pub(crate) trait Column {
+    fn update(&self, at: usize) -> &TableUpdate;
+}
+
+impl Column for Updates {
+    fn update(&self, at: usize) -> &TableUpdate {
+        self.get(at)
+    }
+}
+
+impl Column for [TableUpdate] {
+    fn update(&self, at: usize) -> &TableUpdate {
+        &self[at]
+    }
+}
+
+fn catch_up(
+    source: TableId,
+    column: &(impl Column + ?Sized),
+    source_at: &mut usize,
+    view: &mut Option<SharedView>,
+    hours: &[Hour],
+    at: usize,
+) -> io::Result<()> {
+    while *source_at <= at {
+        let before = view
+            .take()
+            .filter(|view| matches!(&**view, TableView::Complete(_)))
+            .map(|view| (hours[*source_at - 1], view));
+        *view = Some(advance_table(
+            source,
+            column.update(*source_at),
+            before,
+            hours[*source_at],
+            false,
+        )?);
+        *source_at += 1;
+    }
+    Ok(())
+}
+
+/// A whole-table replacement cannot be represented by candidate keys.
+fn source_keys(
+    column: &(impl Column + ?Sized),
+    from: usize,
+    at: usize,
+    keys: &mut Vec<u128>,
+) -> io::Result<bool> {
+    for hour in from..=at {
+        match column.update(hour) {
+            TableUpdate::Delta {
+                changed, deleted, ..
+            } => {
+                allocation::reserve(keys, allocation::add(changed.len(), deleted.len())?)?;
+                keys.extend(changed.iter().map(|row| row.key));
+                keys.extend_from_slice(deleted);
+            }
+            TableUpdate::Unchanged { .. } => {}
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+/// Add the members of a complete ProvinceUnitOrder view's rows at `keys`.
+fn members(view: Option<&TableView>, keys: &[u128], out: &mut Vec<u128>) -> io::Result<()> {
+    let Some(rows) = view.and_then(|view| match view {
+        TableView::Complete(rows) => rows.rows::<tables::ProvinceUnitOrder>(),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    for &key in keys {
+        if let Ok(at) = rows.binary_search_by_key(&key, row_key) {
+            allocation::reserve(out, rows[at].mixed.len())?;
+            out.extend(rows[at].mixed.iter().map(|&id| u128::from(id)));
+        }
+    }
+    Ok(())
+}
+
+/// Member joins need the source's rows both before and after the hour.
+pub(crate) fn reads_members(table: TableId, source: TableId) -> bool {
+    matches!(feeds(table, source), Feeds::Members)
+}
+
+/// `source_at` is the first unapplied hour; `view` belongs to the preceding hour.
+#[derive(Default)]
+pub(crate) struct Followed {
+    pub(crate) source_at: usize,
+    pub(crate) view: Option<SharedView>,
+}
+
+impl Followed {
+    pub(crate) fn changed_keys(
+        &self,
+        column: &(impl Column + ?Sized),
+        at: usize,
+        keys: &mut Vec<u128>,
+    ) -> io::Result<bool> {
+        source_keys(column, self.source_at, at, keys)
+    }
+
+    pub(crate) fn complete(&self) -> bool {
+        matches!(self.view.as_deref(), Some(TableView::Complete(_)))
+    }
+
+    pub(crate) fn members(&self, keys: &[u128], out: &mut Vec<u128>) -> io::Result<()> {
+        members(self.view.as_deref(), keys, out)
+    }
+
+    pub(crate) fn catch_up(
+        &mut self,
+        source: TableId,
+        column: &(impl Column + ?Sized),
+        hours: &[Hour],
+        at: usize,
+    ) -> io::Result<()> {
+        catch_up(
+            source,
+            column,
+            &mut self.source_at,
+            &mut self.view,
+            hours,
+            at,
+        )
+    }
+
+    pub(crate) fn view(&self) -> SharedView {
+        self.view.as_ref().unwrap().clone()
+    }
+}
+
+/// Standalone reads own source views; group reads can share them.
+pub(crate) trait Supply {
+    /// The sources loaded so far, in the order they were first needed.
+    fn loaded(&self) -> usize;
+    /// The loaded source at `index`.
+    fn table(&self, index: usize) -> TableId;
+    /// The position of `source` among those loaded, if it is.
+    fn position(&self, source: TableId) -> Option<usize>;
+    /// Load `source`, first needed at hour index `at`, and give its position.
+    fn load(&mut self, source: TableId, at: usize) -> io::Result<usize>;
+    /// Return false when the source replaces its whole table.
+    fn changed_keys(&mut self, index: usize, at: usize, keys: &mut Vec<u128>) -> io::Result<bool>;
+    /// Whether the source was complete at the hour it was last brought up to.
+    fn complete(&self, index: usize) -> bool;
+    fn members(&self, index: usize, keys: &[u128], out: &mut Vec<u128>) -> io::Result<()>;
+    /// Bring the source up to hour index `at`.
+    fn catch_up(&mut self, index: usize, hours: &[Hour], at: usize) -> io::Result<()>;
+    /// The source's view at the hour it was last brought up to.
+    fn view(&self, index: usize) -> SharedView;
+}
+
+struct Own<F> {
+    load: F,
+    loaded: Vec<(TableId, Updates, Followed)>,
+}
+
+impl<F: FnMut(TableId) -> io::Result<Updates>> Supply for Own<F> {
+    fn loaded(&self) -> usize {
+        self.loaded.len()
+    }
+
+    fn table(&self, index: usize) -> TableId {
+        self.loaded[index].0
+    }
+
+    fn position(&self, source: TableId) -> Option<usize> {
+        self.loaded.iter().position(|entry| entry.0 == source)
+    }
+
+    fn load(&mut self, source: TableId, _at: usize) -> io::Result<usize> {
+        allocation::reserve(&mut self.loaded, 1)?;
+        self.loaded
+            .push((source, (self.load)(source)?, Followed::default()));
+        Ok(self.loaded.len() - 1)
+    }
+
+    fn changed_keys(&mut self, index: usize, at: usize, keys: &mut Vec<u128>) -> io::Result<bool> {
+        let (_, column, followed) = &self.loaded[index];
+        followed.changed_keys(column, at, keys)
+    }
+
+    fn complete(&self, index: usize) -> bool {
+        self.loaded[index].2.complete()
+    }
+
+    fn members(&self, index: usize, keys: &[u128], out: &mut Vec<u128>) -> io::Result<()> {
+        self.loaded[index].2.members(keys, out)
+    }
+
+    fn catch_up(&mut self, index: usize, hours: &[Hour], at: usize) -> io::Result<()> {
+        let (source, column, followed) = &mut self.loaded[index];
+        followed.catch_up(*source, &*column, hours, at)
+    }
+
+    fn view(&self, index: usize) -> SharedView {
+        self.loaded[index].2.view()
+    }
+}
+
+/// The table's rows at ascending `keys`, those it holds.
+struct Select<'a> {
+    rows: &'a TableRows,
+    keys: &'a [u128],
+}
+
+impl Candidate for Select<'_> {
+    type Output = TableRows;
+    fn typed<S: rows::TableSchema>(self) -> io::Result<TableRows> {
+        let held =
+            S::borrow(self.rows).ok_or_else(|| invalid("candidate rows of another table"))?;
+        let mut out = allocation::vec(self.keys.len().min(held.len()))?;
+        let mut from = 0;
+        for &key in self.keys {
+            match held[from..].binary_search_by_key(&key, row_key) {
+                Ok(at) => {
+                    out.push(rows::RowCodec::try_clone_validated(&held[from + at])?);
+                    from += at + 1;
+                }
+                Err(at) => from += at,
+            }
+        }
+        Ok(S::wrap(out))
+    }
+}
+
+/// Emit directly from canonical encoded candidate changes, without decoding their fields again.
+struct Plain<'a> {
+    changed: &'a TableRows,
+    previous: &'a TableRows,
+    keys: &'a [u128],
+    hour: Hour,
+}
+
+impl Candidate for Plain<'_> {
+    type Output = (Vec<u8>, TableUpdate);
+    fn typed<S: rows::TableSchema>(self) -> io::Result<(Vec<u8>, TableUpdate)> {
+        let (Some(changed), Some(previous)) = (S::borrow(self.changed), S::borrow(self.previous))
+        else {
+            return Err(invalid("candidate rows of another table"));
+        };
+        // The table's row count this hour.
+        let count = {
+            let mut count = previous.len();
+            let mut held = changed.iter().peekable();
+            let mut from = 0;
+            for &key in self.keys {
+                let present = held.next_if(|row| row_key(*row) == key).is_some();
+                match previous[from..].binary_search_by_key(&key, row_key) {
+                    Ok(at) => {
+                        from += at + 1;
+                        count -= usize::from(!present);
+                    }
+                    Err(at) => {
+                        from += at;
+                        count += usize::from(present);
+                    }
+                }
+            }
+            count
+        };
+        let mut out = allocation::vec(9)?;
+        out.push(1);
+        out.extend_from_slice(&self.hour.to_le_bytes());
+        let (mut written, mut gone) = (Vec::new(), Vec::new());
+        let changes = rows::restricted_changes::encode_changes_at_noted(
+            changed,
+            previous,
+            self.keys,
+            count,
+            &mut out,
+            &mut Vec::new(),
+            &mut written,
+            &mut gone,
+        )?;
+        if !changes {
+            out.truncate(1);
+            out[0] = 2;
+            out.extend_from_slice(&self.hour.to_le_bytes());
+            return Ok((
+                out,
+                TableUpdate::Unchanged {
+                    baseline: self.hour,
+                },
+            ));
+        }
+        let changed = rows::restricted_changes::delta_rows(
+            S::ID,
+            FormatVersion::CURRENT.version(),
+            &out,
+            &written,
+        )?;
+        Ok((
+            out,
+            TableUpdate::Delta {
+                baseline: self.hour,
+                changed,
+                deleted: gone,
+            },
+        ))
+    }
+}
+
+/// Membership changes use the spare buffer, leaving the old buffer for the next merge.
+struct Merge<'a> {
+    rows: &'a mut TableRows,
+    changed: TableRows,
+    keys: &'a [u128],
+    spare: &'a mut Option<TableRows>,
+}
+
+impl Candidate for Merge<'_> {
+    type Output = ();
+    fn typed<S: rows::TableSchema>(self) -> io::Result<()> {
+        let rows =
+            S::borrow_mut(self.rows).ok_or_else(|| invalid("candidate rows of another table"))?;
+        let changed =
+            S::take(self.changed).map_err(|_| invalid("candidate rows of another table"))?;
+        let (mut count, mut moved) = (rows.len(), false);
+        let mut held = changed.iter().peekable();
+        let mut from = 0;
+        for &key in self.keys {
+            let present = held.next_if(|row| row_key(*row) == key).is_some();
+            match rows[from..].binary_search_by_key(&key, row_key) {
+                Ok(at) => {
+                    from += at + 1;
+                    if !present {
+                        count -= 1;
+                        moved = true;
+                    }
+                }
+                Err(at) => {
+                    from += at;
+                    if present {
+                        count += 1;
+                        moved = true;
+                    }
+                }
+            }
+        }
+        if !moved {
+            // Every changed row replaces a held row in place.
+            let mut from = 0;
+            for row in changed {
+                let at = from
+                    + rows[from..]
+                        .binary_search_by_key(&row_key(&row), row_key)
+                        .map_err(|_| invalid("candidate row is not held"))?;
+                rows[at] = row;
+                from = at + 1;
+            }
+            return Ok(());
+        }
+        // Allocate before taking any row, so a refusal leaves the table whole.
+        let mut out = match self.spare.take().map(S::take) {
+            Some(Ok(spare)) => spare,
+            _ => Vec::new(),
+        };
+        allocation::reserve(&mut out, count)?;
+        let mut old = std::mem::take(rows);
+        let mut before = old.drain(..).peekable();
+        let mut changed = changed.into_iter().peekable();
+        for &key in self.keys {
+            while let Some(row) = before.next_if(|row| row_key(row) < key) {
+                out.push(row);
+            }
+            before.next_if(|row| row_key(row) == key);
+            if let Some(row) = changed.next_if(|row| row_key(row) == key) {
+                out.push(row);
+            }
+        }
+        out.extend(before);
+        *rows = out;
+        *self.spare = Some(S::wrap(old));
+        Ok(())
+    }
+}
+
+/// One hour of an alias table resolved from candidate rows.
+struct CandidateHour {
+    /// The candidate keys, ascending.
+    keys: Vec<u128>,
+    /// The resolved rows the table holds at those keys.
+    rows: TableRows,
+    /// The table's plain change from the hour before.
+    plain: Vec<u8>,
+    /// The update those plain bytes decode to.
+    emitted: TableUpdate,
+}
+
+/// Only changed raw rows, marks and source rows can change candidate results.
+#[allow(clippy::too_many_arguments)]
+fn candidate_hour(
+    table: TableId,
+    hours: &[Hour],
+    at: usize,
+    raw: &TableUpdate,
+    view: &TableView,
+    marks: &[(u128, u16)],
+    mark_keys: &[u128],
+    default: u16,
+    previous: &(Hour, SharedView),
+    supply: &mut impl Supply,
+    source_changes: &mut Vec<u128>,
+) -> io::Result<Option<CandidateHour>> {
+    let (TableView::Complete(raw_rows), TableView::Complete(resolved)) = (view, &*previous.1)
+    else {
+        return Ok(None);
+    };
+    #[cfg(test)]
+    let _scope = hooks::Scope::enter();
+    at_step(Step::Keys);
+    let mut keys = match raw {
+        TableUpdate::Delta {
+            changed, deleted, ..
+        } => allocation::collect_vec(
+            changed
+                .iter()
+                .map(|row| row.key)
+                .chain(deleted.iter().copied()),
+        )?,
+        TableUpdate::Unchanged { .. } => Vec::new(),
+        _ => return Ok(None),
+    };
+    allocation::reserve(&mut keys, mark_keys.len())?;
+    keys.extend_from_slice(mark_keys);
+    for index in 0..supply.loaded() {
+        let source = supply.table(index);
+        let changed = &mut *source_changes;
+        changed.clear();
+        if !supply.changed_keys(index, at, changed)? {
+            return Ok(None);
+        }
+        let was_complete = supply.complete(index);
+        let reads = feeds(table, source);
+        // A member's location reads its rows before and after.
+        if matches!(reads, Feeds::Members) {
+            supply.members(index, changed, &mut keys)?;
+        }
+        at_step(Step::CatchUp);
+        supply.catch_up(index, hours, at)?;
+        at_step(Step::Keys);
+        if supply.complete(index) != was_complete {
+            return Ok(None);
+        }
+        if !was_complete || changed.is_empty() {
+            continue;
+        }
+        match reads {
+            Feeds::Key => {
+                allocation::reserve(&mut keys, changed.len())?;
+                keys.extend_from_slice(changed);
+            }
+            Feeds::Members => supply.members(index, changed, &mut keys)?,
+            Feeds::Table => return Ok(None),
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    // The candidate rows, their marks and the sources they read.
+    at_step(Step::Rows);
+    let Some(rows) = candidate(
+        table,
+        Select {
+            rows: raw_rows,
+            keys: &keys,
+        },
+    ) else {
+        return Ok(None);
+    };
+    let candidates = TableView::Complete(rows?);
+    // Each candidate key's mark, found by one search per key.
+    let mut candidate_marks = allocation::vec(keys.len().min(marks.len()))?;
+    for key in &keys {
+        if let Ok(at) = marks.binary_search_by_key(key, |&(key, _)| key) {
+            candidate_marks.push(marks[at]);
+        }
+    }
+    let mut sources = Vec::new();
+    for &source in dependencies(table) {
+        if !needs_source(&candidates, &candidate_marks, default, source) {
+            continue;
+        }
+        let index = match supply.position(source) {
+            Some(index) => index,
+            None => {
+                at_step(Step::Load);
+                supply.load(source, at)?
+            }
+        };
+        at_step(Step::CatchUp);
+        supply.catch_up(index, hours, at)?;
+        at_step(Step::Rows);
+        allocation::reserve(&mut sources, 1)?;
+        sources.push((source, supply.view(index)));
+    }
+    at_step(Step::Resolve);
+    // The copied candidate rows resolve in place.
+    let TableView::Complete(candidate_rows) = candidates else {
+        unreachable!("candidate rows are a complete view")
+    };
+    let resolved_rows = transform_rows(
+        candidate_rows,
+        true,
+        None,
+        &sources,
+        &mut candidate_marks,
+        false,
+        default,
+    )?;
+    at_step(Step::Encode);
+    let (plain, emitted) = candidate(
+        table,
+        Plain {
+            changed: &resolved_rows,
+            previous: resolved,
+            keys: &keys,
+            hour: previous.0,
+        },
+    )
+    .expect("a candidate table")?;
+    Ok(Some(CandidateHour {
+        keys,
+        rows: resolved_rows,
+        plain,
+        emitted,
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn whole_hour(
+    table: TableId,
+    hours: &[Hour],
+    at: usize,
+    snapshot: bool,
+    view: &TableView,
+    marks: &mut Marks,
+    default: u16,
+    previous: Option<&(Hour, SharedView)>,
+    supply: &mut impl Supply,
+    sources: &mut Vec<(TableId, SharedView)>,
+) -> io::Result<(Vec<u8>, SharedView)> {
+    // Open only marked lanes' sources. A source first needed later still
+    // reconstructs its full prefix before supplying this same-frame value.
+    sources.clear();
+    for &source in dependencies(table) {
+        if !needs_source(view, marks, default, source) {
+            continue;
+        }
+        let index = match supply.position(source) {
+            Some(index) => index,
+            None => supply.load(source, at)?,
+        };
+        supply.catch_up(index, hours, at)?;
+        allocation::reserve(sources, 1)?;
+        sources.push((source, supply.view(index)));
+    }
+    let resolved = transform(view, sources, marks, false, default)?;
+    let plain = plain(
+        &resolved,
+        previous.map(|(hour, view)| (*hour, &**view)),
+        snapshot,
+    )?;
+    Ok((plain, resolved))
+}
+
+pub(crate) struct TableResolution<'m> {
+    table: TableId,
+    key_input: Decoder<'m>,
+    default: u16,
+    later_input: Option<Decoder<'m>>,
+    marks: Marks,
+    previous_raw: Option<(Hour, SharedView)>,
+    previous: Option<(Hour, SharedView)>,
+    sources: Vec<(TableId, SharedView)>,
+    bytes: usize,
+    out: Vec<TableUpdate>,
+    candidates: bool,
+    /// Tests: resolve every candidate hour whole too, and compare.
+    #[cfg(test)]
+    verify: bool,
+    mark_keys: Vec<u128>,
+    // Buffers kept from one candidate hour to the next.
+    spare: Option<TableRows>,
+    source_changes: Vec<u128>,
+}
+
+impl<'m> TableResolution<'m> {
+    /// `frames` hours of `table` with its keyframe and later entries' marks.
+    pub(crate) fn new(
+        table: TableId,
+        frames: usize,
+        key_marks: &'m [u8],
+        later_marks: Option<&'m [u8]>,
+    ) -> io::Result<Self> {
+        let mut key_input = Decoder::new(key_marks);
+        let default = u16::try_from(key_input.varint()?)
+            .map_err(|_| invalid("default alias mask exceeds u16"))?;
+        if default & !allowed(table) != 0 {
+            return Err(invalid("unknown default private alias bits"));
+        }
+        let later_input = later_marks.map(Decoder::new);
+        let out = allocation::vec(frames)?;
+        let mode = resolution();
+        Ok(Self {
+            table,
+            key_input,
+            default,
+            later_input,
+            marks: Vec::new(),
+            previous_raw: None,
+            previous: None,
+            sources: Vec::new(),
+            bytes: 0,
+            out,
+            candidates: mode != Resolution::Whole && candidate(table, Probe).is_some(),
+            #[cfg(test)]
+            verify: mode == Resolution::Verify,
+            mark_keys: Vec::new(),
+            spare: None,
+            source_changes: Vec::new(),
+        })
+    }
+
+    pub(crate) fn hour(
+        &mut self,
+        hours: &[Hour],
+        at: usize,
+        raw: TableUpdate,
+        supply: &mut impl Supply,
+    ) -> io::Result<()> {
+        let (table, default, candidates) = (self.table, self.default, self.candidates);
+        #[cfg(test)]
+        hooks::fail(table, at, false)?;
+        let before = self
+            .previous_raw
+            .take()
+            .filter(|(_, view)| matches!(&**view, TableView::Complete(_)));
+        let view = advance_table(table, &raw, before, hours[at], false)?;
+        let rows = match &*view {
+            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
+        };
+        self.mark_keys.clear();
+        if at == 0 {
+            self.marks = take_marks(table, &mut self.key_input, &[], rows)?;
+        } else if let Some(input) = &mut self.later_input {
+            self.marks = if candidates {
+                #[cfg(test)]
+                let _scope = hooks::Scope::enter();
+                at_step(Step::Marks);
+                take_marks_noting(table, input, &self.marks, rows, Some(&mut self.mark_keys))?
+            } else {
+                take_marks(table, input, &self.marks, rows)?
+            };
+        }
+        // Refusals fall back whole; allocation failures propagate because source views may be gone.
+        let hour = match self.previous.as_ref().filter(|_| candidates && at != 0) {
+            Some(previous) => match candidate_hour(
+                table,
+                hours,
+                at,
+                &raw,
+                &view,
+                &self.marks,
+                &self.mark_keys,
+                default,
+                previous,
+                supply,
+                &mut self.source_changes,
+            ) {
+                Ok(hour) => hour,
+                Err(error) if allocation::is_allocation_error(&error) => return Err(error),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let snapshot = matches!(raw, TableUpdate::Snapshot(_));
+        let (plain, resolved, emitted) = match hour {
+            Some(CandidateHour {
+                keys,
+                rows,
+                plain,
+                emitted,
+            }) => {
+                #[cfg(test)]
+                let whole = self.verify.then(|| {
+                    whole_hour(
+                        table,
+                        hours,
+                        at,
+                        snapshot,
+                        &view,
+                        &mut self.marks,
+                        default,
+                        self.previous.as_ref(),
+                        supply,
+                        &mut self.sources,
+                    )
+                });
+                let (_, mut resolved) = self.previous.take().expect("a candidate hour follows one");
+                let TableView::Complete(held) = &mut *resolved else {
+                    unreachable!("candidate hours follow a complete resolved hour");
+                };
+                #[cfg(test)]
+                let merging = hooks::Scope::enter();
+                at_step(Step::Merge);
+                candidate(
+                    table,
+                    Merge {
+                        rows: held,
+                        changed: rows,
+                        keys: &keys,
+                        spare: &mut self.spare,
+                    },
+                )
+                .expect("a candidate table")?;
+                #[cfg(test)]
+                {
+                    drop(merging);
+                    if let Some(whole) = whole {
+                        let (whole_plain, whole_view) =
+                            whole.expect("candidate hours resolve whole");
+                        assert_eq!(whole_plain, plain, "{table:?} hour {}", hours[at]);
+                        assert_eq!(*whole_view, *resolved, "{table:?} hour {}", hours[at]);
+                        // The emitted update is the one its bytes decode to.
+                        assert_eq!(
+                            update(table, &whole_plain, false).unwrap(),
+                            emitted,
+                            "{table:?} hour {}",
+                            hours[at]
+                        );
+                    }
+                    hooks::with(|hooks| hooks.candidate_hours += 1);
+                }
+                (plain, resolved, Some(emitted))
+            }
+            None => {
+                let (plain, resolved) = whole_hour(
+                    table,
+                    hours,
+                    at,
+                    snapshot,
+                    &view,
+                    &mut self.marks,
+                    default,
+                    self.previous.as_ref(),
+                    supply,
+                    &mut self.sources,
+                )?;
+                if candidates {
+                    self.sources.clear();
+                }
+                (plain, resolved, None)
+            }
+        };
+        #[cfg(test)]
+        hooks::fail(table, at, true)?;
+        self.bytes = allocation::add(self.bytes, plain.len())?;
+        #[cfg(test)]
+        hooks::with(|hooks| hooks.budget.push((table, at, self.bytes)));
+        if self.bytes > resolved_limit() {
+            return Err(invalid(
+                "resolved private aliases exceed raw block size limit",
+            ));
+        }
+        self.out.push(match emitted {
+            Some(emitted) => emitted,
+            None => update(table, &plain, at == 0)?,
+        });
+        self.previous_raw = Some((hours[at], view));
+        self.previous = Some((hours[at], resolved));
+        Ok(())
+    }
+
+    pub(crate) fn resolved(&self) -> Option<&SharedView> {
+        self.previous.as_ref().map(|(_, view)| view)
+    }
+
+    /// The updates resolved so far, one an hour.
+    pub(crate) fn updates(&self) -> &[TableUpdate] {
+        &self.out
+    }
+
+    pub(crate) fn release(&mut self) {
+        self.sources.clear();
+    }
+
+    /// Always finish keyframe marks; finish later marks only for a complete read.
+    pub(crate) fn finish(self, complete: bool) -> io::Result<Vec<TableUpdate>> {
+        self.key_input.finish()?;
+        if complete && let Some(input) = self.later_input {
+            input.finish()?;
+        }
+        Ok(self.out)
+    }
+}
+
 /// Resolve private marks before the existing public frame/cache boundary.
 /// Raw anchors retain only placeholders; the current block owns its marks.
 pub(crate) fn resolve(
@@ -851,93 +1922,20 @@ pub(crate) fn resolve(
     key_marks: Option<&[u8]>,
     later_marks: Option<&[u8]>,
     complete: bool,
-    mut load: impl FnMut(TableId) -> io::Result<Updates>,
+    load: impl FnMut(TableId) -> io::Result<Updates>,
 ) -> io::Result<Vec<TableUpdate>> {
     let Some(key_marks) = key_marks else {
         return Ok(updates);
     };
-    let mut key_input = Decoder::new(key_marks);
-    let default = u16::try_from(key_input.varint()?)
-        .map_err(|_| invalid("default alias mask exceeds u16"))?;
-    if default & !allowed(table) != 0 {
-        return Err(invalid("unknown default private alias bits"));
-    }
-    let mut later_input = later_marks.map(Decoder::new);
-    let mut marks = Vec::new();
-    let mut previous_raw: Option<(Hour, SharedView)> = None;
-    let mut previous: Option<(Hour, SharedView)> = None;
-    let mut loaded: Vec<(TableId, Updates, usize, Option<SharedView>)> = Vec::new();
-    let mut sources: Vec<(TableId, SharedView)> = Vec::new();
-    let mut bytes = 0;
-    let mut out = allocation::vec(updates.len())?;
+    let mut resolution = TableResolution::new(table, updates.len(), key_marks, later_marks)?;
+    let mut supply = Own {
+        load,
+        loaded: Vec::new(),
+    };
     for (at, raw) in updates.into_iter().enumerate() {
-        let before = previous_raw
-            .take()
-            .filter(|(_, view)| matches!(&**view, TableView::Complete(_)));
-        let view = advance_table(table, &raw, before, hours[at], false)?;
-        let rows = match &*view {
-            TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
-        };
-        if at == 0 {
-            marks = take_marks(table, &mut key_input, &[], rows)?;
-        } else if let Some(input) = &mut later_input {
-            marks = take_marks(table, input, &marks, rows)?;
-        }
-        // Open only marked lanes' sources. A source first needed later still
-        // reconstructs its full prefix before supplying this same-frame value.
-        sources.clear();
-        for &source in dependencies(table) {
-            if !needs_source(&view, &marks, default, source) {
-                continue;
-            }
-            let index = match loaded.iter().position(|entry| entry.0 == source) {
-                Some(index) => index,
-                None => {
-                    allocation::reserve(&mut loaded, 1)?;
-                    loaded.push((source, load(source)?, 0, None));
-                    loaded.len() - 1
-                }
-            };
-            let (_, column, source_at, previous_source) = &mut loaded[index];
-            while *source_at <= at {
-                let before = previous_source
-                    .take()
-                    .filter(|view| matches!(&**view, TableView::Complete(_)))
-                    .map(|view| (hours[*source_at - 1], view));
-                *previous_source = Some(advance_table(
-                    source,
-                    column.get(*source_at),
-                    before,
-                    hours[*source_at],
-                    false,
-                )?);
-                *source_at += 1;
-            }
-            allocation::reserve(&mut sources, 1)?;
-            sources.push((source, previous_source.as_ref().unwrap().clone()));
-        }
-        let resolved = transform(&view, &sources, &mut marks, false, default)?;
-        let plain = plain(
-            &resolved,
-            previous.as_ref().map(|(hour, view)| (*hour, &**view)),
-            matches!(raw, TableUpdate::Snapshot(_)),
-        )?;
-        bytes = allocation::add(bytes, plain.len())?;
-        if bytes > super::MAX_BLOCK_RAW_BYTES {
-            return Err(invalid(
-                "resolved private aliases exceed raw block size limit",
-            ));
-        }
-        out.push(update(table, &plain, at == 0)?);
-        previous_raw = Some((hours[at], view));
-        previous = Some((hours[at], resolved));
+        resolution.hour(hours, at, raw, &mut supply)?;
     }
-    key_input.finish()?;
-    if complete && let Some(input) = later_input {
-        input.finish()?;
-    }
-    Ok(out)
+    resolution.finish(complete)
 }
 
 #[cfg(test)]

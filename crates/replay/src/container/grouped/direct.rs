@@ -18,6 +18,33 @@ pub(super) fn table_updates(context: &Context<'_>, table: TableId) -> io::Result
     })
 }
 
+/// A parsed span holds the exact canonical change already read from its column.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Span {
+    pub field: usize,
+    pub end: usize,
+    pub parsed: bool,
+}
+
+/// One span per field; retain the buffer and expose its route to allocation-denial tests.
+pub(super) fn span_room(spans: &mut Vec<Span>, fields: usize, residual: bool) -> io::Result<()> {
+    #[cfg(test)]
+    SPAN_ROUTE.set(Some(residual));
+    #[cfg(not(test))]
+    let _ = residual;
+    let room = allocation::reserve(spans, fields);
+    #[cfg(test)]
+    SPAN_ROUTE.set(None);
+    room
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While a span buffer grows on this thread, whether its row is residual.
+    pub(super) static SPAN_ROUTE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// One row buffer goes to its final DeltaRow. Validation and patch-base
 /// observation share a field traversal after recovery against the old bases.
 pub(super) struct Delta<'a> {
@@ -63,7 +90,59 @@ impl<'a> Delta<'a> {
         self.changed.is_empty()
     }
 
+    #[cfg(test)]
     pub(super) fn row(&mut self, key: u128, mask: u64, values: Vec<u8>) -> io::Result<()> {
+        self.admit(key, mask)?;
+        // No body/predictor operation for this row may read its old bases
+        // after here. In particular the movement advance and list prediction
+        // have both finished before either base is changed.
+        let mut input = self.input(&values);
+        for field in 0..self.fields {
+            if mask & (1 << field) != 0 {
+                let span = self.table.change_span(field, &mut input)?;
+                observe_shadow(self.table, DELTA, key, field, span, self.shadow)?;
+            }
+        }
+        input.finish()?;
+        self.push(key, mask, values)
+    }
+
+    /// Skip reparsing only where a canonical span starts at the current field cursor.
+    pub(super) fn row_spans(
+        &mut self,
+        key: u128,
+        mask: u64,
+        values: Vec<u8>,
+        spans: &[Span],
+    ) -> io::Result<()> {
+        self.admit(key, mask)?;
+        // Old patch bases must not be read after row observation starts.
+        let mut input = self.input(&values);
+        let mut spans = spans.iter().peekable();
+        let mut start = 0;
+        for field in 0..self.fields {
+            if mask & (1 << field) == 0 {
+                continue;
+            }
+            let span = spans.next_if(|span| span.field == field);
+            let at = values.len() - input.remaining();
+            let bytes = match span {
+                Some(span) if span.parsed && at == start && span.end >= start => {
+                    input.take(span.end - start)?
+                }
+                _ => self.table.change_span(field, &mut input)?,
+            };
+            if let Some(span) = span {
+                start = span.end;
+            }
+            observe_shadow(self.table, DELTA, key, field, bytes, self.shadow)?;
+        }
+        input.finish()?;
+        self.push(key, mask, values)
+    }
+
+    /// The row checks that precede reading any of its fields.
+    fn admit(&self, key: u128, mask: u64) -> io::Result<()> {
         if self.table.key_bits() == 0 && !self.changed.is_empty() {
             return Err(invalid_static(
                 "singleton table cannot contain multiple rows",
@@ -78,19 +157,17 @@ impl<'a> Delta<'a> {
         }
         u32::try_from(self.changed.len() + 1)
             .map_err(|_| invalid_static("too many residual rows"))?;
-        // No body/predictor operation for this row may read its old bases
-        // after here. In particular the movement advance and list prediction
-        // have both finished before either base is changed.
-        let mut input = Decoder::new(&values);
+        Ok(())
+    }
+
+    fn input<'b>(&self, values: &'b [u8]) -> Decoder<'b> {
+        let mut input = Decoder::new(values);
         input.format = self.format;
         input.recorded_fields = self.fields;
-        for field in 0..self.fields {
-            if mask & (1 << field) != 0 {
-                let span = self.table.change_span(field, &mut input)?;
-                observe_shadow(self.table, DELTA, key, field, span, self.shadow)?;
-            }
-        }
-        input.finish()?;
+        input
+    }
+
+    fn push(&mut self, key: u128, mask: u64, values: Vec<u8>) -> io::Result<()> {
         self.bytes += varint_bytes(key - self.previous) + self.fields.div_ceil(8) + values.len();
         self.previous = key;
         allocation::reserve(&mut self.changed, 1)?;
@@ -174,6 +251,8 @@ pub(super) fn take_delta(
         None => None,
     };
     let mut row = 0_u128;
+    let mut values = Vec::new();
+    let mut spans = Vec::new();
     for _ in 0..changed {
         let mask = match (&mut coding, &mut run) {
             (Some(coding), Some(run)) => {
@@ -193,7 +272,9 @@ pub(super) fn take_delta(
         if mask == 0 || (fields < 64 && mask >> fields != 0) {
             return Err(invalid_static("invalid recorded delta mask"));
         }
-        let mut values = Vec::new();
+        values.clear();
+        spans.clear();
+        span_room(&mut spans, fields, false)?;
         // take_body charges the body only, excluding its already-written
         // five-byte status/baseline head. Include this row's key and mask
         // before reconstructing byte fields, as the old path does.
@@ -204,7 +285,13 @@ pub(super) fn take_delta(
         for field in (0..fields).filter(|field| mask & (1 << field) != 0) {
             let column = &mut input.0[FIELDS + field];
             if !table.byte_field(field) {
+                // Read by the field's change grammar from these exact bytes.
                 values.extend_from_slice(table.change_span(field, column)?);
+                spans.push(Span {
+                    field,
+                    end: values.len(),
+                    parsed: true,
+                });
             } else {
                 let base = output
                     .bases()
@@ -223,9 +310,15 @@ pub(super) fn take_delta(
                     budget,
                     layout,
                 )?;
+                // A rebuilt list drop or patch is read again by the row.
+                spans.push(Span {
+                    field,
+                    end: values.len(),
+                    parsed: false,
+                });
             }
         }
-        output.row(row, mask, values)?;
+        output.row_spans(row, mask, allocation::copy_vec(&values)?, &spans)?;
         budget.check(output.len() - 5)?;
     }
     let count = varint_u32(&mut input.0[CONTROL])?;
@@ -239,7 +332,7 @@ pub(super) fn take_delta(
         let key = match (&mut run, &mut coding) {
             (Some(run), Some(coding)) => {
                 let (key, _) = run.take(table, &mut input.0[KEYS])?;
-                coding.note_deleted(key);
+                coding.note_deleted(key)?;
                 key
             }
             _ => previous

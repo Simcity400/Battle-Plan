@@ -116,6 +116,10 @@ impl Cache {
         state.enabled = enabled;
         Self::prune(&mut state);
     }
+    /// Read measured column sizes without copying them.
+    pub(super) fn with_largest<T>(&self, read: impl FnOnce(&BTreeMap<usize, usize>) -> T) -> T {
+        read(&self.lock().largest)
+    }
     fn prune(state: &mut State) {
         let budget = state.budget();
         if state.bytes <= budget {
@@ -184,11 +188,21 @@ impl Cache {
         keyframe_only: bool,
         decode: impl FnOnce() -> io::Result<Vec<TableUpdate>>,
     ) -> io::Result<Updates> {
+        self.read_updates(key, hours, keyframe_only, || Updates::new(decode()?))
+    }
+    /// Cache a column already decoded as shared updates.
+    pub(super) fn read_updates(
+        &self,
+        key: Key,
+        hours: usize,
+        keyframe_only: bool,
+        decode: impl FnOnce() -> io::Result<Updates>,
+    ) -> io::Result<Updates> {
         let mut state = self.lock();
         loop {
             if !state.enabled {
                 drop(state);
-                return Updates::new(decode()?);
+                return decode();
             }
             state.clock = state.clock.saturating_add(1);
             let used = state.clock;
@@ -221,7 +235,7 @@ impl Cache {
         }
         drop(state);
         let reading = Reading { cache: self, key };
-        let updates = Updates::new(decode()?)?;
+        let updates = decode()?;
         let bytes = ENTRY_BYTES.saturating_add(updates.bytes());
         let value = Arc::new(Column {
             updates: updates.clone(),
@@ -245,6 +259,27 @@ impl Cache {
         drop(state);
         drop(reading);
         Ok(updates)
+    }
+    /// Return a ready column without waiting for another read or decoding it.
+    pub(super) fn ready(&self, key: Key, hours: usize, keyframe_only: bool) -> Option<Updates> {
+        let mut state = self.lock();
+        if !state.enabled {
+            return None;
+        }
+        let entry = state.entries.get(&key)?;
+        let updates = entry
+            .value
+            .as_ref()
+            .filter(|value| value.updates.len() >= hours && (keyframe_only || value.table_read))?
+            .updates
+            .prefix(hours);
+        let previous = entry.used;
+        state.clock = state.clock.saturating_add(1);
+        let used = state.clock;
+        state.lru.remove(&(previous, key));
+        state.lru.insert((used, key));
+        state.entries.get_mut(&key).unwrap().used = used;
+        Some(updates)
     }
 }
 struct Reading<'a> {
@@ -333,6 +368,42 @@ mod tests {
                 .collect(),
         ))]
     }
+    #[test]
+    fn ready_columns_share_prefixes_and_keep_the_cache_lru_consistent() {
+        let cache = Cache::default();
+        let mut column = rows(2);
+        column.push(TableUpdate::Unchanged { baseline: 0 });
+        let column = Updates::new(column).unwrap();
+        assert!(cache.ready(key(0), 1, true).is_none());
+        cache.enable(true);
+        cache
+            .read_updates(key(0), 1, true, || Ok(column.prefix(1)))
+            .unwrap();
+        assert!(cache.ready(key(0), 1, false).is_none());
+        assert!(cache.ready(key(0), 2, true).is_none());
+        let keyframe = cache.ready(key(0), 1, true).unwrap();
+        assert!(Arc::ptr_eq(keyframe.get(0), column.get(0)));
+        cache
+            .read_updates(key(0), 2, false, || Ok(column.clone()))
+            .unwrap();
+        let previous = cache.lock().clock;
+        let prefix = cache.ready(key(0), 1, false).unwrap();
+        assert_eq!(prefix.len(), 1);
+        assert!(Arc::ptr_eq(prefix.get(0), column.get(0)));
+        let state = cache.lock();
+        assert_eq!(state.clock, previous + 1);
+        assert_eq!(state.lru.len(), 1);
+        assert!(state.lru.contains(&(state.clock, key(0))));
+        assert_eq!(state.entries[&key(0)].used, state.clock);
+        drop(state);
+        let cached = cache
+            .read_updates(key(0), 2, false, || panic!("a ready column must be reused"))
+            .unwrap();
+        assert!(Arc::ptr_eq(cached.get(1), column.get(1)));
+        cache.enable(false);
+        assert!(cache.ready(key(0), 1, false).is_none());
+    }
+
     #[test]
     fn measured_country_sizes_and_live_block_span_set_the_budget() {
         let mut previous = 0;

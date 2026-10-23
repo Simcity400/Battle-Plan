@@ -82,7 +82,7 @@ fn shadow_diagnostic_allocation_failures_propagate_at_every_checked_growth() {
         ]),
     )]);
     let expected = Shadow::from([(1, BTreeMap::from([(8, path.clone())]))]);
-    for route in 0..3 {
+    for route in 0..4 {
         let apply = |shadow: &mut Shadow| -> io::Result<()> {
             match route {
                 0 => advance_shadow(table, format, &plain, shadow),
@@ -90,10 +90,27 @@ fn shadow_diagnostic_allocation_failures_propagate_at_every_checked_growth() {
                     observe_shadow(table, DELTA, 1, 0, &head, shadow)?;
                     observe_shadow(table, DELTA, 1, 8, &path, shadow)
                 }
-                _ => direct::Delta::new(table, table.field_count(), format, 9, shadow).row(
+                2 => direct::Delta::new(table, table.field_count(), format, 9, shadow).row(
                     1,
                     mask,
                     values.clone(),
+                ),
+                _ => direct::Delta::new(table, table.field_count(), format, 9, shadow).row_spans(
+                    1,
+                    mask,
+                    values.clone(),
+                    &[
+                        direct::Span {
+                            field: 0,
+                            end: head.len(),
+                            parsed: true,
+                        },
+                        direct::Span {
+                            field: 8,
+                            end: values.len(),
+                            parsed: false,
+                        },
+                    ],
                 ),
             }
         };

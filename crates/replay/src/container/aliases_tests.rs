@@ -1202,3 +1202,347 @@ fn conditional_display_aliases_watch_resolved_changes_with_quiet_placeholders() 
         assert_eq!(hours, [1, 2, 3, 4]);
     }
 }
+
+/// Resolution hooks are process-wide because decode workers share them.
+fn resolved_as<T>(mode: aliases::private::Resolution, work: impl FnOnce() -> T) -> (T, usize) {
+    use aliases::private::hooks;
+    hooks::with(|hooks| {
+        hooks.resolution = Some(mode);
+        hooks.candidate_hours = 0;
+    });
+    let result = work();
+    let hours = hooks::with(|hooks| {
+        hooks.resolution = None;
+        hooks.candidate_hours
+    });
+    (result, hours)
+}
+
+/// Verify candidate bytes and views against whole-table resolution.
+#[test]
+fn every_alias_test_passes_with_candidate_rows_verified_and_with_whole_tables() {
+    use aliases::private::Resolution;
+    let tests: [fn(); 18] = [
+        private_copy_aliases_materialize_copies_before_any_public_reader_or_checkpoint,
+        private_copy_aliases_keep_every_literal_exception_and_independent_source_refusal,
+        private_copy_aliases_do_not_rewrite_sampling_provenance_or_carried_literals,
+        private_copy_aliases_use_markers_only_for_exact_complete_joins,
+        private_copy_aliases_watch_source_driven_changes_even_without_raw_target_changes,
+        private_copy_aliases_anchor_to_raw_rows_but_resolve_at_the_appended_hour,
+        private_copy_aliases_without_markers_need_no_source_and_invalid_sources_never_invent_values,
+        province_alias_requires_unique_mixed_membership_and_preserves_order_and_literals,
+        province_alias_watches_membership_changes_without_an_availability_cycle,
+        province_alias_never_invents_values_from_missing_or_ambiguous_sources,
+        efficiency_alias_keeps_the_signed_wrapping_prefix_average_and_literal_exceptions,
+        efficiency_alias_requires_complete_matching_context_and_the_entire_factory_prefix,
+        private_movement_aliases_restore_source_only_changes_paths_and_independent_absence,
+        private_movement_marks_restart_at_keyframes_and_preserve_strategic_action_validation,
+        private_marks_change_even_when_the_native_placeholder_has_no_entry,
+        private_alias_tables_materialize_before_selected_reads_keyframes_and_checkpoints,
+        conditional_display_aliases_keep_literal_demand_changes_and_independent_source_failures,
+        conditional_display_aliases_watch_resolved_changes_with_quiet_placeholders,
+    ];
+    let ((), verified) = resolved_as(Resolution::Verify, || tests.iter().for_each(|test| test()));
+    assert!(verified > 0, "the alias tests must reach candidate hours");
+    let ((), whole) = resolved_as(Resolution::Whole, || tests.iter().for_each(|test| test()));
+    assert_eq!(whole, 0);
+}
+
+/// Churn covers membership, marks, source-only changes and incomplete sources.
+fn churn_frame(hour: i32) -> DecodedFrame {
+    let mut frame = source(1, hour);
+    let h = i64::from(hour);
+    let division = |d: u64| (71_u64 << 32) | d;
+    let present: Vec<u64> = (1..=8)
+        .filter(|&d| !(d == 3 && (6..=9).contains(&hour)) && (d != 8 || hour >= 5))
+        .collect();
+    let grace_define: i32 = if hour >= 7 { 150 } else { 143 };
+    let (mut panels, mut statuses, mut movements, mut divisions) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut provinces = std::collections::BTreeMap::<u32, Vec<u64>>::new();
+    for &d in &present {
+        let id = division(d);
+        let di = d as i64;
+        let base = 100_001
+            + di * 7_001
+            + match d {
+                1 => h * 20_000,
+                2 if hour % 4 == 0 => h * 5_000,
+                _ => 0,
+            };
+        let panel = DivisionPanelStatsRow {
+            division: id,
+            panel_stats: std::array::from_fn(|at| Some(base + at as i64 * 10_001)),
+            suppression: Some(base + 22 * 10_001).into(),
+        };
+        let maximum = |stat: usize| {
+            DivisionStatusRow::MAXIMUM_STEP.round(panel.panel_stats[stat].unwrap().max(100))
+        };
+        let organisation = 123_456 + di * 10_000 + if d == 5 { h * 10_000 } else { 0 };
+        let ratio = 12_345 + if d % 2 == 1 { h * 1_000 } else { 0 };
+        let grace = 700_000 + di * 1_000;
+        let mut status = DivisionStatusRow {
+            division: id,
+            maximum_hit_points: maximum(0),
+            maximum_organisation: maximum(1),
+            supply_ratio: DivisionStatusRow::SUPPLY_RATIO_STEP.round(ratio),
+            supply_ratio_exact: Some(ratio).into(),
+            supply_grace_remaining: DivisionStatusRow::displayed_grace(grace, Some(grace_define))
+                .into(),
+            supply_grace_exact: Some(grace).into(),
+            organisation_exact: Some(organisation).into(),
+            strength_factor: 90_000 + di,
+            ..Default::default()
+        };
+        if d == 4 && hour % 3 == 1 {
+            status.maximum_hit_points += 10_000;
+        }
+        let movement = DivisionMovementRow {
+            division: id,
+            source: 300,
+            path: if d == 6 {
+                vec![400 + hour as u32, 401 + hour as u32]
+            } else {
+                vec![500, 501]
+            },
+            path_total: 2,
+            base_speed: panel.panel_stats[21].into(),
+            fuel: Some(20_000 + di).into(),
+            ..Default::default()
+        };
+        let province = if d == 1 {
+            1_000 + hour as u32 / 2
+        } else {
+            1_000 + d as u32 * 10
+        };
+        provinces.entry(province).or_default().push(id);
+        divisions.push(DivisionRow {
+            id,
+            province,
+            organisation: DivisionRow::ORGANISATION_STEP.round(organisation),
+            ..Default::default()
+        });
+        panels.push(panel);
+        statuses.push(status);
+        movements.push(movement);
+    }
+    if (10..=11).contains(&hour) {
+        provinces.entry(2_000).or_default().push(division(2));
+    }
+    let combat = (47_u64 << 32) | 42;
+    let members: Vec<_> = [1_u64, 2]
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, d)| {
+            (
+                ordinal as u32,
+                division(if ordinal == 0 && hour >= 6 { 5 } else { d }),
+            )
+        })
+        .collect();
+    let (mut lines, mut line_modifiers) = (Vec::new(), Vec::new());
+    for line in 1..=3_u64 {
+        let handle = (73_u64 << 32) | line;
+        let shift = if line == 2 && hour % 2 == 0 { h } else { 0 };
+        lines.push(ProductionLineRow {
+            handle,
+            country: 7,
+            active_factories: 3,
+            max_factories: 2,
+            efficiency_raw: 200_001 + shift + i64::from(line == 3),
+            ..Default::default()
+        });
+        line_modifiers.push(ProductionLineModifiersRow {
+            line: handle,
+            country: 7,
+            active_factories: 3,
+            factory_efficiencies: vec![100_001 + shift, 300_001 + shift, i64::MAX],
+            ..Default::default()
+        });
+    }
+    let panels = match hour {
+        12 => TableView::Unavailable {
+            reason: "independent panel refusal".into(),
+        },
+        13 => TableView::Truncated {
+            rows: TableRows::DivisionPanelStats(panels),
+            missing: 1,
+        },
+        _ => TableView::Complete(TableRows::DivisionPanelStats(panels)),
+    };
+    frame.tables[TableId::DivisionPanelStats.index()] = panels.into();
+    frame.metrics.table_ns[TableId::DivisionPanelStats.index()] = 1;
+    for rows in [
+        TableRows::SimulationFeatures(vec![rows::SimulationFeatureRow {
+            movement_defines: rows::MovementDefines {
+                supply_grace: Some(i64::from(grace_define)),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        }]),
+        TableRows::DivisionStatus(statuses),
+        TableRows::DivisionMovement(movements),
+        TableRows::Divisions(divisions),
+        TableRows::ProvinceUnitOrder(
+            provinces
+                .into_iter()
+                .map(|(province, mixed)| ProvinceUnitOrderRow {
+                    province,
+                    mixed,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        TableRows::LandCombatDivisions(
+            members
+                .iter()
+                .map(|&(ordinal, division)| LandCombatDivisionRow {
+                    combat,
+                    ordinal,
+                    division,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        TableRows::LandCombatDivisionModifiers(
+            members
+                .iter()
+                .map(|&(ordinal, division)| LandCombatDivisionModifierRow {
+                    combat,
+                    ordinal,
+                    division,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        TableRows::ProductionLines(lines),
+        TableRows::ProductionLineModifiers(line_modifiers),
+    ] {
+        let table = rows.table();
+        frame.tables[table.index()] = TableView::Complete(rows).into();
+        frame.metrics.table_ns[table.index()] = 1;
+    }
+    frame
+}
+
+/// The churn recording: hours 1..=18, its second block from hour 11.
+fn churn_recording(frames: &[DecodedFrame]) -> Replay {
+    let first = recording(&frames[..10]);
+    let mut encoder = FrameEncoder::new();
+    let mut suffix = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(branch(1, 1)),
+    ];
+    for frame in &frames[10..] {
+        suffix.push(Record::Frame(encoder.encode(frame.clone(), false).unwrap()));
+    }
+    let replay = first.append(&[suffix]).unwrap();
+    assert_eq!(
+        replay.index.len(),
+        2,
+        "the second block restarts at its keyframe"
+    );
+    replay
+}
+
+/// Compare candidate and whole-table resolution against independently encoded frames.
+#[test]
+fn candidate_rows_resolve_churn_membership_marks_and_source_changes_exactly() {
+    use aliases::private::{Resolution, TABLES};
+    let frames: Vec<_> = (1..=18).map(churn_frame).collect();
+    let replay = churn_recording(&frames);
+    for mode in [
+        Resolution::Verify,
+        Resolution::Candidates,
+        Resolution::Whole,
+    ] {
+        let ((), candidate_hours) = resolved_as(mode, || {
+            for block in &replay.index {
+                let mut decoder = FrameDecoder::new();
+                for frame in replay.read_block(block).unwrap() {
+                    let actual = decoder.advance(&frame).unwrap();
+                    assert_eq!(
+                        *actual,
+                        expected(frames[(frame.hour - 1) as usize].clone()),
+                        "{mode:?} hour {}",
+                        frame.hour
+                    );
+                }
+                let mut decoder = FrameDecoder::for_tables(TABLES);
+                for frame in replay.read_block_selected(block, TABLES).unwrap() {
+                    let actual = decoder.advance(&frame).unwrap();
+                    for &table in TABLES {
+                        assert_eq!(
+                            actual.tables[table.index()],
+                            frames[(frame.hour - 1) as usize].tables[table.index()],
+                            "{mode:?} {table:?} hour {}",
+                            frame.hour
+                        );
+                    }
+                }
+            }
+        });
+        if mode == Resolution::Whole {
+            assert_eq!(candidate_hours, 0);
+        } else {
+            assert!(candidate_hours > 0, "{mode:?} must resolve candidate hours");
+        }
+    }
+}
+
+/// Compare the refusing hour and every preceding resolved-byte count.
+#[test]
+fn candidate_rows_keep_the_resolved_size_refusal_and_its_byte_counts() {
+    use aliases::private::{Resolution, hooks};
+    let frames: Vec<_> = (1..=10).map(churn_frame).collect();
+    let replay = recording(&frames);
+    let read = |mode, limit| {
+        hooks::with(|hooks| {
+            hooks.limit = limit;
+            hooks.budget.clear();
+        });
+        let (result, candidate_hours) = resolved_as(mode, || {
+            replay
+                .read_block(&replay.index[0])
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        let budget = hooks::with(|hooks| {
+            hooks.limit = None;
+            std::mem::take(&mut hooks.budget)
+        });
+        (result, budget, candidate_hours)
+    };
+    let (whole, budget, _) = read(Resolution::Whole, None);
+    assert!(whole.is_ok());
+    // Every table's first hour fits; a later hour of some table does not.
+    let limit = budget
+        .iter()
+        .filter(|(_, at, _)| *at == 0)
+        .map(|(_, _, bytes)| *bytes)
+        .max()
+        .unwrap();
+    assert!(budget.iter().any(|(_, _, bytes)| *bytes > limit));
+    let (whole, whole_budget, _) = read(Resolution::Whole, Some(limit));
+    assert!(
+        whole.as_ref().is_err_and(
+            |error| error.contains("resolved private aliases exceed raw block size limit")
+        ),
+        "{whole:?}"
+    );
+    let refused_at = whole_budget.last().map(|&(_, at, _)| at).unwrap();
+    assert!(
+        refused_at > 0,
+        "the refusing hour follows a candidate-eligible hour"
+    );
+    for mode in [Resolution::Candidates, Resolution::Verify] {
+        let (refused, refused_budget, candidate_hours) = read(mode, Some(limit));
+        assert_eq!(refused, whole, "{mode:?}");
+        assert_eq!(refused_budget, whole_budget, "{mode:?}");
+        assert!(
+            candidate_hours > 0,
+            "{mode:?} must resolve candidate hours before refusing"
+        );
+    }
+}

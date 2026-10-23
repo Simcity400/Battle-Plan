@@ -1474,6 +1474,307 @@ fn parallel_map_keeps_input_order() {
     );
 }
 
+/// The first queue items rendezvous and finish in a fixed order without timing assumptions.
+struct Script {
+    script: Vec<u32>,
+    state: std::sync::Mutex<ScriptState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct ScriptState {
+    /// Items started, and how many had when the last script item started.
+    started: usize,
+    started_when_full: Option<usize>,
+    arrived: usize,
+    /// Script items finished, and every item in the order it finished.
+    done: usize,
+    finished: Vec<u32>,
+    /// Script items run on the thread that called the run.
+    on_caller: Vec<u32>,
+}
+
+impl Script {
+    fn new(script: &[u32]) -> Self {
+        Self {
+            script: script.to_vec(),
+            state: std::sync::Mutex::default(),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn run(&self, item: u32, caller: std::thread::ThreadId) {
+        let mut state = self.state.lock().unwrap();
+        state.started += 1;
+        if let Some(turn) = self.script.iter().position(|&scripted| scripted == item) {
+            if std::thread::current().id() == caller {
+                state.on_caller.push(item);
+            }
+            state.arrived += 1;
+            if state.arrived == self.script.len() {
+                state.started_when_full = Some(state.started);
+            }
+            self.changed.notify_all();
+            while state.arrived < self.script.len() || state.done != turn {
+                state = self.changed.wait(state).unwrap();
+            }
+            state.done += 1;
+            self.changed.notify_all();
+        }
+        state.finished.push(item);
+    }
+}
+
+#[test]
+fn parallel_tables_take_the_queue_in_order_and_return_item_order() {
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &|| {},
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let caller = std::thread::current().id();
+    let expected: Vec<u64> = items.iter().map(|item| u64::from(*item) * 7).collect();
+    for (order, script) in [
+        // The last of the first four taken finishes first.
+        ((0..200).rev().collect::<Vec<usize>>(), [196, 197, 198, 199]),
+        (
+            (0..200).step_by(2).chain((1..200).step_by(2)).collect(),
+            [6, 0, 4, 2],
+        ),
+        ((0..200).collect(), [3, 2, 1, 0]),
+    ] {
+        let script = Script::new(&script);
+        let out = parallel_tables(&items, &order, &parallel, |item| {
+            script.run(*item, caller);
+            u64::from(*item) * 7
+        })
+        .unwrap();
+        assert_eq!(out, expected);
+        let state = script.state.into_inner().unwrap();
+        // The queue's first four items started before any other.
+        assert_eq!(state.started_when_full, Some(4));
+        let scripted: Vec<u32> = state
+            .finished
+            .iter()
+            .copied()
+            .filter(|item| script.script.contains(item))
+            .collect();
+        assert_eq!(scripted, script.script);
+        assert_eq!(state.finished.len(), items.len());
+    }
+    // Too few items for a second worker: the calling thread, in item order.
+    let few: Vec<u32> = (0..10).collect();
+    let out = parallel_tables(
+        &few,
+        &(0..10).rev().collect::<Vec<_>>(),
+        &parallel,
+        |item| *item,
+    )
+    .unwrap();
+    assert_eq!(out, few);
+    assert!(
+        parallel_tables(&[] as &[u32], &[], &parallel, |item| *item)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn parallel_tables_report_the_first_error_in_item_order() {
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &|| {},
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let order: Vec<usize> = (0..200).rev().collect();
+    let caller = std::thread::current().id();
+    let work = |item: &u32| {
+        if *item == 196 || *item == 198 {
+            Err(*item)
+        } else {
+            Ok(*item)
+        }
+    };
+    // 198 fails first; 196 fails later but comes first in item order.
+    let script = Script::new(&[198, 197, 196, 199]);
+    let out = parallel_tables(&items, &order, &parallel, |item| {
+        script.run(*item, caller);
+        work(item)
+    })
+    .unwrap();
+    let state = script.state.into_inner().unwrap();
+    let finished = |item| state.finished.iter().position(|&done| done == item);
+    assert!(finished(198) < finished(196));
+    let first = out.into_iter().collect::<Result<Vec<_>, _>>();
+    assert_eq!(first, Err(196));
+    assert_eq!(first, items.iter().map(work).collect());
+}
+
+#[test]
+fn parallel_tables_resume_a_worker_panic_after_every_worker_finishes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &|| {},
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let order: Vec<usize> = (0..200).collect();
+    let finished = AtomicUsize::new(0);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parallel_tables(&items, &order, &parallel, |item| {
+            assert_ne!(*item, 57, "scripted worker panic");
+            finished.fetch_add(1, Ordering::Relaxed);
+        })
+    }));
+    let panic = result.unwrap_err();
+    assert!(
+        panic
+            .downcast_ref::<String>()
+            .is_some_and(|message| message.contains("scripted worker panic"))
+    );
+    // Every other item finished before the panic resumed.
+    assert_eq!(finished.load(Ordering::Relaxed), items.len() - 1);
+}
+
+#[test]
+fn parallel_tables_choose_the_first_registry_panic_with_any_spawn_refusals() {
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &|| {},
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let order: Vec<usize> = (0..200).rev().collect();
+    let caller = std::thread::current().id();
+    for refused in [4, 1, 0] {
+        REFUSED_WORKERS.set(refused);
+        let turns: &[u32] = if refused == 4 {
+            &[199]
+        } else {
+            &[198, 197, 196, 199]
+        };
+        let script = Script::new(turns);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parallel_tables(&items, &order, &parallel, |item| {
+                script.run(*item, caller);
+                if [0, 57, 196, 198, 199].contains(item) {
+                    std::panic::panic_any(*item);
+                }
+                *item
+            })
+        }));
+        assert_eq!(
+            result.unwrap_err().downcast_ref::<u32>(),
+            Some(&0),
+            "{refused}"
+        );
+        let state = script.state.into_inner().unwrap();
+        assert_eq!(
+            state.started_when_full,
+            Some(if refused == 4 { 1 } else { 4 })
+        );
+        let finished: Vec<_> = state
+            .finished
+            .iter()
+            .copied()
+            .filter(|item| turns.contains(item))
+            .collect();
+        assert_eq!(finished, turns, "{refused}");
+        assert_eq!(state.finished.len(), items.len(), "{refused}");
+        assert_eq!(
+            state.on_caller.len(),
+            usize::from(refused != 0),
+            "{refused}"
+        );
+        assert_eq!(REFUSED_WORKERS.get(), 0);
+    }
+}
+
+#[test]
+fn parallel_tables_resume_setup_panics_only_after_item_panics() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let started = AtomicUsize::new(0);
+    let setup = || {
+        started.fetch_add(1, Ordering::Relaxed);
+        std::panic::panic_any("worker setup");
+    };
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &setup,
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let order: Vec<usize> = (0..200).rev().collect();
+    let caller = std::thread::current().id();
+    let script = Script::new(&[199]);
+    REFUSED_WORKERS.set(3);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parallel_tables(&items, &order, &parallel, |item| {
+            script.run(*item, caller);
+            if *item == 0 || *item == 199 {
+                std::panic::panic_any(*item);
+            }
+            *item
+        })
+    }));
+    assert_eq!(result.unwrap_err().downcast_ref::<u32>(), Some(&0));
+    assert_eq!(
+        script.state.into_inner().unwrap().finished.len(),
+        items.len()
+    );
+    assert_eq!(started.load(Ordering::Relaxed), 1);
+    assert_eq!(REFUSED_WORKERS.get(), 0);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        parallel_tables(&items, &order, &parallel, |_| -> u32 {
+            unreachable!("setup panics before any item starts")
+        })
+    }));
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<&str>(),
+        Some(&"worker setup")
+    );
+    assert_eq!(started.load(Ordering::Relaxed), 5);
+}
+
+#[test]
+fn parallel_tables_take_a_refused_workers_share_on_the_calling_thread() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let started = AtomicUsize::new(0);
+    let setup = || {
+        started.fetch_add(1, Ordering::Relaxed);
+    };
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &setup,
+    };
+    let items: Vec<u32> = (0..200).collect();
+    let order: Vec<usize> = (0..200).collect();
+    let caller = std::thread::current().id();
+    // Only the caller can release the fourth scripted item when one worker is refused.
+    REFUSED_WORKERS.set(1);
+    let script = Script::new(&[0, 1, 2, 3]);
+    let out = parallel_tables(&items, &order, &parallel, |item| {
+        script.run(*item, caller);
+        *item
+    })
+    .unwrap();
+    assert_eq!(out, items);
+    assert_eq!(started.load(Ordering::Relaxed), 3);
+    assert_eq!(script.state.into_inner().unwrap().on_caller.len(), 1);
+    // Every worker refused: the calling thread takes every item.
+    REFUSED_WORKERS.set(4);
+    let on_caller = AtomicUsize::new(0);
+    let out = parallel_tables(&items, &order, &parallel, |item| {
+        if std::thread::current().id() == caller {
+            on_caller.fetch_add(1, Ordering::Relaxed);
+        }
+        *item
+    })
+    .unwrap();
+    assert_eq!(out, items);
+    assert_eq!(on_caller.load(Ordering::Relaxed), items.len());
+    assert_eq!(started.load(Ordering::Relaxed), 3);
+    assert_eq!(REFUSED_WORKERS.get(), 0);
+}
+
 #[test]
 fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
     let hours: Vec<i32> = (1..=64).collect();

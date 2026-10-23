@@ -2973,6 +2973,110 @@ fn parallel_map<T: Sync, R: Send>(
     })
 }
 
+/// Take work in queue order but return results in registry order.
+fn parallel_tables<T: Sync, R: Send>(
+    items: &[T],
+    order: &[usize],
+    parallel: &Parallel<'_>,
+    work: impl Fn(&T) -> R + Sync,
+) -> io::Result<Vec<R>> {
+    assert_eq!(order.len(), items.len(), "an order names every item once");
+    let workers = parallel
+        .workers
+        .min(items.len().div_ceil(PARALLEL_FRAMES))
+        .max(1);
+    if workers <= 1 {
+        return engine_allocation::collect_vec(items.iter().map(&work));
+    }
+    // One slot per item, filled by whichever thread takes it.
+    let mut slots =
+        engine_allocation::collect_vec(items.iter().map(|_| std::sync::Mutex::new(None)))?;
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let take = || {
+        while let Some(&at) = order.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&items[at])));
+            *slots[at]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        }
+    };
+    let take = &take;
+    let on_worker = parallel.on_worker;
+    // Measurement only: the workers' CPU is the caller's family's.
+    let cpu_family = crate::cpu::family();
+    let worker_panic = std::thread::scope(|scope| {
+        let mut handles = engine_allocation::vec(workers)?;
+        for _ in 0..workers {
+            let priority = job_priority::JobPriority::current();
+            let spawned = if refused_worker() {
+                None
+            } else {
+                std::thread::Builder::new()
+                    .name("replay parallel decode".into())
+                    .spawn_scoped(scope, move || {
+                        priority.enter(job_priority::Level::Normal);
+                        on_worker();
+                        let _cpu = crate::cpu::scope("decode", cpu_family);
+                        take();
+                    })
+                    .ok()
+            };
+            handles.push(spawned);
+        }
+        // A worker the OS refused leaves its share of the queue to this thread.
+        if handles.iter().any(Option::is_none) {
+            take();
+        }
+        let mut worker_panic = None;
+        for handle in handles.into_iter().flatten() {
+            if let Err(panic) = handle.join()
+                && worker_panic.is_none()
+            {
+                worker_panic = Some(panic);
+            }
+        }
+        Ok::<_, io::Error>(worker_panic)
+    })?;
+    // Item panics rank first in registry order; setup panics follow spawn order.
+    for slot in &mut slots {
+        let outcome = slot
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match outcome.take() {
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            result => *outcome = result,
+        }
+    }
+    if let Some(panic) = worker_panic {
+        std::panic::resume_unwind(panic);
+    }
+    engine_allocation::collect_vec(slots.into_iter().map(|slot| {
+        slot.into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("an order names every item once")
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }))
+}
+
+fn refused_worker() -> bool {
+    #[cfg(test)]
+    {
+        let refused = REFUSED_WORKERS.get();
+        if refused != 0 {
+            REFUSED_WORKERS.set(refused - 1);
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Decode workers this thread's next scheduled reads take as refused.
+    static REFUSED_WORKERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 mod grouped;
 pub(crate) mod pack;
 mod units;

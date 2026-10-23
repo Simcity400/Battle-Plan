@@ -339,6 +339,22 @@ fn step_from_code(
     Ok(step)
 }
 
+/// Skipping a predicted change's parse requires the same native-width admission check.
+fn step_in_range(kind: Kind, step: Step) -> bool {
+    let Step::Number(value) = step else {
+        return true;
+    };
+    let maximum = match kind {
+        Kind::U8 | Kind::I8 => u128::from(u8::MAX),
+        Kind::U16 | Kind::I16 => u128::from(u16::MAX),
+        Kind::U32 | Kind::I32 | Kind::OptionalI32 | Kind::OptionalU32 => u128::from(u32::MAX),
+        Kind::U64 | Kind::I64 | Kind::OptionalI64 | Kind::OptionalU64 => u128::from(u64::MAX),
+        Kind::Bool => 1,
+        Kind::Bytes | Kind::U32List | Kind::U64List | Kind::Opaque => return false,
+    };
+    value.unsigned_abs() <= maximum
+}
+
 fn put_step(kind: Kind, step: Step, plain: &mut Vec<u8>) {
     match step {
         Step::Same => unreachable!("unchanged fields have no plain change"),
@@ -747,12 +763,19 @@ pub(super) fn put_residual(
 /// Where a residual entry's rows go: a plain update's bytes or a direct
 /// table update.
 trait Residuals {
+    const SPANS: bool;
     /// The byte fields' encodings, as the rows so far left them.
     fn shadow(&self) -> &Shadow;
     /// Bytes the entry holds so far.
     fn written(&self) -> usize;
     fn no_rows(&self) -> bool;
-    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()>;
+    fn push_row(
+        &mut self,
+        key: u128,
+        mask: u64,
+        values: &mut Vec<u8>,
+        spans: &[super::direct::Span],
+    ) -> io::Result<()>;
     fn push_deleted(&mut self, deleted: Vec<u128>) -> io::Result<()>;
 }
 
@@ -768,6 +791,7 @@ struct Plain<'a> {
 }
 
 impl Residuals for Plain<'_> {
+    const SPANS: bool = false;
     fn shadow(&self) -> &Shadow {
         self.bases
     }
@@ -777,7 +801,13 @@ impl Residuals for Plain<'_> {
     fn no_rows(&self) -> bool {
         self.rows == 0
     }
-    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()> {
+    fn push_row(
+        &mut self,
+        key: u128,
+        mask: u64,
+        values: &mut Vec<u8>,
+        _spans: &[super::direct::Span],
+    ) -> io::Result<()> {
         put_varint(self.plain, key - self.previous_key);
         self.previous_key = key;
         self.plain
@@ -803,6 +833,7 @@ impl Residuals for Plain<'_> {
 }
 
 impl Residuals for super::direct::Delta<'_> {
+    const SPANS: bool = true;
     fn shadow(&self) -> &Shadow {
         self.bases()
     }
@@ -812,8 +843,14 @@ impl Residuals for super::direct::Delta<'_> {
     fn no_rows(&self) -> bool {
         self.is_empty()
     }
-    fn push_row(&mut self, key: u128, mask: u64, values: &mut Vec<u8>) -> io::Result<()> {
-        self.row(key, mask, std::mem::take(values))
+    fn push_row(
+        &mut self,
+        key: u128,
+        mask: u64,
+        values: &mut Vec<u8>,
+        spans: &[super::direct::Span],
+    ) -> io::Result<()> {
+        self.row_spans(key, mask, engine_allocation::copy_vec(values)?, spans)
     }
     fn push_deleted(&mut self, deleted: Vec<u128>) -> io::Result<()> {
         self.deleted(deleted)
@@ -898,12 +935,12 @@ pub(super) fn take_residual_direct(
 /// Read a residual entry's deleted keys and rows into `output`, predicting
 /// every moving field, and move the predictor on to its changes.
 #[allow(clippy::too_many_arguments)]
-fn take_residual_rows(
+fn take_residual_rows<R: Residuals>(
     table: TableId,
     fields: usize,
     mut input: Option<&mut ColumnReader<'_>>,
     predictor: &mut Predictor,
-    output: &mut impl Residuals,
+    output: &mut R,
     budget: &Budget,
     layout: Layout,
     mut coding: Option<RowCoding<'_>>,
@@ -927,7 +964,7 @@ fn take_residual_rows(
         for index in 0..count(input, 0)? {
             if let (Some(run), Some(coding)) = (&mut run, &mut coding) {
                 let (key, _) = run.take(table, &mut input.0[KEYS])?;
-                coding.note_deleted(key);
+                coding.note_deleted(key)?;
                 deleted.push(key);
                 continue;
             }
@@ -959,6 +996,7 @@ fn take_residual_rows(
     let mut read = 0_usize;
     let mut stored: Option<(u128, u64)> = None;
     let mut values = Vec::new();
+    let mut spans = Vec::new();
     loop {
         if stored.is_none() && read < residuals {
             let input = input.as_deref_mut().expect("residual rows have an entry");
@@ -1006,6 +1044,10 @@ fn take_residual_rows(
             return Err(invalid("residual row is also deleted"));
         }
         values.clear();
+        spans.clear();
+        if R::SPANS {
+            super::direct::span_room(&mut spans, fields, true)?;
+        }
         let mut plain_mask = 0_u64;
         // A field neither stored nor moving stays unchanged and leaves no
         // motion, so only stored fields and fields with a motion are visited.
@@ -1057,6 +1099,13 @@ fn take_residual_rows(
                     continue;
                 }
                 plain_mask |= 1 << field;
+                if R::SPANS {
+                    spans.push(super::direct::Span {
+                        field,
+                        end: values.len(),
+                        parsed: false,
+                    });
+                }
                 byte_motion(base, &values[at..], before)
             } else {
                 let prediction = number_prediction(before);
@@ -1072,6 +1121,13 @@ fn take_residual_rows(
                 if step != Step::Same {
                     plain_mask |= 1 << field;
                     put_step(kind, step, &mut values);
+                    if R::SPANS {
+                        spans.push(super::direct::Span {
+                            field,
+                            end: values.len(),
+                            parsed: step_in_range(kind, step),
+                        });
+                    }
                 }
                 predictor.transitions.after(step, before, layout)
             };
@@ -1080,7 +1136,7 @@ fn take_residual_rows(
             }
         }
         if plain_mask != 0 {
-            output.push_row(key, plain_mask, &mut values)?;
+            output.push_row(key, plain_mask, &mut values, &spans)?;
             budget.check(output.written())?;
         }
     }
@@ -1300,6 +1356,57 @@ mod tests {
         rows::compatibility::HISTORY,
     };
     use std::sync::atomic::AtomicUsize;
+
+    /// Compare the shortcut's admission with the field's actual change grammar.
+    #[test]
+    fn predicted_step_range_check_admits_exactly_what_the_change_grammar_reads() {
+        let kinds = [
+            Kind::U8,
+            Kind::I8,
+            Kind::U16,
+            Kind::I16,
+            Kind::U32,
+            Kind::I32,
+            Kind::U64,
+            Kind::I64,
+            Kind::Bool,
+            Kind::OptionalI32,
+            Kind::OptionalU32,
+            Kind::OptionalI64,
+            Kind::OptionalU64,
+        ];
+        let widths: [i128; 11] = [
+            1,
+            2,
+            255,
+            256,
+            65_535,
+            65_536,
+            i128::from(u32::MAX),
+            1 << 32,
+            i128::from(u64::MAX),
+            i128::from(u64::MAX) + 1,
+            i128::MAX,
+        ];
+        let mut steps = vec![Step::Null, Step::Number(0), Step::Number(i128::MIN)];
+        for width in widths {
+            steps.push(Step::Number(width));
+            steps.push(Step::Number(-width));
+        }
+        for (ordinal, kind) in kinds.into_iter().enumerate() {
+            for &step in &steps {
+                let mut plain = Vec::new();
+                put_step(kind, step, &mut plain);
+                let mut input = Decoder::new(&plain);
+                let read = kind.decode_change(&mut input).is_ok() && input.finish().is_ok();
+                assert_eq!(
+                    step_in_range(kind, step),
+                    read,
+                    "kind {ordinal} of the list, {step:?}"
+                );
+            }
+        }
+    }
 
     const TABLE: TableId = TableId::Divisions;
     /// DivisionRow organisation.

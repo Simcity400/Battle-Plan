@@ -4,7 +4,7 @@ use crate::rows::{
     ArmyOrderRow, CountryRow, DivisionMovementRow, DivisionRow, Kind, LexicalTokenRow,
 };
 
-const LAYOUTS: [Layout; 10] = [
+pub(super) const LAYOUTS: [Layout; 10] = [
     Layout::Timed,
     Layout::Unpredicted,
     Layout::Predicted,
@@ -246,6 +246,7 @@ fn compare(replay: &Replay, expected: &[Frame], index: &BlockIndex, bytes: &[u8]
         selected: None,
         complete: through == hours.len(),
         memo: &memo,
+        group: &OnceLock::new(),
     };
     let expected: Vec<_> = expected
         .iter()
@@ -594,6 +595,7 @@ fn direct_delta_section_refusals_keep_original_framing_and_wire_precedence() {
                 selected: None,
                 complete: true,
                 memo: &memo,
+                group: &OnceLock::new(),
             };
             let original = table_updates_body(&context, table, false).unwrap_err();
             assert_eq!(
@@ -741,6 +743,7 @@ fn direct_delta_malformed_columns_have_fixed_refusals_in_every_layout() {
                     selected: None,
                     complete: true,
                     memo: &memo,
+                    group: &OnceLock::new(),
                 };
                 let error = table_updates_inner(&context, table).unwrap_err();
                 rejected += 1;
@@ -756,16 +759,20 @@ fn direct_delta_malformed_columns_have_fixed_refusals_in_every_layout() {
     assert!(rejected > 100, "every layout must exercise real refusals");
 }
 
-/// Native, non-placeholder values are the oracle; neither the grouped decoder
-/// nor the alias resolver supplies the expected updates in this fixture.
-fn alias_fixture(layout: Layout) -> (Replay, Vec<Frame>) {
+/// The alias fixture over two blocks whose first hours hold every row.
+pub(super) fn alias_fixture(layout: Layout) -> (Replay, Vec<Frame>) {
+    let hours: Vec<_> = (10..26).chain(730..742).collect();
+    alias_fixture_at(layout, &hours)
+}
+
+/// Expected frames are independently encoded native values; hours ending in 7 have no alias rows.
+fn alias_fixture_at(layout: Layout, hours: &[Hour]) -> (Replay, Vec<Frame>) {
     use crate::rows::*;
     let old_layout = WRITTEN_LAYOUT.replace(layout);
     let old_residual = FORCE_RESIDUAL.replace(true);
-    let hours: Vec<_> = (10..26).chain(730..742).collect();
     let mut encoder = crate::frame::FrameEncoder::new();
     let mut expected = Vec::new();
-    let replay = test_recording::build(b"direct-alias-parity", &hours, |hour, tables| {
+    let replay = test_recording::build(b"direct-alias-parity", hours, |hour, tables| {
         let value = 100_000 + i64::from(hour) * 10_000;
         let panel = DivisionPanelStatsRow {
             division: 7,
@@ -1101,7 +1108,11 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
             .env(CHILD, "1")
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         return;
     }
     thread_local! {
@@ -1135,6 +1146,7 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
             selected: None,
             complete: true,
             memo: &memo,
+            group: &OnceLock::new(),
         };
         for &table in &present.tables {
             if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)
@@ -1167,5 +1179,425 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
             }
         }
     }
-    assert!(checked > 0, "the fixture must reach checked allocations on the direct route");
+    assert!(
+        checked > 0,
+        "the fixture must reach checked allocations on the direct route"
+    );
+}
+
+/// Deny span growth on plain and residual routes; neither may retry allocation failures.
+#[test]
+fn span_buffer_growth_failures_propagate_on_both_routes() {
+    const CHILD: &str = "BATTLE_PLAN_GROUPED_SPAN_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "container::grouped::direct_tests::span_buffer_growth_failures_propagate_on_both_routes",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    thread_local! {
+        static ROUTES: std::cell::RefCell<Vec<bool>> = const { std::cell::RefCell::new(Vec::new()) };
+        static FAIL_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+    // Counts only span buffer growth, noting whether its row is residual.
+    fn fail_allocation() -> bool {
+        let Some(residual) = direct::SPAN_ROUTE.get() else {
+            return false;
+        };
+        let attempt = ROUTES.with_borrow_mut(|routes| {
+            routes.push(residual);
+            routes.len()
+        });
+        FAIL_AT.get() == Some(attempt)
+    }
+    let mut reached = [false; 2];
+    let mut checked = 0;
+    for layout in [Layout::Unpredicted, Layout::Chosen] {
+        let (replay, _) = fixture(layout);
+        for index in &replay.index {
+            let bytes = replay.block_bytes(index).unwrap();
+            let directory = Directory::parse(&bytes, index).unwrap();
+            let present = Present::new(replay.format.version(), replay.capture_mode);
+            let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
+            let (hours, entries) = read_header(&header, index, directory.frames, &present).unwrap();
+            let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
+            let context = Context {
+                replay: &replay,
+                index,
+                position: replay.block_position(index),
+                block: &bytes,
+                directory: &directory,
+                format: replay.format,
+                present: &present,
+                hours: &hours,
+                entries: &entries,
+                selected: None,
+                complete: true,
+                memo: &memo,
+                group: &OnceLock::new(),
+            };
+            let read = |table: TableId, fail_at: Option<usize>| {
+                ROUTES.with_borrow_mut(Vec::clear);
+                FAIL_AT.set(fail_at);
+                engine_allocation::set_stop_hook(Some(fail_allocation));
+                let result = direct::table_updates(&context, table);
+                engine_allocation::set_stop_hook(None);
+                (result, ROUTES.with_borrow_mut(std::mem::take))
+            };
+            for &table in &present.tables {
+                if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)
+                    .unwrap()
+                    .is_some()
+                {
+                    continue;
+                }
+                // Warm the alias sources' memo, so every read repeats the same growths.
+                direct::table_updates(&context, table).unwrap();
+                let (healthy, routes) = read(table, None);
+                healthy.unwrap();
+                for (ordinal, &residual) in (1..).zip(&routes) {
+                    reached[usize::from(residual)] = true;
+                    let (result, _) = read(table, Some(ordinal));
+                    assert_eq!(
+                        result.unwrap_err().kind(),
+                        io::ErrorKind::OutOfMemory,
+                        "{layout:?} {table:?} span growth {ordinal}, residual {residual}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 0);
+    assert_eq!(
+        reached, [true; 2],
+        "unpredicted and residual rows must both grow a span buffer"
+    );
+}
+
+/// Deny every candidate step, both alone and grouped, with sources loaded afresh.
+#[test]
+fn candidate_hour_allocation_failures_propagate_instead_of_retrying() {
+    use super::super::aliases::private::{Resolution, Step, TABLES, hooks};
+    const CHILD: &str = "BATTLE_PLAN_GROUPED_CANDIDATE_ALLOCATION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "container::grouped::direct_tests::candidate_hour_allocation_failures_propagate_instead_of_retrying",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    thread_local! {
+        static STEPS: std::cell::RefCell<Vec<Step>> = const { std::cell::RefCell::new(Vec::new()) };
+        static FAIL_AT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+    // Counts only checked growth in candidate-hour work, noting its step.
+    fn fail_allocation() -> bool {
+        let Some(step) = hooks::step() else {
+            return false;
+        };
+        let attempt = STEPS.with_borrow_mut(|steps| {
+            steps.push(step);
+            steps.len()
+        });
+        FAIL_AT.get() == Some(attempt)
+    }
+    hooks::with(|hooks| hooks.resolution = Some(Resolution::Candidates));
+    let hours: Vec<_> = (15..31).chain(735..751).collect();
+    let (replay, _) = alias_fixture_at(Layout::Chosen, &hours);
+    replay.cache_decoded_sections(false);
+    let index = &replay.index[0];
+    assert_eq!(
+        index.first_hour % 8,
+        7,
+        "the block starts with empty alias tables"
+    );
+    let bytes = replay.block_bytes(index).unwrap();
+    let directory = Directory::parse(&bytes, index).unwrap();
+    let present = Present::new(replay.format.version(), replay.capture_mode);
+    let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
+    let (block_hours, entries) = read_header(&header, index, directory.frames, &present).unwrap();
+    let read = |table: TableId, alone: bool, fail_at: Option<usize>| {
+        hooks::with(|hooks| hooks.group_old = Some(alone));
+        let selected = [table];
+        let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
+        let context = Context {
+            replay: &replay,
+            index,
+            position: replay.block_position(index),
+            block: &bytes,
+            directory: &directory,
+            format: replay.format,
+            present: &present,
+            hours: &block_hours,
+            entries: &entries,
+            selected: (!alone).then_some(&selected[..]),
+            complete: true,
+            memo: &memo,
+            group: &OnceLock::new(),
+        };
+        STEPS.with_borrow_mut(Vec::clear);
+        FAIL_AT.set(fail_at);
+        engine_allocation::set_stop_hook(Some(fail_allocation));
+        let result = if alone {
+            direct::table_updates(&context, table).map(|updates| updates.len())
+        } else {
+            table_updates_admitted(&context, table).map(|updates| updates.len())
+        };
+        engine_allocation::set_stop_hook(None);
+        (result, STEPS.with_borrow_mut(std::mem::take))
+    };
+    for alone in [true, false] {
+        let mut reached = std::collections::BTreeSet::new();
+        let mut checked = 0;
+        for &table in TABLES {
+            let (healthy, steps) = read(table, alone, None);
+            healthy.unwrap();
+            reached.extend(steps.iter().copied());
+            for (ordinal, step) in (1..).zip(&steps) {
+                let (result, _) = read(table, alone, Some(ordinal));
+                assert_eq!(
+                    result.unwrap_err().kind(),
+                    io::ErrorKind::OutOfMemory,
+                    "{table:?} checked allocation {ordinal}, {step:?}, alone {alone}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "alone {alone}");
+        // Resolving copied candidate rows makes no checked allocation to deny.
+        for step in [
+            Step::Marks,
+            Step::Keys,
+            Step::CatchUp,
+            Step::Load,
+            Step::Rows,
+            Step::Encode,
+            Step::Merge,
+        ] {
+            assert!(
+                reached.contains(&step),
+                "no checked allocation denied in {step:?}, alone {alone}"
+            );
+        }
+    }
+}
+
+/// Compare scheduled reads with serial reads, warm caches and refused workers included.
+#[test]
+fn scheduled_parallel_reads_return_the_serial_read() {
+    let parallel = Parallel {
+        workers: 8,
+        on_worker: &|| {},
+    };
+    for (replay, _) in [fixture(Layout::Chosen), alias_fixture(Layout::Chosen)] {
+        let serial: Vec<_> = replay
+            .index
+            .iter()
+            .map(|index| replay.read_block(index).unwrap())
+            .collect();
+        for cache in [false, true] {
+            replay.cache_decoded_sections(cache);
+            for (index, serial) in replay.index.iter().zip(&serial) {
+                assert_eq!(
+                    &replay.read_block_parallel(index, &parallel).unwrap(),
+                    serial
+                );
+            }
+        }
+        replay.cache_decoded_sections(false);
+        for (index, serial) in replay.index.iter().zip(&serial) {
+            super::super::REFUSED_WORKERS.set(parallel.workers);
+            assert_eq!(
+                &replay.read_block_parallel(index, &parallel).unwrap(),
+                serial
+            );
+            assert_eq!(super::super::REFUSED_WORKERS.get(), 0);
+        }
+    }
+}
+
+/// Independently encoded frames and fixed malformed-column errors cover the row fast path.
+#[test]
+fn direct_rows_match_every_update_byte_and_fixed_refusal() {
+    direct_delta_all_admitted_grouped_layouts_and_prefixes_match_every_update_and_byte();
+    direct_delta_alias_rows_resolve_every_table_in_all_layouts_and_prefixes();
+    direct_delta_section_refusals_keep_original_framing_and_wire_precedence();
+    direct_delta_malformed_columns_have_fixed_refusals_in_every_layout();
+}
+
+/// Compare span shortcuts with a full field parse, including refusals and patch bases.
+#[test]
+fn direct_row_spans_refuse_what_reading_every_span_refuses() {
+    let format = FormatVersion::CURRENT.version();
+    let check = |table: TableId, mask: u64, bytes: Vec<u8>, spans: &[direct::Span], case: &str| {
+        let (mut all_shadow, mut span_shadow) = (Shadow::new(), Shadow::new());
+        let mut all = direct::Delta::new(table, table.field_count(), format, 9, &mut all_shadow);
+        let mut parts = direct::Delta::new(table, table.field_count(), format, 9, &mut span_shadow);
+        let read_all = all
+            .row(0, mask, bytes.clone())
+            .map_err(|error| (error.kind(), error.to_string()));
+        let read_spans = parts
+            .row_spans(0, mask, bytes, spans)
+            .map_err(|error| (error.kind(), error.to_string()));
+        assert_eq!(read_all, read_spans, "{table:?}, {case}");
+        assert_eq!(all.finish(), parts.finish(), "{table:?}, {case}");
+        assert_eq!(all_shadow, span_shadow, "{table:?}, {case}");
+    };
+    // Every cut of `values`, and one trailing byte past it.
+    let cuts = |values: &[u8]| -> Vec<Vec<u8>> {
+        let mut cuts: Vec<Vec<u8>> = (0..=values.len())
+            .map(|length| values[..length].to_vec())
+            .collect();
+        let mut longer = values.to_vec();
+        longer.push(0);
+        cuts.push(longer);
+        cuts
+    };
+    for table in TableId::ALL {
+        if !table.last_change().present(format)
+            || table.last_change().table_gap(table, format).is_some()
+        {
+            continue;
+        }
+        let schema = table.schema();
+        for (field, &kind) in schema.iter().enumerate() {
+            let valid = change(kind, 1);
+            check(
+                table,
+                1 << field,
+                valid.clone(),
+                &[direct::Span {
+                    field,
+                    end: valid.len(),
+                    parsed: true,
+                }],
+                &format!("parsed field {field}"),
+            );
+            for bytes in cuts(&valid) {
+                let span = direct::Span {
+                    field,
+                    end: bytes.len(),
+                    parsed: false,
+                };
+                check(
+                    table,
+                    1 << field,
+                    bytes.clone(),
+                    &[span],
+                    &format!("field {field}, {} bytes", bytes.len()),
+                );
+            }
+            // An earlier inexact span can displace the cursor before a parsed field.
+            let Some(&next_kind) = schema.get(field + 1) else {
+                continue;
+            };
+            let next = change(next_kind, 2);
+            for first in cuts(&change(kind, 1)) {
+                let end = first.len();
+                let bytes = [first, next.clone()].concat();
+                let spans = [
+                    direct::Span {
+                        field,
+                        end,
+                        parsed: false,
+                    },
+                    direct::Span {
+                        field: field + 1,
+                        end: bytes.len(),
+                        parsed: true,
+                    },
+                ];
+                check(
+                    table,
+                    0b11 << field,
+                    bytes,
+                    &spans,
+                    &format!("fields {field}+1, first {end} bytes"),
+                );
+            }
+        }
+    }
+}
+
+/// Every direct delta owns exactly its value bytes, including residual rows.
+#[test]
+fn direct_rows_copy_each_row_buffer_exactly() {
+    let mut checked = 0;
+    for layout in LAYOUTS {
+        let (replay, expected) = fixture(layout);
+        for index in &replay.index {
+            let bytes = replay.block_bytes(index).unwrap();
+            let frames = read(&replay, index, &bytes, None, None).unwrap();
+            let expected: Vec<_> = expected
+                .iter()
+                .filter(|frame| index.first_hour <= frame.hour && frame.hour <= index.last_hour)
+                .collect();
+            assert_eq!(frames.len(), expected.len(), "{layout:?}");
+            for (frame, expected) in frames.iter().zip(expected) {
+                assert_eq!(frame, expected, "{layout:?}, hour {}", frame.hour);
+                for update in &frame.tables {
+                    if let TableUpdate::Delta { changed, .. } = update {
+                        for row in changed {
+                            assert_eq!(
+                                row.values.capacity(),
+                                row.values.len(),
+                                "{layout:?}, hour {}",
+                                frame.hour
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "the fixture must decode delta rows");
+}
+
+/// Candidate verification retains whole-table resolution as its independent reference.
+#[test]
+fn direct_alias_oracles_pass_with_candidate_rows_verified_and_with_whole_tables() {
+    use super::super::aliases::private::{Resolution, hooks};
+    for mode in [Resolution::Verify, Resolution::Whole] {
+        hooks::with(|hooks| {
+            hooks.resolution = Some(mode);
+            hooks.candidate_hours = 0;
+        });
+        direct_delta_alias_rows_resolve_every_table_in_all_layouts_and_prefixes();
+        direct_delta_alias_keyframe_memos_and_cached_prefixes_hold_only_resolved_updates();
+        let candidate_hours = hooks::with(|hooks| {
+            hooks.resolution = None;
+            hooks.candidate_hours
+        });
+        if mode == Resolution::Whole {
+            assert_eq!(candidate_hours, 0);
+        } else {
+            assert!(
+                candidate_hours > 0,
+                "the oracles must reach candidate hours"
+            );
+        }
+    }
 }

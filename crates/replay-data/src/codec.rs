@@ -188,6 +188,18 @@ impl<'a> Decoder<'a> {
     number!(i64, i64);
     /// Decode one canonical unsigned LEB128 value without consuming the next field.
     pub fn varint(&mut self) -> io::Result<u128> {
+        // One group below 0x80 is a whole canonical value, and most are one group.
+        if let Some((&byte, rest)) = self.bytes.split_first()
+            && byte < 0x80
+        {
+            self.bytes = rest;
+            return Ok(u128::from(byte));
+        }
+        self.varint_groups()
+    }
+
+    /// [`Self::varint`] read group by group.
+    fn varint_groups(&mut self) -> io::Result<u128> {
         let mut value = 0_u128;
         for index in 0..19 {
             let byte = self.u8()?;
@@ -294,6 +306,35 @@ mod tests {
                 io::ErrorKind::InvalidData,
                 "accepted malformed varint {malformed:02x?}",
             );
+        }
+    }
+
+    #[test]
+    fn single_group_varints_match_the_group_loop_in_value_error_and_position() {
+        let mut inputs = vec![Vec::new(), vec![0xff; 9], vec![0x80; 19]];
+        for first in 0..=u8::MAX {
+            inputs.push(vec![first]);
+            for second in [0, 1, 0x7f, 0x80, 0xff] {
+                inputs.push(vec![first, second]);
+                inputs.push(vec![first, second, 0x7f]);
+            }
+        }
+        for value in [0, 127, 128, 16_383, 16_384, u128::from(u64::MAX), u128::MAX] {
+            let mut encoded = Vec::new();
+            put_varint(&mut encoded, value);
+            encoded.push(5);
+            inputs.push(encoded);
+        }
+        for input in inputs {
+            let mut shortcut = Decoder::new(&input);
+            let mut groups = Decoder::new(&input);
+            let outcome = |result: io::Result<u128>| result.map_err(|e| (e.kind(), e.to_string()));
+            assert_eq!(
+                outcome(shortcut.varint()),
+                outcome(groups.varint_groups()),
+                "{input:02x?}"
+            );
+            assert_eq!(shortcut.remaining(), groups.remaining(), "{input:02x?}");
         }
     }
 }

@@ -647,6 +647,7 @@ pub trait TableSchema {
 }
 
 pub mod compatibility;
+pub mod restricted_changes;
 
 #[path = "rows/checkpoint.rs"]
 pub(crate) mod checkpoint;

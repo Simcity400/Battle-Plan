@@ -49,7 +49,7 @@
 use super::{
     BlockIndex, CompressedBlock, MAX_BLOCK_RAW_BYTES, Parallel, Replay,
     pack::{self, Cores},
-    parallel_map, patch, zstd_error,
+    parallel_tables, patch, zstd_error,
 };
 use crate::{
     BranchId, Hour,
@@ -82,10 +82,12 @@ mod direct;
 mod direct_tests;
 #[cfg(test)]
 mod event_feed_tests;
+mod group;
 mod keyed;
 mod modelled;
 mod predicted;
 mod ramp;
+mod schedule;
 #[cfg(test)]
 mod test_recording;
 #[cfg(test)]
@@ -1200,7 +1202,7 @@ fn take_body(
                 match (&mut deleted, &mut coding) {
                     (Some(run), Some(coding)) => {
                         let (key, _) = run.take(table, &mut input.0[KEYS])?;
-                        coding.note_deleted(key);
+                        coding.note_deleted(key)?;
                         put_varint(plain, key - previous);
                         previous = key;
                     }
@@ -2801,6 +2803,8 @@ struct Context<'a> {
     selected: Option<&'a [TableId]>,
     complete: bool,
     memo: &'a [OnceLock<Updates>],
+    /// The read's alias group, resolved by the first member read.
+    group: &'a OnceLock<group::Group>,
 }
 
 impl Replay {
@@ -3104,6 +3108,7 @@ fn read_recorded_through(
     }
     let hours = &hours[..keep];
     let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
+    let group = OnceLock::new();
     let context = Context {
         replay,
         index,
@@ -3117,10 +3122,17 @@ fn read_recorded_through(
         selected,
         complete: keep == frames,
         memo: &memo,
+        group: &group,
     };
     let decode = |table: &TableId| table_updates(&context, *table);
     let decoded = match parallel {
-        Some(parallel) => parallel_map(&TableId::ALL, parallel, decode)?,
+        // Start alias sources before their readers, then the heaviest remaining tables.
+        Some(parallel) => {
+            let order = replay
+                .decoded_sections
+                .with_largest(schedule::table_order)?;
+            parallel_tables(&TableId::ALL, &order, parallel, decode)?
+        }
         None => engine_allocation::collect_vec(TableId::ALL.iter().map(decode))?,
     };
     let columns = decoded.into_iter().collect::<io::Result<Vec<_>>>()?;
@@ -3205,6 +3217,7 @@ pub(crate) fn read_selected_updates(
     let timed = directory.layout == Layout::Timed;
     let metrics = read_diagnostics_prefix(&diagnostics, frames, &present, timed, frames)?;
     let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
+    let group = OnceLock::new();
     let context = Context {
         replay,
         index,
@@ -3218,6 +3231,7 @@ pub(crate) fn read_selected_updates(
         selected: Some(selected),
         complete: true,
         memo: &memo,
+        group: &group,
     };
     let mut updates: Vec<Option<Updates>> =
         engine_allocation::collect_vec(selected.iter().map(|_| None))?;
@@ -3519,31 +3533,51 @@ fn table_updates_admitted(context: &Context<'_>, table: TableId) -> io::Result<U
     if let Some(updates) = context.memo[table.index()].get() {
         return Ok(updates.clone());
     }
-    let updates = context.replay.decoded_sections.read(
-        super::decoded_sections::Key::new(context.replay, context.index, table),
-        context.hours.len(),
-        false,
-        || {
-            let _cpu = crate::cpu::scope("decode", None);
-            let started = crate::cpu::thread_cycles();
-            let decoded = table_updates_inner(context, table);
-            if crate::cpu::enabled()
-                && context
-                    .selected
-                    .is_none_or(|selected| selected.contains(&table))
-            {
-                crate::cpu::decoded(
-                    context.index.branch,
-                    context.index.first_hour,
-                    table,
-                    crate::cpu::thread_cycles().saturating_sub(started),
-                );
-            }
-            decoded
-        },
-    )?;
+    let key = super::decoded_sections::Key::new(context.replay, context.index, table);
+    let cache = &context.replay.decoded_sections;
+    let updates = if group::resolves(context, table) {
+        cache.read_updates(key, context.hours.len(), false, || {
+            measured(context, table, || group_column(context, table))
+        })?
+    } else {
+        cache.read(key, context.hours.len(), false, || {
+            measured(context, table, || table_updates_inner(context, table))
+        })?
+    };
     let _ = context.memo[table.index()].set(updates.clone());
     Ok(updates)
+}
+
+/// Keep existing per-table CPU attribution when decoding a shared column.
+fn measured<T>(context: &Context<'_>, table: TableId, decode: impl FnOnce() -> T) -> T {
+    let _cpu = crate::cpu::scope("decode", None);
+    let started = crate::cpu::thread_cycles();
+    let decoded = decode();
+    if crate::cpu::enabled()
+        && context
+            .selected
+            .is_none_or(|selected| selected.contains(&table))
+    {
+        crate::cpu::decoded(
+            context.index.branch,
+            context.index.first_hour,
+            table,
+            crate::cpu::thread_cycles().saturating_sub(started),
+        );
+    }
+    decoded
+}
+
+/// A cached member missing from the group still resolves alone.
+fn group_column(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
+    let Some(column) = group::column(context, table) else {
+        return Updates::new(table_updates_inner(context, table)?);
+    };
+    #[cfg(test)]
+    super::watched::note_decoded();
+    #[cfg(any(test, feature = "test-support"))]
+    super::test_work::decoded(context.index, table, context.hours.len());
+    column
 }
 
 fn table_updates_inner(context: &Context<'_>, table: TableId) -> io::Result<Vec<TableUpdate>> {
@@ -3559,6 +3593,45 @@ fn table_updates_body(
     table: TableId,
     use_direct: bool,
 ) -> io::Result<Vec<TableUpdate>> {
+    let RawColumn {
+        updates,
+        key_marks,
+        later,
+    } = raw_stage(context, table, use_direct)?;
+    super::aliases::private::resolve(
+        table,
+        context.hours,
+        updates,
+        key_marks.as_deref(),
+        later.marks(),
+        context.complete,
+        |source| dependency_updates(context, source),
+    )
+}
+
+struct RawColumn {
+    updates: Vec<TableUpdate>,
+    /// The keyframe entry's alias marks.
+    key_marks: Option<Vec<u8>>,
+    later: LaterSection,
+}
+
+/// Alias marks occupy the end of the retained later section.
+struct LaterSection {
+    raw: Option<Vec<u8>>,
+    marks: Option<usize>,
+}
+
+impl LaterSection {
+    fn marks(&self) -> Option<&[u8]> {
+        let (raw, length) = (self.raw.as_deref()?, self.marks?);
+        Some(&raw[raw.len() - length..])
+    }
+}
+
+fn raw_stage(context: &Context<'_>, table: TableId, use_direct: bool) -> io::Result<RawColumn> {
+    #[cfg(test)]
+    super::aliases::private::hooks::fail_raw(table)?;
     let format = context.format;
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
@@ -3712,7 +3785,7 @@ fn table_updates_body(
             };
             updates.push(update);
             if layout.keyed() {
-                keys.apply(&mut changes);
+                keys.apply(&mut changes)?;
             }
             continue;
         }
@@ -3749,25 +3822,27 @@ fn table_updates_body(
             // A delta or residual entry inserted the rows it stored as
             // distances; any other update names its rows itself.
             if head.status == DELTA {
-                keys.apply(&mut changes);
+                keys.apply(&mut changes)?;
             } else {
                 keys.advance(table, version, &plain)?;
             }
         }
     }
-    let later_marks = later_input.1;
+    // The marks are the section's last column, so they end where it does.
+    let later_marks = later_input.1.map(<[u8]>::len);
     if context.complete {
         later_input.finish()?;
+    } else {
+        drop(later_input);
     }
-    super::aliases::private::resolve(
-        table,
-        context.hours,
+    Ok(RawColumn {
         updates,
-        marks.as_deref(),
-        later_marks,
-        context.complete,
-        |source| dependency_updates(context, source),
-    )
+        key_marks: marks,
+        later: LaterSection {
+            raw: later_raw,
+            marks: later_marks,
+        },
+    })
 }
 
 /// A keyframe as a later keyframe's anchor: its rows (none for a table this

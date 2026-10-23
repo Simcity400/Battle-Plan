@@ -28,17 +28,87 @@ use crate::{
     codec::{Decoder, invalid_static as invalid, put_varint},
     rows::{TableId, Token},
 };
+use engine_allocation as allocation;
 use std::io;
 
 /// Masks a [`MaskList`] keeps.
 pub(super) const MASKS_KEPT: usize = 64;
 
 /// The keys of one table's rows at the frame before, in order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct KeySet {
     keys: Vec<u128>,
     /// Membership changes within this table's live block.
     changes: u64,
+    /// Malformed plain updates can leave keys unordered.
+    unordered: bool,
+    /// The last membership change, by place.
+    edit: Edit,
+}
+
+/// Equality ignores the placement cache, not keys or membership-change counts.
+impl PartialEq for KeySet {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys && self.changes == other.changes
+    }
+}
+
+impl Eq for KeySet {}
+
+/// Removal positions refer to the old keys; insertion positions refer to the final keys.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Edit {
+    /// Only the latest recorded membership change can be followed by place.
+    from: Option<u64>,
+    removed: Vec<usize>,
+    added: Vec<usize>,
+}
+
+impl Edit {
+    pub(super) fn removed(&self) -> &[usize] {
+        &self.removed
+    }
+
+    pub(super) fn added(&self) -> &[usize] {
+        &self.added
+    }
+}
+
+/// Positions must be increasing; move each intervening run once.
+pub(super) fn remove_at<T: Copy>(values: &mut Vec<T>, removed: &[usize]) {
+    let Some(&first) = removed.first() else {
+        return;
+    };
+    let mut write = first;
+    for (index, &at) in removed.iter().enumerate() {
+        let end = removed.get(index + 1).copied().unwrap_or(values.len());
+        values.copy_within(at + 1..end, write);
+        write += end - at - 1;
+    }
+    values.truncate(write);
+}
+
+/// Insertion positions are increasing and refer to the final vector.
+pub(super) fn insert_at<T: Copy + Default>(
+    values: &mut Vec<T>,
+    added: &[usize],
+    mut value: impl FnMut(usize) -> T,
+) -> io::Result<()> {
+    let old = values.len();
+    allocation::reserve(values, added.len())?;
+    values.resize(old + added.len(), T::default());
+    let mut end = old;
+    for (index, &place) in added.iter().enumerate().rev() {
+        let at = place - index;
+        values.copy_within(at..end, place + 1);
+        values[place] = value(index);
+        end = at;
+    }
+    Ok(())
+}
+
+fn increasing(keys: &[u128]) -> bool {
+    keys.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 impl KeySet {
@@ -46,6 +116,8 @@ impl KeySet {
         if !self.keys.is_empty() {
             self.keys.clear();
             self.changes += 1;
+            self.unordered = false;
+            self.edit.from = None;
         }
     }
 
@@ -57,9 +129,19 @@ impl KeySet {
         &self.keys
     }
 
+    pub(super) fn edit_from(&self, changes: Option<u64>) -> Option<&Edit> {
+        let changes = changes?;
+        (self.edit.from == Some(changes) && changes + 1 == self.changes).then_some(&self.edit)
+    }
+
     #[cfg(test)]
     pub(super) fn of(keys: Vec<u128>) -> Self {
-        Self { keys, changes: 0 }
+        Self {
+            unordered: !increasing(&keys),
+            keys,
+            changes: 0,
+            edit: Edit::default(),
+        }
     }
 
     /// Follow one plain update: a snapshot or truncation names every row it
@@ -79,39 +161,108 @@ impl KeySet {
         let mut counts = 0;
         let mut named = Vec::new();
         let mut deleted = Vec::new();
-        table.walk_update(plain, format, &mut |token, _| match token {
-            Token::Count => counts += 1,
-            Token::Key(key) if status == DELTA && counts == 2 => deleted.push(key),
-            Token::Key(key) => named.push(key),
-            _ => {}
-        })?;
+        let mut failure = None;
+        let walked = table.walk_update(plain, format, &mut |token, _| {
+            let (keys, key) = match token {
+                _ if failure.is_some() => return,
+                Token::Count => {
+                    counts += 1;
+                    return;
+                }
+                Token::Key(key) if status == DELTA && counts == 2 => (&mut deleted, key),
+                Token::Key(key) => (&mut named, key),
+                _ => return,
+            };
+            match allocation::reserve(keys, 1) {
+                Ok(()) => keys.push(key),
+                Err(error) => failure = Some(error),
+            }
+        });
+        // An allocation failure is not a framing refusal: it comes first.
+        failure.map_or(walked, Err)?;
         if status != DELTA {
             // Plain updates hold their rows in increasing key order.
             if self.keys != named {
+                self.unordered = !increasing(&named);
                 self.keys = named;
                 self.changes += 1;
+                self.edit.from = None;
             }
             return Ok(());
         }
         let mut changes = KeyChanges {
-            inserted: named
-                .into_iter()
-                .filter(|key| self.keys.binary_search(key).is_err())
-                .collect(),
+            inserted: allocation::collect_vec(
+                named
+                    .into_iter()
+                    .filter(|key| self.keys.binary_search(key).is_err()),
+            )?,
             deleted,
         };
-        self.apply(&mut changes);
+        self.apply(&mut changes)
+    }
+
+    /// Unordered keys or changes retain the original merge semantics.
+    pub(super) fn apply(&mut self, changes: &mut KeyChanges) -> io::Result<()> {
+        let inserted = !changes.inserted.is_empty();
+        if !inserted && changes.deleted.is_empty() {
+            return Ok(());
+        }
+        let (before, from) = (self.keys.len(), self.changes);
+        let placed = !self.unordered
+            && increasing(&changes.inserted)
+            && increasing(&changes.deleted)
+            && self.place(changes)?;
+        if placed {
+            remove_at(&mut self.keys, &self.edit.removed);
+            let added = &changes.inserted;
+            insert_at(&mut self.keys, &self.edit.added, |index| added[index])?;
+        } else {
+            self.merge(changes)?;
+        }
+        changes.inserted.clear();
+        changes.deleted.clear();
+        if inserted || self.keys.len() != before {
+            self.changes += 1;
+        }
+        self.edit.from = (placed && self.changes != from).then_some(from);
         Ok(())
     }
 
-    /// Insert and delete what a later entry changed, leaving `changes` empty:
-    /// inserted keys the set does not hold and deleted keys, each in
-    /// increasing order.
-    pub(super) fn apply(&mut self, changes: &mut KeyChanges) {
-        let inserted = !changes.inserted.is_empty();
-        let before = self.keys.len();
-        if inserted {
-            let mut merged = Vec::with_capacity(self.keys.len() + changes.inserted.len());
+    /// A key already held requires the original merge, not placed insertion.
+    fn place(&mut self, changes: &mut KeyChanges) -> io::Result<bool> {
+        let (keys, edit) = (&self.keys, &mut self.edit);
+        edit.removed.clear();
+        edit.added.clear();
+        for key in &changes.deleted {
+            if let Ok(at) = keys.binary_search(key) {
+                allocation::reserve(&mut edit.removed, 1)?;
+                edit.removed.push(at);
+            }
+        }
+        // A key both inserted and deleted ends deleted.
+        let (deleted, mut next) = (&changes.deleted, 0);
+        changes.inserted.retain(|key| {
+            while deleted.get(next).is_some_and(|deleted| deleted < key) {
+                next += 1;
+            }
+            deleted.get(next) != Some(key)
+        });
+        allocation::reserve(&mut edit.added, changes.inserted.len())?;
+        for (index, key) in changes.inserted.iter().enumerate() {
+            let Err(at) = keys.binary_search(key) else {
+                return Ok(false);
+            };
+            let kept = at - edit.removed.partition_point(|&removed| removed < at);
+            edit.added.push(kept + index);
+        }
+        allocation::reserve(&mut self.keys, changes.inserted.len())?;
+        Ok(true)
+    }
+
+    fn merge(&mut self, changes: &KeyChanges) -> io::Result<()> {
+        if !changes.inserted.is_empty() {
+            let mut merged =
+                allocation::vec(allocation::add(self.keys.len(), changes.inserted.len())?)?;
             let mut held = self.keys.iter().copied().peekable();
             for &key in &changes.inserted {
                 while let Some(before) = held.next_if(|held| *held < key) {
@@ -121,16 +272,13 @@ impl KeySet {
             }
             merged.extend(held);
             self.keys = merged;
-            changes.inserted.clear();
         }
         if !changes.deleted.is_empty() {
             let deleted = &changes.deleted;
             self.keys.retain(|key| deleted.binary_search(key).is_err());
-            changes.deleted.clear();
         }
-        if inserted || self.keys.len() != before {
-            self.changes += 1;
-        }
+        self.unordered = !increasing(&self.keys);
+        Ok(())
     }
 }
 
@@ -427,24 +575,28 @@ impl<'a> RowCoding<'a> {
                 row
             }
         };
-        self.note_changed(key, inserted);
+        self.note_changed(key, inserted)?;
         Ok((key, mask))
     }
 }
 
 impl RowCoding<'_> {
     /// Note a key a reader decoded, `inserted` when stored as a distance.
-    pub(super) fn note_changed(&mut self, key: u128, inserted: bool) {
+    pub(super) fn note_changed(&mut self, key: u128, inserted: bool) -> io::Result<()> {
         if inserted && let Some(changes) = self.changes.as_deref_mut() {
+            allocation::reserve(&mut changes.inserted, 1)?;
             changes.inserted.push(key);
         }
+        Ok(())
     }
 
     /// Note a deleted key a reader decoded.
-    pub(super) fn note_deleted(&mut self, key: u128) {
+    pub(super) fn note_deleted(&mut self, key: u128) -> io::Result<()> {
         if let Some(changes) = self.changes.as_deref_mut() {
+            allocation::reserve(&mut changes.deleted, 1)?;
             changes.deleted.push(key);
         }
+        Ok(())
     }
 }
 
@@ -555,7 +707,7 @@ mod tests {
             inserted: vec![5],
             deleted: vec![6],
         };
-        followed.apply(&mut changes);
+        followed.apply(&mut changes).unwrap();
         assert_eq!(followed, keys);
         assert!(changes.inserted.is_empty() && changes.deleted.is_empty());
         let mut unchanged = vec![UNCHANGED];
@@ -595,7 +747,7 @@ mod tests {
         let format = crate::FORMAT_VERSION;
         let mut keys = KeySet::default();
         keys.clear();
-        keys.apply(&mut KeyChanges::default());
+        keys.apply(&mut KeyChanges::default()).unwrap();
         assert_eq!(keys.changes(), 0);
         keys.advance(TABLE, format, &snapshot(&[4, 8], SNAPSHOT))
             .unwrap();
@@ -608,13 +760,15 @@ mod tests {
         keys.apply(&mut KeyChanges {
             inserted: Vec::new(),
             deleted: vec![12],
-        });
+        })
+        .unwrap();
         assert_eq!(keys.changes(), 1);
         // Equal length does not imply equal membership.
         keys.apply(&mut KeyChanges {
             inserted: vec![12],
             deleted: vec![4],
-        });
+        })
+        .unwrap();
         assert_eq!(keys.keys(), [8, 12]);
         assert_eq!(keys.changes(), 2);
         keys.advance(TABLE, format, &snapshot(&[4, 8], TRUNCATED))
@@ -652,6 +806,184 @@ mod tests {
         assert_eq!(keys.changes(), 7);
     }
 
+    /// Independent writer reference from before checked growth and placed edits.
+    fn unchecked_advance(keys: &mut Vec<u128>, changes: &mut u64, format: u16, plain: &[u8]) {
+        let status = plain.first().copied().unwrap_or(UNCHANGED);
+        match status {
+            UNCHANGED => return,
+            SNAPSHOT | TRUNCATED | DELTA => {}
+            _ => {
+                if !keys.is_empty() {
+                    keys.clear();
+                    *changes += 1;
+                }
+                return;
+            }
+        }
+        let mut counts = 0;
+        let mut named = Vec::new();
+        let mut deleted = Vec::new();
+        TABLE
+            .walk_update(plain, format, &mut |token, _| match token {
+                Token::Count => counts += 1,
+                Token::Key(key) if status == DELTA && counts == 2 => deleted.push(key),
+                Token::Key(key) => named.push(key),
+                _ => {}
+            })
+            .unwrap();
+        if status != DELTA {
+            if *keys != named {
+                *keys = named;
+                *changes += 1;
+            }
+            return;
+        }
+        let inserted: Vec<u128> = named
+            .into_iter()
+            .filter(|key| keys.binary_search(key).is_err())
+            .collect();
+        let before = keys.len();
+        if !inserted.is_empty() {
+            let mut merged = Vec::with_capacity(keys.len() + inserted.len());
+            let mut held = keys.iter().copied().peekable();
+            for &key in &inserted {
+                while let Some(before) = held.next_if(|held| *held < key) {
+                    merged.push(before);
+                }
+                merged.push(key);
+            }
+            merged.extend(held);
+            *keys = merged;
+        }
+        if !deleted.is_empty() {
+            keys.retain(|key| deleted.binary_search(key).is_err());
+        }
+        if !inserted.is_empty() || keys.len() != before {
+            *changes += 1;
+        }
+    }
+
+    /// Compare writer and reader keys and change counts with the independent unchecked algorithm.
+    #[test]
+    fn checked_key_sets_follow_a_multi_hour_keyed_table_exactly_as_before() {
+        use crate::rows::{DivisionRow, TableRows};
+        let format = crate::FORMAT_VERSION;
+        let rows = |ids: &[u64], hour: i64| {
+            TableRows::Divisions(
+                ids.iter()
+                    .map(|&id| DivisionRow {
+                        id,
+                        organisation: (id as i64 * 7 + hour / 3) * 10_000,
+                        ..Default::default()
+                    })
+                    .collect(),
+            )
+        };
+        let whole = |status: u8, ids: &[u64], hour: i64| {
+            let mut plain = vec![status];
+            if status == TRUNCATED {
+                plain.extend_from_slice(&1_u32.to_le_bytes());
+            }
+            plain.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+            rows(ids, hour).encode_rows(&mut plain).unwrap();
+            plain
+        };
+        let unchanged = |hour: i64| {
+            let mut plain = vec![UNCHANGED];
+            plain.extend_from_slice(&((hour - 1) as i32).to_le_bytes());
+            plain
+        };
+        let mut seed = 0x6b65_7973_u64;
+        let mut next = |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        let mut writer = KeySet::default();
+        let mut reader = KeySet::default();
+        let (mut reference, mut reference_changes) = (Vec::new(), 0_u64);
+        let mut ids: Vec<u64> = (1..=40).collect();
+        let mut complete = false;
+        let mut kinds = [0_usize; 5];
+        for hour in 0..400_i64 {
+            let kind = match next(20) {
+                _ if !complete => 0,
+                0 => 2,
+                1 => 3,
+                2 => 4,
+                _ => 1,
+            };
+            let before = ids.clone();
+            let plain = match kind {
+                // A snapshot: the first hour, and every hour after a break.
+                0 => {
+                    complete = true;
+                    whole(SNAPSHOT, &ids, hour)
+                }
+                // A delta: delete, insert and keep rows, changing some.
+                1 => {
+                    ids.retain(|_| next(12) != 0);
+                    for _ in 0..next(4) {
+                        let id = 1 + next(300);
+                        if let Err(at) = ids.binary_search(&id) {
+                            ids.insert(at, id);
+                        }
+                    }
+                    let mut body = Vec::new();
+                    if rows(&ids, hour)
+                        .encode_changes(&rows(&before, hour - 1), &mut body, &mut Vec::new())
+                        .unwrap()
+                    {
+                        let mut plain = vec![DELTA];
+                        plain.extend_from_slice(&((hour - 1) as i32).to_le_bytes());
+                        plain.extend_from_slice(&body);
+                        plain
+                    } else {
+                        unchanged(hour)
+                    }
+                }
+                2 => unchanged(hour),
+                3 => {
+                    complete = false;
+                    whole(TRUNCATED, &ids, hour)
+                }
+                _ => {
+                    complete = false;
+                    vec![super::super::UNAVAILABLE, 1, 0, 0, 0, b'x']
+                }
+            };
+            kinds[kind] += 1;
+            writer.advance(TABLE, format, &plain).unwrap();
+            unchecked_advance(&mut reference, &mut reference_changes, format, &plain);
+            assert_eq!(writer.keys(), reference, "hour {hour}");
+            assert_eq!(writer.changes(), reference_changes, "hour {hour}");
+            // Reader membership comes from decoded inserts and deletes, not the writer's key set.
+            if plain[0] == DELTA {
+                let held: Vec<u128> = before.iter().map(|&id| u128::from(id)).collect();
+                let now: Vec<u128> = ids.iter().map(|&id| u128::from(id)).collect();
+                let mut changes = KeyChanges {
+                    inserted: now
+                        .iter()
+                        .copied()
+                        .filter(|key| held.binary_search(key).is_err())
+                        .collect(),
+                    deleted: held
+                        .iter()
+                        .copied()
+                        .filter(|key| now.binary_search(key).is_err())
+                        .collect(),
+                };
+                reader.apply(&mut changes).unwrap();
+            } else {
+                reader.advance(TABLE, format, &plain).unwrap();
+            }
+            assert_eq!(reader, writer, "hour {hour}");
+        }
+        // Every kind of hour occurred.
+        assert!(kinds.iter().all(|&count| count > 0), "{kinds:?}");
+    }
+
     #[test]
     fn masks_are_their_place_among_recent_masks() {
         let mut list = MaskList::default();
@@ -678,5 +1010,83 @@ mod tests {
         }
         assert_eq!(list.0.len(), MASKS_KEPT);
         assert!(!list.0.contains(&1) && list.0[0] == MASKS_KEPT as u64 + 1);
+    }
+
+    /// Independent pre-placement merge: insert first, then delete.
+    fn merged(keys: &[u128], inserted: &[u128], deleted: &[u128]) -> Vec<u128> {
+        let mut merged = Vec::new();
+        let mut held = keys.iter().copied().peekable();
+        for &key in inserted {
+            while let Some(before) = held.next_if(|held| *held < key) {
+                merged.push(before);
+            }
+            merged.push(key);
+        }
+        merged.extend(held);
+        merged.retain(|key| deleted.binary_search(key).is_err());
+        merged
+    }
+
+    fn draw(seed: &mut u64, below: u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*seed >> 33) % below
+    }
+
+    /// Include unsorted and repeated keys as well as strictly increasing changes.
+    fn drawn(seed: &mut u64, span: u64, most: u64) -> Vec<u128> {
+        let count = draw(seed, most + 1);
+        let mut keys: Vec<u128> = (0..count).map(|_| u128::from(draw(seed, span))).collect();
+        if draw(seed, 8) != 0 {
+            keys.sort_unstable();
+            keys.dedup();
+        }
+        keys
+    }
+
+    /// Compare placed edits with the original merge, including malformed ordering and overlaps.
+    #[test]
+    fn placed_changes_hold_the_keys_the_merge_held() {
+        let mut seed = 0x706c_6163_u64;
+        let (mut placed, mut merges) = (0, 0);
+        for case in 0..3_000 {
+            let span = 1 + draw(&mut seed, 80);
+            let held = drawn(&mut seed, span, 40);
+            let deleted = drawn(&mut seed, span, 8);
+            let mut inserted = drawn(&mut seed, span, 8);
+            // Mostly keys not held, as a reader's inserted keys are.
+            if draw(&mut seed, 4) != 0 {
+                inserted.retain(|key| !held.contains(key));
+            }
+            let mut set = KeySet::of(held.clone());
+            let mut changes = KeyChanges {
+                inserted: inserted.clone(),
+                deleted: deleted.clone(),
+            };
+            set.apply(&mut changes).unwrap();
+            assert!(changes.inserted.is_empty() && changes.deleted.is_empty());
+            let expected = merged(&held, &inserted, &deleted);
+            assert_eq!(set.keys(), expected, "case {case}");
+            let changed = !inserted.is_empty() || expected.len() != held.len();
+            assert_eq!(set.changes(), u64::from(changed), "case {case}");
+            assert_eq!(set.unordered, !increasing(&expected), "case {case}");
+            match set.edit_from(Some(0)) {
+                Some(edit) => {
+                    placed += 1;
+                    let mut rebuilt = held.clone();
+                    remove_at(&mut rebuilt, edit.removed());
+                    let added = edit.added();
+                    insert_at(&mut rebuilt, added, |index| expected[added[index]]).unwrap();
+                    assert_eq!(rebuilt, expected, "case {case}");
+                }
+                None if changed => merges += 1,
+                None => {}
+            }
+        }
+        assert!(
+            placed > 1_000 && merges > 100,
+            "{placed} placed, {merges} merged"
+        );
     }
 }
