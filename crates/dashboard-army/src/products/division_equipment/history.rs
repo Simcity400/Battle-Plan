@@ -1,7 +1,7 @@
 //! Every country's division equipment reply at every hour of a branch, kept as keyed runs.
 use super::{
     ArmyAttribution, Built, Context, DesignsOf, DivisionEquipmentParams, DivisionEquipmentReply,
-    Labels, Members, NeedsOf, POOLS, Placed, STOCK, Shared, TABLES, build_in,
+    Labels, Members, NeedsOf, POOLS, Placed, STOCK, Shared, TABLES, build_in, manpower_sum,
 };
 use crate::products::{
     army_content::{self, Refusals, TemplateArtwork},
@@ -807,11 +807,74 @@ enum Dirty {
 }
 
 impl Dirty {
+    fn contains(&self, slot: u32) -> bool {
+        match self {
+            Self::All => true,
+            Self::Slots(slots) => slots.contains(&slot),
+        }
+    }
+
     fn slots(&mut self, slots: impl IntoIterator<Item = u32>) {
         if let Self::Slots(dirty) = self {
             dirty.extend(slots);
         }
     }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Numeric {
+    hp: Option<i128>,
+    hp_max: Option<i128>,
+    manpower: Option<i64>,
+}
+
+impl Numeric {
+    fn read(frame: &DecodedFrame, id: u64) -> Option<Self> {
+        let row = super::find(frame.complete::<tables::Divisions>().ok(), id, |row| row.id)?;
+        Some(Self {
+            hp: Some(i128::from(row.hit_points)),
+            hp_max: super::find(frame.complete::<tables::DivisionStatus>().ok(), id, |row| {
+                row.division
+            })
+            .map(|row| i128::from(row.maximum_hit_points)),
+            manpower: super::find(
+                frame.complete::<tables::DivisionLandInputs>().ok(),
+                id,
+                |row| row.division,
+            )
+            .map(|row| i64::from(manpower_sum(&row.manpower))),
+        })
+    }
+
+    fn subtract(self, before: Self) -> Option<Self> {
+        Some(Self {
+            hp: Some(self.hp?.checked_sub(before.hp?)?),
+            hp_max: Some(self.hp_max?.checked_sub(before.hp_max?)?),
+            manpower: Some(self.manpower?.checked_sub(before.manpower?)?),
+        })
+    }
+
+    fn add(self, delta: Self) -> Option<Self> {
+        Some(Self {
+            hp: Some(self.hp?.checked_add(delta.hp?)?),
+            hp_max: Some(self.hp_max?.checked_add(delta.hp_max?)?),
+            manpower: Some(self.manpower?.checked_add(delta.manpower?)?),
+        })
+    }
+
+    fn values(self) -> Option<[(&'static str, i128); 3]> {
+        Some([
+            ("manpower", i128::from(self.manpower?)),
+            ("hp", self.hp?),
+            ("hpMax", self.hp_max?),
+        ])
+    }
+}
+
+#[derive(Default)]
+struct NumericPatch {
+    totals: BTreeMap<(u32, usize, u64), Numeric>,
+    divisions: Vec<(u64, Numeric)>,
 }
 
 /// The reads carried from hour to hour, and what every country's reply shares.
@@ -830,6 +893,8 @@ struct Carried {
     reads: [Option<usize>; 4],
     /// Each counted division's slots and template ([`Members`]), and each template's slots.
     placed: HashMap<u64, Placed>,
+    contributions: HashMap<u64, Numeric>,
+    totals: BTreeMap<(u32, usize, u64), Numeric>,
     users: HashMap<u64, BTreeMap<u32, usize>>,
     /// Each tag listed this hour by its holder's slot (none: no resolved holder).
     tags: BTreeMap<String, Option<u32>>,
@@ -871,8 +936,14 @@ impl Carried {
     }
 
     fn place(&mut self, id: u64, placed: Option<Placed>, dirty: &mut Dirty) {
+        self.contributions.remove(&id);
         let members = self.shared.members.get_or_insert_with(Members::default);
         if let Some(before) = self.placed.remove(&id) {
+            for (at, slot) in before.slots.into_iter().enumerate() {
+                if let Some(slot) = slot {
+                    self.totals.remove(&(slot, at, before.template));
+                }
+            }
             members.remove(id, before);
             for slot in before.slots.into_iter().flatten() {
                 if let Some(users) = self.users.get_mut(&before.template)
@@ -904,6 +975,8 @@ impl Carried {
     /// Index every counted division of the hour afresh.
     fn index(&mut self, frame: &DecodedFrame) -> io::Result<()> {
         self.placed.clear();
+        self.contributions.clear();
+        self.totals.clear();
         self.users.clear();
         self.shared.members = Some(Members::default());
         let links = frame.complete::<tables::CountryLinks>()?;
@@ -914,6 +987,67 @@ impl Carried {
             self.place(row.id, Members::place(row, links), &mut none);
         }
         Ok(())
+    }
+
+    fn invalidate_numeric(&mut self, slot: u32, at: usize) {
+        let keys: Vec<_> = self
+            .totals
+            .range((slot, at, 0)..=(slot, at, u64::MAX))
+            .map(|(&key, _)| {
+                scanned(1);
+                key
+            })
+            .collect();
+        for key in keys {
+            self.totals.remove(&key);
+        }
+        if let Some(members) = &self.shared.members {
+            for id in members.slots[at].get(&slot).into_iter().flatten() {
+                self.contributions.remove(id);
+            }
+        }
+    }
+
+    fn seed_numeric(
+        &mut self,
+        frame: &DecodedFrame,
+        slot: u32,
+        at: usize,
+        reply: &DivisionEquipmentReply,
+    ) {
+        self.invalidate_numeric(slot, at);
+        if reply.absent {
+            return;
+        }
+        for template in &reply.templates {
+            let Ok(handle) = template.template.parse() else {
+                continue;
+            };
+            self.totals.insert(
+                (slot, at, handle),
+                Numeric {
+                    hp: template
+                        .hp_raw
+                        .as_ref()
+                        .and_then(|value| value.parse().ok()),
+                    hp_max: template
+                        .hp_max_raw
+                        .as_ref()
+                        .and_then(|value| value.parse().ok()),
+                    manpower: template
+                        .manpower
+                        .as_ref()
+                        .and_then(|value| value.parse().ok()),
+                },
+            );
+        }
+        if let Some(members) = &self.shared.members {
+            for &id in members.slots[at].get(&slot).into_iter().flatten() {
+                if let Some(value) = Numeric::read(frame, id) {
+                    self.contributions.insert(id, value);
+                }
+            }
+        }
     }
 
     fn division_slots(&self, id: u64) -> impl Iterator<Item = u32> + '_ {
@@ -953,10 +1087,10 @@ impl Carried {
         frame: &DecodedFrame,
         changes: &FrameChanges,
         reads: &[Option<usize>; 4],
-    ) -> io::Result<Dirty> {
+    ) -> io::Result<(Dirty, BTreeSet<u64>)> {
         let previous = self.previous.clone();
         let Some(previous) = previous.as_deref() else {
-            return Ok(Dirty::All);
+            return Ok((Dirty::All, BTreeSet::new()));
         };
         // Links, tokens, local clones and stockpile reads are shared by every reply. A block's
         // first hour marks every table changed; its rows are then compared with the hour before.
@@ -967,7 +1101,7 @@ impl Carried {
             || !unchanged::<tables::LexicalTokens>(previous, frame, changes)
             || !unchanged::<tables::CountryLocalSubunits>(previous, frame, changes)
         {
-            return Ok(Dirty::All);
+            return Ok((Dirty::All, BTreeSet::new()));
         }
         let previous = Some(previous);
         let countries = changed::<tables::Countries>(
@@ -978,9 +1112,10 @@ impl Carried {
             |a, b| (a.canonical_slot, &a.tag) == (b.canonical_slot, &b.tag),
         );
         if countries.is_none_or(|keys| !keys.is_empty()) {
-            return Ok(Dirty::All);
+            return Ok((Dirty::All, BTreeSet::new()));
         }
         let mut dirty = Dirty::Slots(BTreeSet::new());
+        let mut numeric = BTreeSet::new();
         let unlinked = self.shared.members.as_ref().map(|members| members.unlinked);
         let Some(divisions) = changed::<tables::Divisions>(
             previous,
@@ -1015,21 +1150,44 @@ impl Carried {
                 )
             },
         ) else {
-            return Ok(Dirty::All);
+            return Ok((Dirty::All, BTreeSet::new()));
         };
         let links = frame.complete::<tables::CountryLinks>()?;
         let rows = frame.complete::<tables::Divisions>()?;
         for key in divisions {
             let id = key as u64;
-            let placed = rows
-                .binary_search_by_key(&id, |row| row.id)
-                .ok()
-                .and_then(|at| Members::place(&rows[at], links));
-            self.place(id, placed, &mut dirty);
+            let now = super::find(Some(rows), id, |row| row.id);
+            let before = super::find(
+                previous.and_then(|frame| frame.complete::<tables::Divisions>().ok()),
+                id,
+                |row| row.id,
+            );
+            let placed = now.and_then(|row| Members::place(row, links));
+            if before.zip(now).is_some_and(|(before, now)| {
+                (
+                    before.roster_owner,
+                    before.logical_owner,
+                    before.expeditionary_owner,
+                    before.template,
+                    before.reveal_skip,
+                ) == (
+                    now.roster_owner,
+                    now.logical_owner,
+                    now.expeditionary_owner,
+                    now.template,
+                    now.reveal_skip,
+                )
+            }) && placed.is_some()
+                && placed == self.placed.get(&id).copied()
+            {
+                numeric.insert(id);
+            } else {
+                self.place(id, placed, &mut dirty);
+            }
         }
         // Every reply counts the divisions no country links.
         if self.shared.members.as_ref().map(|members| members.unlinked) != unlinked {
-            return Ok(Dirty::All);
+            return Ok((Dirty::All, BTreeSet::new()));
         }
         let by_division: [Option<BTreeSet<u128>>; 3] = [
             changed::<tables::DivisionStatus>(
@@ -1051,13 +1209,19 @@ impl Carried {
             })
             .map(|keys| keys.into_iter().map(|key| key >> 32).collect()),
         ];
-        for keys in by_division {
+        for (at, keys) in by_division.into_iter().enumerate() {
             let Some(keys) = keys else {
-                return Ok(Dirty::All);
+                return Ok((Dirty::All, BTreeSet::new()));
             };
             for key in keys {
-                let slots: Vec<u32> = self.division_slots(key as u64).collect();
-                dirty.slots(slots);
+                if at < 2 {
+                    if self.placed.contains_key(&(key as u64)) {
+                        numeric.insert(key as u64);
+                    }
+                } else {
+                    let slots: Vec<u32> = self.division_slots(key as u64).collect();
+                    dirty.slots(slots);
+                }
             }
         }
         let by_template = [
@@ -1068,7 +1232,7 @@ impl Carried {
         ];
         for keys in by_template {
             let Some(keys) = keys else {
-                return Ok(Dirty::All);
+                return Ok((Dirty::All, BTreeSet::new()));
             };
             for key in keys {
                 let template = key as u64;
@@ -1088,7 +1252,7 @@ impl Carried {
             let armed = self.armed();
             dirty.slots(armed);
         }
-        Ok(dirty)
+        Ok((dirty, numeric))
     }
 }
 
@@ -1216,6 +1380,9 @@ pub struct Prepared {
     #[cfg(any(test, feature = "test-support"))]
     #[serde(skip)]
     pub(crate) builds: usize,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) reference: bool,
 }
 
 impl Prepared {
@@ -1274,6 +1441,8 @@ impl Prepared {
             }
             frames.total() as usize
                 + carried.placed.len() * 48
+                + carried.contributions.len() * (size_of::<(u64, Numeric)>() + 32)
+                + carried.totals.len() * (size_of::<((u32, usize, u64), Numeric)>() + 48)
                 + carried
                     .users
                     .values()
@@ -1382,6 +1551,8 @@ impl Prepared {
         let hour = frame.hour;
         if !carried.known() {
             carried.previous = None;
+            carried.contributions.clear();
+            carried.totals.clear();
             return self.unknown(hour);
         }
         // The tables every reply reads its countries and divisions from, without reading them.
@@ -1390,6 +1561,8 @@ impl Prepared {
             || frame.complete::<tables::Divisions>().is_err()
         {
             carried.previous = None;
+            carried.contributions.clear();
+            carried.totals.clear();
             return self.unknown(hour);
         }
         let starts = !self.open || !continuous;
@@ -1415,8 +1588,8 @@ impl Prepared {
                 .as_ref()
                 .map(|read| Arc::as_ptr(read) as usize),
         ];
-        let mut dirty = if starts {
-            Dirty::All
+        let (mut dirty, numeric) = if starts {
+            (Dirty::All, BTreeSet::new())
         } else {
             carried.dirty(frame, changes, &reads)?
         };
@@ -1435,6 +1608,13 @@ impl Prepared {
             };
             dirty.slots(slots);
         }
+        #[cfg(test)]
+        if self.reference {
+            for &id in &numeric {
+                dirty.slots(carried.division_slots(id));
+            }
+        }
+        let patch = self.stage_numeric(frame, carried, &numeric, &mut dirty);
         if reads[2] != carried.reads[2] {
             carried.shared.designs.clear();
             carried.designs_numbered.clear();
@@ -1481,6 +1661,33 @@ impl Prepared {
             }
             carried.shared.holders = Some(holders);
         }
+        for (&(slot, at, template), &total) in &patch.totals {
+            if dirty.contains(slot) {
+                continue;
+            }
+            let published = (|| {
+                let values = total.values()?;
+                let attribution = [ArmyAttribution::Owner, ArmyAttribution::Host]
+                    .get(at)
+                    .copied()?;
+                for tag in carried.slots.get(&slot)? {
+                    let values = values.map(|(measure, value)| {
+                        let name = format!(
+                            "{tag}|{}|template|{template}|{measure}",
+                            mode(attribution)
+                        );
+                        (name, value)
+                    });
+                    self.publish_sparse(tag, values, hour)?;
+                }
+                Some(())
+            })();
+            if published.is_some() {
+                carried.totals.insert((slot, at, template), total);
+            } else {
+                dirty.slots([slot]);
+            }
+        }
         let rebuilt: Vec<String> = match &dirty {
             Dirty::All => {
                 scanned(carried.tags.len());
@@ -1502,6 +1709,11 @@ impl Prepared {
         if !rebuilt.is_empty() {
             self.rebuild(frame, carried, &rebuilt, hour, starts)?;
         }
+        for (id, value) in patch.divisions {
+            if carried.division_slots(id).any(|slot| !dirty.contains(slot)) {
+                carried.contributions.insert(id, value);
+            }
+        }
         if matches!(dirty, Dirty::All) {
             scanned(self.owned.len());
             let gone: Vec<String> = self
@@ -1522,6 +1734,110 @@ impl Prepared {
         self.last_hour = Some(hour);
         self.open = true;
         Ok(())
+    }
+
+    fn stage_numeric(
+        &self,
+        frame: &DecodedFrame,
+        carried: &Carried,
+        candidates: &BTreeSet<u64>,
+        dirty: &mut Dirty,
+    ) -> NumericPatch {
+        let mut patch = NumericPatch::default();
+        for &id in candidates {
+            let Some(placed) = carried.placed.get(&id) else {
+                *dirty = Dirty::All;
+                break;
+            };
+            if placed
+                .slots
+                .into_iter()
+                .flatten()
+                .all(|slot| dirty.contains(slot))
+            {
+                continue;
+            }
+            let staged = (|| {
+                let previous = carried.previous.as_deref()?;
+                let before = Numeric::read(previous, id)?;
+                let now = Numeric::read(frame, id)?;
+                if carried.contributions.get(&id) != Some(&before)
+                    || Members::place(
+                        super::find(frame.complete::<tables::Divisions>().ok(), id, |row| row.id)?,
+                        frame.complete::<tables::CountryLinks>().ok()?,
+                    ) != Some(*placed)
+                    || placed.slots.iter().enumerate().any(|(at, slot)| {
+                        slot.is_some_and(|slot| {
+                            !carried.shared.members.as_ref().is_some_and(|members| {
+                                members.slots[at]
+                                    .get(&slot)
+                                    .is_some_and(|ids| ids.contains(&id))
+                            })
+                        })
+                    })
+                {
+                    return None;
+                }
+                Some((now, now.subtract(before)?))
+            })();
+            let Some((now, delta)) = staged else {
+                dirty.slots(placed.slots.into_iter().flatten());
+                continue;
+            };
+            patch.divisions.push((id, now));
+            for (at, slot) in placed.slots.into_iter().enumerate() {
+                let Some(slot) = slot.filter(|slot| !dirty.contains(*slot)) else {
+                    continue;
+                };
+                let key = (slot, at, placed.template);
+                let delta = match patch.totals.get(&key) {
+                    Some(before) => before.add(delta),
+                    None => Some(delta),
+                };
+                match delta {
+                    Some(delta) => {
+                        patch.totals.insert(key, delta);
+                    }
+                    None => dirty.slots([slot]),
+                }
+            }
+        }
+        patch.totals.retain(|&(slot, at, template), delta| {
+            if dirty.contains(slot) {
+                return false;
+            }
+            let total = (|| {
+                let before = *carried.totals.get(&(slot, at, template))?;
+                let total = before.add(*delta)?;
+                let aliases = carried.slots.get(&slot).filter(|tags| !tags.is_empty())?;
+                let attribution = [ArmyAttribution::Owner, ArmyAttribution::Host][at];
+                for tag in aliases {
+                    let owned = self.owned.get(tag)?;
+                    for (measure, value) in before.values()? {
+                        let name =
+                            format!("{tag}|{}|template|{template}|{measure}", mode(attribution));
+                        if owned.get(self.index.get(&name)?) != Some(&value) {
+                            return None;
+                        }
+                    }
+                }
+                Some(total)
+            })();
+            match total {
+                Some(total) => {
+                    *delta = total;
+                    true
+                }
+                None => {
+                    dirty.slots([slot]);
+                    false
+                }
+            }
+        });
+        patch
+            .totals
+            .retain(|&(slot, _, _), _| !dirty.contains(slot));
+        patch
     }
 
     fn rebuild(
@@ -1560,6 +1876,7 @@ impl Prepared {
             labels: Labels::Kept,
         };
         let never = AtomicBool::new(false);
+        let mut refreshed = BTreeSet::new();
         for tag in tags {
             let mut values = Vec::new();
             for attribution in [ArmyAttribution::Owner, ArmyAttribution::Host] {
@@ -1577,14 +1894,24 @@ impl Prepared {
                     self.builds += 1;
                 }
                 let mut refusals = Refusals::default();
-                match build_in(
+                let built = build_in(
                     frame,
                     &p,
                     &context,
                     Some(&mut carried.shared),
                     &mut refusals,
                     &never,
-                ) {
+                );
+                let at = usize::from(attribution == ArmyAttribution::Host);
+                if let Some(slot) = carried.tags.get(tag).copied().flatten()
+                    && refreshed.insert((slot, at))
+                {
+                    match &built {
+                        Ok(built) => carried.seed_numeric(frame, slot, at, &built.reply),
+                        Err(_) => carried.invalidate_numeric(slot, at),
+                    }
+                }
+                match built {
                     Ok(built) if built.reply.absent => {}
                     Ok(built) => self.flatten(
                         &prefix,
@@ -1763,8 +2090,30 @@ impl Prepared {
         self.owned.insert(tag.to_owned(), next);
     }
 
+    fn publish_sparse(
+        &mut self,
+        tag: &str,
+        values: [(String, i128); 3],
+        hour: i32,
+    ) -> Option<()> {
+        let current = self.owned.get_mut(tag)?;
+        for (name, value) in values {
+            let key = *self.index.get(&name)?;
+            let before = current.get_mut(&key)?;
+            if *before != value {
+                self.batch.observe(key, hour, Some(value), false);
+                *before = value;
+            }
+        }
+        Some(())
+    }
+
     /// An hour whose replies are not all known: every name is unknown then.
     fn unknown(&mut self, hour: i32) -> io::Result<()> {
+        if let Some(carried) = &mut self.carried {
+            carried.contributions.clear();
+            carried.totals.clear();
+        }
         if self.open {
             let keys: Vec<u64> = [READ, KNOWN]
                 .into_iter()
@@ -1830,6 +2179,7 @@ impl Prepared {
         }
         self.catalogued = catalogued;
         self.index.clear();
+        self.carried = None;
         Ok(())
     }
 }

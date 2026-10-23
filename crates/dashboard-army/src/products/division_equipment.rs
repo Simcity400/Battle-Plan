@@ -944,6 +944,12 @@ fn find<R>(rows: Option<&[R]>, id: u64, key: impl FnMut(&R) -> u64) -> Option<&R
     rows.binary_search_by_key(&id, key).ok().map(|at| &rows[at])
 }
 
+fn manpower_sum(parts: &[replay_data::rows::DivisionManpowerContributor]) -> i32 {
+    parts
+        .iter()
+        .fold(0i32, |total, part| total.wrapping_add(part.amount))
+}
+
 /// One division read against its template's need and its witnessed pool.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
@@ -966,13 +972,7 @@ fn division<'a>(
         row.id,
         |row| row.division,
     )
-    .map(|land| {
-        i64::from(
-            land.manpower
-                .iter()
-                .fold(0i32, |total, part| total.wrapping_add(part.amount)),
-        )
-    });
+    .map(|land| i64::from(manpower_sum(&land.manpower)));
     if manpower.is_none() {
         refusals.note("Division manpower was not recorded");
     }

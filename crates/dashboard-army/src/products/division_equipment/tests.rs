@@ -248,7 +248,11 @@ fn surplus_never_cancels_another_divisions_shortfall_and_stock_is_context_only()
     );
     assert_eq!(
         template.manpower.as_deref(),
-        Some((i64::from(i32::MAX.wrapping_add(2)) + 300).to_string().as_str())
+        Some(
+            (i64::from(i32::MAX.wrapping_add(2)) + 300)
+                .to_string()
+                .as_str()
+        )
     );
     assert_eq!(
         (template.hp_raw.as_deref(), template.hp_max_raw.as_deref()),
@@ -276,7 +280,10 @@ fn unknown_pool_is_counted_without_zeroing_independent_manpower_and_hp() {
     let rows = r.division_rows.unwrap();
     assert_eq!(rows[0].held_raw.as_deref(), Some("10000000"));
     assert!(!rows[1].pool_known && rows[1].needed_raw.is_none() && rows[1].held_raw.is_none());
-    assert_eq!((rows[0].types_short.is_some(), rows[1].types_short), (true, None));
+    assert_eq!(
+        (rows[0].types_short.is_some(), rows[1].types_short),
+        (true, None)
+    );
     assert_eq!(
         (rows[1].manpower.as_deref(), rows[1].hp_raw.as_deref()),
         (Some("300"), Some("1000000"))
@@ -673,13 +680,25 @@ fn conversion_uses_current_need_without_redating_the_sampled_pool() {
 #[test]
 fn a_division_of_an_unlinked_country_is_left_out_and_counted_not_fatal() {
     let mut f = frame();
-    if let TableView::Complete(TableRows::Divisions(rows)) = &mut *f.tables[TableId::Divisions.index()] {
+    if let TableView::Complete(TableRows::Divisions(rows)) =
+        &mut *f.tables[TableId::Divisions.index()]
+    {
         rows.push(division(3, 4_242));
     }
     let r = reply(&f, Some(&f), None, &params());
-    assert_eq!(r.divisions, 2, "the unlinked division counts for no country");
-    assert_eq!(r.divisions_short, 1, "distinct divisions with a known shortfall");
-    assert!(r.warnings.iter().any(|warning| warning.contains("no recorded link")));
+    assert_eq!(
+        r.divisions, 2,
+        "the unlinked division counts for no country"
+    );
+    assert_eq!(
+        r.divisions_short, 1,
+        "distinct divisions with a known shortfall"
+    );
+    assert!(
+        r.warnings
+            .iter()
+            .any(|warning| warning.contains("no recorded link"))
+    );
 }
 
 #[test]
@@ -689,8 +708,18 @@ fn a_types_fill_sums_each_divisions_capped_fulfilment_so_surplus_never_hides_a_s
     let r = reply(&f, Some(&f), None, &params());
     let kind = &r.types[0];
     assert_eq!(
-        (kind.held_raw.as_str(), kind.needed_raw.as_deref(), kind.filled_raw.as_deref(), kind.missing_raw.as_deref()),
-        ("20000000", Some("20000000"), Some("15000000"), Some("5000000")),
+        (
+            kind.held_raw.as_str(),
+            kind.needed_raw.as_deref(),
+            kind.filled_raw.as_deref(),
+            kind.missing_raw.as_deref()
+        ),
+        (
+            "20000000",
+            Some("20000000"),
+            Some("15000000"),
+            Some("5000000")
+        ),
         "held stays the actual holding; filled counts no division past its own need"
     );
 }
@@ -703,10 +732,21 @@ fn classified_holdings_count_when_a_divisions_comparison_is_unknown() {
     };
     let r = reply(&f, Some(&f), None, &params());
     assert_eq!(r.unknown_divisions, 2);
-    let widgets = r.types.iter().find(|row| row.archetype.as_deref() == Some("widgets")).unwrap();
-    assert_eq!(widgets.held_raw, "20000000", "both pools were read and their designs classified");
-    assert!(widgets.needed_raw.is_none() && widgets.filled_raw.is_none() && widgets.missing_raw.is_none(),
-        "unknown need and shortfall stay unknown");
+    let widgets = r
+        .types
+        .iter()
+        .find(|row| row.archetype.as_deref() == Some("widgets"))
+        .unwrap();
+    assert_eq!(
+        widgets.held_raw, "20000000",
+        "both pools were read and their designs classified"
+    );
+    assert!(
+        widgets.needed_raw.is_none()
+            && widgets.filled_raw.is_none()
+            && widgets.missing_raw.is_none(),
+        "unknown need and shortfall stay unknown"
+    );
     assert_eq!(widgets.unknown_divisions, 2);
 }
 
@@ -828,7 +868,10 @@ fn history_frames() -> Vec<DecodedFrame> {
                 if let TableView::Complete(TableRows::CountryLinks(rows)) =
                     &mut *f.tables[TableId::CountryLinks.index()]
                 {
-                    let slot = rows.iter().find(|row| row.id == 11).map(|row| row.canonical_slot);
+                    let slot = rows
+                        .iter()
+                        .find(|row| row.id == 11)
+                        .map(|row| row.canonical_slot);
                     rows.push(CountryLinkRow {
                         id: 9002,
                         canonical_slot: slot.unwrap_or(7),
@@ -882,13 +925,25 @@ fn prepare_history(
         };
         prepared.flush(&mut writer, 1, &flag).unwrap();
         writer
-            .write_at(CONTINUATION, 0, serde_json::to_vec(&prepared).unwrap().as_slice())
+            .write_at(
+                CONTINUATION,
+                0,
+                serde_json::to_vec(&prepared).unwrap().as_slice(),
+            )
             .unwrap();
         writer.commit().unwrap();
-        let saved = fixture.store.read(&fixture.key, CONTINUATION, 0).unwrap().unwrap();
+        let saved = fixture
+            .store
+            .read(&fixture.key, CONTINUATION, 0)
+            .unwrap()
+            .unwrap();
         prepared = serde_json::from_reader(io::BufReader::new(saved)).unwrap();
         prepared
-            .restore(|at| fixture.store.read(&fixture.key, &history::catalogue_section(1), at))
+            .restore(|at| {
+                fixture
+                    .store
+                    .read(&fixture.key, &history::catalogue_section(1), at)
+            })
             .unwrap();
         prepared.configure(source, context);
         writer = fixture.append_writer();
@@ -949,7 +1004,11 @@ fn history_of(
 }
 
 /// The reached product's reply as its server serves it.
-fn served(source: &Source, p: &DivisionEquipmentParams, context: &LoadContext) -> serde_json::Value {
+fn served(
+    source: &Source,
+    p: &DivisionEquipmentParams,
+    context: &LoadContext,
+) -> serde_json::Value {
     let flag = AtomicBool::new(false);
     let (reply, own) =
         dashboard_text::catalogue::capture(|| DivisionEquipment::load(source, p, context, &flag));
@@ -960,7 +1019,11 @@ fn served(source: &Source, p: &DivisionEquipmentParams, context: &LoadContext) -
     serde_json::to_value(reply).unwrap()
 }
 
-fn history_source() -> (Source, LoadContext, dashboard_text::catalogue::tests::Folder) {
+fn history_source() -> (
+    Source,
+    LoadContext,
+    dashboard_text::catalogue::tests::Folder,
+) {
     content_blocks(history_frames(), &[], "history")
 }
 
@@ -969,7 +1032,11 @@ fn content_blocks(
     frames: Vec<DecodedFrame>,
     starts: &[i32],
     name: &str,
-) -> (Source, LoadContext, dashboard_text::catalogue::tests::Folder) {
+) -> (
+    Source,
+    LoadContext,
+    dashboard_text::catalogue::tests::Folder,
+) {
     content_blocks_with(frames, starts, name, DOCUMENT)
 }
 
@@ -979,7 +1046,11 @@ fn content_blocks_with(
     starts: &[i32],
     name: &str,
     document: &str,
-) -> (Source, LoadContext, dashboard_text::catalogue::tests::Folder) {
+) -> (
+    Source,
+    LoadContext,
+    dashboard_text::catalogue::tests::Folder,
+) {
     let root = std::env::temp_dir().join(format!(
         "division-equipment-{name}-{}-{:?}",
         std::process::id(),
@@ -1059,11 +1130,21 @@ fn every_hour_of_the_prepared_history_is_the_served_reached_reply() {
         }
     }
     // Names resolved in the shown language reach the rebuilt reply.
-    let history = history_of(&source, &context, &fixture, "GER", ArmyAttribution::Owner, None);
+    let history = history_of(
+        &source,
+        &context,
+        &fixture,
+        "GER",
+        ArmyAttribution::Owner,
+        None,
+    );
     let reply = history::reply_at(&history, 60_000_020).unwrap();
     assert_eq!(reply.types[0].name.as_deref(), Some("Widgets"));
     assert_eq!(reply.templates[0].name.as_deref(), Some("Line division"));
-    assert_eq!(reply.types[0].variants[0].name.as_deref(), Some("Synthetic model"));
+    assert_eq!(
+        reply.types[0].variants[0].name.as_deref(),
+        Some("Synthetic model")
+    );
 }
 
 #[test]
@@ -1110,7 +1191,10 @@ fn unreadable_template_tables_kept_across_blocks_answer_as_the_served_reply_each
                 answered.insert(hour - 60_000_000);
             }
             for offset in [29, 30, 31, 51, 52, 53] {
-                assert!(answered.contains(&offset), "{tag} {count_for:?} at +{offset}");
+                assert!(
+                    answered.contains(&offset),
+                    "{tag} {count_for:?} at +{offset}"
+                );
             }
         }
     }
@@ -1122,21 +1206,42 @@ fn a_resumed_history_keeps_its_published_hours_and_proves_its_reads_again() {
     let mut fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let resume = 60_000_010;
     prepare_history(&source, &context, &mut fixture, Some(resume));
-    let history = history_of(&source, &context, &fixture, "GER", ArmyAttribution::Owner, None);
+    let history = history_of(
+        &source,
+        &context,
+        &fixture,
+        "GER",
+        ArmyAttribution::Owner,
+        None,
+    );
     let mut answered_after = 0;
     for hour in (HISTORY_FIRST..=HISTORY_LAST).filter(|hour| recorded(&source, *hour)) {
         let mut p = params();
         p.hour = hour;
         match history::reply_at(&history, hour) {
             Some(held) => {
-                assert_eq!(serde_json::to_value(&held).unwrap(), served(&source, &p, &context), "at {hour}");
+                assert_eq!(
+                    serde_json::to_value(&held).unwrap(),
+                    served(&source, &p, &context),
+                    "at {hour}"
+                );
                 answered_after += usize::from(hour > resume);
             }
-            None => assert!(hour > resume, "{hour}, published before the resume, is missing"),
+            None => assert!(
+                hour > resume,
+                "{hour}, published before the resume, is missing"
+            ),
         }
     }
     // A window ending by the resume reads only the page its hours name, and answers alike.
-    let early = history_of(&source, &context, &fixture, "GER", ArmyAttribution::Owner, Some(resume));
+    let early = history_of(
+        &source,
+        &context,
+        &fixture,
+        "GER",
+        ArmyAttribution::Owner,
+        Some(resume),
+    );
     for hour in (HISTORY_FIRST..=resume).filter(|hour| recorded(&source, *hour)) {
         assert_eq!(
             history::reply_at(&early, hour).map(|reply| serde_json::to_value(reply).unwrap()),
@@ -1167,7 +1272,14 @@ fn a_history_answers_only_through_its_prefix_and_window_and_keeps_absence() {
     assert!(history::reply_at(&history, 60_000_020).is_some());
     assert!(history::reply_at(&history, 60_000_021).is_none());
     // A tag no country holds is absent at a prepared hour, not unknown.
-    let absent = history_of(&source, &context, &fixture, "SOV", ArmyAttribution::Owner, None);
+    let absent = history_of(
+        &source,
+        &context,
+        &fixture,
+        "SOV",
+        ArmyAttribution::Owner,
+        None,
+    );
     assert!(history::reply_at(&absent, 60_000_020).is_some_and(|reply| reply.absent));
     // A window answers its own hours only.
     let flag = AtomicBool::new(false);
@@ -1285,7 +1397,9 @@ fn whole_history(
 ) -> history::DivisionEquipmentHistoryReply {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut writer = fixture.writer();
-    prepared.flush(&mut writer, 1, &AtomicBool::new(false)).unwrap();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
     writer.commit().unwrap();
     let asked = serde_json::json!({"branchId": "1", "tag": tag, "countFor": "owner"});
     let prefix = dashboard_base::prepared::prefix::Prefix {
@@ -1347,7 +1461,10 @@ fn template_icons_unavailable_all_session_cost_quiet_hours_nothing_and_keep_one_
     assert_eq!(notes.len(), 4, "{notes:?}");
     for series in &notes {
         assert_eq!(series.runs.len(), 1, "{series:?}");
-        assert_eq!((series.runs[0].0, series.runs[0].1), (60_000_002, 60_000_040));
+        assert_eq!(
+            (series.runs[0].0, series.runs[0].1),
+            (60_000_002, 60_000_040)
+        );
     }
     assert_eq!(reply.hours.len(), 1, "{:?}", reply.hours);
     assert_eq!(
@@ -1360,7 +1477,11 @@ fn template_icons_unavailable_all_session_cost_quiet_hours_nothing_and_keep_one_
         let held = history::reply_at(&reply, hour).expect("an answered hour");
         let mut p = params();
         (p.tag, p.hour) = ("C0000".into(), hour);
-        assert_eq!(serde_json::to_value(&held).unwrap(), served(&source, &p, &context), "at {hour}");
+        assert_eq!(
+            serde_json::to_value(&held).unwrap(),
+            served(&source, &p, &context),
+            "at {hour}"
+        );
     }
 }
 
@@ -1388,7 +1509,11 @@ fn a_content_key_worded_as_an_unreadable_table_stays_as_written_at_every_hour() 
         let held = history::reply_at(&reply, hour).expect("an answered hour");
         let mut p = params();
         (p.tag, p.hour) = ("C0000".into(), hour);
-        assert_eq!(serde_json::to_value(&held).unwrap(), served(&source, &p, &context), "at {hour}");
+        assert_eq!(
+            serde_json::to_value(&held).unwrap(),
+            served(&source, &p, &context),
+            "at {hour}"
+        );
         // The content's words keep the hour they were written with.
         assert!(
             held.warnings.iter().any(|line| line.contains(key)),
@@ -1424,7 +1549,11 @@ fn a_missing_dictionary_row_is_refused_before_unreadable_icons_as_served() {
         let held = history::reply_at(&reply, hour).expect("an answered hour");
         let mut p = params();
         (p.tag, p.hour) = ("C0000".into(), hour);
-        assert_eq!(serde_json::to_value(&held).unwrap(), served(&source, &p, &context), "at {hour}");
+        assert_eq!(
+            serde_json::to_value(&held).unwrap(),
+            served(&source, &p, &context),
+            "at {hour}"
+        );
         assert!(
             held.templates.iter().any(|template| template
                 .name_missing
@@ -1443,13 +1572,17 @@ fn a_stockpile_read_rebuilds_every_country_that_hour() {
     let frames: Vec<_> = (2..=10)
         .map(|offset| {
             let mut f = unsupplied_frame(count, offset);
-            f.tables[TableId::Stockpiles.index()] = frame().tables[TableId::Stockpiles.index()].clone();
+            f.tables[TableId::Stockpiles.index()] =
+                frame().tables[TableId::Stockpiles.index()].clone();
             f
         })
         .collect();
     let (source, context, _folder) = content_blocks(frames, &[], "stockpile");
     let (_, hours) = observed_hours(&source, &context);
-    let builds: Vec<_> = hours.iter().map(|&(hour, builds, _)| (hour, builds)).collect();
+    let builds: Vec<_> = hours
+        .iter()
+        .map(|&(hour, builds, _)| (hour, builds))
+        .collect();
     let every = 2 * count as usize;
     assert_eq!(
         builds,
@@ -1470,8 +1603,8 @@ fn a_stockpile_read_rebuilds_every_country_that_hour() {
 #[test]
 fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred() {
     let count = 1_500;
-    // Two blocks: the second's first hour, 5, marks every table changed. At 6 the one
-    // template both divisions use changes its manpower.
+    let templates = 20;
+    // At 6 only the template shared by the first two divisions changes.
     let frames: Vec<_> = (2..=8)
         .map(|offset| {
             let mut f = scale_frame(count, offset);
@@ -1482,8 +1615,39 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
             if offset >= 5 {
                 second.hit_points = 500_000;
             }
+            let mut divisions = vec![first, second];
+            for country in 0..count {
+                for template in 0..templates {
+                    let id = 3 + u64::from(country * templates + template);
+                    let mut row = division(id, 100 + country);
+                    row.template = 6 + u64::from(template);
+                    divisions.push(row);
+                    if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+                        &mut *f.tables[TableId::DivisionStatus.index()]
+                    {
+                        rows.push(status(id));
+                    }
+                    if let TableView::Complete(TableRows::DivisionLandInputs(rows)) =
+                        &mut *f.tables[TableId::DivisionLandInputs.index()]
+                    {
+                        rows.push(DivisionLandInputsRow {
+                            division: id,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
             *f.tables[TableId::Divisions.index()] =
-                TableView::Complete(TableRows::Divisions(vec![first, second]));
+                TableView::Complete(TableRows::Divisions(divisions));
+            if let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
+                &mut *f.tables[TableId::DivisionTemplateIcons.index()]
+            {
+                let base = rows[0].clone();
+                rows.extend((0..templates).map(|template| DivisionTemplateIconRow {
+                    template: 6 + u64::from(template),
+                    ..base.clone()
+                }));
+            }
             if offset >= 6
                 && let TableView::Complete(TableRows::DivisionTemplateIcons(rows)) =
                     &mut *f.tables[TableId::DivisionTemplateIcons.index()]
@@ -1498,29 +1662,39 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
         .collect();
     let (source, context, _folder) = content_blocks(frames, &[60_000_005], "scale");
     let (mut prepared, hours) = observed_hours(&source, &context);
-    let builds: Vec<_> = hours.iter().map(|&(hour, builds, _)| (hour, builds)).collect();
-    // Every country at the first hour, none at a quiet one, one country after one change,
-    // including at the second block's first hour, which compares its rows with the hour
-    // before, and the two countries using a template after it changes.
+    let builds: Vec<_> = hours
+        .iter()
+        .map(|&(hour, builds, _)| (hour, builds))
+        .collect();
+    // Numeric-only hours rebuild nothing, including at a block boundary.
     let every = 2 * count as usize;
     assert_eq!(
         builds,
         [
             (60_000_002, every),
             (60_000_003, 0),
-            (60_000_004, 2),
-            (60_000_005, 2),
+            (60_000_004, 0),
+            (60_000_005, 0),
             (60_000_006, 4),
             (60_000_007, 0),
             (60_000_008, 0),
         ]
     );
-    // A quiet hour, one changing a division by its delta, and one changing a template list
-    // no country's rows: the template's need resolves through the sources kept since the
-    // first hour.
-    for &(hour, _, scans) in &hours {
+    let totals = 2 * (count * templates + 2) as usize;
+    assert!(
+        hours[0].2 <= totals,
+        "full rebuild scanned {} rows for {totals} totals",
+        hours[0].2
+    );
+    // Rebuilding two countries visits only their totals under each attribution.
+    assert_eq!(hours[4].2, 4 * (templates + 1) as usize);
+    for &(hour, builds, scans) in &hours {
         if hour != 60_000_002 && hour != 60_000_005 {
-            assert!(scans < 10, "{hour} scanned {scans} rows among {count}");
+            let invalidated = builds * (templates + 1) as usize;
+            assert!(
+                scans < invalidated + 10,
+                "{hour} scanned {scans} rows among {count}"
+            );
         }
     }
     // Pending is what the next commit publishes and releases; held is what stays, the
@@ -1528,9 +1702,13 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
     let (pending, held) = (prepared.bytes(), prepared.held_bytes());
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let mut writer = fixture.writer();
-    prepared.flush(&mut writer, 1, &AtomicBool::new(false)).unwrap();
+    prepared
+        .flush(&mut writer, 1, &AtomicBool::new(false))
+        .unwrap();
     let continuation = serde_json::to_vec(&prepared).unwrap();
-    writer.write_at(CONTINUATION, 0, continuation.as_slice()).unwrap();
+    writer
+        .write_at(CONTINUATION, 0, continuation.as_slice())
+        .unwrap();
     writer.commit().unwrap();
     let length = |section: &str, range: u64| {
         let mut bytes = Vec::new();
@@ -1545,8 +1723,14 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
         .take_while(|bytes| *bytes > 0)
         .sum();
     let written = runs + page + length(CONTINUATION, 0);
-    assert!(pending + held >= written, "{pending} pending and {held} held, {written} written");
-    assert!(pending >= runs + page, "{pending} pending, {runs} of runs and {page} of catalogue written");
+    assert!(
+        pending + held >= written,
+        "{pending} pending and {held} held, {written} written"
+    );
+    assert!(
+        pending >= runs + page,
+        "{pending} pending, {runs} of runs and {page} of catalogue written"
+    );
     // A flush releases what was pending; the continuation stays held.
     assert!(prepared.bytes() < pending);
     // One country's history reads the page's directory, its own names and the operands it
@@ -1573,7 +1757,569 @@ fn an_hour_rebuilds_and_scans_only_what_its_changes_reach_among_fifteen_hundred(
         cancelled: &AtomicBool::new(false),
     })
     .unwrap();
-    assert!(history::reply_at(&reply, 60_000_005).is_some());
+    assert_eq!(
+        history::reply_at(&reply, 60_000_005).unwrap().templates.len(),
+        (templates + 1) as usize
+    );
     let read = history::CATALOGUE_READ.get() - read;
-    assert!(read * 4 < page as u64, "{read} of a {page} byte page read for one country");
+    assert!(
+        read * 4 < page as u64,
+        "{read} of a {page} byte page read for one country"
+    );
+}
+
+fn compare_numeric_preparation(
+    source: &Source,
+    context: &LoadContext,
+) -> (
+    [dashboard_base::prepared::series::tests::Fixture; 2],
+    Vec<(i32, usize, usize)>,
+) {
+    use dashboard_base::prepared::{
+        frame_changes::FrameChangeTracker,
+        series::tests::{Fixture, assert_payloads_equal},
+    };
+    let fixtures = [Fixture::new(), Fixture::new()];
+    let mut prepared = [history::Prepared::new(), history::Prepared::new()];
+    prepared[1].reference = true;
+    let replay = source.replay_ref();
+    let flag = AtomicBool::new(false);
+    let mut hours = Vec::new();
+    for index in replay.index.iter().filter(|index| index.branch == 1) {
+        let mut writers = fixtures.each_ref().map(|fixture| fixture.writer());
+        let mut tracker = FrameChangeTracker::new();
+        for state in &mut prepared {
+            state.configure(source, context);
+        }
+        replay
+            .read_block_recorded_alone(
+                index,
+                history::tables(),
+                |raw, frame| {
+                    let changes = tracker.observe_updates(frame, raw, replay.format);
+                    let before = prepared.each_ref().map(|state| state.builds);
+                    for state in &mut prepared {
+                        state.observe(frame, &changes, replay)?;
+                    }
+                    hours.push((
+                        frame.hour,
+                        prepared[0].builds - before[0],
+                        prepared[1].builds - before[1],
+                    ));
+                    assert_eq!(
+                        serde_json::to_vec(&prepared[0]).unwrap(),
+                        serde_json::to_vec(&prepared[1]).unwrap(),
+                        "continuation at {}",
+                        frame.hour
+                    );
+                    if frame.hour % 7 == 0 {
+                        for (state, writer) in prepared.iter_mut().zip(&mut writers) {
+                            state.flush(writer, 1, &flag)?;
+                        }
+                    }
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        for (state, mut writer) in prepared.iter_mut().zip(writers) {
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer
+                .write_at(
+                    CONTINUATION,
+                    0,
+                    serde_json::to_vec(state).unwrap().as_slice(),
+                )
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        assert_payloads_equal(
+            &fixtures[0].payloads(),
+            &fixtures[1].payloads(),
+            "numeric preparation",
+        );
+        for (state, fixture) in prepared.iter_mut().zip(&fixtures) {
+            let saved = fixture
+                .store
+                .read(&fixture.key, CONTINUATION, 0)
+                .unwrap()
+                .unwrap();
+            *state = serde_json::from_reader(io::BufReader::new(saved)).unwrap();
+            state
+                .restore(|at| {
+                    fixture
+                        .store
+                        .read(&fixture.key, &history::catalogue_section(1), at)
+                })
+                .unwrap();
+        }
+        prepared[1].reference = true;
+    }
+    (fixtures, hours)
+}
+
+fn assert_numeric_histories_equal(
+    source: &Source,
+    context: &LoadContext,
+    fixtures: &[dashboard_base::prepared::series::tests::Fixture; 2],
+    tags: &[&str],
+    last: i32,
+) {
+    for tag in tags {
+        for attribution in [ArmyAttribution::Owner, ArmyAttribution::Host] {
+            let replies = fixtures
+                .each_ref()
+                .map(|fixture| history_of(source, context, fixture, tag, attribution, Some(last)));
+            assert_eq!(
+                serde_json::to_vec(&replies[0]).unwrap(),
+                serde_json::to_vec(&replies[1]).unwrap(),
+                "history {tag} {attribution:?}"
+            );
+            for hour in HISTORY_FIRST..=last {
+                assert_eq!(
+                    serde_json::to_vec(&history::reply_at(&replies[0], hour)).unwrap(),
+                    serde_json::to_vec(&history::reply_at(&replies[1], hour)).unwrap(),
+                    "reply {tag} {attribution:?} at {hour}"
+                );
+            }
+        }
+    }
+}
+
+fn numeric_churn_frames() -> Vec<DecodedFrame> {
+    (2..=80)
+        .filter(|offset| *offset != 61)
+        .map(|offset| {
+            let mut f = scale_frame(4, offset);
+            f.metrics.table_ns.fill(0);
+            if offset == 2 {
+                f.metrics.table_ns[TableId::VariantModules.index()] = 1;
+            }
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *f.tables[TableId::Countries.index()]
+            {
+                rows.push(CountryRow {
+                    id: 104,
+                    canonical_slot: 1_000,
+                    tag: if offset < 65 {
+                        b"C0004".to_vec()
+                    } else {
+                        b"C0005".to_vec()
+                    },
+                    ..Default::default()
+                });
+            }
+            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *f.tables[TableId::CountryLinks.index()]
+            {
+                rows.push(CountryLinkRow {
+                    id: 104,
+                    canonical_slot: 1_000,
+                });
+            }
+            let mut divisions = Vec::new();
+            let mut statuses = Vec::new();
+            let mut land = Vec::new();
+            let mut pools = Vec::new();
+            for id in 1..=97u64 {
+                if (id == 5 && offset >= 35) || (id == 97 && offset < 37) {
+                    continue;
+                }
+                let mut row = division(id, 100 + (id % 4) as u32);
+                row.template = 5 + id % 2;
+                row.expeditionary_owner = if id % 5 == 0 {
+                    100 + ((id + 1) % 4) as u32
+                } else {
+                    0
+                };
+                row.hit_points = match id {
+                    1 if offset % 2 == 0 => i64::MIN,
+                    1 => i64::MAX,
+                    _ => (i64::from(offset) - 40) * id as i64 * 100_000,
+                };
+                if id == 1 && offset >= 10 {
+                    row.template = 5;
+                }
+                if id == 2 && offset >= 14 {
+                    row.roster_owner = 103;
+                }
+                if id == 3 && offset >= 17 {
+                    row.expeditionary_owner = 100;
+                }
+                if id == 4 && (27..30).contains(&offset) {
+                    row.reveal_skip = 1;
+                }
+                let mut status = status(id);
+                status.maximum_hit_points = if id % 2 == 0 {
+                    i64::MIN + i64::from(offset)
+                } else {
+                    i64::MAX - i64::from(offset)
+                };
+                if id != 6 || !(56..58).contains(&offset) {
+                    statuses.push(status);
+                }
+                if id != 7 || !(56..59).contains(&offset) {
+                    land.push(DivisionLandInputsRow {
+                        division: id,
+                        manpower: vec![
+                            DivisionManpowerContributor {
+                                country: 100,
+                                amount: i32::MAX,
+                            },
+                            DivisionManpowerContributor {
+                                country: 101,
+                                amount: offset * id as i32 - 1_000,
+                            },
+                            DivisionManpowerContributor {
+                                country: 102,
+                                amount: i32::MIN,
+                            },
+                        ],
+                        ..Default::default()
+                    });
+                }
+                pools.push(equipment(
+                    id,
+                    0,
+                    70,
+                    if id == 9 && offset >= 26 {
+                        -9_000_000
+                    } else {
+                        5_000_000
+                    },
+                ));
+                divisions.push(row);
+            }
+            *f.tables[TableId::Divisions.index()] =
+                TableView::Complete(TableRows::Divisions(divisions));
+            *f.tables[TableId::DivisionStatus.index()] =
+                TableView::Complete(TableRows::DivisionStatus(statuses));
+            *f.tables[TableId::DivisionLandInputs.index()] =
+                TableView::Complete(TableRows::DivisionLandInputs(land));
+            *f.tables[TableId::DivisionEquipment.index()] =
+                TableView::Complete(TableRows::DivisionEquipment(pools));
+            *f.tables[TableId::NewDivisionEquipment.index()] =
+                TableView::Complete(TableRows::NewDivisionEquipment(if offset >= 12 {
+                    vec![equipment(8, 0, 70, i64::from(offset / 12) * 1_000_000)]
+                } else {
+                    vec![]
+                }));
+            let mut icons = f
+                .complete::<tables::DivisionTemplateIcons>()
+                .unwrap()
+                .to_vec();
+            let mut second = icons[0].clone();
+            second.template = 6;
+            icons.push(second);
+            for icon in &mut icons {
+                icon.country = 100;
+                icon.display_name = Recorded::Value(Some(TemplateDisplayName {
+                    sample_hour: PacketHour::Host,
+                    value: TemplateNameValue::Changed {
+                        literal: b"Synthetic line".to_vec(),
+                        fallback_key: None,
+                    },
+                }));
+                if offset >= 40 {
+                    icon.settings = Recorded::Value(Some(Arc::new(TemplateSettings {
+                        total_manpower: 2_000,
+                        ..Default::default()
+                    })));
+                }
+            }
+            *f.tables[TableId::DivisionTemplateIcons.index()] =
+                TableView::Complete(TableRows::DivisionTemplateIcons(icons));
+            *f.tables[TableId::DivisionTemplates.index()] =
+                TableView::Complete(TableRows::DivisionTemplates(vec![
+                    DivisionTemplateRow {
+                        template: 5,
+                        owner: 100,
+                        ..Default::default()
+                    },
+                    DivisionTemplateRow {
+                        template: 6,
+                        owner: 100,
+                        ..Default::default()
+                    },
+                ]));
+            for (hour, table) in [
+                (45, TableId::DivisionTemplateIcons),
+                (48, TableId::DivisionStatus),
+                (52, TableId::DivisionLandInputs),
+                (60, TableId::Countries),
+            ] {
+                if offset == hour {
+                    *f.tables[table.index()] = TableView::Unavailable {
+                        reason: "synthetic wartime unreadability".into(),
+                    };
+                }
+            }
+            f
+        })
+        .collect()
+}
+
+#[test]
+fn numeric_wartime_churn_is_byte_identical_after_every_restored_block() {
+    let (source, context, _folder) = content_blocks(
+        numeric_churn_frames(),
+        &[60_000_020, 60_000_044, 60_000_068],
+        "numeric-churn",
+    );
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    for &(hour, builds, reference) in &hours {
+        if (60_000_003..=60_000_007).contains(&hour) {
+            assert_eq!(builds, 0, "{hour}");
+            assert!(reference > 0, "{hour}");
+        }
+    }
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0001", "C0002", "C0003", "C0004", "C0005"],
+        HISTORY_LAST,
+    );
+    let missing = history_of(
+        &source,
+        &context,
+        &fixtures[0],
+        "C0000",
+        ArmyAttribution::Owner,
+        None,
+    );
+    for (hour, measure) in [(60_000_048, "hpMax"), (60_000_052, "manpower")] {
+        let reply = history::reply_at(&missing, hour).unwrap();
+        assert!(!reply.templates.is_empty());
+        assert!(reply.templates.iter().all(|template| match measure {
+            "hpMax" => template.hp_max_raw.is_none(),
+            _ => template.manpower.is_none(),
+        }));
+    }
+    assert!(history::reply_at(&missing, 60_000_060).is_none());
+    assert!(history::reply_at(&missing, 60_000_061).is_none());
+}
+
+#[test]
+fn cancelling_numeric_changes_publish_no_observations_and_update_every_alias() {
+    let frames = (2..=7)
+        .map(|offset| {
+            let mut f = unsupplied_frame(3, offset);
+            if let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *f.tables[TableId::Countries.index()]
+            {
+                rows.push(CountryRow {
+                    id: 103,
+                    canonical_slot: 1_000,
+                    tag: b"C0003".to_vec(),
+                    ..Default::default()
+                });
+            }
+            if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                &mut *f.tables[TableId::CountryLinks.index()]
+            {
+                rows.push(CountryLinkRow {
+                    id: 103,
+                    canonical_slot: 1_000,
+                });
+            }
+            let delta = i64::from(offset) * 100_000;
+            let mut divisions = vec![division(1, 100), division(2, 100)];
+            divisions[0].hit_points += delta;
+            divisions[1].hit_points -= delta;
+            let mut statuses = vec![status(1), status(2)];
+            statuses[0].maximum_hit_points += delta;
+            statuses[1].maximum_hit_points -= delta;
+            *f.tables[TableId::Divisions.index()] =
+                TableView::Complete(TableRows::Divisions(divisions));
+            *f.tables[TableId::DivisionStatus.index()] =
+                TableView::Complete(TableRows::DivisionStatus(statuses));
+            *f.tables[TableId::DivisionLandInputs.index()] =
+                TableView::Complete(TableRows::DivisionLandInputs(vec![
+                    DivisionLandInputsRow {
+                        division: 1,
+                        manpower: vec![DivisionManpowerContributor {
+                            country: 100,
+                            amount: offset * 900,
+                        }],
+                        ..Default::default()
+                    },
+                    DivisionLandInputsRow {
+                        division: 2,
+                        manpower: vec![DivisionManpowerContributor {
+                            country: 100,
+                            amount: 100 - offset * 900,
+                        }],
+                        ..Default::default()
+                    },
+                ]));
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "numeric-cancel");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    assert!(
+        hours[1..]
+            .iter()
+            .all(|&(_, builds, reference)| builds == 0 && reference == 4)
+    );
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0003"],
+        60_000_007,
+    );
+    for tag in ["C0000", "C0003"] {
+        for attribution in [ArmyAttribution::Owner, ArmyAttribution::Host] {
+            let reply = history_of(
+                &source,
+                &context,
+                &fixtures[0],
+                tag,
+                attribution,
+                Some(60_000_007),
+            );
+            for (measure, value) in [("hp", "2000000"), ("hpMax", "4000000"), ("manpower", "100")] {
+                let series = reply
+                    .window
+                    .series
+                    .iter()
+                    .find(|series| series.name == format!("template|5|{measure}"))
+                    .unwrap();
+                assert_eq!(series.runs.len(), 1, "{tag} {measure}");
+                assert_eq!(series.runs[0].2, value);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_structural_change_in_the_other_attribution_wins_over_numeric_patches() {
+    let frames = (2..=7)
+        .map(|offset| {
+            let mut f = unsupplied_frame(3, offset);
+            let mut first = division(1, 101);
+            first.expeditionary_owner = 100;
+            first.hit_points = i64::from(offset) * -100_000;
+            let mut second = division(2, 102);
+            second.expeditionary_owner = 101;
+            *f.tables[TableId::Divisions.index()] =
+                TableView::Complete(TableRows::Divisions(vec![first, second]));
+            if offset >= 4 {
+                *f.tables[TableId::NewDivisionEquipment.index()] = TableView::Complete(
+                    TableRows::NewDivisionEquipment(vec![equipment(2, 0, 70, 8_000_000)]),
+                );
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "numeric-precedence");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    assert_eq!(
+        hours.iter().find(|&&(hour, _, _)| hour == 60_000_004),
+        Some(&(60_000_004, 4, 6))
+    );
+    assert!(
+        hours[1..]
+            .iter()
+            .filter(|&&(hour, _, _)| hour != 60_000_004)
+            .all(|&(_, builds, _)| builds == 0)
+    );
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0001", "C0002"],
+        60_000_007,
+    );
+}
+
+#[test]
+fn unreadable_and_missing_numeric_sources_rebuild_until_reseeded_and_never_zero() {
+    let frames = (2..=17)
+        .filter(|offset| *offset != 15)
+        .map(|offset| {
+            let mut f = unsupplied_frame(3, offset);
+            if let TableView::Complete(TableRows::Divisions(rows)) =
+                &mut *f.tables[TableId::Divisions.index()]
+            {
+                rows[0].hit_points = i64::from(offset) * 100_000;
+            }
+            if (7..=8).contains(&offset)
+                && let TableView::Complete(TableRows::DivisionStatus(rows)) =
+                    &mut *f.tables[TableId::DivisionStatus.index()]
+            {
+                rows.remove(0);
+            }
+            for (hour, table) in [
+                (4, TableId::DivisionStatus),
+                (10, TableId::DivisionLandInputs),
+                (12, TableId::Divisions),
+            ] {
+                if offset == hour {
+                    *f.tables[table.index()] = TableView::Unavailable {
+                        reason: "synthetic numeric source unreadability".into(),
+                    };
+                }
+            }
+            f
+        })
+        .collect();
+    let (source, context, _folder) = content_blocks(frames, &[], "numeric-recovery");
+    let (fixtures, hours) = compare_numeric_preparation(&source, &context);
+    let expected = [
+        (2, 6),
+        (3, 0),
+        (4, 6),
+        (5, 6),
+        (6, 0),
+        (7, 2),
+        (8, 2),
+        (9, 2),
+        (10, 6),
+        (11, 6),
+        (12, 0),
+        (13, 6),
+        (14, 0),
+        (16, 6),
+        (17, 0),
+    ];
+    assert_eq!(
+        hours
+            .iter()
+            .map(|&(hour, builds, _)| (hour - 60_000_000, builds))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_numeric_histories_equal(
+        &source,
+        &context,
+        &fixtures,
+        &["C0000", "C0001", "C0002"],
+        60_000_017,
+    );
+    let reply = history_of(
+        &source,
+        &context,
+        &fixtures[0],
+        "C0000",
+        ArmyAttribution::Owner,
+        Some(60_000_017),
+    );
+    for hour in [60_000_004, 60_000_007, 60_000_008] {
+        assert!(
+            history::reply_at(&reply, hour).unwrap().templates[0]
+                .hp_max_raw
+                .is_none()
+        );
+    }
+    assert!(
+        history::reply_at(&reply, 60_000_010).unwrap().templates[0]
+            .manpower
+            .is_none()
+    );
+    for hour in [60_000_012, 60_000_015] {
+        assert!(history::reply_at(&reply, hour).is_none());
+    }
 }
