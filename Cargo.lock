@@ -2509,6 +2509,7 @@ dependencies = [
  "installed-content-wargoals",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "map-snow",
  "mimalloc",
  "once_cell",
  "png 0.18.1",
@@ -2710,6 +2711,7 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
+ "map-snow",
  "mimalloc",
  "once_cell",
  "png 0.18.1",
@@ -2721,6 +2723,7 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
+ "sha2",
  "shader-pipeline",
  "store",
  "syn 2.0.119",
@@ -6537,6 +6540,20 @@ name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
+
+[[package]]
+name = "map-snow"
+version = "0.1.0"
+dependencies = [
+ "engine-native",
+ "installed-content-core",
+ "installed-content-image",
+ "installed-content-regions",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+]
 
 [[package]]
 name = "markup5ever"
@@ -10826,6 +10843,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "map-snow",
  "mimalloc",
  "once_cell",
  "png 0.18.1",
@@ -11016,6 +11034,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-unit-path",
  "indexmap 2.14.2",
+ "map-snow",
  "mimalloc",
  "once_cell",
  "pollster 0.4.0",
@@ -11099,6 +11118,7 @@ dependencies = [
  "installed-content-states",
  "installed-content-weather",
  "indexmap 2.14.2",
+ "map-snow",
  "mimalloc",
  "once_cell",
  "pollster 0.4.0",

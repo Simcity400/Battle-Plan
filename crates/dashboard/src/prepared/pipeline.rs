@@ -848,6 +848,17 @@ struct Checkpoint {
 }
 
 impl Checkpoint {
+    fn accepted_walk(&self) -> bool {
+        self.cursor.next_block > 0
+            || self.cursor.previous.is_some()
+            || self.map.resume_range.is_some()
+            || self.map.branches.values().any(|branch| {
+                branch.checkpoints > 0
+                    || branch.since_checkpoint > 0
+                    || branch.last_hour.is_some()
+                    || branch.last_block.is_some()
+            })
+    }
     fn forward_complete(&self, total: usize) -> bool {
         self.cursor.next_block == total
             && self
@@ -1604,6 +1615,7 @@ fn selected() -> &'static [TableId] {
     static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
         let reads = [
             crate::prepared_measure::TABLES,
+            map_snow::TABLES,
             &crate::products::land_battles::CENSUS_TABLES,
             crate::products::game_score::SCORE_TABLES,
             crate::products::autonomy::TABLES,
@@ -2075,6 +2087,50 @@ pub fn unprepared_blocks(
     ))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_SNOW_CHECK: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(&'static str)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn snow_check(cancelled: &AtomicBool, _stage: &'static str) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(hook) = TEST_SNOW_CHECK.with(|hook| hook.borrow().clone()) {
+        hook(_stage);
+    }
+    check_cancel(cancelled)
+}
+
+fn snow_session(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<dashboard_base::snow_export::Session> {
+    check_cancel(cancelled)?;
+    let layers = content
+        .map(|options| source.content(&options.options))
+        .transpose()?;
+    let (store, key) = super::files(source, content)?;
+    dashboard_base::snow_export::Session::bind(
+        source.replay_ref(),
+        layers.as_ref().map(|content| &content.layers),
+        source
+            .replay_ref()
+            .index
+            .iter()
+            .try_fold(0u64, |end, block| {
+                block
+                    .offset
+                    .checked_add(block.length)
+                    .map(|next| end.max(next))
+                    .ok_or_else(|| invalid("snow source block end overflow"))
+            })?,
+        &store,
+        &key,
+        || snow_check(cancelled, "bind"),
+    )
+}
+
 /// Restore completed preparation directly from input/index metadata. A cached
 /// source does not wait for a background worker or reconstruct a historical frame.
 pub fn restore(
@@ -2427,6 +2483,12 @@ fn run_planned(
     let key = dashboard_base::prepared::refresh_saved_binding(source, &store, key)?;
     let replay = source.replay_ref();
     let shared_replay = source.replay();
+    let snow_export = time_family!(
+        family_timings,
+        "snow_export.bind",
+        observe,
+        snow_session(source, content, cancelled)
+    )?;
     let mut saved = time_family!(
         family_timings,
         "resume.saved-key",
@@ -2502,11 +2564,46 @@ fn run_planned(
         "resume.land_owners",
         false,
     );
-    let loaded = loaded.filter(|_| land_owners.is_some());
+    let snow_unstarted = match loaded.as_ref() {
+        Some((state, _)) if !state.accepted_walk() => !snow_export.has_history(
+            &store,
+            &key,
+            replay.branches.iter().map(|branch| branch.id),
+            || snow_check(cancelled, "validate"),
+        )?,
+        _ => false,
+    };
+    let snow_bound = !snow_unstarted
+        && snow_export.reusable(
+            &store,
+            &key,
+            replay.branches.iter().map(|branch| branch.id),
+            || snow_check(cancelled, "validate"),
+        )?;
+    let loaded = match loaded {
+        Some(pair)
+            if land_owners.is_some()
+                && (snow_unstarted
+                    || snow_bound
+                    || match saved.as_ref() {
+                        Some(_) => snow_export.can_inherit(
+                            &store,
+                            &key,
+                            replay.branches.iter().map(|branch| branch.id),
+                            || snow_check(cancelled, "validate"),
+                        )?,
+                        None => false,
+                    }) =>
+        {
+            Some(pair)
+        }
+        _ => None,
+    };
     let state_started = start_timing(&family_timings);
     let (mut state, mut bytes, mut stream) = if let Some((state, bytes)) = loaded {
         if state.forward_complete(replay.index.len())
             && saved.as_ref() == Some(&key)
+            && snow_bound
             && side::complete(source, content, &store, &key)?
         {
             let result = Accepted {
@@ -2816,11 +2913,13 @@ fn run_planned(
     };
     if (state.forward_complete(replay.index.len())
         && saved.as_ref() == Some(&key)
+        && snow_bound
         && side::complete(source, content, &store, &key)?)
-        || (state
-            .independent
-            .values()
-            .all(|family| family.next_block == replay.index.len())
+        || (snow_bound
+            && state
+                .independent
+                .values()
+                .all(|family| family.next_block == replay.index.len())
             && measurement.as_ref().is_some_and(|value| {
                 value.through_hours.is_some_and(|target| {
                     measured_prefix_hours(replay, state.cursor.next_block) >= target
@@ -2906,6 +3005,11 @@ fn run_planned(
         return Ok(None);
     }
     if metadata_dirty {
+        if snow_unstarted {
+            snow_export.initialise(&mut writer)?;
+        } else {
+            snow_export.inherit(&mut writer)?;
+        }
         time_family!(
             family_timings,
             "publication.metadata",
@@ -4123,6 +4227,23 @@ fn run_planned(
                             lanes.serial("repairs", frame, changes, &mut family_timings)?;
                             frame_count += 1;
                             coordinator_order = 49;
+                            time_family!(
+                                family_timings,
+                                "snow_export.observe",
+                                observe,
+                                snow_export.observe_after(
+                                    &mut writer,
+                                    frame,
+                                    replay.index[*last_blocks
+                                        .get(&frame.branch)
+                                        .ok_or_else(|| invalid("snow branch has no block"))?]
+                                    .last_hour,
+                                    map.progress()
+                                        .branches
+                                        .get(&frame.branch)
+                                        .and_then(|progress| progress.last_hour)
+                                )
+                            )?;
                             time_family!(family_timings, "map", observe, {
                                 let position = dashboard_base::prepared_map::Position {
                                     block,

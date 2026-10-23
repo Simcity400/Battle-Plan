@@ -2115,6 +2115,18 @@ impl Writer {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_range_ownership(&self) -> (usize, usize) {
+        self.sections
+            .iter()
+            .fold((0, 0), |(added, replaced), section| {
+                (
+                    added + section.added.len(),
+                    replaced + section.replaced.len(),
+                )
+            })
+    }
+
     /// New range payload bytes successfully written by this transaction (by
     /// this fork alone, on a fork).
     pub fn bytes_written(&self) -> u64 {

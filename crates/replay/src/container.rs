@@ -262,6 +262,7 @@ pub struct Replay {
     bytes: Vec<u8>,
     decoded_sections: decoded_sections::Cache,
     file: Option<File>,
+    held_length: u64,
     /// The header version, validated before decoding any frames.
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
@@ -1168,6 +1169,7 @@ impl Replay {
             bytes: Vec::new(),
             decoded_sections: decoded_sections::Cache::default(),
             file: None,
+            held_length: 0,
             format,
             campaign_id,
             identity,

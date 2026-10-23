@@ -52,6 +52,7 @@ mod prepass_parity;
 mod production_scans;
 mod reply_gates;
 mod serialization_order;
+mod snow_export;
 mod stability_progressive;
 mod walk_selection;
 
@@ -4948,7 +4949,7 @@ fn unprepared_blocks_reads_metadata_without_decoding_recorded_blocks() {
 }
 
 #[test]
-fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() {
+fn game_presence_discards_block_and_library_resume_rejects_changed_accepted_bytes() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     let replay = recording();
@@ -5021,8 +5022,7 @@ fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() 
         progress.state = State::Cancelled;
     }
     assert_eq!(unprepared_blocks(&source, None).unwrap(), Some(1));
-    // Resume must not reconstruct accepted frames. Earlier table sections can
-    // still supply native anchors for the tail, so preserve them and their directory.
+    // Same-stamp source corruption invalidates the fresh snow witness, even on an accepted prefix.
     fixture.corrupt_diagnostics_preserving_stamp(&replay, &replay.index[0]);
     assert!(
         source
@@ -5049,11 +5049,11 @@ fn game_presence_discards_block_and_library_resume_reads_only_unaccepted_tail() 
     let status = super::super::status(&source, "resume-test", "resume-status");
     assert_eq!(
         status.state,
-        State::Ready,
-        "preparation failed: {:?}",
+        State::Failed,
+        "changed source bytes must not reuse completed exports: {:?}",
         status.error
     );
-    assert_eq!(unprepared_blocks(&source, None).unwrap(), Some(0));
+    assert_eq!(unprepared_blocks(&source, None).unwrap(), Some(1));
     assert!(
         source
             .replay_ref()

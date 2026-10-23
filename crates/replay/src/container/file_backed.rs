@@ -125,7 +125,29 @@ impl Replay {
             .ok_or_else(|| invalid("truncated field"))?;
         file.seek(SeekFrom::Start(0))?;
         let header = read(file, end)?;
-        Self::open_metadata(&header, &trailer, to_usize(start)?, warnings)
+        let mut replay = Self::open_metadata(&header, &trailer, to_usize(start)?, warnings)?;
+        replay.held_length = length;
+        Ok(replay)
+    }
+
+    pub fn visit_held_bytes(
+        &self,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let length = if self.file.is_some() {
+            self.held_length
+        } else {
+            self.bytes.len() as u64
+        };
+        let mut buffer = [0; 64 * 1024];
+        let mut offset = 0;
+        while offset < length {
+            let count = (length - offset).min(buffer.len() as u64) as usize;
+            self.read_at(offset, &mut buffer[..count])?;
+            visit(&buffer[..count])?;
+            offset += count as u64;
+        }
+        Ok(())
     }
 
     pub fn is_file_backed(&self) -> bool {

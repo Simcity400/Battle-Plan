@@ -41,7 +41,7 @@ pub const ATLAS_TILES: u32 = MAP_NUM_TILES * MAP_NUM_TILES;
 /// Map pixels one SnowMudData texel covers on each axis. Generated snow/mud
 /// textures remain unpadded; shader globals follow the client's texture-decode
 /// settings and retain the independent fog-grid ratio.
-pub const SNOW_MUD_BLOCK: u32 = 4;
+pub use map_snow::SNOW_MUD_BLOCK;
 // fog of war
 /// Province-image pixels one IntelMap texel covers on each axis. Its six-by-six
 /// blocks are independent of the snow/mud producer's four-by-four blocks.

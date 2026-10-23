@@ -725,7 +725,8 @@ fn a_map_recording_holds_the_political_map_labels_and_weather() {
             province_ids: [1, 2, 3, 4, 5, 5, 5, 5].repeat(4),
             ..map.clone()
         };
-        crate::map::weather::grid(&weather, &[false; 32], &frame).unwrap();
+        let cells = crate::map::weather::SnowCells::new(&weather, &[false; 32]).unwrap();
+        crate::map::weather::grid_from_cells(&cells, &frame).unwrap();
         crate::map::weather_effects::field(&frame).unwrap();
     });
 }

@@ -518,3 +518,61 @@ fn short_held_reads_keep_read_exact_eof_errors() {
     held.read_at(index.offset + 100, &mut []).unwrap();
     assert!(!held.is_verified(index));
 }
+
+#[test]
+fn held_byte_visit_keeps_its_revision_across_rename_and_atomic_replacement() {
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let second = first.append(&[records(2, &[8, 9])]).unwrap();
+    let fixture = Fixture::new(first.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let moved = fixture.0.with_extension("moved");
+    std::fs::rename(&fixture.0, &moved).unwrap();
+    std::fs::write(&fixture.0, second.bytes()).unwrap();
+    let mut visited = Vec::new();
+    let (_, bytes) = file_backed::measure_held_reads(|| {
+        held.visit_held_bytes(|chunk| {
+            visited.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap()
+    });
+    assert_eq!(visited, first.bytes());
+    assert_eq!(bytes, first.bytes().len() as u64);
+    let current = Replay::open_path(&fixture.0).unwrap();
+    let candidate = fixture.0.with_extension("pending");
+    std::fs::write(&candidate, first.bytes()).unwrap();
+    crate::publication::replace_file(&candidate, &fixture.0).unwrap();
+    let mut visited = Vec::new();
+    current
+        .visit_held_bytes(|chunk| {
+            visited.extend_from_slice(chunk);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(visited, second.bytes());
+    std::fs::remove_file(moved).unwrap();
+}
+
+#[test]
+fn held_byte_visit_has_a_captured_length_and_propagates_cancellation() {
+    let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&fixture.0)
+        .unwrap()
+        .write_all(b"later in-place bytes")
+        .unwrap();
+    let mut visited = Vec::new();
+    held.visit_held_bytes(|chunk| {
+        visited.extend_from_slice(chunk);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(visited, memory.bytes(), "never chase a changing EOF");
+    let error = held
+        .visit_held_bytes(|_| Err(io::Error::from(io::ErrorKind::Interrupted)))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+}

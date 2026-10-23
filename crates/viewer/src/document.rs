@@ -282,6 +282,8 @@ pub struct Content {
     /// from; `None` when they are unreadable, which leaves the maps silent.
     pub audio: Option<Arc<viewer_audio::Source>>,
     pub source_path: PathBuf,
+    pub snow_export: dashboard_base::snow_export::Background,
+    snow_export_visual_mods: bool,
     // borders
     /// `map/terrain/border_*_0.dds` and `strait.dds`.
     pub border_assets: BorderAssets,
@@ -2651,7 +2653,11 @@ impl Document {
             viewer_world::map::air_transfers::color,
         )
         .map_err(|error| error.to_string());
+        let snow_cells = weather::SnowCells::new(&map, &assets.perm_snow)
+            .map_err(|error| (error.kind(), error.to_string()));
         let content = Content {
+            snow_export: Default::default(),
+            snow_export_visual_mods: content.layers.presentation().shows_visual_mods(),
             radar_centers,
             resource_icons,
             adjacency_icons,
@@ -2731,14 +2737,16 @@ impl Document {
             trade_route_memo: Recent::new(ORDER_MEMO),
             type_tint_memo: Keyed::new(counters::type_tint::TABLES, TYPE_TINT_MEMO),
             mission_memo: Recent::new(MISSION_MEMO),
-            snow_cells: OnceLock::new(),
+            snow_cells: OnceLock::from(snow_cells),
             intel_cells,
             movement,
             province_geometry,
             province_geometry_build,
         };
+        let content = Arc::new(content);
+        Self::bind_snow_export(&content, &playback.replay_handle());
         Ok(Self {
-            content: Arc::new(content),
+            content,
             playback,
             hour_fraction: initial.hour_fraction,
             demilitarized_override: BTreeSet::new(),
@@ -2748,6 +2756,7 @@ impl Document {
     /// Presentation state over verified content; the coordinator supplies the
     /// first decoded frame without synchronous work on the UI thread.
     pub fn from_content(content: Arc<Content>, replay: Arc<Replay>) -> io::Result<Self> {
+        Self::bind_snow_export(&content, &replay);
         Ok(Self {
             content,
             playback: Playback::unloaded(replay)?,
@@ -2763,12 +2772,55 @@ impl Document {
         replay: Arc<Replay>,
         initial: &InitialHour,
     ) -> io::Result<Self> {
+        Self::bind_snow_export(&content, &replay);
         Ok(Self {
             content,
             playback: Self::initial_playback(replay, initial)?,
             hour_fraction: initial.hour_fraction,
             demilitarized_override: BTreeSet::new(),
         })
+    }
+
+    fn bind_snow_export(content: &Arc<Content>, replay: &Arc<Replay>) {
+        let weak = Arc::downgrade(content);
+        let _ = content
+            .snow_export
+            .start(Arc::clone(replay), move |replay, check| {
+                check()?;
+                let (key, limits, path) = {
+                    let content = weak.upgrade().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::Interrupted, "snow content retired")
+                    })?;
+                    if content.snow_export_visual_mods {
+                        return Err(invalid(
+                            "snow export: visual-mod post-processing is unsupported",
+                        ));
+                    }
+                    let cells = content
+                        .snow_cells
+                        .get()
+                        .ok_or_else(|| invalid("snow cells not loaded"))?
+                        .as_ref()
+                        .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))?;
+                    let winter = content.assets.post.volumes.winter();
+                    let key = dashboard_base::snow_export::Key::for_inputs(
+                        Ok((cells, &winter)),
+                        dashboard_base::snow_export::PRODUCER_VERSION,
+                    )?;
+                    (
+                        key,
+                        dashboard_base::snow_export::Limits::new(cells, &winter),
+                        content.source_path.clone(),
+                    )
+                };
+                let key = key.bind_recording(replay, check)?;
+                check()?;
+                Ok(dashboard_base::snow_export::Reader::new(
+                    dashboard_base::prepared::recording_store(&path)?,
+                    key,
+                    limits,
+                ))
+            });
     }
 
     fn initial_playback(replay: Arc<Replay>, initial: &InitialHour) -> io::Result<Playback> {

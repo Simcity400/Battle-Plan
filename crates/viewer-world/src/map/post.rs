@@ -32,9 +32,7 @@ use std::{collections::BTreeMap, io};
 use viewer_foundation::map::textures::load_image;
 
 use eframe::wgpu;
-use installed_content_core::{
-    ResolvedLayers, defines::Defines, map::MapData, map::ProvinceKind, parser, parser::Value,
-};
+use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, parser, parser::Value};
 use installed_content_image::{Rgba8Image, native::Decode};
 use installed_content_regions::regions::StrategicRegion;
 
@@ -73,9 +71,13 @@ const LUMINANCE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The downsample and bloom targets: bright-pass RGB with log luminance in alpha.
 const BLOOM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// Native fixed-point province snow scale and the minimum snow-band width.
-const SNOW_FIXED_POINT: f32 = 100_000.0;
-const BAND_EPSILON: f32 = 0.001;
+pub use map_snow::winter::SnowFactors;
+use map_snow::winter::{
+    BAND_EPSILON, BoxVolume, HeightVolume, SnowDefines, Winter, province_extents, saturate,
+    snow_records,
+};
+#[cfg(test)]
+use map_snow::winter::{ProvinceExtent, SnowRecord, band};
 
 /// The `NDefines.NGraphics` operands of this pass.
 #[derive(Clone, Copy, Debug)]
@@ -178,70 +180,6 @@ struct PostValues {
     /// `BLOOM_WIDTH`, `BLOOM_SCALE`, `BRIGHT_THRESHOLD`.
     bloom: [f32; 3],
 }
-
-/// A `posteffect_height_volume`: the grade chosen by camera height alone.
-#[derive(Clone, Debug)]
-struct HeightVolume {
-    day: String,
-    night: String,
-    height: f32,
-    fade_distance: f32,
-}
-
-/// A `posteffect_volume`: an axis-aligned world box that overrides the height
-/// grade around the eye, with a winter pair chosen by [`Volumes::set_snow`].
-#[derive(Clone, Debug)]
-struct BoxVolume {
-    day: String,
-    night: String,
-    day_winter: Option<String>,
-    night_winter: Option<String>,
-    position: [f32; 3],
-    size: [f32; 3],
-    fade_distance: f32,
-    /// The volume's region snow records, populated by [`Volumes::set_regions`].
-    records: Vec<SnowRecord>,
-}
-
-impl BoxVolume {
-    /// Ground bounds from position and half size, as min x/z and max x/z. The unbounded vertical
-    /// extent contributes no test.
-    fn ground_bounds(&self) -> [f32; 4] {
-        [
-            self.position[0] - self.size[0] * 0.5,
-            self.position[2] - self.size[2] * 0.5,
-            self.position[0] + self.size[0] * 0.5,
-            self.position[2] + self.size[2] * 0.5,
-        ]
-    }
-}
-
-/// Province-definition operands for grading-volume snow records.
-///
-/// Map-pixel bounds use bottom-up raster rows equal to world z. Grow bounds from raster runs and
-/// round outward to even pixels. Provinces without pixels retain zero bounds.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct ProvinceExtent {
-    /// The lowest column and lowest bottom-up row.
-    min: [i32; 2],
-    /// Volume width and height.
-    size: [i32; 2],
-    /// Pixel count summed from the province's raster runs.
-    area: i32,
-    /// Terrain-kind bits distinguish land, lake and sea.
-    land: bool,
-}
-
-/// One snow record holds a representative province and its weight. Region indices are never read
-/// after creation and are omitted.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct SnowRecord {
-    province: u32,
-    weight: f32,
-}
-
-/// One winter factor per box volume, prepared in the content's volume order.
-pub type SnowFactors = Arc<[Option<f32>]>;
 
 /// The volume tables, without the LUT images, which are dropped once uploaded.
 #[derive(Clone, Debug)]
@@ -420,54 +358,8 @@ impl PostAssets {
             values.insert(name.clone(), resolved);
         }
 
-        // Look up each volume name in resolved values. Missing day/night values skip the volume; a
-        // missing winter name leaves that slot empty.
-        let named = |volume: &parser::Document, key: &str| {
-            scalar(volume, key).filter(|name| values.contains_key(name))
-        };
-        let distance = |volume: &parser::Document, key: &str| {
-            number(volume, key).map(|value| value.unwrap_or(0.0))
-        };
-        let mut heights = Vec::new();
-        let mut boxes = Vec::new();
-        for outer in document.get_all("posteffect_volumes") {
-            let outer = block(outer, "posteffect_volumes")?;
-            for value in outer.get_all("posteffect_height_volume") {
-                let volume = block(value, "posteffect_height_volume")?;
-                let (Some(day), Some(night)) = (
-                    named(&volume, "posteffect_values_day"),
-                    named(&volume, "posteffect_values_night"),
-                ) else {
-                    continue;
-                };
-                heights.push(HeightVolume {
-                    day,
-                    night,
-                    height: distance(&volume, "height").map_err(refuse)?,
-                    fade_distance: distance(&volume, "fade_distance").map_err(refuse)?,
-                });
-            }
-            for value in outer.get_all("posteffect_volume") {
-                let volume = block(value, "posteffect_volume")?;
-                let (Some(day), Some(night)) = (
-                    named(&volume, "posteffect_values_day"),
-                    named(&volume, "posteffect_values_night"),
-                ) else {
-                    continue;
-                };
-                boxes.push(BoxVolume {
-                    day,
-                    night,
-                    day_winter: named(&volume, "posteffect_values_day_winter"),
-                    night_winter: named(&volume, "posteffect_values_night_winter"),
-                    position: triple(&volume, "position").map_err(refuse)?,
-                    size: triple(&volume, "size").map_err(refuse)?,
-                    fade_distance: distance(&volume, "fade_distance").map_err(refuse)?,
-                    // Set by `Volumes::set_regions` once the map is loaded.
-                    records: Vec::new(),
-                });
-            }
-        }
+        let (mut heights, boxes) =
+            map_snow::winter::volumes(&document, |name| values.contains_key(name))?;
         heights.sort_by(|a, b| a.height.total_cmp(&b.height));
 
         let mut luts = Vec::with_capacity(lut_paths.len());
@@ -502,7 +394,23 @@ impl PostAssets {
     }
 }
 
+impl map_snow::winter::Factors for Volumes {
+    fn snow_factors(&self, snow: &[Option<i64>]) -> SnowFactors {
+        Volumes::snow_factors(self, snow)
+    }
+}
+
 impl Volumes {
+    pub fn winter(&self) -> Winter {
+        Winter {
+            defines: SnowDefines {
+                per_province: self.defines.snow_per_province,
+                total: self.defines.snow_total,
+            },
+            records: self.boxes.iter().map(|v| v.records.clone()).collect(),
+        }
+    }
+
     /// Select the highest faded-in height volume, then the first containing box, preserving LUT blend
     /// order.
     pub fn select(&self, camera: Camera, day_night: DayNight) -> Grading {
@@ -614,7 +522,16 @@ impl Volumes {
     pub fn snow_factors(&self, snow: &[Option<i64>]) -> SnowFactors {
         self.boxes
             .iter()
-            .map(|volume| snow_factor(&volume.records, snow, self.defines))
+            .map(|volume| {
+                map_snow::winter::snow_factor(
+                    &volume.records,
+                    snow,
+                    SnowDefines {
+                        per_province: self.defines.snow_per_province,
+                        total: self.defines.snow_total,
+                    },
+                )
+            })
             .collect()
     }
 
@@ -768,22 +685,6 @@ fn resolve(
     })
 }
 
-/// Clamp scalars to the unit interval, treating NaN as zero.
-fn saturate(value: f32) -> f32 {
-    if 0.0 <= value { value.min(1.0) } else { 0.0 }
-}
-
-/// Normalize within the band and clamp to zero through one. Replace a width at or below BAND_EPSILON
-/// with the epsilon before division.
-fn band(value: f32, low: f32, high: f32) -> f32 {
-    let width = if high - low <= BAND_EPSILON {
-        BAND_EPSILON
-    } else {
-        high - low
-    };
-    saturate((value - low) / width)
-}
-
 /// the identity cube uses nearest-byte rounding on a 32-point
 /// RGB lattice. Native storage is BGRA; this asset boundary owns RGBA bytes.
 fn identity_lut() -> Rgba8Image {
@@ -807,135 +708,6 @@ fn identity_lut() -> Rgba8Image {
         height: 32,
         pixels,
     }
-}
-
-/// Every defined province's [`ProvinceExtent`], indexed by id.
-///
-/// `map.province_ids` is top-down, so row `r` is native row `height - 1 - r`.
-/// `None` is an id `definition.csv` does not define, which the engine's province
-/// lookup does not return.
-fn province_extents(map: &MapData) -> Vec<Option<ProvinceExtent>> {
-    let len = map
-        .definitions
-        .keys()
-        .copied()
-        .chain(map.province_ids.iter().copied())
-        .max()
-        .map_or(0, |id| id as usize + 1);
-    let mut extents: Vec<Option<ProvinceExtent>> = vec![None; len];
-    for (&id, definition) in &map.definitions {
-        extents[id as usize] = Some(ProvinceExtent {
-            land: definition.kind == ProvinceKind::Land,
-            ..ProvinceExtent::default()
-        });
-    }
-    // Inclusive pixel bounds while scanning; `[i32::MAX, i32::MAX, -1, -1]` is unseen.
-    let mut bounds = vec![[i32::MAX, i32::MAX, -1, -1]; len];
-    let width = map.width as usize;
-    let height = map.height as i32;
-    for (index, &id) in map.province_ids.iter().enumerate() {
-        let column = (index % width.max(1)) as i32;
-        let row = height - 1 - (index / width.max(1)) as i32;
-        let Some(Some(extent)) = extents.get_mut(id as usize) else {
-            continue;
-        };
-        extent.area = extent.area.wrapping_add(1);
-        let b = &mut bounds[id as usize];
-        b[0] = b[0].min(column);
-        b[1] = b[1].min(row);
-        b[2] = b[2].max(column);
-        b[3] = b[3].max(row);
-    }
-    for (extent, b) in extents.iter_mut().zip(&bounds) {
-        if let Some(extent) = extent
-            && b[2] >= 0
-        {
-            // Align minima down and exclusive maxima up to even pixels after raster-row conversion
-            // to world Z.
-            extent.min = [b[0] & !1, b[1] & !1];
-            extent.size = [
-                ((b[2] + 2) & !1) - extent.min[0],
-                ((b[3] + 2) & !1) - extent.min[1],
-            ];
-        }
-    }
-    extents
-}
-
-/// Snow records for one grading volume's ground bounds.
-///
-/// For each region, in order: every province of its list that is land and whose
-/// box **strictly** overlaps the volume adds its whole `area` (not the overlap)
-/// and becomes the representative, so the representative is the **last**
-/// eligible province of the list. A region whose summed area is zero or that has
-/// no representative adds no record. Each record's weight is its area over the
-/// total of all records, saturated.
-///
-/// Region rectangles enclose all province boxes, including seam-split copies. Preliminary overlap
-/// cannot reject a province admitted by per-province tests, so those tests supply the result
-/// directly.
-fn snow_records<'a>(
-    bounds: [f32; 4],
-    regions: impl IntoIterator<Item = &'a [u32]>,
-    extents: &[Option<ProvinceExtent>],
-) -> Vec<SnowRecord> {
-    let [min_x, min_z, max_x, max_z] = bounds;
-    let mut areas = Vec::new();
-    let mut total = 0u32;
-    let mut seen = Vec::new();
-    for provinces in regions {
-        seen.clear();
-        let mut area = 0i32;
-        let mut representative = None;
-        for &id in provinces {
-            let Some(Some(extent)) = extents.get(id as usize) else {
-                continue;
-            };
-            // Append each province at most once per region.
-            if seen.contains(&id) {
-                continue;
-            }
-            seen.push(id);
-            let overlaps = (extent.min[0] as f32) < max_x
-                && min_x < extent.min[0].wrapping_add(extent.size[0]) as f32
-                && (extent.min[1] as f32) < max_z
-                && min_z < extent.min[1].wrapping_add(extent.size[1]) as f32;
-            if extent.land && overlaps {
-                representative = Some(id);
-                area = area.wrapping_add(extent.area);
-            }
-        }
-        if let (true, Some(province)) = (area != 0, representative) {
-            areas.push((province, area));
-            total = total.wrapping_add(area as u32);
-        }
-    }
-    areas
-        .into_iter()
-        .map(|(province, area)| SnowRecord {
-            province,
-            weight: saturate(area as f32 / total as i32 as f32),
-        })
-        .collect()
-}
-
-/// Weighted snow factor from one volume's records.
-///
-/// Each representative's raw snow is converted to `f32`, divided by
-/// [`SNOW_FIXED_POINT`] and banded through the province snow defines; the
-/// weighted sum, in record order, is banded through the total snow defines.
-fn snow_factor(records: &[SnowRecord], snow: &[Option<i64>], defines: PostDefines) -> Option<f32> {
-    let mut sum = 0.0f32;
-    for record in records {
-        let raw = snow.get(record.province as usize).copied().flatten()?;
-        let province = band(
-            raw as f32 / SNOW_FIXED_POINT,
-            defines.snow_per_province[0],
-            defines.snow_per_province[1],
-        );
-        sum += province * record.weight;
-    }
-    Some(band(sum, defines.snow_total[0], defines.snow_total[1]))
 }
 
 /// How far inside a box volume the camera is, as 0 outside to 1 beyond the fade.
@@ -997,24 +769,6 @@ fn number(document: &parser::Document, key: &str) -> Result<Option<f32>, String>
         .and_then(|text| text.trim().parse().ok())
         .map(Some)
         .ok_or_else(|| format!("{key} is not a number"))
-}
-
-/// A required `{ x y z }`.
-fn triple(document: &parser::Document, key: &str) -> Result<[f32; 3], String> {
-    let items = document
-        .get(key)
-        .and_then(Value::items)
-        .filter(|items| items.len() == 3)
-        .ok_or_else(|| format!("{key} is not three numbers"))?;
-    let mut out = [0.0; 3];
-    for (slot, item) in out.iter_mut().zip(items) {
-        *slot = item
-            .value
-            .scalar_str()
-            .and_then(|text| text.trim().parse().ok())
-            .ok_or_else(|| format!("{key} is not three numbers"))?;
-    }
-    Ok(out)
 }
 
 fn unquote(text: &str) -> String {

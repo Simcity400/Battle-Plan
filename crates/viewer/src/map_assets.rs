@@ -187,7 +187,7 @@ pub fn load(
         // trees
         trees,
         // weather
-        perm_snow: terrain_flag_mask(definitions, &terrain, |kind| kind.perm_snow).into(),
+        perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),
         // close zoom
         spawn_city: terrain_flag_mask(definitions, &terrain, |kind| kind.spawn_city),
         sight: Default::default(),

@@ -1,4 +1,5 @@
 use super::*;
+use installed_content_core::map::ProvinceKind;
 use viewer_foundation::map::camera::MapDefines;
 
 const BERLIN_DAY: i32 = 60832933;
@@ -273,13 +274,37 @@ fn the_factor_bands_each_representative_then_the_weighted_sum() {
         },
     ];
     let defines = PostDefines::default();
-    assert_eq!(snow_factor(&records, &[], defines), None);
+    assert_eq!(
+        map_snow::winter::snow_factor(
+            &records,
+            &[],
+            SnowDefines {
+                per_province: defines.snow_per_province,
+                total: defines.snow_total
+            }
+        ),
+        None
+    );
     // 10250 is a quarter up the 0.1..0.2 band; 0.025 at weight 0.8 is 0.02,
     // which is 0.4 of the 0..0.05 total band.
-    let factor = snow_factor(&records, &[Some(0), Some(10_250), Some(-5)], defines);
+    let factor = map_snow::winter::snow_factor(
+        &records,
+        &[Some(0), Some(10_250), Some(-5)],
+        SnowDefines {
+            per_province: defines.snow_per_province,
+            total: defines.snow_total,
+        },
+    );
     assert!((factor.unwrap() - 0.4).abs() < 1e-4, "{factor:?}");
     assert_eq!(
-        snow_factor(&records, &[Some(0), Some(0), Some(20_000)], defines),
+        map_snow::winter::snow_factor(
+            &records,
+            &[Some(0), Some(0), Some(20_000)],
+            SnowDefines {
+                per_province: defines.snow_per_province,
+                total: defines.snow_total
+            }
+        ),
         Some(1.0)
     );
     assert!((band(0.1005, 0.1, 0.1) - 0.5).abs() < 1e-3, "width floor");

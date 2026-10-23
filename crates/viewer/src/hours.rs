@@ -1975,17 +1975,29 @@ impl coordinator::BuildTarget for Coordinator {
             }),
         );
         let memos = Arc::clone(&self.memos);
+        let snow_replay = self.playback.replay_handle();
         submit(
             "snow",
             Box::new(move |view, _spans| {
-                Part::Snow(view.snow_cells().and_then(|cells| {
-                    memos.snow_shared.get_or_build(view.frame, |projected| {
-                        weather::grid_from_cells(cells, projected).map(|mut snow| {
-                            snow.prepare_post(&view.assets.post.volumes);
-                            snow
+                let live = || {
+                    view.snow_cells().and_then(|cells| {
+                        memos.snow_shared.get_or_build(view.frame, |projected| {
+                            map_snow::build(cells, projected, &view.assets.post.volumes)
                         })
                     })
-                }))
+                };
+                Part::Snow(match view.snow_export.reader(&snow_replay) {
+                    Ok(exports) => {
+                        exports.build_or_restore(view.frame.branch, view.frame.hour, live)
+                    }
+                    Err(reason) => {
+                        println!(
+                            "PROFILE map_export_snow branch={} hour={} result=miss restore_us=0 reason={reason:?}",
+                            view.frame.branch, view.frame.hour
+                        );
+                        live()
+                    }
+                })
             }),
         );
         PreparedTarget::Parts(Box::new(pending), jobs)
