@@ -659,6 +659,8 @@ dependencies = [
  "engine-scripts",
  "engine-stability",
  "engine-visibility",
+ "installed-content-country-names",
+ "installed-content-localisation",
  "proc-macro2",
  "recorder-replay",
  "replay",
