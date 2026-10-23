@@ -5,14 +5,16 @@ import { CountryFlag } from '../components/CountryFlag';
 import { Icon } from '../components/Icons';
 import { Segmented } from '../components/Segmented';
 import { Select } from '../components/Select';
+import { recordingDisplayName, recordingFilename } from '../dashboard/recordingNames';
 import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { captureModeFixed, discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, stopPromptVisible, untilNextMinute, whatToRecord } from './status';
-import type { CaptureMode, Head, NextLoad, RecorderSettings, Snapshot } from './status';
+import { captureModeFixed, dateText, discardTooltip, head, nextLoad, recordingName, recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText,
+  spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, whatToRecord } from './status';
+import type { CaptureMode, FlagImage, Head, NextLoad, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
 import './recorder.css';
 
-export type View = 'main' | 'settings' | 'record';
+export type View = 'main' | 'settings' | 'record' | 'recordings';
 
 /** What the panel's controls do. */
 export interface PanelActions {
@@ -29,6 +31,10 @@ export interface PanelActions {
   campaign(campaign: string, choice: { record?: boolean; next?: NextLoad }): void;
   saveFolder(): void;
   userFolder(choose: boolean): void;
+  /** Save or Discard a recording waiting to be saved. */
+  waiting(recording: UnsavedRecording, discard: boolean): void;
+  /** Show a saved recording selected in its folder. */
+  reveal(path: string): void;
 }
 
 export interface PanelViewProps {
@@ -41,9 +47,14 @@ export interface PanelViewProps {
   now: number;
   actions: PanelActions;
   root?: Ref<HTMLDivElement>;
+  /** The window is the Stop prompt alone, beside the tray icon. */
+  compact?: boolean;
+  /** The recordings, once listed. */
+  recordings?: Recordings | null;
 }
 
 const folderName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
+const joined = (parts: readonly (string | null)[]) => parts.filter(part => part).join(' · ');
 
 function Switch({ label, checked, onChange, unavailable }: { label: string; checked: boolean; onChange: (checked: boolean) => void; unavailable?: string }) {
   return <label className={`recorder-row${unavailable ? ' is-unavailable' : ''}`}><span>{label}{unavailable && <span className="recorder-hint">{unavailable}</span>}</span>
@@ -68,6 +79,12 @@ function CaptureModeChoice({ value, fixed, onChange }: { value: CaptureMode; fix
   </div>;
 }
 
+/** A switch with a one-line description under its label. */
+function Toggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return <label className="recorder-row recorder-toggle"><span className="recorder-toggle-text"><span>{label}</span><small>{description}</small></span>
+    <input type="checkbox" role="switch" checked={checked} onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)} /></label>;
+}
+
 function State({ head: shown }: { head: Head }) {
   return <span className="recorder-state">
     {shown.dot === 'spin' ? <span className="recorder-spin" aria-hidden="true" /> : shown.dot && <span className={`recorder-dot ${shown.dot}`} aria-hidden="true" />}
@@ -76,25 +93,80 @@ function State({ head: shown }: { head: Head }) {
   </span>;
 }
 
+function ItemFlag({ flag }: { flag: FlagImage | null }) {
+  return flag ? <span className="recorder-item-flag"><CountryFlag image={flag} /></span> : <span className="recorder-item-flag is-empty" aria-hidden="true" />;
+}
+
+/** Recordings waiting to be saved, besides any recording now. */
+const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
+
 /** The panel for one snapshot: every state of the approved design. */
-export function PanelView({ snapshot, settings, view, asking, error, now, actions, root }: PanelViewProps) {
+export function PanelView({ snapshot, settings, view, asking, error, now, actions, root, compact = false, recordings = null }: PanelViewProps) {
   const problem = error ?? snapshot.problem?.text ?? null;
   const notice: ReactNode = problem && <div className="notice warning" role="status">
     <Icon name="alert" /><span>{problem}</span>
     {!error && snapshot.problem && <button type="button" className="recorder-details" data-tooltip={snapshot.problem.detail || undefined}
       onClick={actions.details}>Details</button>}
   </div>;
+  const shown = head(snapshot);
+  const prompt = stopPromptVisible(asking, snapshot);
+  const discard = <button type="button" className="button small recorder-discard" data-tooltip={discardTooltip(snapshot.continued)}
+    onClick={() => actions.stop(true)}>Discard</button>;
+
+  if (compact) return <div ref={root} className="recorder recorder-compact">
+    {prompt && <div className="recorder-ask">
+      <span>{stopQuestion(recordingName(snapshot.name), snapshot.startedAt, now)}</span>
+      {discard}
+      <button type="button" className="button small primary" autoFocus onClick={() => actions.stop(false)}>Save</button>
+    </div>}
+  </div>;
+
+  const waiting = waitingCount(recordings);
+  // Battle Plan opens from every view.
+  const footer = (more: boolean) => <footer className="recorder-foot">
+    <button type="button" className="button small quiet recorder-brand" onClick={() => actions.open(null)}><BrandMark size={15} />Open Battle Plan</button>
+    <span className="recorder-grow" />
+    {more && <button type="button" className="icon-button recorder-recordings" aria-label={waiting ? `Recordings, ${waiting} waiting to be saved` : 'Recordings'}
+      data-tooltip={waiting ? `Recordings · ${waiting} waiting to be saved` : 'Recordings'} onClick={() => actions.view('recordings')}>
+      <Icon name="history" />{waiting > 0 && <span className="recorder-badge" aria-hidden="true">{waiting}</span>}</button>}
+    <button type="button" className="icon-button" aria-label="Recordings folder" data-tooltip="Recordings folder" onClick={actions.folder}>
+      <Icon name="folder" /></button>
+    {more && <button type="button" className="icon-button" aria-label="Settings" data-tooltip="Settings" disabled={!settings} onClick={() => actions.view('settings')}>
+      <Icon name="settings" /></button>}
+  </footer>;
+  const back = (to: View) => <button type="button" className="icon-button" aria-label="Back" onClick={() => actions.view(to)}><Icon name="chevron-left" /></button>;
+
+  if (view === 'recordings') {
+    const unsaved = recordings?.unsaved ?? [];
+    const saved = recordings?.saved ?? [];
+    const total = recordings && spoolTotalText(unsaved);
+    return <div ref={root} className="recorder">
+      <div className="recorder-top" data-tauri-drag-region="deep">{back('main')}Recordings</div>
+      {error && notice}
+      <div className="recorder-list themed-scrollbar">
+        <section className="recorder-section is-first" aria-label="Not saved yet">
+          <div className="recorder-label recorder-label-row"><span>Not saved yet</span>{total && <span className="recorder-total">{total}</span>}</div>
+          {recordings && (unsaved.length ? unsaved.map(row => <UnsavedRow key={`${row.session}/${row.campaign}`} row={row} actions={actions} />)
+            : <p className="recorder-empty">Nothing is waiting to be saved.</p>)}
+        </section>
+        <section className="recorder-section is-last" aria-label="Saved">
+          <div className="recorder-label">Saved</div>
+          {recordings && (saved.length ? saved.map(row => <SavedRow key={row.path} row={row} actions={actions} />)
+            : <p className="recorder-empty">No saved recordings yet.</p>)}
+        </section>
+      </div>
+      {footer(false)}
+    </div>;
+  }
 
   if (view !== 'main' && settings) {
-    const back = <button type="button" className="icon-button" aria-label="Back" onClick={() => actions.view(view === 'record' ? 'settings' : 'main')}>
-      <Icon name="chevron-left" /></button>;
     if (view === 'record') {
       const fixed = captureModeFixed(snapshot);
       // While attached, the mode the session records, not one chosen since.
       const mode = snapshot.captureMode ?? settings.captureMode;
       const fullOnly = mode === 'map' ? 'Full only' : undefined;
       return <div ref={root} className="recorder">
-        <div className="recorder-top">{back}What to record</div>
+        <div className="recorder-top" data-tauri-drag-region="deep">{back('settings')}What to record</div>
         {error && notice}
         <section className="recorder-section is-first">
           <div className="recorder-label">Capture mode</div>
@@ -109,16 +181,22 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
             onChange={operationOutcomes => actions.settings({ operationOutcomes })} />
           <Switch label="Politics" checked={settings.politics} unavailable={fullOnly} onChange={politics => actions.settings({ politics })} />
         </section>
+        {footer(false)}
       </div>;
     }
     const userOptions = [{ value: 'automatic', label: 'Automatic' },
       ...(settings.userFolder ? [{ value: 'custom', label: folderName(settings.userFolder), reason: settings.userFolder }] : []),
       { value: 'choose', label: 'Choose folder…' }];
     return <div ref={root} className="recorder">
-      <div className="recorder-top">{back}Settings</div>
+      <div className="recorder-top" data-tauri-drag-region="deep">{back('main')}Settings</div>
       {error && notice}
       <section className="recorder-section is-first">
-        <Switch label="Record every campaign" checked={settings.recordEveryCampaign} onChange={recordEveryCampaign => actions.settings({ recordEveryCampaign })} />
+        <Toggle label="Auto record" description="Records each campaign when it loads." checked={settings.recordEveryCampaign}
+          onChange={recordEveryCampaign => actions.settings({ recordEveryCampaign })} />
+        <Toggle label="Auto save" description="Saves when you load another campaign or close the game." checked={settings.autoSave}
+          onChange={autoSave => actions.settings({ autoSave })} />
+      </section>
+      <section className="recorder-section">
         <div className="recorder-row"><span>Save to</span>
           <button type="button" className="recorder-path" data-tooltip={settings.effectiveSaveFolder} onClick={actions.saveFolder}>
             <span>{settings.effectiveSaveFolder}</span><i><Icon name="folder" /></i></button></div>
@@ -135,26 +213,27 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
         <button type="button" className="recorder-row recorder-link" onClick={() => actions.view('record')}><span>What to record</span>
           <span className="recorder-value">{whatToRecord(settings)}<Icon name="chevron-right" /></span></button>
       </section>
+      {footer(false)}
     </div>;
   }
 
-  const shown = head(snapshot);
-  const prompt = stopPromptVisible(asking, snapshot);
   const campaign = snapshot.campaign;
   return <div ref={root} className="recorder">
-    <div className="recorder-head">
+    <div className="recorder-head" data-tauri-drag-region="deep">
       {shown.glyph ? <span className="recorder-glyph"><Icon name="gamepad" /></span>
         : shown.flag && <span className="recorder-flag"><CountryFlag image={shown.flag} /></span>}
-      <div className="recorder-who"><strong>{shown.title}</strong><State head={shown} /></div>
+      <div className="recorder-who"><strong data-tooltip={snapshot.recording ? recordingFilename(snapshot.recording) : undefined}>
+        {shown.title}</strong><State head={shown} />{shown.sizes && <span className="recorder-sizes">{shown.sizes}</span>}</div>
       {shown.action === 'stop' && <button type="button" className={`button small${asking ? ' is-pressed' : ''}`} aria-pressed={asking}
         onClick={actions.toggleAsk}><span className="recorder-square" aria-hidden="true" />Stop</button>}
       {shown.action === 'record' && <button type="button" className="button small" onClick={actions.record}>
         <span className="recorder-round" aria-hidden="true" />Record</button>}
       {shown.action === 'open' && <button type="button" className="button small primary" onClick={() => actions.open(snapshot.recording)}>Open</button>}
+      {shown.action === 'recordings' && <button type="button" className="button small" onClick={() => actions.view('recordings')}>Recordings</button>}
     </div>
     {prompt ? <div className="recorder-ask">
       <span><b>Keep</b> this session's {sessionLength(snapshot.startedAt, now)}?</span>
-      <button type="button" className="button small recorder-discard" data-tooltip={discardTooltip(snapshot.continued)} onClick={() => actions.stop(true)}>Discard</button>
+      {discard}
       <button type="button" className="button small primary" onClick={() => actions.stop(false)}>Save</button>
     </div> : <>
       {notice}
@@ -169,27 +248,49 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
             options={[{ value: 'continue', label: 'Continue' }, { value: 'newFile', label: 'New file' }]}
             onChange={next => actions.campaign(campaign, { next })} /></div>
       </section>}
-      {shown.footer && <footer className="recorder-foot">
-        <button type="button" className="button small quiet recorder-brand" onClick={() => actions.open(null)}><BrandMark size={15} />Open Battle Plan</button>
-        <span className="recorder-grow" />
-        <button type="button" className="icon-button" aria-label="Recordings folder" data-tooltip="Recordings folder" onClick={actions.folder}>
-          <Icon name="folder" /></button>
-        <button type="button" className="icon-button" aria-label="Settings" data-tooltip="Settings" disabled={!settings} onClick={() => actions.view('settings')}>
-          <Icon name="settings" /></button>
-      </footer>}
     </>}
+    {footer(true)}
+  </div>;
+}
+
+function UnsavedRow({ row, actions }: { row: UnsavedRecording; actions: PanelActions }) {
+  const status = row.status === 'recording' ? 'Recording' : row.status === 'saving' ? 'Saving…' : 'Waiting';
+  const when = row.status === 'recording' ? dateText(row.lastHour) : spanText(row.firstHour, row.lastHour);
+  return <div className="recorder-item">
+    <ItemFlag flag={row.flag} />
+    <span className="recorder-item-name" data-tooltip={row.recording ? recordingFilename(row.recording) : undefined}>{recordingName(row.name)}</span>
+    <span className="recorder-item-meta"><span className={`recorder-dot ${row.status === 'recording' ? 'red' : 'grey'}`} aria-hidden="true" />
+      <span>{joined([status, when, spoolText(row.spoolBytes)])}</span></span>
+    {row.status === 'waiting' && <span className="recorder-item-actions">
+      <button type="button" className="button small recorder-discard recorder-item-action" data-tooltip={discardTooltip(row.recording != null)}
+        onClick={() => actions.waiting(row, true)}>Discard</button>
+      <button type="button" className="button small recorder-item-action" onClick={() => actions.waiting(row, false)}>Save</button>
+    </span>}
+  </div>;
+}
+
+function SavedRow({ row, actions }: { row: SavedRecording; actions: PanelActions }) {
+  return <div className="recorder-item">
+    <ItemFlag flag={row.flag} />
+    <button type="button" className="recorder-item-name recorder-item-open" data-tooltip={`Open in Battle Plan · ${recordingFilename(row.path)}`}
+      onClick={() => actions.open(row.path)}>{recordingDisplayName(row.path)}</button>
+    <span className="recorder-item-meta"><span>{joined([spanText(row.firstHour, row.lastHour), sizeText(row.bytes)])}</span></span>
+    <span className="recorder-item-actions"><button type="button" className="icon-button" aria-label="Show in folder" data-tooltip="Show in folder"
+      onClick={() => actions.reveal(row.path)}><Icon name="folder-open" /></button></span>
   </div>;
 }
 
 // Asked once per panel window: the recorder answers whether it opens on the Stop prompt.
-let opened: Promise<{ askStop: boolean }> | null = null;
+let opened: Promise<{ askStop: boolean; compact: boolean }> | null = null;
 
 /** The Battle Plan Recorder tray panel. */
 export default function RecorderPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [settings, setSettings] = useState<RecorderSettings | null>(null);
+  const [recordings, setRecordings] = useState<Recordings | null>(null);
   const [view, setView] = useState<View>('main');
   const [asking, setAsking] = useState(false);
+  const [compact, setCompact] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [, setMinute] = useState(0);
   const root = useRef<HTMLDivElement>(null);
@@ -207,12 +308,34 @@ export default function RecorderPanel() {
     ];
     void api.recorderStatus().then(value => { if (active) setSnapshot(value); }, cause => { if (active) setError(errorMessage(cause)); });
     loadSettings();
-    void (opened ??= api.panelOpened()).then(({ askStop }) => { if (active && askStop) setAsking(true); }, () => {});
+    void (opened ??= api.panelOpened()).then(({ askStop, compact: alone }) => {
+      if (!active) return;
+      setCompact(alone);
+      if (askStop) setAsking(true);
+    }, () => { if (active) setCompact(false); });
     return () => { active = false; for (const listener of listeners) void listener.then(stop => stop(), () => {}); };
   }, [queue]);
 
-  // The window takes the panel's height and stays above the tray icon.
-  const ready = snapshot != null;
+  // Listed only while the full panel shows, at the status's pace while their view is open.
+  const listing = compact === false;
+  const [changed, setChanged] = useState(0);
+  useEffect(() => {
+    if (!listing) return;
+    let active = true;
+    const listener = api.onRecordings(() => { if (active) setChanged(count => count + 1); });
+    return () => { active = false; void listener.then(stop => stop(), () => {}); };
+  }, [listing]);
+  const phase = snapshot?.phase;
+  const watching = view === 'recordings' ? snapshot : null;
+  useEffect(() => {
+    if (!listing) return;
+    let active = true;
+    void api.recordings().then(value => { if (active) setRecordings(value); }, cause => { if (active) setError(errorMessage(cause)); });
+    return () => { active = false; };
+  }, [listing, phase, watching, changed]);
+
+  // The window takes the panel's height and stays on screen.
+  const ready = snapshot != null && compact != null;
   useEffect(() => {
     const element = root.current;
     if (!ready || !element) return;
@@ -246,7 +369,12 @@ export default function RecorderPanel() {
     return () => clearTimeout(timer);
   }, [prompting, startedAt]);
 
-  if (!snapshot) return <div ref={root} className="recorder" />;
+  // The pop-up beside the tray icon closes once its prompt is gone.
+  useEffect(() => {
+    if (compact && snapshot && !prompting) void api.closePanel();
+  }, [compact, snapshot, prompting]);
+
+  if (!snapshot || compact == null) return <div ref={root} className="recorder" />;
   const run = (work: () => Promise<unknown>) => {
     setError(null);
     void work().catch(cause => setError(errorMessage(cause)));
@@ -269,6 +397,9 @@ export default function RecorderPanel() {
     campaign: (campaign, choice) => save(() => api.setCampaignChoice(campaign, choice)),
     saveFolder: () => save(api.chooseSaveFolder),
     userFolder: choose => save(() => api.setUserFolder(choose)),
+    waiting: (recording, discard) => run(() => api.actOnWaiting(recording.session, recording.campaign, discard)),
+    reveal: path => run(() => api.revealRecording(path)),
   };
-  return <PanelView snapshot={snapshot} settings={settings} view={view} asking={asking} error={error} now={Date.now()} actions={actions} root={root} />;
+  return <PanelView snapshot={snapshot} settings={settings} view={view} asking={asking} error={error} now={Date.now()} actions={actions} root={root}
+    compact={compact} recordings={recordings} />;
 }

@@ -4,6 +4,7 @@
 mod commands;
 mod flags;
 mod panel;
+mod recordings;
 mod snapshot;
 mod startup;
 mod targets;
@@ -22,6 +23,7 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(Arc::clone(&recorder))
         .manage(panel::Panel::default())
+        .manage(recordings::Library::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::create(&handle, Arc::clone(&recorder))?;
@@ -48,6 +50,9 @@ fn main() {
             commands::open_recordings_folder,
             commands::open_details,
             commands::open_replay,
+            commands::recordings,
+            commands::act_on_waiting,
+            commands::reveal_recording,
         ])
         .build(tauri::generate_context!())
         .expect("Could not start Battle Plan Recorder");

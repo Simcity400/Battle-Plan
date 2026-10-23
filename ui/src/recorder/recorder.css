@@ -2,6 +2,8 @@
    theme roles so it follows the user's appearance. The window is the panel. */
 :root { background: var(--overlay); }
 .recorder { width: 100%; background: var(--overlay); color: var(--text); font-size: 0.8125rem; user-select: none; }
+/* A window clamped to the screen scrolls its content; the footer stays in reach. */
+#root { overflow-y: auto; }
 
 .recorder-head { display: flex; align-items: center; gap: 11px; padding: 16px 16px 14px; }
 .recorder-glyph { display: grid; place-items: center; flex: none; width: 38px; height: 25px; color: var(--quiet); }
@@ -90,10 +92,51 @@
 .recorder .select-trigger:hover:not(:disabled) { border: 0; background: transparent; color: var(--text); }
 .recorder .select-trigger > svg { color: var(--quiet); }
 
-.recorder-foot { display: flex; align-items: center; gap: 2px; padding: 8px 10px; box-shadow: 0 -1px 0 var(--line-soft); }
+.recorder-foot { position: sticky; bottom: 0; display: flex; align-items: center; gap: 2px; padding: 8px 10px; background: var(--overlay);
+  box-shadow: 0 -1px 0 var(--line-soft); }
 .recorder-grow { flex: 1; }
 .recorder .button.quiet.recorder-brand { padding: 0 8px; font-weight: 500; }
 /* The viewed country's flag, fitted into the design's flag slot. */
 .recorder-flag { position: relative; display: block; flex: none; width: 38px; height: 25px; overflow: hidden; border-radius: 3px; }
 .recorder-flag .country-flag { display: block; width: 100%; height: 100%; }
 .recorder-flag::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent); pointer-events: none; }
+
+.recorder-sizes { overflow: hidden; color: var(--muted); font-size: 0.71875rem; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+
+/* A switch with a one-line description under its label. */
+.recorder-toggle { min-height: 46px; padding: 3px 0; }
+.recorder-row > span.recorder-toggle-text { display: grid; gap: 1px; min-width: 0; white-space: normal; }
+.recorder-toggle-text small { overflow: hidden; color: var(--muted); font-size: 0.71875rem; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+
+/* The footer's recordings button counts recordings waiting to be saved. */
+.recorder-recordings { position: relative; }
+.recorder-badge { position: absolute; top: 1px; right: 0; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 99px;
+  background: var(--accent); color: var(--accent-text); font-size: 0.625rem; font-weight: 700; line-height: 15px; text-align: center; pointer-events: none; }
+
+/* Recordings: long lists scroll inside the view, never past the panel's fit. */
+.recorder-list { max-height: min(340px, 62vh); overflow-y: auto; overscroll-behavior: contain; }
+.recorder-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.recorder-total { color: var(--muted); font-weight: 500; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.recorder-empty { margin: 0; padding: 4px 0 8px; color: var(--muted); font-size: 0.75rem; }
+/* Name and actions share the first line; the details take the full width under them. */
+.recorder-item { display: grid; grid-template: "flag name actions" auto "flag meta meta" auto / 24px minmax(0, 1fr) auto; align-items: center;
+  column-gap: 9px; row-gap: 1px; min-height: 40px; padding: 5px 0; }
+.recorder-item + .recorder-item { box-shadow: 0 -1px 0 var(--line-soft); }
+.recorder-item-flag { grid-area: flag; position: relative; width: 24px; height: 16px; overflow: hidden; border-radius: 2px; }
+.recorder-item-flag .country-flag { display: block; width: 100%; height: 100%; }
+.recorder-item-flag::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent); }
+.recorder-item-flag.is-empty { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.recorder-item-name { grid-area: name; min-width: 0; overflow: hidden; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.recorder-item-actions { grid-area: actions; display: flex; align-items: center; gap: 2px; margin: -3px 0; }
+button.recorder-item-open { justify-self: start; max-width: 100%; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit;
+  font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+button.recorder-item-open:hover { text-decoration: underline; text-underline-offset: 2px; }
+.recorder-item-meta { grid-area: meta; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: 0.71875rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.recorder-item-meta > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.recorder .button.small.recorder-item-action { height: 24px; min-height: 24px; padding: 0 9px; font-size: 0.75rem; }
+.recorder .button.small.recorder-discard.recorder-item-action { padding: 0 6px; }
+
+/* The Stop prompt alone, beside the tray icon. */
+.recorder-compact .recorder-ask { padding: 12px 12px 12px 16px; box-shadow: none; }
+.recorder-compact .recorder-ask > span:first-child { display: -webkit-box; color: var(--text); font-size: 0.78125rem; line-height: 1.35; white-space: normal;
+  overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }

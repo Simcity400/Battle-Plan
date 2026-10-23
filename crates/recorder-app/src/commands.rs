@@ -1,11 +1,13 @@
 //! Commands the panel invokes.
 use crate::{
     panel,
+    recordings::{Library, Live, Recordings},
     snapshot::Snapshot,
     startup,
-    worker::{Recorder, save_folder},
+    worker::{Recorder, recordings_changed, save_folder},
 };
 use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
+use replay_data::identity::is_campaign_uuid;
 use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -61,15 +63,16 @@ pub fn recorder_status(recorder: State<'_, Arc<Recorder>>) -> Snapshot {
 #[serde(rename_all = "camelCase")]
 pub struct PanelOpened {
     ask_stop: bool,
+    /// The window is the Stop prompt alone, beside the tray icon.
+    compact: bool,
 }
 
 /// The panel has drawn: it learns whether to open on the Stop prompt.
 #[tauri::command]
 pub fn panel_opened(app: AppHandle, recorder: State<'_, Arc<Recorder>>) -> PanelOpened {
     recorder.panel_opened(&app);
-    PanelOpened {
-        ask_stop: panel::take_ask_stop(&app),
-    }
+    let (ask_stop, compact) = panel::take_opening(&app);
+    PanelOpened { ask_stop, compact }
 }
 
 /// The panel's content height changed: resize, place and (first time) show it.
@@ -113,6 +116,7 @@ pub async fn recorder_settings() -> Result<SettingsView, String> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsPatch {
     record_every_campaign: Option<bool>,
+    auto_save: Option<bool>,
     start_with_windows: Option<bool>,
     start_with_replay: Option<bool>,
     game_score: Option<bool>,
@@ -161,6 +165,7 @@ pub async fn update_recorder_settings(
                 &mut settings.record_every_campaign,
                 patch.record_every_campaign,
             );
+            set(&mut settings.auto_save, patch.auto_save);
             set(&mut settings.start_with_windows, patch.start_with_windows);
             set(&mut settings.start_with_replay, patch.start_with_replay);
             set(&mut settings.game_score, patch.game_score);
@@ -296,6 +301,113 @@ pub async fn open_recordings_folder() -> Result<(), String> {
     .await
 }
 
+/// The recordings not saved yet and the saved ones, listed while the panel asks.
+#[tauri::command]
+pub async fn recordings(app: AppHandle) -> Result<Recordings, String> {
+    blocking(move || {
+        let settings = RecorderSettings::load()
+            .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
+        let recorder = app.state::<Arc<Recorder>>();
+        let snapshot = recorder.snapshot();
+        let (session, set_aside, names) = recorder.set_aside();
+        let live = Live {
+            session: session.as_ref().map(|(session, _)| session.as_path()),
+            target: session.as_ref().map(|(_, target)| target.as_path()),
+            campaign: snapshot
+                .campaign
+                .as_deref()
+                .filter(|_| snapshot.phase == crate::snapshot::Phase::Recording),
+            hour: snapshot.hour,
+            set_aside: &set_aside,
+            names: &names,
+        };
+        Ok(app
+            .state::<Library>()
+            .list(&settings, &live, &recorder.flags()))
+    })
+    .await
+}
+
+/// A session folder of this recorder's save folder, and a recorded campaign in it.
+fn waiting_part(session: &str, campaign: &str) -> Result<PathBuf, String> {
+    let root = save_folder(&RecorderSettings::load().unwrap_or_default());
+    let sessions = root
+        .join("sessions")
+        .canonicalize()
+        .map_err(|error| format!("Unknown recording: {error}"))?;
+    let session = PathBuf::from(session)
+        .canonicalize()
+        .map_err(|error| format!("Unknown recording: {error}"))?;
+    if session.parent() != Some(sessions.as_path()) || !is_campaign_uuid(campaign.as_bytes()) {
+        return Err("Unknown recording".into());
+    }
+    Ok(session)
+}
+
+/// Through the running session when it saves into the same folder.
+#[tauri::command]
+pub async fn act_on_waiting(
+    app: AppHandle,
+    session: String,
+    campaign: String,
+    discard: bool,
+) -> Result<(), String> {
+    let session = waiting_part(&session, &campaign)?;
+    let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
+    let target = match recorder.live_target(&session) {
+        Some(target) => target,
+        None => {
+            let (session, campaign) = (session.clone(), campaign.clone());
+            blocking(move || recorder::controller::waiting_folder(&session, &campaign)).await?
+        }
+    };
+    if recorder.act_on_recording(&target, &campaign, discard) {
+        return Ok(());
+    }
+    let result = blocking(move || {
+        if discard {
+            recorder::controller::discard_waiting(&session, &campaign)
+        } else {
+            recorder::controller::save_waiting(&session, &campaign).map(|_| ())
+        }
+    })
+    .await;
+    recordings_changed(&app);
+    result
+}
+
+/// Show a saved recording selected in its folder.
+#[tauri::command]
+pub async fn reveal_recording(path: String) -> Result<(), String> {
+    blocking(move || {
+        let path = recording_file(&path)?;
+        Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path.display()))
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Could not show {}: {error}", path.display()))
+    })
+    .await
+}
+
+fn recording_file(path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path)
+        .canonicalize()
+        .map_err(|error| format!("Cannot open recording: {error}"))?;
+    if !path.is_file()
+        || !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
+    {
+        return Err("Choose a .battleplan recording".into());
+    }
+    // Explorer and the replay app take a plain path.
+    let plain = path.display().to_string();
+    Ok(plain
+        .strip_prefix(r"\\?\")
+        .map_or(path.clone(), PathBuf::from))
+}
+
 /// Details: the session folder holding the collector's status and completion records.
 #[tauri::command]
 pub async fn open_details(recorder: State<'_, Arc<Recorder>>) -> Result<(), String> {
@@ -339,22 +451,7 @@ pub fn launch_replay(recording: Option<&Path>) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_replay(path: Option<String>) -> Result<(), String> {
     blocking(move || {
-        let recording = match path {
-            Some(path) => {
-                let path = PathBuf::from(path)
-                    .canonicalize()
-                    .map_err(|error| format!("Cannot open recording: {error}"))?;
-                if !path.is_file()
-                    || !path
-                        .extension()
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
-                {
-                    return Err("Choose a .battleplan recording".into());
-                }
-                Some(path)
-            }
-            None => None,
-        };
+        let recording = path.as_deref().map(recording_file).transpose()?;
         launch_replay(recording.as_deref())
     })
     .await

@@ -204,6 +204,58 @@ pub fn write_campaign_spool(
     campaign
 }
 
+/// A closed spool segment of the synthetic campaign: `branch`'s hours at `load`.
+pub fn write_load_segment(
+    campaign: &std::path::Path,
+    number: u32,
+    branch: u64,
+    hours: std::ops::RangeInclusive<i32>,
+    load: i64,
+) -> std::path::PathBuf {
+    use replay::{spool::ControlRecord, spool::Record};
+    use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
+    let mut records = vec![allocation_records().remove(0)];
+    records.push(Record::BranchStart(BranchStart {
+        id: branch,
+        session: 7,
+        loaded_hour: Some(*hours.start() - 1),
+        first_hour: *hours.start(),
+        parent: Parentage::Unknown,
+        reason: BranchReason::LoadSignal,
+    }));
+    for hour in hours {
+        records.push(Record::Control(ControlRecord::ClockWitness {
+            session: 7,
+            qpc: branch * 1_000 + hour as u64,
+            hour,
+            load_signal: Some(load),
+        }));
+        records.push(Record::Frame(allocation_frame(branch, hour, load)));
+    }
+    let path = campaign.join(format!("spool.{number:04}.h4s"));
+    std::fs::create_dir_all(campaign).unwrap();
+    std::fs::write(
+        &path,
+        records
+            .iter()
+            .flat_map(|record| replay::spool::encode_record(record).unwrap())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    path
+}
+
+/// Each recorded frame of a recording, as (branch, hour).
+pub fn recorded_frames(path: &std::path::Path) -> Vec<(u64, i32)> {
+    let replay = replay::container::Replay::open(std::fs::read(path).unwrap()).unwrap();
+    replay
+        .index
+        .iter()
+        .flat_map(|block| replay.read_block(block).unwrap())
+        .map(|frame| (frame.branch, frame.hour))
+        .collect()
+}
+
 pub fn allocation_witness(committed_bytes: u64) -> replay_data::witness::TerminalWitness {
     replay_data::witness::TerminalWitness {
         session: 7,

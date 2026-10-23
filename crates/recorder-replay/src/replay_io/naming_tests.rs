@@ -148,6 +148,7 @@ impl Fixture {
             &|| Ok(()),
             Ahead::default(),
             self.naming(localised),
+            &|_| Destination::Recording,
         )
         .unwrap();
         assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
@@ -365,6 +366,7 @@ fn a_failed_rename_keeps_the_saved_recording_and_the_next_save_retries() {
         &campaign,
         &segment_paths(&campaign).unwrap(),
         &fixture.output,
+        false,
         &mut None,
         None,
         None,
@@ -478,6 +480,7 @@ fn a_session_saves_into_the_recording_it_started_with() {
         &|| Ok(()),
         Ahead::default(),
         fixture.naming(true),
+        &|_| Destination::Recording,
     )
     .unwrap();
     assert!(refused.replays.is_empty());
@@ -545,6 +548,7 @@ fn a_first_save_interrupted_before_noting_its_recording_continues_it() {
         &|| Ok(()),
         Ahead::default(),
         fixture.naming(true),
+        &|_| Destination::Recording,
     )
     .unwrap();
     assert!(refused.replays.is_empty());
@@ -593,7 +597,7 @@ fn a_spool_names_the_recording_it_will_become() {
         ),
     );
     let mut ahead = Ahead::default();
-    ahead.read(&session).unwrap();
+    ahead.read(&session, &fixture.output).unwrap();
     let names = ahead.names(Some(&fixture.localisation));
     let name = &names[std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap()];
     assert_eq!(name.stem(), "Nowhere The Reich 1936–1939 (Multiplayer)");

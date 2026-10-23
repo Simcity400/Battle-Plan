@@ -48,6 +48,9 @@ pub enum Refusal {
     /// The recorder settings could not be read or updated, so neither whether
     /// the campaign records nor its folder is known.
     Settings,
+    /// Earlier hours of the campaign wait to be saved and could not be staged for this session to
+    /// continue: its loads are left out, and other campaigns record.
+    Waiting,
 }
 
 impl Refusal {
@@ -56,6 +59,7 @@ impl Refusal {
             Self::Off => "off",
             Self::Elsewhere => "elsewhere",
             Self::Settings => "settings",
+            Self::Waiting => "waiting",
         }
     }
 
@@ -64,6 +68,7 @@ impl Refusal {
             "off" => Some(Self::Off),
             "elsewhere" => Some(Self::Elsewhere),
             "settings" => Some(Self::Settings),
+            "waiting" => Some(Self::Waiting),
             _ => None,
         }
     }
@@ -142,7 +147,7 @@ enum Segment {
 }
 
 /// A segment opened so that no one else may write, truncate, replace or delete it while held.
-fn open_held(path: &Path) -> std::io::Result<fs::File> {
+pub fn open_held(path: &Path) -> std::io::Result<fs::File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
     fs::OpenOptions::new()
@@ -162,6 +167,8 @@ pub struct Ahead {
 
 #[derive(Default)]
 struct CampaignAhead {
+    /// Segments an earlier save of the session holds, never read again.
+    saved: BTreeSet<u32>,
     tails: BTreeMap<u32, (PathBuf, Tail<Recovered>)>,
     clock: Option<FrameDecoder>,
     written: Option<(replay::container::Ahead, Box<Summary>)>,
@@ -173,13 +180,31 @@ struct CampaignAhead {
 
 impl Ahead {
     /// Reads what each campaign's spool added; whether a frame was added.
-    pub fn read(&mut self, session_dir: &Path) -> Result<bool> {
+    pub fn read(&mut self, session_dir: &Path, replay_dir: &Path) -> Result<bool> {
         let mut grew = false;
         for name in spooled_campaigns(session_dir)? {
             let campaign_dir = session_dir.join(&name);
-            let campaign = &mut **self.campaigns.entry(campaign_dir.clone()).or_default();
+            let campaign = &mut **self
+                .campaigns
+                .entry(campaign_dir.clone())
+                .or_insert_with(|| {
+                    let sessions = spool_session(&segment_paths(&campaign_dir).unwrap_or_default());
+                    let base = save_base(session_dir, replay_dir, &name, &sessions)
+                        .ok()
+                        .flatten();
+                    Box::new(CampaignAhead {
+                        saved: read_saved(&campaign_dir)
+                            .filter(|saved| Some(&saved.replay) == base.as_ref())
+                            .map(|saved| saved.segments.into_keys().collect())
+                            .unwrap_or_default(),
+                        ..CampaignAhead::default()
+                    })
+                });
             let naming = &campaign.naming;
             for (number, path) in segment_paths(&campaign_dir)? {
+                if campaign.saved.contains(&number) {
+                    continue;
+                }
                 let keep = |record: Record, placement: Placement| {
                     if let Record::Frame(frame) = &record {
                         naming
@@ -254,6 +279,11 @@ impl Ahead {
         self.speed
     }
 
+    /// Drop what was read of a campaign whose spool changed under it.
+    pub fn forget(&mut self, campaign_dir: &Path) {
+        self.campaigns.remove(campaign_dir);
+    }
+
     /// Frames read from the spools.
     pub fn frames_read(&self) -> usize {
         self.campaigns
@@ -293,7 +323,7 @@ impl Ahead {
             }
             if campaign.written.is_none() {
                 let sessions = spooled_sessions(segments.iter().flat_map(|(_, records)| *records));
-                let existing = match continued_recording(session_dir, replay_dir, &id, &sessions) {
+                let existing = match save_base(session_dir, replay_dir, &name, &sessions) {
                     Ok(None) => None,
                     Ok(Some(destination)) => match open(&destination) {
                         Ok(previous)
@@ -522,7 +552,7 @@ fn segment_number(name: &str) -> Result<Option<u32>> {
         .map_err(|_| format!("spool segment number exceeds u32: {name}"))
 }
 
-fn segment_paths(directory: &Path) -> Result<Vec<(u32, PathBuf)>> {
+pub fn segment_paths(directory: &Path) -> Result<Vec<(u32, PathBuf)>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(directory).map_err(|error| failure(directory, error))? {
         let entry = entry.map_err(|error| failure(directory, error))?;
@@ -578,6 +608,9 @@ pub fn select_recordings(session_dir: &Path, replay_dir: &Path) -> Result<()> {
     // Created now, so the folder noted is the one a save canonicalises.
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let found = recording_files::recordings(replay_dir).map_err(|error| error.to_string())?;
+    // One that cannot be read continues nothing, so only this session's own sessions count.
+    let staged = recording_files::recordings(&replay::publication::unsaved_folder(replay_dir))
+        .unwrap_or_default();
     write_selection(
         session_dir,
         &Selection {
@@ -585,6 +618,17 @@ pub fn select_recordings(session_dir: &Path, replay_dir: &Path) -> Result<()> {
             recordings: found
                 .into_iter()
                 .map(|(campaign, paths)| (String::from_utf8_lossy(&campaign).into_owned(), paths))
+                .collect(),
+            continues: staged
+                .into_iter()
+                .map(|(campaign, paths)| {
+                    let sessions = paths
+                        .iter()
+                        .filter_map(|path| Replay::read_session_ids(path).ok())
+                        .flatten()
+                        .collect();
+                    (String::from_utf8_lossy(&campaign).into_owned(), sessions)
+                })
                 .collect(),
         },
     )
@@ -594,6 +638,8 @@ struct Selection {
     /// The folder the recordings were noted in; another folder ignores them.
     folder: PathBuf,
     recordings: BTreeMap<String, Vec<PathBuf>>,
+    /// The sessions whose unsaved hours of each campaign this session continues.
+    continues: BTreeMap<String, Vec<u64>>,
 }
 
 fn folder_key(folder: &Path) -> std::io::Result<PathBuf> {
@@ -606,7 +652,11 @@ fn folder_key(folder: &Path) -> std::io::Result<PathBuf> {
 fn write_selection(session_dir: &Path, selection: &Selection) -> Result<()> {
     write_json(
         &session_dir.join(RECORDINGS_FILE),
-        &json!({ "folder": selection.folder, "recordings": selection.recordings }),
+        &json!({
+            "folder": selection.folder,
+            "recordings": selection.recordings,
+            "continues": selection.continues,
+        }),
     )
 }
 
@@ -622,6 +672,13 @@ fn selected_recordings(session_dir: &Path) -> Result<Option<Selection>> {
             .map_err(|error| failure(&path, error))?,
         recordings: serde_json::from_value(value["recordings"].clone())
             .map_err(|error| failure(&path, error))?,
+        // Noted only when unsaved hours waited.
+        continues: match &value["continues"] {
+            Value::Null => BTreeMap::new(),
+            continues => {
+                serde_json::from_value(continues.clone()).map_err(|error| failure(&path, error))?
+            }
+        },
     }))
 }
 
@@ -655,15 +712,17 @@ fn continued_recording(
     };
     let key = String::from_utf8_lossy(campaign).to_ascii_lowercase();
     match selection.recordings.get(&key).map(Vec::as_slice) {
-        // A recording that appeared since is this session's own only if it holds one of its sessions.
+        // A recording that appeared since is this session's own only if it holds one of its
+        // sessions, or of those whose unsaved hours it continues.
         None | Some([]) => match look()? {
             None => Ok(None),
             Some(path) => {
-                let found = open(&path)?;
+                let continued = selection.continues.get(&key).map_or(&[][..], Vec::as_slice);
+                let found =
+                    Replay::read_session_ids(&path).map_err(|error| failure(&path, error))?;
                 if found
-                    .sessions
                     .iter()
-                    .any(|session| sessions.contains(&session.id))
+                    .any(|session| sessions.contains(session) || continued.contains(session))
                 {
                     Ok(Some(path))
                 } else {
@@ -951,6 +1010,17 @@ fn first_witness(campaign_dir: &Path) -> Option<(u64, Option<i64>)> {
     None
 }
 
+/// The capture mode a campaign's spool records, from its first segment's session.
+pub fn spool_capture_mode(campaign_dir: &Path) -> Option<replay_data::scope::CaptureMode> {
+    let (_, first) = segment_paths(campaign_dir).ok()?.into_iter().next()?;
+    let file = fs::File::open(&first).ok()?;
+    let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    match RecordReader::new(file, length).next_record() {
+        Ok(Some(Record::SessionStart(session))) => Some(session.capture_mode),
+        _ => None,
+    }
+}
+
 /// Whether this session's spool for a campaign already holds hours from before
 /// load `load`: its first clock witness carries another load signal (or none).
 pub fn recorded_before_load(campaign_dir: &Path, load: i64) -> bool {
@@ -1143,6 +1213,8 @@ fn keep_admitted_loads(
 #[derive(Debug, Default)]
 pub struct Finalized {
     pub replays: Vec<PathBuf>,
+    /// Unsaved recordings written.
+    pub unsaved: Vec<PathBuf>,
     /// Campaigns that could not be published.
     pub errors: Vec<String>,
     /// Loads a Battle Plan Recorder session left out, with their hours and why.
@@ -1186,7 +1258,14 @@ pub fn finalize_session_outcome_with_progress(
         localisation: None,
         settings: &settings,
     };
-    finalize_session_ahead(session_dir, replay_dir, progress, Ahead::default(), naming)
+    finalize_session_ahead(
+        session_dir,
+        replay_dir,
+        progress,
+        Ahead::default(),
+        naming,
+        &|_| Destination::Recording,
+    )
 }
 
 /// How a save names recordings.
@@ -1198,17 +1277,8 @@ pub struct Naming<'a> {
     pub settings: &'a Path,
 }
 
-/// Finalizes taking over the recovery and blocks written ahead where they still hold.
-pub fn finalize_session_ahead(
-    session_dir: &Path,
-    replay_dir: &Path,
-    progress: &dyn Fn() -> std::io::Result<()>,
-    mut ahead: Ahead,
-    naming: Naming<'_>,
-) -> Result<Finalized> {
-    progress().map_err(|error| failure(session_dir, error))?;
-    let admissions = session_admissions(session_dir)?;
-    let mut finalized = Finalized::default();
+/// A session's failure witness, refusing a failed capture without one.
+fn session_witness(session_dir: &Path) -> Result<Option<TerminalWitness>> {
     let witness = read_failure_witness(session_dir)?;
     if witness.is_none()
         && ["status.json", "completed.json"].iter().any(|name| {
@@ -1223,6 +1293,32 @@ pub fn finalize_session_ahead(
             "capture failed without a valid terminal witness; spool retained",
         ));
     }
+    Ok(witness)
+}
+
+/// What a session's save does with one of its campaigns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Recording,
+    /// The unsaved recording, which the next session continues and Save publishes.
+    Unsaved,
+    /// Left in the session folder as it is.
+    Neither,
+}
+
+/// Finalizes taking over the recovery and blocks written ahead where they still hold.
+pub fn finalize_session_ahead(
+    session_dir: &Path,
+    replay_dir: &Path,
+    progress: &dyn Fn() -> std::io::Result<()>,
+    mut ahead: Ahead,
+    naming: Naming<'_>,
+    destination: &dyn Fn(&str) -> Destination,
+) -> Result<Finalized> {
+    progress().map_err(|error| failure(session_dir, error))?;
+    let admissions = session_admissions(session_dir)?;
+    let mut finalized = Finalized::default();
+    let witness = session_witness(session_dir)?;
     fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
     let mut campaigns = Vec::new();
     for entry in fs::read_dir(session_dir).map_err(|error| failure(session_dir, error))? {
@@ -1237,6 +1333,11 @@ pub fn finalize_session_ahead(
                 continue;
             }
             let name = entry.file_name().to_str().map(str::to_owned);
+            let unsaved = match name.as_deref().map_or(Destination::Recording, destination) {
+                Destination::Recording => false,
+                Destination::Unsaved => true,
+                Destination::Neither => continue,
+            };
             // A Battle Plan Recorder session publishes nothing of a campaign without
             // an admitted load; its hours are reported as left out.
             let admitted = match &admissions {
@@ -1258,7 +1359,7 @@ pub fn finalize_session_ahead(
                     }
                 }
             };
-            campaigns.push((entry.path(), name, segments, admitted));
+            campaigns.push((entry.path(), name, segments, admitted, unsaved));
         }
     }
     campaigns.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1266,12 +1367,13 @@ pub fn finalize_session_ahead(
         return Err(failure(session_dir, "no campaign spool segments found"));
     }
     let mut process_context = None;
-    for (campaign_dir, name, paths, admitted) in campaigns {
+    for (campaign_dir, name, paths, admitted, unsaved) in campaigns {
         let ahead = ahead.campaigns.remove(&campaign_dir);
         match finalize_campaign(
             &campaign_dir,
             &paths,
             replay_dir,
+            unsaved,
             &mut process_context,
             witness.as_ref(),
             admitted,
@@ -1280,7 +1382,11 @@ pub fn finalize_session_ahead(
             naming,
         ) {
             Ok(outcome) => {
-                finalized.replays.extend(outcome.replay);
+                if unsaved {
+                    finalized.unsaved.extend(outcome.replay);
+                } else {
+                    finalized.replays.extend(outcome.replay);
+                }
                 finalized.unrenamed.extend(outcome.unrenamed);
                 if let (Some(admissions), Some(name)) = (&admissions, &name) {
                     finalized.omitted.extend(
@@ -1294,7 +1400,11 @@ pub fn finalize_session_ahead(
             Err(error) => finalized.errors.push(error),
         }
     }
-    if admissions.is_some() && finalized.replays.is_empty() && finalized.errors.is_empty() {
+    if admissions.is_some()
+        && finalized.replays.is_empty()
+        && finalized.unsaved.is_empty()
+        && finalized.errors.is_empty()
+    {
         println!("No admitted load recorded an hour; nothing published.");
     }
     // By campaign; each campaign's loads stay in spool order.
@@ -1318,12 +1428,56 @@ pub fn finalize_session_ahead(
     Ok(finalized)
 }
 
-/// Publish one campaign's spool (with `admitted`, only those loads) into its recording, and name it.
+/// Save (or with `unsaved`, stage) a campaign's closed segments; its loads must be decided.
+pub fn save_campaign(
+    session_dir: &Path,
+    replay_dir: &Path,
+    campaign: &str,
+    unsaved: bool,
+    progress: &dyn Fn() -> std::io::Result<()>,
+    ahead: &mut Ahead,
+    naming: Naming<'_>,
+) -> Result<(Option<PathBuf>, Vec<Omission>)> {
+    let admissions = session_admissions(session_dir)?;
+    let witness = session_witness(session_dir)?;
+    fs::create_dir_all(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let campaign_dir = session_dir.join(campaign);
+    let admitted = admissions
+        .as_ref()
+        .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
+    let outcome = finalize_campaign(
+        &campaign_dir,
+        &segment_paths(&campaign_dir)?,
+        replay_dir,
+        unsaved,
+        &mut None,
+        witness.as_ref(),
+        admitted.as_ref(),
+        progress,
+        ahead.campaigns.remove(&campaign_dir),
+        naming,
+    )?;
+    if let Some(unrenamed) = &outcome.unrenamed {
+        println!("{unrenamed}");
+    }
+    let omitted = admissions.map_or_else(Vec::new, |admissions| {
+        outcome
+            .omitted
+            .into_iter()
+            .map(|(load, hours)| admissions.omission(campaign, load, hours))
+            .collect()
+    });
+    Ok((outcome.replay, omitted))
+}
+
+/// Publish one campaign's spool (with `admitted`, only those loads) into its recording and name
+/// it, or with `unsaved`, into its unsaved recording.
 #[allow(clippy::too_many_arguments)]
 fn finalize_campaign(
     campaign_dir: &Path,
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
+    unsaved: bool,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
@@ -1335,6 +1489,7 @@ fn finalize_campaign(
         campaign_dir,
         paths,
         replay_dir,
+        unsaved,
         process_context,
         witness,
         admitted,
@@ -1346,11 +1501,158 @@ fn finalize_campaign(
     )
 }
 
+/// The campaign's unsaved recording, found as the collector finds its history; an ambiguous one is refused.
+fn staged_recording(replay_dir: &Path, campaign: &str) -> Result<Option<PathBuf>> {
+    let staged = replay::publication::unsaved_path(replay_dir, campaign);
+    match recording_files::unsaved_recording(replay_dir, campaign.as_bytes()) {
+        Ok(found) => Ok(found.map(|_| staged)),
+        Err(error) => Err(failure(
+            replay_dir,
+            format!("{error}; nothing saved; spool retained"),
+        )),
+    }
+}
+
+/// What a save adds to: the campaign's unsaved recording when it has one, else the recording it continues.
+fn save_base(
+    session_dir: &Path,
+    replay_dir: &Path,
+    campaign: &str,
+    sessions: &[u64],
+) -> Result<Option<PathBuf>> {
+    match staged_recording(replay_dir, campaign)? {
+        Some(staged) => Ok(Some(staged)),
+        None => continued_recording(session_dir, replay_dir, campaign.as_bytes(), sessions),
+    }
+}
+
+/// The session a campaign's spool records: every segment begins with its context.
+fn spool_session(paths: &[(u32, PathBuf)]) -> Vec<u64> {
+    let first = || {
+        let (_, first) = paths.first()?;
+        let file = fs::File::open(first).ok()?;
+        let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
+        match RecordReader::new(file, length).next_record() {
+            Ok(Some(Record::SessionStart(session))) => Some(session.id),
+            Ok(Some(Record::BranchStart(branch))) => Some(branch.session),
+            _ => None,
+        }
+    };
+    first().into_iter().collect()
+}
+
+/// The name a save gives a recording of these contents.
+fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Result<String> {
+    Ok(
+        crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
+            .map_err(|error| error.to_string())?
+            .stem(),
+    )
+}
+
+/// Where a saved recording's bytes are before they become its file.
+#[derive(Clone, Copy)]
+enum Bytes<'a> {
+    /// In memory only.
+    New,
+    /// In memory, staged whole into the unsaved recording before it moves into place.
+    Restage(&'a Path),
+    /// The unsaved recording holds them.
+    Staged(&'a Path),
+    /// The recording it continues holds them.
+    Unchanged,
+}
+
+/// Make `replay` the campaign's recording: the one it continues, renamed once durable unless the
+/// user chose its name, or a new one under the first free name, never replacing another file.
+/// Returns the recording, and why it kept a name its contents no longer give.
+#[allow(clippy::too_many_arguments)]
+fn save_recording_file(
+    replay: &Replay,
+    bytes: Bytes<'_>,
+    replay_dir: &Path,
+    existing: Option<&Path>,
+    stem: &str,
+    naming: Naming<'_>,
+    publish: impl FnOnce(&Replay, &Path) -> std::io::Result<()>,
+    rename: impl FnOnce(&Path, &str) -> std::io::Result<PathBuf>,
+    progress: &dyn Fn() -> std::io::Result<()>,
+) -> Result<(PathBuf, Option<String>)> {
+    let id = &replay.campaign_id;
+    let folder = fs::canonicalize(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let settings = RecorderSettings::load_from(naming.settings)
+        .map_err(|error| failure(naming.settings, error))?;
+    let Some(destination) = existing else {
+        // A new recording is named by its contents until the user names it.
+        if settings.name_chosen(&folder, id) {
+            RecorderSettings::update_at(naming.settings, |settings| {
+                settings.choose_name(&folder, &String::from_utf8_lossy(id), false)
+            })
+            .map_err(|error| failure(naming.settings, error))?;
+        }
+        let published = match bytes {
+            Bytes::New | Bytes::Unchanged => {
+                recording_files::publish_new(replay, replay_dir, stem, |_| progress())
+            }
+            Bytes::Restage(staged) => publish(replay, staged)
+                .and_then(|()| recording_files::place_new(staged, replay_dir, stem)),
+            Bytes::Staged(staged) => recording_files::place_new(staged, replay_dir, stem),
+        }
+        .map_err(|error| failure(replay_dir, error))?;
+        progress().map_err(|error| failure(&published, error))?;
+        return Ok((published, None));
+    };
+    // Only a recording it holds whole: one game process gives each capture it makes the same session.
+    if let Bytes::Restage(_) | Bytes::Staged(_) = bytes
+        && !replay.holds(destination).map_err(|error| {
+            failure(
+                destination,
+                format!("{error}; nothing saved; spool retained"),
+            )
+        })?
+    {
+        return Err(failure(
+            destination,
+            "the unsaved recording does not hold all of this recording unchanged; nothing saved; spool retained",
+        ));
+    }
+    match bytes {
+        Bytes::New => publish(replay, destination),
+        // Staged whole first, then moved: a crash never leaves it older than the saved recording.
+        Bytes::Restage(staged) => publish(replay, staged)
+            .and_then(|()| replay::publication::replace_file(staged, destination)),
+        Bytes::Staged(staged) => replay::publication::replace_file(staged, destination),
+        // Matching bytes can survive a rename whose durability flush failed.
+        Bytes::Unchanged => replay::publication::sync_file(destination),
+    }
+    .map_err(|error| failure(destination, error))?;
+    progress().map_err(|error| failure(destination, error))?;
+    let current = destination
+        .file_stem()
+        .and_then(|current| current.to_str())
+        .unwrap_or_default();
+    if recording_files::stem_is(current, stem) || settings.name_chosen(&folder, id) {
+        return Ok((destination.to_owned(), None));
+    }
+    // Renamed once its contents are durable; a failure keeps the old name.
+    Ok(match rename(destination, stem) {
+        Ok(renamed) => (renamed, None),
+        Err(error) => (
+            destination.to_owned(),
+            Some(format!(
+                "{}: saved, but not renamed to {stem} ({error}); the next save tries again",
+                destination.display()
+            )),
+        ),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn finalize_campaign_with_publisher(
     campaign_dir: &Path,
     paths: &[(u32, PathBuf)],
     replay_dir: &Path,
+    unsaved: bool,
     process_context: &mut Option<(SessionId, u32, u64, u64)>,
     witness: Option<&TerminalWitness>,
     admitted: Option<&BTreeSet<i64>>,
@@ -1363,6 +1665,111 @@ fn finalize_campaign_with_publisher(
     let (mut tails, written) =
         ahead.map_or_else(Default::default, |ahead| (ahead.tails, ahead.written));
     let started = Instant::now();
+    let folder = campaign_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| failure(campaign_dir, "campaign folder has no name"))?;
+    let session_dir = campaign_dir.parent().unwrap_or(campaign_dir);
+    // Held until the recording has its name, so no user rename slips in between.
+    let lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let staged = replay::publication::unsaved_path(replay_dir, folder);
+    let existing = continued_recording(
+        session_dir,
+        replay_dir,
+        folder.as_bytes(),
+        &spool_session(paths),
+    )?;
+    let base = staged_recording(replay_dir, folder)?.or_else(|| existing.clone());
+    let previous = match &base {
+        Some(base) => {
+            let previous = open(base)?;
+            previous
+                .require_undamaged()
+                .map_err(|error| failure(base, error))?;
+            Some(previous)
+        }
+        None => None,
+    };
+    let base_blocks = previous.as_ref().map_or(0, |previous| previous.index.len());
+    let base_roster = match &base {
+        Some(base) => known_roster(base).map_err(|error| failure(base, error))?,
+        None => Some(false),
+    };
+    // Segments an earlier save of this session put into the base as it still is are not read again.
+    let (mut saved, mut omitted) = read_saved(campaign_dir)
+        .filter(|saved| {
+            Some(&saved.replay) == base.as_ref()
+                && previous
+                    .as_ref()
+                    .is_some_and(|previous| digest(previous.bytes()) == saved.digest)
+        })
+        .map(|saved| (saved.segments, saved.omitted))
+        .unwrap_or_default();
+    let paths: Vec<_> = paths
+        .iter()
+        .filter(|(number, path)| {
+            saved.get(number).is_none_or(|bytes| {
+                fs::metadata(path).map_or(true, |metadata| metadata.len() != *bytes)
+            })
+        })
+        .collect();
+    if paths.is_empty() {
+        // Nothing new: the base already holds every hour.
+        let (Some(base), Some(previous)) = (base, previous) else {
+            return Ok(CampaignOutcome {
+                omitted,
+                ..CampaignOutcome::default()
+            });
+        };
+        let (destination, unrenamed) = if unsaved {
+            if base != staged {
+                // The saved recording holds it all; nothing waits.
+                return Ok(CampaignOutcome {
+                    omitted,
+                    ..CampaignOutcome::default()
+                });
+            }
+            replay::publication::sync_file(&staged).map_err(|error| failure(&staged, error))?;
+            (staged, None)
+        } else {
+            let multiplayer = match base_roster {
+                Some(known) => known,
+                None => crate::recording_name::multiplayer(&previous, base_blocks)
+                    .map_err(|error| failure(&base, error))?,
+            };
+            let stem = recording_stem(&previous, naming, multiplayer)
+                .map_err(|error| failure(&base, error))?;
+            let bytes = if base == staged {
+                Bytes::Staged(&staged)
+            } else {
+                Bytes::Unchanged
+            };
+            let placed = save_recording_file(
+                &previous,
+                bytes,
+                replay_dir,
+                existing.as_deref(),
+                &stem,
+                naming,
+                publish,
+                rename,
+                progress,
+            )?;
+            record_recording(session_dir, &previous.campaign_id, &placed.0)?;
+            remember_roster(&placed.0, multiplayer).map_err(|error| failure(&placed.0, error))?;
+            if base == staged {
+                write_saved_record(campaign_dir, &placed.0, &previous, saved, &omitted);
+            }
+            placed
+        };
+        drop(lock);
+        println!("{} (already finalized; unchanged)", destination.display());
+        return Ok(CampaignOutcome {
+            replay: Some(destination),
+            unrenamed,
+            omitted,
+        });
+    }
     let mut spool_bytes = 0_u64;
     let mut segments = Vec::with_capacity(paths.len());
     let failing_campaign = witness.is_some_and(|witness| {
@@ -1418,6 +1825,7 @@ fn finalize_campaign_with_publisher(
     });
     let mut watermark_found = watermark.is_none();
     let mut held = BTreeMap::new();
+    let mut lengths = BTreeMap::new();
     for (number, path) in paths {
         let file = open_held(path).map_err(|error| failure(path, error))?;
         let length = file.metadata().map_err(|error| failure(path, error))?.len();
@@ -1473,6 +1881,7 @@ fn finalize_campaign_with_publisher(
                 recovered.valid_bytes
             );
         }
+        lengths.insert(*number, length);
         segments.push((*number, recovered));
     }
     if !watermark_found {
@@ -1525,7 +1934,6 @@ fn finalize_campaign_with_publisher(
     // load that failed) is not admitted, the failure is not this recording's
     // and the published hours end cleanly before it. A branch that failed
     // before its first clock witness takes its load from the validated witness.
-    let mut omitted = Vec::new();
     let mut failure_published = true;
     if let Some(admitted) = admitted {
         let last_branch = segments
@@ -1539,8 +1947,13 @@ fn finalize_campaign_with_publisher(
         let known = witness
             .filter(|_| failing_campaign)
             .and_then(|witness| Some((witness.branch?, witness.load_signal?)));
-        let dropped;
-        (dropped, omitted) = keep_admitted_loads(&mut segments, admitted, known);
+        let (dropped, left_out) = keep_admitted_loads(&mut segments, admitted, known);
+        for (load, hours) in left_out {
+            match omitted.iter_mut().find(|(known, _)| *known == load) {
+                Some((_, total)) => *total += hours,
+                None => omitted.push((load, hours)),
+            }
+        }
         if !segments.iter().any(|(_, recovery)| {
             recovery
                 .records
@@ -1562,39 +1975,32 @@ fn finalize_campaign_with_publisher(
                     .and_then(|witness| witness.load_signal)
                     .is_none_or(|signal| admitted.contains(&signal)));
     }
+    if let (Some(base), Some(previous)) = (&base, &previous)
+        && previous.campaign_id != id
+    {
+        return Err(failure(
+            base,
+            "existing replay belongs to a different campaign",
+        ));
+    }
+    let frames = FinalizationFrames::new(held, &segments);
+    let published = match &previous {
+        Some(previous) => published_prefix(previous, &segments, |number, frame| {
+            progress()?;
+            frames.read(number, frame)
+        })?,
+        None => 0,
+    };
+    let unchanged = published == segments.len();
+    // Saved before a failure elsewhere: it stays as it was saved.
     if let Some(witness) = witness
         && failure_published
+        && !unchanged
     {
         apply_failure_witness(&mut segments, witness, failing_campaign)
             .map_err(|error| failure(campaign_dir, error))?;
     }
-    let session_dir = campaign_dir.parent().unwrap_or(campaign_dir);
-    // Held until the recording has its name, so no user rename slips in between.
-    let lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
-    let sessions = spooled_sessions(segments.iter().flat_map(|(_, recovery)| &recovery.records));
-    let existing = continued_recording(session_dir, replay_dir, &id, &sessions)?;
-    let previous = match &existing {
-        Some(destination) => {
-            let previous = open(destination)?;
-            previous
-                .require_undamaged()
-                .map_err(|error| failure(destination, error))?;
-            if previous.campaign_id != id {
-                return Err(failure(
-                    destination,
-                    "existing replay belongs to a different campaign",
-                ));
-            }
-            Some(previous)
-        }
-        None => None,
-    };
-    let existing_blocks = previous.as_ref().map_or(0, |previous| previous.index.len());
-    let existing_roster = match &existing {
-        Some(path) => known_roster(path).map_err(|error| failure(path, error))?,
-        None => Some(false),
-    };
-    let mut sorted: Vec<_> = segments
+    let mut sorted: Vec<_> = segments[published..]
         .iter()
         .map(|(number, recovery)| (*number, recovery.records.as_slice()))
         .collect();
@@ -1612,106 +2018,93 @@ fn finalize_campaign_with_publisher(
         }
         _ => (None, Box::default()),
     };
-    let mut unchanged = false;
-    let frames = FinalizationFrames::new(held, &segments);
     let read = |number, frame: &FrameMetadata| frames.read(number, frame);
     let observe = |hour: &Observed| {
         progress()?;
         summary.observe_hour(hour).map_err(std::io::Error::other)
     };
-    let replay = if let Some(previous) = previous {
-        if already_finalized_with_reader(&previous, &segments, |number, frame| {
-            progress()?;
-            frames.read(number, frame)
-        })? {
-            unchanged = true;
-            previous
-        } else {
-            previous
-                .append_recovered_with_reader(&segments, read, progress, observe, ahead)
-                .map_err(|error| failure(existing.as_deref().unwrap_or(replay_dir), error))?
-        }
-    } else {
-        Replay::from_recovered_with_reader(id.clone(), &segments, read, progress, observe, ahead)
-            .map_err(|error| failure(campaign_dir, error))?
+    let base_path = base.as_deref().unwrap_or(campaign_dir);
+    let replay = match previous {
+        Some(previous) if unchanged => previous,
+        Some(previous) => previous
+            .append_recovered_with_reader(&segments[published..], read, progress, observe, ahead)
+            .map_err(|error| failure(base_path, error))?,
+        None => Replay::from_recovered_with_reader(
+            id.clone(),
+            &segments,
+            read,
+            progress,
+            observe,
+            ahead,
+        )
+        .map_err(|error| failure(campaign_dir, error))?,
     };
-    let checked = if unchanged {
-        replay.index.len()
-    } else {
-        existing_blocks
-    };
-    let multiplayer = summary.multiplayer
-        || match existing_roster {
-            Some(known) if !unchanged => known,
-            _ => crate::recording_name::multiplayer(&replay, checked)
-                .map_err(|error| failure(campaign_dir, error))?,
-        };
-    let stem = crate::recording_name::recording_name(&replay, naming.localisation, multiplayer)
-        .map_err(|error| failure(campaign_dir, error))?
-        .stem();
-    let folder = fs::canonicalize(replay_dir).map_err(|error| failure(replay_dir, error))?;
-    let campaign = String::from_utf8_lossy(&id).into_owned();
-    let settings = RecorderSettings::load_from(naming.settings)
-        .map_err(|error| failure(naming.settings, error))?;
     let mut outcome = CampaignOutcome {
-        omitted,
+        omitted: omitted.clone(),
         ..CampaignOutcome::default()
     };
-    let destination = match &existing {
-        Some(destination) => {
-            if unchanged {
-                // Matching bytes can survive a rename whose durability flush failed.
-                replay::publication::sync_file(destination)
-            } else {
-                publish(&replay, destination)
-            }
-            .map_err(|error| failure(destination, error))?;
-            progress().map_err(|error| failure(destination, error))?;
-            let current = destination
-                .file_stem()
-                .and_then(|current| current.to_str())
-                .unwrap_or_default();
-            if recording_files::stem_is(current, &stem) || settings.name_chosen(&folder, &id) {
-                destination.clone()
-            } else {
-                // Renamed once its contents are durable; a failure keeps the old name.
-                rename(destination, &stem).unwrap_or_else(|error| {
-                    outcome.unrenamed = Some(format!(
-                        "{}: saved, but not renamed to {stem} ({error}); the next save tries again",
-                        destination.display()
-                    ));
-                    destination.clone()
-                })
-            }
-        }
-        None => {
-            // A new recording is named by its contents until the user names it.
-            if settings.name_chosen(&folder, &id) {
-                RecorderSettings::update_at(naming.settings, |settings| {
-                    settings.choose_name(&folder, &campaign, false)
-                })
-                .map_err(|error| failure(naming.settings, error))?;
-            }
-            let published =
-                recording_files::publish_new(&replay, replay_dir, &stem, |_| progress())
-                    .map_err(|error| failure(replay_dir, error))?;
-            progress().map_err(|error| failure(&published, error))?;
-            published
-        }
-    };
-    record_recording(session_dir, &id, &destination)?;
-    remember_roster(&destination, multiplayer).map_err(|error| failure(&destination, error))?;
-    drop(lock);
-    let ready_seconds = started.elapsed().as_secs_f64();
-    println!(
-        "{}{}",
-        destination.display(),
-        if unchanged {
-            " (already finalized; unchanged)"
+    let destination = if unsaved {
+        if !unchanged {
+            replay::publication::create_unsaved_folder(replay_dir)
+                .map_err(|error| failure(replay_dir, error))?;
+            publish(&replay, &staged).map_err(|error| failure(&staged, error))?;
+        } else if base.as_ref() != Some(&staged) {
+            // The saved recording holds it all; nothing waits.
+            return Ok(CampaignOutcome {
+                omitted,
+                ..CampaignOutcome::default()
+            });
         } else {
-            ""
+            replay::publication::sync_file(&staged).map_err(|error| failure(&staged, error))?;
         }
-    );
+        staged.clone()
+    } else {
+        let checked = if unchanged {
+            replay.index.len()
+        } else {
+            base_blocks
+        };
+        let multiplayer = summary.multiplayer
+            || match base_roster {
+                Some(known) => known,
+                None => crate::recording_name::multiplayer(&replay, checked)
+                    .map_err(|error| failure(campaign_dir, error))?,
+            };
+        let stem = recording_stem(&replay, naming, multiplayer)
+            .map_err(|error| failure(campaign_dir, error))?;
+        let bytes = match (base.as_ref() == Some(&staged), unchanged) {
+            (true, false) => Bytes::Restage(&staged),
+            (true, true) => Bytes::Staged(&staged),
+            (false, true) => Bytes::Unchanged,
+            (false, false) => Bytes::New,
+        };
+        let (destination, unrenamed) = save_recording_file(
+            &replay,
+            bytes,
+            replay_dir,
+            existing.as_deref(),
+            &stem,
+            naming,
+            publish,
+            rename,
+            progress,
+        )?;
+        outcome.unrenamed = unrenamed;
+        record_recording(session_dir, &id, &destination)?;
+        remember_roster(&destination, multiplayer).map_err(|error| failure(&destination, error))?;
+        destination
+    };
+    drop(lock);
+    if unchanged {
+        println!("{} (already finalized; unchanged)", destination.display());
+    }
+    saved.extend(lengths);
+    write_saved_record(campaign_dir, &destination, &replay, saved, &omitted);
+    progress().map_err(|error| failure(&destination, error))?;
+    let ready_seconds = started.elapsed().as_secs_f64();
+    if !unchanged {
+        println!("{}", destination.display());
+    }
     println!(
         "finalize_s={ready_seconds:.3} replay_bytes={} spool_bytes={spool_bytes}",
         replay.bytes().len()
@@ -1772,6 +2165,28 @@ fn finalize_campaign_with_publisher(
         replay: Some(destination),
         ..outcome
     })
+}
+
+/// Note the segments a save put into `destination`; without the note the next save compares them
+/// with the recording instead.
+fn write_saved_record(
+    campaign_dir: &Path,
+    destination: &Path,
+    replay: &Replay,
+    segments: BTreeMap<u32, u64>,
+    omitted: &[(Option<i64>, u64)],
+) {
+    if let Err(error) = write_saved(
+        campaign_dir,
+        &Saved {
+            replay: destination.to_owned(),
+            digest: digest(replay.bytes()),
+            segments,
+            omitted: omitted.to_vec(),
+        },
+    ) {
+        eprintln!("{error}");
+    }
 }
 
 fn apply_failure_witness(
@@ -1997,6 +2412,291 @@ fn apply_failure_witness(
 fn open(path: &Path) -> Result<Replay> {
     Replay::open(fs::read(path).map_err(|error| failure(path, error))?)
         .map_err(|error| failure(path, error))
+}
+
+/// The segments a save put into a recording, valid while the recording has the digest written.
+const SAVED_FILE: &str = "saved.json";
+
+struct Saved {
+    replay: PathBuf,
+    digest: u64,
+    /// Segment number to its length when saved.
+    segments: BTreeMap<u32, u64>,
+    /// Loads those segments left out, with their hours.
+    omitted: Vec<(Option<i64>, u64)>,
+}
+
+/// FNV-1a over little-endian words.
+fn digest(bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64 ^ bytes.len() as u64;
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        hash = (hash ^ u64::from_le_bytes(word.try_into().unwrap())).wrapping_mul(PRIME);
+    }
+    for byte in words.remainder() {
+        hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
+    }
+    hash
+}
+
+fn read_saved(campaign_dir: &Path) -> Option<Saved> {
+    let value: Value =
+        serde_json::from_slice(&fs::read(campaign_dir.join(SAVED_FILE)).ok()?).ok()?;
+    Some(Saved {
+        replay: PathBuf::from(value["replay"].as_str()?),
+        digest: u64::from_str_radix(value["digest"].as_str()?, 16).ok()?,
+        segments: value["segments"]
+            .as_array()?
+            .iter()
+            .map(|entry| Some((u32::try_from(entry[0].as_u64()?).ok()?, entry[1].as_u64()?)))
+            .collect::<Option<_>>()?,
+        omitted: value["omitted"]
+            .as_array()?
+            .iter()
+            .map(|entry| {
+                let load = match &entry[0] {
+                    Value::Null => None,
+                    load => Some(load.as_i64()?),
+                };
+                Some((load, entry[1].as_u64()?))
+            })
+            .collect::<Option<_>>()?,
+    })
+}
+
+fn write_saved(campaign_dir: &Path, saved: &Saved) -> Result<()> {
+    write_json(
+        &campaign_dir.join(SAVED_FILE),
+        &json!({
+            "replay": saved.replay,
+            "digest": format!("{:016x}", saved.digest),
+            "segments": saved.segments.iter().map(|(number, bytes)| json!([number, bytes])).collect::<Vec<_>>(),
+            "omitted": saved.omitted.iter().map(|(load, hours)| json!([load, hours])).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+/// By the saved record alone: for showing and discarding, never for publishing.
+pub fn unsaved_segments(campaign_dir: &Path) -> Result<Vec<(u32, PathBuf, u64)>> {
+    // Hours staged into an unsaved recording still wait.
+    let saved = read_saved(campaign_dir)
+        .filter(|saved| {
+            saved.replay.parent()
+                != Some(&replay::publication::unsaved_folder(
+                    saved
+                        .replay
+                        .parent()
+                        .and_then(Path::parent)
+                        .unwrap_or(Path::new("")),
+                ))
+        })
+        .map(|saved| saved.segments)
+        .unwrap_or_default();
+    let mut unsaved = Vec::new();
+    for (number, path) in segment_paths(campaign_dir)? {
+        let bytes = fs::metadata(&path)
+            .map_err(|error| failure(&path, error))?
+            .len();
+        if saved.get(&number) != Some(&bytes) {
+            unsaved.push((number, path, bytes));
+        }
+    }
+    Ok(unsaved)
+}
+
+/// What a campaign's unsaved spool holds, for a recording waiting to be saved.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Unsaved {
+    /// Admitted hours.
+    pub hours: u64,
+    pub first_hour: Option<Hour>,
+    pub last_hour: Option<Hour>,
+    /// Spool bytes on disk.
+    pub bytes: u64,
+    /// A load in them was never asked about, so what a save keeps is not known yet.
+    pub undecided: bool,
+}
+
+/// The admitted hours of a campaign's unsaved segments; `None` when nothing waits.
+pub fn unsaved(session_dir: &Path, campaign: &str) -> Result<Option<Unsaved>> {
+    let admissions = session_admissions(session_dir)?;
+    let campaign_dir = session_dir.join(campaign);
+    let admitted = admissions
+        .as_ref()
+        .map(|admissions| admissions.loads.get(campaign).cloned().unwrap_or_default());
+    let decided = |load: i64| {
+        admissions.as_ref().is_none_or(|admissions| {
+            admitted
+                .as_ref()
+                .is_some_and(|admitted| admitted.contains(&load))
+                || admissions
+                    .refused
+                    .contains_key(&(campaign.to_owned(), load))
+        })
+    };
+    let mut summary = Unsaved::default();
+    for (_, path, bytes) in unsaved_segments(&campaign_dir)? {
+        summary.bytes += bytes;
+        let file = fs::File::open(&path).map_err(|error| failure(&path, error))?;
+        let recovery = recover_reader(
+            std::io::BufReader::new(file),
+            usize::try_from(bytes).map_err(|error| failure(&path, error))?,
+            Recovered::keep,
+            |_| Ok(()),
+        )
+        .map_err(|error| failure(&path, error))?;
+        let mut branches = BranchLoads::default();
+        for record in &recovery.records {
+            branches.observe(record.view());
+        }
+        summary.undecided |= branches.loads.values().any(|load| !decided(*load));
+        for record in &recovery.records {
+            let Recovered::Frame(frame) = record else {
+                continue;
+            };
+            if admitted.as_ref().is_some_and(|admitted| {
+                !branches
+                    .loads
+                    .get(&frame.branch)
+                    .is_some_and(|load| admitted.contains(load))
+            }) {
+                continue;
+            }
+            let hour = frame.hour;
+            summary.hours += 1;
+            summary.first_hour = Some(summary.first_hour.map_or(hour, |first| first.min(hour)));
+            summary.last_hour = Some(summary.last_hour.map_or(hour, |last| last.max(hour)));
+        }
+    }
+    Ok((summary.hours > 0 || summary.undecided).then_some(summary))
+}
+
+/// Save a recording's unsaved hours: its unsaved recording becomes it, named as any save names it.
+pub fn publish_unsaved(
+    replay_dir: &Path,
+    campaign: &str,
+    naming: Naming<'_>,
+) -> Result<Option<PathBuf>> {
+    let Some(unsaved) = staged_recording(replay_dir, campaign)? else {
+        return Ok(None);
+    };
+    // Held until the recording has its name, so no user rename slips in between.
+    let _lock = NamesLock::wait(replay_dir).map_err(|error| failure(replay_dir, error))?;
+    let existing = recording_files::recording_of(replay_dir, campaign.as_bytes())
+        .map_err(|error| failure(replay_dir, error))?;
+    let replay = open(&unsaved)?;
+    replay
+        .require_undamaged()
+        .map_err(|error| failure(&unsaved, error))?;
+    if !replay.campaign_id.eq_ignore_ascii_case(campaign.as_bytes()) {
+        return Err(failure(
+            &unsaved,
+            "existing replay belongs to a different campaign",
+        ));
+    }
+    let multiplayer = match known_roster(&unsaved).map_err(|error| failure(&unsaved, error))? {
+        Some(known) => known,
+        None => crate::recording_name::multiplayer(&replay, replay.index.len())
+            .map_err(|error| failure(&unsaved, error))?,
+    };
+    let stem =
+        recording_stem(&replay, naming, multiplayer).map_err(|error| failure(&unsaved, error))?;
+    let (recording, unrenamed) = save_recording_file(
+        &replay,
+        Bytes::Staged(&unsaved),
+        replay_dir,
+        existing.as_deref(),
+        &stem,
+        naming,
+        |_: &Replay, _: &Path| Ok(()),
+        recording_files::rename,
+        &|| Ok(()),
+    )?;
+    if let Some(unrenamed) = unrenamed {
+        println!("{unrenamed}");
+    }
+    remember_roster(&recording, multiplayer).map_err(|error| failure(&recording, error))?;
+    Ok(Some(recording))
+}
+
+/// Drop a recording's unsaved hours, keeping what it saved. An ambiguous unsaved recording, one
+/// that may hold another campaign's hours, is refused and every file kept.
+pub fn discard_unsaved_recording(replay_dir: &Path, campaign: &str) -> Result<()> {
+    let unsaved = recording_files::unsaved_recording(replay_dir, campaign.as_bytes())
+        .map_err(|error| failure(replay_dir, format!("{error}; nothing discarded")))?;
+    if let Some(unsaved) = unsaved {
+        replay::publication::posix_delete(&unsaved).map_err(|error| failure(&unsaved, error))?;
+    }
+    Ok(())
+}
+
+/// Call only once no one writes them.
+pub fn discard_unsaved(session_dir: &Path, campaign: &str) -> Result<()> {
+    for (_, path, _) in unsaved_segments(&session_dir.join(campaign))? {
+        fs::remove_file(&path).map_err(|error| format!("discard {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// How many leading segments the recording holds exactly; the rest must share no hour with it.
+fn published_prefix(
+    previous: &Replay,
+    segments: &[(u32, Recovery<Recovered>)],
+    read: impl FnMut(u32, &FrameMetadata) -> std::io::Result<Frame>,
+) -> Result<usize> {
+    let conflict = || {
+        "spool overlaps a finalized session but differs from it; refusing to append duplicate or conflicting hours".to_string()
+    };
+    let mut blocks: BTreeMap<BranchId, Vec<(Hour, Hour)>> = BTreeMap::new();
+    for index in &previous.index {
+        blocks
+            .entry(index.branch)
+            .or_default()
+            .push((index.first_hour, index.last_hour));
+    }
+    let covered = |branch: BranchId, hour: Hour| {
+        blocks.get(&branch).is_some_and(|ranges| {
+            let at = ranges.partition_point(|(first, _)| *first <= hour);
+            at > 0 && ranges[at - 1].1 >= hour
+        })
+    };
+    let mut published = 0;
+    let mut frames = false;
+    for (at, (_, recovery)) in segments.iter().enumerate() {
+        let (mut inside, mut outside) = (0, 0);
+        for record in &recovery.records {
+            if let Recovered::Frame(frame) = record {
+                if covered(frame.branch, frame.hour) {
+                    inside += 1;
+                } else {
+                    outside += 1;
+                }
+            }
+        }
+        let held = if inside + outside == 0 {
+            recovery.records.iter().all(|record| match record {
+                Recovered::SessionStart(session) => previous.sessions.contains(session),
+                Recovered::BranchStart(branch) => previous.branches.contains(branch),
+                Recovered::Gap(gap) => previous.gaps.contains(gap),
+                Recovered::Control(control) => previous.controls.contains(control),
+                _ => true,
+            })
+        } else {
+            outside == 0
+        };
+        if inside > 0 && (outside > 0 || published != at) {
+            return Err(conflict());
+        }
+        if held && published == at {
+            published += 1;
+            frames |= inside > 0;
+        }
+    }
+    if frames && !already_finalized_with_reader(previous, &segments[..published], read)? {
+        return Err(conflict());
+    }
+    Ok(published)
 }
 
 /// A repeated request is harmless only when its complete recovered contents
@@ -3068,6 +3768,365 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    use crate::test_support::write_load_segment as set_aside_segment;
+
+    #[test]
+    fn a_campaign_saved_while_the_session_records_on_appends_exactly_what_follows() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("set-aside-save");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        admissions
+            .admit(&session, &target, name, FIRST_LOAD)
+            .unwrap();
+        // The game left the campaign: its segment is closed and saved at once.
+        set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        let mut ahead = Ahead::default();
+        ahead.read(&session, &target).unwrap();
+        let (saved, omitted) = save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut ahead,
+            unnamed(),
+        )
+        .unwrap();
+        let saved = saved.unwrap();
+        assert!(omitted.is_empty());
+        assert_eq!(published_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
+        assert!(unsaved_segments(&campaign).unwrap().is_empty());
+        assert_eq!(unsaved(&session, name).unwrap(), None);
+        // Loaded again in the same session: a new load in a new segment.
+        admissions.admit(&session, &target, name, RELOAD).unwrap();
+        let second = set_aside_segment(&campaign, 1, 10, 3..=5, RELOAD);
+        assert_eq!(
+            unsaved(&session, name).unwrap(),
+            Some(Unsaved {
+                hours: 3,
+                first_hour: Some(3),
+                last_hour: Some(5),
+                bytes: fs::metadata(&second).unwrap().len(),
+                undecided: false,
+            })
+        );
+        ahead.read(&session, &target).unwrap();
+        save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut ahead,
+            unnamed(),
+        )
+        .unwrap();
+        let both = [(9, 2), (9, 3), (9, 4), (10, 3), (10, 4), (10, 5)];
+        assert_eq!(published_frames(&saved), both);
+        let replay = open(&saved).unwrap();
+        assert_eq!(
+            replay
+                .branches
+                .iter()
+                .map(|branch| branch.id)
+                .collect::<Vec<_>>(),
+            [9, 10]
+        );
+        assert_eq!(replay.sessions.len(), 1);
+        // The same as saving the whole spool at once.
+        let whole = finalize_session(&session, &directory.join("whole")).unwrap();
+        assert_eq!(published_frames(&whole[0]), both);
+        assert_eq!(open(&whole[0]).unwrap().branches, replay.branches);
+        // Saving again, even without its saved record, changes nothing.
+        let bytes = fs::read(&saved).unwrap();
+        save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap();
+        assert_eq!(
+            finalize_session(&session, &target).unwrap(),
+            [saved.clone()]
+        );
+        fs::remove_file(campaign.join(SAVED_FILE)).unwrap();
+        save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&saved).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_save_continues_the_unsaved_recording_and_takes_its_place() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("unsaved-base");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        // Its hours name no country or date.
+        let recording = target.join("Campaign.battleplan");
+        let unsaved = replay::publication::unsaved_path(&target, name);
+        let campaign = session.join(name);
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        for load in [FIRST_LOAD, RELOAD] {
+            admissions.admit(&session, &target, name, load).unwrap();
+        }
+        let save = |stage| {
+            save_campaign(
+                &session,
+                &target,
+                name,
+                stage,
+                &|| Ok(()),
+                &mut Ahead::default(),
+                unnamed(),
+            )
+            .unwrap()
+            .0
+        };
+        set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        assert_eq!(save(true), Some(unsaved.clone()));
+        // Staged hours still wait, for showing and discarding.
+        assert_eq!(unsaved_segments(&campaign).unwrap().len(), 1);
+        set_aside_segment(&campaign, 1, 10, 5..=6, RELOAD);
+        assert_eq!(save(false), Some(recording.clone()));
+        assert!(!unsaved.exists());
+        assert_eq!(
+            published_frames(&recording),
+            [(9, 2), (9, 3), (9, 4), (10, 5), (10, 6)]
+        );
+        assert!(unsaved_segments(&campaign).unwrap().is_empty());
+        // Nothing more: staging finds nothing waiting.
+        assert_eq!(save(true), None);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_save_never_replaces_a_recording_its_unsaved_recording_does_not_hold() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("unsaved-not-held");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let begin = |session: &Path, target: &Path, load: i64| {
+            begin_admissions(session, target).unwrap();
+            select_recordings(session, target).unwrap();
+            Admissions::default()
+                .admit(session, target, name, load)
+                .unwrap();
+        };
+        let save = |session: &Path, target: &Path, stage: bool| {
+            save_campaign(
+                session,
+                target,
+                name,
+                stage,
+                &|| Ok(()),
+                &mut Ahead::default(),
+                unnamed(),
+            )
+        };
+        // Hours 2 to 4, saved.
+        let first = directory.join("first");
+        let first_session = directory.join("first-session");
+        begin(&first_session, &first, FIRST_LOAD);
+        set_aside_segment(&first_session.join(name), 0, 9, 2..=4, FIRST_LOAD);
+        let saved = save(&first_session, &first, false).unwrap().0.unwrap();
+        let published = fs::read(&saved).unwrap();
+        // New file: the same game process captures hours 5 and 6 into another folder; they wait.
+        let second = directory.join("second");
+        let second_session = directory.join("second-session");
+        begin(&second_session, &second, RELOAD);
+        set_aside_segment(&second_session.join(name), 0, 10, 5..=6, RELOAD);
+        let unsaved = save(&second_session, &second, true).unwrap().0.unwrap();
+        assert_eq!(unsaved, replay::publication::unsaved_path(&second, name));
+        // The first recording is moved in before Save; its session is the waiting hours' own.
+        let moved = second.join(saved.file_name().unwrap());
+        fs::rename(&saved, &moved).unwrap();
+        assert_eq!(
+            Replay::read_session_ids(&moved).unwrap(),
+            Replay::read_session_ids(&unsaved).unwrap()
+        );
+        // The unsaved recording holds hours 5 and 6 alone: no save replaces the first with it.
+        let error = save(&second_session, &second, false).unwrap_err();
+        assert!(error.contains("nothing saved; spool retained"), "{error}");
+        let error = publish_unsaved(&second, name, unnamed()).unwrap_err();
+        assert!(error.contains("nothing saved; spool retained"), "{error}");
+        assert_eq!(fs::read(&moved).unwrap(), published);
+        assert_eq!(published_frames(&unsaved), [(10, 5), (10, 6)]);
+        // Moved back out, the waiting hours save as a recording of their own.
+        fs::rename(&moved, &saved).unwrap();
+        let placed = save(&second_session, &second, false).unwrap().0.unwrap();
+        assert_eq!(published_frames(&placed), [(10, 5), (10, 6)]);
+        assert_eq!(fs::read(&saved).unwrap(), published);
+        // Hours staged onto the first recording hold it whole, so they take its place.
+        let third_session = directory.join("third-session");
+        begin(&third_session, &first, THIRD_LOAD);
+        set_aside_segment(&third_session.join(name), 0, 11, 7..=8, THIRD_LOAD);
+        save(&third_session, &first, true).unwrap();
+        let replaced = save(&third_session, &first, false).unwrap().0.unwrap();
+        assert_eq!(
+            published_frames(&replaced),
+            [(9, 2), (9, 3), (9, 4), (11, 7), (11, 8)]
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn discard_keeps_an_unsaved_recording_named_for_another_campaign() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_test_directory};
+        const OTHER: &str = "00000000-0000-4000-8000-000000000001";
+        let directory = allocation_test_directory("discard-ambiguous");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let (session, target) = (directory.join("session"), directory.join("target"));
+        begin_admissions(&session, &target).unwrap();
+        select_recordings(&session, &target).unwrap();
+        Admissions::default()
+            .admit(&session, &target, name, FIRST_LOAD)
+            .unwrap();
+        set_aside_segment(&session.join(name), 0, 9, 2..=4, FIRST_LOAD);
+        let staged = save_campaign(
+            &session,
+            &target,
+            name,
+            true,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap()
+        .0
+        .unwrap();
+        // Its hours under another campaign's name: neither campaign's Discard may delete them.
+        let misnamed = replay::publication::unsaved_path(&target, OTHER);
+        fs::rename(&staged, &misnamed).unwrap();
+        let bytes = fs::read(&misnamed).unwrap();
+        for campaign in [OTHER, name] {
+            let error = discard_unsaved_recording(&target, campaign).unwrap_err();
+            assert!(error.contains("nothing discarded"), "{error}");
+        }
+        assert_eq!(fs::read(&misnamed).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_saved_segment_that_differs_from_the_recording_is_refused() {
+        use crate::test_support::{ALLOCATION_CAMPAIGN, FIRST_LOAD, allocation_test_directory};
+        let directory = allocation_test_directory("set-aside-conflict");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        begin_admissions(&session, &target).unwrap();
+        Admissions::default()
+            .admit(&session, &target, name, FIRST_LOAD)
+            .unwrap();
+        set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        let saved = save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap()
+        .0
+        .unwrap();
+        let bytes = fs::read(&saved).unwrap();
+        // A segment holding saved hours and a new one, and nothing saying what was saved.
+        fs::remove_file(campaign.join(SAVED_FILE)).unwrap();
+        set_aside_segment(&campaign, 0, 9, 2..=5, FIRST_LOAD);
+        let error = save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("refusing to append duplicate or conflicting hours"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&saved).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn discarding_waiting_hours_keeps_what_was_saved_and_undecided_loads_are_told() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
+        };
+        let directory = allocation_test_directory("set-aside-discard");
+        let session = directory.join("session");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        begin_admissions(&session, &target).unwrap();
+        let mut admissions = Admissions::default();
+        admissions
+            .admit(&session, &target, name, FIRST_LOAD)
+            .unwrap();
+        let first = set_aside_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        let saved = save_campaign(
+            &session,
+            &target,
+            name,
+            false,
+            &|| Ok(()),
+            &mut Ahead::default(),
+            unnamed(),
+        )
+        .unwrap()
+        .0
+        .unwrap();
+        let bytes = fs::read(&saved).unwrap();
+        // A refused load and one never asked about wait after it.
+        admissions
+            .refuse(&session, &target, name, RELOAD, Refusal::Off)
+            .unwrap();
+        set_aside_segment(&campaign, 1, 10, 5..=6, RELOAD);
+        let refused = unsaved(&session, name).unwrap();
+        assert_eq!(
+            refused, None,
+            "a refused load is never saved, so nothing waits"
+        );
+        set_aside_segment(&campaign, 2, 11, 7..=8, THIRD_LOAD);
+        let waiting = unsaved(&session, name).unwrap().unwrap();
+        assert!(waiting.undecided);
+        assert_eq!((waiting.hours, waiting.first_hour), (0, None));
+        discard_unsaved(&session, name).unwrap();
+        assert_eq!(segment_paths(&campaign).unwrap(), [(0, first)]);
+        assert_eq!(fs::read(&saved).unwrap(), bytes);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn a_full_spool_with_nothing_admitted_reports_every_load_left_out() {
         use crate::test_support::{
@@ -3353,6 +4412,7 @@ mod tests {
             &campaign,
             &segment_paths(&campaign).unwrap(),
             &output,
+            false,
             &mut None,
             None,
             None,
@@ -3547,11 +4607,11 @@ mod tests {
             written.extend_from_slice(&record);
             // The collector's write of a record may not be whole yet.
             fs::write(&path, &written[..written.len() - record.len() / 2]).unwrap();
-            ahead.read(&session).unwrap();
+            ahead.read(&session, &ahead_dir).unwrap();
             ahead.write(&session, &ahead_dir, &|| false).unwrap();
             fs::write(&path, &written).unwrap();
             if at % 3 == 0 {
-                ahead.read(&session).unwrap();
+                ahead.read(&session, &ahead_dir).unwrap();
                 ahead.write(&session, &ahead_dir, &|| false).unwrap();
             }
         }
@@ -3560,7 +4620,10 @@ mod tests {
         assert_eq!(ahead.frames_read(), 20);
         assert_eq!(ahead.speed(), Some(0));
         let with =
-            finalize_session_ahead(&session, &ahead_dir, &|| Ok(()), ahead, unnamed()).unwrap();
+            finalize_session_ahead(&session, &ahead_dir, &|| Ok(()), ahead, unnamed(), &|_| {
+                Destination::Recording
+            })
+            .unwrap();
         let without = finalize_session(&session, &directory.join("plain")).unwrap();
         assert_eq!(
             fs::read(&with.replays[0]).unwrap(),
@@ -3568,7 +4631,7 @@ mod tests {
         );
         // Records that differ from those written ahead are finalized from the spool.
         let mut ahead = Ahead::default();
-        ahead.read(&session).unwrap();
+        ahead.read(&session, &directory.join("changed")).unwrap();
         ahead
             .write(&session, &directory.join("changed"), &|| false)
             .unwrap();
@@ -3585,6 +4648,7 @@ mod tests {
             &|| Ok(()),
             ahead,
             unnamed(),
+            &|_| Destination::Recording,
         )
         .unwrap();
         let plain = finalize_session(&session, &directory.join("changed-plain")).unwrap();
@@ -3594,7 +4658,7 @@ mod tests {
         );
         // A spool cut short since it was read ahead is finalized from what it still holds.
         let mut ahead = Ahead::default();
-        ahead.read(&session).unwrap();
+        ahead.read(&session, &directory.join("truncated")).unwrap();
         ahead
             .write(&session, &directory.join("truncated"), &|| false)
             .unwrap();
@@ -3607,6 +4671,7 @@ mod tests {
             &|| Ok(()),
             ahead,
             unnamed(),
+            &|_| Destination::Recording,
         )
         .unwrap();
         let plain = finalize_session(&session, &directory.join("truncated-plain")).unwrap();

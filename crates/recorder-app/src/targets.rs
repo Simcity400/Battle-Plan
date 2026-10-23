@@ -49,10 +49,25 @@ impl RecordingCache {
     }
 }
 
-/// Whether the folder may hold the campaign's recording; one that cannot be read might.
-fn has_recording(folder: &Path, campaign: &str) -> bool {
+/// The ended sessions whose hours of the campaign wait to be saved into `folder`.
+fn waiting_sessions(root: &Path, folder: &Path, campaign: &str) -> Vec<PathBuf> {
+    recorder::controller::session_folders(root)
+        .into_iter()
+        .filter(|session| {
+            recorder::controller::waiting_campaigns(session)
+                .iter()
+                .any(|waiting| waiting.campaign == campaign && waiting.target == folder)
+        })
+        .collect()
+}
+
+/// Whether `folder` may hold the campaign's recording: saved (one that cannot be read might),
+/// unsaved, or waiting in an ended session's spool.
+fn holds_recording(root: &Path, folder: &Path, campaign: &str) -> bool {
     recording_files::recordings_of(folder, campaign.as_bytes())
         .map_or(true, |found| !found.is_empty())
+        || replay::publication::unsaved_path(folder, campaign).exists()
+        || !waiting_sessions(root, folder, campaign).is_empty()
 }
 
 /// The campaign's current folder, without using up a pending New file.
@@ -78,10 +93,25 @@ fn new_folder_name(root: &Path, campaign: &str) -> String {
     }
 }
 
-/// An unreadable recording is left to the append, which refuses it by name.
-fn other_mode(folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
-    recording(folder, campaign)
-        .is_some_and(|path| Replay::read_capture_mode(&path).is_ok_and(|recorded| recorded != mode))
+/// What a session in `folder` continues is in another capture mode: the unsaved recording, else
+/// the saved one, or hours an ended session left waiting. An unreadable recording is left to the
+/// append, which refuses it by name.
+fn other_mode(root: &Path, folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
+    let other =
+        |path: &Path| Replay::read_capture_mode(path).is_ok_and(|recorded| recorded != mode);
+    let unsaved = replay::publication::unsaved_path(folder, campaign);
+    let continued = if unsaved.exists() {
+        other(&unsaved)
+    } else {
+        recording(folder, campaign).is_some_and(|path| other(&path))
+    };
+    continued
+        || waiting_sessions(root, folder, campaign)
+            .iter()
+            .any(|session| {
+                recorder::controller::spool_capture_mode(&session.join(campaign))
+                    .is_some_and(|recorded| recorded != mode)
+            })
 }
 
 /// Where the campaign's next session (or next load) records. A pending New
@@ -89,7 +119,7 @@ fn other_mode(folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
 /// its current folder, or (`recorded`) hours of an earlier load in the running
 /// session's spool, which become that recording when the session saves. It is
 /// used up either way; the returned flag records consumption under the settings lock.
-/// A recording in another capture mode moves the campaign to a new folder too.
+/// A recording, or hours waiting, in another capture mode moves the campaign to a new folder too.
 pub fn session_target_at(
     settings_path: &Path,
     root: &Path,
@@ -101,7 +131,7 @@ pub fn session_target_at(
         .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
     let current = current_folder(&settings, root, campaign);
     if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile)
-        && !other_mode(&current, campaign, mode)
+        && !other_mode(root, &current, campaign, mode)
     {
         return Ok((current, false));
     }
@@ -109,12 +139,12 @@ pub fn session_target_at(
         let choice = settings.campaigns.entry(campaign.to_owned()).or_default();
         let current = campaign_folder(root, choice.folder.as_deref());
         let new_file = choice.next == NextLoad::NewFile;
-        let other = other_mode(&current, campaign, mode);
+        let other = other_mode(root, &current, campaign, mode);
         if !new_file && !other {
             return (current, false);
         }
         choice.next = NextLoad::Continue;
-        if !other && !recorded && !has_recording(&current, campaign) {
+        if !other && !recorded && !holds_recording(root, &current, campaign) {
             return (current, true);
         }
         let name = new_folder_name(root, campaign);
@@ -204,6 +234,30 @@ pub(crate) mod tests {
             Replay::from_records(CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
         fs::create_dir_all(folder).unwrap();
         fs::write(folder.join("Recording.battleplan"), replay.bytes()).unwrap();
+    }
+
+    #[test]
+    fn unsaved_hours_in_another_capture_mode_continue_in_a_new_folder_too() {
+        let scratch = scratch();
+        let settings = scratch.join("settings.json");
+        let root = scratch.join("recordings");
+        // Staged and not saved: the next session in this folder would continue it.
+        let unsaved = replay::publication::unsaved_folder(&root);
+        recorded_in(&unsaved, CaptureMode::Full);
+        fs::rename(
+            unsaved.join("Recording.battleplan"),
+            replay::publication::unsaved_path(&root, CAMPAIGN),
+        )
+        .unwrap();
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
+            (root.clone(), false)
+        );
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Map).unwrap(),
+            (root.join(format!("{CAMPAIGN} (2)")), false)
+        );
+        fs::remove_dir_all(scratch).unwrap();
     }
 
     #[test]

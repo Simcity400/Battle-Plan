@@ -7,7 +7,7 @@ use replay_data::{
 };
 use replay_frame::branches::BranchTracker;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read},
     os::windows::fs::OpenOptionsExt,
@@ -29,7 +29,7 @@ struct Prepared {
     event_feed_generation: Option<u64>,
     event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
     map_events: (u64, u64),
-    lease: File,
+    lease: Option<File>,
 }
 
 #[derive(Default)]
@@ -43,32 +43,47 @@ pub struct PreparedCampaigns {
     event_feed_generation: Option<u64>,
     event_feed_counts: replay_data::event_feed_rows::EventFeedCounts,
     map_events: (u64, u64),
+    /// Recorded without their history: the recorder leaves their loads out.
+    without_history: BTreeSet<String>,
 }
 
 impl PreparedCampaigns {
+    /// Record a campaign without its history: the recorder leaves its loads out, so whatever its
+    /// history holds, even an unreadable one, cannot stop the others recording.
+    pub fn without_history(&mut self, id: &str) {
+        let key = id.to_ascii_lowercase();
+        self.entries.remove(&key);
+        self.without_history.insert(key);
+    }
+
     pub fn load(
         directory: &Path,
         session: &SessionStart,
         mut progress: impl FnMut(&str) -> io::Result<()>,
     ) -> io::Result<Self> {
         // Each recording by the campaign its header names, whatever its file name.
-        let mut paths = Vec::new();
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !entry.file_type()?.is_file() || !recording_files::is_recording(&path) {
-                continue;
-            }
-            // One that cannot be read may be any campaign's: preparation fails.
-            if let Some(id) =
-                recording_files::campaign_of(&path)?.and_then(|id| campaign_name(&id).ok())
-            {
-                engine_allocation::reserve(&mut paths, 1)?;
-                paths.push((id, path));
+        let mut paths = recordings(directory)?;
+        let mut entries = BTreeMap::new();
+        // An unsaved recording holds its saved one and more: it is the history, found as a save
+        // finds it. One that is ambiguous leaves neither guessed to be.
+        for (campaign, unsaved) in recording_files::unsaved_recordings(directory)? {
+            let id = campaign_name(&campaign)?;
+            let saved = paths
+                .iter()
+                .position(|(saved, _)| saved.eq_ignore_ascii_case(&id));
+            match (unsaved, saved) {
+                (Ok(path), Some(saved)) => paths[saved].1 = path,
+                (Ok(path), None) => {
+                    engine_allocation::reserve(&mut paths, 1)?;
+                    paths.push((id, path));
+                }
+                (Err(reason), _) => {
+                    paths.retain(|(saved, _)| !saved.eq_ignore_ascii_case(&id));
+                    entries.insert(id, Err(reason));
+                }
             }
         }
         paths.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let mut entries = BTreeMap::new();
         let mut completion_sequence = 0;
         let mut naval_result_sequence = 0;
         let mut event_ledger_sequences = [None; 4];
@@ -129,16 +144,13 @@ impl PreparedCampaigns {
             event_feed_generation,
             event_feed_counts,
             map_events,
+            without_history: BTreeSet::new(),
         })
     }
 
     fn read(path: &Path, name: &str, session: &SessionStart) -> io::Result<Prepared> {
-        // Readers remain allowed. Keep this handle until detach/process exit so
-        // the history used for parentage cannot change beneath the collector.
-        let mut lease = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .open(path)?;
+        // Held until detach, except while the recorder saves this campaign.
+        let mut lease = lease(path)?;
         let mut bytes = Vec::new();
         let length =
             usize::try_from(lease.metadata()?.len()).map_err(|_| engine_allocation::oom())?;
@@ -195,8 +207,31 @@ impl PreparedCampaigns {
             event_feed_generation,
             event_feed_counts,
             map_events,
-            lease,
+            lease: Some(lease),
         })
+    }
+
+    /// Let go of a prepared campaign's history file while the recorder saves it.
+    pub fn release(&mut self, id: &str) {
+        if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
+            prepared.lease = None;
+        }
+    }
+
+    /// Hold a prepared campaign's history file again, as the recorder saved it.
+    pub fn retake(&mut self, id: &str, file: Option<File>) {
+        if let Some(Ok(prepared)) = self.entries.get_mut(&id.to_ascii_lowercase()) {
+            prepared.lease = file;
+        }
+    }
+
+    /// The file that holds a campaign's history now: its unsaved recording, else its saved one
+    /// found by its header.
+    pub fn history_path(&self, id: &str) -> io::Result<Option<PathBuf>> {
+        match recording_files::unsaved_recording(&self.directory, id.as_bytes())? {
+            Some(unsaved) => Ok(Some(unsaved)),
+            None => recording_files::recording_of(&self.directory, id.as_bytes()),
+        }
     }
 
     pub fn event_feed_sequence(&self) -> Option<u64> {
@@ -249,6 +284,11 @@ impl PreparedCampaigns {
         session: &SessionStart,
     ) -> io::Result<(BranchTracker, Option<File>)> {
         let key = id.to_ascii_lowercase();
+        if self.without_history.contains(&key) {
+            let mut tracker = BranchTracker::new();
+            tracker.begin_session(session.id)?;
+            return Ok((tracker, None));
+        }
         match self.entries.get(&key) {
             Some(Err(reason)) => return Err(invalid(reason.clone())),
             Some(Ok(prepared)) => {
@@ -269,7 +309,9 @@ impl PreparedCampaigns {
                 }
             }
             None => {
-                if !recording_files::recordings_of(&self.directory, id.as_bytes())?.is_empty() {
+                if !recording_files::recordings_of(&self.directory, id.as_bytes())?.is_empty()
+                    || recording_files::unsaved_recording(&self.directory, id.as_bytes())?.is_some()
+                {
                     return Err(invalid(
                         "campaign replay appeared after history preparation; restart the recorder",
                     ));
@@ -280,8 +322,36 @@ impl PreparedCampaigns {
             }
         }
         let prepared = self.entries.remove(&key).unwrap().map_err(invalid)?;
-        Ok((prepared.tracker, Some(prepared.lease)))
+        Ok((prepared.tracker, prepared.lease))
     }
+}
+
+/// The recordings directly in a folder, by the campaign their header names.
+fn recordings(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_file() || !recording_files::is_recording(&path) {
+            continue;
+        }
+        // One that cannot be read may be any campaign's: preparation fails.
+        if let Some(id) =
+            recording_files::campaign_of(&path)?.and_then(|id| campaign_name(&id).ok())
+        {
+            engine_allocation::reserve(&mut paths, 1)?;
+            paths.push((id, path));
+        }
+    }
+    Ok(paths)
+}
+
+/// Readers remain allowed; no one may change the history beneath the collector.
+pub(crate) fn lease(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
 }
 
 fn completion_sequence(replay: &Replay) -> io::Result<u64> {

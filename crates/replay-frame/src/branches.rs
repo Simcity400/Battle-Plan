@@ -297,6 +297,11 @@ impl BranchTracker {
         self.last.map(|last| last.branch)
     }
 
+    /// The load signal of the last observation.
+    pub fn last_load_signal(&self) -> Option<i64> {
+        self.last.and_then(|last| last.load_signal)
+    }
+
     /// The branch and hour of the last observation: before a resumed
     /// session's first observation, its recorded tail.
     pub fn last_observation(&self) -> Option<(BranchId, Hour)> {

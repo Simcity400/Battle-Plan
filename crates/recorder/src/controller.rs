@@ -11,7 +11,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub use crate::recording::{CaptureOutcome, Control, Omission, Refusal, Stage};
+pub use crate::recording::{
+    CaptureOutcome, Control, Omission, Refusal, SetAside, Stage, Waiting, WaitingCampaign,
+    discard_waiting, save_waiting, session_folders, waiting_campaigns, waiting_folder,
+};
 
 /// What one capture records and where.
 pub struct Recording<'a> {
@@ -42,6 +45,8 @@ pub struct Recording<'a> {
     /// The campaign and load signal this session attaches for, already chosen:
     /// admitted before the collector starts.
     pub opening: Option<(&'a str, i64)>,
+    /// Auto save, asked as each decision is made.
+    pub auto_save: &'a dyn Fn() -> bool,
     /// Whether the names recordings would get are shown now.
     pub names_wanted: &'a dyn Fn() -> bool,
 }
@@ -68,6 +73,7 @@ pub fn record(
         admit: Some(recording.admit),
         loaded: Some(recording.loaded),
         opening: recording.opening,
+        auto_save: Some(recording.auto_save),
         names_wanted: Some(recording.names_wanted),
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
@@ -173,6 +179,18 @@ pub fn session_identity(session: &Path) -> Result<replay_data::identity::Identit
 /// only the first records of each campaign's spool; safe while recording.
 pub fn first_loaded_campaign(session: &Path) -> Option<String> {
     crate::replay_io::first_spooled_campaign(session)
+}
+
+/// The capture mode a session's campaign folder spools; `None` when it cannot be read.
+pub fn spool_capture_mode(campaign_dir: &Path) -> Option<CaptureMode> {
+    crate::replay_io::spool_capture_mode(campaign_dir)
+}
+
+/// Unsaved spool bytes in a session's campaign folder; `None` when unreadable.
+pub fn unsaved_spool_bytes(campaign_dir: &Path) -> Option<u64> {
+    crate::replay_io::unsaved_segments(campaign_dir)
+        .ok()
+        .map(|segments| segments.iter().map(|(_, _, bytes)| bytes).sum())
 }
 
 /// A campaign identity read twice the same, in the recorded UUID form.

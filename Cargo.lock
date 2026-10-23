@@ -660,6 +660,7 @@ dependencies = [
  "engine-stability",
  "engine-visibility",
  "proc-macro2",
+ "recorder-replay",
  "replay",
  "replay-data",
  "replay-derive",

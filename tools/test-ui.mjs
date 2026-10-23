@@ -18,6 +18,7 @@ export const browserTests = [
   'ui/src/components/GameWindow.dom.test.ts',
   'ui/src/components/GameWindow.keyboard.dom.test.ts',
   'ui/src/components/Select.dom.test.ts',
+  'ui/src/recorder/RecorderPanel.dom.test.ts',
   'ui/src/shell/appearance/WidgetIconMenu.dom.test.ts',
   'ui/src/widgets/diplomacySizes.dom.test.ts',
   'ui/src/widgets/economySizes.dom.test.ts',

@@ -10,15 +10,37 @@ use std::{
 use windows_sys::Win32::{
     Foundation::GENERIC_WRITE,
     Storage::FileSystem::{
-        DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_RENAME_INFO,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
-        FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-        SetFileInformationByHandle,
+        DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileDispositionInfoEx, FileRenameInfoEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        MoveFileExW, SetFileAttributesW, SetFileInformationByHandle,
     },
 };
 
 /// FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS.
 const RENAME_REPLACE_POSIX: u32 = 0x1 | 0x2;
+
+/// Where a folder's recordings with unsaved hours wait, each as saving it would be.
+pub fn unsaved_folder(folder: &Path) -> std::path::PathBuf {
+    folder.join(".unsaved")
+}
+
+/// A campaign's unsaved recording in `folder`, by campaign id whatever its recording is called.
+pub fn unsaved_path(folder: &Path, campaign: &str) -> std::path::PathBuf {
+    unsaved_folder(folder).join(format!("{campaign}.battleplan"))
+}
+
+/// The unsaved folder of `folder`, created hidden so Explorer does not show it.
+pub fn create_unsaved_folder(folder: &Path) -> io::Result<std::path::PathBuf> {
+    let unsaved = unsaved_folder(folder);
+    std::fs::create_dir_all(&unsaved)?;
+    let wide: Vec<u16> = unsaved.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated path that outlives the call.
+    if unsafe { SetFileAttributesW(wide.as_ptr(), FILE_ATTRIBUTE_HIDDEN) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsaved)
+}
 
 /// Remove a file's name now; delete-sharing readers retain its bytes until close.
 /// Unsupported POSIX deletion is an error, with no deferred-delete fallback.

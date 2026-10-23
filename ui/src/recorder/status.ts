@@ -3,10 +3,10 @@
 import { formatDate, gameDate, monthNames } from '../dashboard/calendar.ts';
 import { formatMegabytes } from '../charts/numberFormat.ts';
 
-export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded';
+export type Phase = 'waiting' | 'notRecording' | 'recording' | 'saving' | 'saved' | 'discarded' | 'unsaved';
 export interface Problem { text: string; detail: string }
 /** Loads a finished session recorded but left out of its recordings, and why when it is one reason. */
-export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'notAdmitted' | null }
+export interface OmittedLoads { loads: number; reason: 'off' | 'elsewhere' | 'settings' | 'waiting' | 'notAdmitted' | null }
 /** Straight-alpha RGBA of the viewed country's flag, as the app's flag canvas draws it. */
 export interface FlagImage { width: number; height: number; pixels: number[] }
 
@@ -20,7 +20,10 @@ export interface Snapshot {
   continued: boolean;
   hour: number | null;
   firstHour: number | null;
-  bytes: number | null;
+  /** The saved recording's size: the earlier part a recording continues, or the file once saved. */
+  savedBytes: number | null;
+  /** This session's spool on disk, not saved yet. */
+  spoolBytes: number | null;
   progress: number | null;
   startedAt: number | null;
   stopping: boolean;
@@ -40,7 +43,9 @@ export type NextLoad = 'continue' | 'newFile';
 export type CaptureMode = 'full' | 'map';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
+  /** Auto record. */
   recordEveryCampaign: boolean;
+  autoSave: boolean;
   saveFolder?: string;
   userFolder?: string;
   startWithWindows: boolean;
@@ -54,8 +59,35 @@ export interface RecorderSettings {
   effectiveSaveFolder: string;
 }
 
+/** A recording not saved yet: recording now, or waiting in a session folder for Save or Discard. */
+export interface UnsavedRecording {
+  session: string;
+  campaign: string;
+  /** The saved recording these hours continue, when there is one. */
+  recording: string | null;
+  /** Its file name, or the name its file will get; null until known. */
+  name: string | null;
+  firstHour: number | null;
+  lastHour: number | null;
+  /** Spool bytes on disk; null when unknown. */
+  spoolBytes: number | null;
+  status: 'recording' | 'waiting' | 'saving';
+  flag: FlagImage | null;
+}
+
+export interface SavedRecording {
+  path: string;
+  firstHour: number | null;
+  lastHour: number | null;
+  /** The file's size from its metadata. */
+  bytes: number;
+  flag: FlagImage | null;
+}
+
+export interface Recordings { unsaved: UnsavedRecording[]; saved: SavedRecording[] }
+
 export type Dot = 'red' | 'grey' | 'green' | 'spin';
-export type HeadAction = 'stop' | 'record' | 'open';
+export type HeadAction = 'stop' | 'record' | 'open' | 'recordings';
 
 /** The head row and which parts of the panel follow it. */
 export interface Head {
@@ -69,9 +101,10 @@ export interface Head {
   label: string | null;
   /** Plain status text after the label; truncates, never runs under the button. */
   detail: string | null;
+  /** Sizes on disk, on their own line: spool and saved apart, never added up. */
+  sizes?: string | null;
   action: HeadAction | null;
   campaign: boolean;
-  footer: boolean;
   /** Progress bar fill, 0 to 1; null shows work without a known end. */
   bar?: number | null;
 }
@@ -85,6 +118,24 @@ export function dateText(hour: number | null): string | null {
 
 export function sizeText(bytes: number | null): string | null {
   return bytes == null ? null : formatMegabytes(bytes);
+}
+
+/** Spool on disk, never mistaken for a saved file's size. */
+export function spoolText(bytes: number | null): string | null {
+  return bytes == null ? null : `spool ${formatMegabytes(bytes)}`;
+}
+
+/** The saved part of a recording still being recorded. */
+export function savedText(bytes: number | null): string | null {
+  return bytes == null ? null : `saved ${formatMegabytes(bytes)}`;
+}
+
+/** Spool on disk across everything not saved yet; "at least" when a size is unknown. */
+export function spoolTotalText(unsaved: readonly UnsavedRecording[]): string | null {
+  const known = unsaved.filter(recording => recording.spoolBytes != null);
+  if (!known.length) return null;
+  const total = formatMegabytes(known.reduce((sum, recording) => sum + recording.spoolBytes!, 0));
+  return `Spool on disk: ${known.length < unsaved.length ? 'at least ' : ''}${total}`;
 }
 
 /** A saved recording's span: its first year to its last month. */
@@ -104,9 +155,15 @@ export function omittedText(omitted: OmittedLoads | null | undefined): string | 
     case 'off': return `${count} (Record automatically was off)`;
     case 'elsewhere': return `${count} (${one ? 'it belongs' : 'they belong'} in another file)`;
     case 'settings': return `${count} (the recorder's settings couldn't be read)`;
+    case 'waiting': return `${count} (earlier hours wait to be saved; save or discard them in Recordings)`;
     case 'notAdmitted': return `${count} (${one ? 'it was' : 'they were'} not identified)`;
     default: return count;
   }
+}
+
+/** The one name a recording has anywhere in the recorder: its file name, or the one its file will get. */
+export function recordingName(name: string | null): string {
+  return name ?? 'New recording';
 }
 
 /** The recording's name; none until it has one, never the campaign's id. */
@@ -117,7 +174,7 @@ export function campaignTitle(snapshot: Snapshot): string {
 export function head(snapshot: Snapshot): Head {
   const title = campaignTitle(snapshot);
   const named = title !== '';
-  const plain = { glyph: false, flag: named ? snapshot.flag : null, title, dot: null, label: null, detail: null, action: null, campaign: false, footer: true } as const;
+  const plain = { glyph: false, flag: named ? snapshot.flag : null, title, dot: null, label: null, detail: null, action: null, campaign: false } as const;
   // Loads a finished session left out replace its usual status text until shown.
   const omitted = omittedText(snapshot.omitted);
   switch (snapshot.phase) {
@@ -128,15 +185,18 @@ export function head(snapshot: Snapshot): Head {
         ? { ...plain, dot: 'grey', detail: omitted ?? joined(['Not recording', dateText(snapshot.hour)]), action: 'record', campaign: snapshot.campaign != null }
         : { ...plain, glyph: true, title: 'Not recording', detail: omitted, action: 'record' };
     case 'recording':
-      return { ...plain, glyph: !named, dot: 'red', label: 'Recording', detail: joined([dateText(snapshot.hour), sizeText(snapshot.bytes)]),
-        action: snapshot.stopping ? null : 'stop', campaign: snapshot.campaign != null };
+      return { ...plain, glyph: !named, dot: 'red', label: 'Recording', detail: dateText(snapshot.hour),
+        sizes: joined([spoolText(snapshot.spoolBytes), savedText(snapshot.savedBytes)]), action: snapshot.stopping ? null : 'stop', campaign: snapshot.campaign != null };
     case 'saving':
-      return { ...plain, glyph: !named, dot: 'spin', label: 'Saving recording…', footer: false, bar: snapshot.progress };
+      return { ...plain, glyph: !named, dot: 'spin', label: 'Saving recording…', bar: snapshot.progress };
     case 'saved':
-      return { ...plain, glyph: !named, dot: 'green', label: 'Saved', detail: omitted ?? joined([spanText(snapshot.firstHour, snapshot.hour), sizeText(snapshot.bytes)]),
+      return { ...plain, glyph: !named, dot: 'green', label: 'Saved', detail: omitted ?? joined([spanText(snapshot.firstHour, snapshot.hour), sizeText(snapshot.savedBytes)]),
         action: snapshot.recording ? 'open' : null };
     case 'discarded':
-      return { ...plain, glyph: !named, dot: 'grey', detail: 'Session discarded', action: 'record', footer: false };
+      return { ...plain, glyph: !named, dot: 'grey', detail: 'Session discarded', action: 'record' };
+    case 'unsaved':
+      return { ...plain, glyph: !named, dot: 'grey', label: 'Not saved yet', detail: omitted ?? dateText(snapshot.hour), sizes: spoolText(snapshot.spoolBytes),
+        action: 'recordings' };
   }
 }
 
@@ -157,6 +217,11 @@ export function untilNextMinute(startedAt: number | null, now: number): number {
 /** What Discard deletes: only this session when the file held an earlier recording. */
 export function discardTooltip(continued: boolean): string {
   return continued ? 'Deletes this session only. Earlier recording in this file is kept.' : 'Deletes this recording.';
+}
+
+/** The compact Stop prompt's question. */
+export function stopQuestion(name: string, startedAt: number | null, now: number): string {
+  return `Stop recording ${name} after ${sessionLength(startedAt, now)}?`;
 }
 
 /** The Stop prompt shows only while recording, until Save or Discard is carried out. */

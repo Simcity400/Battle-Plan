@@ -96,6 +96,37 @@ impl Replay {
         self.file.is_some()
     }
 
+    /// Whether this recording holds the one at `earlier` unchanged, as an append leaves it: its
+    /// header and blocks byte for byte, and each trailer list as the start of this one's. Replacing
+    /// `earlier` with this then loses nothing. A damaged recording is never held.
+    pub fn holds(&self, earlier: &Path) -> io::Result<bool> {
+        self.require_resident()?;
+        let earlier = Self::open_path(earlier)?;
+        if self.needed_recovery()
+            || earlier.needed_recovery()
+            || earlier.trailer_start > self.trailer_start
+            || !self.sessions.starts_with(&earlier.sessions)
+            || !self.branches.starts_with(&earlier.branches)
+            || !self.gaps.starts_with(&earlier.gaps)
+            || !self.controls.starts_with(&earlier.controls)
+            || !self.recovery_notes.starts_with(&earlier.recovery_notes)
+            || !self.index.starts_with(&earlier.index)
+        {
+            return Ok(false);
+        }
+        let mut chunk = engine_allocation::filled(earlier.trailer_start.min(1 << 20), 0)?;
+        let mut at = 0;
+        while at < earlier.trailer_start {
+            let length = chunk.len().min(earlier.trailer_start - at);
+            earlier.read_at(at as u64, &mut chunk[..length])?;
+            if chunk[..length] != self.bytes[at..at + length] {
+                return Ok(false);
+            }
+            at += length;
+        }
+        Ok(true)
+    }
+
     pub(super) fn held_block_bytes(&self, index: &BlockIndex) -> io::Result<Vec<u8>> {
         let _cpu = crate::cpu::scope("source_read", None);
         let mut bytes = engine_allocation::filled(to_usize(index.length)?, 0)?;

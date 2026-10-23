@@ -445,6 +445,8 @@ required-features = ["tap-foreign-probe"]
 
 [dev-dependencies]
 collector-naval-management = { workspace = true, features = ["test-support"] }
+# Saves spools the collector writes, as the recorder does.
+recorder-replay.workspace = true
 syn = { version = "2.0.119", features = ["full", "visit"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-politics = { workspace = true, features = ["test-support"] }

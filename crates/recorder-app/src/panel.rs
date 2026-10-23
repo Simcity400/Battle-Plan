@@ -1,5 +1,4 @@
-//! The panel window: created when the tray icon is clicked, placed above it
-//! within the monitor's work area, and destroyed when it loses focus.
+//! The panel window, placed beside the tray icon or where it was dragged, destroyed on focus loss.
 use crate::{tray::TRAY_ID, worker::Recorder};
 use std::{
     path::PathBuf,
@@ -7,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Rect, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, Rect, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 pub const LABEL: &str = "panel";
@@ -24,11 +23,25 @@ const REOPEN_GUARD: Duration = Duration::from_millis(400);
 /// appearance, so the panel opens with the same theme.
 const REPLAY_IDENTIFIER: &str = "local.hoi4.replay";
 
+/// What the panel opens on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opening {
+    Panel,
+    /// The Stop prompt alone, beside the tray icon; an open panel shows its own instead.
+    StopPrompt,
+}
+
 #[derive(Default)]
 struct State {
     anchor: Option<Rect>,
     closed_at: Option<Instant>,
     ask_stop: bool,
+    /// The window shows only the Stop prompt.
+    compact: bool,
+    /// Where the user dragged the panel, kept while the recorder runs.
+    moved: Option<PhysicalPosition<i32>>,
+    /// Where the panel was last put, so its own placement is not taken for a drag.
+    placed: Option<PhysicalPosition<i32>>,
     /// A native dialog owns focus; losing focus to it does not close the panel.
     dialog: bool,
     focused: bool,
@@ -93,7 +106,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
                 let _ = window.destroy();
             }
         }
-        Click::Open => open(app, Some(anchor), false),
+        Click::Open => open(app, Some(anchor), Opening::Panel),
         Click::Ignore => {}
     }
 }
@@ -101,7 +114,8 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 /// Open the panel (or focus it), optionally on the Stop prompt. Tray and menu
 /// callbacks run on the event loop, where building a webview window would wait
 /// on that same loop, so the window is created on its own thread.
-pub fn open(app: &AppHandle, anchor: Option<Rect>, ask_stop: bool) {
+pub fn open(app: &AppHandle, anchor: Option<Rect>, opening: Opening) {
+    let ask_stop = opening == Opening::StopPrompt;
     if let Some(window) = app.get_webview_window(LABEL) {
         if ask_stop {
             state(app).ask_stop = true;
@@ -124,6 +138,8 @@ pub fn open(app: &AppHandle, anchor: Option<Rect>, ask_stop: bool) {
         *state = State {
             anchor,
             ask_stop,
+            compact: ask_stop,
+            moved: state.moved,
             opening: true,
             ..State::default()
         };
@@ -185,6 +201,12 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     let handle = app.clone();
     window.on_window_event(move |event| match event {
         WindowEvent::Focused(true) => state(&handle).focused = true,
+        WindowEvent::Moved(position) => {
+            let mut state = state(&handle);
+            if state.shown && !state.compact && state.placed != Some(*position) {
+                state.moved = Some(*position);
+            }
+        }
         WindowEvent::Focused(false) => {
             let close = {
                 let mut state = state(&handle);
@@ -211,15 +233,47 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// The panel asks this once it has drawn: whether it opens on the Stop prompt.
-pub fn take_ask_stop(app: &AppHandle) -> bool {
-    std::mem::take(&mut state(app).ask_stop)
+/// Whether the panel opens on the Stop prompt, and whether that is all it shows.
+pub fn take_opening(app: &AppHandle) -> (bool, bool) {
+    let mut state = state(app);
+    (std::mem::take(&mut state.ask_stop), state.compact)
 }
 
-/// Size the panel to its content, place it above the tray icon and show it.
+/// Size the panel to its content, place it and show it.
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
-    let anchor = state(app).anchor;
-    place(app, window, anchor, height.clamp(40.0, 2000.0))?;
+    let (anchor, moved) = {
+        let state = state(app);
+        (state.anchor, state.moved.filter(|_| !state.compact))
+    };
+    let mut screens = Vec::new();
+    let primary = app.primary_monitor()?;
+    for monitor in primary.iter().chain(&app.available_monitors()?) {
+        let screen = screen(monitor);
+        if !screens.contains(&screen) {
+            screens.push(screen);
+        }
+    }
+    // Tray rectangles are physical on Windows.
+    let anchor = anchor.map(|rect| {
+        let position = rect.position.to_physical::<f64>(1.0);
+        let size = rect.size.to_physical::<f64>(1.0);
+        Area {
+            x: position.x.round() as i32,
+            y: position.y.round() as i32,
+            width: size.width.round() as i32,
+            height: size.height.round() as i32,
+        }
+    });
+    let at = moved.map(|position| (position.x, position.y));
+    match placement(&screens, anchor, at, (WIDTH, height.clamp(40.0, 4000.0))) {
+        Some(placed) => {
+            let position = PhysicalPosition::new(placed.x, placed.y);
+            state(app).placed = Some(position);
+            window.set_size(PhysicalSize::new(placed.width, placed.height))?;
+            window.set_position(position)?;
+        }
+        None => window.set_size(tauri::LogicalSize::new(WIDTH, height))?,
+    }
     let first = !std::mem::replace(&mut state(app).shown, true);
     if first {
         window.show()?;
@@ -228,47 +282,170 @@ pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Resul
     Ok(())
 }
 
-fn place(
-    app: &AppHandle,
-    window: &WebviewWindow,
-    anchor: Option<Rect>,
-    height: f64,
-) -> tauri::Result<()> {
-    // Tray rectangles are physical on Windows; scale 1 only finds the monitor.
-    let point = anchor.map(|rect| {
-        let position = rect.position.to_physical::<f64>(1.0);
-        let size = rect.size.to_physical::<f64>(1.0);
-        (position.x + size.width / 2.0, position.y, size.width)
-    });
-    let monitor = match point {
-        Some((x, y, _)) => app.monitor_from_point(x, y)?,
-        None => None,
+fn screen(monitor: &Monitor) -> Screen {
+    let area = |position: PhysicalPosition<i32>, size: PhysicalSize<u32>| Area {
+        x: position.x,
+        y: position.y,
+        width: size.width as i32,
+        height: size.height as i32,
     };
-    let monitor = match monitor {
-        Some(monitor) => Some(monitor),
-        None => app.primary_monitor()?,
+    let work = monitor.work_area();
+    Screen {
+        bounds: area(*monitor.position(), *monitor.size()),
+        work: area(work.position, work.size),
+        scale: monitor.scale_factor(),
+    }
+}
+
+/// A rectangle in physical pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Area {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl Area {
+    fn right(&self) -> i32 {
+        self.x + self.width
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y + self.height
+    }
+
+    fn contains(&self, (x, y): (i32, i32)) -> bool {
+        (self.x..self.right()).contains(&x) && (self.y..self.bottom()).contains(&y)
+    }
+
+    /// Squared distance from a point to the nearest point inside.
+    fn distance(&self, (x, y): (i32, i32)) -> i64 {
+        let dx = i64::from((self.x - x).max(0).max(x - (self.right() - 1)));
+        let dy = i64::from((self.y - y).max(0).max(y - (self.bottom() - 1)));
+        dx * dx + dy * dy
+    }
+}
+
+/// A monitor: its bounds and work area in physical pixels, and its scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    pub bounds: Area,
+    pub work: Area,
+    pub scale: f64,
+}
+
+/// The panel's physical position and size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+/// Where the dragged position `at`, else the tray icon, puts the panel; the first screen is the primary.
+pub fn placement(
+    screens: &[Screen],
+    anchor: Option<Area>,
+    at: Option<(i32, i32)>,
+    size: (f64, f64),
+) -> Option<Placement> {
+    let nearest = |point: (i32, i32)| {
+        screens
+            .iter()
+            .find(|screen| screen.bounds.contains(point))
+            .or_else(|| {
+                screens
+                    .iter()
+                    .min_by_key(|screen| screen.bounds.distance(point))
+            })
     };
-    let Some(monitor) = monitor else {
-        return window.set_size(tauri::LogicalSize::new(WIDTH, height));
+    let point = at.or(anchor.map(|icon| (icon.x + icon.width / 2, icon.y + icon.height / 2)));
+    let screen = match point {
+        Some(point) => nearest(point)?,
+        None => screens.first()?,
     };
-    let scale = monitor.scale_factor();
-    let area = monitor.work_area();
-    let width = (WIDTH * scale).round() as i32;
-    let tall = (height * scale).round() as i32;
-    let margin = (MARGIN * scale).round() as i32;
-    let left = area.position.x;
-    let top = area.position.y;
-    let right = left + area.size.width as i32;
-    let bottom = top + area.size.height as i32;
-    // Without a tray position, use the work area's bottom-right corner.
-    let (centre, icon_top) = point
-        .map(|(x, y, _)| (x.round() as i32, y.round() as i32))
-        .unwrap_or((right, bottom));
-    let x = (centre - width / 2).clamp(left + margin, (right - width - margin).max(left + margin));
-    let y =
-        (icon_top - tall - margin).clamp(top + margin, (bottom - tall - margin).max(top + margin));
-    window.set_size(PhysicalSize::new(width.max(1) as u32, tall.max(1) as u32))?;
-    window.set_position(PhysicalPosition::new(x, y))
+    let work = screen.work;
+    let margin = (MARGIN * screen.scale).round() as i32;
+    let fit =
+        |logical: f64, room: i32| ((logical * screen.scale).round() as i32).clamp(1, room.max(1));
+    let width = fit(size.0, work.width - 2 * margin);
+    let height = fit(size.1, work.height - 2 * margin);
+    // `value` kept so `length` from it ends by `high`, and never before `low`.
+    let clamp =
+        |value: i32, low: i32, length: i32, high: i32| value.clamp(low, (high - length).max(low));
+    let (x, y) = match (at, anchor) {
+        (Some((x, y)), _) => (
+            clamp(x, work.x, width, work.right()),
+            clamp(y, work.y, height, work.bottom()),
+        ),
+        (None, Some(icon)) => {
+            let (centre_x, centre_y) = (icon.x + icon.width / 2, icon.y + icon.height / 2);
+            // An auto-hidden taskbar is at the monitor edge nearest the icon.
+            let bounds = screen.bounds;
+            let side = if centre_y >= work.bottom() {
+                Side::Bottom
+            } else if centre_y < work.y {
+                Side::Top
+            } else if centre_x < work.x {
+                Side::Left
+            } else if centre_x >= work.right() {
+                Side::Right
+            } else {
+                [
+                    (bounds.bottom() - centre_y, Side::Bottom),
+                    (centre_y - bounds.y, Side::Top),
+                    (centre_x - bounds.x, Side::Left),
+                    (bounds.right() - centre_x, Side::Right),
+                ]
+                .into_iter()
+                .min_by_key(|(distance, _)| *distance)
+                .map(|(_, side)| side)
+                .unwrap()
+            };
+            let (low_x, high_x) = (work.x + margin, work.right() - margin);
+            let (low_y, high_y) = (work.y + margin, work.bottom() - margin);
+            let across_x = clamp(centre_x - width / 2, low_x, width, high_x);
+            let across_y = clamp(centre_y - height / 2, low_y, height, high_y);
+            match side {
+                Side::Bottom => {
+                    let y = icon.y.min(work.bottom()) - margin - height;
+                    (across_x, clamp(y, low_y, height, high_y))
+                }
+                Side::Top => {
+                    let y = icon.bottom().max(work.y) + margin;
+                    (across_x, clamp(y, low_y, height, high_y))
+                }
+                Side::Left => {
+                    let x = icon.right().max(work.x) + margin;
+                    (clamp(x, low_x, width, high_x), across_y)
+                }
+                Side::Right => {
+                    let x = icon.x.min(work.right()) - margin - width;
+                    (clamp(x, low_x, width, high_x), across_y)
+                }
+            }
+        }
+        (None, None) => (
+            work.right() - margin - width,
+            work.bottom() - margin - height,
+        ),
+    };
+    Some(Placement {
+        x,
+        y,
+        width: width as u32,
+        height: height as u32,
+    })
 }
 
 /// Run a native dialog without the panel closing when it takes focus.
@@ -292,6 +469,185 @@ mod tests {
         assert_eq!(click(false, false, true), Click::Ignore);
         assert_eq!(click(true, false, false), Click::Close);
         assert_eq!(click(false, false, false), Click::Open);
+    }
+
+    const fn area(x: i32, y: i32, width: i32, height: i32) -> Area {
+        Area {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn screen(bounds: Area, work: Area, scale: f64) -> Screen {
+        Screen {
+            bounds,
+            work,
+            scale,
+        }
+    }
+
+    /// The placement lies wholly inside the work area.
+    fn inside(placed: Placement, work: Area) -> bool {
+        placed.x >= work.x
+            && placed.y >= work.y
+            && placed.x + placed.width as i32 <= work.right()
+            && placed.y + placed.height as i32 <= work.bottom()
+    }
+
+    const PANEL: (f64, f64) = (360.0, 200.0);
+
+    #[test]
+    fn the_panel_stands_beside_the_tray_icon_away_from_a_taskbar_on_any_edge() {
+        // 1080p at 100%, taskbar at the bottom.
+        let work = area(0, 0, 1920, 1032);
+        let monitor = screen(area(0, 0, 1920, 1080), work, 1.0);
+        let placed = placement(&[monitor], Some(area(1700, 1036, 32, 40)), None, PANEL).unwrap();
+        assert_eq!(
+            placed,
+            Placement {
+                x: 1536,
+                y: 820,
+                width: 360,
+                height: 200
+            }
+        );
+        // 1440p at 125%, taskbar at the top: below the icon, pulled in from the edge.
+        let work = area(0, 60, 2560, 1380);
+        let monitor = screen(area(0, 0, 2560, 1440), work, 1.25);
+        let placed = placement(&[monitor], Some(area(2400, 10, 40, 40)), None, PANEL).unwrap();
+        assert_eq!(
+            placed,
+            Placement {
+                x: 2095,
+                y: 75,
+                width: 450,
+                height: 250
+            }
+        );
+        assert!(inside(placed, work));
+        // 4K at 150%, taskbar on the left: to the icon's right.
+        let work = area(72, 0, 3768, 2160);
+        let monitor = screen(area(0, 0, 3840, 2160), work, 1.5);
+        let placed = placement(&[monitor], Some(area(16, 2000, 40, 40)), None, PANEL).unwrap();
+        assert_eq!(
+            placed,
+            Placement {
+                x: 90,
+                y: 1842,
+                width: 540,
+                height: 300
+            }
+        );
+        assert!(inside(placed, work));
+        // 4K at 200%, taskbar on the right: to the icon's left.
+        let work = area(0, 0, 3744, 2160);
+        let monitor = screen(area(0, 0, 3840, 2160), work, 2.0);
+        let placed = placement(&[monitor], Some(area(3780, 1900, 48, 48)), None, PANEL).unwrap();
+        assert_eq!(
+            placed,
+            Placement {
+                x: 3000,
+                y: 1724,
+                width: 720,
+                height: 400
+            }
+        );
+        assert!(inside(placed, work));
+    }
+
+    #[test]
+    fn an_auto_hidden_taskbar_is_found_at_the_nearest_monitor_edge() {
+        // The work area is the whole monitor; the icon shows inside it.
+        let whole = area(0, 0, 1920, 1080);
+        let monitor = screen(whole, whole, 1.0);
+        let bottom = placement(&[monitor], Some(area(1700, 1040, 32, 40)), None, PANEL).unwrap();
+        assert_eq!((bottom.x, bottom.y), (1536, 828));
+        let right = placement(&[monitor], Some(area(1880, 900, 40, 32)), None, PANEL).unwrap();
+        assert_eq!((right.x, right.y), (1508, 816));
+        assert!(inside(bottom, whole) && inside(right, whole));
+    }
+
+    #[test]
+    fn a_negative_coordinate_secondary_monitor_holds_its_own_panel() {
+        let primary = screen(area(0, 0, 1920, 1080), area(0, 0, 1920, 1032), 1.0);
+        let work = area(-2560, -200, 2560, 1380);
+        let secondary = screen(area(-2560, -200, 2560, 1440), work, 1.25);
+        let placed = placement(
+            &[primary, secondary],
+            Some(area(-300, 1190, 40, 40)),
+            None,
+            PANEL,
+        )
+        .unwrap();
+        assert_eq!(
+            placed,
+            Placement {
+                x: -505,
+                y: 915,
+                width: 450,
+                height: 250
+            }
+        );
+        assert!(inside(placed, work));
+    }
+
+    #[test]
+    fn mixed_dpi_sizes_the_panel_for_the_monitor_it_lands_on() {
+        let primary_work = area(0, 0, 3840, 2064);
+        let primary = screen(area(0, 0, 3840, 2160), primary_work, 2.0);
+        let secondary_work = area(3840, 500, 1920, 1032);
+        let secondary = screen(area(3840, 500, 1920, 1080), secondary_work, 1.0);
+        let screens = [primary, secondary];
+        let by_tray = placement(&screens, Some(area(3600, 2080, 64, 64)), None, PANEL).unwrap();
+        assert_eq!((by_tray.width, by_tray.height), (720, 400));
+        assert!(inside(by_tray, primary_work));
+        // Dragged onto the secondary: its own scale, where the user left it.
+        let dragged = placement(&screens, None, Some((4000, 600)), PANEL).unwrap();
+        assert_eq!(
+            dragged,
+            Placement {
+                x: 4000,
+                y: 600,
+                width: 360,
+                height: 200
+            }
+        );
+        // Dragged partly off the secondary: pulled fully back onto it.
+        let off = placement(&screens, None, Some((5700, 1400)), PANEL).unwrap();
+        assert_eq!((off.x, off.y), (5400, 1332));
+        assert!(inside(off, secondary_work));
+        // Left where no monitor is (the secondary was unplugged): the nearest one.
+        let gone = placement(&screens, None, Some((9000, 600)), PANEL).unwrap();
+        assert!(inside(gone, secondary_work));
+        // A remembered position wins over the tray.
+        let both = placement(
+            &screens,
+            Some(area(3600, 2080, 64, 64)),
+            Some((4000, 600)),
+            PANEL,
+        );
+        assert_eq!(both, Some(dragged));
+    }
+
+    #[test]
+    fn a_panel_taller_than_the_screen_at_300_percent_stays_on_it() {
+        let work = area(0, 0, 1920, 1032);
+        let monitor = screen(area(0, 0, 1920, 1080), work, 3.0);
+        let placed = placement(
+            &[monitor],
+            Some(area(1700, 1036, 32, 40)),
+            None,
+            (360.0, 500.0),
+        )
+        .unwrap();
+        assert_eq!((placed.width, placed.height), (1080, 960));
+        assert!(inside(placed, work));
+        // Without a tray position, the primary work area's corner.
+        let corner = placement(&[monitor], None, None, PANEL).unwrap();
+        assert_eq!((corner.x, corner.y), (804, 396));
+        assert!(placement(&[], None, None, PANEL).is_none());
     }
 
     #[test]

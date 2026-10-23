@@ -1,5 +1,4 @@
-//! The tray icon, drawn at run time as a ring with a coloured dot, its tooltip
-//! and its right-click menu.
+//! The tray icon, a ring whose dot is the only status, and its right-click menu.
 use crate::{panel, snapshot::Light, worker::Recorder};
 use std::sync::{
     Arc,
@@ -8,12 +7,13 @@ use std::sync::{
 use tauri::{
     AppHandle, Manager, Wry,
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
 pub const TRAY_ID: &str = "recorder";
 const OPEN: &str = "open";
+const START: &str = "start";
 const STOP: &str = "stop";
 const QUIT: &str = "quit";
 /// Windows scales this to the notification area's size.
@@ -26,15 +26,19 @@ fn theme(light_taskbar: bool) -> u8 {
     1 + u8::from(light_taskbar)
 }
 
-/// The menu's Stop item, enabled only while recording.
-pub struct TrayMenu(MenuItem<Wry>);
+/// The menu's Start and Stop items, each enabled only when it applies.
+pub struct TrayMenu {
+    start: MenuItem<Wry>,
+    stop: MenuItem<Wry>,
+}
 
+/// Mid-tone shades that stand out from both a light and a dark taskbar.
 fn dot_colour(light: Light) -> [u8; 3] {
     match light {
-        Light::Idle => [0x8a, 0x8a, 0x8a],
+        Light::Ready => [0x22, 0xb0, 0x5a],
         Light::Recording => [0xef, 0x44, 0x44],
-        Light::Problem => [0xf0, 0xb4, 0x4c],
-        Light::Busy => [0x2f, 0x6b, 0xff],
+        Light::Saving => [0x2f, 0x6b, 0xff],
+        Light::Problem => [0xe8, 0xa3, 0x17],
     }
 }
 
@@ -111,19 +115,20 @@ pub fn follow_theme(app: &AppHandle, light: Light) {
 }
 
 pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, OPEN, "Open recorder", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?;
+    let start = MenuItem::with_id(app, START, "Start recording", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, STOP, "Stop recording", false, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &stop, &separator, &quit])?;
-    app.manage(TrayMenu(stop));
+    let menu = Menu::with_items(app, &[&open, &start, &stop, &quit])?;
+    app.manage(TrayMenu { start, stop });
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon(Light::Idle))
+        .icon(icon(Light::Ready))
         .tooltip("Battle Plan Recorder")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            OPEN => panel::open(app, None, false),
+            OPEN => panel::open(app, None, panel::Opening::Panel),
+            START => recorder.record(),
             STOP => recorder.ask_stop(app),
             QUIT => recorder.quit(app),
             _ => {}
@@ -143,18 +148,18 @@ pub fn create(app: &AppHandle, recorder: Arc<Recorder>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show the snapshot's light, tooltip and whether Stop is available.
-pub fn show(app: &AppHandle, light: Light, tooltip: &str, can_stop: bool) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Err(error) = tray.set_icon(Some(icon(light))) {
-            eprintln!("Tray icon could not change: {error}");
-        }
-        if let Err(error) = tray.set_tooltip(Some(tooltip)) {
-            eprintln!("Tray tooltip could not change: {error}");
-        }
+/// Show the snapshot's light and which of Start and Stop apply.
+pub fn show(app: &AppHandle, light: Light, can_start: bool, can_stop: bool) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID)
+        && let Err(error) = tray.set_icon(Some(icon(light)))
+    {
+        eprintln!("Tray icon could not change: {error}");
     }
     if let Some(menu) = app.try_state::<TrayMenu>()
-        && let Err(error) = menu.0.set_enabled(can_stop)
+        && let Err(error) = menu
+            .start
+            .set_enabled(can_start)
+            .and_then(|()| menu.stop.set_enabled(can_stop))
     {
         eprintln!("Tray menu could not change: {error}");
     }
@@ -173,10 +178,10 @@ mod tests {
     fn icon_draws_a_ring_and_a_coloured_dot_on_a_clear_background() {
         let size = 32;
         for (light, colour) in [
-            (Light::Idle, [0x8a, 0x8a, 0x8a]),
+            (Light::Ready, [0x22, 0xb0, 0x5a]),
             (Light::Recording, [0xef, 0x44, 0x44]),
-            (Light::Problem, [0xf0, 0xb4, 0x4c]),
-            (Light::Busy, [0x2f, 0x6b, 0xff]),
+            (Light::Saving, [0x2f, 0x6b, 0xff]),
+            (Light::Problem, [0xe8, 0xa3, 0x17]),
         ] {
             let pixels = icon_pixels(light, size, false);
             assert_eq!(pixels.len(), (size * size * 4) as usize);
@@ -190,7 +195,48 @@ mod tests {
             // The corners stay clear.
             assert_eq!(pixel(&pixels, size, 0, 0)[3], 0);
         }
-        let light = icon_pixels(Light::Idle, size, true);
+        let light = icon_pixels(Light::Ready, size, true);
         assert_eq!(pixel(&light, size, 16, 16 + 12), [0x3a, 0x3a, 0x3a, 255]);
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(colour: [u8; 3]) -> f64 {
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(colour[0]) + 0.7152 * linear(colour[1]) + 0.0722 * linear(colour[2])
+    }
+
+    #[test]
+    fn each_status_colour_stands_out_on_a_light_and_a_dark_taskbar() {
+        let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
+        // Windows 11's light and dark taskbars.
+        let (light, dark) = (luminance([0xf3, 0xf3, 0xf3]), luminance([0x20, 0x20, 0x20]));
+        let lights = [
+            Light::Ready,
+            Light::Recording,
+            Light::Saving,
+            Light::Problem,
+        ];
+        for status in lights {
+            let dot = luminance(dot_colour(status));
+            assert!(contrast(dot, light) >= 1.9, "{status:?} on a light taskbar");
+            assert!(contrast(dot, dark) >= 3.0, "{status:?} on a dark taskbar");
+        }
+        // Four colours, none mistaken for another.
+        for (at, first) in lights.iter().enumerate() {
+            for second in &lights[at + 1..] {
+                let [a, b] = [dot_colour(*first), dot_colour(*second)];
+                let distance: i32 = (0..3)
+                    .map(|channel| (i32::from(a[channel]) - i32::from(b[channel])).abs())
+                    .sum();
+                assert!(distance >= 120, "{first:?} and {second:?}");
+            }
+        }
     }
 }

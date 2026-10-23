@@ -17,6 +17,8 @@ pub enum Phase {
     Saving,
     Saved,
     Discarded,
+    /// The session ended and its recording waits to be saved (Auto save is off).
+    Unsaved,
 }
 
 /// Why loads were left out of a session's recordings.
@@ -29,6 +31,8 @@ pub enum OmissionReason {
     Elsewhere,
     /// The recorder settings could not be read or updated.
     Settings,
+    /// Earlier hours of the campaign wait to be saved and could not be staged.
+    Waiting,
     /// The load was never admitted (it could not be identified).
     NotAdmitted,
 }
@@ -65,8 +69,10 @@ pub struct Snapshot {
     pub hour: Option<i32>,
     /// The first hour of a saved recording.
     pub first_hour: Option<i32>,
-    /// Bytes on disk for this recording.
-    pub bytes: Option<u64>,
+    /// The saved recording's size, never an estimate of a future save.
+    pub saved_bytes: Option<u64>,
+    /// Bytes of this session's spool on disk, not saved yet.
+    pub spool_bytes: Option<u64>,
     /// Saving progress, 0 to 1, when it can be told.
     pub progress: Option<f64>,
     /// When this session began recording, in milliseconds since the Unix epoch.
@@ -152,13 +158,14 @@ pub fn saving_progress(records: u64, hours: u64) -> Option<f64> {
     (hours > 0).then(|| (records as f64 / (hours as f64 * 4.0)).min(0.95))
 }
 
-/// The tray's light: amber for any problem, then by phase.
+/// The tray icon's dot, its only status: yellow for any problem, then by phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Light {
-    Idle,
+    /// On and ready, not recording.
+    Ready,
     Recording,
+    Saving,
     Problem,
-    Busy,
 }
 
 impl Snapshot {
@@ -168,24 +175,10 @@ impl Snapshot {
         } else {
             match self.phase {
                 Phase::Recording => Light::Recording,
-                Phase::Saving => Light::Busy,
-                _ => Light::Idle,
+                Phase::Saving => Light::Saving,
+                _ => Light::Ready,
             }
         }
-    }
-
-    /// The tray tooltip.
-    pub fn tooltip(&self) -> String {
-        let state = match (&self.problem, self.phase) {
-            (Some(problem), _) => problem.text.as_str(),
-            (None, Phase::Waiting) => "Waiting for the game",
-            (None, Phase::NotRecording) => "Not recording",
-            (None, Phase::Recording) => "Recording",
-            (None, Phase::Saving) => "Saving recording…",
-            (None, Phase::Saved) => "Saved",
-            (None, Phase::Discarded) => "Session discarded",
-        };
-        format!("Battle Plan Recorder: {state}")
     }
 }
 
@@ -265,23 +258,27 @@ mod tests {
     }
 
     #[test]
-    fn tray_light_and_tooltip_follow_phase_with_problems_first() {
+    fn tray_light_follows_phase_with_problems_first() {
         let mut snapshot = Snapshot::default();
-        assert_eq!(snapshot.light(), Light::Idle);
-        assert_eq!(snapshot.tooltip(), "Battle Plan Recorder: Waiting for the game");
-        snapshot.phase = Phase::Recording;
-        assert_eq!(snapshot.light(), Light::Recording);
-        snapshot.phase = Phase::Saving;
-        assert_eq!(snapshot.light(), Light::Busy);
-        assert_eq!(snapshot.tooltip(), "Battle Plan Recorder: Saving recording…");
+        for (phase, light) in [
+            (Phase::Waiting, Light::Ready),
+            (Phase::NotRecording, Light::Ready),
+            (Phase::Saved, Light::Ready),
+            (Phase::Discarded, Light::Ready),
+            (Phase::Unsaved, Light::Ready),
+            (Phase::Recording, Light::Recording),
+            (Phase::Saving, Light::Saving),
+        ] {
+            snapshot.phase = phase;
+            assert_eq!(snapshot.light(), light, "{phase:?}");
+        }
         snapshot.problem = Some(Problem {
             text: "2 hours couldn't be recorded".into(),
             detail: String::new(),
         });
-        assert_eq!(snapshot.light(), Light::Problem);
-        assert_eq!(
-            snapshot.tooltip(),
-            "Battle Plan Recorder: 2 hours couldn't be recorded"
-        );
+        for phase in [Phase::Waiting, Phase::Recording, Phase::Saving] {
+            snapshot.phase = phase;
+            assert_eq!(snapshot.light(), Light::Problem, "{phase:?}");
+        }
     }
 }

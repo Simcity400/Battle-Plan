@@ -241,6 +241,29 @@ impl ReadHours {
     }
 }
 
+/// Write what `campaign` owes its segment and close it, under its own allocation context.
+fn set_aside_in_context(
+    id: &str,
+    campaign: &mut Campaign,
+    counters: &mut OrderCounterWitness,
+) -> io::Result<()> {
+    let caller = crate::allocation::context();
+    crate::allocation::set_context(crate::allocation::Context {
+        campaign_id: id.as_bytes().try_into().ok(),
+        branch: campaign.tracker.current_branch(),
+        load_signal: None,
+        failed_hour: None,
+    });
+    let result = campaign.set_aside();
+    crate::allocation::set_context(caller);
+    if let Err(error) = &result {
+        counters.invalidate_write(id, error);
+        campaign.disk_branch = None;
+        campaign.encoder = FrameEncoder::new();
+    }
+    result
+}
+
 struct Campaigns(Vec<(String, Campaign)>);
 impl Campaigns {
     fn new() -> Self {
@@ -615,7 +638,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     intel_shadow: IntelShadow,
     projection_scratch: ProjectionScratch,
     lexical_conversion: LexicalConversionStats,
-    _history_file: Option<File>,
+    history_lease: Option<File>,
 }
 
 impl Campaign {
@@ -680,7 +703,7 @@ impl Campaign {
             intel_shadow: IntelShadow::default(),
             projection_scratch: ProjectionScratch::default(),
             lexical_conversion: LexicalConversionStats::default(),
-            _history_file: history_file,
+            history_lease: history_file,
         })
     }
 }
@@ -1501,6 +1524,23 @@ impl<B: SegmentBackend> Campaign<B> {
         }))?;
         self.pending.clear();
         self.spool.finish_segment()
+    }
+
+    /// The game left this campaign: end its segment so the recorder can save it.
+    fn set_aside(&mut self) -> io::Result<()> {
+        if !self.spool.is_open() {
+            return Ok(());
+        }
+        let written = self.context(false, 0).and_then(|context| {
+            context
+                .iter()
+                .try_for_each(|record| self.spool.append(record))
+        });
+        if written.is_ok() {
+            self.pending.clear();
+        }
+        let closed = self.spool.finish_segment();
+        written.and(closed)
     }
 }
 
@@ -2873,6 +2913,14 @@ impl Processor {
         self.unpublished_families |= work.validation_families;
         self.unknown_pending = 0;
         self.suppress_origin = false;
+        if self
+            .stats
+            .previous
+            .as_ref()
+            .is_some_and(|(previous, ..)| *previous != id)
+        {
+            self.set_aside_others(&id);
+        }
         // The status names the viewed country's flag operands from rows just
         // committed; nothing is read from the game for it.
         let viewed = self
@@ -2897,6 +2945,95 @@ impl Processor {
         stats.previous = Some((id, branch, clock.hour, qpc));
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        Ok(())
+    }
+
+    /// This hour is written, so a failure here is the other campaign's, as in a flush.
+    fn set_aside_others(&mut self, current: &str) {
+        if crate::allocation::failed() {
+            return;
+        }
+        let mut first_error = None;
+        for (id, campaign) in &mut self.campaigns {
+            if id == current {
+                continue;
+            }
+            if let Err(error) = set_aside_in_context(id, campaign, &mut self.stats.order_counters)
+            {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            self.error(&error);
+        }
+    }
+
+    /// The game loaded another campaign: close this one's segment now, not at that one's first hour.
+    /// `load` is the load it left; one loaded again since keeps recording.
+    pub(crate) fn close_campaign(&mut self, id: &str, load: Option<i64>) -> Result<(), &'static str> {
+        if crate::allocation::failed() {
+            return Err("allocation failed");
+        }
+        let Some(campaign) = self.campaigns.get_mut(id) else {
+            return Ok(());
+        };
+        if load.is_some_and(|load| campaign.tracker.last_load_signal().is_some_and(|now| now != load))
+        {
+            return Err("the campaign was loaded again");
+        }
+        match set_aside_in_context(id, campaign, &mut self.stats.order_counters) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.error(&error);
+                Err("its segment could not be closed")
+            }
+        }
+    }
+
+    /// The recorder saves a campaign the game left: let go of its history file meanwhile.
+    pub(crate) fn release_history(&mut self, id: &str) -> Result<(), &'static str> {
+        match self.campaigns.get_mut(id) {
+            Some(campaign) if campaign.spool.is_open() => return Err("the campaign is recording"),
+            Some(campaign) => campaign.history_lease = None,
+            None => self.history.release(id),
+        }
+        Ok(())
+    }
+
+    /// Answer the recorder's `<token> release|retake <campaign>` with `<token> ok|refused <reason>`.
+    pub(crate) fn history_request(&mut self, request: &str) -> String {
+        let mut words = request.split_whitespace();
+        let (token, action, campaign) = (words.next(), words.next(), words.next());
+        let load = words.next().and_then(|load| load.parse::<i64>().ok());
+        let refusal = match (
+            campaign.map(|campaign| campaign_name(campaign.as_bytes())),
+            action,
+        ) {
+            (Some(Ok(campaign)), Some("release")) => self.release_history(&campaign).err(),
+            (Some(Ok(campaign)), Some("close")) => self.close_campaign(&campaign, load).err(),
+            (Some(Ok(campaign)), Some("retake")) => self
+                .retake_history(&campaign)
+                .err()
+                .map(|_| "the history file could not be held"),
+            _ => Some("unknown request"),
+        };
+        let token = token.unwrap_or_default();
+        match refusal {
+            None => format!("{token} ok"),
+            Some(reason) => format!("{token} refused {reason}"),
+        }
+    }
+
+    /// Hold a campaign's history file again, as the recorder saved it.
+    pub(crate) fn retake_history(&mut self, id: &str) -> io::Result<()> {
+        let lease = match self.history.history_path(id)? {
+            Some(path) => Some(crate::history::lease(&path)?),
+            None => None,
+        };
+        match self.campaigns.get_mut(id) {
+            Some(campaign) => campaign.history_lease = lease,
+            None => self.history.retake(id, lease),
         }
         Ok(())
     }
@@ -4051,6 +4188,19 @@ pub(crate) fn spool_failure_fixture(root: &Path) -> io::Result<Processor> {
     Processor::new(root, PreparedCampaigns::default(), tests::session())
 }
 
+/// An hour of `campaign` at load `signal`.
+#[cfg(test)]
+pub(crate) fn campaign_frame(campaign: &[u8], signal: i64, hour: i32) -> Captured {
+    let mut frame = tests::captured(hour);
+    let clock = frame.clock.as_mut().unwrap();
+    clock.campaign_id = engine_native::capture_text::Owned {
+        bytes: campaign.to_vec(),
+        len: campaign.len(),
+    };
+    clock.play_session_started_at = signal;
+    frame
+}
+
 #[cfg(test)]
 pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
     let mut frame = tests::captured(hour);
@@ -4506,6 +4656,418 @@ mod tests {
         let retained = serde_json::to_value(&retained).unwrap();
         assert_eq!(retained, status["validation_refusals"]);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_close_request_closes_a_left_campaigns_segment_before_any_other_hour() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-close-request-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        processor
+            .frame(&crate::spooling::campaign_frame(ID, 1234, 10))
+            .unwrap();
+        let name = std::str::from_utf8(ID).unwrap();
+        let segment = fs::read_dir(directory.join(name))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "h4s"))
+            .unwrap();
+        // The recorder takes a segment no one may write as settled.
+        let settled = |path: &Path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+                .open(path)
+                .is_ok()
+        };
+        assert!(!settled(&segment));
+        // The game loaded another campaign, paused before its first hour.
+        // A close for a load it has left since is refused; the load it is on closes.
+        assert_eq!(
+            processor.history_request(&format!("1 close {name} 9999")),
+            "1 refused the campaign was loaded again"
+        );
+        assert!(!settled(&segment));
+        assert_eq!(processor.history_request(&format!("2 close {name} 1234")), "2 ok");
+        assert!(settled(&segment));
+        drop(processor);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn another_campaigns_hour_closes_the_left_campaigns_segment_for_good() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const OTHER: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a7";
+        let directory = std::env::temp_dir().join(format!("hoi4-set-aside-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
+        let load = |campaign: &[u8], signal: i64, hour: i32| {
+            let mut source = captured(hour);
+            let clock = source.clock.as_mut().unwrap();
+            clock.campaign_id = owned_text(campaign);
+            clock.play_session_started_at = signal;
+            source
+        };
+        let first = directory.join(std::str::from_utf8(ID).unwrap());
+        let segments = || {
+            let mut paths: Vec<_> = fs::read_dir(&first)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|extension| extension == "h4s"))
+                .collect();
+            paths.sort();
+            paths
+        };
+        // The recorder takes a segment no one may write as settled.
+        let settled = |path: &Path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+                .open(path)
+                .is_ok()
+        };
+        processor.frame(&load(ID, 1234, 10)).unwrap();
+        processor.frame(&load(ID, 1234, 11)).unwrap();
+        let [open] = segments().try_into().unwrap();
+        assert!(!settled(&open), "the campaign being recorded keeps writing");
+        processor.frame(&load(OTHER, 5678, 20)).unwrap();
+        assert!(settled(&open), "the left campaign's segment is closed");
+        let closed = fs::read(&open).unwrap();
+        processor.frame(&load(OTHER, 5678, 21)).unwrap();
+        // Loading it again starts a new segment with its own context.
+        processor.frame(&load(ID, 9999, 30)).unwrap();
+        processor.detach().unwrap();
+        assert_eq!(
+            fs::read(&open).unwrap(),
+            closed,
+            "a closed segment never changes"
+        );
+        let [before, after] = segments().try_into().unwrap();
+        assert_eq!(before, open);
+        let records = |path: &Path| replay::spool::recover_prefix(&fs::read(path).unwrap()).records;
+        let summary = |records: &[Record]| {
+            records
+                .iter()
+                .map(|record| match record {
+                    Record::SessionStart(_) => "session".to_owned(),
+                    Record::BranchStart(_) => "branch".to_owned(),
+                    Record::Frame(frame) => format!("hour {}", frame.hour),
+                    Record::Control(ControlRecord::Detach { .. }) => "detach".to_owned(),
+                    Record::Control(_) => "control".to_owned(),
+                    other => format!("{other:?}"),
+                })
+                .filter(|kind| kind != "control")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            summary(&records(&before)),
+            ["session", "branch", "hour 10", "hour 11"]
+        );
+        assert_eq!(
+            summary(&records(&after)),
+            ["session", "branch", "hour 30", "detach"]
+        );
+        let replay = replay::container::Replay::from_recovered(
+            ID.to_vec(),
+            &[
+                (
+                    0,
+                    replay::spool::recover_prefix(&fs::read(&before).unwrap()),
+                ),
+                (1, replay::spool::recover_prefix(&fs::read(&after).unwrap())),
+            ],
+        )
+        .unwrap();
+        let hours: Vec<_> = replay
+            .branches
+            .iter()
+            .flat_map(|branch| replay.recorded_hours(branch.id).unwrap())
+            .collect();
+        assert_eq!(hours, [10, 11, 30]);
+        drop(processor);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn scratch_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("hoi4-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("recordings")).unwrap();
+        root
+    }
+
+    fn recorded_frames(path: &Path) -> Vec<(u64, i32)> {
+        let replay = replay::container::Replay::open(fs::read(path).unwrap()).unwrap();
+        replay
+            .index
+            .iter()
+            .flat_map(|block| replay.read_block(block).unwrap())
+            .map(|frame| (frame.branch, frame.hour))
+            .collect()
+    }
+
+    fn loss(campaign: &[u8], signal: i64, hour: i32) -> LostObservation {
+        LostObservation {
+            campaign_id: owned_text(campaign),
+            first_hour: hour,
+            last_hour: hour,
+            count: 1,
+            load_signal: Some(signal),
+            ..Default::default()
+        }
+    }
+
+    const OTHER: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a7";
+
+    #[test]
+    fn a_campaign_recorded_again_after_a_restart_continues_its_unsaved_hours_and_both_save() {
+        use recorder_replay::replay_io;
+        let root = scratch_root("restart-unsaved");
+        let target = root.join("recordings");
+        let name = std::str::from_utf8(ID).unwrap();
+        let unsaved = replay::publication::unsaved_path(&target, name);
+        let settings = root.join("settings.json");
+        let naming = replay_io::Naming {
+            localisation: None,
+            settings: &settings,
+        };
+        let recording = || replay::recording_files::recording_of(&target, ID).unwrap();
+        // Each game process records the campaign, then ends with Auto save off.
+        let mut branches = Vec::new();
+        for (process, signal, hours) in [(1, 1234, 10..=12), (2, 5678, 20..=21)] {
+            let session = SessionStart {
+                id: process,
+                process_start_time: process * 1000,
+                ..session()
+            };
+            let folder = root.join("sessions").join(process.to_string());
+            let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
+            let mut processor = Processor::new(&folder, history, session).unwrap();
+            for hour in hours {
+                processor
+                    .frame(&crate::spooling::campaign_frame(ID, signal, hour))
+                    .unwrap();
+            }
+            branches.push(
+                processor
+                    .campaigns
+                    .get_mut(name)
+                    .unwrap()
+                    .tracker
+                    .current_branch(),
+            );
+            processor.detach().unwrap();
+            drop(processor);
+            let (staged, _) = replay_io::save_campaign(
+                &folder,
+                &target,
+                name,
+                true,
+                &|| Ok(()),
+                &mut replay_io::Ahead::default(),
+                naming,
+            )
+            .unwrap();
+            assert_eq!(staged.as_deref(), Some(unsaved.as_path()));
+            assert_eq!(recording(), None, "nothing is saved");
+        }
+        // The restarted capture continued the first one's branches.
+        assert_ne!(branches[0], branches[1]);
+        // Save: both captures, as one recording.
+        let saved = replay_io::publish_unsaved(&target, name, naming).unwrap();
+        let recording = recording().unwrap();
+        assert_eq!(saved, Some(recording.clone()));
+        assert!(!unsaved.exists());
+        let [first, second] = [branches[0].unwrap(), branches[1].unwrap()];
+        assert_eq!(
+            recorded_frames(&recording),
+            [
+                (first, 10),
+                (first, 11),
+                (first, 12),
+                (second, 20),
+                (second, 21)
+            ]
+        );
+        let replay = replay::container::Replay::open(fs::read(&recording).unwrap()).unwrap();
+        assert_eq!(
+            replay
+                .sessions
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_campaign_the_game_left_is_saved_over_its_existing_recording_while_its_history_is_released()
+    {
+        use recorder_replay::replay_io;
+        let root = scratch_root("set-aside-lease");
+        let target = root.join("recordings");
+        let name = std::str::from_utf8(ID).unwrap();
+        let other = std::str::from_utf8(OTHER).unwrap();
+        let settings = root.join("settings.json");
+        let save = |folder: &Path| {
+            replay_io::save_campaign(
+                folder,
+                &target,
+                name,
+                false,
+                &|| Ok(()),
+                &mut replay_io::Ahead::default(),
+                replay_io::Naming {
+                    localisation: None,
+                    settings: &settings,
+                },
+            )
+        };
+        // An earlier game process saved the campaign.
+        let earlier = root.join("sessions").join("1");
+        let mut processor =
+            Processor::new(&earlier, PreparedCampaigns::default(), session()).unwrap();
+        for hour in 10..=11 {
+            processor
+                .frame(&crate::spooling::campaign_frame(ID, 1234, hour))
+                .unwrap();
+        }
+        processor.detach().unwrap();
+        drop(processor);
+        let recording = save(&earlier).unwrap().0.unwrap();
+        // This process holds that recording as the campaign's history.
+        let session = SessionStart {
+            id: 2,
+            process_start_time: 2000,
+            ..session()
+        };
+        let folder = root.join("sessions").join("2");
+        let history = PreparedCampaigns::load(&target, &session, |_| Ok(())).unwrap();
+        let mut processor = Processor::new(&folder, history, session).unwrap();
+        for hour in 20..=21 {
+            processor
+                .frame(&crate::spooling::campaign_frame(ID, 5678, hour))
+                .unwrap();
+        }
+        processor
+            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
+            .unwrap();
+        let held = fs::read(&recording).unwrap();
+        assert!(
+            save(&folder).is_err(),
+            "no one replaces a history the collector holds"
+        );
+        assert_eq!(fs::read(&recording).unwrap(), held);
+        // The campaign being recorded keeps its history.
+        assert_eq!(
+            processor.history_request(&format!("1 release {other}")),
+            "1 refused the campaign is recording"
+        );
+        assert_eq!(
+            processor.history_request(&format!("2 release {name}")),
+            "2 ok"
+        );
+        let recording = save(&folder).unwrap().0.unwrap();
+        assert_eq!(
+            processor.history_request(&format!("3 retake {name}")),
+            "3 ok"
+        );
+        let first = processor
+            .campaigns
+            .get_mut(name)
+            .unwrap()
+            .tracker
+            .current_branch();
+        assert!(
+            fs::OpenOptions::new().write(true).open(&recording).is_err(),
+            "held again"
+        );
+        assert_eq!(
+            processor.history_request("4 rename x"),
+            "4 refused unknown request"
+        );
+        processor.detach().unwrap();
+        drop(processor);
+        let frames = recorded_frames(&recording);
+        assert_eq!(
+            frames.iter().map(|(_, hour)| *hour).collect::<Vec<_>>(),
+            [10, 11, 20, 21]
+        );
+        assert_eq!(frames[2].0, first.unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn saving_a_campaign_each_time_the_game_leaves_it_writes_what_one_save_at_the_end_would() {
+        use recorder_replay::replay_io;
+        let root = scratch_root("set-aside-bytes");
+        let target = root.join("recordings");
+        let name = std::str::from_utf8(ID).unwrap();
+        let folder = root.join("sessions").join("1");
+        let mut processor =
+            Processor::new(&folder, PreparedCampaigns::default(), session()).unwrap();
+        let settings = root.join("settings.json");
+        let save = || {
+            replay_io::save_campaign(
+                &folder,
+                &target,
+                name,
+                false,
+                &|| Ok(()),
+                &mut replay_io::Ahead::default(),
+                replay_io::Naming {
+                    localisation: None,
+                    settings: &settings,
+                },
+            )
+            .unwrap()
+        };
+        for hour in 10..=11 {
+            processor
+                .frame(&crate::spooling::campaign_frame(ID, 1234, hour))
+                .unwrap();
+        }
+        // An hour lost while leaving: its gap is written when the campaign is set aside.
+        processor.lost(&loss(ID, 1234, 12)).unwrap();
+        processor
+            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 30))
+            .unwrap();
+        save();
+        // Loaded again, then left again: the save appends.
+        for hour in 40..=41 {
+            processor
+                .frame(&crate::spooling::campaign_frame(ID, 5678, hour))
+                .unwrap();
+        }
+        processor
+            .frame(&crate::spooling::campaign_frame(OTHER, 9012, 31))
+            .unwrap();
+        save();
+        processor.detach().unwrap();
+        drop(processor);
+        let once = root.join("once");
+        replay_io::finalize_session(&folder, &once).unwrap();
+        let saved = |folder: &Path| {
+            let recording = replay::recording_files::recording_of(folder, ID).unwrap();
+            fs::read(recording.unwrap()).unwrap()
+        };
+        assert_eq!(saved(&target), saved(&once));
+        let replay = replay::container::Replay::open(saved(&target)).unwrap();
+        assert_eq!(
+            replay
+                .gaps
+                .iter()
+                .map(|gap| gap.first_hour)
+                .collect::<Vec<_>>(),
+            [12]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -6107,7 +6669,7 @@ mod tests {
                 intel_shadow: IntelShadow::default(),
                 projection_scratch: ProjectionScratch::default(),
                 lexical_conversion: LexicalConversionStats::default(),
-                _history_file: None,
+                history_lease: None,
             },
             store,
         )

@@ -77,8 +77,12 @@ mod capture_mode {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
+    /// Auto record: campaigns record when they load, unless their own choice says otherwise.
     #[serde(default = "enabled")]
     pub record_every_campaign: bool,
+    /// Auto save: otherwise recordings wait for Save or Discard.
+    #[serde(default = "enabled")]
+    pub auto_save: bool,
     /// Where recordings are saved; absent is the recorder's default folder.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_folder: Option<PathBuf>,
@@ -136,6 +140,7 @@ impl Default for RecorderSettings {
     fn default() -> Self {
         Self {
             record_every_campaign: true,
+            auto_save: true,
             save_folder: None,
             user_folder: None,
             start_with_windows: false,
@@ -300,7 +305,7 @@ mod tests {
         let root = scratch("defaults");
         let path = root.join("settings.json");
         let settings = RecorderSettings::load_from(&path).unwrap();
-        assert!(settings.record_every_campaign);
+        assert!(settings.record_every_campaign && settings.auto_save);
         assert!(settings.start_with_replay && !settings.start_with_windows);
         assert!(settings.game_score && settings.operation_outcomes && settings.politics);
         assert_eq!(settings.capture_mode, CaptureMode::Full);

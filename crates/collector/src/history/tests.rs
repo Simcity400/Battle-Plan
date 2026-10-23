@@ -151,6 +151,14 @@ fn compatibility_old_campaign_is_refused_before_recording_history_is_seeded() {
     fs::write(&path, replay.bytes()).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     assert!(prepared.take(id, &session).unwrap().1.is_some());
+    // Left out, a campaign records without its history, even one unreadable after its header.
+    drop(prepared);
+    let header = &replay.bytes()[..14 + id.len()];
+    fs::write(&path, [header, b"not a recording"].concat()).unwrap();
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    prepared.without_history(id);
+    let (tracker, lease) = prepared.take(id, &session).unwrap();
+    assert!(lease.is_none() && tracker.last_observation().is_none());
     drop(prepared);
     fs::remove_dir_all(&root).unwrap();
 }
@@ -188,6 +196,62 @@ fn a_campaigns_recording_is_found_by_its_header_whatever_its_name() {
     fs::remove_file(root.join("Germany 1936 - Copy.battleplan")).unwrap();
     fs::write(root.join("Damaged.battleplan"), b"junk").unwrap();
     assert!(PreparedCampaigns::load(&root, &session, |_| Ok(())).is_err());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_one() {
+    let id = "01234567-89ab-cdef-0123-456789abcdef";
+    let other = "11234567-89ab-cdef-0123-456789abcdef";
+    let root = std::env::temp_dir().join(format!("hoi4_history_unsaved_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let session = session();
+    let recording = |campaign: &str| {
+        Replay::from_records(
+            campaign.into(),
+            &[vec![Record::SessionStart(session.clone())]],
+        )
+        .unwrap()
+    };
+    let replay = recording(id);
+    let session = SessionStart {
+        id: 2,
+        ..session.clone()
+    };
+    fs::write(root.join("Germany 1936.battleplan"), replay.bytes()).unwrap();
+    let unsaved = replay::publication::unsaved_path(&root, id);
+    fs::create_dir_all(unsaved.parent().unwrap()).unwrap();
+    fs::write(&unsaved, replay.bytes()).unwrap();
+    // Its own unsaved recording is the history, the same file a save finds.
+    let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+    assert_eq!(prepared.history_path(id).unwrap(), Some(unsaved.clone()));
+    assert_eq!(
+        recording_files::unsaved_recording(&root, id.as_bytes()).unwrap(),
+        Some(unsaved.clone())
+    );
+    let (_, lease) = prepared.take(id, &session).unwrap();
+    assert!(lease.is_some());
+    drop((lease, prepared));
+    // With a second one beside it, neither unsaved recording nor the saved one is guessed to be it.
+    let copy = unsaved.with_file_name("Copy.battleplan");
+    fs::write(&copy, replay.bytes()).unwrap();
+    let refused = |campaign: &str| {
+        let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
+        let error = prepared.take(campaign, &session).err().unwrap().to_string();
+        assert!(error.contains("is ambiguous"), "{error}");
+        assert!(prepared.history_path(campaign).is_err());
+        assert!(recording_files::unsaved_recording(&root, campaign.as_bytes()).is_err());
+    };
+    refused(id);
+    // Alone but not named for its campaign, it is not the one a save finds.
+    fs::remove_file(&unsaved).unwrap();
+    refused(id);
+    // Named for the campaign but another's by header: refused for both.
+    fs::remove_file(&copy).unwrap();
+    fs::write(&unsaved, recording(other).bytes()).unwrap();
+    refused(id);
+    refused(other);
     fs::remove_dir_all(&root).unwrap();
 }
 

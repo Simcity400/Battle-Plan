@@ -116,6 +116,74 @@ pub fn recording_of(folder: &Path, campaign: &[u8]) -> io::Result<Option<PathBuf
     one_recording(folder, campaign, recordings_of(folder, campaign)?)
 }
 
+/// Each campaign's unsaved recording in `folder`, by the campaign in lower case: the file named for
+/// it, when no other file there is its by header or by name. Any other is refused, never guessed.
+pub fn unsaved_recordings(folder: &Path) -> io::Result<BTreeMap<Vec<u8>, Result<PathBuf, String>>> {
+    let unsaved = crate::publication::unsaved_folder(folder);
+    let entries = match fs::read_dir(&unsaved) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        entries => entries.map_err(|error| at(&unsaved, error))?,
+    };
+    // Each file of each campaign, and whether its name and header both name it.
+    let mut claimed = BTreeMap::<Vec<u8>, Vec<(PathBuf, bool)>>::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| at(&unsaved, error))?;
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| at(&path, error))?
+            .is_file()
+            || !is_recording(&path)
+        {
+            continue;
+        }
+        let header = campaign_of(&path)?.map(|campaign| campaign.to_ascii_lowercase());
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| stem.as_bytes().to_ascii_lowercase())
+            .filter(|stem| crate::identity::is_campaign_uuid(stem));
+        let own = header.is_some() && header == name;
+        for campaign in [header, name.filter(|_| !own)].into_iter().flatten() {
+            claimed
+                .entry(campaign)
+                .or_default()
+                .push((path.clone(), own));
+        }
+    }
+    Ok(claimed
+        .into_iter()
+        .map(|(campaign, files)| {
+            let found = match files.as_slice() {
+                [(path, true)] => Ok(path.clone()),
+                files => {
+                    let mut names: Vec<_> = files
+                        .iter()
+                        .filter_map(|(path, _)| path.file_name())
+                        .map(|name| name.to_string_lossy())
+                        .collect();
+                    names.sort();
+                    let campaign = String::from_utf8_lossy(&campaign);
+                    Err(format!(
+                        "{}: the unsaved recording of campaign {campaign} is ambiguous ({}); only {campaign}.{EXTENSION}, its header naming that campaign, may be there",
+                        unsaved.display(),
+                        names.join(", "),
+                    ))
+                }
+            };
+            (campaign, found)
+        })
+        .collect())
+}
+
+/// The campaign's unsaved recording in `folder`, as [`unsaved_recordings`] finds it.
+pub fn unsaved_recording(folder: &Path, campaign: &[u8]) -> io::Result<Option<PathBuf>> {
+    unsaved_recordings(folder)?
+        .remove(&campaign.to_ascii_lowercase())
+        .transpose()
+        .map_err(io::Error::other)
+}
+
 pub fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
@@ -253,18 +321,21 @@ impl AtomicPublisher for NewPublisher<'_> {
     }
     fn replace(&mut self, writer: File) -> io::Result<()> {
         drop(writer);
-        for number in 1_u64.. {
-            let target = numbered(self.folder, self.stem, number);
-            match crate::publication::rename_new(&self.temporary, &target) {
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                result => {
-                    self.published = Some(target);
-                    return result;
-                }
-            }
-        }
-        Err(io::Error::other("no free recording name"))
+        self.published = Some(place_new(&self.temporary, self.folder, self.stem)?);
+        Ok(())
     }
+}
+
+/// Move the synced file `source` into `folder` as `stem`, numbered past any file there.
+pub fn place_new(source: &Path, folder: &Path, stem: &str) -> io::Result<PathBuf> {
+    for number in 1_u64.. {
+        let target = numbered(folder, stem, number);
+        match crate::publication::rename_new(source, &target) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            result => return result.map(|()| target),
+        }
+    }
+    Err(io::Error::other("no free recording name"))
 }
 
 /// Publish a new recording as `stem` in `folder`, numbered past any file there.

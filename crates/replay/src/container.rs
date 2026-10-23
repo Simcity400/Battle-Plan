@@ -188,7 +188,12 @@ impl Observed {
             })
     }
 }
-type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>, CaptureMode);
+type TrailerSummary = (
+    Option<ControlRecord>,
+    Option<(Hour, Hour)>,
+    CaptureMode,
+    Vec<SessionId>,
+);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
@@ -535,6 +540,13 @@ impl Replay {
         Ok(Self::read_trailer_summary(&mut file, length)?.2)
     }
 
+    /// The ids of the sessions a recording holds, from its trailer without inflating blocks.
+    pub fn read_session_ids(path: &Path) -> io::Result<Vec<SessionId>> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        Ok(Self::read_trailer_summary(&mut file, length)?.3)
+    }
+
     /// The partial notice, when readable, and the recorded hour span.
     fn read_trailer_summary(
         file: &mut (impl Read + Seek),
@@ -577,6 +589,7 @@ impl Replay {
         expect_magic(&mut trailer, TRAILER_MAGIC)?;
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
         let mode = file_capture_mode(&sessions)?;
+        let ids = sessions.iter().map(|session| session.id).collect();
         let _branches = decode_list(&mut trailer, BranchStart::decode)?;
         let mut warnings = Vec::new();
         let mut damaged_parts = 0;
@@ -617,20 +630,20 @@ impl Replay {
         // hour span. Full opening reports checksum failures and trailing bytes
         // as warnings.
         if validate_partial_controls(&controls).is_err() {
-            return Ok((None, span, mode));
+            return Ok((None, span, mode, ids));
         }
         for control in &controls {
             if !sessions
                 .iter()
                 .any(|session| session.id == control.session())
             {
-                return Ok((None, span, mode));
+                return Ok((None, span, mode, ids));
             }
         }
         let partial = controls
             .into_iter()
             .find(|control| matches!(control, ControlRecord::Partial { .. }));
-        Ok((partial, span, mode))
+        Ok((partial, span, mode, ids))
     }
 
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {

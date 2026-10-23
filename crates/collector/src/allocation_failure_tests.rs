@@ -238,6 +238,12 @@ fn checked_allocation_sweep_stops_once_and_preserves_prefix() {
 }
 
 #[test]
+fn a_campaign_set_aside_with_a_pending_gap_commits_under_its_own_name() {
+    let output = child("set-aside", "spool", 0);
+    successful(&output, "set-aside", "spool", 0);
+}
+
+#[test]
 #[ignore = "launched only by allocation-failure parent tests"]
 fn allocation_safety_child() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -260,6 +266,7 @@ fn allocation_safety_child() {
             .unwrap();
         }
         "raw-advisory" => raw_advisory_and_details().unwrap(),
+        "set-aside" => set_aside_witness().unwrap(),
         "cpu-sets" | "cpu-sets-size-failed" | "cpu-sets-read-failed" => {
             let query_failure = match mode.as_str() {
                 "cpu-sets-size-failed" => Some(1),
@@ -323,6 +330,56 @@ fn deferred_failure() -> io::Result<()> {
     assert_eq!(witness.committed_bytes, 2100);
     assert_eq!(Some(witness), read_witness(&witness_file)?);
     allocation::clear_handle();
+    Ok(())
+}
+
+/// A loss pending as the game leaves a campaign commits under that campaign's name.
+fn set_aside_witness() -> io::Result<()> {
+    const OTHER: &[u8; 36] = b"01234567-89ab-cdef-0123-456789abcdee";
+    allocation::reset();
+    allocation::install_hooks();
+    let root = case_root(Phase::Spool, 0, false);
+    fs::create_dir_all(&root)?;
+    let witness_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(root.join(replay_data::witness::WITNESS_FILE_NAME))?;
+    allocation::prepare(&witness_file, 1, 1000);
+    let mut processor = crate::spooling::spool_failure_fixture(&root)?;
+    {
+        let _scope = allocation::enter(Phase::Spool);
+        for hour in 10..=11 {
+            processor.frame(&crate::spooling::campaign_frame(CAMPAIGN, 1, hour))?;
+        }
+        processor.lost(&crate::sampling::LostObservation {
+            campaign_id: engine_native::capture_text::Owned {
+                bytes: CAMPAIGN.to_vec(),
+                len: CAMPAIGN.len(),
+            },
+            first_hour: 12,
+            last_hour: 12,
+            load_signal: Some(1),
+            count: 1,
+            ..Default::default()
+        })?;
+        processor.frame(&crate::spooling::campaign_frame(OTHER, 2, 30))?;
+        allocation::fail(Phase::Spool, Code::Reserve);
+    }
+    let witness = allocation::failure().unwrap();
+    assert_eq!(witness.committed_campaign_id, Some(*CAMPAIGN));
+    assert_eq!(witness.campaign_id, Some(*OTHER));
+    assert_eq!(Some(witness), read_witness(&witness_file)?);
+    allocation::clear_handle();
+    drop(processor);
+    // The witness is on disk; the recorder finalizes with allocation working again.
+    allocation::reset();
+    let finalized =
+        recorder_replay::replay_io::finalize_session_outcome(&root, &root.join("recordings"))
+            .map_err(io::Error::other)?;
+    assert!(finalized.errors.is_empty(), "{:?}", finalized.errors);
+    assert_eq!(finalized.replays.len(), 2);
     Ok(())
 }
 

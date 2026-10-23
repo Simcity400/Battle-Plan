@@ -69,6 +69,9 @@ pub(crate) fn refuse_land_detach_for_test(retain: impl FnOnce()) -> Result<(), &
 struct Config {
     #[serde(default)]
     scripted_maps: crate::scripted_maps::Demand,
+    /// Campaigns whose loads the recorder leaves out: recorded without their history.
+    #[serde(default)]
+    without_history: Vec<String>,
     #[serde(default = "observer_default")]
     operation_outcomes: bool,
     #[serde(default = "observer_default")]
@@ -714,7 +717,7 @@ fn run(
     // It protects both existing histories and campaigns with no replay yet.
     let output_lock = reserve_output(&config, &detach)?;
     progress.step("output_reserved", None);
-    let history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
+    let mut history = PreparedCampaigns::load(&config.replay_dir, &session, |campaign| {
         if config.cancel_file.exists() || detach.signaled() {
             return Err(io::Error::from(io::ErrorKind::Interrupted));
         }
@@ -727,6 +730,9 @@ fn run(
         )
     })
     .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
+    for campaign in &config.without_history {
+        history.without_history(campaign);
+    }
     crate::politics_changes::restore_epoch(history.politics_epoch())?;
     crate::operation_outcomes::restore_sequence(history.completion_sequence())?;
     let (map_event_epoch, map_event_sequence) = history.map_events();
@@ -4289,6 +4295,7 @@ fn spool_loop(
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::new();
     let mut refresh_requests = RefreshRequests::default();
+    let mut history_requests = HistoryRequests::default();
     // Wake-ups replace polling: decode publication, a parked clock
     // preparation and the stop request unpark this thread.
     let _ = shared.spool_waker.set(std::thread::current());
@@ -4547,6 +4554,10 @@ fn spool_loop(
             if let Err(error) = refresh_requests.poll(&config.output_dir, shared) {
                 crate::allocation::observe(&error);
                 last_warning = Some("refresh request failed");
+            }
+            if let Err(error) = history_requests.poll(&config.output_dir, &mut processor) {
+                crate::allocation::observe(&error);
+                last_warning = Some("history request failed");
             }
             let status_started = sampling::qpc();
             if let Some(error) = writer.take_error() {
@@ -5622,6 +5633,35 @@ impl RefreshRequests {
 }
 
 static REFRESH_ACCEPTED: AtomicU64 = AtomicU64::new(0);
+
+/// The recorder's requests for a set-aside campaign's history file; the output lock stays held.
+#[derive(Default)]
+struct HistoryRequests {
+    last: Option<String>,
+}
+
+pub(crate) const HISTORY_REQUEST: &str = "history.request";
+pub(crate) const HISTORY_ACK: &str = "history.ack";
+
+impl HistoryRequests {
+    fn poll(&mut self, session: &Path, processor: &mut Processor) -> io::Result<()> {
+        let request = session.join(HISTORY_REQUEST);
+        let text = match fs::read_to_string(&request) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let token = text.split_whitespace().next().unwrap_or_default();
+        if token.is_empty() || self.last.as_deref() == Some(token) {
+            return Ok(());
+        }
+        let ack = processor.history_request(&text);
+        self.last = Some(token.to_owned());
+        // Consumed before acknowledged: once acknowledged, the recorder's next request may replace it.
+        fs::remove_file(&request)?;
+        fs::write(session.join(HISTORY_ACK), ack)
+    }
+}
 
 static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);

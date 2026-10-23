@@ -8,7 +8,8 @@ use crate::{
     targets, tray,
 };
 use recorder::controller::{
-    self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, Stage,
+    self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, SetAside,
+    Stage, Waiting,
 };
 use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
 use replay_data::scope::CaptureMode;
@@ -26,6 +27,14 @@ use tauri::{AppHandle, Emitter, Manager};
 pub const STATUS_EVENT: &str = "recorder-status";
 /// The worker changed the saved settings itself: the panel reads them again.
 pub const SETTINGS_EVENT: &str = "recorder-settings";
+/// A recording was saved or discarded, or began or stopped waiting: the panel lists them again.
+pub const RECORDINGS_EVENT: &str = "recorder-recordings";
+
+pub fn recordings_changed(app: &AppHandle) {
+    if let Err(error) = app.emit(RECORDINGS_EVENT, ()) {
+        eprintln!("Recordings could not reach the panel: {error}");
+    }
+}
 
 fn settings_used(app: &AppHandle) {
     if let Err(error) = app.emit(SETTINGS_EVENT, ()) {
@@ -57,6 +66,16 @@ struct Inner {
     idle_recording: targets::RecordingCache,
     /// The saved recording the panel still shows, found again if renamed.
     saved_recording: targets::RecordingCache,
+    /// The running session's folder, once it records, and the folder it saves into.
+    session: Option<(PathBuf, PathBuf)>,
+    /// A game runs, so Record can attach to it.
+    game_running: bool,
+    /// The tray menu's Start and Stop as last shown.
+    menu: Option<(bool, bool)>,
+    /// Campaigns the running session set aside that wait to be saved.
+    set_aside: Vec<Waiting>,
+    /// The name each of the running session's recordings would get so far, by campaign.
+    names: BTreeMap<String, String>,
     /// The campaign and flag keys whose flag was last asked for this session.
     flag_keys: Option<(String, Vec<String>)>,
     /// This session's game and Paradox user folders, for its content stack.
@@ -159,11 +178,50 @@ impl GameProbe {
     }
 }
 
+/// Why the record loop does not attach to a game on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hold {
+    /// Its capture failed: until it restarts or Record is pressed.
+    Game,
+    /// The user stopped it: with Auto record on, its next other load records.
+    Load,
+}
+
+/// A game the record loop does not attach to on its own.
+#[derive(Debug, PartialEq, Eq)]
+struct Held {
+    start: u64,
+    /// After Stop, the load stopped; `None` holds until restart or Record.
+    stopped: Option<Option<(String, i64)>>,
+}
+
+impl Held {
+    fn game(start: u64) -> Self {
+        Self {
+            start,
+            stopped: None,
+        }
+    }
+
+    /// Auto record on, and the game names a load other than the one stopped.
+    fn released_by(&self, loaded: Option<&LoadedCampaign>, auto_record: bool) -> bool {
+        auto_record
+            && self.stopped.as_ref().is_some_and(|stopped| {
+                loaded.is_some_and(|loaded| {
+                    stopped.as_ref().is_none_or(|(campaign, load)| {
+                        *campaign != loaded.campaign || *load != loaded.load
+                    })
+                })
+            })
+    }
+}
+
 /// How a session ended, for the record loop.
 struct Ended {
-    /// Do not attach to this game again automatically: the user stopped it or
-    /// its capture failed.
-    hold: bool,
+    /// Do not attach to this game again automatically, and until when.
+    hold: Option<Hold>,
+    /// The last load the game named while the session recorded.
+    last_load: Option<(String, i64)>,
     /// The session ended because a load was refused.
     rerouted: bool,
     /// The campaign Record was pressed for, refused only because it records
@@ -173,13 +231,13 @@ struct Ended {
 
 /// How a finished capture continues. A session that ended for a refused load
 /// looks again at once: the campaign may be skipped, or record into its own
-/// folder. The user's Stop (Save or Discard, even while a refusal
-/// was already detaching) holds the game instead, until it restarts or Record
-/// is pressed.
+/// folder. The user's Stop, even during that detach, holds the stopped load instead.
 fn continuation(outcome: &CaptureOutcome, stopped: bool) -> Ended {
     let rerouted = outcome.rerouted && !stopped;
     Ended {
-        hold: outcome.detach_requested && !outcome.process_exited && !rerouted,
+        hold: (outcome.detach_requested && !outcome.process_exited && !rerouted)
+            .then_some(Hold::Load),
+        last_load: None,
         rerouted,
         handover: None,
     }
@@ -188,7 +246,8 @@ fn continuation(outcome: &CaptureOutcome, stopped: bool) -> Ended {
 impl Ended {
     fn held() -> Self {
         Self {
-            hold: true,
+            hold: Some(Hold::Game),
+            last_load: None,
             rerouted: false,
             handover: None,
         }
@@ -268,6 +327,7 @@ fn omitted_loads(omitted: &[Omission]) -> Option<OmittedLoads> {
             Some(Refusal::Off) => OmissionReason::Off,
             Some(Refusal::Elsewhere) => OmissionReason::Elsewhere,
             Some(Refusal::Settings) => OmissionReason::Settings,
+            Some(Refusal::Waiting) => OmissionReason::Waiting,
             None => OmissionReason::NotAdmitted,
         });
     Some(OmittedLoads {
@@ -310,34 +370,84 @@ impl Recorder {
 
     /// Unchanged snapshots must still follow taskbar theme changes.
     fn update(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) {
-        let (published, light) = {
+        let (published, menu, menu_changed, light) = {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
-            let published = (inner.snapshot != before).then(|| {
-                let can_stop = inner.capturing
+            // Start needs a game to attach to; Stop a recording to end.
+            let menu = (
+                inner.game_running && !inner.capturing,
+                inner.capturing
                     && inner.snapshot.phase == Phase::Recording
-                    && !inner.snapshot.stopping;
-                (inner.snapshot.clone(), can_stop)
-            });
-            (published, inner.snapshot.light())
+                    && !inner.snapshot.stopping,
+            );
+            let menu_changed = inner.menu.replace(menu) != Some(menu);
+            let published = (inner.snapshot != before).then(|| inner.snapshot.clone());
+            (published, menu, menu_changed, inner.snapshot.light())
         };
-        match published {
-            Some((snapshot, can_stop)) => {
-                if let Err(error) = app.emit(STATUS_EVENT, &snapshot) {
-                    eprintln!("Recorder status could not reach the panel: {error}");
-                }
-                tray::show(app, snapshot.light(), &snapshot.tooltip(), can_stop);
-            }
-            None => tray::follow_theme(app, light),
+        if let Some(snapshot) = &published
+            && let Err(error) = app.emit(STATUS_EVENT, snapshot)
+        {
+            eprintln!("Recorder status could not reach the panel: {error}");
+        }
+        if published.is_some() || menu_changed {
+            tray::show(app, light, menu.0, menu.1);
+        } else {
+            tray::follow_theme(app, light);
         }
     }
 
     pub fn snapshot(&self) -> Snapshot {
         self.lock().snapshot.clone()
+    }
+
+    /// The running session's folder and the folder it saves into, the campaigns it set aside that
+    /// wait, and the names their recordings there would get so far.
+    pub fn set_aside(
+        &self,
+    ) -> (
+        Option<(PathBuf, PathBuf)>,
+        Vec<Waiting>,
+        BTreeMap<String, String>,
+    ) {
+        let inner = self.lock();
+        (
+            inner.session.clone().filter(|_| inner.capturing),
+            inner.set_aside.clone(),
+            inner.names.clone(),
+        )
+    }
+
+    /// The folder the running session saves into, when `session` is that session.
+    pub fn live_target(&self, session: &Path) -> Option<PathBuf> {
+        let inner = self.lock();
+        inner
+            .session
+            .as_ref()
+            .filter(|(live, _)| inner.capturing && live == session)
+            .map(|(_, target)| target.clone())
+    }
+
+    /// The last flag shown for each campaign this run.
+    pub fn flags(&self) -> BTreeMap<String, FlagImage> {
+        self.lock().last_flags.clone()
+    }
+
+    /// The running session's collector guards `target`'s histories, so it acts there.
+    pub fn act_on_recording(&self, target: &Path, campaign: &str, discard: bool) -> bool {
+        let running = {
+            let inner = self.lock();
+            inner.capturing
+                && inner
+                    .session
+                    .as_ref()
+                    .is_some_and(|(_, live)| live == target)
+        };
+        // Once its capture loop has ended, the caller acts on it itself.
+        running && self.control.set_aside(campaign.to_owned(), discard)
     }
 
     pub fn start(self: &Arc<Self>, app: AppHandle) -> std::io::Result<()> {
@@ -372,14 +482,14 @@ impl Recorder {
         self.wake.notify_all();
     }
 
-    /// Right-click Stop recording: the panel opens on the Stop prompt.
+    /// Right-click Stop recording: the Stop prompt opens beside the tray icon.
     pub fn ask_stop(&self, app: &AppHandle) {
         let recording = {
             let inner = self.lock();
             inner.capturing && inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping
         };
         if recording {
-            panel::open(app, None, true);
+            panel::open(app, None, panel::Opening::StopPrompt);
         }
     }
 
@@ -392,7 +502,7 @@ impl Recorder {
         } else if inner.snapshot.phase == Phase::Recording && !inner.snapshot.stopping {
             inner.quit_after_stop = true;
             drop(inner);
-            panel::open(app, None, true);
+            panel::open(app, None, panel::Opening::StopPrompt);
         } else {
             // Nothing recorded yet, or already saving: finish, then exit.
             inner.quit_when_idle = true;
@@ -456,9 +566,8 @@ impl Recorder {
     }
 
     fn run(&self, app: &AppHandle) {
-        // The game process the user stopped, or whose capture failed. It is not
-        // attached again until it exits or Record is pressed.
-        let mut held: Option<u64> = None;
+        // The game the user stopped, or whose capture failed, until it is released.
+        let mut held: Option<Held> = None;
         let mut game: Option<GameProbe> = None;
         // The last session ended because a load was refused.
         let mut rerouted = false;
@@ -495,7 +604,7 @@ impl Recorder {
                     // The process is going away; look again shortly.
                     Err(_) => {}
                     Ok(start) => {
-                        if manual || held.is_some_and(|held| held != start) {
+                        if manual || held.as_ref().is_some_and(|held| held.start != start) {
                             held = None;
                         }
                         if !game.as_ref().is_some_and(|game| game.settled(start)) {
@@ -527,17 +636,30 @@ impl Recorder {
                         // If that cannot be read, attaching at the menu again would
                         // only meet the same refusal, so the game is held instead.
                         if std::mem::take(&mut rerouted) && loaded.is_none() && !manual {
-                            held = Some(start);
+                            held = Some(Held::game(start));
+                        }
+                        if held.as_ref().is_some_and(|held| {
+                            held.released_by(loaded.as_ref(), settings.record_every_campaign)
+                        }) {
+                            held = None;
                         }
                         let wanted = match &loaded {
                             Some(loaded) => settings.records_campaign(&loaded.campaign),
                             None => settings.record_every_campaign,
                         };
                         if held.is_none() && (manual || wanted) {
+                            let started = loaded
+                                .as_ref()
+                                .map(|loaded| (loaded.campaign.clone(), loaded.load));
                             let ended = self.capture(app, pid, &settings, manual, loaded, probe);
-                            if ended.hold {
-                                held = Some(start);
-                            }
+                            held = ended.hold.map(|hold| match hold {
+                                Hold::Game => Held::game(start),
+                                // The load recorded when Stop came; one loaded while it saved records.
+                                Hold::Load => Held {
+                                    start,
+                                    stopped: Some(ended.last_load.or(started)),
+                                },
+                            });
                             rerouted = ended.rerouted;
                             handover = ended.handover.map(|campaign| (start, campaign));
                             continue;
@@ -579,6 +701,7 @@ impl Recorder {
             }
         };
         self.update(app, |inner| {
+            inner.game_running = game_running;
             let automatic = settings.record_every_campaign;
             if inner.result {
                 inner.snapshot.automatic = automatic;
@@ -599,6 +722,10 @@ impl Recorder {
                 ..Snapshot::default()
             };
             if let Some((loaded, recording)) = named {
+                inner.snapshot.saved_bytes = recording
+                    .as_ref()
+                    .and_then(|recording| fs::metadata(recording).ok())
+                    .map(|metadata| metadata.len());
                 inner.snapshot.continued = recording.is_some();
                 inner.snapshot.flag = inner.last_flags.get(&loaded.campaign).cloned();
                 inner.snapshot.campaign = Some(loaded.campaign);
@@ -663,11 +790,15 @@ impl Recorder {
             .map(|game_dir| (game_dir, user.clone()));
         self.update(app, |inner| {
             inner.capturing = true;
+            inner.game_running = true;
             inner.result = false;
             inner.sticky = None;
             inner.seen = false;
             inner.hours = 0;
             inner.earlier = None;
+            inner.session = None;
+            inner.set_aside.clear();
+            inner.names.clear();
             inner.flag_keys = None;
             inner.flag_folders = flag_folders;
             inner.snapshot = Snapshot {
@@ -689,7 +820,7 @@ impl Recorder {
                 snapshot.continued = recording.is_some();
                 snapshot.recording = recording.map(|path| path.display().to_string());
                 snapshot.hour = Some(loaded.hour);
-                snapshot.bytes = bytes;
+                snapshot.saved_bytes = bytes;
             }
         });
         let settings_path = RecorderSettings::path();
@@ -716,10 +847,28 @@ impl Recorder {
             used_up: Box::new(|| settings_used(app)),
         };
         let admit = |campaign: &str, recorded: bool| admission.admit(campaign, recorded);
+        let last_load = RefCell::new(None);
         let current = || {
-            probe
+            let named = probe
                 .and_then(Probe::loaded)
-                .map(|loaded| (loaded.campaign, loaded.load))
+                .map(|loaded| (loaded.campaign, loaded.load));
+            if named.is_some() {
+                last_load.replace(named.clone());
+            }
+            named
+        };
+        // Read as each decision is made, so a change applies without a restart; settings that
+        // cannot be read keep the last value read, never turning Auto save on by themselves.
+        let last_auto_save = Cell::new(settings.auto_save);
+        let auto_save = || match RecorderSettings::load_from(&settings_path) {
+            Ok(read) => {
+                last_auto_save.set(read.auto_save);
+                read.auto_save
+            }
+            Err(error) => {
+                eprintln!("Recorder settings could not be read; Auto save stays as it was: {error}");
+                last_auto_save.get()
+            }
         };
         let started = Cell::new(false);
         let stage = |stage: Stage<'_>| match stage {
@@ -730,9 +879,10 @@ impl Recorder {
                 names,
             } => {
                 started.set(true);
-                session_dir
-                    .borrow_mut()
-                    .get_or_insert_with(|| session.to_path_buf());
+                if session_dir.borrow().is_none() {
+                    session_dir.replace(Some(session.to_path_buf()));
+                    self.lock().session = Some((session.to_path_buf(), target.clone()));
+                }
                 if !self.control.stopping() {
                     self.live(app, &target, session, status, names, probe);
                 }
@@ -742,6 +892,7 @@ impl Recorder {
                 inner.snapshot.problem = None;
                 inner.snapshot.progress = snapshot::saving_progress(records, inner.hours);
             }),
+            Stage::SetAside { waiting, done } => self.set_aside_changed(app, waiting, done),
         };
         let recording = Recording {
             output: &root,
@@ -758,6 +909,7 @@ impl Recorder {
             opening: loaded
                 .as_ref()
                 .map(|loaded| (loaded.campaign.as_str(), loaded.load)),
+            auto_save: &auto_save,
             names_wanted: &|| self.lock().panel_open,
         };
         let result = controller::record(pid, &recording, &self.control, &stage);
@@ -765,7 +917,33 @@ impl Recorder {
         if ended.rerouted {
             ended.handover = admission.handover.take();
         }
+        ended.last_load = last_load.into_inner();
         ended
+    }
+
+    /// A failed save stays shown as any capture failure does.
+    fn set_aside_changed(&self, app: &AppHandle, waiting: Option<&[Waiting]>, done: &[SetAside]) {
+        let failure = done.iter().find_map(|done| match done {
+            SetAside::Failed(campaign, error) => Some(format!("Campaign {campaign}: {error}")),
+            _ => None,
+        });
+        if let Some(error) = &failure {
+            eprintln!("Recording: {error}");
+        }
+        self.update(app, |inner| {
+            if let Some(waiting) = waiting {
+                inner.set_aside = waiting.to_vec();
+            }
+            if let Some(error) = failure {
+                let problem = Problem {
+                    text: controller::problem_text(&error, true).into(),
+                    detail: error,
+                };
+                inner.sticky = Some(problem.clone());
+                inner.snapshot.problem = Some(problem);
+            }
+        });
+        recordings_changed(app);
     }
 
     /// Fold one collector status publication into the snapshot. Before the
@@ -807,12 +985,20 @@ impl Recorder {
         };
         let name = match (&recording, &live.campaign) {
             (Some(recording), _) => file_name(recording),
-            (None, Some(campaign)) => names
-                .get(campaign)
-                .and_then(|stem| recording_files::unique_path(target, stem, None).ok())
-                .as_deref()
-                .and_then(file_name),
-            (None, None) => None,
+            // Named by the spool alone, which is not the name of one that adds to unsaved hours.
+            (None, Some(campaign))
+                if matches!(
+                    recording_files::unsaved_recording(target, campaign.as_bytes()),
+                    Ok(None)
+                ) =>
+            {
+                names
+                    .get(campaign)
+                    .and_then(|stem| recording_files::unique_path(target, stem, None).ok())
+                    .as_deref()
+                    .and_then(file_name)
+            }
+            (None, _) => None,
         };
         // A new set of flag keys (another country, cosmetic tag or ruling group)
         // or another campaign asks for its flag once.
@@ -840,6 +1026,7 @@ impl Recorder {
         }
         self.update(app, |inner| {
             inner.hours = live.hours;
+            inner.names.clone_from(names);
             let snapshot = &mut inner.snapshot;
             snapshot.session = Some(session.display().to_string());
             if let Some(campaign) = live.campaign {
@@ -856,9 +1043,11 @@ impl Recorder {
                 snapshot.continued = recording.is_some();
                 snapshot.recording = recording.map(|path| path.display().to_string());
                 snapshot.hour = live.hour.or(snapshot.hour);
-                snapshot.bytes = Some(earlier.unwrap_or(0) + live.spool_bytes);
+                snapshot.saved_bytes = earlier;
+                snapshot.spool_bytes = Some(live.spool_bytes);
             }
-            snapshot.problem = live.problem;
+            // A failed save of a set-aside campaign stays shown.
+            snapshot.problem = live.problem.or_else(|| inner.sticky.clone());
         });
     }
 
@@ -876,16 +1065,20 @@ impl Recorder {
             }
         };
         let ended = continuation(&outcome, self.control.stopping());
+        recordings_changed(app);
         if outcome.discarded {
             self.update(app, |inner| {
                 inner.capturing = false;
+                inner.session = None;
                 inner.snapshot.capture_mode = None;
                 inner.result = true;
+                inner.set_aside.clear();
                 let snapshot = &mut inner.snapshot;
                 snapshot.phase = Phase::Discarded;
                 snapshot.stopping = false;
                 snapshot.progress = None;
                 snapshot.problem = None;
+                snapshot.spool_bytes = None;
             });
             return ended;
         }
@@ -903,6 +1096,11 @@ impl Recorder {
             .or(outcome.replays.last())
             .cloned();
         let omitted = omitted_loads(&outcome.omitted);
+        // The campaign in progress waits to be saved: Auto save is off.
+        let unsaved = campaign
+            .as_ref()
+            .is_some_and(|campaign| outcome.waiting.contains(campaign));
+        let saved = saved.filter(|_| !unsaved);
         let unrenamed = (!outcome.unrenamed.is_empty()).then(|| Problem {
             text: "Saved, but the file kept its old name. It's renamed at the next save.".into(),
             detail: outcome.unrenamed.join("\n"),
@@ -913,8 +1111,10 @@ impl Recorder {
                 let bytes = fs::metadata(&path).ok().map(|metadata| metadata.len());
                 self.update(app, |inner| {
                     inner.capturing = false;
+                    inner.session = None;
                     inner.snapshot.capture_mode = None;
                     inner.result = true;
+                    inner.set_aside.clear();
                     let snapshot = &mut inner.snapshot;
                     snapshot.phase = Phase::Saved;
                     snapshot.omitted = omitted;
@@ -923,7 +1123,9 @@ impl Recorder {
                     snapshot.recording = Some(path.display().to_string());
                     snapshot.first_hour = span.map(|(first, _)| first);
                     snapshot.hour = span.map(|(_, last)| last).or(snapshot.hour);
-                    snapshot.bytes = bytes;
+                    snapshot.saved_bytes = bytes;
+                    snapshot.spool_bytes = None;
+                    snapshot.continued = true;
                     snapshot.stopping = false;
                     snapshot.progress = None;
                     snapshot.problem = unrenamed;
@@ -934,10 +1136,16 @@ impl Recorder {
             // until the panel has shown it.
             None => self.update(app, |inner| {
                 inner.capturing = false;
+                inner.session = None;
+                inner.set_aside.clear();
                 inner.snapshot.capture_mode = None;
                 inner.snapshot.stopping = false;
                 inner.snapshot.progress = None;
-                if omitted.is_some() {
+                if unsaved {
+                    inner.result = true;
+                    inner.snapshot.phase = Phase::Unsaved;
+                    inner.snapshot.omitted = omitted;
+                } else if omitted.is_some() {
                     inner.result = true;
                     inner.snapshot.phase = Phase::NotRecording;
                     inner.snapshot.omitted = omitted;
@@ -953,8 +1161,11 @@ impl Recorder {
             text: controller::problem_text(&error, started).into(),
             detail: error,
         };
+        recordings_changed(app);
         self.update(app, |inner| {
             inner.capturing = false;
+            inner.session = None;
+            inner.set_aside.clear();
             inner.snapshot.capture_mode = None;
             inner.sticky = Some(problem.clone());
             let snapshot = &mut inner.snapshot;
@@ -1140,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_while_a_refusal_detaches_holds_the_game_instead_of_attaching_again() {
+    fn stop_while_a_refusal_detaches_holds_the_load_instead_of_attaching_again() {
         let rerouting = CaptureOutcome {
             detach_requested: true,
             rerouted: true,
@@ -1148,16 +1359,51 @@ mod tests {
         };
         // A refusal alone looks again at once.
         let ended = continuation(&rerouting, false);
-        assert!(!ended.hold && ended.rerouted);
-        // Save or Discard chosen during that detach holds the game.
+        assert!(ended.hold.is_none() && ended.rerouted);
+        // Save or Discard chosen during that detach holds the stopped load.
         let ended = continuation(&rerouting, true);
-        assert!(ended.hold && !ended.rerouted);
+        assert!(ended.hold == Some(Hold::Load) && !ended.rerouted);
         // The game exiting never holds.
         let exited = CaptureOutcome {
             process_exited: true,
             ..rerouting
         };
-        assert!(!continuation(&exited, true).hold);
+        assert!(continuation(&exited, true).hold.is_none());
+        // A failed capture holds the whole game.
+        assert_eq!(Ended::held().hold, Some(Hold::Game));
+    }
+
+    fn loaded(campaign: &str, load: i64) -> LoadedCampaign {
+        LoadedCampaign {
+            campaign: campaign.to_owned(),
+            hour: 1,
+            load,
+        }
+    }
+
+    #[test]
+    fn after_stop_auto_record_records_the_next_load_of_any_campaign_but_not_the_stopped_one() {
+        let stopped = Held {
+            start: 7,
+            stopped: Some(Some((CAMPAIGN.to_owned(), 100))),
+        };
+        // The stopped load itself, or the menu, never records again by itself.
+        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 100)), true));
+        assert!(!stopped.released_by(None, true));
+        // Reloading the same campaign, or loading another, records again.
+        assert!(stopped.released_by(Some(&loaded(CAMPAIGN, 101)), true));
+        assert!(stopped.released_by(Some(&loaded(OTHER, 100)), true));
+        // With Auto record off, only Record or a game restart does.
+        assert!(!stopped.released_by(Some(&loaded(CAMPAIGN, 101)), false));
+        assert!(!stopped.released_by(Some(&loaded(OTHER, 5)), false));
+        // Stopped before the game named a load: whatever it loads next records.
+        let unnamed = Held {
+            start: 7,
+            stopped: Some(None),
+        };
+        assert!(unnamed.released_by(Some(&loaded(CAMPAIGN, 100)), true));
+        // A failed capture holds the game through every load.
+        assert!(!Held::game(7).released_by(Some(&loaded(OTHER, 5)), true));
     }
 
     /// Record pressed at the menu with automatic recording off: campaign A

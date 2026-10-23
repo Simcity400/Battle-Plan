@@ -963,9 +963,10 @@ fn trailer_hour_span_covers_every_branch_without_reading_blocks() {
     )
     .unwrap();
     let length = replay.bytes().len() as u64;
-    let (partial, span, mode) =
+    let (partial, span, mode, sessions) =
         Replay::read_trailer_summary(&mut std::io::Cursor::new(replay.bytes()), length).unwrap();
     assert_eq!(mode, CaptureMode::Full);
+    assert_eq!(sessions, [1, 2]);
     assert!(partial.is_none());
     assert_eq!(span, Some((3, 721)));
     // Block payloads are not read: damaging one leaves the span readable.
