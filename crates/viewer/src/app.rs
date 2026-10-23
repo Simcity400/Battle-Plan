@@ -1756,7 +1756,10 @@ impl Viewer {
         if let Some(texture) = self.scene_target.take()
             && let Some(state) = frame.wgpu_render_state()
         {
-            state.renderer.write().free_texture(&texture);
+            match crate::renderer_host::local(state) {
+                Some(host) => host.free(texture),
+                None => state.renderer.write().free_texture(&texture),
+            }
         }
         let retired = (
             self.document.take(),
@@ -5061,20 +5064,32 @@ impl Viewer {
         let [animate, overlay_upload, encode, submit] = scene.render_laps();
         if self.scene_target.stale(scene.generation()) {
             let view = scene.view().ok_or("Map target was not created")?;
-            let mut egui_renderer = state.renderer.write();
-            if let Some(texture) = self.scene_target.texture {
-                egui_renderer.update_egui_texture_from_wgpu_texture(
-                    &state.device,
-                    view,
-                    PRESENTATION_FILTER,
-                    texture,
-                );
+            if let Some(host) = crate::renderer_host::local(state) {
+                let target = crate::renderer_host::Target {
+                    view: view.clone(),
+                    filter: PRESENTATION_FILTER,
+                };
+                if let Some(texture) = self.scene_target.texture {
+                    host.rebind(texture, target);
+                } else {
+                    self.scene_target.texture = Some(host.register(target));
+                }
             } else {
-                self.scene_target.texture = Some(egui_renderer.register_native_texture(
-                    &state.device,
-                    view,
-                    PRESENTATION_FILTER,
-                ));
+                let mut egui_renderer = state.renderer.write();
+                if let Some(texture) = self.scene_target.texture {
+                    egui_renderer.update_egui_texture_from_wgpu_texture(
+                        &state.device,
+                        view,
+                        PRESENTATION_FILTER,
+                        texture,
+                    );
+                } else {
+                    self.scene_target.texture = Some(egui_renderer.register_native_texture(
+                        &state.device,
+                        view,
+                        PRESENTATION_FILTER,
+                    ));
+                }
             }
             self.scene_target.generation = scene.generation();
         }

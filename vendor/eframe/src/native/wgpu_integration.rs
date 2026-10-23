@@ -90,6 +90,45 @@ pub struct SharedState {
     viewport_from_window: HashMap<WindowId, ViewportId>,
     focused_viewport: Option<ViewportId>,
     resized_viewport: Option<ViewportId>,
+
+    /// HOI4 Replay patch: [`NativeOptions::paint_owner`].
+    paint_owner: Option<Arc<dyn crate::PaintOwner>>,
+}
+
+// HOI4 Replay patch: retain the published paint call when no owner is set.
+#[expect(clippy::too_many_arguments)]
+fn paint_viewport(
+    paint_owner: Option<&dyn crate::PaintOwner>,
+    painter: &mut egui_wgpu::winit::Painter,
+    viewport_id: ViewportId,
+    pixels_per_point: f32,
+    clear_color: [f32; 4],
+    clipped_primitives: &[egui::ClippedPrimitive],
+    textures_delta: &mut TexturesDelta,
+    capture_data: Vec<egui::UserData>,
+    window: &Arc<Window>,
+) -> f32 {
+    match paint_owner {
+        Some(owner) => owner.paint(
+            painter,
+            viewport_id,
+            pixels_per_point,
+            clear_color,
+            clipped_primitives,
+            textures_delta,
+            capture_data,
+            window,
+        ),
+        None => painter.paint_and_update_textures(
+            viewport_id,
+            pixels_per_point,
+            clear_color,
+            clipped_primitives,
+            textures_delta,
+            capture_data,
+            window,
+        ),
+    }
 }
 
 pub type Viewports = egui::OrderedViewportIdMap<Viewport>;
@@ -360,6 +399,7 @@ impl<'app> WgpuWinitApp<'app> {
             painter,
             focused_viewport: Some(ViewportId::ROOT),
             resized_viewport: None,
+            paint_owner: self.native_options.paint_owner.clone(), // HOI4 Replay patch
         }));
 
         {
@@ -764,6 +804,7 @@ impl WgpuWinitRunning<'_> {
             viewports,
             painter,
             viewport_from_window,
+            paint_owner, // HOI4 Replay patch
             ..
         } = &mut *shared_mut;
 
@@ -808,7 +849,10 @@ impl WgpuWinitRunning<'_> {
                     true
                 }
             });
-            let vsync_secs = painter.paint_and_update_textures(
+            // HOI4 Replay patch: through the paint owner, if any.
+            let vsync_secs = paint_viewport(
+                paint_owner.as_deref(),
+                painter,
                 viewport_id,
                 pixels_per_point,
                 app.clear_color(&egui_ctx.global_style().visuals),
@@ -1209,6 +1253,7 @@ fn render_immediate_viewport(
         viewports,
         painter,
         viewport_from_window,
+        paint_owner, // HOI4 Replay patch
         ..
     } = &mut *shared_mut;
 
@@ -1235,7 +1280,10 @@ fn render_immediate_viewport(
     }
 
     let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
-    painter.paint_and_update_textures(
+    // HOI4 Replay patch: through the paint owner, if any.
+    paint_viewport(
+        paint_owner.as_deref(),
+        painter,
         ids.this,
         pixels_per_point,
         [0.0, 0.0, 0.0, 0.0],

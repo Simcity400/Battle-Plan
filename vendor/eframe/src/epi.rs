@@ -41,6 +41,32 @@ pub type EventLoopBuilderHook = Box<dyn FnOnce(&mut EventLoopBuilder<UserEvent>)
 #[cfg(any(feature = "glow", feature = "wgpu_no_default_features"))]
 pub type WindowBuilderHook = Box<dyn FnOnce(egui::ViewportBuilder) -> egui::ViewportBuilder>;
 
+// HOI4 Replay patch: optional native-wgpu paint ownership.
+
+/// The native window lent to a paint owner.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "wgpu_no_default_features")]
+pub type PaintWindow = winit::window::Window;
+
+/// Paints root, deferred and immediate viewports synchronously at eframe's original call points.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "wgpu_no_default_features")]
+pub trait PaintOwner {
+    /// Leaves pending deltas and returns vsync seconds exactly as the painter's own call would.
+    #[expect(clippy::too_many_arguments)]
+    fn paint(
+        &self,
+        painter: &mut egui_wgpu::winit::Painter,
+        viewport_id: egui::ViewportId,
+        pixels_per_point: f32,
+        clear_color: [f32; 4],
+        clipped_primitives: &[egui::ClippedPrimitive],
+        textures_delta: &mut egui::TexturesDelta,
+        capture_data: Vec<egui::UserData>,
+        window: &std::sync::Arc<PaintWindow>,
+    ) -> f32;
+}
+
 type DynError = Box<dyn core::error::Error + Send + Sync>;
 
 /// This is how your app is created.
@@ -374,6 +400,10 @@ pub struct NativeOptions {
     #[cfg(feature = "wgpu_no_default_features")]
     pub wgpu_options: egui_wgpu::WgpuConfiguration,
 
+    /// HOI4 Replay patch: an optional native-wgpu paint owner; `None` keeps published painting.
+    #[cfg(feature = "wgpu_no_default_features")]
+    pub paint_owner: Option<std::sync::Arc<dyn PaintOwner>>,
+
     /// Controls whether or not the native window position and size will be
     /// persisted (only if the "persistence" feature is enabled).
     pub persist_window: bool,
@@ -420,6 +450,9 @@ impl Clone for NativeOptions {
             #[cfg(feature = "wgpu_no_default_features")]
             wgpu_options: self.wgpu_options.clone(),
 
+            #[cfg(feature = "wgpu_no_default_features")]
+            paint_owner: self.paint_owner.clone(), // HOI4 Replay patch
+
             persistence_path: self.persistence_path.clone(),
 
             #[cfg(target_os = "android")]
@@ -459,6 +492,9 @@ impl Default for NativeOptions {
             #[cfg(feature = "wgpu_no_default_features")]
             wgpu_options: egui_wgpu::WgpuConfiguration::default()
                 .with_surface_config(egui_wgpu::SurfaceConfig::LOW_LATENCY),
+
+            #[cfg(feature = "wgpu_no_default_features")]
+            paint_owner: None, // HOI4 Replay patch
 
             persist_window: true,
 

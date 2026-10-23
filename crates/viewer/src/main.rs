@@ -34,9 +34,11 @@ mod map_assets;
 mod map_checkpoints;
 mod map_icons;
 mod map_views;
+mod paint_owner;
 mod playback;
 mod raid_lane;
 mod render;
+mod renderer_host;
 #[cfg(test)]
 mod unit_scale_tests;
 mod visual_fallback;
@@ -2252,6 +2254,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         renderer: eframe::Renderer::Wgpu,
         viewport,
         wgpu_options: render::configuration(),
+        paint_owner: Some(paint_owner::owner()),
         ..Default::default()
     };
     // capture: a `--window-dump` failure has to leave the process, and the only
@@ -2262,6 +2265,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Battle Plan",
         native,
         Box::new(move |cc| {
+            if let Some(state) = &cc.wgpu_render_state {
+                renderer_host::bind(state);
+            }
             let embedding = parent.map(|parent| parent.attach(cc)).transpose()?;
             let viewer = app::Viewer::new(cc, config, options, config_error, reported, embedding);
             Ok(Box::new(viewer))
