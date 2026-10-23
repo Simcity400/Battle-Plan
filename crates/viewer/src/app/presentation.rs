@@ -244,6 +244,53 @@ impl Viewer {
         } else {
             (2, 2)
         };
+        let wait = exact_capture_wait(
+            self.capture.as_ref().map(|capture| capture.remaining),
+            profiling(),
+        );
+        let activation = grid_activation(
+            hours::page_grid(),
+            self.playing,
+            self.dashboard_map,
+            matches!(
+                self.map_mode,
+                viewer_world::map::map_mode::MapMode::Scripted(_)
+            ),
+            self.capture.is_some(),
+            wait,
+            self.profile_playback.wall_active(),
+            self.speed,
+        );
+        let count = u32::try_from(ahead.saturating_add(1)).unwrap_or(0);
+        let ahead = match activation {
+            Ok(stride) => i32::try_from(u64::from(stride) * u64::from(count)).unwrap_or(i32::MAX),
+            Err(_) => ahead,
+        };
+        let shown = shown_held(
+            self.shown
+                .as_ref()
+                .map(|shown| (shown.epoch, shown.branch, shown.hour)),
+            self.epoch,
+            self.animation_seek,
+        );
+        let grid = activation.ok().map(|stride| {
+            let (installed, usable) = grid_feedback(
+                &self.ready,
+                |built| built.layers.is_ok(),
+                shown,
+                playhead.branch,
+            );
+            hours::Grid {
+                cadence: hours::Cadence {
+                    sequence: 0,
+                    stride,
+                    count,
+                    anchor: None,
+                },
+                installed,
+                usable,
+            }
+        });
         let want = hours::Want {
             branch: playhead.branch,
             hour: playhead.hour,
@@ -255,25 +302,14 @@ impl Viewer {
             show_allied_plans: self.graphics.show_allied_plans,
             counters: self.counter_view.clone(),
             view,
-            // Not the hour on screen after a seek, which may be to that hour.
-            have: self
-                .ready
-                .keys()
-                .chain(
-                    self.shown
-                        .as_ref()
-                        .filter(|shown| shown.epoch == self.epoch && !self.animation_seek)
-                        .map(|shown| (shown.branch, shown.hour))
-                        .iter(),
-                )
-                .filter(|(branch, _)| *branch == playhead.branch)
-                .map(|(_, hour)| *hour)
-                .collect(),
+            have: held_hours(self.ready.keys().copied(), shown, playhead.branch),
             received: 0,
+            grid,
         };
         // Everything this frame lets go of, freed off the frame path at its end.
         let mut retired = Retired::default();
         let pipeline = self.hours.as_mut().expect("started above");
+        pipeline.note_grid(activation, playhead.hour);
         let epoch = pipeline.want(want)?;
         if epoch != self.epoch {
             self.epoch = epoch;
@@ -282,121 +318,123 @@ impl Viewer {
         if self.dropper.is_none() {
             self.dropper = Some(Arc::new(Dropper::new()?));
         }
-        for built in pipeline.take()? {
-            feed_raids(&self.raid_lane, &built);
-            if built.epoch == epoch {
-                if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
-                    retired.push(old);
-                }
-            } else {
-                retired.push(built);
-            }
-        }
-        let fallback = self
-            .playing
-            .then(|| {
-                latest_built_key(&self.ready, (playhead.branch, playhead.hour), |built| {
-                    built.layers.is_ok()
-                })
-            })
-            .flatten();
-        let (keep, gone): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.ready)
-            .into_iter()
-            .partition(|((branch, hour), _)| {
-                *branch == playhead.branch
-                    && ((playhead.hour.saturating_sub(behind)
-                        ..=playhead.hour.saturating_add(ahead))
-                        .contains(hour)
-                        || fallback == Some((*branch, *hour)))
-            });
-        self.ready = keep;
-        let mut passed = gone;
-        laps.lap("hours_poll");
         let target = (playhead.branch, playhead.hour);
-        let shown_at = self
-            .shown
-            .as_ref()
-            .filter(|shown| shown.epoch == epoch)
-            .map(|shown| (shown.branch, shown.hour));
-        let mut next = None;
-        // A seek to the hour on screen takes it again, rebuilt (see `have`),
-        // to start a fresh animation history. The fallback below still moves
-        // only forward from the hour on screen.
-        if self.animation_seek || shown_at != Some(target) {
-            next = self.ready.remove(&target);
-            // A capture names its hour, and waits for it.
-            let wait = self
-                .capture
-                .as_ref()
-                .is_some_and(|capture| !profiling() || capture.remaining == 0);
-            if next.is_none() && wait {
-                let pipeline = self.hours.as_ref().expect("started above");
-                next = Some(wait_for_hour(
-                    &self.raid_lane,
-                    (target, epoch),
-                    || pipeline.wait(),
-                    &mut self.ready,
-                    |built| retired.push(built),
-                )?);
-            }
-            if next.is_none() && self.playing {
-                // The newest hour on the way from the one on screen.
-                let on_the_way = fallback
-                    .filter(|key| shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1));
-                if let Some(key) = on_the_way {
-                    next = self.ready.remove(&key);
-                    let later = self.ready.split_off(&key);
-                    passed.extend(std::mem::replace(&mut self.ready, later));
+        let mut passed = BTreeMap::new();
+        let applied = (|| {
+            let pipeline = self.hours.as_ref().expect("started above");
+            for built in pipeline.take()? {
+                feed_raids(&self.raid_lane, &built);
+                if built.epoch == epoch {
+                    if let Some(old) = self.ready.insert((built.branch, built.hour), built) {
+                        retired.push(old);
+                    }
+                } else {
+                    retired.push(built);
                 }
             }
-        }
-        let applied = match next {
-            Some(built) => {
-                // The hour on screen of any epoch: a perspective change starts
-                // a new build epoch, but the scene's building history does not
-                // depend on the viewing country, so it continues across it.
-                let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
-                // Hours the builders passed over to keep up with the clock
-                // continue the history, also on the catch-up after a pause; a
-                // seek or a gap in the recording does not.
-                let passes_unbuilt = !self.animation_seek
-                    && on_screen.is_some_and(|(_, from)| {
-                        !crosses_gap(
-                            &document.playback.replay().gaps,
-                            built.branch,
-                            from,
-                            built.hour,
-                        )
+            let fallback = self
+                .playing
+                .then(|| {
+                    latest_built_key(&self.ready, (playhead.branch, playhead.hour), |built| {
+                        built.layers.is_ok()
+                    })
+                })
+                .flatten();
+            let (keep, gone): (BTreeMap<_, _>, BTreeMap<_, _>) = std::mem::take(&mut self.ready)
+                .into_iter()
+                .partition(|(key, _)| {
+                    keeps_ready(
+                        *key,
+                        (playhead.branch, playhead.hour),
+                        (behind, ahead),
+                        fallback,
+                    )
+                });
+            self.ready = keep;
+            passed = gone;
+            laps.lap("hours_poll");
+            let shown_at = self
+                .shown
+                .as_ref()
+                .filter(|shown| shown.epoch == epoch)
+                .map(|shown| (shown.branch, shown.hour));
+            let mut next = None;
+            // A seek to the hour on screen takes it again, rebuilt (see `have`),
+            // to start a fresh animation history. The fallback below still moves
+            // only forward from the hour on screen.
+            if self.animation_seek || shown_at != Some(target) {
+                next = self.ready.remove(&target);
+                // A capture names its hour, and waits for it.
+                if next.is_none() && wait {
+                    let pipeline = self.hours.as_ref().expect("started above");
+                    next = Some(wait_for_hour(
+                        &self.raid_lane,
+                        (target, epoch),
+                        || pipeline.wait(),
+                        &mut self.ready,
+                        |built| retired.push(built),
+                    )?);
+                }
+                if next.is_none() && self.playing {
+                    // The newest hour on the way from the one on screen.
+                    let on_the_way = fallback.filter(|key| {
+                        shown_at.is_none_or(|shown| shown.0 != key.0 || shown.1 < key.1)
                     });
-                let skipped = skipped_hours(
-                    on_screen,
-                    (built.branch, built.hour),
-                    passes_unbuilt,
-                    |hour| {
-                        let key = (built.branch, hour);
-                        let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
-                        let layers = passed_hour.layers.as_ref().ok();
-                        Some(layers.map(|layers| {
-                            (
-                                Arc::clone(&layers.buildings),
-                                (Arc::clone(&layers.impacts), Arc::clone(&layers.map_text)),
-                            )
-                        }))
-                    },
-                );
-                self.apply_hour(state, document, built, skipped, &mut retired, laps)
+                    if let Some(key) = on_the_way {
+                        next = self.ready.remove(&key);
+                        let later = self.ready.split_off(&key);
+                        passed.extend(std::mem::replace(&mut self.ready, later));
+                    }
+                }
             }
-            None => Ok(()),
-        };
+            match next {
+                Some(built) => {
+                    // The hour on screen of any epoch: a perspective change starts
+                    // a new build epoch, but the scene's building history does not
+                    // depend on the viewing country, so it continues across it.
+                    let on_screen = self.shown.as_ref().map(|shown| (shown.branch, shown.hour));
+                    // Hours the builders passed over to keep up with the clock
+                    // continue the history, also on the catch-up after a pause; a
+                    // seek or a gap in the recording does not.
+                    let passes_unbuilt = !self.animation_seek
+                        && on_screen.is_some_and(|(_, from)| {
+                            !crosses_gap(
+                                &document.playback.replay().gaps,
+                                built.branch,
+                                from,
+                                built.hour,
+                            )
+                        });
+                    let skipped = skipped_hours(
+                        on_screen,
+                        (built.branch, built.hour),
+                        passes_unbuilt,
+                        |hour| {
+                            let key = (built.branch, hour);
+                            let passed_hour = self.ready.get(&key).or_else(|| passed.get(&key))?;
+                            let layers = passed_hour.layers.as_ref().ok();
+                            Some(layers.map(|layers| {
+                                (
+                                    Arc::clone(&layers.buildings),
+                                    (Arc::clone(&layers.impacts), Arc::clone(&layers.map_text)),
+                                )
+                            }))
+                        },
+                    );
+                    self.apply_hour(state, document, built, skipped, &mut retired, laps)
+                }
+                None => Ok(()),
+            }
+        })();
         if !passed.is_empty() {
             retired.push(passed);
         }
-        if let Some(dropper) = &self.dropper
-            && !retired.is_empty()
-        {
-            dropper.drop_later(retired);
-        }
-        applied?;
+        finish_hour_poll(
+            &mut document.playback,
+            self.dropper.as_ref().expect("created before polling"),
+            retired,
+            applied,
+        )?;
         // The frame sits past the playhead's hour only when it is the hour on
         // screen.
         document.hour_fraction = if (document.playback.branch(), document.playback.hour()) == target
@@ -907,10 +945,202 @@ impl Viewer {
     }
 }
 
+fn finish_hour_poll<T>(
+    playback: &mut crate::playback::Playback,
+    dropper: &Dropper,
+    mut retired: Retired,
+    result: std::io::Result<T>,
+) -> std::io::Result<T> {
+    if let Some(source) = playback.release_source() {
+        retired.push(source);
+    }
+    if !retired.is_empty() {
+        dropper.drop_later(retired);
+    }
+    result
+}
+
+fn shown_held(
+    shown: Option<(u64, replay_data::BranchId, i32)>,
+    epoch: u64,
+    seeking: bool,
+) -> Option<(replay_data::BranchId, i32)> {
+    shown
+        .filter(|&(shown_epoch, ..)| shown_epoch == epoch && !seeking)
+        .map(|(_, branch, hour)| (branch, hour))
+}
+
+fn held_hours(
+    ready: impl Iterator<Item = (replay_data::BranchId, i32)>,
+    shown: Option<(replay_data::BranchId, i32)>,
+    branch: replay_data::BranchId,
+) -> Vec<i32> {
+    ready
+        .chain(shown)
+        .filter(|(at, _)| *at == branch)
+        .map(|(_, hour)| hour)
+        .collect()
+}
+
+fn keeps_ready(
+    key: (replay_data::BranchId, i32),
+    playhead: (replay_data::BranchId, i32),
+    (behind, ahead): (i32, i32),
+    fallback: Option<(replay_data::BranchId, i32)>,
+) -> bool {
+    let (branch, hour) = key;
+    branch == playhead.0
+        && ((playhead.1.saturating_sub(behind)..=playhead.1.saturating_add(ahead)).contains(&hour)
+            || fallback == Some(key))
+}
+
+pub(crate) fn exact_capture_wait(remaining: Option<u32>, profiling: bool) -> bool {
+    remaining.is_some_and(|remaining| !profiling || remaining == 0)
+}
+
+pub(crate) fn grid_activation(
+    switch: bool,
+    playing: bool,
+    dashboard_map: bool,
+    scripted: bool,
+    capture: bool,
+    exact_wait: bool,
+    wall_sweep: bool,
+    speed: f64,
+) -> Result<u32, &'static str> {
+    if !switch {
+        return Err("switch-off");
+    }
+    if !playing {
+        return Err("paused");
+    }
+    if dashboard_map {
+        return Err("dashboard-map");
+    }
+    if scripted {
+        return Err("scripted-map-mode");
+    }
+    if exact_wait || (capture && !wall_sweep) {
+        return Err("capture");
+    }
+    hours::grid_stride(speed).ok_or("below-finest-stride")
+}
+
+fn grid_feedback<T>(
+    ready: &BTreeMap<(replay_data::BranchId, i32), T>,
+    usable: impl Fn(&T) -> bool,
+    shown: Option<(replay_data::BranchId, i32)>,
+    branch: replay_data::BranchId,
+) -> (Option<i32>, Vec<i32>) {
+    let installed = shown.filter(|(at, _)| *at == branch).map(|(_, hour)| hour);
+    let usable = ready
+        .iter()
+        .filter(|((at, _), built)| *at == branch && usable(built))
+        .map(|((_, hour), _)| *hour)
+        .collect();
+    (installed, usable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use viewer_world::map::strike_effects::{Impact, Impacts};
+
+    fn check_poll_cleanup(poll: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
+        use crate::playback::{Current, Playback};
+        use std::sync::mpsc;
+
+        struct ReportDrop(mpsc::Sender<std::thread::ThreadId>);
+        impl Drop for ReportDrop {
+            fn drop(&mut self) {
+                let _ = self.0.send(std::thread::current().id());
+            }
+        }
+
+        let mut playback = Playback::new(crate::playback::tests::fixture()).unwrap();
+        let Current::Frame(shown) = playback.current().clone() else {
+            panic!("the initial hour is recorded");
+        };
+        assert!(playback.holds_source());
+        let at = (playback.branch(), playback.hour());
+        let dropper = Dropper::new().unwrap();
+        let (freed, dropped) = mpsc::channel();
+        let mut retired = Retired::default();
+        retired.push(ReportDrop(freed));
+        let result = poll();
+        let result = finish_hour_poll(&mut playback, &dropper, retired, result);
+        assert!(!playback.holds_source());
+        assert_eq!((playback.branch(), playback.hour()), at);
+        assert!(matches!(
+            playback.current(),
+            Current::Frame(current) if Arc::ptr_eq(current, &shown)
+        ));
+        assert_ne!(
+            dropped
+                .recv_timeout(crate::map::test_support::TEST_HANG_GUARD)
+                .unwrap(),
+            std::thread::current().id(),
+            "cleanup must hand its retirement to the bounded dropper",
+        );
+        result
+    }
+
+    #[test]
+    fn a_disconnected_first_poll_releases_the_source_and_preserves_its_original_error() {
+        let error = check_poll_cleanup(|| {
+            let (send, receive) = std::sync::mpsc::channel::<hours::Built>();
+            drop(send);
+            hours::poll_results(|| receive.try_recv()).map(|_| ())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(error.to_string(), "the hour builders stopped");
+    }
+
+    #[test]
+    fn a_successful_empty_first_poll_releases_the_source_without_changing_the_shown_hour() {
+        check_poll_cleanup(|| {
+            let (_send, receive) = std::sync::mpsc::channel::<hours::Built>();
+            let built = hours::poll_results(|| receive.try_recv())?;
+            assert!(built.is_empty());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_exact_wait_failure_releases_the_source_and_preserves_its_original_error() {
+        let error = check_poll_cleanup(|| {
+            let (_send, receive) = std::sync::mpsc::channel::<hours::Built>();
+            assert!(hours::poll_results(|| receive.try_recv())?.is_empty());
+            let mut original = Some(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "the exact hour is unavailable",
+            ));
+            wait_for_hour::<hours::Built>(
+                &crate::raid_lane::RaidLane::default(),
+                ((1, 137), 0),
+                || Err(original.take().expect("the failed wait is not retried")),
+                &mut BTreeMap::new(),
+                |_| panic!("the failed wait delivered nothing"),
+            )
+            .map(|_| ())
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "the exact hour is unavailable");
+    }
+
+    #[test]
+    fn an_apply_failure_after_polling_releases_the_source_and_preserves_its_original_error() {
+        let error = check_poll_cleanup(|| {
+            let (_send, receive) = std::sync::mpsc::channel::<hours::Built>();
+            assert!(hours::poll_results(|| receive.try_recv())?.is_empty());
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(5));
+    }
 
     #[test]
     fn snow_content_comparison_keeps_its_value_in_either_order() {
@@ -971,7 +1201,12 @@ mod tests {
             None
         );
         let samples = [
-            (0, 1, 60827943, "shown_ns=0 shown_branch=1 shown_hour=60827943"),
+            (
+                0,
+                1,
+                60827943,
+                "shown_ns=0 shown_branch=1 shown_hour=60827943",
+            ),
             (
                 16_666_667,
                 1,
@@ -1126,4 +1361,135 @@ mod tests {
         assert_eq!(with_skipped.bytes, old.bytes);
     }
 
+    #[test]
+    fn the_page_grid_is_off_with_its_switch_and_outside_fast_unscripted_campaign_play() {
+        for playing in [false, true] {
+            for capture in [false, true] {
+                for speed in [24.0, 720.0, 1_440.0] {
+                    assert_eq!(
+                        grid_activation(false, playing, false, false, capture, false, true, speed),
+                        Err("switch-off")
+                    );
+                }
+            }
+        }
+        let on = |playing, dashboard, scripted, capture, wall, speed| {
+            grid_activation(
+                true, playing, dashboard, scripted, capture, false, wall, speed,
+            )
+        };
+        assert_eq!(on(true, false, false, false, false, 1_440.0), Ok(40));
+        assert_eq!(on(true, false, false, false, false, 720.0), Ok(20));
+        assert_eq!(
+            on(true, false, false, false, false, 719.0),
+            Err("below-finest-stride")
+        );
+        assert_eq!(
+            on(false, false, false, false, false, 1_440.0),
+            Err("paused")
+        );
+        assert_eq!(
+            on(true, true, false, false, false, 1_440.0),
+            Err("dashboard-map")
+        );
+        assert_eq!(
+            on(true, false, true, false, false, 1_440.0),
+            Err("scripted-map-mode")
+        );
+        assert_eq!(on(true, false, false, true, false, 1_440.0), Err("capture"));
+        assert_eq!(on(true, false, false, true, true, 1_440.0), Ok(40));
+        for profiling in [false, true] {
+            for remaining in [None, Some(0), Some(1)] {
+                let wait = exact_capture_wait(remaining, profiling);
+                assert_eq!(wait, remaining.is_some_and(|n| !profiling || n == 0));
+                assert_eq!(
+                    grid_activation(
+                        true,
+                        true,
+                        false,
+                        false,
+                        remaining.is_some(),
+                        wait,
+                        true,
+                        720.0
+                    ),
+                    if wait { Err("capture") } else { Ok(20) },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_polls_held_hours_partition_and_grid_feedback_keep_todays_cuts() {
+        let ready: BTreeMap<(u64, i32), bool> = [
+            ((1, 118), true),
+            ((1, 119), true),
+            ((1, 120), false),
+            ((1, 122), true),
+            ((2, 121), true),
+        ]
+        .into();
+        let fallback_at = |ready: &BTreeMap<(u64, i32), bool>, hour| {
+            super::super::latest_built_key(ready, (1, hour), |usable| *usable)
+        };
+        let kept = |ready: &BTreeMap<(u64, i32), bool>, playhead, window, fallback| -> Vec<_> {
+            ready
+                .keys()
+                .copied()
+                .filter(|key| keeps_ready(*key, playhead, window, fallback))
+                .collect()
+        };
+        let fallback = fallback_at(&ready, 121);
+        assert_eq!(fallback, Some((1, 119)));
+        assert_eq!(
+            kept(&ready, (1, 121), (0, 1), fallback),
+            [(1, 119), (1, 122)]
+        );
+        assert_eq!(
+            kept(&ready, (1, 120), (2, 2), None),
+            [(1, 118), (1, 119), (1, 120), (1, 122)]
+        );
+        let failed: BTreeMap<(u64, i32), bool> = [((1, 120), false), ((1, 122), true)].into();
+        let fallback = fallback_at(&failed, 121);
+        assert_eq!(fallback, None);
+        assert_eq!(kept(&failed, (1, 121), (0, 1), fallback), [(1, 122)]);
+        let mut unavailable = failed.clone();
+        unavailable.remove(&(1, 120));
+        for (shown, ready, held) in [
+            ((3, 1, 80), &failed, vec![120, 122, 80]),
+            ((3, 1, 120), &unavailable, vec![122, 120]),
+        ] {
+            let displayed = shown_held(Some(shown), 3, false);
+            assert_eq!(displayed, Some((1, shown.2)));
+            assert_eq!(held_hours(ready.keys().copied(), displayed, 1), held);
+            assert_eq!(
+                grid_feedback(ready, |usable| *usable, displayed, 1),
+                (Some(shown.2), vec![122])
+            );
+        }
+        for (epoch, seeking) in [(4, false), (3, true)] {
+            let shown = shown_held(Some((3, 1, 120)), epoch, seeking);
+            assert_eq!(shown, None);
+            assert_eq!(held_hours(failed.keys().copied(), shown, 1), [120, 122]);
+            assert_eq!(
+                grid_feedback(&failed, |usable| *usable, shown, 1),
+                (None, vec![122])
+            );
+        }
+        assert_eq!(shown_held(None, 3, false), None);
+        let shown = shown_held(Some((3, 1, 117)), 3, false);
+        assert_eq!(
+            held_hours(ready.keys().copied(), shown, 1),
+            [118, 119, 120, 122, 117]
+        );
+        assert_eq!(held_hours(ready.keys().copied(), shown, 2), [121]);
+        assert_eq!(
+            grid_feedback(&ready, |usable| *usable, shown, 1),
+            (Some(117), vec![118, 119, 122])
+        );
+        assert_eq!(
+            grid_feedback(&ready, |usable| *usable, shown, 2),
+            (None, vec![121])
+        );
+    }
 }

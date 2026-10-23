@@ -27,9 +27,6 @@ impl DecoderState {
         self.playback.seek(branch, hour)?;
         let current = self.playback.current().clone();
         self.frames.retain(|_, frame| frame.strong_count() > 0);
-        if self.frames.len() >= FRAME_CACHE {
-            self.frames.pop_first();
-        }
         if let Current::Frame(frame) = &current {
             self.frames.insert((branch, hour), Arc::downgrade(frame));
         }

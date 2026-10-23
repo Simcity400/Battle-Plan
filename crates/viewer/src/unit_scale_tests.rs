@@ -257,6 +257,7 @@ fn unit_scale_replay_layers() {
                 },
                 have: Vec::new(),
                 received: 0,
+                grid: None,
             })
             .unwrap();
         let mut held = Vec::new();

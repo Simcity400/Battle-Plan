@@ -478,6 +478,8 @@ impl RealDriver {
                 epoch: 0,
                 sent: BTreeMap::new(),
                 sends: 0,
+                usable_sent: BTreeSet::new(),
+                anchor: None,
                 slots: BTreeMap::new(),
                 memos: Arc::new(Memos::new()),
                 reusable: BTreeMap::new(),
@@ -515,6 +517,7 @@ impl RealDriver {
             view: super::super::tests::test_view(),
             have: Vec::new(),
             received: 0,
+            grid: None,
         };
         *self.driver.core.requested.lock().unwrap() = Some((epoch, want, None));
         assert!(self.driver.event(Event::Want));
@@ -824,3 +827,5 @@ fn real_driver_unaccepted_colour_fold_releases_its_frame_on_supersession() {
     assert!(weak.upgrade().is_none());
     release.send(()).unwrap();
 }
+
+mod grid;

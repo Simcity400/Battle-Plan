@@ -27,6 +27,12 @@ pub(super) struct Flight<K> {
     pub retired: bool,
 }
 
+impl<K> Flight<K> {
+    pub fn accepted_any(&self) -> bool {
+        self.accepted != 0
+    }
+}
+
 /// A credit is retained through decode, parts, retirement and local output.
 /// Only successful output admission or terminal retirement releases it.
 #[derive(Debug)]
@@ -49,6 +55,11 @@ impl<K: Eq> Ledger<K> {
     }
     pub fn get(&self, ticket: Ticket) -> Option<&Flight<K>> {
         self.flights.get(&ticket)
+    }
+    pub fn flights(&self) -> impl Iterator<Item = (Ticket, &Flight<K>)> + '_ {
+        self.flights
+            .iter()
+            .map(|(&ticket, flight)| (ticket, flight))
     }
     pub fn contains(&self, epoch: u64, key: &K) -> bool {
         self.flights
@@ -227,8 +238,15 @@ impl<K: Eq> Ledger<K> {
     /// order, never an accepted job or a predecessor a retained target needs.
     /// The adapter drops only the returned payloads/held closures.
     pub fn retarget(&mut self, mut keep: impl FnMut(u64, &K) -> bool) -> Vec<Ticket> {
-        for flight in self.flights.values_mut() {
-            flight.retired = !keep(flight.epoch, &flight.key);
+        self.retarget_flights(|_, flight| keep(flight.epoch, &flight.key))
+    }
+
+    pub fn retarget_flights(
+        &mut self,
+        mut keep: impl FnMut(Ticket, &Flight<K>) -> bool,
+    ) -> Vec<Ticket> {
+        for (&ticket, flight) in self.flights.iter_mut() {
+            flight.retired = !keep(ticket, flight);
         }
         let candidates: Vec<_> = self.flights.keys().rev().copied().collect();
         let mut cancelled = Vec::new();

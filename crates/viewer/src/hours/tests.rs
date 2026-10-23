@@ -17,6 +17,7 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
         view: test_view(),
         have: vec![],
         received: 0,
+        grid: None,
     };
     let mut next = Want {
         hour: 100,
@@ -67,9 +68,6 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
     assert!(old.invalidates(&next));
 }
 
-/// The row size `sized_frame` fills its `Countries` table with.
-const ROW: u64 = std::mem::size_of::<replay_data::rows::CountryRow>() as u64;
-
 /// A decoded hour whose `Countries` table holds `rows` rows.
 pub(super) fn sized_frame(hour: Hour, rows: usize) -> Current {
     use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows};
@@ -93,71 +91,207 @@ pub(super) fn sized_frame(hour: Hour, rows: usize) -> Current {
     }))
 }
 
-#[test]
-fn the_frame_cache_is_bounded_by_bytes_but_keeps_the_wanted_hours() {
-    let mut cache = FrameCache::default();
-    // Each hour holds 1,000 rows.
-    let each = 1_000 * ROW;
-    for hour in 0..10 {
-        cache.insert((1, hour), sized_frame(hour, 1_000));
+fn tagged_frame(hour: Hour, rows: usize) -> Current {
+    use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
+    let Current::Frame(frame) = sized_frame(hour, rows) else {
+        unreachable!()
+    };
+    let mut frame = (*frame).clone();
+    frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (0..rows)
+            .map(|slot| CountryRow {
+                canonical_slot: slot as u32,
+                tag: vec![b'A'; 16],
+                ..Default::default()
+            })
+            .collect(),
+    ))
+    .into();
+    Current::Frame(Arc::new(frame))
+}
+
+fn reference_cache_bytes(frames: &[&Current]) -> u64 {
+    use replay_data::rows::{CountryRow, TableRows};
+    use replay_frame::frame::TableView;
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0usize;
+    for current in frames {
+        if let Current::Frame(frame) = current {
+            for table in &frame.tables {
+                if !seen.insert(table.as_ptr() as usize) {
+                    continue;
+                }
+                total += std::mem::size_of::<TableView>() + 2 * std::mem::size_of::<usize>();
+                total += match &**table {
+                    TableView::Complete(TableRows::Countries(rows)) => {
+                        rows.capacity() * std::mem::size_of::<CountryRow>()
+                            + rows.iter().map(|row| row.tag.capacity()).sum::<usize>()
+                    }
+                    TableView::Unavailable { reason } => reason.capacity(),
+                    _ => panic!("unexpected synthetic table"),
+                };
+            }
+        }
     }
-    assert_eq!(cache.bytes, 10 * each);
-    // A budget of four hours keeps the newest four.
-    cache.evict_except(4 * each, &BTreeSet::new());
-    assert_eq!(cache.frames.len(), 4);
-    assert!(cache.contains_key(&(1, 9)) && !cache.contains_key(&(1, 5)));
-    assert_eq!(cache.bytes, 4 * each);
-    // Spared hours stay even over budget; the oldest others go first.
-    cache.evict_except(0, &BTreeSet::from([(1, 6), (1, 8)]));
-    assert_eq!(cache.frames.len(), 2);
-    assert!(cache.contains_key(&(1, 6)) && cache.contains_key(&(1, 8)));
-    // A hit makes an hour the most recently used: hour 6 outlives 8.
-    assert!(cache.get(&(1, 6)).is_some());
-    cache.evict_except(each, &BTreeSet::new());
-    assert!(cache.contains_key(&(1, 6)) && !cache.contains_key(&(1, 8)));
-    cache.insert((1, 7), sized_frame(7, 1_000));
-    cache.insert((1, 8), sized_frame(8, 1_000));
-    // Replacing an hour does not count it twice.
-    cache.insert((1, 8), sized_frame(8, 500));
+    total as u64
+}
+
+#[test]
+fn the_frame_cache_counts_true_bytes_once_and_releases_only_the_last_holder() {
+    let first = tagged_frame(0, 1_500);
+    let Current::Frame(frame) = &first else {
+        unreachable!()
+    };
+    let mut next = (**frame).clone();
+    next.hour = 1;
+    let second = Current::Frame(Arc::new(next));
+    let third = tagged_frame(2, 500);
+    let replacement = tagged_frame(2, 250);
+    let mut cache = FrameCache::default();
+    cache.insert((1, 0), first.clone());
+    assert_eq!(cache.added_bytes, reference_cache_bytes(&[&first]));
+    cache.insert((1, 1), second.clone());
+    assert_eq!(cache.added_bytes, 0, "every allocation was already held");
+    cache.insert((1, 2), third.clone());
+    assert_eq!(
+        cache.bytes,
+        reference_cache_bytes(&[&first, &second, &third])
+    );
+    cache.insert((1, 2), replacement.clone());
     assert_eq!(cache.frames.len(), 3);
-    assert_eq!(cache.bytes, 2 * each + 500 * ROW);
-    // The count bound still applies to hours that cost nothing.
-    let mut gaps = FrameCache::default();
-    for hour in 0..(FRAME_CACHE as i32 + 10) {
-        gaps.insert(
-            (1, hour),
+    assert_eq!(
+        cache.bytes,
+        reference_cache_bytes(&[&first, &second, &replacement])
+    );
+    cache.retain_only(&[(1, 1)].into());
+    assert_eq!(cache.bytes, reference_cache_bytes(&[&second]));
+    assert!(
+        matches!(cache.get(&(1, 1)), Some(Current::Frame(held)) if Arc::ptr_eq(&held, match &second { Current::Frame(frame) => frame, _ => unreachable!() }))
+    );
+    let mut plain = FrameCache::default();
+    plain.insert((1, 0), sized_frame(0, 1_500));
+    assert_eq!(cache.bytes - plain.bytes, 1_500 * 16);
+    cache.retain_only(&BTreeSet::new());
+    assert_eq!(
+        (cache.frames.len(), cache.tables.len(), cache.bytes),
+        (0, 0, 0)
+    );
+}
+
+#[test]
+fn a_required_gap_set_has_no_content_count_cap() {
+    let required: BTreeSet<_> = (0..1_500).map(|hour| (1, hour)).collect();
+    let mut cache = FrameCache::default();
+    for &(branch, hour) in &required {
+        cache.insert(
+            (branch, hour),
             Current::Gap {
-                branch: 1,
+                branch,
                 hour,
-                reason: String::new(),
+                reason: "recorded gap".into(),
             },
         );
     }
-    gaps.evict_except(FRAME_CACHE_BYTES, &BTreeSet::new());
-    assert_eq!(gaps.frames.len(), FRAME_CACHE);
+    cache.retain_only(&required);
+    assert_eq!(
+        cache.frames.keys().copied().collect::<BTreeSet<_>>(),
+        required
+    );
+    assert_eq!(cache.bytes, 0, "gaps own no table allocations");
+    cache.retain_only(&[(1, 1_499)].into());
+    assert_eq!(
+        cache.frames.keys().copied().collect::<Vec<_>>(),
+        [(1, 1_499)]
+    );
 }
 
-/// Hours share their unchanged tables, and the cache counts each shared
-/// table once, releasing it only with the last hour that holds it.
 #[test]
-fn the_frame_cache_counts_a_shared_table_once() {
-    let each = 1_000 * ROW;
-    let Current::Frame(first) = sized_frame(0, 1_000) else {
-        unreachable!()
+fn the_window_follows_the_measured_throughput_and_the_live_memory_gate() {
+    assert_eq!(window_len(36.0, 0.025, 8, true), 2);
+    assert_eq!(window_len(36.0, 0.045, 8, true), 3);
+    assert_eq!(window_len(24.0, 0.003, 8, true), 2);
+    assert_eq!(window_len(0.0, 0.0, 8, true), 1, "paused");
+    assert_eq!(window_len(1_000.0, 1.0, 8, true), 8, "never past the pool");
+    assert_eq!(window_len(36.0, 0.045, 8, false), 1, "the gate closed");
+    assert_eq!(window_len(36.0, 0.045, 0, true), 1);
+    let newest = 100_000_000;
+    let plenty = Some((8_000_000_000, 8_000_000_000));
+    assert_eq!(memory_gate(None, newest, false), None, "unreadable memory");
+    assert_eq!(memory_gate(plenty, newest, false), None);
+    assert_eq!(memory_gate(plenty, newest, true), Some("os"));
+    let commit = Some((newest - 1, 8_000_000_000));
+    assert_eq!(memory_gate(commit, newest, false), Some("commit"));
+    let physical = Some((8_000_000_000, newest - 1));
+    assert_eq!(memory_gate(physical, newest, false), Some("physical"));
+    assert_eq!(memory_gate(Some((newest, newest)), newest, false), None);
+    let start = Instant::now();
+    let mut throughput = Throughput::default();
+    for read in 0..9u64 {
+        throughput.took(start + Duration::from_millis(25 * read), 8);
+    }
+    let rate = throughput.take_rate(start + Duration::from_millis(200));
+    assert!((rate - 40.0).abs() < 1e-6, "{rate}");
+    assert!(throughput.take_rate(start + Duration::from_secs(10)) < 1.0);
+    for service in [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10] {
+        throughput.served(service, 8);
+    }
+    assert!((throughput.service_p90() - 0.10).abs() < 1e-12);
+}
+
+#[test]
+fn the_frame_cache_keeps_only_the_required_hours_and_a_pause_releases_the_grid() {
+    let grid: Vec<(BranchId, Hour)> = (0..20).map(|step| (1, 400 + step * 40)).collect();
+    for ahead in [1, 2, 8] {
+        let mut state = LaneState {
+            frames: FrameCache::default(),
+            ..LaneState::default()
+        };
+        state.set_want(grid.clone(), 0, 8);
+        state.ahead = ahead;
+        state.served = Some(grid[2]);
+        state.urgent = Some((1, 5_000));
+        for key in grid
+            .iter()
+            .copied()
+            .chain([(1, 5_000), (1, 5_040), (1, 5_080)])
+        {
+            state.frames.insert(key, sized_frame(key.1, 1));
+        }
+        state.evict(Some((1, 5_040)));
+        assert_eq!(state.window().len(), 3 + ahead, "ahead {ahead}");
+        let mut expected: BTreeSet<_> = match ahead {
+            1 => vec![400, 440, 480, 520],
+            2 => vec![400, 440, 480, 520, 560],
+            8 => vec![400, 440, 480, 520, 560, 600, 640, 680, 720, 760, 800],
+            _ => unreachable!(),
+        }
+        .into_iter()
+        .map(|hour| (1, hour))
+        .collect();
+        expected.extend([(1, 5_000), (1, 5_040)]);
+        let held: BTreeSet<_> = state.frames.frames.keys().copied().collect();
+        assert_eq!(held, expected, "ahead {ahead}");
+        state.set_want(vec![(1, 500), (1, 501), (1, 499), (1, 502), (1, 498)], 2, 8);
+        state.served = None;
+        state.urgent = None;
+        for hour in [500, 501] {
+            state.frames.insert((1, hour), sized_frame(hour, 1));
+        }
+        state.evict(None);
+        let held: Vec<_> = state.frames.frames.keys().copied().collect();
+        assert_eq!(held, state.window().to_vec(), "ahead {ahead}");
+        assert_eq!(held, [(1, 500)]);
+    }
+    let mut state = LaneState {
+        frames: FrameCache::default(),
+        ..LaneState::default()
     };
-    let mut second = (*first).clone();
-    second.hour = 1;
-    let mut cache = FrameCache::default();
-    cache.insert((1, 0), Current::Frame(first));
-    cache.insert((1, 1), Current::Frame(Arc::new(second)));
-    assert_eq!(cache.bytes, each);
-    cache.evict_except(0, &BTreeSet::from([(1, 1)]));
-    assert_eq!(cache.frames.len(), 1);
-    assert_eq!(cache.bytes, each, "the kept hour still holds the table");
-    let mut third = FrameCache::default();
-    third.insert((1, 0), sized_frame(0, 1_000));
-    third.insert((1, 1), sized_frame(1, 1_000));
-    assert_eq!(third.bytes, 2 * each, "equal rows in two allocations");
+    state.set_want(grid.clone(), 0, 8);
+    state.served = Some(grid[2]);
+    state.gate = Some("commit");
+    state.resize(Instant::now());
+    assert_eq!(state.window(), &grid[2..4]);
 }
 
 pub(super) fn test_view() -> View {
@@ -308,6 +442,7 @@ fn perspective_changes_discard_old_hour_acknowledgements() {
         view: test_view(),
         have: vec![10, 11],
         received: 2,
+        grid: None,
     };
     let mut next = old.clone();
     next.perspective.fog = !next.perspective.fog;
@@ -659,26 +794,31 @@ fn source_worker_seed_attaches_committed_checkpoints_and_clear_keeps_exact_hour_
 }
 
 #[test]
-fn the_lane_window_runs_from_the_last_hour_served_and_is_never_evicted() {
-    let mut state = LaneState {
-        wanted: (0..100).map(|hour| (1, hour)).collect(),
-        ..LaneState::default()
-    };
-    assert_eq!(state.window().len(), DECODE_AHEAD);
+fn the_lane_window_retains_exactly_its_adaptive_required_hours() {
+    let mut state = LaneState::default();
+    state.set_want((0..100).map(|hour| (1, hour)).collect(), 0, 8);
+    state.ahead = 3;
+    assert_eq!(state.window(), &[(1, 0), (1, 1), (1, 2)]);
     state.served = Some((1, 10));
-    assert_eq!(state.window().last(), Some(&(1, 10 + DECODE_AHEAD as i32)));
-    state.served = Some((1, 99));
-    assert_eq!(state.window().len(), 100);
-    // A full cache frees hours outside the window first.
-    state.served = Some((1, 0));
-    for hour in 0..(FRAME_CACHE as i32 + 20) {
+    assert_eq!(
+        state.window(),
+        &(0..=13).map(|hour| (1, hour)).collect::<Vec<_>>()
+    );
+    for hour in 0..100 {
         state.frames.insert((1, hour), sized_frame(hour, 1));
     }
-    state.evict();
-    assert_eq!(state.frames.frames.len(), FRAME_CACHE);
-    for key in state.window().to_vec() {
-        assert!(state.frames.contains_key(&key), "{key:?}");
-    }
+    state.evict(Some((2, 90)));
+    assert_eq!(
+        state.frames.frames.keys().copied().collect::<Vec<_>>(),
+        (0..=13).map(|hour| (1, hour)).collect::<Vec<_>>()
+    );
+    state.gate = Some("physical");
+    state.resize(Instant::now());
+    state.evict(None);
+    assert_eq!(
+        state.frames.frames.keys().copied().collect::<Vec<_>>(),
+        [(1, 10), (1, 11)]
+    );
 }
 
 #[test]
@@ -733,6 +873,7 @@ fn playing_targets_consecutive_hours_from_the_playhead_and_stops_at_the_branch_e
         view: test_view(),
         have: vec![],
         received: 0,
+        grid: None,
     };
     assert_eq!(want.hours((0, 1000)), (100..=107).collect::<Vec<_>>());
     assert_eq!(want.hours((0, 105)), (100..=105).collect::<Vec<_>>());
@@ -854,6 +995,7 @@ fn same_hour_seeks_discard_ready_acknowledgements_just_like_other_history_resets
         view: test_view(),
         have: vec![10, 11],
         received: 2,
+        grid: None,
     };
     // A pause or camera update keeps the epoch; a seek to precisely the same
     // position must force it to change and prevent reusing the ready result.
@@ -959,15 +1101,26 @@ fn target_trace_decode_metadata_follows_frame_cache_eviction() {
     for hour in 0..100 {
         state.frames.insert(
             (1, hour),
-            Current::Gap { branch: 1, hour, reason: "recorded gap".into() },
+            Current::Gap {
+                branch: 1,
+                hour,
+                reason: "recorded gap".into(),
+            },
         );
-        state.decode_profile
+        state
+            .decode_profile
             .get_or_insert_with(BTreeMap::new)
             .insert((1, hour), sample);
     }
-    state.evict();
+    state.set_want(vec![(1, 40), (1, 41)], 0, 2);
+    state.served = Some((1, 20));
+    state.urgent = Some((1, 30));
+    state.evict(Some((1, 99)));
     let metadata = state.decode_profile.as_ref().unwrap();
-    assert_eq!(metadata.len(), FRAME_CACHE);
+    assert_eq!(
+        metadata.keys().copied().collect::<Vec<_>>(),
+        [(1, 20), (1, 30), (1, 40), (1, 99)]
+    );
     assert_eq!(
         metadata.keys().copied().collect::<Vec<_>>(),
         state.frames.frames.keys().copied().collect::<Vec<_>>(),
@@ -991,7 +1144,8 @@ fn railway_neighbour_wait_precedes_single_flight_ownership_after_reversed_worker
                 wait_all(vec![near])
             },
             |_| -> io::Result<_> { Ok(Arc::new(999)) },
-        ).unwrap();
+        )
+        .unwrap();
         done.send(value).unwrap();
     });
     waiting.recv_timeout(TEST_HANG_GUARD).unwrap();
@@ -999,12 +1153,10 @@ fn railway_neighbour_wait_precedes_single_flight_ownership_after_reversed_worker
     // If B claimed it before waiting, A and B would form the reported cycle.
     let (built, first) = mpsc::channel();
     let earlier = thread::spawn(move || {
-        let value = memo_after_neighbours(
-            &memo,
-            1,
-            Vec::<Arc<u32>>::new,
-            |_| -> io::Result<_> { Ok(Arc::new(42)) },
-        ).unwrap();
+        let value = memo_after_neighbours(&memo, 1, Vec::<Arc<u32>>::new, |_| -> io::Result<_> {
+            Ok(Arc::new(42))
+        })
+        .unwrap();
         Fill(predecessor).set(Some(value.clone()));
         built.send(value).unwrap();
     });
@@ -1369,4 +1521,61 @@ fn a_page_walk_cancellation_does_not_enter_native_fallback_or_publish_the_endpoi
     assert_native(playback.current(), &reference, 129);
     let _ = store::Store::local(id).unwrap().clear();
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn rewant_retains_the_mailboxs_pending_hour_until_the_lane_takes_it() {
+    let shared = LaneShared {
+        mailbox: OnceLock::new(),
+        state: Mutex::new(LaneState::default()),
+        changed: Condvar::new(),
+    };
+    let mailbox = SourceMailbox::new(|_| true);
+    shared.mailbox.set(mailbox.clone()).ok().unwrap();
+    let _handle = mailbox.post(1, (1, 80), |_, _| {});
+    let mut state = DecodeLane::lock(&shared);
+    for hour in [40, 80, 120] {
+        state.frames.insert((1, hour), sized_frame(hour, 1));
+    }
+    state.set_want(vec![(1, 40)], 0, 1);
+    state.evict(DecodeLane::pending(&shared));
+    assert_eq!(
+        state.frames.frames.keys().copied().collect::<Vec<_>>(),
+        [(1, 40), (1, 80)]
+    );
+    let read = mailbox.take().unwrap();
+    assert_eq!(read.key, (1, 80));
+    state.urgent = Some(read.key);
+    state.evict(DecodeLane::pending(&shared));
+    assert!(state.frames.contains_key(&(1, 80)));
+    state.served = Some(read.key);
+    state.urgent = None;
+    state.evict(None);
+    assert!(state.frames.contains_key(&(1, 80)));
+    drop(state);
+    read.ready(sized_frame(80, 1), None);
+}
+
+#[test]
+fn evicted_backward_and_branch_requests_match_independent_source_seeks() {
+    let replay = Arc::new(
+        Replay::from_records(
+            b"campaign".to_vec(),
+            &[
+                crate::playback::tests::records(1, &(10..=310).collect::<Vec<_>>()),
+                crate::playback::tests::records(2, &(20..=80).collect::<Vec<_>>()),
+            ],
+        )
+        .unwrap(),
+    );
+    let lane = lane_over(&replay);
+    for (branch, hour) in [(1, 290), (1, 100), (2, 70), (1, 300), (2, 25), (1, 10)] {
+        lane.want(vec![(branch, hour)], 0);
+        let actual = source_frame(&lane.client(), branch, hour);
+        let replay::container::SeekResult::Frame(expected) = replay.seek(branch, hour).unwrap()
+        else {
+            panic!("recorded hour")
+        };
+        assert_eq!(actual, Current::Frame(Arc::from(expected)));
+    }
 }

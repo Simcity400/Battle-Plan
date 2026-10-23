@@ -257,24 +257,12 @@ impl<B: BuildTarget> Driver<B> {
     }
 
     fn retarget(&mut self) {
-        let epoch = self.core.epoch;
-        let want = self.core.want.as_ref();
-        let keep: BTreeSet<_> = want
-            .map(|want| {
-                let range = self
-                    .core
-                    .playback
-                    .range(want.branch)
-                    .unwrap_or((want.hour, want.hour));
-                want.hours(range)
-                    .into_iter()
-                    .map(|hour| (want.branch, hour))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let cancelled = self
-            .ledger
-            .retarget(|e, key| e == epoch && want.is_some_and(|w| w.keeps_pending(*key, &keep)));
+        let cancelled = retarget_ledger(
+            &mut self.ledger,
+            &self.core,
+            self.core.want.as_ref(),
+            self.core.epoch,
+        );
         for ticket in cancelled {
             let key = self.targets.get(&ticket).map(|target| match target {
                 PreparedTarget::Parts(pending, _) => match &pending.current {
@@ -351,6 +339,7 @@ impl<B: BuildTarget> Driver<B> {
                     unreachable!()
                 };
                 let key = (built.branch, built.hour);
+                let (built_epoch, usable) = (built.epoch, built.layers.is_ok());
                 let trace = built.trace.clone();
                 if self.sending.insert(ticket) {
                     trace.sending();
@@ -360,6 +349,7 @@ impl<B: BuildTarget> Driver<B> {
                         trace.sent();
                         let order = self.core.sends;
                         self.core.sent.insert(key, order);
+                        self.core.note_sent(built_epoch, key, order, usable);
                         self.core.sends += 1;
                         self.sending.remove(&ticket);
                         assert!(self.ledger.release(ticket));
@@ -468,14 +458,63 @@ impl<B: BuildTarget> Driver<B> {
     fn next_hour(&self) -> Option<Hour> {
         let want = self.core.want.as_ref()?;
         let range = self.core.playback.range(want.branch)?;
-        want.hours(range).into_iter().find(|hour| {
-            let key = (want.branch, *hour);
-            !self.core.sent.contains_key(&key)
-                && !want.have.contains(hour)
-                && !self.ledger.contains(self.core.epoch, &key)
-        })
+        self.core
+            .wanted_hours(want, range)
+            .into_iter()
+            .find(|hour| {
+                let key = (want.branch, *hour);
+                !self.core.sent.contains_key(&key)
+                    && !want.have.contains(hour)
+                    && !self.ledger.contains(self.core.epoch, &key)
+            })
     }
 }
+// A ready result must drain even when every part was reused.
+fn started(flight: &flow::Flight<(BranchId, Hour)>) -> bool {
+    flight.accepted_any() || flight.phase == flow::Phase::Ready
+}
+
+pub(super) fn retarget_ledger(
+    ledger: &mut Ledger<(BranchId, Hour)>,
+    core: &CoordinatorState,
+    want: Option<&Want>,
+    epoch: u64,
+) -> Vec<u64> {
+    let keep: BTreeSet<_> = want
+        .map(|want| {
+            let range = core
+                .playback
+                .range(want.branch)
+                .unwrap_or((want.hour, want.hour));
+            core.wanted_hours(want, range)
+                .into_iter()
+                .map(|hour| (want.branch, hour))
+                .collect()
+        })
+        .unwrap_or_default();
+    match want.filter(|want| want.grid.is_some()) {
+        Some(want) => {
+            let facts = want.grid_facts(
+                ledger
+                    .flights()
+                    .filter(|(_, flight)| flight.epoch == epoch)
+                    .map(|(_, flight)| (flight.key, started(flight))),
+                core.usable_sent.iter().copied().filter(|key| {
+                    core.sent
+                        .get(key)
+                        .is_some_and(|order| *order >= want.received)
+                }),
+            );
+            ledger.retarget_flights(|_, flight| {
+                flight.epoch == epoch
+                    && want.keeps_flight(flight.key, started(flight), &keep, &facts)
+            })
+        }
+        None => ledger
+            .retarget(|e, key| e == epoch && want.is_some_and(|w| w.keeps_pending(*key, &keep))),
+    }
+}
+
 impl<B: BuildTarget> Drop for Driver<B> {
     fn drop(&mut self) {
         if let Some(reading) = &self.reading {

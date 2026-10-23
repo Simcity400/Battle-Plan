@@ -180,14 +180,24 @@ impl Drop for PageWork {
     }
 }
 
-fn page_worker_priority() -> impl Fn() + Copy + Send + Sync + 'static {
-    || {
+fn caller_priority() -> impl Fn() + Copy + Send + Sync + 'static {
+    #[cfg(windows)]
+    let priority = {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        // SAFETY: the current-thread pseudo handle is valid and is only read.
+        match unsafe { GetThreadPriority(GetCurrentThread()) } {
+            i32::MAX => THREAD_PRIORITY_BELOW_NORMAL,
+            priority => priority,
+        }
+    };
+    move || {
         #[cfg(windows)]
+        // SAFETY: only the calling worker's scheduling priority is changed.
         unsafe {
-            use windows_sys::Win32::System::Threading::{
-                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
-            };
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+            SetThreadPriority(GetCurrentThread(), priority);
         }
     }
 }
@@ -291,6 +301,28 @@ impl Reader {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn retained_source(&self) -> Option<(usize, Hour)> {
+        self.block
+            .as_ref()
+            .map(|block| (block.index, block.through))
+    }
+
+    // Pages move the cursor without loading source; a native request can reload the released block.
+    pub fn release_passed_source(&mut self) -> Option<impl Send + 'static + use<>> {
+        let passed = self.page_cursor
+            && self
+                .block
+                .as_ref()
+                .zip(self.cursor)
+                .is_some_and(|(block, cursor)| block.index != cursor.block);
+        if !passed {
+            return None;
+        }
+        self.retained_source_frames = 0;
+        self.block.take()
+    }
+
     pub fn with_pages(mut self, pages: Vec<(BranchId, BranchPages)>) -> io::Result<Self> {
         self.bind_pages(pages)?;
         Ok(self)
@@ -311,7 +343,6 @@ impl Reader {
         self.pages.as_deref().unwrap_or(&[])
     }
 
-    #[cfg(test)]
     pub fn held_hour(&self) -> Option<Hour> {
         self.decoder.current().map(|frame| frame.hour)
     }
@@ -735,7 +766,7 @@ impl Reader {
                 ControlFlow::Continue(Some(first)) => first,
             };
             let mut decoder = self.decoder.clone();
-            let on_worker = page_worker_priority();
+            let on_worker = caller_priority();
             let (mut count, mut total_bytes) = (0, 0);
             let mut last = None;
             let (mut from, mut next) = (at, first);
@@ -841,7 +872,7 @@ impl Reader {
             return;
         };
         let (store, key) = (Arc::clone(&self.store), self.key.clone());
-        let priority = page_worker_priority();
+        let priority = caller_priority();
         #[cfg(test)]
         let payloads = Arc::clone(&self.page_payloads);
         let read = std::thread::Builder::new()
@@ -1237,5 +1268,36 @@ impl Reader {
             hour,
             reason: gap_reason(&self.store, &self.key, &self.progress, branch, hour)?,
         })
+    }
+}
+
+#[cfg(all(test, windows))]
+mod priority_tests {
+    #[test]
+    fn page_threads_run_at_the_asking_threads_priority() {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            THREAD_PRIORITY_NORMAL,
+        };
+        for priority in [THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL] {
+            let seen = std::thread::spawn(move || {
+                // SAFETY: this test owns the current thread.
+                assert_ne!(
+                    unsafe { SetThreadPriority(GetCurrentThread(), priority) },
+                    0
+                );
+                let on_worker = super::caller_priority();
+                std::thread::spawn(move || {
+                    on_worker();
+                    // SAFETY: the current-thread pseudo handle is valid.
+                    unsafe { GetThreadPriority(GetCurrentThread()) }
+                })
+                .join()
+                .unwrap()
+            })
+            .join()
+            .unwrap();
+            assert_eq!(seen, priority);
+        }
     }
 }

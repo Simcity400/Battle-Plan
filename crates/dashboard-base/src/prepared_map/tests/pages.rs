@@ -1803,3 +1803,30 @@ fn cancelling_after_one_page_reads_no_later_range_or_native_fallback_and_publish
         same(&mut paged, &mut plain, 1, 130, 129).0.unwrap();
     }
 }
+
+#[test]
+fn pages_that_leave_the_retained_source_block_release_it_and_native_requests_read_it_again() {
+    let prepared = Prepared::new(&recording(), recording(), Hour::MAX);
+    let (mut paged, mut plain) = (prepared.reader(true), prepared.reader(false));
+    same(&mut paged, &mut plain, 1, 104, 104).0.unwrap();
+    assert!(
+        paged.retained_source().is_some(),
+        "the walk to 104 keeps its block"
+    );
+    assert_eq!(
+        paged.advance_pages(1, 120, 120, || true).unwrap(),
+        std::ops::ControlFlow::Continue(Some(120))
+    );
+    assert!(paged.release_passed_source().is_none());
+    assert!(paged.retained_source().is_some());
+    assert_eq!(
+        paged.advance_pages(1, 168, 168, || true).unwrap(),
+        std::ops::ControlFlow::Continue(Some(168))
+    );
+    assert!(paged.release_passed_source().is_some());
+    assert_eq!(paged.retained_source_frames, 0);
+    assert_eq!(paged.retained_source(), None);
+    assert!(paged.release_passed_source().is_none(), "nothing is left");
+    same(&mut paged, &mut plain, 1, 170, 170).0.unwrap();
+    same(&mut paged, &mut plain, 1, 105, 105).0.unwrap();
+}

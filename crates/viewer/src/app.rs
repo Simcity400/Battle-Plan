@@ -73,6 +73,8 @@ pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
 mod presentation;
+#[cfg(test)]
+pub(crate) use presentation::{exact_capture_wait, grid_activation};
 mod profile_playback;
 #[cfg(test)]
 pub(crate) mod readback;
@@ -123,6 +125,8 @@ fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
 
 #[cfg(test)]
 mod fly_render_tests;
+#[cfg(test)]
+mod initial_source_tests;
 #[cfg(test)]
 mod map_mode_fixture_tests;
 #[cfg(test)]

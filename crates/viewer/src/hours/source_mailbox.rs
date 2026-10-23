@@ -153,7 +153,6 @@ impl<K, V, S> Mailbox<K, V, S> {
     }
 
     /// Short metadata read; never decode or clone a table body here.
-    #[cfg(test)]
     pub fn pending_key(&self) -> Option<K>
     where
         K: Clone,

@@ -252,6 +252,16 @@ impl Playback {
         std::mem::replace(&mut self.current, current)
     }
 
+    // Presented frames retain their identity while the load-time decoder and block go.
+    pub fn release_source(&mut self) -> Option<impl Send + 'static + use<>> {
+        self.cache.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn holds_source(&self) -> bool {
+        self.cache.is_some()
+    }
+
     /// The timeline includes explicitly lost hours at either end of a branch.
     pub fn range(&self, branch: BranchId) -> Option<(Hour, Hour)> {
         if let Some(range) = self.checkpoints.as_ref().and_then(|map| map.range(branch)) {
@@ -354,6 +364,14 @@ impl Playback {
         Ok(())
     }
 
+    pub fn page_skip(&self) -> (Option<&'static str>, Option<Hour>) {
+        self.checkpoints
+            .as_ref()
+            .map_or((Some("no-prepared-map"), None), |map| {
+                (map.page_skip, map.held_hour())
+            })
+    }
+
     pub fn page_entry(&self, branch: BranchId, from: Hour, limit: Hour) -> Option<Hour> {
         self.checkpoints
             .as_ref()
@@ -361,7 +379,6 @@ impl Playback {
             .and_then(|map| map.page_entry(branch, from, limit))
     }
 
-    #[cfg(test)]
     pub fn page_fallbacks(&self) -> u64 {
         self.checkpoints
             .as_ref()
@@ -385,6 +402,12 @@ impl Playback {
         let reached = match checkpoints.advance_pages(branch, hour, visit_from, &mut wanted) {
             Ok(ControlFlow::Break(())) => return ControlFlow::Break(()),
             Ok(ControlFlow::Continue(Some(reached))) => {
+                if let Some(passed) = checkpoints.release_passed_source() {
+                    match &self.reader {
+                        Some(reader) => reader.drop_later(passed),
+                        None => drop(passed),
+                    }
+                }
                 self.branch = branch;
                 self.hour = reached;
                 self.current = gap(branch, reached, "hour has not been decoded".into());
@@ -1362,6 +1385,62 @@ pub(crate) mod tests {
             panic!("held frame")
         };
         assert_eq!(held.as_ref(), &source(1, 105));
+    }
+
+    #[test]
+    fn releasing_the_source_keeps_the_presented_hour_and_later_seeks_read_again() {
+        let mut playback = Playback::new(fixture()).unwrap();
+        playback.seek(1, 105).unwrap();
+        let Current::Frame(shown) = playback.current().clone() else {
+            panic!("hour 105 is recorded");
+        };
+        assert_eq!(playback.block_loads, 1);
+        assert!(playback.holds_source());
+        assert!(playback.release_source().is_some());
+        assert!(!playback.holds_source());
+        assert!(
+            playback.release_source().is_none(),
+            "nothing is left to release"
+        );
+        assert!(matches!(
+            playback.current(),
+            Current::Frame(presented) if Arc::ptr_eq(presented, &shown)
+        ));
+        assert_eq!((playback.branch(), playback.hour()), (1, 105));
+        assert_eq!(playback.walk_start(1, 105), Some(99));
+        playback.seek(1, 105).unwrap();
+        assert_eq!(playback.block_loads, 2);
+        assert_eq!(playback.frame(), Some(&*shown));
+        for hour in [100, 101, 102, 104, 820, 105] {
+            assert_seek_matches_shared(&mut playback, 1, hour);
+        }
+        assert_eq!(playback.block_loads, 4);
+    }
+
+    #[test]
+    fn a_released_unreadable_block_is_read_again_to_the_same_gap() {
+        let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
+        let unreadable = playback.current().clone();
+        assert!(matches!(
+            &unreadable,
+            Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
+        ));
+        assert_eq!(
+            playback.walk_start(1, 101),
+            None,
+            "a failed block is not walked"
+        );
+        assert!(playback.release_source().is_some());
+        assert_eq!(playback.current(), &unreadable);
+        assert_eq!(playback.walk_start(1, 101), Some(99));
+        for hour in [100, 101, 105] {
+            assert_seek_matches_shared(&mut playback, 1, hour);
+            assert!(matches!(
+                playback.current(),
+                Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
+            ));
+        }
+        assert_eq!(playback.block_loads, 2);
     }
 }
 

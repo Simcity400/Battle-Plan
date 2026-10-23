@@ -37,11 +37,13 @@
 //! region derivation: an equal hour must keep the same political id, because
 //! the border classes are shared, and their upload skipped, only by that id.
 
+mod cadence;
 mod coordinator;
 mod dispatch_plan;
 mod flow;
-mod source_mailbox;
+mod memory_pressure;
 mod shared_decoder;
+mod source_mailbox;
 pub use shared_decoder::SharedDecoder;
 mod trace;
 
@@ -124,6 +126,38 @@ pub struct Want {
     /// How many built hours the window had received when it asked. Hours sent
     /// after that are on their way and not built again either.
     pub received: u64,
+    pub grid: Option<Grid>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grid {
+    pub cadence: Cadence,
+    pub installed: Option<Hour>,
+    pub usable: Vec<Hour>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cadence {
+    pub sequence: u64,
+    pub stride: u32,
+    pub count: u32,
+    pub anchor: Option<Hour>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct GridFacts {
+    installed: Option<Hour>,
+    newest_usable_due: Option<Hour>,
+    newest_reserved_due: Option<Hour>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Obligation {
+    sequence: u64,
+    epoch: u64,
+    key: (BranchId, Hour),
+    sent: Option<u64>,
+    done: bool,
 }
 
 impl Want {
@@ -185,14 +219,99 @@ impl Want {
                 && key.1 <= self.hour)
     }
 
+    fn keeps_sent(&self, key: (BranchId, Hour), order: u64) -> bool {
+        let kept = order >= self.received || (key.0 == self.branch && self.have.contains(&key.1));
+        kept && (self.grid.is_some() || self.keeps_reusable(key))
+    }
+
+    fn grid_facts(
+        &self,
+        flights: impl IntoIterator<Item = ((BranchId, Hour), bool)>,
+        usable_sent: impl IntoIterator<Item = (BranchId, Hour)>,
+    ) -> GridFacts {
+        let Some(grid) = &self.grid else {
+            return GridFacts::default();
+        };
+        let installed = grid.installed;
+        let due = |(branch, hour): (BranchId, Hour)| branch == self.branch && hour <= self.hour;
+        GridFacts {
+            installed,
+            newest_usable_due: grid
+                .usable
+                .iter()
+                .map(|hour| (self.branch, *hour))
+                .chain(usable_sent)
+                .filter(|key| due(*key))
+                .map(|(_, hour)| hour)
+                .max(),
+            newest_reserved_due: flights
+                .into_iter()
+                .filter(|&(key, started)| {
+                    !started && due(key) && installed.is_none_or(|installed| key.1 > installed)
+                })
+                .map(|((_, hour), _)| hour)
+                .max(),
+        }
+    }
+
+    fn keeps_flight(
+        &self,
+        key: (BranchId, Hour),
+        started: bool,
+        wanted: &BTreeSet<(BranchId, Hour)>,
+        facts: &GridFacts,
+    ) -> bool {
+        let (branch, hour) = key;
+        if branch != self.branch || facts.installed.is_some_and(|installed| hour <= installed) {
+            return false;
+        }
+        wanted.contains(&key)
+            || started
+            || (hour <= self.hour
+                && facts.newest_reserved_due == Some(hour)
+                && facts.newest_usable_due.is_none_or(|usable| usable <= hour))
+    }
+
     /// Explicit seeks, including same-hour seeks, restart history just like
     /// a changed mode or perspective. No ready or pending result may cross it.
     fn discard_stale_have(&mut self, previous: Option<&Self>, sought: bool) -> bool {
         let invalidates = sought || previous.is_some_and(|old| old.invalidates(self));
         if invalidates {
             self.have.clear();
+            if let Some(grid) = &mut self.grid {
+                grid.installed = None;
+                grid.usable.clear();
+            }
         }
         invalidates
+    }
+}
+
+// Experimental fast-play grid; absent by default.
+pub fn page_grid() -> bool {
+    static SWITCH: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("BATTLE_PLAN_VIEWER_PAGE_GRID").or_else(|| std::env::var_os("HOI4_VIEWER_PAGE_GRID")).is_some_and(|value| value == "1")
+    });
+    *SWITCH
+}
+
+pub fn grid_stride(speed: f64) -> Option<u32> {
+    cadence::stride(speed)
+}
+
+fn new_intent(
+    previous: Option<(BranchId, u32)>,
+    want: (BranchId, u32),
+    sought: bool,
+) -> Option<&'static str> {
+    if sought {
+        return Some("seek");
+    }
+    match previous {
+        None => Some("start"),
+        Some((branch, _)) if branch != want.0 => Some("branch"),
+        Some((_, stride)) if stride != want.1 => Some("stride"),
+        Some(_) => None,
     }
 }
 
@@ -985,57 +1104,24 @@ impl Pending {
     }
 }
 
-/// Recently decoded frames the coordinator keeps, so a step back or a
-/// rebuild for a new perspective decodes nothing. Also the bound of the weak
-/// frame and snapshot registries, which hold no frame data themselves.
-const FRAME_CACHE: usize = 96;
-
-/// Decoded bytes the coordinator's own frame cache may hold.
-///
-/// A decoded hour grows with the recording's countries and units, so a fixed
-/// count of hours is not a fixed amount of memory. Tables are counted at their
-/// own row sizes ([`replay_data::rows::TableRows::allocated_bytes`]), without the
-/// strings and lists a row owns on the heap. The cache keeps at most
-/// [`FRAME_CACHE`] hours and, past this budget, only the hours the current
-/// want still reaches (`FrameCache::evict`).
-const FRAME_CACHE_BYTES: u64 = 2 << 30;
-
-/// A decoded table's row allocation in bytes.
-fn table_bytes(table: &replay_frame::frame::TableView) -> u64 {
-    match table {
-        replay_frame::frame::TableView::Complete(rows)
-        | replay_frame::frame::TableView::Truncated { rows, .. } => rows.allocated_bytes() as u64,
-        replay_frame::frame::TableView::Unavailable { .. }
-        | replay_frame::frame::TableView::NotRecorded { .. } => 0,
-    }
+fn true_table_bytes(table: &replay_frame::frame::SharedView) -> u64 {
+    dashboard_base::prepared::prepass::HeldBytes::default()
+        .view(table)
+        .total()
 }
 
-/// The coordinator's recently decoded hours, least recently used first,
-/// bounded by count and by row bytes.
-///
-/// Hours share every table that did not change between them
-/// ([`replay_frame::frame::SharedView`]), so the byte count is of distinct tables:
-/// each allocation is counted once however many cached hours hold it.
 #[derive(Default)]
 struct FrameCache {
     frames: BTreeMap<(BranchId, Hour), Current>,
-    /// Every cached hour, least recently used first.
-    order: VecDeque<(BranchId, Hour)>,
-    /// Distinct cached tables by allocation: holders and row bytes.
     tables: HashMap<usize, (usize, u64)>,
     bytes: u64,
+    // Bytes newly held by the last insert, used to size the next decode's headroom.
+    added_bytes: u64,
 }
 
 impl FrameCache {
-    /// A cached hour; the hit makes it the most recently used.
-    fn get(&mut self, key: &(BranchId, Hour)) -> Option<Current> {
-        let current = self.frames.get(key)?.clone();
-        if let Some(at) = self.order.iter().position(|cached| cached == key)
-            && let Some(entry) = self.order.remove(at)
-        {
-            self.order.push_back(entry);
-        }
-        Some(current)
+    fn get(&self, key: &(BranchId, Hour)) -> Option<Current> {
+        self.frames.get(key).cloned()
     }
 
     fn contains_key(&self, key: &(BranchId, Hour)) -> bool {
@@ -1043,28 +1129,29 @@ impl FrameCache {
     }
 
     fn insert(&mut self, key: (BranchId, Hour), current: Current) {
-        self.hold(&current);
+        self.added_bytes = self.hold(&current);
         if let Some(old) = self.frames.insert(key, current) {
             self.release(&old);
-            self.order.retain(|at| *at != key);
         }
-        self.order.push_back(key);
     }
 
-    fn hold(&mut self, current: &Current) {
+    fn hold(&mut self, current: &Current) -> u64 {
         let Current::Frame(frame) = current else {
-            return;
+            return 0;
         };
+        let mut added = 0u64;
         for table in &frame.tables {
             let entry = self
                 .tables
                 .entry(table.as_ptr() as usize)
-                .or_insert_with(|| (0, table_bytes(table)));
+                .or_insert_with(|| (0, true_table_bytes(table)));
             if entry.0 == 0 {
                 self.bytes = self.bytes.saturating_add(entry.1);
+                added = added.saturating_add(entry.1);
             }
             entry.0 += 1;
         }
+        added
     }
 
     fn release(&mut self, current: &Current) {
@@ -1083,20 +1170,15 @@ impl FrameCache {
         }
     }
 
-    /// Drops the least recently used hours past [`FRAME_CACHE`] and past
-    /// `budget` bytes, never an hour in `spare`: the hours the builders will
-    /// still ask for.
-    fn evict_except(&mut self, budget: u64, spare: &BTreeSet<(BranchId, Hour)>) {
-        let mut at = 0;
-        while at < self.order.len() && (self.order.len() > FRAME_CACHE || self.bytes > budget) {
-            if spare.contains(&self.order[at]) {
-                at += 1;
-                continue;
-            }
-            let Some(old) = self.order.remove(at) else {
-                break;
-            };
-            if let Some(current) = self.frames.remove(&old) {
+    fn retain_only(&mut self, required: &BTreeSet<(BranchId, Hour)>) {
+        let gone: Vec<_> = self
+            .frames
+            .keys()
+            .filter(|key| !required.contains(key))
+            .copied()
+            .collect();
+        for key in gone {
+            if let Some(current) = self.frames.remove(&key) {
                 self.release(&current);
             }
         }
@@ -1114,8 +1196,7 @@ impl FrameCache {
 /// readiness events without waiting on the lane.
 /// The lane's [`Playback`] reads the next block ahead through its [`BlockReader`].
 ///
-/// The lane runs below normal priority, as the builders do, so it never
-/// competes with the window's own thread.
+// The serial decode lane runs above the builders that wait for it.
 struct DecodeLane {
     shared: Arc<LaneShared>,
 }
@@ -1126,13 +1207,75 @@ struct LaneShared {
     changed: Condvar,
 }
 
-/// Wanted hours the lane decodes past the last one the coordinator took.
-///
-/// The builders take hours in want order, a pool's worth at a time, so a
-/// window of this many keeps every dispatch waiting on nothing but the build.
-/// A larger one only holds decoded hours in memory longer; a smaller one than
-/// the pool would make dispatches wait for the decode.
-const DECODE_AHEAD: usize = 32;
+// Decode ahead only as far as recent demand and service time require.
+fn window_len(take_rate: f64, service: f64, pool: usize, open: bool) -> usize {
+    let pool = pool.max(1);
+    if !open {
+        return 1;
+    }
+    let ahead = (take_rate * service).ceil();
+    let ahead = if ahead.is_finite() && ahead > 0.0 {
+        ahead as usize
+    } else {
+        0
+    };
+    ahead.saturating_add(1).min(pool)
+}
+
+#[derive(Default)]
+struct Throughput {
+    takes: VecDeque<Instant>,
+    services: VecDeque<f64>,
+}
+
+impl Throughput {
+    fn took(&mut self, at: Instant, pool: usize) {
+        self.takes.push_back(at);
+        while self.takes.len() > pool.max(1) + 1 {
+            self.takes.pop_front();
+        }
+    }
+
+    fn served(&mut self, seconds: f64, pool: usize) {
+        self.services.push_back(seconds);
+        while self.services.len() > pool.max(1) {
+            self.services.pop_front();
+        }
+    }
+
+    fn take_rate(&self, now: Instant) -> f64 {
+        if self.takes.len() < 2 {
+            return 0.0;
+        }
+        let span = now.saturating_duration_since(self.takes[0]).as_secs_f64();
+        if span > 0.0 {
+            (self.takes.len() - 1) as f64 / span
+        } else {
+            0.0
+        }
+    }
+
+    fn service_p90(&self) -> f64 {
+        let mut services: Vec<f64> = self.services.iter().copied().collect();
+        services.sort_by(f64::total_cmp);
+        let at = (services.len() * 9 / 10).min(services.len().saturating_sub(1));
+        services.get(at).copied().unwrap_or(0.0)
+    }
+}
+
+fn memory_gate(available: Option<(u64, u64)>, newest: u64, low: bool) -> Option<&'static str> {
+    if low {
+        return Some("os");
+    }
+    let (commit, physical) = available?;
+    if commit < newest {
+        Some("commit")
+    } else if physical < newest {
+        Some("physical")
+    } else {
+        None
+    }
+}
 
 /// Hours a long walk through a block applies between checks that its target
 /// is still wanted, so a seek away abandons it within a few milliseconds.
@@ -1143,36 +1286,35 @@ const LANE_STOPPED: &str = "the hour decoder stopped";
 
 #[derive(Default)]
 struct LaneState {
-    /// The hours to keep decoded, in the order the builders will ask for them.
     wanted: Vec<(BranchId, Hour)>,
-    /// Earlier hours of a block to keep while passing them, for a step back.
     behind: i32,
-    /// The last hour the coordinator took, which the window runs from.
     served: Option<(BranchId, Hour)>,
-    /// The hour the coordinator is waiting for, decoded before anything else.
     urgent: Option<(BranchId, Hour)>,
     frames: FrameCache,
-    /// PROFILE metadata follows the same cache lifetime; no allocation when disabled.
     decode_profile: Option<BTreeMap<(BranchId, Hour), trace::DecodeSample>>,
-    /// Set by the lane's owner to stop the thread.
     stop: bool,
-    /// Set when the thread has ended, however it ended.
     dead: bool,
+    pool: usize,
+    ahead: usize,
+    throughput: Throughput,
+    gate: Option<&'static str>,
+    rewant: bool,
 }
 
 impl LaneState {
-    /// The wanted hours the lane keeps decoded now: from the want's start up to
-    /// [`DECODE_AHEAD`] past the last one served.
     fn window(&self) -> &[(BranchId, Hour)] {
         let served = self
             .served
-            .and_then(|served| self.wanted.iter().position(|key| *key == served))
-            .map_or(0, |at| at + 1);
-        &self.wanted[..(served + DECODE_AHEAD).min(self.wanted.len())]
+            .and_then(|served| self.wanted.iter().position(|key| *key == served));
+        let (start, ahead) = if self.gate.is_some() {
+            (served.unwrap_or(0), self.ahead.max(1))
+        } else {
+            (0, self.ahead.max(1))
+        };
+        let end = (served.map_or(0, |at| at + 1) + ahead).min(self.wanted.len());
+        &self.wanted[start.min(end)..end]
     }
 
-    /// The next hour to decode: an urgent one, else the first hour of the
-    /// window not decoded yet.
     fn next(&self) -> Option<(BranchId, Hour)> {
         self.urgent
             .filter(|key| !self.frames.contains_key(key))
@@ -1184,15 +1326,42 @@ impl LaneState {
             })
     }
 
-    /// Whether decoding `target` is still worth finishing.
     fn still_wanted(&self, target: (BranchId, Hour)) -> bool {
         !self.stop && (self.urgent == Some(target) || self.window().contains(&target))
     }
 
-    /// Frees what the builders will not ask for again, keeping the window.
-    fn evict(&mut self) {
-        let spare: BTreeSet<_> = self.window().iter().copied().chain(self.urgent).collect();
-        self.frames.evict_except(FRAME_CACHE_BYTES, &spare);
+    fn set_want(&mut self, wanted: Vec<(BranchId, Hour)>, behind: i32, pool: usize) {
+        self.wanted = wanted;
+        self.behind = behind;
+        self.pool = pool.max(1);
+        self.rewant = true;
+        self.resize(Instant::now());
+    }
+
+    fn resize(&mut self, now: Instant) {
+        self.ahead = window_len(
+            self.throughput.take_rate(now),
+            self.throughput.service_p90(),
+            self.pool,
+            self.gate.is_none(),
+        );
+    }
+
+    fn check_memory(&mut self, now: Instant) {
+        self.gate = memory_gate(
+            memory_pressure::available(),
+            self.frames.added_bytes,
+            memory_pressure::system_low(),
+        );
+        self.resize(now);
+    }
+
+    fn evict(&mut self, pending: Option<(BranchId, Hour)>) {
+        let mut required: BTreeSet<_> = self.window().iter().copied().chain(self.urgent).collect();
+        required.extend(self.served);
+        required.extend(pending);
+        self.frames.retain_only(&required);
+        self.rewant = false;
         if let Some(profile) = &mut self.decode_profile {
             profile.retain(|key, _| self.frames.contains_key(key));
         }
@@ -1220,10 +1389,14 @@ impl DecodeLane {
         });
         let weak = Arc::downgrade(&shared);
         let mailbox = SourceMailbox::new(move |_| {
-            let Some(shared) = weak.upgrade() else { return false };
+            let Some(shared) = weak.upgrade() else {
+                return false;
+            };
             // Same lock as the empty-check/Condvar sleep: no missed request wake.
             let state = Self::lock(&shared);
-            if state.stop || state.dead { return false }
+            if state.stop || state.dead {
+                return false;
+            }
             shared.changed.notify_all();
             true
         });
@@ -1233,7 +1406,7 @@ impl DecodeLane {
             .name("hour decoder".into())
             .spawn(move || {
                 let _exit = LaneExit(&lane);
-                background_priority();
+                viewer_foundation::worker_priority::normal_priority();
                 Self::run(&lane, playback);
             })?;
         Ok(Self { shared })
@@ -1255,12 +1428,26 @@ impl DecodeLane {
             let (target, behind, read) = {
                 let mut state = Self::lock(shared);
                 loop {
-                    if state.stop { return; }
+                    if state.stop {
+                        return;
+                    }
+                    if state.rewant {
+                        state.evict(Self::pending(shared));
+                    }
                     if let Some(read) = shared.mailbox.get().and_then(|mailbox| mailbox.take()) {
                         let target = read.key;
+                        let now = Instant::now();
+                        let pool = state.pool;
+                        state.throughput.took(now, pool);
+                        state.resize(now);
                         if let Some(current) = state.frames.get(&target) {
                             state.served = Some(target);
-                            let sample = state.decode_profile.as_ref().and_then(|p| p.get(&target)).copied();
+                            state.evict(Self::pending(shared));
+                            let sample = state
+                                .decode_profile
+                                .as_ref()
+                                .and_then(|p| p.get(&target))
+                                .copied();
                             drop(state);
                             read.ready(current, sample);
                             shared.changed.notify_all();
@@ -1269,18 +1456,30 @@ impl DecodeLane {
                         state.urgent = Some(target);
                         break (target, state.behind, Some(read));
                     }
-                    if let Some(target) = state.next() { break (target, state.behind, None); }
-                    state = shared.changed.wait(state).unwrap_or_else(|p| p.into_inner());
+                    if let Some(target) = state.next() {
+                        break (target, state.behind, None);
+                    }
+                    state = shared
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(|p| p.into_inner());
                 }
             };
             let (branch, hour) = target;
-            let decode_clock = trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
+            let decode_clock =
+                trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
+            let started = Instant::now();
             let walked = if let Some(read) = &read {
                 Self::walk_for(shared, &mut playback, target, Some(read))
-            } else { Self::walk(shared, &mut playback, target) };
+            } else {
+                Self::walk(shared, &mut playback, target)
+            };
             if !walked {
                 let mut state = Self::lock(shared);
-                if read.is_some() && state.urgent == Some(target) { state.urgent = None; }
+                if read.is_some() && state.urgent == Some(target) {
+                    state.urgent = None;
+                }
+                state.evict(Self::pending(shared));
                 drop(state);
                 drop(read); // terminal cancellation acknowledgement retains the credit until here
                 continue 'next;
@@ -1292,7 +1491,11 @@ impl DecodeLane {
                 }
             }) {
                 Ok(()) => playback.current().clone(),
-                Err(error) => Current::Gap { branch, hour, reason: error.to_string() },
+                Err(error) => Current::Gap {
+                    branch,
+                    hour,
+                    reason: error.to_string(),
+                },
             };
             let mut sample = decode_clock.finish(branch, hour);
             let mut state = Self::lock(shared);
@@ -1300,23 +1503,37 @@ impl DecodeLane {
             for (at, frame) in passed {
                 if !state.frames.contains_key(&(branch, at)) {
                     state.frames.insert((branch, at), frame);
-                    if let Some(keys) = &mut profile_keys { keys.push((branch, at)); }
+                    if let Some(keys) = &mut profile_keys {
+                        keys.push((branch, at));
+                    }
                 }
             }
             state.frames.insert(target, current.clone());
             if let Some(sample) = &mut sample {
                 sample.ready = trace::now(true).expect("enabled");
                 let profile = state.decode_profile.get_or_insert_with(BTreeMap::new);
-                for key in profile_keys.into_iter().flatten() { profile.insert(key, *sample); }
+                for key in profile_keys.into_iter().flatten() {
+                    profile.insert(key, *sample);
+                }
                 profile.insert(target, *sample);
             }
             if read.is_some() {
                 state.served = Some(target);
-                if state.urgent == Some(target) { state.urgent = None; }
+                if state.urgent == Some(target) {
+                    state.urgent = None;
+                }
             }
-            state.evict();
+            let now = Instant::now();
+            let pool = state.pool;
+            state
+                .throughput
+                .served(now.duration_since(started).as_secs_f64(), pool);
+            state.check_memory(now);
+            state.evict(Self::pending(shared));
             drop(state);
-            if let Some(read) = read { read.ready(current, sample); }
+            if let Some(read) = read {
+                read.ready(current, sample);
+            }
             shared.changed.notify_all();
         }
     }
@@ -1344,6 +1561,7 @@ impl DecodeLane {
             !read.is_some_and(|read| read.cancelled()) && Self::lock(shared).still_wanted(target)
         };
         if (playback.branch(), playback.hour()) == (branch, hour) {
+            Self::note_page_route(target, playback, "held");
             return true;
         }
         let behind = Self::lock(shared).behind;
@@ -1357,6 +1575,11 @@ impl DecodeLane {
             std::ops::ControlFlow::Continue(reached) => reached,
             std::ops::ControlFlow::Break(()) => return false,
         };
+        Self::note_page_route(
+            target,
+            playback,
+            if paged.is_some() { "pages" } else { "native" },
+        );
         if !wanted() {
             return false;
         }
@@ -1388,6 +1611,15 @@ impl DecodeLane {
                 std::ops::ControlFlow::Continue(reached) => reached,
                 std::ops::ControlFlow::Break(()) => return false,
             };
+            Self::note_page_route(
+                target,
+                playback,
+                if paged.is_some() {
+                    "native+pages"
+                } else {
+                    "native"
+                },
+            );
             if !wanted() {
                 return false;
             }
@@ -1416,13 +1648,37 @@ impl DecodeLane {
         true
     }
 
-    /// Replaces the hours the lane keeps decoded.
+    fn note_page_route((branch, hour): (BranchId, Hour), playback: &Playback, route: &str) {
+        if !page_grid() || !viewer_foundation::profile_writer::profiling() {
+            return;
+        }
+        let (skip, held) = playback.page_skip();
+        let held = held.map_or_else(|| "none".to_owned(), |held| held.to_string());
+        viewer_foundation::profile_writer::profile_print(format!(
+            "PROFILE grid lane target branch {branch} hour {hour} route {route} page_skip {} held {held} page_fallbacks {}",
+            skip.unwrap_or("none"),
+            playback.page_fallbacks(),
+        ));
+    }
+
+    #[cfg(test)]
     fn want(&self, wanted: Vec<(BranchId, Hour)>, behind: i32) {
+        let pool = wanted.len();
+        self.want_sized(wanted, behind, pool);
+    }
+
+    fn want_sized(&self, wanted: Vec<(BranchId, Hour)>, behind: i32, pool: usize) {
         let mut state = Self::lock(&self.shared);
-        state.wanted = wanted;
-        state.behind = behind;
+        state.set_want(wanted, behind, pool);
         drop(state);
         self.shared.changed.notify_all();
+    }
+
+    fn pending(shared: &LaneShared) -> Option<(BranchId, Hour)> {
+        shared
+            .mailbox
+            .get()
+            .and_then(|mailbox| mailbox.pending_key())
     }
 }
 
@@ -1466,6 +1722,8 @@ struct CoordinatorState {
     sent: BTreeMap<(BranchId, Hour), u64>,
     /// How many built hours have been sent, of any epoch.
     sends: u64,
+    usable_sent: BTreeSet<(BranchId, Hour)>,
+    anchor: Option<Obligation>,
     /// The shared parts of the hours last dispatched, which the neighbouring
     /// hours' parts compare with.
     slots: BTreeMap<(BranchId, Hour), Slots>,
@@ -1491,6 +1749,7 @@ impl CoordinatorState {
     fn invalidate(&mut self) {
         self.epoch += 1;
         self.sent.clear();
+        self.usable_sent.clear();
         self.slots.clear();
     }
 
@@ -1508,27 +1767,25 @@ impl CoordinatorState {
             self.invalidate();
             self.epoch = epoch;
         }
+        self.reduce_anchor(&want);
         let range = self
             .playback
             .range(want.branch)
             .unwrap_or((want.hour, want.hour));
         self.reusable.retain(|key, _| want.keeps_reusable(*key));
         // Keep an hour the window holds, or one still on its way to it.
-        self.sent.retain(|key, order| {
-            want.keeps_reusable(*key)
-                && (*order >= want.received || (key.0 == want.branch && want.have.contains(&key.1)))
-        });
+        self.sent.retain(|key, order| want.keeps_sent(*key, *order));
+        self.usable_sent.retain(|key| self.sent.contains_key(key));
         let predecessor = self
             .slots
             .range((want.branch, i32::MIN)..(want.branch, want.hour))
             .next_back()
             .map(|(key, _)| *key);
-        self.slots.retain(|key, _| {
-            want.keeps_reusable(*key) || Some(*key) == predecessor
-        });
+        self.slots
+            .retain(|key, _| want.keeps_reusable(*key) || Some(*key) == predecessor);
         if let Some(lane) = &self.lane {
-            lane.want(
-                want.hours(range)
+            lane.want_sized(
+                self.wanted_hours(&want, range)
                     .into_iter()
                     .map(|hour| (want.branch, hour))
                     .collect(),
@@ -1537,11 +1794,70 @@ impl CoordinatorState {
                 } else {
                     want.behind.max(2)
                 },
+                want.grid
+                    .as_ref()
+                    .map_or(self.parallel, |grid| grid.cadence.count as usize),
             );
         }
         self.want = Some(want);
     }
 
+    fn wanted_hours(&self, want: &Want, range: (Hour, Hour)) -> Vec<Hour> {
+        let Some(grid) = &want.grid else {
+            return want.hours(range);
+        };
+        let anchor = self
+            .anchor
+            .filter(|anchor| {
+                !anchor.done && anchor.epoch == self.epoch && anchor.key.0 == want.branch
+            })
+            .map(|anchor| anchor.key.1);
+        let (stride, count) = (grid.cadence.stride, grid.cadence.count);
+        cadence::targets(stride, count, want.hour, anchor, range)
+    }
+
+    fn note_sent(&mut self, epoch: u64, key: (BranchId, Hour), order: u64, usable: bool) {
+        if usable {
+            self.usable_sent.insert(key);
+        } else {
+            self.usable_sent.remove(&key);
+        }
+        if let Some(anchor) = &mut self.anchor
+            && !anchor.done
+            && (anchor.epoch, anchor.key) == (epoch, key)
+            && anchor.sent.is_none()
+        {
+            anchor.sent = Some(order);
+        }
+    }
+
+    fn reduce_anchor(&mut self, want: &Want) {
+        let Some(grid) = &want.grid else {
+            return;
+        };
+        let cadence = &grid.cadence;
+        if self
+            .anchor
+            .is_none_or(|anchor| anchor.sequence != cadence.sequence)
+        {
+            self.anchor = cadence.anchor.map(|hour| Obligation {
+                sequence: cadence.sequence,
+                epoch: self.epoch,
+                key: (want.branch, hour),
+                sent: None,
+                done: false,
+            });
+        }
+        let epoch = self.epoch;
+        if let Some(anchor) = &mut self.anchor {
+            let (branch, hour) = anchor.key;
+            anchor.done |= anchor.epoch != epoch
+                || branch != want.branch
+                || anchor.sent.is_some_and(|order| order < want.received)
+                || want.have.contains(&hour)
+                || grid.installed.is_some_and(|installed| installed >= hour);
+        }
+    }
 }
 
 impl Coordinator {
@@ -2034,6 +2350,8 @@ pub struct Pipeline {
     workers: Workers,
     frame_workers: Workers,
     pool: Arc<Pool>,
+    grid_sequence: u64,
+    grid_decision: Option<Result<u32, &'static str>>,
 }
 
 /// The window's engaged-flag index, shared by the window and its builders.
@@ -2158,6 +2476,8 @@ impl Pipeline {
             epoch: 0,
             sent: BTreeMap::new(),
             sends: 0,
+            usable_sent: BTreeSet::new(),
+            anchor: None,
             slots: BTreeMap::new(),
             memos: Arc::new(Memos::new()),
             reusable: BTreeMap::new(),
@@ -2190,6 +2510,8 @@ impl Pipeline {
             workers,
             frame_workers,
             pool,
+            grid_sequence: 0,
+            grid_decision: None,
         })
     }
 
@@ -2266,6 +2588,7 @@ impl Pipeline {
     pub fn want(&mut self, mut want: Want) -> io::Result<u64> {
         want.received = self.received.get();
         let invalidates = want.discard_stale_have(self.want.as_ref(), self.seek_pending);
+        self.grid_intent(&mut want);
         if self.want.as_ref() != Some(&want) || invalidates {
             if invalidates {
                 self.epoch += 1;
@@ -2287,23 +2610,71 @@ impl Pipeline {
         Ok(self.epoch)
     }
 
-    /// Every hour finished since the last call, without waiting.
-    pub fn take(&self) -> io::Result<Vec<Built>> {
-        let mut built = Vec::new();
-        loop {
-            match self.results.try_recv() {
-                Ok(hour) => {
-                    hour.trace.delivered();
-                    self.received.set(self.received.get() + 1);
-                    built.push(hour);
+    fn grid_intent(&mut self, want: &mut Want) {
+        let previous = self.want.as_ref().and_then(|previous| {
+            previous
+                .grid
+                .as_ref()
+                .map(|grid| (previous.branch, grid.cadence.clone()))
+        });
+        let (branch, hour) = (want.branch, want.hour);
+        let Some(grid) = &mut want.grid else {
+            return;
+        };
+        let reason = new_intent(
+            previous
+                .as_ref()
+                .map(|(branch, cadence)| (*branch, cadence.stride)),
+            (branch, grid.cadence.stride),
+            self.seek_pending,
+        );
+        match (reason, previous) {
+            (None, Some((_, last))) => {
+                grid.cadence.sequence = last.sequence;
+                grid.cadence.anchor = last.anchor;
+            }
+            (reason, _) => {
+                self.grid_sequence += 1;
+                grid.cadence.sequence = self.grid_sequence;
+                grid.cadence.anchor = Some(hour);
+                if viewer_foundation::profile_writer::profiling() {
+                    viewer_foundation::profile_writer::profile_print(format!(
+                        "PROFILE grid intent sequence {} reason {} branch {branch} hour {hour} stride {} count {}",
+                        self.grid_sequence,
+                        reason.unwrap_or("start"),
+                        grid.cadence.stride,
+                        grid.cadence.count,
+                    ));
                 }
-                Err(mpsc::TryRecvError::Empty) => {
-                    if !built.is_empty() { self.results_freed(); }
-                    return Ok(built);
-                }
-                Err(mpsc::TryRecvError::Disconnected) => return Err(stopped()),
             }
         }
+    }
+
+    pub fn note_grid(&mut self, decision: Result<u32, &'static str>, hour: Hour) {
+        if !page_grid() || self.grid_decision == Some(decision) {
+            return;
+        }
+        self.grid_decision = Some(decision);
+        if viewer_foundation::profile_writer::profiling() {
+            viewer_foundation::profile_writer::profile_print(match decision {
+                Ok(stride) => format!("PROFILE grid want hour {hour} active stride {stride}"),
+                Err(reason) => format!("PROFILE grid want hour {hour} inactive reason {reason}"),
+            });
+        }
+    }
+
+    /// Every hour finished since the last call, without waiting.
+    pub fn take(&self) -> io::Result<Vec<Built>> {
+        let built = poll_results(|| {
+            let hour = self.results.try_recv()?;
+            hour.trace.delivered();
+            self.received.set(self.received.get() + 1);
+            Ok(hour)
+        })?;
+        if !built.is_empty() {
+            self.results_freed();
+        }
+        Ok(built)
     }
 
     /// The next hour to finish, waiting for it.
@@ -2322,6 +2693,19 @@ impl Pipeline {
     }
 }
 
+pub(crate) fn poll_results<T>(
+    mut take: impl FnMut() -> Result<T, mpsc::TryRecvError>,
+) -> io::Result<Vec<T>> {
+    let mut built = Vec::new();
+    loop {
+        match take() {
+            Ok(hour) => built.push(hour),
+            Err(mpsc::TryRecvError::Empty) => return Ok(built),
+            Err(mpsc::TryRecvError::Disconnected) => return Err(stopped()),
+        }
+    }
+}
+
 fn stopped() -> io::Error {
     io::Error::other("the hour builders stopped")
 }
@@ -2331,6 +2715,9 @@ pub use viewer_foundation::retirement::Dropper;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod grid_tests;
 
 #[cfg(test)]
 mod mode_tests {
@@ -2361,6 +2748,7 @@ mod mode_tests {
             },
             have: vec![10, 11],
             received: 2,
+            grid: None,
         }
     }
 

@@ -263,3 +263,41 @@ fn stalled_actor_keeps_one_wake_and_does_not_retain_cancelled_clients() {
         source_mailbox::Reply::Ready { .. }
     ));
 }
+
+#[test]
+fn the_shared_registry_keeps_every_live_frame_and_prunes_dead_entries_on_decode() {
+    let replay = Arc::new(
+        Replay::from_records(
+            b"campaign".to_vec(),
+            &[crate::playback::tests::records(
+                1,
+                &(100..=229).collect::<Vec<_>>(),
+            )],
+        )
+        .unwrap(),
+    );
+    let mut state = DecoderState {
+        playback: Playback::unloaded(replay.clone()).unwrap(),
+        frames: BTreeMap::new(),
+    };
+    let mut held = Vec::new();
+    for hour in 100..=227 {
+        held.push(state.frame(1, hour).unwrap());
+    }
+    assert_eq!(state.frames.len(), 128);
+    let Current::Frame(first) = &held[0] else {
+        panic!("recorded hour")
+    };
+    assert!(
+        matches!(state.frame(1, 100).unwrap(), Current::Frame(reused) if Arc::ptr_eq(first, &reused))
+    );
+    let weak = Arc::downgrade(first);
+    held.clear();
+    assert!(weak.upgrade().is_none(), "the registry owns no frame");
+    let current = state.frame(1, 228).unwrap();
+    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 228).unwrap() else {
+        panic!("recorded hour")
+    };
+    assert_eq!(current, Current::Frame(Arc::from(expected)));
+    assert_eq!(state.frames.keys().copied().collect::<Vec<_>>(), [(1, 228)]);
+}
