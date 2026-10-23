@@ -261,7 +261,7 @@ impl RecoveryNote {
 pub struct Replay {
     bytes: Vec<u8>,
     decoded_sections: decoded_sections::Cache,
-    file: Option<std::sync::Mutex<File>>,
+    file: Option<File>,
     /// The header version, validated before decoding any frames.
     pub format: FormatVersion,
     pub campaign_id: Vec<u8>,
@@ -1540,6 +1540,19 @@ impl Replay {
         selected: Option<&[TableId]>,
         visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
+        self.visit_inflated_frames(raw, index, selected, visit, self.is_verified(index))?;
+        self.mark_verified(index);
+        Ok(())
+    }
+
+    fn visit_inflated_frames(
+        &self,
+        raw: &mut Inflated<impl Read>,
+        index: &BlockIndex,
+        selected: Option<&[TableId]>,
+        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
+        verified: bool,
+    ) -> io::Result<()> {
         let mut word = [0; 4];
         raw.fill(&mut word)?;
         let count = u64::from(u32::from_le_bytes(word));
@@ -1553,9 +1566,6 @@ impl Replay {
             return Err(invalid("empty block"));
         }
         validate_frame_count(index, count)?;
-        let position = self.block_position(index);
-        let verified =
-            position.is_some_and(|position| self.verified[position].load(Ordering::Acquire));
         let mut order = BlockOrder::new(index);
         let mut payload = Vec::new();
         let mut visiting = true;
@@ -1586,9 +1596,6 @@ impl Replay {
             return Err(invalid("block raw length mismatch"));
         }
         order.finish()?;
-        if let Some(position) = position {
-            self.verified[position].store(true, Ordering::Release);
-        }
         Ok(())
     }
 

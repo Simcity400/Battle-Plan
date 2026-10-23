@@ -1,10 +1,10 @@
 //! Held recording files and selected, block-positioned preparation.
 
 use super::*;
-use std::sync::Mutex;
 
 #[cfg(test)]
 thread_local! {
+    static HELD_VISIT_PASSES: std::cell::RefCell<Option<Vec<bool>>> = const { std::cell::RefCell::new(None) };
     static HELD_READ_BYTES: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
@@ -14,6 +14,42 @@ pub(super) fn measure_held_reads<T>(read: impl FnOnce() -> T) -> (T, u64) {
     let result = read();
     let bytes = HELD_READ_BYTES.with(|bytes| bytes.replace(None).unwrap());
     (result, bytes)
+}
+
+#[cfg(test)]
+pub(super) fn measure_held_passes<T>(read: impl FnOnce() -> T) -> (T, Vec<bool>) {
+    HELD_VISIT_PASSES.with(|passes| *passes.borrow_mut() = Some(Vec::new()));
+    let result = read();
+    let passes = HELD_VISIT_PASSES.with(|passes| passes.borrow_mut().take().unwrap());
+    (result, passes)
+}
+
+struct PositionalReader<'a> {
+    file: &'a File,
+    offset: u64,
+    remaining: u64,
+}
+
+impl Read for PositionalReader<'_> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let length = self.remaining.min(output.len() as u64) as usize;
+        if length == 0 {
+            return Ok(0);
+        }
+        #[cfg(windows)]
+        let read = {
+            use std::os::windows::fs::FileExt;
+            self.file.seek_read(&mut output[..length], self.offset)?
+        };
+        #[cfg(unix)]
+        let read = {
+            use std::os::unix::fs::FileExt;
+            self.file.read_at(&mut output[..length], self.offset)?
+        };
+        self.offset += read as u64;
+        self.remaining -= read as u64;
+        Ok(read)
+    }
 }
 
 impl Replay {
@@ -33,7 +69,7 @@ impl Replay {
         }
         let mut file = options.open(path)?;
         let mut replay = Self::open_file_metadata(&mut file)?;
-        replay.file = Some(Mutex::new(file));
+        replay.file = Some(file);
         Ok(replay)
     }
 
@@ -182,11 +218,12 @@ impl Replay {
                         bytes.set(Some(total + output.len() as u64));
                     }
                 });
-                let mut file = file
-                    .lock()
-                    .map_err(|_| io::Error::other("recording file lock poisoned"))?;
-                file.seek(SeekFrom::Start(offset))?;
-                file.read_exact(output)
+                PositionalReader {
+                    file,
+                    offset,
+                    remaining: output.len() as u64,
+                }
+                .read_exact(output)
             }
             None => {
                 let start = to_usize(offset)?;
@@ -220,20 +257,14 @@ impl Replay {
         check: &mut dyn FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
-        let mut file = self
-            .file
-            .as_ref()
-            .unwrap()
-            .lock()
-            .map_err(|_| io::Error::other("recording file lock poisoned"))?;
+        let file = self.file.as_ref().unwrap();
         let position = self
             .block_position(index)
             .ok_or_else(|| invalid("block outside replay"))?;
-        // No visitor receives a frame from a malformed block. Admission streams
-        // all wire grammar and the checksum first, retaining only one payload.
+        // Admission checks all wire grammar and the checksum before any visitor receives a frame.
         if !self.verified[position].load(Ordering::Acquire) {
             self.visit_file_pass(
-                &mut file,
+                file,
                 index,
                 selected,
                 &mut |_| {
@@ -245,7 +276,7 @@ impl Replay {
             self.verified[position].store(true, Ordering::Release);
         }
         self.visit_file_pass(
-            &mut file,
+            file,
             index,
             selected,
             &mut |frame| {
@@ -258,25 +289,38 @@ impl Replay {
 
     fn visit_file_pass(
         &self,
-        file: &mut File,
+        file: &File,
         index: &BlockIndex,
         selected: Option<&[TableId]>,
         visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
         validate: bool,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        HELD_VISIT_PASSES.with(|passes| {
+            if let Some(passes) = &mut *passes.borrow_mut() {
+                passes.push(validate);
+            }
+        });
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
-        file.seek(SeekFrom::Start(index.offset))?;
         let mut magic = [0; 4];
-        file.read_exact(&mut magic)?;
+        PositionalReader {
+            file,
+            offset: index.offset,
+            remaining: magic.len() as u64,
+        }
+        .read_exact(&mut magic)?;
         if magic != [0x28, 0xb5, 0x2f, 0xfd] {
             return Err(invalid("block is not a zstd frame"));
         }
-        file.seek(SeekFrom::Start(index.offset))?;
         let mut decoder = zstd::stream::read::Decoder::with_buffer(io::BufReader::with_capacity(
             64 * 1024,
-            file.take(index.length),
+            PositionalReader {
+                file,
+                offset: index.offset,
+                remaining: index.length,
+            },
         ))
         .map_err(zstd_error)?
         .single_frame();
@@ -285,12 +329,18 @@ impl Replay {
             stream: decoder.take(index.raw_length + 1),
             read: 0,
         };
-        // During admission verified remains false, so visit_inflated reads to end.
-        self.visit_inflated(&mut raw, index, selected, visit)
-            .map_err(zstd_error)?;
+        // Only the completed grammar and trailing-frame checks may publish admission to other readers.
+        self.visit_inflated_frames(
+            &mut raw,
+            index,
+            selected,
+            visit,
+            !validate && self.is_verified(index),
+        )
+        .map_err(zstd_error)?;
         if validate {
             let buffered = raw.stream.into_inner().finish();
-            let unread = buffered.buffer().len() as u64 + buffered.into_inner().limit();
+            let unread = buffered.buffer().len() as u64 + buffered.into_inner().remaining;
             if unread != 0 {
                 self.verified[self.block_position(index).unwrap()].store(false, Ordering::Release);
                 return Err(invalid(

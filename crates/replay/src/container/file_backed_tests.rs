@@ -361,3 +361,160 @@ fn malformed_grouped_admission_leaves_stream_at_previous_boundary() {
     assert_eq!(stream.cursor(), &ReplayCursor::default());
     assert!(stream.accumulator().is_none());
 }
+
+fn interleaved_recording() -> Replay {
+    let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
+    let replay = edited_block(&current, |_| {});
+    assert!(!grouped::is_grouped(
+        &replay.block_bytes(&replay.index[0]).unwrap()
+    ));
+    replay
+}
+
+#[test]
+fn positional_reads_finish_while_a_block_visitor_is_parked() {
+    use std::sync::mpsc;
+    let memory = interleaved_recording();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let index = &held.index[0];
+    let expected = memory.block_bytes(&memory.index[0]).unwrap();
+    std::thread::scope(|scope| {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let replay = &held;
+        let visiting = scope.spawn(move || {
+            replay.visit_file_block(index, None, &mut |_| {
+                assert!(replay.is_verified(index));
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(false)
+            })
+        });
+        entered_rx.recv().unwrap();
+        let mut magic = [0; 4];
+        held.read_at(index.offset, &mut magic).unwrap();
+        assert_eq!(magic, expected[..4]);
+        assert_eq!(held.block_bytes(index).unwrap(), expected);
+        assert_eq!(
+            held.block_range(index, 1, 3).unwrap().as_ref(),
+            &expected[1..4]
+        );
+        assert!(!visiting.is_finished());
+        release_tx.send(()).unwrap();
+        visiting.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn held_visits_validate_once_before_the_first_callback() {
+    let memory = interleaved_recording();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let index = &held.index[0];
+    assert!(!held.is_verified(index));
+    for expected in [vec![true, false], vec![false]] {
+        let mut visited = 0;
+        let (result, passes) = file_backed::measure_held_passes(|| {
+            held.visit_file_block(index, None, &mut |frame| {
+                assert!(held.is_verified(index));
+                assert_eq!(frame.hour, 1);
+                visited += 1;
+                Ok(false)
+            })
+        });
+        result.unwrap();
+        assert_eq!(visited, 1);
+        assert_eq!(passes, expected);
+    }
+}
+
+#[test]
+fn held_admission_refuses_a_later_bad_payload_before_any_callback() {
+    let memory = interleaved_recording();
+    let malformed = edited_block(&memory, |raw| {
+        raw.pop().unwrap();
+    });
+    let fixture = Fixture::new(malformed.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let index = &held.index[0];
+    let (result, passes) = file_backed::measure_held_passes(|| {
+        held.visit_file_block(index, None, &mut |_| panic!("unadmitted frame escaped"))
+    });
+    assert_eq!(result.unwrap_err().to_string(), "truncated field");
+    assert_eq!(passes, [true]);
+    assert!(!held.is_verified(index));
+}
+
+#[test]
+fn held_admission_refuses_buffered_and_unread_concatenated_frames() {
+    let memory = interleaved_recording();
+    let mut random = 1_u64;
+    let noise: Vec<u8> = (0..96 * 1024)
+        .map(|_| {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            random as u8
+        })
+        .collect();
+    let small = zstd::encode_all(&[][..], 3).unwrap();
+    let large = zstd::encode_all(&noise[..], 3).unwrap();
+    assert!(memory.index[0].length + (small.len() as u64) < 64 * 1024);
+    assert!(large.len() > 64 * 1024);
+    for trailing in [small, large] {
+        let mut prefix = memory.bytes()[..memory.trailer_start].to_vec();
+        prefix.extend_from_slice(&trailing);
+        let mut index = memory.index.clone();
+        index[0].length += trailing.len() as u64;
+        let bytes = rebuild(&memory, prefix, &index);
+        let fixture = Fixture::new(&bytes);
+        let held = Replay::open_path(&fixture.0).unwrap();
+        let error = held
+            .visit_file_block(&held.index[0], None, &mut |_| {
+                panic!("trailing frame escaped")
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "block contains trailing or concatenated zstd frames"
+        );
+        assert!(!held.is_verified(&held.index[0]));
+    }
+}
+
+#[test]
+fn short_held_reads_keep_read_exact_eof_errors() {
+    let memory = interleaved_recording();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let index = &held.index[0];
+    OpenOptions::new()
+        .write(true)
+        .open(&fixture.0)
+        .unwrap()
+        .set_len(index.offset + 2)
+        .unwrap();
+    let mut reference = File::open(&fixture.0).unwrap();
+    reference.seek(SeekFrom::Start(index.offset)).unwrap();
+    let expected = reference.read_exact(&mut [0; 4]).unwrap_err();
+    let mut output = [0; 4];
+    let errors = [
+        held.read_at(index.offset, &mut output).unwrap_err(),
+        held.block_bytes(index).unwrap_err(),
+        held.visit_file_block(index, None, &mut |_| panic!("short block escaped"))
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.kind(), expected.kind());
+        assert_eq!(error.to_string(), expected.to_string());
+    }
+    assert_eq!(
+        &output[..2],
+        &memory.bytes()[index.offset as usize..index.offset as usize + 2]
+    );
+    held.read_at(index.offset + 100, &mut []).unwrap();
+    assert!(!held.is_verified(index));
+}

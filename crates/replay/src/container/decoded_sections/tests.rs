@@ -683,6 +683,7 @@ fn retained(block: usize, table: usize, bytes: usize, obsolete: bool) -> (Key, E
         Entry {
             value: Some(Arc::new(value)),
             reading: false,
+            priority: 0,
             used: 0,
             obsolete,
         },
@@ -1421,4 +1422,447 @@ fn a_slower_reader_decodes_again_only_what_its_window_did_not_keep() {
     }
     assert!(again.contains(&3), "decoded again: {again:?}");
     drop((slow, fast));
+}
+
+fn wait_for_waiters(cache: &Cache, count: usize) {
+    let mut state = cache.lock();
+    while state.waiters < count {
+        state = cache.0.waiting.wait(state).unwrap();
+    }
+}
+
+fn normal_priority() {
+    #[cfg(windows)]
+    set_priority(windows_sys::Win32::System::Threading::THREAD_PRIORITY_NORMAL);
+}
+
+#[cfg(windows)]
+fn set_priority(priority: i32) {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};
+    assert_ne!(
+        unsafe { SetThreadPriority(GetCurrentThread(), priority) },
+        0
+    );
+    assert_eq!(thread_priority(), priority);
+}
+
+fn assert_same_updates(left: &Updates, right: &Updates) {
+    assert_eq!(left.len(), right.len());
+    for hour in 0..left.len() {
+        assert_eq!(left.get(hour), right.get(hour));
+    }
+}
+
+#[test]
+fn equal_priority_waits_for_the_owner_and_reuses_exactly_one_decode() {
+    use std::sync::mpsc;
+    let cache = Cache::default();
+    cache.enable(true);
+    cache.log_decodes();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = scope.spawn(move || {
+            normal_priority();
+            cache
+                .read(key(0), 1, false, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(rows(2))
+                })
+                .unwrap()
+        });
+        entered_rx.recv().unwrap();
+        let waiter = scope.spawn(move || {
+            normal_priority();
+            cache
+                .read(key(0), 1, false, || panic!("equal priority decoded again"))
+                .unwrap()
+        });
+        wait_for_waiters(cache, 1);
+        assert!(!waiter.is_finished());
+        assert!(cache.decodes().is_empty());
+        release_tx.send(()).unwrap();
+        let first = owner.join().unwrap();
+        let second = waiter.join().unwrap();
+        assert_same_updates(&first, &second);
+        assert!(Arc::ptr_eq(first.get(0), second.get(0)));
+    });
+    assert_eq!(cache.decodes().len(), 1);
+    assert!(cache.decodes()[0].returned);
+    assert_eq!(cache.lock().waiters, 0);
+    assert_consistent(&cache);
+}
+
+#[test]
+#[cfg(windows)]
+fn normal_priority_decodes_while_the_lowest_priority_owner_stays_parked() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    let cache = Cache::default();
+    cache.enable(true);
+    cache.log_decodes();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(0), 1, false, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(rows(2))
+                })
+                .unwrap()
+        });
+        entered_rx.recv().unwrap();
+        let waiter = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(0), 1, false, || {
+                    panic!("published bypass was not reused")
+                })
+                .unwrap()
+        });
+        wait_for_waiters(cache, 1);
+        let bypass = scope
+            .spawn(move || {
+                normal_priority();
+                cache
+                    .read(key(0), 1, false, || {
+                        assert!(cache.lock().entries[&key(0)].reading);
+                        assert_eq!(
+                            cache.lock().entries[&key(0)].priority,
+                            THREAD_PRIORITY_LOWEST
+                        );
+                        Ok(rows(2))
+                    })
+                    .unwrap()
+            })
+            .join()
+            .unwrap();
+        assert!(!owner.is_finished());
+        assert!(cache.lock().entries[&key(0)].reading);
+        assert_eq!(cache.decodes().len(), 1);
+        assert!(cache.decodes()[0].returned);
+        let retained = cache.ready(key(0), 1, false).unwrap();
+        assert!(Arc::ptr_eq(retained.get(0), bypass.get(0)));
+        let waited = waiter.join().unwrap();
+        assert!(Arc::ptr_eq(waited.get(0), bypass.get(0)));
+        assert_consistent(cache);
+        release_tx.send(()).unwrap();
+        let original = owner.join().unwrap();
+        assert_same_updates(&bypass, &original);
+        let retained = cache.ready(key(0), 1, false).unwrap();
+        assert!(Arc::ptr_eq(retained.get(0), original.get(0)));
+    });
+    assert_eq!(cache.decodes().len(), 2);
+    assert!(cache.decodes().iter().all(|decode| decode.returned));
+    assert_consistent(&cache);
+}
+
+#[test]
+#[cfg(windows)]
+fn lower_priority_waits_for_a_normal_priority_owner() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    let cache = Cache::default();
+    cache.enable(true);
+    cache.log_decodes();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = scope.spawn(move || {
+            normal_priority();
+            cache
+                .read(key(0), 1, false, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(rows(2))
+                })
+                .unwrap()
+        });
+        entered_rx.recv().unwrap();
+        let waiter = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(0), 1, false, || panic!("lower priority decoded again"))
+                .unwrap()
+        });
+        wait_for_waiters(cache, 1);
+        assert!(!waiter.is_finished());
+        release_tx.send(()).unwrap();
+        let first = owner.join().unwrap();
+        let second = waiter.join().unwrap();
+        assert!(Arc::ptr_eq(first.get(0), second.get(0)));
+    });
+    assert_eq!(cache.decodes().len(), 1);
+    assert_consistent(&cache);
+}
+
+#[test]
+#[cfg(windows)]
+fn bypass_errors_and_panics_leave_the_owner_and_its_waiter_alone() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    let cache = Cache::default();
+    cache.enable(true);
+    cache.log_decodes();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let owner = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(0), 1, false, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(rows(2))
+                })
+                .unwrap()
+        });
+        entered_rx.recv().unwrap();
+        let waiter = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(0), 1, false, || {
+                    panic!("owner slot was released by a bypass")
+                })
+                .unwrap()
+        });
+        wait_for_waiters(cache, 1);
+        scope
+            .spawn(move || {
+                normal_priority();
+                let error = cache
+                    .read(key(0), 1, false, || Err(io::Error::other("bypass refusal")))
+                    .unwrap_err();
+                assert_eq!(error.to_string(), "bypass refusal");
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        let _ = cache.read(key(0), 1, false, || panic!("bypass panic"));
+                    })
+                    .is_err()
+                );
+            })
+            .join()
+            .unwrap();
+        wait_for_waiters(cache, 1);
+        assert!(!owner.is_finished() && !waiter.is_finished());
+        assert!(cache.lock().entries[&key(0)].reading);
+        assert_eq!(cache.decodes().len(), 2);
+        assert!(cache.decodes().iter().all(|decode| !decode.returned));
+        release_tx.send(()).unwrap();
+        let original = owner.join().unwrap();
+        let waited = waiter.join().unwrap();
+        assert!(Arc::ptr_eq(original.get(0), waited.get(0)));
+    });
+    assert_eq!(cache.decodes().len(), 3);
+    assert!(cache.decodes()[2].returned);
+    assert_consistent(&cache);
+}
+
+#[test]
+#[cfg(windows)]
+fn a_late_bypass_keeps_a_covering_publication_but_replaces_a_short_or_keyframe_one() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    for (owner_hours, owner_keyframe, bypass_hours, bypass_keyframe, keep) in [
+        (2, false, 1, false, true),
+        (1, true, 1, true, true),
+        (1, false, 2, false, false),
+        (1, true, 1, false, false),
+    ] {
+        let cache = Cache::default();
+        cache.enable(true);
+        cache.log_decodes();
+        std::thread::scope(|scope| {
+            let cache = &cache;
+            let (owner_tx, owner_rx) = mpsc::channel();
+            let (release_owner_tx, release_owner_rx) = mpsc::channel();
+            let (bypass_tx, bypass_rx) = mpsc::channel();
+            let (release_bypass_tx, release_bypass_rx) = mpsc::channel();
+            let owner = scope.spawn(move || {
+                set_priority(THREAD_PRIORITY_LOWEST);
+                cache
+                    .read(key(0), owner_hours, owner_keyframe, || {
+                        owner_tx.send(()).unwrap();
+                        release_owner_rx.recv().unwrap();
+                        Ok((0..owner_hours).flat_map(|_| rows(2)).collect())
+                    })
+                    .unwrap()
+            });
+            owner_rx.recv().unwrap();
+            let bypass = scope.spawn(move || {
+                normal_priority();
+                cache
+                    .read(key(0), bypass_hours, bypass_keyframe, || {
+                        bypass_tx.send(()).unwrap();
+                        release_bypass_rx.recv().unwrap();
+                        Ok((0..bypass_hours).flat_map(|_| rows(2)).collect())
+                    })
+                    .unwrap()
+            });
+            bypass_rx.recv().unwrap();
+            release_owner_tx.send(()).unwrap();
+            let original = owner.join().unwrap();
+            assert!(!cache.lock().entries[&key(0)].reading);
+            release_bypass_tx.send(()).unwrap();
+            let independent = bypass.join().unwrap();
+            let retained = cache.ready(key(0), bypass_hours, bypass_keyframe).unwrap();
+            let expected = if keep { &original } else { &independent };
+            assert!(Arc::ptr_eq(retained.get(0), expected.get(0)));
+            assert_eq!(retained.get(0), original.get(0));
+            assert_eq!(cache.decodes().len(), 2);
+        });
+        assert_consistent(&cache);
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn a_bypass_can_publish_after_its_owner_fails_or_the_cache_is_reenabled() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    for enabled in [true, false] {
+        let cache = Cache::default();
+        cache.enable(true);
+        cache.log_decodes();
+        std::thread::scope(|scope| {
+            let cache = &cache;
+            let (owner_tx, owner_rx) = mpsc::channel();
+            let (release_owner_tx, release_owner_rx) = mpsc::channel();
+            let (bypass_tx, bypass_rx) = mpsc::channel();
+            let (release_bypass_tx, release_bypass_rx) = mpsc::channel();
+            let owner = scope.spawn(move || {
+                set_priority(THREAD_PRIORITY_LOWEST);
+                cache.read(key(0), 1, false, || {
+                    owner_tx.send(()).unwrap();
+                    release_owner_rx.recv().unwrap();
+                    Err(io::Error::other("owner refusal"))
+                })
+            });
+            owner_rx.recv().unwrap();
+            let bypass = scope.spawn(move || {
+                normal_priority();
+                cache
+                    .read(key(0), 1, false, || {
+                        bypass_tx.send(()).unwrap();
+                        release_bypass_rx.recv().unwrap();
+                        Ok(rows(2))
+                    })
+                    .unwrap()
+            });
+            bypass_rx.recv().unwrap();
+            release_owner_tx.send(()).unwrap();
+            assert_eq!(
+                owner.join().unwrap().unwrap_err().to_string(),
+                "owner refusal"
+            );
+            assert!(cache.lock().entries.is_empty());
+            cache.enable(false);
+            cache.enable(enabled);
+            release_bypass_tx.send(()).unwrap();
+            let updates = bypass.join().unwrap();
+            assert_eq!(cache.ready(key(0), 1, false).is_some(), enabled);
+            if enabled {
+                assert!(Arc::ptr_eq(
+                    cache.ready(key(0), 1, false).unwrap().get(0),
+                    updates.get(0)
+                ));
+            } else {
+                assert_eq!(cache.lock().bytes, 0);
+                assert!(cache.lock().entries.is_empty());
+            }
+        });
+        let log = cache.decodes();
+        assert_eq!(log.len(), 2);
+        assert!(!log[0].returned && log[1].returned);
+        assert_consistent(&cache);
+    }
+}
+
+#[test]
+#[cfg(windows)]
+fn a_bypass_can_publish_after_its_successful_owner_is_pruned() {
+    use std::sync::mpsc;
+    use windows_sys::Win32::System::Threading::THREAD_PRIORITY_LOWEST;
+    let cache = Cache::default();
+    cache.enable(true);
+    cache.log_decodes();
+    let expected = Updates::new(rows(3).into_iter().chain(rows(4)).collect()).unwrap();
+    std::thread::scope(|scope| {
+        let cache = &cache;
+        let expected = &expected;
+        let (owner_tx, owner_rx) = mpsc::channel();
+        let (release_owner_tx, release_owner_rx) = mpsc::channel();
+        let (bypass_tx, bypass_rx) = mpsc::channel();
+        let (release_bypass_tx, release_bypass_rx) = mpsc::channel();
+        let owner = scope.spawn(move || {
+            set_priority(THREAD_PRIORITY_LOWEST);
+            cache
+                .read(key(1), 1, false, || {
+                    owner_tx.send(()).unwrap();
+                    release_owner_rx.recv().unwrap();
+                    Ok(rows(2))
+                })
+                .unwrap()
+        });
+        owner_rx.recv().unwrap();
+        let bypass = scope.spawn(move || {
+            normal_priority();
+            cache
+                .read_updates(key(1), expected.len(), false, || {
+                    bypass_tx.send(()).unwrap();
+                    release_bypass_rx.recv().unwrap();
+                    Ok(expected.clone())
+                })
+                .unwrap()
+        });
+        bypass_rx.recv().unwrap();
+        assert!(!owner.is_finished() && !bypass.is_finished());
+        release_owner_tx.send(()).unwrap();
+        let original = owner.join().unwrap();
+        assert!(original.len() < expected.len());
+        let state = cache.lock();
+        let entry = &state.entries[&key(1)];
+        assert!(!entry.reading);
+        assert!(Arc::ptr_eq(
+            entry.value.as_ref().unwrap().updates.get(0),
+            original.get(0)
+        ));
+        let owner_bytes = state.bytes;
+        assert_eq!(state.allowance, owner_bytes);
+        drop(state);
+        assert_consistent(cache);
+
+        put(cache, 0, 0, 2);
+        assert!(!bypass.is_finished());
+        assert!(!cache.lock().entries.contains_key(&key(1)));
+        assert_eq!(kept(cache), vec![(0, 0)]);
+        assert_eq!(cache.lock().bytes, owner_bytes);
+        assert_eq!(cache.lock().allowance, owner_bytes);
+        assert_consistent(cache);
+
+        release_bypass_tx.send(()).unwrap();
+        let independent = bypass.join().unwrap();
+        assert_same_updates(&independent, expected);
+        let retained = cache.ready(key(1), expected.len(), false).unwrap();
+        for hour in 0..expected.len() {
+            assert!(Arc::ptr_eq(independent.get(hour), expected.get(hour)));
+            assert!(Arc::ptr_eq(retained.get(hour), expected.get(hour)));
+        }
+        assert_eq!(kept(cache), vec![(0, 1)]);
+        assert!(!cache.lock().entries[&key(1)].reading);
+        assert_eq!(cache.lock().bytes, ENTRY_BYTES + expected.bytes());
+        assert_eq!(cache.lock().allowance, ENTRY_BYTES + expected.bytes());
+    });
+    let log = cache.decodes();
+    assert_eq!(log.len(), 3);
+    assert!(log.iter().all(|decode| decode.returned));
+    assert_consistent(&cache);
 }

@@ -61,6 +61,7 @@ struct Column {
 struct Entry {
     value: Option<Arc<Column>>,
     reading: bool,
+    priority: i32,
     used: u64,
     /// Obsolete columns have their own LRU order and one-block allowance.
     obsolete: bool,
@@ -216,6 +217,8 @@ struct State {
     decodes: Option<Vec<SectionDecode>>,
     #[cfg(test)]
     inspections: usize,
+    #[cfg(test)]
+    waiters: usize,
 }
 /// A reader's blocks (half-open) and tables, before or after it changes.
 type Span = ((usize, usize), Option<Box<[bool; TABLE_COUNT]>>);
@@ -416,6 +419,8 @@ const ENTRY_BYTES: usize = size_of::<Column>()
 struct Inner {
     state: Mutex<State>,
     changed: Condvar,
+    #[cfg(test)]
+    waiting: Condvar,
     /// The wire decodes begun since the log started, while it is kept.
     #[cfg(any(test, feature = "test-support"))]
     wire: Mutex<Option<Vec<WireDecode>>>,
@@ -569,7 +574,7 @@ impl Cache {
         decode: impl FnOnce() -> io::Result<Updates>,
     ) -> io::Result<Updates> {
         let mut state = self.lock();
-        loop {
+        let owns_slot = loop {
             if !state.enabled {
                 drop(state);
                 return decode();
@@ -591,21 +596,36 @@ impl Cache {
             {
                 return Ok(value.updates.prefix(hours));
             }
+            let priority = thread_priority();
             if !entry.reading {
                 entry.reading = true;
-                break;
+                entry.priority = priority;
+                break true;
+            }
+            if priority > entry.priority {
+                break false;
+            }
+            #[cfg(test)]
+            {
+                state.waiters += 1;
+                self.0.waiting.notify_all();
             }
             state = self
                 .0
                 .changed
                 .wait(state)
                 .unwrap_or_else(|error| error.into_inner());
-        }
+            #[cfg(test)]
+            {
+                state.waiters -= 1;
+            }
+        };
         drop(state);
         #[allow(unused_mut)]
         let mut reading = Reading {
             cache: self,
             key,
+            owns_slot,
             #[cfg(any(test, feature = "test-support"))]
             attempt: Some((hours, keyframe_only)),
         };
@@ -629,14 +649,26 @@ impl Cache {
                 returned: true,
             });
         }
-        if state.enabled {
+        let covered = state.entries.get(&key).is_some_and(|entry| {
+            entry.value.as_ref().is_some_and(|value| {
+                value.updates.len() >= hours && (keyframe_only || value.table_read)
+            })
+        });
+        if state.enabled && (owns_slot || !covered) {
             let largest = state.largest.entry(key.table).or_default();
             if bytes > *largest {
                 let grown = bytes - *largest;
                 *largest = bytes;
                 state.allowance += grown;
             }
-            state.evict(key);
+            let used = state
+                .entries
+                .get(&key)
+                .map_or(state.clock, |entry| entry.used);
+            if state.entries.contains_key(&key) {
+                state.evict(key);
+            }
+            state.entries.entry(key).or_default().used = used;
             state.retain(key, value);
             Self::prune(&mut state);
         }
@@ -704,9 +736,22 @@ impl Cache {
         }
     }
 }
+fn thread_priority() -> i32 {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority};
+        GetThreadPriority(GetCurrentThread())
+    }
+    #[cfg(not(windows))]
+    {
+        0
+    }
+}
+
 struct Reading<'a> {
     cache: &'a Cache,
     key: Key,
+    owns_slot: bool,
     /// The hours and mode of a decode not yet logged as returned.
     #[cfg(any(test, feature = "test-support"))]
     attempt: Option<(usize, bool)>,
@@ -727,10 +772,12 @@ impl Drop for Reading<'_> {
                 returned: false,
             });
         }
-        let entry = state.entries.get_mut(&self.key).unwrap();
-        entry.reading = false;
-        if entry.value.is_none() {
-            state.entries.remove(&self.key);
+        if self.owns_slot {
+            let entry = state.entries.get_mut(&self.key).unwrap();
+            entry.reading = false;
+            if entry.value.is_none() {
+                state.entries.remove(&self.key);
+            }
         }
         drop(state);
         self.cache.0.changed.notify_all();
