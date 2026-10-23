@@ -73,6 +73,9 @@ pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
 mod presentation;
+mod profile_playback;
+#[cfg(test)]
+pub(crate) mod readback;
 mod walk;
 
 /// Guard the README's frame-budget boundary at both production entry points.
@@ -1012,6 +1015,7 @@ pub struct Viewer {
     /// that much of its next advance, so it meets the host's position without stepping back.
     clock_lead: f64,
     last_step: Instant,
+    profile_playback: profile_playback::Clock,
     started: Instant,
     /// When the replay was opened, so a profiled run reports the cold open:
     /// the loading thread's document and scene, then the first hour built.
@@ -1543,6 +1547,7 @@ impl Viewer {
             speed: 24.0,
             clock_lead: 0.0,
             last_step: Instant::now(),
+            profile_playback: Default::default(),
             started: Instant::now(),
             opened: None,
             // hours
@@ -1899,10 +1904,7 @@ impl Viewer {
         if self.playing
             && let Some(head) = &mut self.playhead
         {
-            let step = seconds.max(0.0) * self.speed;
-            let held = step.min(self.clock_lead);
-            self.clock_lead -= held;
-            self.playing = advance_clock(head, head.fraction + step - held, last);
+            self.playing = tick_clock(head, &mut self.clock_lead, self.speed, seconds, last);
         }
     }
 
@@ -3339,12 +3341,19 @@ impl Viewer {
                 profile_print(format!("PROFILE adapter {} {:?}", info.name, info.backend));
             });
         }
-        // The Campaign map runs the host's clock between its updates. Captures
-        // keep their exact target; the play sweep calls the same tick with its
-        // deterministic elapsed time instead of wall time.
-        if !self.dashboard_map && self.capture.is_none() {
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.last_step).as_secs_f64();
+        // Wall-clock captures use the interactive tick; nominal captures keep their fixed sweep step.
+        let wall_clock = self
+            .profile_playback
+            .sample(Instant::now)
+            .filter(|_| self.profile_playback.wall_active());
+        if !self.dashboard_map && (self.capture.is_none() || wall_clock.is_some()) {
+            let (now, elapsed) = wall_clock.map_or_else(
+                || {
+                    let now = Instant::now();
+                    (now, now.duration_since(self.last_step).as_secs_f64())
+                },
+                |clock| (clock.now, clock.seconds),
+            );
             self.last_step = now;
             if let Some(head) = self.playhead
                 && let Some((_, last)) = document.playback.range(head.branch)
@@ -5021,6 +5030,8 @@ impl Viewer {
         let shown_stamp = presentation::shown_stamp(profiling(), || {
             (document.playback.branch(), document.playback.hour())
         });
+        let playback_stamp =
+            profiling().then(|| self.profile_playback.stamp(self.playhead, self.playing));
         // A window capture stays silent; with `BATTLE_PLAN_VIEWER_AUDIO_LOG` it traces
         // the voices it would start without opening a device.
         let trace = self.capture.is_some() && std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some();
@@ -5076,7 +5087,7 @@ impl Viewer {
                 cpu.finish();
             }
             profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {} thread {} cpu_hz {} {}",
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {} thread {} cpu_hz {} {} {}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -5099,6 +5110,7 @@ impl Viewer {
                 viewer_foundation::profiling::take_thread_spans(),
                 viewer_foundation::profiling::cpu_clock_hz()
                     .map_or_else(|| "unavailable".to_owned(), |hz| hz.to_string()),
+                playback_stamp.expect("PROFILE frame sampled its playback stamp"),
                 shown_stamp.expect("PROFILE frame sampled its shown stamp"),
             ));
         }
@@ -5462,6 +5474,9 @@ impl eframe::App for Viewer {
         self.poll(ui.ctx());
         self.lap("poll");
         let central_panel = egui::CentralPanel::default().frame(egui::Frame::NONE);
+        if !profiling() || self.capture.is_none() {
+            self.profile_playback.configure(None, false);
+        }
         if let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
                 // Deterministic diagnostic sweep, including at a replay's final
@@ -5502,16 +5517,15 @@ impl eframe::App for Viewer {
                         hours.seek();
                     }
                 }
-                // Steady playback at `play:<hours per second>`, sampled as a
-                // clock at the profiled pace over the sweep, as the host's clock would run.
-                let playing = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE"))
-                    .ok()
-                    .and_then(|mode| mode.strip_prefix("play:")?.parse::<f64>().ok());
+                // `play:` keeps nominal frame steps; `playwall:` measures elapsed window time.
+                let playing = profile_playback::Mode::parse(&mode);
                 self.playing = playing.is_some() && profiling_sweep().contains(&self.profile_frame);
-                if let Some(speed) = playing {
-                    self.speed = speed;
+                if let Some(mode) = playing {
+                    self.speed = mode.speed();
                 }
+                self.profile_playback.configure(playing, self.playing);
                 if self.playing
+                    && !self.profile_playback.wall_active()
                     && let Some(head) = self.playhead
                 {
                     let last = document
@@ -5757,6 +5771,14 @@ fn anchor_clock(current: Option<Playhead>, target: Playhead, forward: bool) -> (
         }
         _ => (target, 0.0),
     }
+}
+
+// Repay a delayed host update's lead before advancing either playback clock.
+fn tick_clock(head: &mut Playhead, lead: &mut f64, speed: f64, seconds: f64, last: i32) -> bool {
+    let step = seconds.max(0.0) * speed;
+    let held = step.min(*lead);
+    *lead -= held;
+    advance_clock(head, head.fraction + step - held, last)
 }
 
 /// Moves a playing playhead `fraction` hours past its hour, whether or not the
@@ -7051,6 +7073,26 @@ pub(crate) mod tests {
         };
         assert_eq!(anchor_clock(Some(current), branch, true), (branch, 0.0));
         assert_eq!(anchor_clock(None, current, true), (current, 0.0));
+    }
+
+    #[test]
+    fn the_clock_tick_repays_its_lead_first_and_stops_at_the_branch_end() {
+        let mut head = Playhead {
+            branch: 1,
+            hour: 100,
+            fraction: 0.5,
+        };
+        let mut lead = 0.75;
+        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.0625, 1_000));
+        assert_eq!((head.hour, head.fraction, lead), (100, 0.5, 0.5));
+        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.125, 1_000));
+        assert_eq!((head.hour, head.fraction, lead), (100, 0.5, 0.0));
+        assert!(tick_clock(&mut head, &mut lead, 4.0, 0.4375, 1_000));
+        assert_eq!((head.hour, head.fraction), (102, 0.25));
+        assert!(tick_clock(&mut head, &mut lead, 4.0, -1.0, 1_000));
+        assert_eq!((head.hour, head.fraction), (102, 0.25));
+        assert!(!tick_clock(&mut head, &mut lead, 1_440.0, 1.0, 1_000));
+        assert_eq!((head.hour, head.fraction), (1_000, 0.0));
     }
 
     #[test]
