@@ -2913,6 +2913,8 @@ fn a_map_recording_offers_only_the_modes_whose_tables_it_records() {
         Stock::Terrain,
         Stock::Players,
         Stock::Ideology,
+        // Map records Factions for the land figures' graphics pools.
+        Stock::Factions,
         // Its wing grids and mission regions are Map's air view.
         Stock::StrategicAir,
         // Its trade-route convoys are among Map's animations.

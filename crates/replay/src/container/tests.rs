@@ -431,6 +431,12 @@ fn map_records(id: u64, hours: &[i32]) -> Vec<Record> {
     for &hour in hours {
         let mut input = crate::frame::FrameInput::from(source(id, hour));
         input.scope_to(CaptureMode::Map);
+        // The model witness only Map records.
+        input.tables[TableId::DivisionModelInputs.index()] = TableView::Complete(
+            crate::rows::sample_extended_table(TableId::DivisionModelInputs, hour as usize)
+                .unwrap(),
+        )
+        .into();
         records.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
     }
     records
@@ -460,7 +466,7 @@ fn a_map_recording_stores_no_section_for_a_table_it_leaves_out() {
                 matches!(size.section, grouped::Section::Keyframe(id) | grouped::Section::Later(id) if id == table)
             })
         };
-        assert!(stored(TableId::Divisions));
+        assert!(stored(TableId::Divisions) && stored(TableId::DivisionModelInputs));
         for table in TableId::ALL.into_iter().filter(|table| left_out(*table)) {
             assert!(!stored(table), "{table:?}");
         }
@@ -483,8 +489,10 @@ fn a_map_recording_stores_no_section_for_a_table_it_leaves_out() {
                         },
                         "{table:?}"
                     );
-                } else {
+                } else if crate::scope::records(CaptureMode::Full, table) {
                     assert_eq!(*view, *full.tables[table.index()], "{table:?}");
+                } else {
+                    assert!(matches!(view, TableView::Complete(_)), "{table:?}");
                 }
             }
         }

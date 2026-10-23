@@ -94,7 +94,10 @@ use viewer_foundation::table_access::TokenNames;
 use installed_content_core::{ResolvedLayers, defines::Defines, map::MapData, mesh, terrain::DefaultMap};
 use installed_content_image::native::Decode;
 use installed_content_localisation::localisation::Localisation;
-use replay_data::{rows::DivisionTemplateIconRow, rows::VariantDefinitionRow, rows::tables};
+use replay_data::{
+    rows::DivisionModelInputRow, rows::DivisionStatusRow, rows::DivisionTemplateIconRow,
+    rows::VariantDefinitionRow, rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 
 mod ships;
@@ -123,6 +126,65 @@ use {
 
 /// The suffix every unit entity's name ends with (seven bytes).
 pub const ENTITY_SUFFIX: &str = "_entity";
+
+/// What a land figure reads of a division: its DivisionStatus row, or in a
+/// recording that leaves DivisionStatus out, its DivisionModelInputs witness.
+#[derive(Clone, Copy, Debug)]
+pub enum ModelStatus<'a> {
+    Status(&'a DivisionStatusRow),
+    Witness(&'a DivisionModelInputRow),
+}
+
+impl<'a> From<&'a DivisionStatusRow> for ModelStatus<'a> {
+    fn from(row: &'a DivisionStatusRow) -> Self {
+        Self::Status(row)
+    }
+}
+
+impl<'a> ModelStatus<'a> {
+    pub fn division(self) -> u64 {
+        match self {
+            Self::Status(row) => row.division,
+            Self::Witness(row) => row.division,
+        }
+    }
+
+    /// None is this hour's read refusal.
+    pub fn model_number(self) -> Option<i32> {
+        match self {
+            Self::Status(row) => Some(row.model_number),
+            Self::Witness(row) => row.model_number,
+        }
+    }
+
+    /// None is this hour's read refusal.
+    pub fn exercising(self) -> Option<bool> {
+        match self {
+            Self::Status(row) => Some(row.exercising != 0),
+            Self::Witness(row) => row.exercising.map(|exercising| exercising != 0),
+        }
+    }
+
+    /// The hour's statuses: DivisionStatus's, or the witness's where the recording leaves
+    /// DivisionStatus out.
+    fn read(frame: &'a DecodedFrame) -> io::Result<BTreeMap<u64, Self>> {
+        Ok(
+            if frame.recorded(replay_data::rows::TableId::DivisionStatus) {
+                rows::<tables::DivisionStatus>(frame)?
+                    .rows()
+                    .iter()
+                    .map(|row| (row.division, Self::Status(row)))
+                    .collect()
+            } else {
+                rows::<tables::DivisionModelInputs>(frame)?
+                    .rows()
+                    .iter()
+                    .map(|row| (row.division, Self::Witness(row)))
+                    .collect()
+            },
+        )
+    }
+}
 
 /// The key a division in naval transfer takes instead of its own.
 pub const TRANSPORT_KEY: &str = "transport";
@@ -1321,13 +1383,6 @@ impl UnitModelAssets {
                 combat_states.insert(*id, crate::map::entity_animation::DEFEND);
             }
         }
-        let training: BTreeSet<u64> = hour
-            .statuses
-            .values()
-            .filter(|r| r.exercising != 0)
-            .map(|r| r.division)
-            .collect();
-
         let mut stacks: BTreeMap<StackKey, Stack> = BTreeMap::new();
         for division in rows::<tables::Divisions>(frame)?.rows() {
             if division.province == 0 {
@@ -1419,7 +1474,7 @@ impl UnitModelAssets {
             };
             let base = name.clone();
             if !transport {
-                let Some(status) = hour.statuses.get(&stack.oldest) else {
+                let Some(&status) = hour.statuses.get(&stack.oldest) else {
                     report.error("division acclimatization status is unavailable");
                     continue;
                 };
@@ -1484,6 +1539,18 @@ impl UnitModelAssets {
                 report.unanchored += 1;
                 continue;
             };
+            let training = hour
+                .statuses
+                .get(&stack.oldest)
+                .and_then(|status| status.exercising());
+            let Some(animation) = animation_state(
+                movements.get(&stack.oldest),
+                combat_states.get(&stack.oldest).copied(),
+                training,
+            ) else {
+                report.error("division exercise is unavailable this hour");
+                continue;
+            };
             if position.motion.is_some() {
                 report.moving += 1;
             }
@@ -1525,11 +1592,7 @@ impl UnitModelAssets {
                         scale,
                         pitch: 0.0,
                         train_clip: [0.0; 4],
-                        animation: animation_state(
-                            movements.get(&stack.oldest),
-                            combat_states.get(&stack.oldest).copied(),
-                            training.contains(&stack.oldest),
-                        ),
+                        animation,
                         animation_seed: stack.oldest as u32 ^ (stack.oldest >> 32) as u32,
                         ..ModelInstance::default()
                     },
@@ -1584,7 +1647,7 @@ struct Hour<'a> {
     /// Spells the variants' equipment type tokens.
     tokens: TokenNames<'a>,
     equipment: Result<Equipment<'a>, String>,
-    statuses: BTreeMap<u64, &'a replay_data::rows::DivisionStatusRow>,
+    statuses: BTreeMap<u64, ModelStatus<'a>>,
     camouflage: camouflage::Context<'a>,
     spans: RefCell<BuilderSpans>,
     selection: Stages,
@@ -1644,11 +1707,7 @@ impl<'a> Hour<'a> {
                 .collect(),
             tokens: TokenNames::new(frame)?,
             equipment,
-            statuses: rows::<tables::DivisionStatus>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.division, row))
-                .collect(),
+            statuses: ModelStatus::read(frame)?,
             camouflage: {
                 lap("um_model_joins");
                 let camouflage = camouflage::Context::read(frame, terrain)?;
@@ -2082,8 +2141,11 @@ impl<'a> Selector<'a, '_> {
             let status = self.hour.statuses.get(&stack.oldest).ok_or_else(|| {
                 Missing::Input("division model number status is unavailable".into())
             })?;
+            let number = status.model_number().ok_or_else(|| {
+                Missing::Input("division model number is unavailable this hour".into())
+            })?;
             // The game sign-extends the stored number's low byte.
-            let number = status.model_number as i8;
+            let number = number as i8;
             match resolve_model_numbered(
                 model_country,
                 &subunit.key,
@@ -2454,17 +2516,23 @@ type StackKey = (u32, u32, Option<[u32; 2]>);
 /// Slot 0 is idle/training, 19 idle, movement slots select
 /// attack/support_attack before retreat/move. Slots 9/10 fall through to defend.
 /// LandCombats supplies the side when format14 has no DivisionMovement row.
-fn animation_state(route: Option<&Route>, combat: Option<u32>, training: bool) -> u32 {
+/// None when the state rests on an exercise predicate the hour does not hold.
+fn animation_state(
+    route: Option<&Route>,
+    combat: Option<u32>,
+    training: Option<bool>,
+) -> Option<u32> {
     use crate::map::entity_animation::*;
+    let standing = || training.map(|training| if training { TRAINING } else { IDLE });
     if let Some(route) = route {
         if matches!(route.stack_kind, 9 | 10) {
-            return DEFEND;
+            return Some(DEFEND);
         }
         if route.stack_kind == 19 {
-            return IDLE;
+            return Some(IDLE);
         }
         if route.stack_kind == 0 {
-            return if training { TRAINING } else { IDLE };
+            return standing();
         }
         let side = match route.combat_role {
             1 => Some(ATTACK),
@@ -2472,15 +2540,15 @@ fn animation_state(route: Option<&Route>, combat: Option<u32>, training: bool) -
             _ => combat,
         };
         if let Some(side) = side {
-            return if side == ATTACK && route.path.is_empty() {
+            return Some(if side == ATTACK && route.path.is_empty() {
                 SUPPORT
             } else {
                 side
-            };
+            });
         }
-        return if route.retreat { RETREAT } else { MOVE };
+        return Some(if route.retreat { RETREAT } else { MOVE });
     }
-    combat.unwrap_or(if training { TRAINING } else { IDLE })
+    combat.or_else(standing)
 }
 
 /// One stack's representative division: the oldest, whose template names the

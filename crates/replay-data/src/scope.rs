@@ -5,7 +5,8 @@ pub use replay_identity::CaptureMode;
 
 pub const fn records(mode: CaptureMode, table: TableId) -> bool {
     match mode {
-        CaptureMode::Full => true,
+        // Owner decision 2026-10-23: Full's DivisionStatus already holds what Map's witness does.
+        CaptureMode::Full => !matches!(table, TableId::DivisionModelInputs),
         CaptureMode::Map => map_records(table),
     }
 }
@@ -17,7 +18,7 @@ pub const fn omits(mode: CaptureMode) -> Option<&'static str> {
         // Owner decision 2026-10-23: kept views withhold what reads beyond this scope, and say so here.
         CaptureMode::Map => Some(concat!(
             "division names, organisation and strength (counters and battle windows show none), ",
-            "3D unit figures, division details, fog of war, supply, fronts and plans, raids, ",
+            "division details, fog of war, supply, fronts and plans, raids, ",
             "some hover details, most map modes and every dashboard",
         )),
     }
@@ -60,6 +61,14 @@ const fn map_records(table: TableId) -> bool {
             | DivisionTemplateIcons
             | DivisionTemplates
             | CountryTemplateState
+            // Owner decision 2026-10-23: 3D land figures, their model inputs and model choice.
+            | DivisionModelInputs
+            | DivisionEquipment
+            | NewDivisionEquipment
+            | CountryLocalSubunits
+            | VariantUpgrades
+            | AvailableEquipmentVariants
+            | Factions
             // Counter colours, order icons, abilities, portraits and railway guns.
             | ArmyOrders
             | ArmyOrderPlans
@@ -198,8 +207,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_records_every_table_and_map_omits_division_status() {
-        assert_eq!(omitted(CaptureMode::Full).count(), 0);
+    fn full_records_every_table_but_the_model_witness_and_map_omits_division_status() {
+        assert_eq!(
+            omitted(CaptureMode::Full).collect::<Vec<_>>(),
+            [TableId::DivisionModelInputs]
+        );
+        assert!(omits(CaptureMode::Full).is_none());
         assert!(!records(CaptureMode::Map, TableId::DivisionStatus));
         for table in [
             TableId::Clock,
@@ -212,6 +225,25 @@ mod tests {
             assert!(records(CaptureMode::Map, table), "{table:?}");
         }
         assert!(omitted(CaptureMode::Map).any(|table| table == TableId::CountryFactories));
+    }
+
+    #[test]
+    fn map_records_the_land_model_witness_and_model_choice() {
+        for table in [
+            TableId::DivisionModelInputs,
+            TableId::DivisionEquipment,
+            TableId::NewDivisionEquipment,
+            TableId::CountryLocalSubunits,
+            TableId::VariantUpgrades,
+            TableId::AvailableEquipmentVariants,
+            TableId::Factions,
+            TableId::DivisionTemplateIcons,
+            TableId::VariantDefinitions,
+        ] {
+            assert!(records(CaptureMode::Map, table), "{table:?}");
+        }
+        let omits = omits(CaptureMode::Map).unwrap();
+        assert!(!omits.contains("3D unit figures"), "{omits}");
     }
 
     #[test]

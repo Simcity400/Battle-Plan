@@ -261,7 +261,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::CAPTURE_MODE_FORMAT
+            crate::rows::compatibility::DIVISION_MODEL_INPUTS_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -485,6 +485,9 @@ mod tests {
             }
             if version < crate::rows::compatibility::UNIT_BONUSES_FORMAT {
                 expected.push(TableId::CountryUnitBonuses);
+            }
+            if version < crate::rows::compatibility::DIVISION_MODEL_INPUTS_FORMAT {
+                expected.push(TableId::DivisionModelInputs);
             }
             if version < crate::rows::compatibility::RETREAT_BANS_FORMAT {
                 expected.push(TableId::DivisionRetreatBans);

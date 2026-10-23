@@ -451,6 +451,16 @@ pub(crate) struct ArmyIconsRequest {
     pub icons: crate::extended::army_icon_inputs::Captured,
     pub ticks: [u64; 1],
 }
+/// DivisionModelInputs in a Map recording, beside the Divisions job: the
+/// seeded census carries the model number and acclimatization header.
+pub(crate) struct DivisionModelInputsRequest {
+    pub base: usize,
+    pub game_state: usize,
+    pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub captured: crate::extended::division_model_inputs::Captured,
+}
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DivisionModelInputsReport;
 /// RaidAirScores and the shared rail tables in their own first-burst job:
 /// both walks read only the game state and the hour, the score walk
 /// resolving countries from the hour's snapshot bytes. The Late job keeps the
@@ -816,6 +826,7 @@ pub(crate) enum Job {
     Late(LateRequest),
     ScoresRails(ScoresRailsRequest),
     ArmyIcons(ArmyIconsRequest),
+    DivisionModelInputs(DivisionModelInputsRequest),
     /// The Orders job: part 0 of this pass's census and plan walk.
     Orders(OrdersRequest),
     /// Another part of this pass's census and plan walk.
@@ -899,6 +910,7 @@ pub(crate) enum Report {
     Late(LateReport),
     ScoresRails(ScoresRailsReport),
     ArmyIcons(ScoresRailsReport),
+    DivisionModelInputs(DivisionModelInputsReport),
     Orders(OrdersReport),
     OrdersPart(OrdersReport),
     OrdersStitch(StitchReport),
@@ -1003,6 +1015,7 @@ pub(crate) enum Role {
     PresentationStatus,
     PresentationPreparation,
     PresentationSettle,
+    DivisionModelInputs,
 }
 
 impl Role {
@@ -1090,6 +1103,7 @@ impl Role {
             Self::CharacterInputs => T::CharacterRoleTraits,
             Self::PresentationMovement => T::DivisionMovement,
             Self::PresentationSpeedTerms => T::MovementStateTerms,
+            Self::DivisionModelInputs => T::DivisionModelInputs,
         }
     }
 }
@@ -1189,7 +1203,9 @@ impl Role {
             | Self::OrdinaryNaval
             | Self::Provinces
             | Self::Research
-            | Self::ShipModelDetails => 2,
+            | Self::ShipModelDetails
+            // Map's model witness, joined with the late joins.
+            | Self::DivisionModelInputs => 2,
             Self::States
             | Self::Capitulation
             | Self::Wars
@@ -1218,7 +1234,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 78;
+pub(crate) const ROLE_COUNT: usize = 79;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1298,6 +1314,7 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::PresentationStatus,
     Role::PresentationPreparation,
     Role::PresentationSettle,
+    Role::DivisionModelInputs,
 ];
 impl Job {
     /// Whether this job must run on a worker: its role's rule, except a
@@ -1380,6 +1397,7 @@ impl Job {
             Self::Late(..) => Role::Late,
             Self::ScoresRails(..) => Role::ScoresRails,
             Self::ArmyIcons(..) => Role::ArmyIcons,
+            Self::DivisionModelInputs(..) => Role::DivisionModelInputs,
             Self::OrderRoots(..) => Role::OrderRoots,
             Self::Orders(..) => Role::Orders,
             Self::OrdersPart(..) => Role::OrdersPart,
@@ -2175,6 +2193,15 @@ fn run_with_memory(
                     .map(crate::division_census::UnitInputs::seeds),
             );
             Report::ArmyIcons(ScoresRailsReport)
+        }
+        Job::DivisionModelInputs(request) => {
+            request.captured.capture(
+                memory,
+                request.base,
+                request.game_state,
+                request.inputs.as_deref(),
+            );
+            Report::DivisionModelInputs(DivisionModelInputsReport)
         }
         Job::Orders(request) => {
             request.orders.walk_first_part(memory, request.base);
@@ -4399,5 +4426,62 @@ mod tests {
         let result: Result<(), Failure> = catch_failure(|| std::panic::panic_any(PanicOnDrop));
         assert_eq!(result, Err(Failure::Panicked));
         assert_eq!(catch_failure(|| 7), Ok(7));
+    }
+
+    /// The Map witness runs as its own role over the hour's census; a missing
+    /// census or a failed job refuses its table, never an empty one.
+    #[test]
+    fn the_model_witness_job_reads_the_census_under_its_own_role() {
+        use engine_native::walk::Outcome;
+        let memory = engine_native::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let table = TableId::DivisionModelInputs.index();
+        let mut captured =
+            crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+        let empty = Arc::new(crate::division_census::UnitInputs::fixture(
+            Vec::new(),
+            Outcome::Rows { len: 0 },
+        ));
+        for (inputs, completed, outcome, training) in [
+            (Some(&empty), true, Outcome::Rows { len: 0 }, Some(0)),
+            (
+                None,
+                true,
+                Outcome::Unavailable {
+                    reason: "division census unavailable",
+                },
+                None,
+            ),
+            (
+                Some(&empty),
+                false,
+                Outcome::Unavailable {
+                    reason: "division model input acquisition failed",
+                },
+                None,
+            ),
+        ] {
+            captured.reset();
+            let mut job = Job::DivisionModelInputs(captured.take_division_model_inputs_request(
+                0,
+                0x1000,
+                inputs.cloned(),
+            ));
+            assert_eq!(job.role(), Role::DivisionModelInputs);
+            let Report::DivisionModelInputs(_) = run_for_test(&mut job, &memory) else {
+                unreachable!("model witness report type");
+            };
+            let Job::DivisionModelInputs(request) = job else {
+                unreachable!("model witness job type");
+            };
+            assert_eq!(
+                captured.restore_division_model_inputs_request(request, completed),
+                training
+            );
+            assert_eq!(captured.outcomes()[table], outcome);
+        }
+        assert_eq!(Arc::strong_count(&empty), 1);
     }
 }

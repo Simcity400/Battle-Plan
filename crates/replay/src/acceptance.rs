@@ -42,7 +42,8 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRED_TABLES.len()] = [
+const DOMAIN_TABLES: [TableId;
+    TableId::ALL.len() - DIRECT_TABLES.len() - RETIRED_TABLES.len() - FULL_OMITTED.len()] = [
     TableId::UnitLeaderTraitExperience,
     TableId::DivisionHistory,
     TableId::DivisionPanelSources,
@@ -443,6 +444,9 @@ const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len() - RETIRE
 /// them by name (the compatibility tests exercise that framing).
 const RETIRED_TABLES: [TableId; crate::rows::compatibility::RETIRED_TABLES.len()] =
     crate::rows::compatibility::RETIRED_TABLES;
+/// Tables a Full recording leaves out, which this Full campaign cannot drive.
+const FULL_OMITTED: [TableId; 1] = [TableId::DivisionModelInputs];
+
 /// The fault campaign drives every table except those the clock, campaign,
 /// country, province, state and division fixtures build directly, so a new table cannot
 /// be added without being exercised here.
@@ -462,14 +466,23 @@ fn the_fault_campaign_covers_every_table_exactly_once() {
         .into_iter()
         .chain(DIRECT_TABLES)
         .chain(RETIRED_TABLES)
+        .chain(FULL_OMITTED)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     covered.sort();
     assert_eq!(covered, TableId::ALL);
     assert_eq!(
-        DOMAIN_TABLES.len() + DIRECT_TABLES.len() + RETIRED_TABLES.len(),
+        DOMAIN_TABLES.len() + DIRECT_TABLES.len() + RETIRED_TABLES.len() + FULL_OMITTED.len(),
         TableId::ALL.len()
+    );
+    assert_eq!(
+        crate::scope::omitted(crate::scope::CaptureMode::Full)
+            .filter(|table| table
+                .last_change()
+                .present(crate::format::FormatVersion::CURRENT.version()))
+            .collect::<Vec<_>>(),
+        FULL_OMITTED
     );
     for table in RETIRED_TABLES {
         assert!(
@@ -1677,8 +1690,12 @@ fn synthesize() -> Campaign {
                     coverage.division_unavailable_tables +=
                         usize::from(table == TableId::Divisions);
                 }
-                // Every acceptance source records every table.
-                TableUpdate::NotRecorded { .. } => unreachable!("a full recording"),
+                TableUpdate::NotRecorded { mode } => {
+                    assert!(
+                        FULL_OMITTED.contains(&table),
+                        "{mode} recording left out {table:?}"
+                    );
+                }
                 TableUpdate::Truncated { .. } => {
                     coverage.truncated_tables += 1;
                     if let Some(domain_index) = domain_index {

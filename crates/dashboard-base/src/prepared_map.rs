@@ -91,6 +91,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::DivisionPanelSources,
             TableId::DivisionPanelStats,
             TableId::DivisionLandInputs,
+            TableId::DivisionModelInputs,
             TableId::DivisionMovement,
             TableId::DivisionRetreatBans,
             TableId::Divisions,

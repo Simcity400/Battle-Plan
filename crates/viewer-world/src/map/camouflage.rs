@@ -8,7 +8,8 @@
 //! the resulting `<entity>_<condition>` and keeps the base if it is absent.
 //!
 //! A recording's DivisionStatus holds the category the first two steps keep
-//! (`camouflage`), decided at capture with the live define. Recordings before
+//! (`camouflage`), decided at capture with the live define, as a Map
+//! recording's DivisionModelInputs does. Recordings before
 //! it hold every entry and the maximum, and the same port
 //! ([`engine_native::acclimatization_data::camouflage`]) decides here with the
 //! content's define.
@@ -21,8 +22,10 @@
 use std::{collections::BTreeMap, io};
 
 use installed_content_core::{ResolvedLayers, defines::Defines, parser};
-use replay_data::{rows::DivisionStatusRow, rows::Recorded, rows::tables};
+use replay_data::{rows::Recorded, rows::tables};
 use replay_frame::frame::DecodedFrame;
+
+use crate::map::unit_models::ModelStatus;
 
 use viewer_foundation::map::tables::{Available, core, rows};
 use viewer_foundation::table_access::{TokenKeys, TokenNames};
@@ -116,7 +119,16 @@ impl Content {
     /// The token of the category the game keeps for a division before
     /// its province conditions; `None` shows no camouflage. An unreadable
     /// acclimatization is an error, never a false test.
-    fn category(&self, status: &DivisionStatusRow) -> io::Result<Option<u32>> {
+    fn category(&self, status: ModelStatus<'_>) -> io::Result<Option<u32>> {
+        let status = match status {
+            ModelStatus::Status(status) => status,
+            ModelStatus::Witness(row) => {
+                return row
+                    .camouflage
+                    .map(|camouflage| camouflage.category)
+                    .ok_or_else(|| invalid("division camouflage is unavailable this hour"));
+            }
+        };
         match &status.camouflage {
             Recorded::Value(Some(camouflage)) => Ok(camouflage.category),
             Recorded::Value(None) => Err(invalid("division camouflage is unavailable this hour")),
@@ -141,15 +153,15 @@ impl Content {
     /// The suffix for one division at one province. `state_provinces` holds
     /// every member of the province's state, the province included; empty when
     /// it has no state. `matches` decides one condition at one province.
-    fn suffix<'a>(
+    fn suffix<'a, 's>(
         &'a self,
-        status: &DivisionStatusRow,
+        status: impl Into<ModelStatus<'s>>,
         tokens: TokenNames<'_>,
         province: u32,
         state_provinces: &[u32],
         mut matches: impl FnMut(u32, &str) -> io::Result<bool>,
     ) -> io::Result<Option<&'a str>> {
-        let Some(token) = self.category(status)? else {
+        let Some(token) = self.category(status.into())? else {
             return Ok(None);
         };
         // The division records the category by token: its spelling names the
@@ -271,13 +283,13 @@ impl<'a> Context<'a> {
         &self,
         content: &'b Content,
         tokens: TokenNames<'_>,
-        status: &DivisionStatusRow,
+        status: ModelStatus<'_>,
         province: u32,
     ) -> io::Result<Option<&'b str>> {
         let state = *self.provinces.get(&province).ok_or_else(|| {
             invalid(format!(
                 "division {} has unknown province {province}",
-                status.division
+                status.division()
             ))
         })?;
         let members = self
@@ -326,7 +338,9 @@ impl<'a> Context<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay_data::{rows::DivisionAcclimatization, rows::DivisionCamouflage};
+    use replay_data::{
+        rows::DivisionAcclimatization, rows::DivisionCamouflage, rows::DivisionStatusRow,
+    };
 
     fn content() -> Content {
         Content::parse(

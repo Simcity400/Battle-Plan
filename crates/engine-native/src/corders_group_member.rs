@@ -382,23 +382,7 @@ impl MembershipPacket {
             parent: None,
             roots: Default::default(),
         };
-        input.result = (|| {
-            let vtable =
-                crate::read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
-            if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
-                .iter()
-                .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
-            {
-                return Err("orders membership group identity mismatch");
-            }
-            if read_at::<u64>(memory, at, group::HANDLE)
-                .ok_or("orders membership pointer unreadable")? as u32
-                != group::REFERENCE_TYPE
-            {
-                return Err("orders membership group identity mismatch");
-            }
-            Ok(())
-        })();
+        input.result = group_identity(memory, base, at);
         let slot = self.groups.len();
         self.groups.push(input);
         insert_index(&mut self.group_index, at, slot);
@@ -762,6 +746,28 @@ fn hash(pointer: usize, len: usize) -> Option<usize> {
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     Some((value ^ (value >> 27)) as usize % len)
+}
+
+/// An orders or army group's identity, which admits a division's own group.
+pub(crate) fn group_identity(
+    memory: &impl Memory,
+    base: usize,
+    at: usize,
+) -> Result<(), &'static str> {
+    let vtable = crate::read::<u64>(memory, at).ok_or("orders group identity unreadable")?;
+    if ![group::VTABLE_RVA, crate::carmy_group::VTABLE_RVA]
+        .iter()
+        .any(|&rva| base.checked_add(rva).map(|p| p as u64) == Some(vtable))
+    {
+        return Err("orders membership group identity mismatch");
+    }
+    if read_at::<u64>(memory, at, group::HANDLE).ok_or("orders membership pointer unreadable")?
+        as u32
+        != group::REFERENCE_TYPE
+    {
+        return Err("orders membership group identity mismatch");
+    }
+    Ok(())
 }
 
 fn root_offset(set: usize) -> usize {

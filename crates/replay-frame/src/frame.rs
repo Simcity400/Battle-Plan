@@ -580,6 +580,12 @@ impl DecodedFrame {
             _ => None,
         })
     }
+
+    /// Whether the recording holds `table`, from its own marker, which a
+    /// projection keeps for every table it selects; it reads none of its rows.
+    pub fn recorded(&self, table: TableId) -> bool {
+        !matches!(*self.tables[table.index()].0, TableView::NotRecorded { .. })
+    }
 }
 
 impl FrameInput {
@@ -615,13 +621,14 @@ fn recorded_here(table: TableId) -> bool {
         .present(crate::format::FormatVersion::CURRENT.version())
 }
 
-/// Refused unless exactly the tables the mode leaves out are NotRecorded.
+/// Refused unless exactly the tables the mode leaves out are NotRecorded. A frame that
+/// names no mode is Full, and need not name the tables Full leaves out: none is stored.
 fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Result<CaptureMode> {
-    let mode = TableId::ALL
+    let named = TableId::ALL
         .into_iter()
         .filter(|table| recorded_here(*table))
-        .find_map(|table| not_recorded(table.index()))
-        .unwrap_or(CaptureMode::Full);
+        .find_map(|table| not_recorded(table.index()));
+    let mode = named.unwrap_or(CaptureMode::Full);
     for table in TableId::ALL {
         if !recorded_here(table) {
             continue;
@@ -633,7 +640,7 @@ fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Resu
             Some(_) if scope::records(mode, table) => {
                 return Err(invalid("frame leaves out a table its capture mode records"));
             }
-            None if !scope::records(mode, table) => {
+            None if named.is_some() && !scope::records(mode, table) => {
                 return Err(invalid(
                     "frame holds a table its capture mode does not record",
                 ));
@@ -724,18 +731,23 @@ fn validate_delta_keys(
     Ok(())
 }
 
-/// The view a current recording decodes for a table its format does not
-/// record (a retired table), or None for a recorded table. Test sources that
-/// supply every table replace retired ones with it, as decoding would.
+/// The view a current Full recording decodes for a table it does not record (a
+/// retired table, or one Full leaves out), or None for a recorded table. Test
+/// sources that supply every table replace those with it, as decoding would.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn current_absence(table: TableId) -> Option<TableView> {
     let format = crate::format::FormatVersion::CURRENT.version();
     let change = table.last_change();
-    (!change.present(format)).then(|| TableView::Unavailable {
-        reason: change
-            .table_gap(table, format)
-            .expect("absent table has a catalogued gap"),
+    if !change.present(format) {
+        return Some(TableView::Unavailable {
+            reason: change
+                .table_gap(table, format)
+                .expect("absent table has a catalogued gap"),
+        });
+    }
+    (!scope::records(CaptureMode::Full, table)).then_some(TableView::NotRecorded {
+        mode: CaptureMode::Full,
     })
 }
 

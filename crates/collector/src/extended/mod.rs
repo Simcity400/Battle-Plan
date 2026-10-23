@@ -739,6 +739,7 @@ pub(crate) use country_naval_movement_inputs::{
     Capacities as PhysicalNavyCapacities, Work as PhysicalNavyWork,
 };
 pub mod division_counts;
+pub mod division_model_inputs;
 pub mod division_presentation;
 pub mod division_templates;
 pub use collector_economy::economy;
@@ -842,6 +843,7 @@ packs!(
     naval_result_details @helper,
     construction @helper,
     division_presentation @helper_exclusive,
+    division_model_inputs,
     division_templates,
     economy @helper,
     fog @helper,
@@ -2051,6 +2053,42 @@ impl Captured {
                     .fail_owned_capture("character_portraits acquisition not supplied")
             }
         })
+    }
+
+    /// Loan the DivisionModelInputs pack, with the hour's division census when
+    /// it completed, to its job beside Divisions.
+    pub(crate) fn take_division_model_inputs_request(
+        &mut self,
+        base: usize,
+        state: usize,
+        inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    ) -> crate::acquisition_jobs::DivisionModelInputsRequest {
+        crate::acquisition_jobs::DivisionModelInputsRequest {
+            base,
+            game_state: state,
+            inputs,
+            captured: std::mem::replace(
+                &mut self.division_model_inputs,
+                division_model_inputs::Captured::vacant(),
+            ),
+        }
+    }
+
+    /// Takes back the rows and releases the census lease; a failed job fails
+    /// the rows. Returns the rows whose group trained, when the job read them.
+    pub(crate) fn restore_division_model_inputs_request(
+        &mut self,
+        mut request: crate::acquisition_jobs::DivisionModelInputsRequest,
+        completed: bool,
+    ) -> Option<u32> {
+        drop(request.inputs.take());
+        let mut captured = request.captured;
+        if !completed {
+            captured.fail_job("division model input acquisition failed");
+        }
+        let training = captured.training();
+        self.division_model_inputs = captured;
+        training
     }
 
     /// Loan the complete ProvinceUnitOrder rows and handle arena to the flat
@@ -3325,6 +3363,8 @@ impl Captured {
         }
         ticks[TableId::StateBuildings.index()] =
             self.construction.finish_buildings(current_hour, force_full);
+        let cost = self.division_model_inputs.finish();
+        scatter(&division_model_inputs::TABLES, cost, &mut ticks);
         let province_order_report = self.acquire_province_unit_order(
             memory,
             province_unit_order::CaptureContext { base, game_state },

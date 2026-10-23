@@ -1227,6 +1227,7 @@ fn run(
     ranges.extend(politics_hooks.executable_ranges());
     let mut shared = Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
         .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
+    shared.capture_mode = session.capture_mode;
     shared.prepare_roster(&memory);
     shared
         .prepare_clock_capture(&memory)
@@ -2938,6 +2939,12 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "other_reasons": models.other,
                 "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
                 "scope": "cumulative template model, spatial, settings and country-context refusals since attach, by reason; independent counter and model fields remain available when extension acquisition fails. missed_hours counts hours not folded because this status write held the counters",
+            },
+            "division_model_inputs": {
+                "hours": shared.model_inputs.hours.load(Ordering::Relaxed),
+                "training": shared.model_inputs.training.load(Ordering::Relaxed),
+                "training_peak": shared.model_inputs.training_peak.load(Ordering::Relaxed),
+                "scope": "Map recordings only: hours the DivisionModelInputs job read the division census, and the rows whose orders group trained (the only ones it reads exercise operands for), cumulative and the most in one hour; its timing is the division_model_inputs role's",
             },
             "background_priority": background_priority_status(),
             "collector_thread_cpu": crate::thread_cpu::status(

@@ -20,7 +20,7 @@ impl<M: Memory> Memory for NoFooter<'_, M> {
     }
 }
 
-fn acquire(
+pub(super) fn acquire(
     memory: &impl Memory,
     capture: &mut Captured,
     store: &mut held_store::Loan,

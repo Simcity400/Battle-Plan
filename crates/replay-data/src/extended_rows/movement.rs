@@ -1460,6 +1460,24 @@ typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
  { 0 => (maximum_hit_points): I64 @ Self::MAXIMUM_STEP, 1 => (maximum_organisation): I64 @ Self::MAXIMUM_STEP, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64 @ Self::SUPPLY_RATIO_STEP, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque, 27 => (camouflage): Opaque, 28 => (attack_stats): Opaque, 29 => (weather_factor): OptionalI64, 30 => (name_template): Opaque, 31 => (movement_stats): Opaque, 32 => (out_of_supply_days): OptionalI32, 33 => (commander_modifiers): Opaque, 34 => (supply_ratio_exact): OptionalI64, 35 => (supply_grace_exact): OptionalI64, 36 => (experience): OptionalI64, 37 => (pending_template): OptionalU64, 38 => (officer_experience): OptionalI64, 39 => (career_counter): OptionalI32, 40 => (panel_source): Opaque, 41 => (combat_movement): Opaque, 42 => (organisation_exact): OptionalI64, 43 => (maximum_organisation_exact): OptionalI64, 44 => (commander_width_factor): OptionalI64 }, |_row| Ok(()));
 
+/// Hourly in Map recordings, which leave DivisionStatus out: the three DivisionStatus
+/// columns a land model reads, read as DivisionStatus reads them, keyed by the full
+/// Divisions handle. Each None is that field's own read refusal; the rest of the row
+/// stands.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct DivisionModelInputRow {
+    pub division: u64,
+    /// [`DivisionStatusRow::model_number`].
+    pub model_number: Option<i32>,
+    /// [`DivisionStatusRow::camouflage`].
+    pub camouflage: Option<DivisionCamouflage>,
+    /// [`DivisionStatusRow::exercising`].
+    pub exercising: Option<u8>,
+}
+typed_codec!(DivisionModelInputRow, 64, |row| row.division as u128,
+ |key| Self { division: key as u64, ..Default::default() },
+ { 0 => (model_number): OptionalI32, 1 => (camouflage): Opaque, 2 => (exercising): Opaque }, |_row| Ok(()));
+
 /// DivisionRetreatBans: key division (64 bits). A division whose commander
 /// bans retreat: bits of the leader modifier block selected for it,
 /// whatever its combats; a division without a ban has no row. The game

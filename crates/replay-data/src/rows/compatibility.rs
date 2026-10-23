@@ -62,6 +62,9 @@ pub const EVENT_FEED_OCCURRENCE_DELTAS_FORMAT: u16 = 119;
 pub const PANEL_SUPPRESSION_FORMAT: u16 = 120;
 /// Sessions and frames name their capture mode; frames omit the tables it leaves out.
 pub const CAPTURE_MODE_FORMAT: u16 = 121;
+/// Owner-approved DivisionModelInputs: the land model's three DivisionStatus columns,
+/// recorded in Map, which leaves DivisionStatus out.
+pub const DIVISION_MODEL_INPUTS_FORMAT: u16 = 122;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -2947,6 +2950,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             "feat/designer-stats",
         )
     };
+    history[TableId::DivisionModelInputs.index()] = LastChange {
+        introduced: DIVISION_MODEL_INPUTS_FORMAT,
+        ..table(
+            TableId::DivisionModelInputs,
+            DIVISION_MODEL_INPUTS_FORMAT,
+            "t3/map-model-witness",
+        )
+    };
     let air_ledgers = [
         TableId::AirLossEvents,
         TableId::BuildingBombingDamage,
@@ -4685,10 +4696,11 @@ mod tests {
                 EVENT_FEED_OCCURRENCE_DELTAS_FORMAT,
                 PANEL_SUPPRESSION_FORMAT,
                 CAPTURE_MODE_FORMAT,
+                DIVISION_MODEL_INPUTS_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121],
+            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122],
         );
-        assert_eq!(FORMAT_VERSION, CAPTURE_MODE_FORMAT);
+        assert_eq!(FORMAT_VERSION, DIVISION_MODEL_INPUTS_FORMAT);
     }
 
     #[test]

@@ -1437,7 +1437,9 @@ pub struct RetreatBanRow {
 
 use crate::corders_group_member::{MembershipCapacity, MembershipPacket, MembershipQuery};
 
+mod model_inputs;
 mod status_parts;
+pub use model_inputs::{ModelInputsReport, ModelInputsRow};
 pub use status_parts::StatusPart;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2563,6 +2565,7 @@ impl StatusPacket {
         unit: usize,
         held_experience: Option<i64>,
         autonomous: impl FnOnce(&mut Self, u32) -> Result<bool, &'static str>,
+        maximum_hp: impl FnOnce(&mut Self) -> Result<i64, &'static str>,
     ) -> Result<StatusExerciseOperands, &'static str> {
         let mut inputs = StatusExerciseOperands::default();
 
@@ -2591,8 +2594,7 @@ impl StatusPacket {
             .strength
             .ok_or("division presentation field unreadable")?;
         inputs.strength = Some(strength);
-        let maximum_hp = self.maxima[self.units[unit].maxima].effective().0;
-        let fraction = status_strength_fraction(strength, maximum_hp);
+        let fraction = status_strength_fraction(strength, maximum_hp(self)?);
         let minimum = (*self.minimum_strength.get_or_insert_with(|| {
             presentation_field(memory, base, EXERCISE_MINIMUM_STRENGTH_RVA)
         }))?;
@@ -2634,7 +2636,7 @@ impl StatusPacket {
     fn exercise(
         &self,
         inputs: StatusExerciseOperands,
-        maximum_hp: i64,
+        maximum_hp: Option<i64>,
     ) -> Result<bool, &'static str> {
         if inputs.autonomous
             && self.level(inputs.level.ok_or("division exercise level missing")?)?
@@ -2652,7 +2654,7 @@ impl StatusPacket {
             inputs
                 .strength
                 .ok_or("division exercise strength missing")?,
-            maximum_hp,
+            maximum_hp.ok_or("division exercise maxima missing")?,
         );
         if fraction
             <= inputs
@@ -2686,9 +2688,7 @@ impl StatusPacket {
         let maximum_hp = self
             .maxima
             .get(unit.maxima)
-            .ok_or("division exercise maxima missing")?
-            .effective()
-            .0;
+            .map(|maxima| maxima.effective().0);
         self.exercise(inputs, maximum_hp).map(u8::from)
     }
 
@@ -3093,6 +3093,7 @@ impl StatusPacket {
                             |packet, raw| {
                                 packet.exercise_autonomous(memory, base, state, &countries, raw)
                             },
+                            |packet| Ok(packet.maxima[packet.units[unit].maxima].effective().0),
                         )?);
                     }
                 }
@@ -3324,7 +3325,7 @@ pub fn project_status(packet: &StatusPacket, output: &mut [StatusRow]) -> Outcom
                 exercising: match unit.exercising {
                     Some(decision) => decision?,
                     None => u8::from(match unit.exercise {
-                        Some(inputs) => packet.exercise(inputs, maximum_hit_points)?,
+                        Some(inputs) => packet.exercise(inputs, Some(maximum_hit_points))?,
                         None => false,
                     }),
                 },
@@ -3714,10 +3715,16 @@ fn exercising(
             strength: maximum_hp,
             ..crate::csub_unit_definition::DivisionMaxima::default()
         });
-    let inputs = packet.capture_exercise(memory, base, &seeds[0], 0, None, |_, raw| {
-        cgame_state::autonomous_country(memory, base, state, raw)
-    })?;
-    packet.exercise(inputs, maximum_hp)
+    let inputs = packet.capture_exercise(
+        memory,
+        base,
+        &seeds[0],
+        0,
+        None,
+        |_, raw| cgame_state::autonomous_country(memory, base, state, raw),
+        |_| Ok(maximum_hp),
+    )?;
+    packet.exercise(inputs, Some(maximum_hp))
 }
 
 #[cfg(test)]

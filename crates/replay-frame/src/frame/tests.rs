@@ -93,15 +93,18 @@ fn selected_delta_test_wire(
         bytes.push(crate::scope::CaptureMode::Full.byte());
     }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
+    // A Full frame stores only what its format and Full record.
+    let stored =
+        |recorded| super::wire::table_stored(recorded, format, crate::scope::CaptureMode::Full);
     for recorded in TableId::ALL {
-        if recorded.last_change().present(format.version()) {
+        if stored(recorded) {
             bytes.extend_from_slice(&u64::from(recorded == table).to_le_bytes());
         }
     }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     for recorded in TableId::ALL {
-        if !recorded.last_change().present(format.version()) {
+        if !stored(recorded) {
             continue;
         }
         if recorded == table {
@@ -3377,12 +3380,23 @@ fn containment_cannot_hide_clock_or_encoder_context_failures() {
     );
 }
 
+/// `source` as a Map recording holds it: what Map leaves out marked, and synthetic rows for
+/// the model witness, which only Map records.
+fn map_input(source: DecodedFrame) -> FrameInput {
+    let mut map = FrameInput::from(source);
+    map.scope_to(crate::scope::CaptureMode::Map);
+    map.tables[TableId::DivisionModelInputs.index()] = TableView::Complete(
+        crate::rows::sample_extended_table(TableId::DivisionModelInputs, 1).unwrap(),
+    )
+    .into();
+    map
+}
+
 #[test]
 fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
     use crate::scope::{self, CaptureMode};
     let full = source(1, 0);
-    let mut map = FrameInput::from(full.clone());
-    map.scope_to(CaptureMode::Map);
+    let map = map_input(full.clone());
     assert_eq!(map.capture_mode().unwrap(), CaptureMode::Map);
     let full_frame = FrameEncoder::new().encode(full, true).unwrap();
     let map_frame = FrameEncoder::new().encode_input(map, true).unwrap();
@@ -3394,17 +3408,33 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
     let not_recorded = TableUpdate::NotRecorded {
         mode: CaptureMode::Map,
     };
-    let mut omitted = 0;
+    let only_full = |table: TableId| {
+        table.last_change().present(crate::FORMAT_VERSION)
+            && !scope::records(CaptureMode::Map, table)
+    };
+    let only_map = |table: TableId| {
+        table.last_change().present(crate::FORMAT_VERSION)
+            && !scope::records(CaptureMode::Full, table)
+    };
+    let (mut omitted, mut added) = (0, 0);
     let mut left_out = 0;
     for table in TableId::ALL {
         let index = table.index();
-        if table.last_change().present(crate::FORMAT_VERSION)
-            && !scope::records(CaptureMode::Map, table)
-        {
+        if only_full(table) {
             assert_eq!(map_frame.tables[index], not_recorded, "{table:?}");
             assert_eq!(map_sizes[index], 0, "{table:?}");
             omitted += 8 + full_sizes[index];
             left_out += 1;
+        } else if only_map(table) {
+            assert_eq!(
+                full_frame.tables[index],
+                TableUpdate::NotRecorded {
+                    mode: CaptureMode::Full
+                },
+                "{table:?}"
+            );
+            assert_eq!(full_sizes[index], 0, "{table:?}");
+            added += 8 + map_sizes[index];
         } else {
             assert_eq!(
                 map_frame.tables[index], full_frame.tables[index],
@@ -3414,7 +3444,8 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
         }
     }
     assert!(left_out > 300 && scope::records(CaptureMode::Map, TableId::Divisions));
-    assert_eq!(full_bytes.len() - map_bytes.len(), omitted);
+    assert!(added > 8 && only_map(TableId::DivisionModelInputs));
+    assert_eq!(full_bytes.len() + added - map_bytes.len(), omitted);
     let decoded = FrameDecoder::new()
         .apply(&Frame::decode(&mut Decoder::new(&map_bytes)).unwrap())
         .unwrap();
@@ -3430,6 +3461,8 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
                 }
             );
             assert_eq!(decoded.metrics.table_ns[table.index()], 0);
+        } else if only_map(table) {
+            assert!(matches!(view, TableView::Complete(_)), "{table:?}");
         } else {
             assert_eq!(*view, *full_decoded.tables[table.index()], "{table:?}");
         }
@@ -3451,8 +3484,8 @@ fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
 #[test]
 fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
     use crate::scope::CaptureMode;
-    let mut map = FrameInput::from(source(1, 0));
-    map.scope_to(CaptureMode::Map);
+    let map = map_input(source(1, 0));
+    assert_eq!(map.capture_mode().unwrap(), CaptureMode::Map);
     // A table Map leaves out, sampled anyway.
     let mut extra = map.clone();
     extra.tables[TableId::DivisionStatus.index()] =
@@ -3473,4 +3506,16 @@ fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
         assert!(input.capture_mode().is_err());
         assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
     }
+    // A frame naming no mode is Full and need not mark what Full leaves out.
+    let mut unnamed = FrameInput::from(source(1, 0));
+    unnamed.tables[TableId::DivisionModelInputs.index()] =
+        TableView::Complete(TableRows::empty(TableId::DivisionModelInputs)).into();
+    assert_eq!(unnamed.capture_mode().unwrap(), CaptureMode::Full);
+    let encoded = FrameEncoder::new().encode_input(unnamed, true).unwrap();
+    assert_eq!(
+        encoded.tables[TableId::DivisionModelInputs.index()],
+        TableUpdate::NotRecorded {
+            mode: CaptureMode::Full
+        }
+    );
 }

@@ -4516,3 +4516,216 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     );
     assert_eq!(packet.units[0].movement_organisation, Some(None));
 }
+
+/// The witness's columns for `sources` from a fresh census, as the collector's
+/// Map job reads them.
+fn model_inputs_test_capture(
+    memory: &impl crate::Memory,
+    sources: &[crate::cequipment_variant_pool::DivisionSource],
+) -> (super::ModelInputsReport, Vec<super::ModelInputsRow>) {
+    let mut seeds: Vec<_> = sources
+        .iter()
+        .map(|source| super::DivisionSeed {
+            pointer: source.pointer,
+            division: source.division,
+            ..super::DivisionSeed::default()
+        })
+        .collect();
+    super::capture_division_seeds(memory, &mut seeds);
+    let mut packet = super::StatusPacket::new(0).unwrap();
+    let mut rows = vec![super::ModelInputsRow::default(); seeds.len()];
+    let report = packet.capture_model_inputs(
+        memory,
+        0,
+        GS,
+        &seeds,
+        Outcome::Rows { len: seeds.len() },
+        &mut rows,
+    );
+    (report, rows)
+}
+
+/// DivisionStatus's model number, camouflage and exercising for A1, as the
+/// witness carries them; None when Status refuses the table.
+fn status_model_columns(memory: &PresentationMemory) -> Option<super::ModelInputsRow> {
+    let mut rows = [super::StatusRow::default(); 1];
+    let outcome = super::walk_status(
+        memory,
+        0,
+        GS,
+        &presentation_source(),
+        Outcome::Rows { len: 1 },
+        &mut rows,
+    );
+    (outcome == Outcome::Rows { len: 1 }).then_some(super::ModelInputsRow {
+        division: rows[0].division,
+        model_number: Some(rows[0].model_number),
+        camouflage: rows[0].camouflage,
+        exercising: Some(rows[0].exercising),
+    })
+}
+
+#[test]
+fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
+    use crate::{acclimatization_category, acclimatization_data};
+    let mut memory = presentation_fixture();
+    p32(
+        &mut memory.bytes,
+        A1 + carmy::RETAINED_VISUAL_VARIANT,
+        0x1ff,
+    );
+    let object = A1 + carmy::ACCLIMATIZATION;
+    array(
+        &mut memory.bytes,
+        object + acclimatization_data::DATA,
+        0x16000,
+        2,
+    );
+    p64(
+        &mut memory.bytes,
+        object + acclimatization_data::MAXIMUM,
+        15_000_000,
+    );
+    memory.globals.insert(
+        acclimatization_data::CAMO_SHOW_AT_RVA,
+        50_000_i64.to_le_bytes().to_vec(),
+    );
+    for (index, category, token, weight) in [
+        (0, 0x16100_usize, 7_u32, 9_000_000_u64),
+        (1, 0x16200, 8, 8_000_000),
+    ] {
+        p64(&mut memory.bytes, 0x16000 + index * 16, category as u64);
+        p64(&mut memory.bytes, 0x16008 + index * 16, weight);
+        p32(
+            &mut memory.bytes,
+            category + acclimatization_category::TOKEN,
+            token,
+        );
+    }
+    memory.globals.insert(
+        acclimatization_category::REGISTRY_RVA,
+        0x16800_u64.to_le_bytes().to_vec(),
+    );
+    array(&mut memory.bytes, 0x16800, 0x16900, 2);
+    p64(&mut memory.bytes, 0x16900, 0x16200);
+    p64(&mut memory.bytes, 0x16908, 0x16100);
+    let witness = |memory: &PresentationMemory| {
+        let (report, rows) = model_inputs_test_capture(memory, &presentation_source());
+        assert_eq!(report.outcome, Outcome::Rows { len: 1 });
+        (rows[0], report.training)
+    };
+    let shown = Some(super::Camouflage { category: Some(7) });
+
+    // Idle: the training byte is the only exercise read.
+    let idle = status_model_columns(&memory).unwrap();
+    assert_eq!(
+        (idle.model_number, idle.camouflage, idle.exercising),
+        (Some(0x1ff), shown, Some(0))
+    );
+    let observed = ObservedMovementMemory {
+        source: &memory,
+        reads: Default::default(),
+        fault: None,
+    };
+    let (report, rows) = model_inputs_test_capture(&observed, &presentation_source());
+    assert_eq!((rows[0], report.training), (idle, 0));
+    assert!(observed.reads.borrow().iter().all(|&address| {
+        address != A1 + carmy::DEPLOYMENT_TYPE
+            && address != A1 + carmy::EXPERIENCE
+            && address != 0x11000
+    }));
+
+    // Training above, then at, the minimum strength.
+    memory.bytes[G1 + corders_group::TRAINING] = 1;
+    let training = status_model_columns(&memory).unwrap();
+    assert_eq!(training.exercising, Some(1));
+    assert_eq!(witness(&memory), (training, 1));
+    p64(&mut memory.bytes, A1 + carmy::STRENGTH, 100_000);
+    let weak = status_model_columns(&memory).unwrap();
+    assert_eq!(weak.exercising, Some(0));
+    assert_eq!(witness(&memory), (weak, 1));
+    p64(&mut memory.bytes, A1 + carmy::STRENGTH, 150_000);
+
+    // An empty entry list shows no camouflage; an unreadable one refuses only it.
+    array(
+        &mut memory.bytes,
+        object + acclimatization_data::DATA,
+        0x16000,
+        0,
+    );
+    let empty = status_model_columns(&memory).unwrap();
+    assert_eq!(empty.camouflage, Some(super::Camouflage { category: None }));
+    assert_eq!(witness(&memory).0, empty);
+    array(
+        &mut memory.bytes,
+        object + acclimatization_data::DATA,
+        0x7fff_0000,
+        2,
+    );
+    let unreadable = status_model_columns(&memory).unwrap();
+    assert_eq!(
+        (unreadable.camouflage, unreadable.exercising),
+        (None, Some(1))
+    );
+    assert_eq!(witness(&memory).0, unreadable);
+    array(
+        &mut memory.bytes,
+        object + acclimatization_data::DATA,
+        0x16000,
+        2,
+    );
+
+    // A failed exercise read refuses Status whole, but only the witness's exercising.
+    let define = memory
+        .globals
+        .remove(&carmy::EXERCISE_MINIMUM_STRENGTH_RVA)
+        .unwrap();
+    assert_eq!(status_model_columns(&memory), None);
+    assert_eq!(
+        witness(&memory).0,
+        super::ModelInputsRow {
+            exercising: None,
+            ..training
+        }
+    );
+    memory
+        .globals
+        .insert(carmy::EXERCISE_MINIMUM_STRENGTH_RVA, define);
+
+    // A2 shares the training group but has no stat block: only its exercising fails.
+    let sources = [
+        presentation_source()[0],
+        crate::cequipment_variant_pool::DivisionSource {
+            pointer: A2,
+            division: handle(9, 51),
+            template: handle(0, 52),
+            country: 3,
+        },
+    ];
+    let (report, rows) = model_inputs_test_capture(&memory, &sources);
+    assert_eq!(
+        (report.outcome, report.training),
+        (Outcome::Rows { len: 2 }, 2)
+    );
+    assert_eq!(rows[0], training);
+    assert_eq!(
+        rows[1],
+        super::ModelInputsRow {
+            division: handle(9, 51),
+            model_number: Some(0),
+            camouflage: Some(super::Camouflage { category: None }),
+            exercising: None,
+        }
+    );
+
+    // A changed identity is not this division's row.
+    p64(&mut memory.bytes, A1 + cunit::HANDLE, handle(9, 9001));
+    assert_eq!(status_model_columns(&memory), None);
+    assert_eq!(
+        witness(&memory).0,
+        super::ModelInputsRow {
+            division: handle(9, 9000),
+            ..super::ModelInputsRow::default()
+        }
+    );
+}

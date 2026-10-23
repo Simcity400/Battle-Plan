@@ -571,15 +571,20 @@ fn legacy_frame_with_history(
         bytes.push(CaptureMode::Full.byte());
     }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
+    // A Full frame stores only what its format and Full record.
+    let stored = |table: TableId| {
+        history[table.index()].present(format.version())
+            && crate::scope::records(CaptureMode::Full, table)
+    };
     for table in TableId::ALL {
-        if history[table.index()].present(format.version()) {
+        if stored(table) {
             bytes.extend_from_slice(&0_u64.to_le_bytes());
         }
     }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     for table in TableId::ALL {
-        if !history[table.index()].present(format.version()) {
+        if !stored(table) {
             continue;
         }
         let rows = legacy_rows(table, hour, format);
@@ -602,18 +607,16 @@ fn replace_legacy_snapshot(
     table: TableId,
     update: &[u8],
 ) -> Vec<u8> {
+    let stored = |table: &TableId| {
+        table.last_change().present(format.version())
+            && crate::scope::records(CaptureMode::Full, *table)
+    };
     let prefix = 37
         + usize::from(format.version() >= rows::compatibility::CAPTURE_MODE_FORMAT)
-        + 8 * TableId::ALL
-            .into_iter()
-            .filter(|table| table.last_change().present(format.version()))
-            .count();
+        + 8 * TableId::ALL.into_iter().filter(stored).count();
     let mut input = Decoder::new(&payload[prefix..]);
     let mut range = None;
-    for id in TableId::ALL
-        .into_iter()
-        .filter(|table| table.last_change().present(format.version()))
-    {
+    for id in TableId::ALL.into_iter().filter(stored) {
         let start = payload.len() - input.remaining();
         assert_eq!(input.u8().unwrap(), 0);
         id.skip_snapshot(format.fields(id), &mut input).unwrap();

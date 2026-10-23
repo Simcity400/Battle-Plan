@@ -338,22 +338,45 @@ fn hourly_mesh_upload_preserves_the_inherited_convoy_clock() {
 fn recorded_stack_and_combat_roles_select_native_states() {
     use crate::map::entity_animation::*;
     let mut route = Route::default();
-    assert_eq!(animation_state(Some(&route), None, false), IDLE);
-    assert_eq!(animation_state(Some(&route), None, true), TRAINING);
+    assert_eq!(animation_state(Some(&route), None, Some(false)), Some(IDLE));
+    assert_eq!(
+        animation_state(Some(&route), None, Some(true)),
+        Some(TRAINING)
+    );
     route.stack_kind = 19;
-    assert_eq!(animation_state(Some(&route), None, true), IDLE);
+    assert_eq!(animation_state(Some(&route), None, Some(true)), Some(IDLE));
     route.stack_kind = 10;
-    assert_eq!(animation_state(Some(&route), None, false), DEFEND);
+    assert_eq!(
+        animation_state(Some(&route), None, Some(false)),
+        Some(DEFEND)
+    );
     route.stack_kind = 1;
     route.path = vec![42];
-    assert_eq!(animation_state(Some(&route), None, false), MOVE);
+    assert_eq!(animation_state(Some(&route), None, Some(false)), Some(MOVE));
     route.retreat = true;
-    assert_eq!(animation_state(Some(&route), None, false), RETREAT);
+    assert_eq!(
+        animation_state(Some(&route), None, Some(false)),
+        Some(RETREAT)
+    );
     route.combat_role = 1;
-    assert_eq!(animation_state(Some(&route), None, false), ATTACK);
+    assert_eq!(
+        animation_state(Some(&route), None, Some(false)),
+        Some(ATTACK)
+    );
     route.path.clear();
-    assert_eq!(animation_state(Some(&route), None, false), SUPPORT);
-    assert_eq!(animation_state(None, Some(DEFEND), false), DEFEND);
+    assert_eq!(
+        animation_state(Some(&route), None, Some(false)),
+        Some(SUPPORT)
+    );
+    assert_eq!(
+        animation_state(None, Some(DEFEND), Some(false)),
+        Some(DEFEND)
+    );
+    // An unknown exercise predicate decides only a standing state.
+    assert_eq!(animation_state(Some(&route), None, None), Some(SUPPORT));
+    assert_eq!(animation_state(None, Some(DEFEND), None), Some(DEFEND));
+    assert_eq!(animation_state(Some(&Route::default()), None, None), None);
+    assert_eq!(animation_state(None, None, None), None);
 }
 
 #[test]
@@ -364,8 +387,14 @@ fn animation_selection_prioritizes_combat_and_retreat_over_movement() {
         path: vec![2],
         ..Route::default()
     };
-    assert_eq!(animation_state(Some(&moving), None, false), MOVE);
-    assert_eq!(animation_state(Some(&moving), Some(ATTACK), false), ATTACK);
+    assert_eq!(
+        animation_state(Some(&moving), None, Some(false)),
+        Some(MOVE)
+    );
+    assert_eq!(
+        animation_state(Some(&moving), Some(ATTACK), Some(false)),
+        Some(ATTACK)
+    );
     assert_eq!(
         animation_state(
             Some(&Route {
@@ -373,9 +402,9 @@ fn animation_selection_prioritizes_combat_and_retreat_over_movement() {
                 ..moving.clone()
             }),
             Some(ATTACK),
-            false
+            Some(false)
         ),
-        SUPPORT
+        Some(SUPPORT)
     );
     assert_eq!(
         animation_state(
@@ -384,9 +413,9 @@ fn animation_selection_prioritizes_combat_and_retreat_over_movement() {
                 ..moving.clone()
             }),
             None,
-            false
+            Some(false)
         ),
-        RETREAT
+        Some(RETREAT)
     );
     assert_eq!(
         animation_state(
@@ -395,14 +424,17 @@ fn animation_selection_prioritizes_combat_and_retreat_over_movement() {
                 ..moving
             }),
             Some(ATTACK),
-            false
+            Some(false)
         ),
-        DEFEND
+        Some(DEFEND)
     );
-    assert_eq!(animation_state(None, Some(DEFEND), false), DEFEND);
     assert_eq!(
-        animation_state(Some(&Route::default()), None, true),
-        TRAINING
+        animation_state(None, Some(DEFEND), Some(false)),
+        Some(DEFEND)
+    );
+    assert_eq!(
+        animation_state(Some(&Route::default()), None, Some(true)),
+        Some(TRAINING)
     );
 }
 
@@ -654,6 +686,8 @@ fn prepare_frame() -> DecodedFrame {
 /// uses `aircraft_variant_model` and the
 /// conventional bridge, from a minimal content fixture and hour.
 mod aircraft_designer;
+
+mod model_witness;
 
 fn camouflaged_assets() -> UnitModelAssets {
     UnitModelAssets {

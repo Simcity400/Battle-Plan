@@ -363,6 +363,8 @@ fn map_selection_keeps_every_authored_trigger_operand_and_omits_product_only_inp
         TableId::DivisionHistory,
         TableId::DivisionPanelStats,
         TableId::DivisionLandInputs,
+        // A Map recording's land figures.
+        TableId::DivisionModelInputs,
         TableId::MapEvents,
         TableId::NuclearStrikes,
         TableId::TaskForceMapMotion,
@@ -750,6 +752,135 @@ fn production_prepared_seek_and_advance_preserve_movement_speed_inputs() {
             })
             .unwrap();
         assert_eq!(speed, i64::from(hour));
+    }
+}
+
+/// A Map recording's land figures read DivisionModelInputs where DivisionStatus is not
+/// recorded. Prepared playback keeps both the witness rows and DivisionStatus's marker
+/// through checkpoints, steps and seeks, while it projects the tables it does not select.
+#[test]
+fn production_prepared_map_playback_keeps_the_model_witness_and_its_marker() {
+    use crate::test_fixtures::{CAMPAIGN, records, scale_frame};
+    use replay::spool::Record;
+    use replay::{container::Replay, container::ReplayStream, container::SeekResult};
+    use replay_data::{
+        rows::DivisionCamouflage, rows::DivisionModelInputRow, scope, scope::CaptureMode,
+    };
+    let observed = |hour: Hour| {
+        let mut frame = scale_frame(1, hour, 1);
+        for table in TableId::ALL {
+            if table.last_change().present(replay_data::FORMAT_VERSION)
+                && !scope::records(CaptureMode::Map, table)
+            {
+                frame.tables[table.index()] = TableView::NotRecorded {
+                    mode: CaptureMode::Map,
+                }
+                .into();
+            }
+        }
+        frame.tables[TableId::DivisionModelInputs.index()] = if hour == 103 {
+            TableView::Unavailable {
+                reason: "synthetic failed census".into(),
+            }
+        } else {
+            TableView::Complete(TableRows::DivisionModelInputs(vec![
+                DivisionModelInputRow {
+                    division: 1,
+                    model_number: Some(hour % 3 - 1),
+                    camouflage: Some(DivisionCamouflage {
+                        category: (hour % 2 == 0).then_some(hour as u32),
+                    }),
+                    exercising: (hour != 101).then_some((hour % 2) as u8),
+                },
+            ]))
+        }
+        .into();
+        frame
+    };
+    let mut recorded = records(1, (100..=104).map(observed).collect());
+    let Record::SessionStart(start) = &mut recorded[0] else {
+        unreachable!("records begin with their session");
+    };
+    start.capture_mode = CaptureMode::Map;
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[recorded]).unwrap());
+    assert_eq!(replay.capture_mode, CaptureMode::Map);
+    let fixture = crate::prepared::series::tests::Fixture::new();
+    let selected = selected_tables();
+    let projected = TableId::UnitLeaderTraitExperience;
+    assert!(!selected.contains(&projected) && !scope::records(CaptureMode::Map, projected));
+    let mut builder =
+        Builder::new(NonZeroU32::new(2).unwrap(), selected, Progress::default()).unwrap();
+    builder.set_ranges(&replay);
+    let mut stream = ReplayStream::new(selected).unwrap();
+    for block in 0..replay.index.len() {
+        let mut writer = fixture.writer();
+        let mut count = 0;
+        stream
+            .next_block_with(
+                &replay,
+                |raw, frame| {
+                    count += 1;
+                    builder.accept(
+                        &mut writer,
+                        &raw,
+                        frame,
+                        Position {
+                            block,
+                            next_frame: count,
+                        },
+                    )
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    let mut reader = Reader::new(
+        store::Store::local(
+            uuid::Uuid::parse_str(fixture.directory.file_name().unwrap().to_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap(),
+        fixture.key.clone(),
+        builder.progress().clone(),
+        Arc::clone(&replay),
+        selected,
+    )
+    .unwrap();
+    let mut visits = vec![(100, reader.seek(1, 100).unwrap().unwrap())];
+    for hour in 101..=104 {
+        visits.push((hour, reader.advance(1, hour, |_| {}).unwrap().unwrap()));
+    }
+    for hour in [103, 101] {
+        visits.push((hour, reader.seek(1, hour).unwrap().unwrap()));
+    }
+    for (hour, current) in visits {
+        let Current::Frame(frame) = current else {
+            panic!("prepared frame at {hour}")
+        };
+        let SeekResult::Frame(expected) = replay.seek_selected(1, hour, None).unwrap() else {
+            panic!("recorded frame at {hour}")
+        };
+        assert!(!frame.recorded(TableId::DivisionStatus), "{hour}");
+        for table in [TableId::DivisionModelInputs, TableId::DivisionStatus] {
+            assert_eq!(
+                &*frame.tables[table.index()],
+                &*expected.tables[table.index()],
+                "{table:?} at {hour}"
+            );
+        }
+        assert_eq!(
+            &*frame.tables[TableId::DivisionModelInputs.index()],
+            &*observed(hour).tables[TableId::DivisionModelInputs.index()],
+            "{hour}"
+        );
+        assert!(
+            matches!(
+                &*frame.tables[projected.index()],
+                TableView::Unavailable { .. }
+            ),
+            "{hour}"
+        );
     }
 }
 

@@ -3078,6 +3078,7 @@ sample_struct!(DivisionSupplyFooter { asked: i64, received: i64, from_state: i64
     origins: Option<Vec<UnitSupplyOrigin>> });
 fixture!(DivisionPanelStatsRow, |key| {division: key as u64}, {panel_stats: [Option<i64>; 22], suppression: Recorded<Option<i64>>});
 fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: RetiredU8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<DivisionSupplyFooter>>, attrition_inputs: Recorded<Retired>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<Witnessed<DivisionAttackInputs>>, camouflage: Recorded<Option<DivisionCamouflage>>, attack_stats: Recorded<Option<DivisionAttackStats>>, weather_factor: Recorded<Option<i64>>, name_template: Recorded<Witnessed<u64>>, movement_stats: Recorded<Option<DivisionMovementStats>>, out_of_supply_days: Recorded<Option<i32>>, commander_modifiers: Recorded<Option<[Option<i64>; 5]>>, supply_ratio_exact: Recorded<Option<i64>>, supply_grace_exact: Recorded<Option<i64>>, experience: Recorded<Option<i64>>, pending_template: Recorded<Option<u64>>, officer_experience: Recorded<Option<i64>>, career_counter: Recorded<Option<i32>>, panel_source:Recorded<Option<[u64;3]>>, combat_movement: Recorded<Option<Option<i64>>>, organisation_exact: Recorded<Option<i64>>, maximum_organisation_exact: Recorded<Option<i64>>, commander_width_factor: Recorded<Option<i64>>});
+fixture!(DivisionModelInputRow, |key| {division: key as u64}, {model_number: Option<i32>, camouflage: Option<DivisionCamouflage>, exercising: Option<u8>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Leg vectors must stay aligned, so they cannot be sampled apart.
@@ -4227,6 +4228,9 @@ pub fn sample_extended_table(table: TableId, tick: usize) -> Option<TableRows> {
             TableRows::DivisionPanelStats(rows::<DivisionPanelStatsRow>(tick))
         }
         TableId::DivisionStatus => TableRows::DivisionStatus(rows::<DivisionStatusRow>(tick)),
+        TableId::DivisionModelInputs => {
+            TableRows::DivisionModelInputs(rows::<DivisionModelInputRow>(tick))
+        }
         TableId::DivisionEtaInputs => {
             TableRows::DivisionEtaInputs(rows::<DivisionEtaInputsRow>(tick))
         }
@@ -6494,6 +6498,7 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
     check_table::<DivisionMovementRow>(TableId::DivisionMovement);
     check_table::<DivisionPanelStatsRow>(TableId::DivisionPanelStats);
     check_table::<DivisionStatusRow>(TableId::DivisionStatus);
+    check_table::<DivisionModelInputRow>(TableId::DivisionModelInputs);
     check_table::<DivisionEtaInputsRow>(TableId::DivisionEtaInputs);
     check_table::<LandCombatProgressRow>(TableId::LandCombatProgress);
     check_table::<LandCombatSideRow>(TableId::LandCombatSides);

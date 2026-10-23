@@ -824,6 +824,24 @@ impl Drop for EarlyStepTimer<'_> {
     }
 }
 
+/// Map's DivisionModelInputs job since attach: the hours it read a census and
+/// the rows whose orders group trained, the only ones it reads exercise operands for.
+#[derive(Debug, Default)]
+pub struct ModelInputStats {
+    pub hours: AtomicU64,
+    pub training: AtomicU64,
+    pub training_peak: AtomicU64,
+}
+impl ModelInputStats {
+    fn record(&self, training: u32) {
+        self.hours.fetch_add(1, Ordering::Relaxed);
+        self.training
+            .fetch_add(u64::from(training), Ordering::Relaxed);
+        self.training_peak
+            .fetch_max(u64::from(training), Ordering::Relaxed);
+    }
+}
+
 /// Cumulative DivisionTemplateIcons rows whose model inputs failed, by
 /// reason, since attach. Fixed size: folding an hour in allocates nothing.
 #[derive(Clone, Copy, Debug, Default)]
@@ -1082,6 +1100,9 @@ pub struct Shared {
     pub frequency: u64,
     /// Immutable attachment setting; disabling adds no score operand reads.
     pub game_score_enabled: bool,
+    /// The session's capture mode, set before hook publication.
+    pub capture_mode: replay_data::scope::CaptureMode,
+    pub model_inputs: ModelInputStats,
     /// Every slot is allocated before hook installation and never moves.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
@@ -1472,6 +1493,8 @@ impl Shared {
             trampoline,
             frequency,
             game_score_enabled: sizing.extended.game_score.enabled,
+            capture_mode: replay_data::scope::CaptureMode::Full,
+            model_inputs: ModelInputStats::default(),
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
             callback_tail: std::array::from_fn(|_| AtomicI64::new(0)),
@@ -3602,6 +3625,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let mut intel_pending = None;
             let mut gated_pending = None;
             let mut province_unit_order_pending = None;
+            let mut model_inputs_pending = None;
             let mut ordinary_pending = None;
             let mut provinces_pending = None;
             let mut states_pending = None;
@@ -4310,6 +4334,16 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         batch.hold();
                         divisions_pending =
                             Some(queue!(acquisition::Job::Divisions(input_request)));
+                        if shared.capture_mode == replay_data::scope::CaptureMode::Map {
+                            model_inputs_pending =
+                                Some(queue!(acquisition::Job::DivisionModelInputs(
+                                    frame.extended.take_division_model_inputs_request(
+                                        shared.base,
+                                        state,
+                                        inputs.clone(),
+                                    )
+                                )));
+                        }
                         // Presentation needs only the country snapshot and the unit inputs
                         // installed above; it leaves as soon as those exist, its status
                         // side, movement and speed terms as independent jobs.
@@ -5464,6 +5498,15 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             let (province_order_request, province_order_report) =
                 collected!(province_unit_order_pending, ProvinceUnitOrder);
+            if let Some(pending) = model_inputs_pending {
+                let (request, _, failure) = completed!(pending, DivisionModelInputs);
+                if let Some(training) = frame
+                    .extended
+                    .restore_division_model_inputs_request(request, failure.is_none())
+                {
+                    shared.model_inputs.record(training);
+                }
+            }
             let province_unit_store = frame
                 .extended
                 .restore_province_unit_order_request(province_order_request, province_order_report);

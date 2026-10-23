@@ -2984,6 +2984,7 @@ mod tests {
     use replay_frame::frame::TableView;
 
     mod daily_status;
+    mod model_witness;
     mod read_ahead;
     mod status_bench;
     mod status_reads;
