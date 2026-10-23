@@ -4356,16 +4356,30 @@ impl AircraftPlan {
                 }
             ));
         }
-        let mut wings: BTreeMap<(u64, u32, &str, usize), usize> = BTreeMap::new();
-        for f in &self.flights {
-            *wings.entry((f.wing, f.region, &f.rig, f.mesh)).or_default() += 1;
-        }
-        for ((wing, region, rig, mesh), count) in wings {
+        {
             let library = assets.library();
-            lines.push(format!(
-                "Aircraft wing {wing}, region {region}: {count} slots, {rig}, {}, asset scale {}",
-                library.meshes[mesh].name, library.meshes[mesh].scale
-            ));
+            let mut wings = BTreeMap::new();
+            for (ordinal, f) in self.flights.iter().enumerate() {
+                let entry = wings
+                    .entry((
+                        f.wing,
+                        f.region,
+                        &f.rig,
+                        library.meshes[f.mesh].asset.clone(),
+                    ))
+                    .or_insert((ordinal, f.mesh, 0usize));
+                entry.2 += 1;
+            }
+            let mut wings: Vec<_> = wings.into_iter().collect();
+            wings.sort_by(|(a, av), (b, bv)| {
+                (a.0, a.1, a.2, av.0, &a.3).cmp(&(b.0, b.1, b.2, bv.0, &b.3))
+            });
+            for ((wing, region, rig, _), (_, mesh, count)) in wings {
+                lines.push(format!(
+                    "Aircraft wing {wing}, region {region}: {count} slots, {rig}, {}, asset scale {}",
+                    library.meshes[mesh].name, library.meshes[mesh].scale
+                ));
+            }
         }
         for (index, i) in self.placed(assets, 0.0) {
             let flight = &self.flights[index];

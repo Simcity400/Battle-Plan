@@ -830,8 +830,7 @@ impl TrainPlan {
         } = &mut self.scratch;
         placed.clear();
         if self.routes.is_empty() {
-            field.instances.clear();
-            field.groups.clear();
+            field.rebuild(&assets.library, placed, keyed, 128.0);
             return field;
         }
         let defines = &assets.defines;
@@ -2023,6 +2022,33 @@ pub(crate) mod tests {
             reused.field(&assets, time as f32 / 10.0);
         }
         assert_eq!(*reused.field(&assets, 45.0), expected);
+    }
+
+    #[test]
+    fn an_empty_route_field_drops_its_previous_source_spine() {
+        let assets = assets();
+        let mut plan = plan();
+        plan.scratch.field = ModelField::build(
+            &assets.library,
+            vec![(
+                0,
+                ModelInstance {
+                    scale: 1.,
+                    ..Default::default()
+                },
+            )],
+            128.,
+        );
+        assert_eq!(plan.scratch.field.native_order.len(), 1);
+        plan.routes.clear();
+        let field = plan.field(&assets, 1.);
+        assert!(
+            field.instances.is_empty() && field.groups.is_empty() && field.native_order.is_empty()
+        );
+        let mut pass = super::super::models::ModelPass::new(&assets.library, "trains");
+        pass.replace_field(&assets.library, field);
+        pass.animate(1., None, &[0.]);
+        assert!(pass.events.is_empty());
     }
 
     #[test]

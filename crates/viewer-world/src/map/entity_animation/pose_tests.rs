@@ -155,14 +155,14 @@ fn events_equal(a: &[Event], b: &[Event]) {
         assert_eq!(
             (
                 a.seed,
-                a.key,
+                a.key.clone(),
                 a.emission_end.map(f32::to_bits),
                 a.hidden,
                 a.state
             ),
             (
                 b.seed,
-                b.key,
+                b.key.clone(),
                 b.emission_end.map(f32::to_bits),
                 b.hidden,
                 b.state
@@ -327,4 +327,40 @@ fn native_only_callback_sampling_keeps_phase_finishes_and_events() {
         assert_eq!(full.root_clip_phase(&rig), direct.root_clip_phase(&rig));
         assert_eq!(full.event_refusals(), direct.event_refusals());
     }
+}
+
+#[test]
+fn event_seed_keeps_fixed_ordinary_and_direct_inputs() {
+    let ordinary = ModelInstance {
+        animation_seed: 0x1234_5678,
+        animation_epoch: 7,
+        ..Default::default()
+    };
+    let playing = Playing {
+        requested: "idle".into(),
+        clip: 2,
+        start: 0.,
+        event_time: 1.5,
+        phase_offset: 0.,
+        previous: None,
+        admitted_kept: BTreeMap::new(),
+        propagate: false,
+        random: Random::new(0),
+        cycle: 0,
+        completed: false,
+    };
+    assert_eq!(event_seed(ordinary, 3, 5, Some(&playing)), 0x1234_557d);
+    let direct = ModelInstance {
+        animation: DIRECT,
+        ..ordinary
+    };
+    assert_eq!(event_seed(direct, 3, 5, Some(&playing)), 0xec36_6d7c);
+    let changed_identity = ModelInstance {
+        animation_identity: 999,
+        ..direct
+    };
+    assert_eq!(
+        event_seed(changed_identity, 3, 5, Some(&playing)),
+        0xec36_6d7c
+    );
 }

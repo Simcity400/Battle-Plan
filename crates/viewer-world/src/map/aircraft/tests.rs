@@ -2399,3 +2399,45 @@ fn a_scenario_rig_the_mods_break_is_flown_from_the_recording() {
             .contains("aircraft scenario fighter_1_patrol_entity")
     );
 }
+
+#[test]
+fn aircraft_report_ties_use_effective_assets_not_mesh_bindings() {
+    use crate::map::models::order_tests;
+    let mut reference = None;
+    for order in order_tests::ORDERS {
+        let library = order_tests::library(order, true);
+        let mut assets = aircraft_with_planes(&ResolvedLayers::default(), &[]);
+        assets.library = RwLock::new(library);
+        let (mut plan, rigs) = one_run(
+            vec![height(3.), height(4.)],
+            1.,
+            false,
+            false,
+            Explode::Absent,
+        );
+        assets.rigs = rigs;
+        let prototype = plan.flights[0].clone();
+        plan.flights = ["zeta", "alpha", "middle", "alpha"]
+            .into_iter()
+            .map(|name| Flight {
+                mesh: assets.library().slot(name).unwrap(),
+                ..prototype.clone()
+            })
+            .collect();
+        plan.runs.clear();
+        let report = plan.report(&assets).join("\n").into_bytes();
+        let lines = String::from_utf8(report.clone()).unwrap();
+        let tied: Vec<_> = lines
+            .lines()
+            .filter(|line| line.starts_with("Aircraft wing "))
+            .collect();
+        assert_eq!(tied.len(), 3);
+        assert!(tied[1].contains("2 slots") && tied[1].contains(", alpha, "));
+        assert!(tied[0].contains(", zeta, ") && tied[2].contains(", middle, "));
+        if let Some(expected) = &reference {
+            assert_eq!(&report, expected);
+        } else {
+            reference = Some(report);
+        }
+    }
+}

@@ -64,7 +64,7 @@ impl Scene {
             if let Some(model) = model {
                 for event in &model.events {
                     let actual = crate::map::sound_events::key(&event.key);
-                    let mut canonical = event.key;
+                    let mut canonical = event.key.clone();
                     canonical.pass = layer as u64 + 1;
                     owner_keys.insert(actual, crate::map::sound_events::key(&canonical));
                 }

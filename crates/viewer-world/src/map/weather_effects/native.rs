@@ -215,18 +215,17 @@ impl EntitySimulations {
             }
             let runtimes = self.0.get_mut(name).expect("registered particle name");
             for (ordinal, emitter) in emitters.iter().enumerate() {
-                let runtime =
-                    runtimes
-                        .entry((event.key, ordinal))
-                        .or_insert_with(|| EntityRuntime {
-                            simulation: Simulation::cold(
-                                emitter,
-                                u64::from(event.seed) ^ ((ordinal as u64) << 32),
-                                event.transform.translation,
-                                event.age,
-                            ),
-                            seen: None,
-                        });
+                let runtime = runtimes
+                    .entry((event.key.clone(), ordinal))
+                    .or_insert_with(|| EntityRuntime {
+                        simulation: Simulation::cold(
+                            emitter,
+                            u64::from(event.seed) ^ ((ordinal as u64) << 32),
+                            event.transform.translation,
+                            event.age,
+                        ),
+                        seen: None,
+                    });
                 if runtime.seen.is_some() {
                     failure = Some(io::Error::other(format!(
                         "Map shader particles: 1 refused actor {name}: duplicate presentation identity {:?}",
@@ -306,7 +305,7 @@ impl EntitySimulations {
         };
         self.0.get(name).is_some_and(|runtimes| {
             runtimes
-                .range((event.key, 0)..=(event.key, usize::MAX))
+                .range((event.key.clone(), 0)..=(event.key.clone(), usize::MAX))
                 .any(|(_, runtime)| !runtime.simulation.particles.is_empty())
         })
     }
@@ -353,7 +352,7 @@ impl EntitySimulations {
             let (actor, event, scale, emitters, runtimes, out) = &tasks[at];
             let mut packets = out.lock().unwrap_or_else(|error| error.into_inner());
             for (ordinal, emitter) in emitters.iter().enumerate() {
-                let Some(runtime) = runtimes.get(&(event.key, ordinal)) else {
+                let Some(runtime) = runtimes.get(&(event.key.clone(), ordinal)) else {
                     continue;
                 };
                 let sim = &runtime.simulation;
@@ -1246,6 +1245,64 @@ mod tests {
     }
 
     #[test]
+    fn bake_order_independent_events_keep_particle_packets_and_duplicate_refusals() {
+        use crate::map::models::order_tests;
+        let emitters = (0..3)
+            .map(|at| {
+                let mut emitter = super::super::tests::activation_test_emitter();
+                emitter.registration = [2, 0, 2][at];
+                emitter.render.trail = at == 1;
+                emitter
+            })
+            .collect();
+        let entities = BTreeMap::from([("smoke".into(), (1., emitters))]);
+        let mut reference: Option<Vec<Vec<DrawPacket>>> = None;
+        let mut refusal = None;
+        for retained in [false, true] {
+            for order in order_tests::ORDERS {
+                let mut events = order_tests::events(order, retained);
+                let mut simulation = EntitySimulations::default();
+                let mut frames = Vec::new();
+                for age in [0., 0.13, 0.4, 0.8] {
+                    for event in &mut events {
+                        event.age = age;
+                    }
+                    simulation.prepare(&entities, &events).unwrap();
+                    let mut packets = Vec::new();
+                    simulation.packets(&entities, &events, &mut packets);
+                    super::order(&mut packets);
+                    frames.push(packets);
+                }
+                assert!(
+                    frames
+                        .last()
+                        .unwrap()
+                        .iter()
+                        .any(|packet| !packet.instances.is_empty())
+                );
+                if let Some(reference) = &reference {
+                    for (actual, expected) in frames.iter().zip(reference) {
+                        assert_packets_equal(actual, expected);
+                    }
+                } else {
+                    reference = Some(frames);
+                }
+                events.push(events[0].clone());
+                let error = simulation
+                    .prepare(&entities, &events)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains("duplicate presentation identity"));
+                if let Some(expected) = &refusal {
+                    assert_eq!(&error, expected);
+                } else {
+                    refusal = Some(error);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn borrowed_entity_ticks_and_packets_preserve_runtime_and_submission_order() {
         use crate::map::{entity_animation, models};
         let rig = entity_animation::pose_tests::rig(1., false, true);
@@ -1295,7 +1352,8 @@ mod tests {
                 .filter(|actor| frame < 4 || actor % 3 != 0)
                 .map(|actor| {
                     let mut event = prototype.clone();
-                    event.key.model = 40 - actor;
+                    event.key.model =
+                        crate::map::models::AssetKey::synthetic(&format!("actor_{}", 40 - actor));
                     event.seed = actor as u32;
                     event.definition.particle =
                         Some(if actor % 2 == 0 { "zeta" } else { "alpha" }.into());
@@ -1335,7 +1393,7 @@ mod tests {
                     let runtimes = &serial.0[event.definition.particle.as_ref().unwrap()];
                     (0..3).filter_map(move |ordinal| {
                         runtimes
-                            .contains_key(&(event.key, ordinal))
+                            .contains_key(&(event.key.clone(), ordinal))
                             .then_some(([1, actor, 0, 0], [2, 0, 2][ordinal]))
                     })
                 })
@@ -1556,13 +1614,16 @@ mod tests {
                     assert!(refusal.to_string().starts_with(
                         "Map shader particles: 1 refused actor wake: duplicate presentation identity"
                     ));
-                    first = events.iter().map(|event| (event.key, event.age)).collect();
+                    first = events
+                        .iter()
+                        .map(|event| (event.key.clone(), event.age))
+                        .collect();
                 }
                 let mut current = Vec::new();
-                for (event, &(key, age)) in events.iter().zip(&first) {
-                    assert_eq!(event.key, key, "reapplying idle keeps the live event");
+                for (event, (key, age)) in events.iter().zip(&first) {
+                    assert_eq!(&event.key, key, "reapplying idle keeps the live event");
                     assert!((event.age - age - (time - 1.)).abs() < 1e-5);
-                    let sim = &simulations.0["wake"][&(key, 0)].simulation;
+                    let sim = &simulations.0["wake"][&(key.clone(), 0)].simulation;
                     assert!((sim.age - (time - 1.)).abs() < 1e-5, "no respawn");
                     current.push((sim.seed, sim.particles.len()));
                 }

@@ -18,7 +18,9 @@ pub(super) struct Dispatch {
 
 struct Layout {
     instances: usize,
+    order: Vec<(usize, usize)>,
     groups: Vec<Group>,
+    visible: Vec<bool>,
     sources: Vec<Source>,
     tasks: Vec<Task>,
     supported: bool,
@@ -28,11 +30,11 @@ struct Group {
     mesh: usize,
     range: Range<u32>,
     rig: Option<Arc<Rig>>,
-    sources: Range<usize>,
 }
 
 #[derive(Clone, Copy)]
 struct Source {
+    group: usize,
     index: usize,
     key: Key,
     kind: u8,
@@ -70,7 +72,10 @@ fn key(mesh: usize, instance: ModelInstance) -> Key {
 
 impl Layout {
     fn matches(&self, rigs: &[Arc<Rig>], field: &ModelField) -> bool {
-        if self.instances != field.instances.len() || self.groups.len() != field.groups.len() {
+        if self.instances != field.instances.len()
+            || self.groups.len() != field.groups.len()
+            || !self.order.iter().copied().eq(field.source_order())
+        {
             return false;
         }
         for (cached, group) in self.groups.iter().zip(&field.groups) {
@@ -93,40 +98,44 @@ impl Layout {
     fn build(rigs: &[Arc<Rig>], field: &ModelField) -> Self {
         let mut layout = Self {
             instances: field.instances.len(),
+            order: Vec::new(),
             groups: Vec::with_capacity(field.groups.len()),
+            visible: Vec::with_capacity(field.groups.len()),
             sources: Vec::new(),
             tasks: Vec::new(),
             supported: true,
         };
+        layout.order.extend(field.source_order());
         for group in &field.groups {
             let rig = rigs.get(group.mesh);
-            let start = layout.sources.len();
-            if let Some(rig) = rig
-                && rig.nodes.iter().any(|node| !node.clips.is_empty())
-            {
-                // A mixed rig needs real palette slices. Keep its whole pass on the
-                // general path rather than change the order or ownership of those slices.
-                layout.supported &= rig.nodes.iter().all(|node| node.native.is_some());
-                for index in group.range.clone() {
-                    let Some(&instance) = field.instances.get(index as usize) else {
-                        // Let the original demand path decide whether an invalid range is
-                        // reached. Validation must not add a panic for an unseen group.
-                        layout.supported = false;
-                        break;
-                    };
-                    layout.sources.push(Source {
-                        index: index as usize,
-                        key: key(group.mesh, instance),
-                        kind: kind(instance),
-                        call: None,
-                    });
-                }
-            }
             layout.groups.push(Group {
                 mesh: group.mesh,
                 range: group.range.clone(),
                 rig: rig.map(Arc::clone),
-                sources: start..layout.sources.len(),
+            });
+        }
+        for &(group_at, index) in &layout.order {
+            let Some(group) = field.groups.get(group_at) else {
+                layout.supported = false;
+                break;
+            };
+            let Some(rig) = rigs.get(group.mesh) else {
+                continue;
+            };
+            if rig.nodes.iter().all(|node| node.clips.is_empty()) {
+                continue;
+            }
+            layout.supported &= rig.nodes.iter().all(|node| node.native.is_some());
+            let Some(&instance) = field.instances.get(index) else {
+                layout.supported = false;
+                break;
+            };
+            layout.sources.push(Source {
+                group: group_at,
+                index,
+                key: key(group.mesh, instance),
+                kind: kind(instance),
+                call: None,
             });
         }
         if !layout.supported {
@@ -191,6 +200,9 @@ impl Dispatch {
         if !layout.supported {
             return false;
         }
+        field.prepare_clock_order();
+        layout.visible.clear();
+        layout.visible.extend(field.groups.iter().map(shown));
         for task in &mut layout.tasks {
             task.alive = false;
             task.ordinary = false;
@@ -204,60 +216,50 @@ impl Dispatch {
             instance.palette_offset = 0;
         }
         let mut palette_end = palette_start;
-        for (cached, group) in layout.groups.iter().zip(&field.groups) {
-            // Keep even this callback in the original group order, before that group's
-            // clock callbacks. The callback itself is not part of the retained layout.
-            if !shown(group) {
+        for source in &layout.sources {
+            if !layout.visible[source.group] {
                 continue;
             }
-            for source in &layout.sources[cached.sources.clone()] {
-                let Some((task_at, call_at)) = source.call else {
-                    continue;
-                };
-                let instance = &mut field.instances[source.index];
-                if phase_only
-                    && field
-                        .clocks
-                        .get(&source.key)
-                        .is_none_or(|clock| clock.phase.is_none())
-                {
-                    continue;
-                }
-                let request = field.default_states.get(&source.key).copied();
-                if source.kind == 1 && request.is_none() {
-                    continue;
-                }
-                let task = &mut layout.tasks[task_at];
-                let player = players.entry(source.key).or_insert_with(|| {
-                    if request.is_some() {
-                        entity_animation::Player::native_choice(&task.rig)
-                    } else {
-                        entity_animation::Player::new(&task.rig)
-                    }
-                });
-                instance.palette_offset = (palette_end - task.rig.start) as u32;
-                palette_end += task.rig.end - task.rig.start;
-                let call = &mut task.calls[call_at];
-                call.active = true;
-                call.instance = ModelInstance {
-                    animation: request.unwrap_or(instance.animation),
-                    ..*instance
-                };
-                let clock = field.clocks.get(&source.key);
-                call.clocked = clock.is_some();
-                if let Some(clock) = clock {
-                    player.evaluate_clock(
-                        &task.rig,
-                        call.instance,
-                        clock,
-                        &mut [],
-                        &mut call.events,
-                    );
-                } else {
-                    task.ordinary = true;
-                }
-                task.alive = true;
+            let Some((task_at, call_at)) = source.call else {
+                continue;
+            };
+            let instance = &mut field.instances[source.index];
+            if phase_only
+                && field
+                    .clocks
+                    .get(&source.key)
+                    .is_none_or(|clock| clock.phase.is_none())
+            {
+                continue;
             }
+            let request = field.default_states.get(&source.key).copied();
+            if source.kind == 1 && request.is_none() {
+                continue;
+            }
+            let task = &mut layout.tasks[task_at];
+            let player = players.entry(source.key).or_insert_with(|| {
+                if request.is_some() {
+                    entity_animation::Player::native_choice(&task.rig)
+                } else {
+                    entity_animation::Player::new(&task.rig)
+                }
+            });
+            instance.palette_offset = (palette_end - task.rig.start) as u32;
+            palette_end += task.rig.end - task.rig.start;
+            let call = &mut task.calls[call_at];
+            call.active = true;
+            call.instance = ModelInstance {
+                animation: request.unwrap_or(instance.animation),
+                ..*instance
+            };
+            let clock = field.clocks.get(&source.key);
+            call.clocked = clock.is_some();
+            if let Some(clock) = clock {
+                player.evaluate_clock(&task.rig, call.instance, clock, &mut [], &mut call.events);
+            } else {
+                task.ordinary = true;
+            }
+            task.alive = true;
         }
         let run_span;
         {
@@ -292,21 +294,22 @@ impl Dispatch {
                 let call = &mut layout.tasks[task].calls[call];
                 if call.active {
                     events.extend(call.events.drain(..).map(|mut event| {
-                        event.key.model = source.key.0;
+                        event.key.model = field.groups[source.group].asset.clone();
                         event
                     }));
                 }
             }
         }
-        for (key, clock) in &field.clocks {
-            if clock.phase.is_none() || layout.alive(key) {
+        for key in field.clock_order() {
+            let clock = &field.clocks[&key];
+            if clock.phase.is_none() || layout.alive(&key) {
                 continue;
             }
             let Some(rig) = rigs.get(key.0) else {
                 continue;
             };
             players
-                .entry(*key)
+                .entry(key)
                 .or_insert_with(|| entity_animation::Player::new(rig))
                 .advance_hidden(rig, clock);
         }

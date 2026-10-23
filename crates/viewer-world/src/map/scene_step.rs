@@ -57,7 +57,7 @@ impl Presentation<'_> {
         size: [u32; 2],
         animation_time: f32,
         rails_shown: bool,
-    ) -> BTreeSet<(usize, u32, u32)> {
+    ) -> BTreeSet<crate::map::models::ActorAddress> {
         let Self {
             graphics,
             mut aircraft,
@@ -246,11 +246,11 @@ impl Presentation<'_> {
             pass.update_placed(placed, 256.);
             drop(place_span);
             let clocks_span = viewer_foundation::profiling::span("map_frame_clocks");
-            struck.extend(clocks.keys().copied());
             pass.set_clocks(clocks);
             drop(clocks_span);
             let _animate_span = viewer_foundation::profiling::span("map_frame_animate");
             pass.animate_with_workers(animation_time, None, &[0.], workers);
+            struck.extend(pass.clock_actor_addresses());
         }
         struck
     }

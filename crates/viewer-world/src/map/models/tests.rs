@@ -191,6 +191,7 @@ fn a_pass_over_an_empty_library_takes_the_stack_of_its_later_bakes() {
 fn merging_a_shard_rebases_every_palette_slot() {
     let joint = PaletteJoint::from_transform(&mesh::Transform::IDENTITY);
     let shard_mesh = ModelMesh {
+        asset: crate::map::models::AssetKey::synthetic("shard"),
         name: "shard".to_owned(),
         path: "shard.mesh".to_owned(),
         scale: 1.0,
@@ -380,6 +381,7 @@ fn a_posed_vertex_widens_the_reach_where_the_bind_box_would_not() {
 fn library_with_one_mesh(radius: f32) -> ModelLibrary {
     ModelLibrary {
         meshes: vec![ModelMesh {
+            asset: crate::map::models::AssetKey::synthetic("m"),
             name: "m".into(),
             path: "m.mesh".into(),
             scale: 1.0,
@@ -1327,7 +1329,10 @@ fn a_refused_visual_mod_entity_is_drawn_from_the_recording() {
     assert_eq!(pass.field.groups[0].mesh, counterpart);
     let (seed, identity) = ModelInstance::default().animation_key();
     pass.set_hidden([(shown, seed, identity)].into());
-    assert!(pass.hides((shown, seed, identity)) && pass.hides((counterpart, seed, identity)));
+    assert!(
+        pass.hides(pass.actor_address((shown, seed, identity)))
+            && pass.hides(pass.actor_address((counterpart, seed, identity)))
+    );
     assert_eq!(
         pass.root_play_position((shown, seed, identity)),
         pass.root_play_position((counterpart, seed, identity))
@@ -1459,4 +1464,89 @@ fn retained_placement_storage_keeps_group_ties_order_and_replacement_state() {
             )
         );
     }
+}
+
+#[test]
+fn visual_fallback_and_refusal_identities_survive_opposite_demand_orders() {
+    let (root, layers) = visual_stack(
+        "stable_identity",
+        &[
+            (
+                "base/gfx/models/meshes.gfx",
+                br#"objectTypes = {
+                pdxmesh = { name = body file = "gfx/models/plane.mesh" scale = 1 }
+                pdxmesh = { name = hull file = "gfx/models/tank.mesh" scale = 1 }
+                pdxmesh = { name = absent file = "gfx/models/absent.mesh" scale = 1 }
+            }"#,
+            ),
+            ("base/gfx/models/plane.mesh", &triangle_mesh(1.)),
+            (
+                "base/gfx/entities/actors.asset",
+                br#"
+            entity = { name = alpha pdxmesh = body }
+            entity = { name = zeta pdxmesh = body }
+            entity = { name = retry pdxmesh = body }
+            entity = { name = refused pdxmesh = absent }
+        "#,
+            ),
+            ("art/gfx/models/plane.mesh", &triangle_mesh(2.)),
+            (
+                "art/gfx/entities/actors.asset",
+                br#"
+            entity = { name = alpha pdxmesh = body }
+            entity = { name = zeta pdxmesh = body }
+            entity = { name = retry pdxmesh = hull }
+            entity = { name = refused pdxmesh = absent }
+        "#,
+            ),
+        ],
+    );
+    let presentation = layers.presentation();
+    let roster = presentation.descriptor_roster().unwrap();
+    let mut reference = None;
+    for names in [
+        ["zeta", "retry", "alpha", "refused"],
+        ["refused", "alpha", "retry", "zeta"],
+    ] {
+        let mut warnings = Vec::new();
+        let library = ModelLibrary::load(
+            presentation,
+            Decode::default(),
+            &roster.descriptors,
+            &names.map(str::to_owned),
+            &mut warnings,
+        )
+        .unwrap();
+        let mut identities = BTreeMap::new();
+        for name in ["alpha", "retry", "zeta"] {
+            let slot = library.slot(name).unwrap();
+            let counterpart = library
+                .alternatives
+                .get(&slot)
+                .map(|&at| library.meshes[at].asset.clone());
+            if name != "retry" {
+                let counterpart = counterpart
+                    .as_ref()
+                    .expect("a visual mesh has its recorded counterpart");
+                assert_ne!(&library.meshes[slot].asset, counterpart);
+                let recorded = presentation.without_overlays().unwrap();
+                let mut expected =
+                    AssetKey::selected(name, identity::namespace(&recorded), Decode::default());
+                expected.recorded(true);
+                assert_eq!(counterpart, &expected);
+            } else {
+                assert!(counterpart.is_none());
+            }
+            identities.insert(name, (library.meshes[slot].asset.clone(), counterpart));
+        }
+        assert!(library.slot("refused").is_none());
+        assert!(library.failed["refused"].contains("absent"));
+        let observed = (identities, library.failed.clone());
+        if let Some(expected) = &reference {
+            assert_eq!(&observed, expected);
+        } else {
+            reference = Some(observed);
+        }
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }

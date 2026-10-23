@@ -33,6 +33,7 @@ fn append_rig(library: &mut ModelLibrary, slot: usize) {
     library.palette.resize(rig.end, PaletteJoint::IDENTITY);
     library.rigs.push(Arc::new(rig));
     library.meshes.push(ModelMesh {
+        asset: crate::map::models::AssetKey::synthetic(&format!("synthetic_{slot}")),
         name: format!("synthetic_{slot}"),
         path: String::new(),
         scale: 1.,
@@ -181,7 +182,8 @@ fn assert_frame(
         let mut source_calls = Vec::new();
         let mut cursor = pass.default_palette.len();
         let mut supported = true;
-        for group in &before.groups {
+        for (group_at, index) in before.source_order() {
+            let group = &before.groups[group_at];
             let Some(rig) = pass.rigs.get(group.mesh) else {
                 continue;
             };
@@ -189,30 +191,28 @@ fn assert_frame(
                 continue;
             }
             supported &= rig.nodes.iter().all(|node| node.native.is_some());
-            for index in group.range.clone() {
-                let mut instance = before.instances[index as usize];
-                let key = key(group.mesh, instance);
-                let class = match instance.animation {
-                    entity_animation::STOPPED => 0,
-                    entity_animation::DEFAULT_STATE => 1,
-                    _ => 2,
-                };
-                sources.push((index as usize, key, class));
-                let active = shown(group)
-                    && class != 0
-                    && (!phase_only || clocks.get(&key).is_some_and(|clock| clock.phase.is_some()))
-                    && (class != 1 || defaults.contains_key(&key));
-                source_calls.push(if active {
-                    instance.palette_offset = (cursor - rig.start) as u32;
-                    instances[index as usize].palette_offset = instance.palette_offset;
-                    cursor += rig.end - rig.start;
-                    instance.animation = defaults.get(&key).copied().unwrap_or(instance.animation);
-                    alive.insert(key);
-                    Some(instance)
-                } else {
-                    None
-                });
-            }
+            let mut instance = before.instances[index];
+            let key = key(group.mesh, instance);
+            let class = match instance.animation {
+                entity_animation::STOPPED => 0,
+                entity_animation::DEFAULT_STATE => 1,
+                _ => 2,
+            };
+            sources.push((index as usize, key, class));
+            let active = shown(group)
+                && class != 0
+                && (!phase_only || clocks.get(&key).is_some_and(|clock| clock.phase.is_some()))
+                && (class != 1 || defaults.contains_key(&key));
+            source_calls.push(if active {
+                instance.palette_offset = (cursor - rig.start) as u32;
+                instances[index as usize].palette_offset = instance.palette_offset;
+                cursor += rig.end - rig.start;
+                instance.animation = defaults.get(&key).copied().unwrap_or(instance.animation);
+                alive.insert(key);
+                Some(instance)
+            } else {
+                None
+            });
         }
         let mut players = alive.clone();
         players.extend(clocks.iter().filter_map(|(key, clock)| {
@@ -295,7 +295,11 @@ fn assert_frame(
         }
         for event in &pass.events {
             assert_eq!(event.key.pass, pass.event_namespace);
-            assert!(alive.contains(&event.key.actor()));
+            assert!(
+                alive
+                    .iter()
+                    .any(|&key| pass.actor_address(key) == event.key.actor())
+            );
             assert_eq!(event.definition.particle.as_deref(), Some("smoke"));
             assert!(event.age.is_finite());
             assert!(
@@ -473,6 +477,12 @@ fn retained_dispatch_preserves_source_calls_and_outputs_across_900_frames() {
             field.groups.insert(2, duplicate); // Overlapping ranges, not just duplicate keys.
             let shift = roll as usize % field.groups.len();
             field.groups.rotate_left(shift);
+            field.native_order = field
+                .groups
+                .iter()
+                .enumerate()
+                .flat_map(|(at, group)| group.range.clone().map(move |index| (at, index as usize)))
+                .collect();
             counts[4] += 1;
         }
         if frame.is_multiple_of(43) {

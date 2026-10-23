@@ -3,6 +3,7 @@ use super::*;
 fn append(library: &mut ModelLibrary) {
     let slot = library.meshes.len();
     library.meshes.push(ModelMesh {
+        asset: crate::map::models::AssetKey::synthetic(&(format!("route_{slot}"))),
         name: format!("route_{slot}"),
         path: String::new(),
         scale: 1.,

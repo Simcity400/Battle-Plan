@@ -11,8 +11,12 @@ use viewer_foundation::debug_fields;
 use viewer_foundation::map::textures::load_file;
 use viewer_foundation::profiling::BuilderSpans;
 mod animation_dispatch;
-mod skeleton_source;
+mod identity;
+#[cfg(test)]
+pub(crate) mod order_tests;
+pub use identity::{ActorAddress, AssetKey};
 mod native;
+mod skeleton_source;
 pub use native::{
     Inputs as NativeInputs, ObjectConstants as NativeObjectConstants, Queue as NativeQueue,
 };
@@ -182,6 +186,7 @@ pub struct ModelMaterial {
 /// One resolved mesh: its LOD ladder and the bounding radius a cull needs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelMesh {
+    pub asset: AssetKey,
     /// The name the layer asked for: an entity name or a pdxmesh name.
     pub name: String,
     /// The `.mesh` the descriptor named.
@@ -259,6 +264,7 @@ pub struct ModelLibrary {
     /// Whether this library's entities stand in for the same names' entities they are merged
     /// with ([`Self::isolated`]).
     alternative: bool,
+    asset_namespace: Option<Arc<[identity::ContentLayer]>>,
 }
 debug_fields!(ModelLibrary(this) {
     decode, palette, meshes, materials, textures, spaces, index, paths, animations, rigs, attachment_refusals, failed
@@ -440,6 +446,7 @@ impl ModelLibrary {
     ) -> io::Result<Self> {
         Self::load_with_spans(
             layers,
+            layers,
             decode,
             descriptors,
             names,
@@ -462,6 +469,7 @@ impl ModelLibrary {
     ) -> io::Result<Self> {
         Self::load_with_spans(
             layers,
+            layers,
             decode,
             descriptors,
             names,
@@ -476,6 +484,7 @@ impl ModelLibrary {
     #[allow(clippy::too_many_arguments)]
     fn load_with_spans(
         layers: &ResolvedLayers,
+        session: &ResolvedLayers,
         decode: Decode,
         descriptors: &Descriptors,
         names: &[String],
@@ -496,13 +505,16 @@ impl ModelLibrary {
         // An empty list bakes an empty library: `chunks` needs a nonzero
         // size and then yields no shard.
         let chunk = unique.len().div_ceil(shards).max(1);
+        let asset_namespace = identity::namespace_for(layers, session);
         let baked = std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for shard_names in unique.chunks(chunk).collect::<Vec<_>>() {
                 let mut worker = spans.fork();
+                let asset_namespace = Arc::clone(&asset_namespace);
                 handles.push(scope.spawn(move || {
                     let baked = worker.measure(labels.worker, |_| {
                         let mut library = ModelLibrary {
+                            asset_namespace: Some(asset_namespace),
                             decode,
                             ..Default::default()
                         };
@@ -556,6 +568,7 @@ impl ModelLibrary {
                     .collect();
                 let baked = Self::load_with_spans(
                     &recorded,
+                    session,
                     decode,
                     &roster.descriptors,
                     &names,
@@ -586,6 +599,7 @@ impl ModelLibrary {
             if !visual.is_empty() {
                 let counterparts = Self::load_with_spans(
                     &recorded,
+                    session,
                     decode,
                     &roster.descriptors,
                     &visual,
@@ -712,6 +726,7 @@ impl ModelLibrary {
         };
         let baked = Self::load_with_spans(
             &recorded,
+            layers,
             decode,
             &roster.descriptors,
             names,
@@ -872,6 +887,7 @@ impl ModelLibrary {
             })
             .collect();
         for mesh in &mut self.meshes {
+            mesh.asset.recorded(alternative);
             for descriptor in &mut mesh.native {
                 for part in descriptor.lods.iter_mut().flatten() {
                     part.geometry_key.0 = apart(&part.geometry_key.0);
@@ -944,7 +960,11 @@ impl ModelLibrary {
             *self.attachment_refusals.entry(reason).or_default() += count;
         }
         self.index.insert(name.to_owned(), self.meshes.len());
+        let namespace = self
+            .asset_namespace
+            .get_or_insert_with(|| identity::namespace(layers));
         self.meshes.push(ModelMesh {
+            asset: AssetKey::selected(name, Arc::clone(namespace), self.decode),
             name: name.to_owned(),
             path,
             scale,
@@ -1410,7 +1430,9 @@ impl ModelLibrary {
         self.composing_visual |= layers.supplied_by_visual_mod(path);
         if !self.animations.contains_key(path) {
             let read = |stack: &ResolvedLayers| -> Result<mesh::Animation, String> {
-                let bytes = stack.read_uncovered(path).map_err(|error| error.to_string())?;
+                let bytes = stack
+                    .read_uncovered(path)
+                    .map_err(|error| error.to_string())?;
                 mesh::read_animation(&bytes).map_err(|error| error.to_string())
             };
             let decoded = match read(layers) {
@@ -1418,10 +1440,7 @@ impl ModelLibrary {
                 Err(why) => {
                     // An animation the visual mods break is the recording's own, named; one
                     // neither stack reads is refused by name.
-                    match layers
-                        .without_overlays()
-                        .map(|recorded| read(&recorded))
-                    {
+                    match layers.without_overlays().map(|recorded| read(&recorded)) {
                         Some(Ok(animation)) => {
                             layers.note_overlay_refusal(format!("animation {path} ({why})"));
                             Some(Arc::new(animation))
@@ -1560,6 +1579,7 @@ fn skinned(
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelGroup {
     pub mesh: usize,
+    pub asset: AssetKey,
     /// Slice of [`ModelField::instances`].
     pub range: Range<u32>,
     /// World bounds of the group's instances, `[x0, z0, x1, z1]`, already
@@ -1573,19 +1593,126 @@ pub struct ModelGroup {
 pub type KeyedInstance = ((usize, i32, i32), ModelInstance, usize);
 
 /// The placed instances of one layer.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ModelField {
     pub instances: Vec<ModelInstance>,
     pub groups: Vec<ModelGroup>,
     /// (group, instance) in submission order, before the port's mesh/tile sort.
     pub native_order: Vec<(usize, usize)>,
+    tile: Option<f32>,
+    bindings: BTreeMap<usize, AssetKey>,
+    producer_order: Vec<(ClockKey, usize)>,
+    producer_scratch: Vec<(ClockKey, usize)>,
+    clock_priorities: BTreeMap<ClockKey, usize>,
+    clock_sources: Vec<ClockKey>,
+    ordered_clocks: Vec<(ClockKey, usize, Option<AssetKey>)>,
+    group_work: Vec<Option<usize>>,
+    #[cfg(test)]
+    clock_order_builds: usize,
+    #[cfg(test)]
+    producer_sorts: usize,
     pub clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>,
     /// This frame's default-state actors and the state request each plays
     /// ([`ModelPass::prepare_default_states`]).
     pub default_states: BTreeMap<(usize, u32, u32), u32>,
 }
 
+type ClockKey = (usize, u32, u32);
+
+fn source_order<'a>(
+    native_order: &'a [(usize, usize)],
+    groups: &'a [ModelGroup],
+) -> impl Iterator<Item = (usize, usize)> + 'a {
+    native_order.iter().copied().chain(
+        groups
+            .iter()
+            .enumerate()
+            .take(if native_order.is_empty() {
+                groups.len()
+            } else {
+                0
+            })
+            .flat_map(|(group, entry)| {
+                entry
+                    .range
+                    .clone()
+                    .map(move |index| (group, index as usize))
+            }),
+    )
+}
+
+impl PartialEq for ModelField {
+    fn eq(&self, other: &Self) -> bool {
+        self.instances == other.instances
+            && self.groups == other.groups
+            && self.native_order == other.native_order
+            && self.tile == other.tile
+            && self.clocks == other.clocks
+            && self.default_states == other.default_states
+            && self.producer_order == other.producer_order
+    }
+}
+
 impl ModelField {
+    fn source_order(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        source_order(&self.native_order, &self.groups)
+    }
+
+    fn producer_ordinal(&self, key: ClockKey) -> usize {
+        self.producer_order
+            .binary_search_by_key(&key, |entry| entry.0)
+            .map(|at| self.producer_order[at].1)
+            .unwrap_or(usize::MAX)
+    }
+
+    fn prepare_clock_order(&mut self) {
+        let phase_keys = || {
+            self.clocks
+                .iter()
+                .filter_map(|(key, clock)| clock.phase.is_some().then_some(*key))
+        };
+        if phase_keys().eq(self.clock_sources.iter().copied())
+            && self.ordered_clocks.iter().all(|(key, ordinal, asset)| {
+                *ordinal
+                    == self
+                        .clock_priorities
+                        .get(key)
+                        .copied()
+                        .unwrap_or_else(|| self.producer_ordinal(*key))
+                    && asset.as_ref() == self.bindings.get(&key.0)
+            })
+        {
+            return;
+        }
+        self.clock_sources.clear();
+        self.clock_sources.extend(
+            self.clocks
+                .iter()
+                .filter_map(|(key, clock)| clock.phase.is_some().then_some(*key)),
+        );
+        self.ordered_clocks.clear();
+        for &key in &self.clock_sources {
+            let ordinal = self
+                .clock_priorities
+                .get(&key)
+                .copied()
+                .unwrap_or_else(|| self.producer_ordinal(key));
+            self.ordered_clocks
+                .push((key, ordinal, self.bindings.get(&key.0).cloned()));
+        }
+        self.ordered_clocks.sort_unstable_by(|a, b| {
+            (a.1, &a.2, a.0.1, a.0.2, a.0.0).cmp(&(b.1, &b.2, b.0.1, b.0.2, b.0.0))
+        });
+        #[cfg(test)]
+        {
+            self.clock_order_builds += 1;
+        }
+    }
+
+    fn clock_order(&self) -> impl Iterator<Item = ClockKey> + '_ {
+        self.ordered_clocks.iter().map(|entry| entry.0)
+    }
+
     /// Sorts placed instances into one group per (mesh, tile) and records each
     /// group's bounds.
     ///
@@ -1630,8 +1757,18 @@ impl ModelField {
         keyed: &mut Vec<KeyedInstance>,
         tile: f32,
     ) {
-        // Sorted once instead of a tree insert per instance: the same key
-        // order the map held, without an allocation per instance.
+        self.rebuild_meshes_inner(meshes, placed, keyed, tile, false);
+    }
+
+    fn rebuild_meshes_inner(
+        &mut self,
+        meshes: &[ModelMesh],
+        placed: &mut Vec<(usize, ModelInstance)>,
+        keyed: &mut Vec<KeyedInstance>,
+        tile: f32,
+        regroup: bool,
+    ) {
+        // Binding slots never decide storage or submission order.
         keyed.clear();
         keyed.extend(
             placed
@@ -1649,19 +1786,102 @@ impl ModelField {
                     )
                 }),
         );
-        keyed.sort_unstable_by_key(|entry| (entry.0, entry.2));
+        keyed.sort_unstable_by(|a, b| {
+            let ((am, ax, az), _, ao) = a;
+            let ((bm, bx, bz), _, bo) = b;
+            (
+                meshes.get(*am).map(|mesh| &mesh.asset),
+                meshes.get(*am).is_none().then_some(am),
+                ax,
+                az,
+                ao,
+            )
+                .cmp(&(
+                    meshes.get(*bm).map(|mesh| &mesh.asset),
+                    meshes.get(*bm).is_none().then_some(bm),
+                    bx,
+                    bz,
+                    bo,
+                ))
+        });
         let field = self;
         field.instances.clear();
         field.groups.clear();
+        field.tile = Some(tile);
         field.clocks.clear();
+        let mut bindings_changed = false;
+        let mut producers_changed = false;
+        let mut first_ordinals = 0;
+        let mut previous_mesh = None;
+        for &((mesh, _, _), instance, ordinal) in keyed.iter() {
+            if previous_mesh != Some(mesh) {
+                if let Some(asset) = meshes.get(mesh) {
+                    let binding = field.bindings.entry(mesh).or_default();
+                    if *binding != asset.asset {
+                        *binding = asset.asset.clone();
+                        bindings_changed = true;
+                    }
+                }
+                previous_mesh = Some(mesh);
+            }
+            if !regroup {
+                let (seed, identity) = instance.animation_key();
+                let key = (mesh, seed, identity);
+                match field
+                    .producer_order
+                    .binary_search_by_key(&key, |entry| entry.0)
+                {
+                    Ok(at) => {
+                        let first = field.producer_order[at].1;
+                        first_ordinals += usize::from(first == ordinal);
+                        producers_changed |= ordinal < first;
+                    }
+                    Err(_) => producers_changed = true,
+                }
+            }
+        }
+        producers_changed |= !regroup && first_ordinals != field.producer_order.len();
+        if producers_changed {
+            field.producer_scratch.clear();
+            field.producer_scratch.extend(keyed.iter().map(
+                |&((mesh, _, _), instance, ordinal)| {
+                    let (seed, identity) = instance.animation_key();
+                    ((mesh, seed, identity), ordinal)
+                },
+            ));
+            field.producer_scratch.sort_unstable();
+            field.producer_scratch.dedup_by_key(|entry| entry.0);
+            std::mem::swap(&mut field.producer_order, &mut field.producer_scratch);
+            #[cfg(test)]
+            {
+                field.producer_sorts += 1;
+            }
+        }
+        if bindings_changed || producers_changed {
+            field.clock_priorities.clear();
+        }
         field.native_order.resize(keyed.len(), (0, 0));
         let mut cursor = 0;
         while cursor < keyed.len() {
-            // Keys sort mesh first, so one run of equal keys is one of the
-            // map's groups, in the map's iteration order.
+            // Equal effective assets and tiles retain producer placement order.
             let (mesh, _, _) = keyed[cursor].0;
             let start = cursor;
-            while cursor < keyed.len() && keyed[cursor].0 == keyed[start].0 {
+            while cursor < keyed.len() {
+                let (next, x, z) = keyed[cursor].0;
+                let (_, first_x, first_z) = keyed[start].0;
+                if (
+                    meshes.get(next).map(|mesh| &mesh.asset),
+                    meshes.get(next).is_none().then_some(next),
+                    x,
+                    z,
+                ) != (
+                    meshes.get(mesh).map(|mesh| &mesh.asset),
+                    meshes.get(mesh).is_none().then_some(mesh),
+                    first_x,
+                    first_z,
+                ) {
+                    break;
+                }
                 cursor += 1;
             }
             let radius = meshes.get(mesh).map_or(0.0, |entry| entry.radius);
@@ -1678,6 +1898,10 @@ impl ModelField {
             let count = (cursor - start) as f64;
             field.groups.push(ModelGroup {
                 mesh,
+                asset: meshes
+                    .get(mesh)
+                    .map(|mesh| mesh.asset.clone())
+                    .unwrap_or_default(),
                 range: instances_start..field.instances.len() as u32,
                 bounds,
                 centroid: [
@@ -1761,6 +1985,23 @@ impl ClockRecord {
             requests: Arc::clone(&self.requests),
         }
     }
+}
+
+#[derive(Default)]
+struct ClockRoutes {
+    effective: bool,
+    redirects: BTreeMap<usize, usize>,
+    sources: Vec<ClockKey>,
+    routes: Vec<ClockRoute>,
+    #[cfg(test)]
+    builds: usize,
+}
+
+struct ClockRoute {
+    source: ClockKey,
+    target: ClockKey,
+    ordinal: usize,
+    asset: Option<AssetKey>,
 }
 
 struct ClockRecords {
@@ -1939,6 +2180,8 @@ pub struct ModelPass {
     meshes: Vec<ModelMesh>,
     field: ModelField,
     clock_records: Option<ClockRecords>,
+    clock_routes: ClockRoutes,
+    redirect_placed: Vec<(usize, ModelInstance)>,
     animation_dispatch: animation_dispatch::Dispatch,
     /// Placement and live-player keys, rebuilt in retained storage each frame.
     keyed: Vec<KeyedInstance>,
@@ -1964,6 +2207,7 @@ pub struct ModelPass {
     event_namespace: u64,
     /// Placed actors, by animation key, that keep animating but draw and cast nothing.
     hidden: BTreeSet<(usize, u32, u32)>,
+    hidden_actors: BTreeSet<ActorAddress>,
     /// The library's visual mod entities and their recorded counterparts
     /// ([`ModelLibrary::alternatives`]).
     alternatives: BTreeMap<usize, usize>,
@@ -1982,6 +2226,11 @@ fn event_namespace() -> u64 {
 }
 
 impl ModelPass {
+    #[cfg(test)]
+    pub(crate) fn groups_for_tests(&self) -> &[ModelGroup] {
+        &self.field.groups
+    }
+
     /// The entity player of a placed instance, under the key every producer
     /// and draw shares ([`ModelInstance::animation_key`]).
     pub fn player(
@@ -2041,8 +2290,138 @@ impl ModelPass {
     /// Installs producer-owned state requests on the shared entity player.
     pub fn set_clocks(&mut self, clocks: BTreeMap<(usize, u32, u32), entity_animation::Clock>) {
         self.clock_records = None;
-        self.field.clocks = clocks;
-        self.redirect_field();
+        self.install_clocks(clocks, false);
+    }
+
+    pub(crate) fn clock_actor_addresses(&self) -> impl Iterator<Item = ActorAddress> + '_ {
+        self.clock_routes
+            .routes
+            .iter()
+            .map(|route| route.target)
+            .chain(self.clock_routes.sources.iter().copied().take(
+                if self.clock_routes.redirects.is_empty() {
+                    self.clock_routes.sources.len()
+                } else {
+                    0
+                },
+            ))
+            .map(|key| self.actor_address(key))
+    }
+
+    fn install_clocks(
+        &mut self,
+        mut clocks: BTreeMap<ClockKey, entity_animation::Clock>,
+        effective: bool,
+    ) {
+        for (&source, clock) in &clocks {
+            if clock.phase.is_some() {
+                let target = self.redirects.get(&source.0).copied().unwrap_or(source.0);
+                for mesh in [source.0, target] {
+                    if let Some(asset) = self.meshes.get(mesh) {
+                        self.field
+                            .bindings
+                            .entry(mesh)
+                            .or_insert_with(|| asset.asset.clone());
+                    }
+                }
+            }
+        }
+        let routes = &mut self.clock_routes;
+        let sources_changed = !routes.sources.iter().copied().eq(clocks.keys().copied());
+        if self.redirects.is_empty() {
+            if sources_changed || !routes.redirects.is_empty() || routes.effective != effective {
+                routes.sources.clear();
+                routes.sources.extend(clocks.keys().copied());
+                routes.routes.clear();
+                routes.redirects.clear();
+                routes.effective = effective;
+                #[cfg(test)]
+                {
+                    routes.builds += 1;
+                }
+            }
+            self.field.clock_priorities.clear();
+            self.field.clocks = clocks;
+            return;
+        }
+        if sources_changed
+            || routes.effective != effective
+            || routes.redirects != self.redirects
+            || (self.field.clock_priorities.is_empty() && !routes.routes.is_empty())
+            || !routes.routes.iter().all(|route| {
+                let ordinal = if effective {
+                    self.field
+                        .clock_priorities
+                        .get(&route.source)
+                        .copied()
+                        .unwrap_or_else(|| self.field.producer_ordinal(route.source))
+                } else {
+                    self.field.producer_ordinal(route.source)
+                };
+                route.ordinal == ordinal
+                    && route.asset.as_ref()
+                        == self
+                            .field
+                            .bindings
+                            .get(&route.source.0)
+                            .or_else(|| self.meshes.get(route.source.0).map(|mesh| &mesh.asset))
+            })
+        {
+            routes.sources.clear();
+            routes.sources.extend(clocks.keys().copied());
+            routes.routes.clear();
+            for &source in &routes.sources {
+                let target = (
+                    self.redirects.get(&source.0).copied().unwrap_or(source.0),
+                    source.1,
+                    source.2,
+                );
+                for mesh in [source.0, target.0] {
+                    if let Some(asset) = self.meshes.get(mesh) {
+                        self.field
+                            .bindings
+                            .entry(mesh)
+                            .or_insert_with(|| asset.asset.clone());
+                    }
+                }
+                routes.routes.push(ClockRoute {
+                    source,
+                    target,
+                    ordinal: if effective {
+                        self.field
+                            .clock_priorities
+                            .get(&source)
+                            .copied()
+                            .unwrap_or_else(|| self.field.producer_ordinal(source))
+                    } else {
+                        self.field.producer_ordinal(source)
+                    },
+                    asset: self.field.bindings.get(&source.0).cloned(),
+                });
+            }
+            routes.routes.sort_unstable_by(|a, b| {
+                (a.ordinal, &a.asset, a.source.1, a.source.2, a.source.0)
+                    .cmp(&(b.ordinal, &b.asset, b.source.1, b.source.2, b.source.0))
+            });
+            routes.redirects.clone_from(&self.redirects);
+            routes.effective = effective;
+            #[cfg(test)]
+            {
+                routes.builds += 1;
+            }
+            self.field.clock_priorities.clear();
+            for route in &routes.routes {
+                self.field
+                    .clock_priorities
+                    .insert(route.target, route.ordinal);
+            }
+        }
+        self.field.clocks.clear();
+        for route in &routes.routes {
+            self.field
+                .clocks
+                .insert(route.target, clocks.remove(&route.source).unwrap());
+        }
     }
 
     /// Replaces all producer clocks, retaining their key order and request storage while the
@@ -2050,8 +2429,7 @@ impl ModelPass {
     /// Duplicate keys retain the last source record, just as collecting them into a map does.
     pub fn set_clock_records(&mut self, records: &Arc<[ClockRecord]>, time: f32) {
         if !self.redirects.is_empty() {
-            // Redirect collisions must resolve AFTER collecting original keys in key order.
-            // Keep the ordinary installer for this path, including chained counterpart redirects.
+            // Collect duplicate producer keys first, then resolve redirects in producer order.
             self.set_clocks(
                 records
                     .iter()
@@ -2098,7 +2476,7 @@ impl ModelPass {
         }
         // A placement rebuild, default-state insertion or another field owner may have changed
         // the clock map since the last install. Replace it completely, not just the reached keys.
-        self.field.clocks = installed
+        let clocks = installed
             .order
             .iter()
             .map(|&index| {
@@ -2106,6 +2484,7 @@ impl ModelPass {
                 (record.key, record.clock(time))
             })
             .collect();
+        self.install_clocks(clocks, false);
     }
 
     /// Samples visible entity palettes; meshes and material buffers are immutable.
@@ -2201,62 +2580,65 @@ impl ModelPass {
     fn prepare_default_states(&mut self, time: f32) -> BTreeMap<(usize, u32, u32), u32> {
         self.default_state_refusals.clear();
         let mut native = BTreeMap::new();
-        for group in &self.field.groups {
-            let range = group.range.clone();
-            if !range.clone().any(|index| {
-                self.field.instances[index as usize].animation == entity_animation::DEFAULT_STATE
-            }) {
+        let mut states = BTreeMap::new();
+        let ModelField {
+            native_order,
+            groups,
+            instances,
+            clocks,
+            ..
+        } = &mut self.field;
+        for (group_at, index) in source_order(native_order, groups) {
+            let group = &groups[group_at];
+            let instance = instances[index];
+            if instance.animation != entity_animation::DEFAULT_STATE {
                 continue;
             }
-            let state = self.rigs.get(group.mesh).and_then(|rig| {
-                let root = rig.nodes.first()?;
-                root.clips
-                    .iter()
-                    .any(|clip| clip.state.name == root.default)
-                    .then(|| (root.default.clone(), drawn_variants(rig)))
+            let state = states.entry(group.mesh).or_insert_with(|| {
+                self.rigs.get(group.mesh).and_then(|rig| {
+                    let root = rig.nodes.first()?;
+                    root.clips
+                        .iter()
+                        .any(|clip| clip.state.name == root.default)
+                        .then(|| (root.default.clone(), drawn_variants(rig)))
+                })
             });
-            for index in range {
-                let instance = self.field.instances[index as usize];
-                if instance.animation != entity_animation::DEFAULT_STATE {
-                    continue;
-                }
-                let Some((default, drawn)) = &state else {
-                    continue;
+            let Some((default, drawn)) = state.as_ref() else {
+                continue;
+            };
+            if let Some((node, reached, variants)) = drawn {
+                let entity = self.meshes.get(group.mesh).map_or("", |mesh| &mesh.name);
+                let part = if *node == 0 {
+                    String::new()
+                } else {
+                    format!(" (attached entity {node})")
                 };
-                if let Some((node, reached, variants)) = drawn {
-                    let entity = self.meshes.get(group.mesh).map_or("", |mesh| &mesh.name);
-                    let part = if *node == 0 {
-                        String::new()
-                    } else {
-                        format!(" (attached entity {node})")
-                    };
-                    *self
+                *self
                         .default_state_refusals
                         .entry(format!(
                             "entity {entity}{part} reaches state {reached} of {variants} variants, which the game draws from a per-entity random counter no recording holds; it stays still and silent"
                         ))
                         .or_default() += 1;
-                    continue;
-                }
-                let (seed, identity) = instance.animation_key();
-                let key = (group.mesh, seed, identity);
-                let appeared = self.default_appeared.entry(key).or_insert(time);
-                // A presentation clock that starts again starts the state with it.
-                *appeared = appeared.min(time);
-                self.field.clocks.insert(
-                    key,
-                    entity_animation::Clock {
-                        time: time - *appeared,
-                        phase: None,
-                        requests: Arc::new(vec![entity_animation::Request {
-                            time: 0.0,
-                            phase_time: None,
-                            state: default.clone(),
-                        }]),
-                    },
-                );
-                native.insert(key, entity_animation::named_request(default));
+                continue;
             }
+            let (seed, identity) = instance.animation_key();
+            let key = (group.mesh, seed, identity);
+            let appeared = self.default_appeared.entry(key).or_insert(time);
+            // A presentation clock that starts again starts the state with it.
+            *appeared = appeared.min(time);
+            clocks.insert(
+                key,
+                entity_animation::Clock {
+                    time: time - *appeared,
+                    phase: None,
+                    requests: Arc::new(vec![entity_animation::Request {
+                        time: 0.0,
+                        phase_time: None,
+                        state: default.clone(),
+                    }]),
+                },
+            );
+            native.insert(key, entity_animation::named_request(default));
         }
         self.default_appeared
             .retain(|key, _| native.contains_key(key));
@@ -2267,6 +2649,7 @@ impl ModelPass {
     /// A seek or a branch change starts new entity histories.
     pub fn reset_animation(&mut self) {
         self.event_namespace = event_namespace();
+        self.refresh_hidden_actors();
         self.players.clear();
         self.default_appeared.clear();
         self.events.clear();
@@ -2274,13 +2657,14 @@ impl ModelPass {
 
     /// Replaces placements while preserving the players of surviving actors.
     pub fn update_placed(&mut self, mut placed: Vec<(usize, ModelInstance)>, tile: f32) {
-        for (mesh, _) in &mut placed {
-            *mesh = self.drawn_slot(*mesh);
-        }
         self.alive.clear();
         self.alive.extend(placed.iter().map(|(mesh, instance)| {
             let (seed, identity) = instance.animation_key();
-            (*mesh, seed, identity)
+            (
+                self.redirects.get(mesh).copied().unwrap_or(*mesh),
+                seed,
+                identity,
+            )
         }));
         self.alive.sort_unstable();
         self.players.retain(|key, _| {
@@ -2295,6 +2679,7 @@ impl ModelPass {
         self.field.default_states.clear();
         self.field
             .rebuild_meshes(&self.meshes, &mut placed, &mut self.keyed, tile);
+        self.redirect_field();
         self.rebuild_native_walk();
     }
 
@@ -2303,7 +2688,21 @@ impl ModelPass {
     /// ([`Self::make_field_resident`]).
     pub fn replace_field(&mut self, library: &ModelLibrary, field: &mut ModelField) {
         self.sync(library);
+        // Clock caches belong to the pass; installs validate their dependency values.
+        std::mem::swap(
+            &mut self.field.clock_priorities,
+            &mut field.clock_priorities,
+        );
+        std::mem::swap(&mut self.field.clock_sources, &mut field.clock_sources);
+        std::mem::swap(&mut self.field.ordered_clocks, &mut field.ordered_clocks);
+        #[cfg(test)]
+        std::mem::swap(
+            &mut self.field.clock_order_builds,
+            &mut field.clock_order_builds,
+        );
         std::mem::swap(&mut self.field, field);
+        let clocks = std::mem::take(&mut self.field.clocks);
+        self.install_clocks(clocks, false);
         self.redirect_field();
         self.rebuild_native_walk();
     }
@@ -2335,6 +2734,8 @@ impl ModelPass {
             meshes: library.meshes.clone(),
             field: ModelField::default(),
             clock_records: None,
+            clock_routes: ClockRoutes::default(),
+            redirect_placed: Vec::new(),
             animation_dispatch: Default::default(),
             keyed: Vec::new(),
             alive: Vec::new(),
@@ -2355,13 +2756,32 @@ impl ModelPass {
             events: Vec::new(),
             event_namespace: event_namespace(),
             hidden: BTreeSet::new(),
+            hidden_actors: BTreeSet::new(),
         }
     }
 
     /// A pass over `rigs` with no meshes, for stepping animation events without a GPU.
     #[cfg(test)]
     pub(crate) fn with_rigs_for_tests(rigs: Vec<Arc<Rig>>, label: &'static str) -> Self {
-        let mut pass = Self::new(&ModelLibrary::default(), label);
+        let mut library = ModelLibrary::default();
+        for at in 0..rigs.len() {
+            library.meshes.push(ModelMesh {
+                asset: AssetKey::synthetic(&format!("actor_{at}")),
+                name: format!("actor_{at}"),
+                path: String::new(),
+                scale: 1.,
+                lod_distances: Vec::new(),
+                native: Vec::new(),
+                radius: 0.,
+                height: 0.,
+                visual: false,
+                own_radius: 0.,
+                bound: 0.,
+                convoy_radius: None,
+                attachments: 0,
+            });
+        }
+        let mut pass = Self::new(&library, label);
         pass.rigs = rigs;
         pass.default_palette = vec![PaletteJoint::IDENTITY];
         pass
@@ -2385,13 +2805,27 @@ impl ModelPass {
     pub fn set_hidden(&mut self, hidden: BTreeSet<(usize, u32, u32)>) {
         self.hidden = hidden;
         self.redirect_field();
+        self.refresh_hidden_actors();
         self.native_walk.set_hidden(&self.hidden);
     }
 
-    /// Whether an actor is placed but hidden ([`ModelPass::set_hidden`]).
-    pub fn hides(&self, key: (usize, u32, u32)) -> bool {
-        self.hidden
-            .contains(&(self.drawn_slot(key.0), key.1, key.2))
+    /// Resolves a producer's binding handle to its live pass-local actor address.
+    pub fn actor_address(&self, key: (usize, u32, u32)) -> ActorAddress {
+        let asset = self.meshes[self.drawn_slot(key.0)].asset.clone();
+        (self.event_namespace, asset, key.1, key.2)
+    }
+
+    fn refresh_hidden_actors(&mut self) {
+        self.hidden_actors = self
+            .hidden
+            .iter()
+            .map(|&key| self.actor_address(key))
+            .collect();
+    }
+
+    /// Whether an actor is placed but hidden.
+    pub fn hides(&self, key: ActorAddress) -> bool {
+        self.hidden_actors.contains(&key)
     }
 
     /// Follows a library that grew since the pass last saw it (the unit
@@ -2577,12 +3011,18 @@ impl ModelPass {
 
     /// Draws each mod entity refused since the last frame from its recorded counterpart, named.
     fn fall_back(&mut self) {
-        let refused = std::mem::take(self.falling_back.get_mut());
+        let refused = self.falling_back.get_mut();
+        if refused.is_empty() {
+            return;
+        }
+        let refused = std::mem::take(refused);
+        let mut changed = false;
         for (mesh, why) in refused {
             let Some(&counterpart) = self.alternatives.get(&mesh) else {
                 continue;
             };
             if self.redirects.insert(mesh, counterpart).is_none() {
+                changed = true;
                 let name = self.meshes[mesh].name.clone();
                 if let Some(layers) = &self.layers {
                     layers.note_overlay_refusal(format!("model {name} ({why})"));
@@ -2590,7 +3030,9 @@ impl ModelPass {
                 self.from_recording.insert(name, why);
             }
         }
-        self.redirect_field();
+        if changed {
+            self.redirect_field();
+        }
     }
 
     /// Points every placed group of a redirected entity at its recorded counterpart.
@@ -2598,37 +3040,66 @@ impl ModelPass {
         if self.redirects.is_empty() {
             return;
         }
-        let field = &mut self.field;
         let mut changed = false;
-        for group in &mut field.groups {
+        for group in &mut self.field.groups {
             if let Some(&to) = self.redirects.get(&group.mesh) {
                 changed |= group.mesh != to;
                 group.mesh = to;
-                // Culled by the counterpart's own reach, not the refused entity's.
+                group.asset = self.meshes[to].asset.clone();
                 let radius = self.meshes.get(to).map_or(0.0, |mesh| mesh.radius);
                 let instances =
-                    &field.instances[group.range.start as usize..group.range.end as usize];
+                    &self.field.instances[group.range.start as usize..group.range.end as usize];
                 group.bounds = reach_bounds(radius, instances.iter());
             }
         }
-        self.field.clocks = std::mem::take(&mut self.field.clocks)
-            .into_iter()
-            .map(|((mesh, seed, identity), clock)| {
-                let mesh = self.redirects.get(&mesh).copied().unwrap_or(mesh);
-                ((mesh, seed, identity), clock)
-            })
-            .collect();
-        self.hidden = std::mem::take(&mut self.hidden)
-            .into_iter()
-            .map(|(mesh, seed, identity)| {
-                (
-                    self.redirects.get(&mesh).copied().unwrap_or(mesh),
-                    seed,
-                    identity,
-                )
-            })
-            .collect();
+        if self
+            .field
+            .clocks
+            .keys()
+            .any(|key| self.redirects.contains_key(&key.0))
+        {
+            let clocks = std::mem::take(&mut self.field.clocks);
+            self.install_clocks(clocks, true);
+        }
+        if self
+            .hidden
+            .iter()
+            .any(|key| self.redirects.contains_key(&key.0))
+        {
+            self.hidden = std::mem::take(&mut self.hidden)
+                .into_iter()
+                .map(|(mesh, seed, identity)| {
+                    (
+                        self.redirects.get(&mesh).copied().unwrap_or(mesh),
+                        seed,
+                        identity,
+                    )
+                })
+                .collect();
+            self.refresh_hidden_actors();
+        }
         if changed {
+            if let Some(tile) = self.field.tile {
+                self.redirect_placed.clear();
+                self.redirect_placed
+                    .extend(self.field.source_order().map(|(group, instance)| {
+                        (
+                            self.field.groups[group].mesh,
+                            self.field.instances[instance],
+                        )
+                    }));
+                let clocks = std::mem::take(&mut self.field.clocks);
+                let priorities = std::mem::take(&mut self.field.clock_priorities);
+                self.field.rebuild_meshes_inner(
+                    &self.meshes,
+                    &mut self.redirect_placed,
+                    &mut self.keyed,
+                    tile,
+                    true,
+                );
+                self.field.clocks = clocks;
+                self.field.clock_priorities = priorities;
+            }
             self.rebuild_native_walk();
         } else {
             self.native_walk.set_hidden(&self.hidden);
@@ -2768,6 +3239,7 @@ fn animate_players_with_workers(
 ) -> Vec<PaletteJoint> {
     struct Call<'a> {
         key: (usize, u32, u32),
+        asset: &'a AssetKey,
         rig: &'a Rig,
         instance: ModelInstance,
         count: usize,
@@ -2781,6 +3253,24 @@ fn animate_players_with_workers(
         events: &'a mut Vec<entity_animation::Event>,
     }
     let plan_span = viewer_foundation::profiling::span("animation_dispatch_plan");
+    field.prepare_clock_order();
+    field.group_work.clear();
+    field.group_work.extend(field.groups.iter().map(|group| {
+        if !shown(group) {
+            return None;
+        }
+        let rig = rigs.get(group.mesh)?;
+        if rig.nodes.iter().all(|node| node.clips.is_empty()) {
+            return None;
+        }
+        Some(
+            if native_only && rig.nodes.iter().all(|node| node.native.is_some()) {
+                0
+            } else {
+                rig.end - rig.start
+            },
+        )
+    }));
     let mut calls = Vec::new();
     // Native actors do not read the optional name-joined palette. Keep the logical
     // offsets identical, but do not allocate or copy unused per-instance ranges.
@@ -2795,81 +3285,75 @@ fn animate_players_with_workers(
     for instance in &mut field.instances {
         instance.palette_offset = 0;
     }
-    for group in &field.groups {
-        if !shown(group) {
-            continue;
-        }
-        let Some(rig) = rigs.get(group.mesh) else {
+    let ModelField {
+        native_order,
+        groups,
+        instances,
+        group_work,
+        clocks,
+        default_states,
+        ..
+    } = field;
+    for (group_at, index) in source_order(native_order, groups) {
+        let Some(count) = group_work[group_at] else {
             continue;
         };
-        if rig.nodes.iter().all(|n| n.clips.is_empty()) {
+        let group = &groups[group_at];
+        let rig = &rigs[group.mesh];
+        let instance = &mut instances[index];
+        if instance.animation == entity_animation::STOPPED {
             continue;
         }
-        for index in group.range.clone() {
-            let instance = &mut field.instances[index as usize];
-            if instance.animation == entity_animation::STOPPED {
-                continue;
-            }
-            let (seed, identity) = instance.animation_key();
-            let key = (group.mesh, seed, identity);
-            if phase_only
-                && field
-                    .clocks
-                    .get(&key)
-                    .is_none_or(|clock| clock.phase.is_none())
-            {
-                continue;
-            }
-            // A default-state actor plays its request; one refused, or whose
-            // entity has no default state, stays still.
-            let request = field.default_states.get(&key).copied();
-            if instance.animation == entity_animation::DEFAULT_STATE && request.is_none() {
-                continue;
-            }
-            alive.insert(key);
-            let player = players.entry(key).or_insert_with(|| {
-                if request.is_some() {
-                    entity_animation::Player::native_choice(rig)
-                } else {
-                    entity_animation::Player::new(rig)
-                }
-            });
-            let count = if native_only && rig.nodes.iter().all(|node| node.native.is_some()) {
-                0
-            } else {
-                rig.end - rig.start
-            };
-            let start = palette.len();
-            if count != 0 {
-                palette.extend_from_slice(&default_palette[rig.start..rig.end]);
-            }
-            instance.palette_offset = (palette_end - rig.start) as u32;
-            palette_end += rig.end - rig.start;
-            let playing = ModelInstance {
-                animation: request.unwrap_or(instance.animation),
-                ..*instance
-            };
-            let mut emitted = Vec::new();
-            let clock = field.clocks.get(&key);
-            // Clock callbacks intern content-named states. Keep those callbacks
-            // in placement order; ordinary players only read registered names.
-            if let Some(clock) = clock {
-                let palette = if native_only && rig.nodes.iter().all(|node| node.native.is_some()) {
-                    &mut []
-                } else {
-                    &mut palette[start..]
-                };
-                player.evaluate_clock(rig, playing, clock, palette, &mut emitted);
-            }
-            calls.push(Call {
-                key,
-                rig,
-                instance: playing,
-                count,
-                clocked: clock.is_some(),
-                events: emitted,
-            });
+        let (seed, identity) = instance.animation_key();
+        let key = (group.mesh, seed, identity);
+        if phase_only && clocks.get(&key).is_none_or(|clock| clock.phase.is_none()) {
+            continue;
         }
+        // A default-state actor plays its request; one refused, or whose
+        // entity has no default state, stays still.
+        let request = default_states.get(&key).copied();
+        if instance.animation == entity_animation::DEFAULT_STATE && request.is_none() {
+            continue;
+        }
+        alive.insert(key);
+        let player = players.entry(key).or_insert_with(|| {
+            if request.is_some() {
+                entity_animation::Player::native_choice(rig)
+            } else {
+                entity_animation::Player::new(rig)
+            }
+        });
+        let start = palette.len();
+        if count != 0 {
+            palette.extend_from_slice(&default_palette[rig.start..rig.end]);
+        }
+        instance.palette_offset = (palette_end - rig.start) as u32;
+        palette_end += rig.end - rig.start;
+        let playing = ModelInstance {
+            animation: request.unwrap_or(instance.animation),
+            ..*instance
+        };
+        let mut emitted = Vec::new();
+        let clock = clocks.get(&key);
+        // Clock callbacks intern content-named states. Keep those callbacks
+        // in placement order; ordinary players only read registered names.
+        if let Some(clock) = clock {
+            let palette = if count == 0 {
+                &mut []
+            } else {
+                &mut palette[start..]
+            };
+            player.evaluate_clock(rig, playing, clock, palette, &mut emitted);
+        }
+        calls.push(Call {
+            key,
+            asset: &group.asset,
+            rig,
+            instance: playing,
+            count,
+            clocked: clock.is_some(),
+            events: emitted,
+        });
     }
     let run_span;
     {
@@ -2907,37 +3391,37 @@ fn animate_players_with_workers(
             let mut task = tasks[at].lock().unwrap_or_else(|error| error.into_inner());
             let (player, work) = &mut *task;
             for work in work {
-                let palette =
-                    if native_only && work.rig.nodes.iter().all(|node| node.native.is_some()) {
-                        &mut []
-                    } else {
-                        &mut *work.palette
-                    };
+                let palette = if work.palette.is_empty() {
+                    &mut []
+                } else {
+                    &mut *work.palette
+                };
                 player.evaluate(work.rig, work.instance, time, palette, work.events);
             }
         });
     }
     for call in calls {
         events.extend(call.events.into_iter().map(|mut event| {
-            event.key.model = call.key.0;
+            event.key.model = call.asset.clone();
             event
         }));
     }
     // A deactivated shared naval wrapper is absent from placements but keeps
     // its producer-owned clock. Initialize even an actor hidden before its
     // first draw, and advance only its phase/explicit requests while hidden.
-    for (key, clock) in &field.clocks {
-        if clock.phase.is_none() || alive.contains(key) {
+    for key in field.clock_order() {
+        let clock = &field.clocks[&key];
+        if clock.phase.is_none() || alive.contains(&key) {
             continue;
         }
         let Some(rig) = rigs.get(key.0) else {
             continue;
         };
         players
-            .entry(*key)
+            .entry(key)
             .or_insert_with(|| entity_animation::Player::new(rig))
             .advance_hidden(rig, clock);
-        alive.insert(*key);
+        alive.insert(key);
     }
     players.retain(|key, _| alive.contains(key));
     drop(run_span);
@@ -3017,8 +3501,9 @@ mod parallel_animation_tests {
             });
         }
         let builders = Arc::new(Pool(std::sync::Mutex::new(sender)));
-        let assist = viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(builders, 1)
-            .unwrap();
+        let assist =
+            viewer_foundation::frame_assist::FrameAssist::with_helpers_for_tests(builders, 1)
+                .unwrap();
         Workers::new(Arc::new(assist))
     }
 
@@ -3032,6 +3517,7 @@ mod parallel_animation_tests {
         let mut library = ModelLibrary {
             rigs: vec![Arc::new(rig)],
             meshes: vec![ModelMesh {
+                asset: AssetKey::synthetic("synthetic"),
                 name: "synthetic".into(),
                 path: String::new(),
                 scale: 1.,
@@ -3186,6 +3672,7 @@ mod parallel_animation_tests {
                 }
                 field.groups.push(ModelGroup {
                     mesh,
+                    asset: AssetKey::synthetic(&format!("actor_{mesh}")),
                     range: start..field.instances.len() as u32,
                     bounds: [0.; 4],
                     centroid: [0.; 3],
@@ -3237,7 +3724,7 @@ mod parallel_animation_tests {
                 assert_eq!(a.definition, b.definition);
                 assert_eq!(
                     (
-                        a.key,
+                        a.key.clone(),
                         a.seed,
                         a.age.to_bits(),
                         a.state,
@@ -3245,7 +3732,7 @@ mod parallel_animation_tests {
                         a.hidden
                     ),
                     (
-                        b.key,
+                        b.key.clone(),
                         b.seed,
                         b.age.to_bits(),
                         b.state,
@@ -3323,6 +3810,7 @@ mod parallel_animation_tests {
                 }
                 field.groups.push(ModelGroup {
                     mesh,
+                    asset: AssetKey::synthetic(&format!("actor_{mesh}")),
                     range: start..field.instances.len() as u32,
                     bounds: [0.; 4],
                     centroid: [0.; 3],
@@ -3382,8 +3870,8 @@ mod parallel_animation_tests {
                     bytemuck::bytes_of(&PaletteJoint::from_transform(&b.transform)),
                 );
                 assert_eq!(
-                    (a.age.to_bits(), a.seed, a.key, a.state),
-                    (b.age.to_bits(), b.seed, b.key, b.state)
+                    (a.age.to_bits(), a.seed, a.key.clone(), a.state),
+                    (b.age.to_bits(), b.seed, b.key.clone(), b.state)
                 );
             }
             for (key, player) in &expected {

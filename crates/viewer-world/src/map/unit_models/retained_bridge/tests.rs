@@ -631,12 +631,24 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         let right = right.field(&new);
         targets_equal(&left.targets, &right.targets);
         admitted += left.targets.len();
-        assert_eq!(reference.library().index, new.library().index);
-        assert_eq!(reference.library().meshes, new.library().meshes);
+        let left_library = reference.library();
+        let right_library = new.library();
         assert_eq!(
-            bytemuck::cast_slice::<_, u8>(&reference.library().palette),
-            bytemuck::cast_slice::<_, u8>(&new.library().palette)
+            left_library.index.keys().collect::<Vec<_>>(),
+            right_library.index.keys().collect::<Vec<_>>()
         );
+        for name in left_library.index.keys() {
+            let left_slot = left_library.slot(name).unwrap();
+            let right_slot = right_library.slot(name).unwrap();
+            assert_eq!(
+                left_library.meshes[left_slot],
+                right_library.meshes[right_slot]
+            );
+            assert_eq!(
+                left_library.rig_source(left_slot).1,
+                right_library.rig_source(right_slot).1
+            );
+        }
     }
     assert!(
         admitted > 100,

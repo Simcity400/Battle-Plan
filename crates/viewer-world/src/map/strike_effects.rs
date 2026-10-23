@@ -624,7 +624,8 @@ mod tests {
         let mut pass = super::super::models::ModelPass::new(&library, "map frame");
         let (placed, clocks) = shown.advance(true, |_| true, |_| None, 1.0);
         pass.update_placed(placed.clone(), 256.0);
-        let struck: std::collections::BTreeSet<_> = clocks.keys().copied().collect();
+        let struck: std::collections::BTreeSet<_> =
+            clocks.keys().map(|&key| pass.actor_address(key)).collect();
         pass.set_clocks(clocks);
         pass.animate(1.0, None, &[0.0]);
         // The impact's sound is a combat sound: its event is found under the

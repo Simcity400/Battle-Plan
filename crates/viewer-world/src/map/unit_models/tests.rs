@@ -1247,8 +1247,12 @@ fn overlapping_unit_bake_batches_load_each_name_once() {
     });
     let library = assets.library();
     assert_eq!(library.meshes.len(), 2);
-    assert_eq!(library.slot("first"), Some(0));
-    assert_eq!(library.slot("second"), Some(1));
+    let first = library.slot("first").unwrap();
+    let second = library.slot("second").unwrap();
+    assert_ne!(first, second);
+    assert_eq!(library.meshes[first].name, "first");
+    assert_eq!(library.meshes[second].name, "second");
+    assert_ne!(library.meshes[first].asset, library.meshes[second].asset);
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1267,4 +1271,95 @@ fn unsuccessful_unit_bakes_are_not_retried() {
     assets.ensure(&["missing".into()]);
     assert!(assets.library().slot("missing").is_none());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn concurrent_demand_schedules_keep_stable_groups_events_and_sound_creation_order() {
+    use super::*;
+    let descriptors = mesh::parse_descriptors(
+        br#"
+        entity = { name = first state = { name = idle event = { sound = { soundeffect = hum } } } }
+        entity = { name = second state = { name = idle event = { sound = { soundeffect = hum } } } }
+    "#,
+        "synthetic.asset",
+    )
+    .unwrap();
+    let mut reference = None;
+    for first in ["first", "second"] {
+        let mut assets = UnitModelAssets::off(String::new());
+        assets.registered = ["first".into(), "second".into()].into();
+        assets.roster = Arc::new(mesh::Roster {
+            descriptors: descriptors.clone(),
+            ..Default::default()
+        });
+        assets.ensure(&[first.into()]);
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for names in [
+                ["first", "second"],
+                ["second", "first"],
+                ["first", "first"],
+                ["second", "second"],
+            ] {
+                let (assets, barrier) = (&assets, &barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    assets.ensure(&names.map(str::to_owned));
+                });
+            }
+        });
+        let library = assets.library();
+        assert_eq!(
+            library.slot(first),
+            Some(0),
+            "the schedules really differ in layout"
+        );
+        let mut pass = crate::map::models::ModelPass::new(&library, "unit models");
+        pass.update_placed(
+            ["second", "first"]
+                .into_iter()
+                .enumerate()
+                .map(|(at, name)| {
+                    (
+                        library.slot(name).unwrap(),
+                        ModelInstance {
+                            scale: 1.,
+                            animation: crate::map::entity_animation::IDLE,
+                            animation_seed: at as u32 + 17,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            256.,
+        );
+        pass.animate(1., None, &[0.]);
+        assert_eq!(pass.events.len(), 2);
+        let mut sounds = Vec::new();
+        for event in &mut pass.events {
+            event.key.pass = 0;
+        }
+        crate::map::sound_events::collect(
+            &pass.events,
+            &mut Default::default(),
+            &mut sounds,
+            |_| false,
+        );
+        let observed = (
+            pass.groups_for_tests()
+                .iter()
+                .map(|group| (group.asset.clone(), group.bounds, group.centroid))
+                .collect::<Vec<_>>(),
+            pass.events
+                .iter()
+                .map(|event| (event.key.clone(), event.seed))
+                .collect::<Vec<_>>(),
+            sounds,
+        );
+        if let Some(expected) = &reference {
+            assert_eq!(&observed, expected);
+        } else {
+            reference = Some(observed);
+        }
+    }
 }

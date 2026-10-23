@@ -301,10 +301,10 @@ struct NativeSample {
 }
 
 /// Exact presentation identity; RNG seeds need not be unique across actors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EventKey {
     pub pass: u64,
-    pub model: usize,
+    pub model: super::models::AssetKey,
     actor: (u32, u32),
     node: usize,
     state: (usize, u32),
@@ -314,13 +314,16 @@ pub struct EventKey {
 impl EventKey {
     /// This identity without its pass namespace, which differs between passes built alike.
     #[cfg(test)]
-    pub(crate) fn without_pass(self) -> Self {
-        Self { pass: 0, ..self }
+    pub(crate) fn without_pass(&self) -> Self {
+        Self {
+            pass: 0,
+            ..self.clone()
+        }
     }
 
-    /// The emitting actor's `(mesh, seed, identity)` animation key.
-    pub fn actor(&self) -> (usize, u32, u32) {
-        (self.model, self.actor.0, self.actor.1)
+    /// The emitting actor's live namespace, stable asset and unchanged shared-player key.
+    pub fn actor(&self) -> super::models::ActorAddress {
+        (self.pass, self.model.clone(), self.actor.0, self.actor.1)
     }
 }
 
@@ -348,10 +351,9 @@ impl Event {
 }
 
 impl EventKey {
-    /// The player the event's actor animates under: its model and animation key,
-    /// as producer clocks are keyed.
-    pub fn player(&self) -> (usize, u32, u32) {
-        (self.model, self.actor.0, self.actor.1)
+    /// The emitting player's address within this event's live pass namespace.
+    pub fn player(&self) -> super::models::ActorAddress {
+        self.actor()
     }
 }
 
@@ -363,7 +365,7 @@ fn event_key(
 ) -> EventKey {
     EventKey {
         pass: 0,
-        model: 0,
+        model: Default::default(),
         actor: instance.animation_key(),
         node,
         state: playing.map_or((0, 0), |playing| {
@@ -1440,7 +1442,7 @@ impl Player {
                                 self.phase.map_or(time, |(_, phase)| phase) - kept.start,
                                 Some(kept.end),
                                 Some(kept.seed),
-                                Some(kept.key),
+                                Some(kept.key.clone()),
                             )
                         }),
                 );

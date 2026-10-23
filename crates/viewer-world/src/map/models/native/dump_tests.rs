@@ -171,6 +171,7 @@ fn fixture() -> (TestDir, ModelLibrary, usize) {
             uv1: false,
         });
         library.meshes.push(ModelMesh {
+            asset: crate::map::models::AssetKey::synthetic(&(name)),
             name: name.into(),
             path: format!("{name}.mesh"),
             scale: 1.,
