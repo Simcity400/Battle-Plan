@@ -40,6 +40,7 @@
 ## Tests
 
 - Don't run tests, not even before merging. Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00.
+- Before merging, compile what the PR changed, without running tests, on top of current `main`: `cargo check --all-targets -p <crate>...` for every crate it changes and every crate depending on those, directly or not, tests included (`cargo tree -i <crate> -e normal,build,dev --prefix none` lists them), and `npm.cmd run check:ui` when it changes the UI or the types the UI reads.
 - Read the last run in `captures\ci\latest.md`. If it fails in something you changed, fix it in a new PR; the next daily run checks the fix. No clippy.
 - Each test sets up everything it needs. Never rely on another test or on timing.
 - No tests behind features. Use `#[ignore]` only for benchmarks and tests that need special hardware.

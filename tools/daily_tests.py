@@ -7,7 +7,8 @@
 it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
 newest origin/main and holds TESTS_RUNNING while it waits for running benchmarks to end, then runs
 every Rust test, the UI typecheck and tests and the dependency checks. Its report goes to
-captures\\ci: latest.md, a folder per run with each step's log, and history.tsv.
+captures\\ci: latest.md, a folder per run with each step's log, kept 30 days, and
+history.tsv, kept whole.
 """
 
 import argparse
@@ -38,6 +39,11 @@ DEADLINE = datetime.timedelta(hours=18)
 GIT_TIMEOUT = 600
 CLEANUP = 120
 NO_WINDOW = subprocess.CREATE_NO_WINDOW
+# Owner decision 2026-10-23: run folders are kept 30 days; history.tsv keeps every run's line.
+KEEP = datetime.timedelta(days=30)
+RUN_FOLDER = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{4}-[0-9a-f]{10}(?:-\d+)?$")
+# Written in each run folder as it is made: its start and commit, proving the runner made it.
+RUN_MARK = "daily-tests-run.tsv"
 SUMMARY = re.compile(r"^\s*Summary \[")
 # After the summary nextest lists each failing test (final status level "fail"): its status, crate
 # and name.
@@ -157,6 +163,38 @@ def not_passed(log):
     return [f"{match.group(1)} {match.group(2)}" for match in listed if match]
 
 
+def run_folder(started, commit):
+    """A folder this run creates for its logs, marked as the runner's; never an existing one."""
+    name = f"{started:%Y-%m-%d-%H%M}-{commit[:10]}"
+    for attempt in range(1, 100):
+        folder = REPORTS / (name if attempt == 1 else f"{name}-{attempt}")
+        try:
+            folder.mkdir()
+        except FileExistsError:
+            continue
+        (folder / RUN_MARK).write_text(f"{started:%Y-%m-%d %H:%M}\t{commit}\n", encoding="utf-8")
+        return folder
+    raise RuntimeError(f"every run folder name beside {name} is taken")
+
+
+def prune(now):
+    """Delete run folders this runner marked as its own, older than KEEP; keep anything else, and
+    a folder that cannot be read or deleted until the next night."""
+    try:
+        folders = list(REPORTS.iterdir())
+    except OSError:
+        return
+    for folder in folders:
+        try:
+            if not RUN_FOLDER.match(folder.name) or not folder.is_dir():
+                continue
+            mark = (folder / RUN_MARK).read_text(encoding="utf-8").split("\t")[0].strip()
+            if now - datetime.datetime.strptime(mark, "%Y-%m-%d %H:%M") > KEEP:
+                shutil.rmtree(folder)
+        except (OSError, ValueError):
+            continue
+
+
 def run(args):
     started = datetime.datetime.now()
     lock = lock_runner()
@@ -181,8 +219,7 @@ def run(args):
                 write_report("SKIPPED", [heading, "", f"Benchmarks held the machine: {names}."])
                 return 0
             time.sleep(60)
-        folder = REPORTS / f"{started:%Y-%m-%d-%H%M}-{commit[:10]}"
-        folder.mkdir(parents=True, exist_ok=True)
+        folder = run_folder(started, commit)
         environment = dict(
             os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1"
         )
@@ -227,6 +264,7 @@ def run(args):
         recorded = True
         report = write_report(result.upper(), lines)
         (folder / "report.md").write_text(report, encoding="utf-8")
+        prune(started)
         return 0 if result == "passed" else 1
     except Exception:
         # History first: it outlives a latest.md this run cannot replace.
