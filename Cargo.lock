@@ -9050,6 +9050,7 @@ dependencies = [
  "installed-content-settings",
  "installed-content-weather",
  "gilrs",
+ "mimalloc",
  "replay",
  "replay-data",
  "replay-identity",

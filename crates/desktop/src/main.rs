@@ -15,6 +15,10 @@ use native::{HostStatus, NativeHost};
 use std::path::PathBuf;
 use tauri::{Manager, State, WebviewWindow};
 
+// Preparation and widget requests contend on the Windows process heap; the viewer ships this too.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tauri::command]
 fn desktop_state(window: WebviewWindow, host: State<'_, NativeHost>) -> Result<HostStatus, String> {
     // Establish configuration/onboarding even before a recording makes the map visible.
