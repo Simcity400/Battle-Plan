@@ -1100,3 +1100,87 @@ fn every_hook_capture_producer_table_has_an_explicit_classification() {
         "refusal table has no capture-source contract"
     );
 }
+
+#[test]
+fn map_exclusive_intel_hooks_install_nothing_without_reads_or_failure_counters() {
+    if !isolated(
+        "hook_failures::contract_tests::map_exclusive_intel_hooks_install_nothing_without_reads_or_failure_counters",
+    ) {
+        return;
+    }
+    reset_session();
+    struct NoRead;
+    impl engine_native::Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("an omitted hook family read native memory");
+        }
+    }
+    let mode = replay_data::scope::CaptureMode::Map;
+    macro_rules! omitted {
+        ($module:ident, $family:ident, $status:path) => {{
+            let capture = crate::extended::records_any(mode, Family::$family.tables());
+            assert!(!capture);
+            assert!(crate::extended::records_any(
+                replay_data::scope::CaptureMode::Full,
+                Family::$family.tables()
+            ));
+            let mut hooks = FamilyHooks::construct(0, || unsafe {
+                crate::$module::Hooks::new(&NoRead, 0, capture)
+            })
+            .unwrap();
+            assert!(hooks.inner.is_some());
+            for _ in 0..100 {
+                assert_eq!(hooks.set_enabled(true), Ok(true));
+                assert_eq!(hooks.executable_ranges().count(), 0);
+                assert_eq!(hooks.set_enabled(false), Ok(true));
+            }
+            let status = serde_json::to_value($status()).unwrap();
+            assert_eq!(status["enabled"], false);
+            assert_eq!(status["failed_observations"], 0);
+            assert!(!failed(Family::$family));
+            status
+        }};
+    }
+    let propaganda = omitted!(
+        propaganda_changes,
+        Propaganda,
+        collector_intel::propaganda_changes::status
+    );
+    assert_eq!(propaganda["daily_calls"], 0);
+    assert_eq!(propaganda["reset_calls"], 0);
+    assert_eq!(propaganda["rejected_appends"], 0);
+    assert_eq!(propaganda["lane_bytes"], 0);
+    let sources = omitted!(
+        intel_source_changes,
+        IntelSources,
+        collector_intel::source_changes::status
+    );
+    assert_eq!(sources["lane_bytes"], 0);
+    assert!(
+        sources["calls_by_writer"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|calls| *calls == 0)
+    );
+    assert!(
+        sources["failures_by_writer"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|failures| *failures == 0)
+    );
+    let auxiliary = omitted!(
+        network_auxiliary,
+        NetworkAuxiliary,
+        collector_intel::network_auxiliary::status
+    );
+    assert_eq!(auxiliary["shared_cache_bytes"], 0);
+    assert!(
+        serde_json::to_value(status())
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

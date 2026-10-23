@@ -544,7 +544,14 @@ pub struct Hooks {
 impl Hooks {
     /// # Safety
     /// Host authenticates the executable and restores/quiesces before unload.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(
+        memory: &impl Memory,
+        base: usize,
+        capture: bool,
+    ) -> Result<Self, &'static str> {
+        if !capture {
+            return Ok(Self { hooks: Vec::new() });
+        }
         STORE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -585,6 +592,9 @@ impl Hooks {
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if self.hooks.is_empty() {
+            return Ok(true);
+        }
         if !enabled {
             ENABLED.store(false, Ordering::Release);
         }

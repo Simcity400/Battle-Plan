@@ -780,7 +780,14 @@ impl Hooks {
     /// # Safety
     /// The host authenticates the image and retains hooks and stores until
     /// restoration and native callback quiescence are both proved.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(
+        memory: &impl Memory,
+        base: usize,
+        capture: bool,
+    ) -> Result<Self, &'static str> {
+        if !capture {
+            return Ok(Self { hooks: Vec::new() });
+        }
         BASE.store(base, Ordering::Release);
         let game = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|p| usize::try_from(p).ok())
@@ -834,6 +841,9 @@ impl Hooks {
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if self.hooks.is_empty() {
+            return Ok(true);
+        }
         if !enabled {
             ENABLED.store(false, Ordering::Release);
         }

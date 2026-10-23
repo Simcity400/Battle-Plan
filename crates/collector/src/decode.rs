@@ -946,6 +946,13 @@ fn decode_loop() {
     reclaim_payloads();
 }
 
+#[cfg(test)]
+pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
+    while let Some(job) = shared.decode_queue.pop() {
+        process_owned_job(shared, job, memo);
+    }
+}
+
 /// The worker owns the raw payloads through decoding, then returns every
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.

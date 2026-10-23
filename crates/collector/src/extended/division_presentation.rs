@@ -101,6 +101,21 @@ pub const TABLES: [TableId; N] = [
     speed_terms::TABLES[3],
     speed_terms::TABLES[4],
 ];
+/// Every table but DivisionMovement: the status side, the speed terms and the
+/// movement pass's land and dig-in inputs, which run only if one is recorded.
+pub const STATUS_TABLES: [TableId; N - 1] = [
+    TableId::DivisionStatus,
+    TableId::DivisionLandInputs,
+    TableId::DivisionRetreatBans,
+    TableId::DivisionHistory,
+    TableId::DivisionPanelSources,
+    TableId::DivisionPanelStats,
+    speed_terms::TABLES[0],
+    speed_terms::TABLES[1],
+    speed_terms::TABLES[2],
+    speed_terms::TABLES[3],
+    speed_terms::TABLES[4],
+];
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
@@ -591,9 +606,17 @@ pub(crate) struct MovementPass {
     dig_in: super::dig_in::Captured,
     dig_in_ticks: u64,
     owned_pending: bool,
+    /// False when the capture mode leaves out [`STATUS_TABLES`]: the land and
+    /// dig-in walks, which only they read, do not run.
+    status: bool,
 }
 
 impl MovementPass {
+    /// Leave out the land and dig-in walks with the status side.
+    pub(crate) fn omit_status(&mut self) {
+        self.status = false;
+    }
+
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.land.allocated_bytes()
             + self.movement.allocated_bytes()
@@ -646,7 +669,11 @@ impl MovementPass {
                 return report;
             }
         }
-        self.land_ticks = self.land.capture(memory, base, rows, outcome);
+        if self.status {
+            self.land_ticks = self.land.capture(memory, base, rows, outcome);
+        } else {
+            self.land.fail(super::NOT_RECORDED);
+        }
         let _movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
         let start = qpc();
         // A failed geometry root stays the movement rows' own refusal.
@@ -708,11 +735,13 @@ impl MovementPass {
         self.paths.required = movement.required_paths;
         let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
         drop(_movement_reads);
-        let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
-        let start = qpc();
-        self.dig_in
-            .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
-        self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
+        if self.status {
+            let _status_reads = crate::read_accounting::table(TableId::DivisionStatus);
+            let start = qpc();
+            self.dig_in
+                .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
+            self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
+        }
         report.ticks[0] = movement_ticks;
         report.ticks[1] = self.dig_in_ticks;
         report.ticks[3] = self.land_ticks;
@@ -770,6 +799,9 @@ pub struct Captured {
     source_capacity: usize,
     source_required: usize,
     decode_pending: bool,
+    /// The status side was left out ([`Self::omit_status`]): the decode
+    /// projects only the movement pass's rows.
+    status_omitted: bool,
     movement_owned_pending: bool,
     /// The live `NMilitary.SUPPLY_GRACE` hours this pass read, which
     /// DivisionStatus.supply_grace_remaining is stored against
@@ -909,6 +941,7 @@ impl Captured {
             source_capacity: 0,
             source_required: 0,
             decode_pending: false,
+            status_omitted: false,
             movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
@@ -973,6 +1006,7 @@ impl Captured {
             source_capacity: c.movement.max(c.status),
             source_required: 0,
             decode_pending: false,
+            status_omitted: false,
             movement_owned_pending: false,
             supply_grace: None,
             speed_terms: speed_terms::SpeedTerms::default(),
@@ -1023,6 +1057,7 @@ impl Captured {
         self.order_transport.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
+        self.status_omitted = false;
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -1164,6 +1199,7 @@ impl Captured {
             dig_in: std::mem::replace(&mut self.dig_in, super::dig_in::Captured::new(0)),
             dig_in_ticks: 0,
             owned_pending: std::mem::take(&mut self.movement_owned_pending),
+            status: true,
         }
     }
 
@@ -1182,6 +1218,7 @@ impl Captured {
             dig_in,
             dig_in_ticks,
             owned_pending,
+            status: _,
         } = pass;
         self.land = land;
         self.land_ticks = land_ticks;
@@ -1985,6 +2022,23 @@ impl Captured {
         self.land.fail(reason);
         self.speed_terms.fail(reason);
         self.decode_pending = false;
+        self.status_omitted = false;
+        CaptureReport::default()
+    }
+
+    /// Leave out the status side (status, retreat bans, naming, attack and
+    /// panels) and the speed terms, reading nothing: their jobs do not run.
+    /// The movement pass's rows, returned by [`Self::restore_movement`], are
+    /// projected as they are when the status side is read.
+    pub(crate) fn omit_status(&mut self, reason: &'static str) -> CaptureReport {
+        self.reset_status();
+        self.attack.history = Some(Err(reason));
+        self.attack.sources = Some(Err(reason));
+        self.status.outcome = Outcome::Unavailable { reason };
+        self.bans.outcome = Outcome::Unavailable { reason };
+        self.speed_terms.fail(reason);
+        self.status_omitted = true;
+        self.decode_pending = true;
         CaptureReport::default()
     }
 
@@ -2386,6 +2440,9 @@ impl Captured {
         if !std::mem::take(&mut self.decode_pending) {
             return [0; 2];
         }
+        if std::mem::take(&mut self.status_omitted) {
+            return [self.project_owned_movement(), 0];
+        }
         let started = qpc();
         self.settle_owned_sources();
         self.phase_ticks[14] = qpc().saturating_sub(started).max(0) as u64;
@@ -2461,6 +2518,31 @@ impl Captured {
         }
         self.deferred_inputs = None;
         self.deferred_context = None;
+        let movement_ticks = self.project_owned_movement();
+        let started = qpc();
+        self.status.outcome = self.status_packet.project(&mut self.status.rows);
+        let count = self.status.outcome.len();
+        for (row, naming) in self.status.rows[..count]
+            .iter_mut()
+            .zip(&self.naming.first[..self.naming.len])
+        {
+            if row.division != naming.division {
+                self.status.outcome = Outcome::Unavailable {
+                    reason: "division naming input identity invalid",
+                };
+                break;
+            }
+            row.naming = naming.inputs;
+            row.country_ordinal = naming.country_ordinal;
+        }
+        if let Some(store) = self.deferred_store.as_mut() {
+            store.complete();
+        }
+        [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
+    }
+
+    /// The movement pass's rows, projected from its packet; returns the ticks.
+    fn project_owned_movement(&mut self) -> u64 {
         let started = qpc();
         // Projection is still worker-owned. Its destination follows the full
         // original route demand, including a failed payload's retained prefix.
@@ -2492,26 +2574,7 @@ impl Captured {
         self.paths.required = self.paths.required.max(movement.required_paths);
         let movement_ticks = qpc().saturating_sub(started).max(0) as u64;
         self.phase_ticks[19] += movement_ticks;
-        let started = qpc();
-        self.status.outcome = self.status_packet.project(&mut self.status.rows);
-        let count = self.status.outcome.len();
-        for (row, naming) in self.status.rows[..count]
-            .iter_mut()
-            .zip(&self.naming.first[..self.naming.len])
-        {
-            if row.division != naming.division {
-                self.status.outcome = Outcome::Unavailable {
-                    reason: "division naming input identity invalid",
-                };
-                break;
-            }
-            row.naming = naming.inputs;
-            row.country_ordinal = naming.country_ordinal;
-        }
-        if let Some(store) = self.deferred_store.as_mut() {
-            store.complete();
-        }
-        [movement_ticks, qpc().saturating_sub(started).max(0) as u64]
+        movement_ticks
     }
 
     pub(crate) fn capture_border_stats(
@@ -5097,6 +5160,97 @@ mod tests {
         report.merge_movement(movement);
         report.merge_speed_terms(speed_terms);
         assert_eq!(report.ticks[7..], speed_terms.ticks[7..]);
+    }
+
+    /// Map leaves out the status side, the speed terms and the movement
+    /// pass's land and dig-in walks: it reads nothing for them and refuses
+    /// them, while its DivisionMovement and the reads behind it equal Full's.
+    #[test]
+    fn map_presentation_reads_only_the_movement_full_reads() {
+        let populated = Populated::new();
+        let inputs = std::sync::Arc::clone(populated.census.unit_inputs().unwrap());
+        let sources = || Sources {
+            rows: inputs.seeds(),
+            outcome: inputs.outcome(),
+        };
+        let memory = engine_native::read_counts::CountedMemory::new(populated.world.live());
+        let countries = std::sync::Arc::new(
+            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+        );
+        let mut runs = Vec::new();
+        for map in [false, true] {
+            let mut captured =
+                super::super::Captured::with_capacities(&super::super::Capacities::default());
+            captured.division_presentation = populated.capture();
+            captured.install_unit_inputs(Some(std::sync::Arc::clone(&inputs)));
+            let context = populated.context();
+            let mut request = captured.take_presentation_request(
+                &countries,
+                context.base,
+                context.game_state,
+                context.hour,
+                None,
+            );
+            let mut movement = request.take_movement();
+            let reads = crate::read_accounting::Capture::new();
+            let report = if map {
+                movement.pass.omit_status();
+                let ticks = movement.pass.capture(
+                    &memory,
+                    context.base,
+                    context.game_state,
+                    sources(),
+                    Some(context.hour),
+                );
+                let status = request.captured.omit_status(super::super::NOT_RECORDED);
+                request.restore_movement(movement, Ok(ticks), Ok(status))
+            } else {
+                let mut terms = request.take_speed_terms();
+                let speed_ticks =
+                    terms
+                        .pass
+                        .capture(&memory, context.base, context.game_state, sources());
+                let ticks = movement.pass.capture(
+                    &memory,
+                    context.base,
+                    context.game_state,
+                    sources(),
+                    Some(context.hour),
+                );
+                let status =
+                    request
+                        .captured
+                        .capture_status_holding(&memory, context, sources(), None);
+                let report = request.restore_movement(movement, Ok(ticks), Ok(status));
+                request.restore_speed_terms(terms, Ok(speed_ticks), report)
+            };
+            let counts = reads.finish();
+            assert!(report.is_ok());
+            captured.restore_presentation_request(request, report);
+            captured.decode_division_presentation_inputs();
+            runs.push((counts, captured.division_presentation.tables()));
+        }
+        let [(full_reads, full), (map_reads, map)] = <[_; 2]>::try_from(runs).ok().unwrap();
+        assert!(matches!(full[0], TableView::Complete(_)));
+        assert_eq!(map[0], full[0]);
+        let movement = TableId::DivisionMovement.index();
+        assert_eq!(map_reads[movement], full_reads[movement]);
+        assert_ne!(
+            full_reads[TableId::DivisionStatus.index()],
+            engine_native::read_counts::ReadCounts::ZERO
+        );
+        for table in STATUS_TABLES {
+            assert_eq!(
+                map_reads[table.index()],
+                engine_native::read_counts::ReadCounts::ZERO,
+                "{table:?}"
+            );
+            let view = &map[TABLES.iter().position(|&id| id == table).unwrap()];
+            assert!(
+                matches!(view, TableView::Unavailable { .. }),
+                "{table:?}: {view:?}"
+            );
+        }
     }
 
     /// A rejected or failed presentation pass publishes no presentation

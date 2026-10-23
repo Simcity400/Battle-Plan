@@ -663,7 +663,7 @@ fn presentation_continuations_reuse_pool_storage_without_callback_allocations() 
         let request = crate::test_support::with_allocations_denied(|| {
             let mut request = request;
             batch.arm_presentation(&mut request);
-            let ledger = batch.arm_presentation_inputs(request, 0, None);
+            let ledger = batch.arm_presentation_inputs(request, 0, None, false);
             ledger.take_request().unwrap()
         });
         let mut presentation = PresentationPending {
@@ -766,7 +766,7 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             let mut request = request();
             request.inputs = None;
             batch.arm_presentation(&mut request);
-            let dispatch = batch.arm_presentation_inputs(request, 1, None);
+            let dispatch = batch.arm_presentation_inputs(request, 1, None, false);
             let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
             let mut payload = DivisionsJob::new_worker();
             payload.slots = Some((1, 2));
@@ -893,6 +893,134 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
         assert_eq!(pool.calibration().executor.uncollected, 0);
         assert_eq!(pool.calibration().executor.caller_executed, 0);
     }
+}
+
+/// Without the status side the last input publisher joins the census, as
+/// Full's does, and submits nothing: the callback finds no dispatched job,
+/// takes the request back untouched and the final join refuses the status
+/// side without a read.
+#[test]
+fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing() {
+    use super::super::divisions_test_kit as kit;
+    let shared = Shared::new(0, 0, 1);
+    let bytes = kit::fixture();
+    let context = DivisionsCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        details_active: false,
+        ..Default::default()
+    };
+    let mut reference = DivisionsJob::new_worker();
+    assert!(copy_divisions_inputs_refresh_growing(
+        &kit::memory(&bytes),
+        context,
+        &mut reference
+    ));
+    let expected: Vec<_> = reference
+        .census
+        .unit_inputs()
+        .unwrap()
+        .seeds()
+        .iter()
+        .map(|seed| seed.division)
+        .collect();
+    let (ran, roles) = mpsc::channel();
+    let pool = acquisition::Pool::with_test_runner(2, move |job| {
+        ran.send(job.role()).unwrap();
+        acquisition::run_for_test(job, &kit::memory(&bytes))
+    });
+    {
+        let mut batch = acquisition::Batch::new(&pool);
+        let mut request = request();
+        request.inputs = None;
+        request.army_stats = None;
+        let dispatch = batch.arm_presentation_inputs(request, 1, None, true);
+        let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+        let mut payload = DivisionsJob::new_worker();
+        payload.slots = Some((1, 2));
+        payload.presentation = Some(Arc::clone(&dispatch));
+        let master = unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::DivisionInputs(acquisition::RawRequest {
+                    countries: Arc::clone(&countries),
+                    context,
+                    payload,
+                }),
+            )
+        };
+        let part = unsafe {
+            submit_acquisition(
+                &shared,
+                &mut batch,
+                acquisition::Job::DivisionInputParts(acquisition::DivisionPartRequest {
+                    countries,
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    slots: (2, u32::MAX),
+                    census: Box::new(crate::division_census::Census::new_worker()),
+                    presentation: Some((Arc::clone(&dispatch), 0)),
+                }),
+            )
+        };
+        let master = unsafe { finish_acquisition(&shared, &mut batch, master) };
+        let part = unsafe { finish_acquisition(&shared, &mut batch, part) };
+        // A job completes before its publication runs: wait for the publishers.
+        let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+        while pool.calibration().executor.active != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "publishers never ended"
+            );
+            std::thread::yield_now();
+        }
+        let acquisition::Job::DivisionInputs(mut master) = master.request else {
+            unreachable!()
+        };
+        let acquisition::Job::DivisionInputParts(mut part) = part.request else {
+            unreachable!()
+        };
+        assert_eq!(
+            dispatch.restore_master(&mut master.payload.census),
+            (true, None)
+        );
+        dispatch.restore_part(0, &mut part.census);
+        assert_eq!(
+            master
+                .payload
+                .census
+                .unit_inputs()
+                .unwrap()
+                .seeds()
+                .iter()
+                .map(|seed| seed.division)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(dispatch.take_dispatched().is_none());
+        let mut presentation = PresentationPending {
+            omitted: Some(dispatch.take_request().expect("request held back")),
+            ..Default::default()
+        };
+        let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };
+        assert!(report.is_ok());
+        assert!(request.inputs.is_none() && request.army_stats.is_none());
+        assert!(matches!(
+            request.captured.outcomes()[1],
+            engine_native::walk::Outcome::Unavailable { .. }
+        ));
+    }
+    let mut seen: Vec<_> = roles.try_iter().collect();
+    seen.sort_by_key(|role| *role as usize);
+    assert_eq!(
+        seen,
+        [
+            acquisition::Role::DivisionInputParts,
+            acquisition::Role::DivisionInputs
+        ]
+    );
+    assert_eq!(pool.calibration().executor.uncollected, 0);
 }
 
 #[test]

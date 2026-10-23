@@ -142,6 +142,9 @@ pub struct Captured {
     /// rows before the ready handoff. Preserved across `reset`, cleared by
     /// the worker.
     pub(crate) registrations_raw_mode: bool,
+    /// False when the capture mode leaves out TheatreAreas and StationedUnits:
+    /// their walk does not run. Set with each Gated loan.
+    pub(crate) stationed: bool,
 }
 
 const SKIPPED: Outcome = Outcome::Unavailable {
@@ -198,6 +201,7 @@ impl Captured {
             radar_raw_mode: false,
             intel_raw_mode: false,
             registrations_raw_mode: false,
+            stationed: true,
         }
     }
 
@@ -376,45 +380,58 @@ impl Captured {
         ticks[6] = elapsed(begin);
         drop(sent_reads);
 
-        let stationed_slot = if self.active[2] { 2 } else { 3 };
-        let area_reads = read_accounting::table(TABLES[stationed_slot]);
-        let begin = qpc();
-        let first = ctheatre::walk_stationed_buffers(
-            memory,
-            base,
-            game_state,
-            ctheatre::StationedStorage {
-                areas_active: self.active[2],
-                areas: if growing {
-                    engine_native::walk::Buffer::Growing(&mut self.areas.rows)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut self.areas.rows)
-                },
-                area_provinces: if growing {
-                    engine_native::walk::Buffer::Growing(&mut self.area_provinces.first)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut self.area_provinces.first)
-                },
-                units: if growing {
-                    engine_native::walk::Buffer::Growing(&mut self.units.rows)
-                } else {
-                    engine_native::walk::Buffer::Fixed(&mut self.units.rows)
-                },
-            },
-        );
-        if self.active[2] {
-            arena_first(
-                &mut self.areas,
-                &mut self.area_provinces,
-                first.areas,
-                first.provinces_len,
-                first.required_provinces,
-            );
-        } else {
-            self.areas.outcome = SKIPPED;
+        if !self.stationed {
+            let outcome = Outcome::Unavailable {
+                reason: super::NOT_RECORDED,
+            };
+            self.areas.fail(outcome);
+            self.units.fail(outcome);
         }
-        self.units.outcome = bounded(first.units, self.units.rows.len());
-        ticks[stationed_slot] = elapsed(begin);
+        let stationed_slot = if self.active[2] { 2 } else { 3 };
+        let area_reads = self
+            .stationed
+            .then(|| read_accounting::table(TABLES[stationed_slot]));
+        let begin = qpc();
+        let first = self.stationed.then(|| {
+            ctheatre::walk_stationed_buffers(
+                memory,
+                base,
+                game_state,
+                ctheatre::StationedStorage {
+                    areas_active: self.active[2],
+                    areas: if growing {
+                        engine_native::walk::Buffer::Growing(&mut self.areas.rows)
+                    } else {
+                        engine_native::walk::Buffer::Fixed(&mut self.areas.rows)
+                    },
+                    area_provinces: if growing {
+                        engine_native::walk::Buffer::Growing(&mut self.area_provinces.first)
+                    } else {
+                        engine_native::walk::Buffer::Fixed(&mut self.area_provinces.first)
+                    },
+                    units: if growing {
+                        engine_native::walk::Buffer::Growing(&mut self.units.rows)
+                    } else {
+                        engine_native::walk::Buffer::Fixed(&mut self.units.rows)
+                    },
+                },
+            )
+        });
+        if let Some(first) = first {
+            if self.active[2] {
+                arena_first(
+                    &mut self.areas,
+                    &mut self.area_provinces,
+                    first.areas,
+                    first.provinces_len,
+                    first.required_provinces,
+                );
+            } else {
+                self.areas.outcome = SKIPPED;
+            }
+            self.units.outcome = bounded(first.units, self.units.rows.len());
+            ticks[stationed_slot] = elapsed(begin);
+        }
         drop(area_reads);
 
         // Shared census acquisition already produced this hour's owned rows.

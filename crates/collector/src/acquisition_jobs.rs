@@ -1680,6 +1680,9 @@ fn run_economy_shared(
 
 #[cfg(test)]
 pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -> Report {
+    if let Job::ObserverBoundary(request) = job {
+        return Report::ObserverBoundary(request.capture_with_memory(memory));
+    }
     run_with_memory(job, memory, &SharedCalibration::default())
 }
 
@@ -2759,9 +2762,10 @@ impl<'a> Batch<'a> {
         request: PresentationRequest,
         parts: usize,
         store: Option<Arc<division_presentation::held_store::Slot>>,
+        omit_status: bool,
     ) -> Arc<PresentationInputs> {
         let dispatch = Arc::clone(&self.pool.presentation_inputs);
-        dispatch.arm(request, parts, store);
+        dispatch.arm(request, parts, store, omit_status);
         self.presentation_inputs = Some(Arc::clone(&dispatch));
         dispatch
     }

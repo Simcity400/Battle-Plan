@@ -40,35 +40,48 @@ impl Captured {
         self.raid_state_spare = Some(packs);
     }
     /// A missing job on the slot refuses its tables as a missing Slow did.
-    pub(super) fn fail_missing_production_daily(&mut self, hour: i32, force_full: bool) {
+    pub(super) fn fail_missing_production_daily(
+        &mut self,
+        hour: i32,
+        force_full: bool,
+        reason: &'static str,
+    ) {
         let mut packs = self
             .production_daily_spare
             .take()
             .expect("production daily spare present");
         self.swap_production_daily(&mut packs);
-        packs.fail(hour, force_full, "slow acquisition not supplied");
+        packs.fail(hour, force_full, reason);
         self.swap_production_daily(&mut packs);
         self.production_daily_spare = Some(packs);
     }
-    #[cfg(not(test))]
-    pub(super) fn fail_missing_war_overview(&mut self, hour: i32, force_full: bool) {
+    pub(super) fn fail_missing_war_overview(
+        &mut self,
+        hour: i32,
+        force_full: bool,
+        reason: &'static str,
+    ) {
         let mut packs = self
             .war_overview_spare
             .take()
             .expect("war overview spare present");
         self.swap_war_overview(&mut packs);
-        packs.fail(hour, force_full, "war overview acquisition not supplied");
+        packs.fail(hour, force_full, reason);
         self.swap_war_overview(&mut packs);
         self.war_overview_spare = Some(packs);
     }
-    #[cfg(not(test))]
-    pub(super) fn fail_missing_stability(&mut self, hour: i32, force_full: bool) {
+    pub(super) fn fail_missing_stability(
+        &mut self,
+        hour: i32,
+        force_full: bool,
+        reason: &'static str,
+    ) {
         let mut packs = self
             .stability_spare
             .take()
             .expect("stability spare present");
         self.swap_stability(&mut packs);
-        packs.fail(hour, force_full, "stability acquisition not supplied");
+        packs.fail(hour, force_full, reason);
         self.swap_stability(&mut packs);
         self.stability_spare = Some(packs);
     }
@@ -96,13 +109,14 @@ impl Captured {
         self.swap_late(&mut packs, orders);
         self.late_spare = Some(packs);
     }
-    #[cfg(not(test))]
-    pub(super) fn fail_missing_raid_targets(&mut self, hour: i32, force_full: bool) {
-        self.raid_target_statuses.fail_capture(
-            hour,
-            force_full,
-            "raid target acquisition not supplied",
-        );
+    pub(super) fn fail_missing_raid_targets(
+        &mut self,
+        hour: i32,
+        force_full: bool,
+        reason: &'static str,
+    ) {
+        self.raid_target_statuses
+            .fail_capture(hour, force_full, reason);
     }
 
     /// The Countries worker owns the original naming buffers (the appearance
@@ -375,6 +389,7 @@ impl Captured {
         let mut packs = self.slow_spare.take().expect("slow spare present");
         self.swap_slow(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
+        packs.capture_mode = self.capture_mode;
         crate::acquisition_jobs::SlowRequest {
             countries: Arc::clone(countries),
             base,
@@ -1095,6 +1110,11 @@ impl Captured {
         let mut packs = self.gated_spare.take().expect("gated spare present");
         self.swap_gated(&mut packs);
         packs.ticks = [0; TABLE_COUNT];
+        packs.fog.stationed = super::records_any(
+            self.capture_mode,
+            &[TableId::TheatreAreas, TableId::StationedUnits],
+        );
+        packs.projects_recorded = super::records_any(self.capture_mode, &projects::TABLES);
         crate::acquisition_jobs::GatedRequest {
             base,
             game_state: state,
@@ -1749,6 +1769,9 @@ pub(crate) struct SlowPacks {
     pub(crate) combat_log: combat_log::Captured,
     pub(crate) country_factories: country_factories::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
+    /// The session's capture mode: a sub-pack it records no table of is
+    /// refused without its walk. Set with each loan.
+    pub(crate) capture_mode: replay_data::scope::CaptureMode,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -1893,6 +1916,12 @@ impl ProductionDailyPacks {
     pub(crate) fn due(hour: i32, force_full: bool) -> bool {
         replay_data::cadence::should_walk(industrial_organisations::TABLES[0], hour, force_full)
             || replay_data::cadence::should_walk(production_modifiers::TABLES[0], hour, force_full)
+    }
+
+    /// Whether `mode` records any of the slot's tables; its jobs run only then.
+    pub(crate) fn recorded(mode: replay_data::scope::CaptureMode) -> bool {
+        super::records_any(mode, &industrial_organisations::TABLES)
+            || super::records_any(mode, &production_modifiers::TABLES)
     }
 
     pub(crate) fn capture(
@@ -2129,6 +2158,7 @@ impl SlowPacks {
             combat_log: combat_log::Captured::vacant(),
             country_factories: country_factories::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
+            capture_mode: replay_data::scope::CaptureMode::Full,
             ticks: [0; TABLE_COUNT],
         }))
     }
@@ -2150,13 +2180,18 @@ impl SlowPacks {
                 .capture_growing(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
+        let recorded = |tables: &[TableId]| super::records_any(self.capture_mode, tables);
         macro_rules! staggered {
             ($($pack:ident),+ $(,)?) => {$(
-                scatter(
-                    &$pack::TABLES,
-                    self.$pack.capture(memory, base, game_state, hour, force_full),
-                    &mut ticks,
-                );
+                if recorded(&$pack::TABLES) {
+                    scatter(
+                        &$pack::TABLES,
+                        self.$pack.capture(memory, base, game_state, hour, force_full),
+                        &mut ticks,
+                    );
+                } else {
+                    self.$pack.fail_capture(hour, force_full, super::NOT_RECORDED);
+                }
             )+};
         }
         staggered!(
@@ -2164,10 +2199,18 @@ impl SlowPacks {
             map_names,
             faction_theatres,
             modifier_definitions,
-            logistics,
-            combat_log,
-            country_factories
+            logistics
         );
+        // The Combat Log walk drains its history hooks' lane, so it runs in
+        // every mode.
+        scatter(
+            &combat_log::TABLES,
+            self.combat_log
+                .capture(memory, base, game_state, hour, force_full),
+            &mut ticks,
+        );
+        staggered!(country_factories);
+        // Without the doctrine store the unlock walk reads no doctrine.
         scatter(
             &country_tactic_unlocks::TABLES,
             self.country_tactic_unlocks.capture_carried(
@@ -2176,7 +2219,10 @@ impl SlowPacks {
                 game_state,
                 hour,
                 force_full,
-                stores.doctrines.as_deref(),
+                stores
+                    .doctrines
+                    .as_deref()
+                    .filter(|_| recorded(&collector_slow_tables::doctrines::TABLES)),
             ),
             &mut ticks,
         );
@@ -2193,19 +2239,24 @@ impl SlowPacks {
             ),
             &mut ticks,
         );
-        scatter(
-            &hired_advisors::TABLES,
-            self.hired_advisors.capture_carried(
-                memory,
-                base,
-                game_state,
-                hour,
-                force_full,
-                stores.advisors.as_deref_mut(),
-                stores.available.as_deref_mut(),
-            ),
-            &mut ticks,
-        );
+        if recorded(&hired_advisors::TABLES) {
+            scatter(
+                &hired_advisors::TABLES,
+                self.hired_advisors.capture_carried(
+                    memory,
+                    base,
+                    game_state,
+                    hour,
+                    force_full,
+                    stores.advisors.as_deref_mut(),
+                    stores.available.as_deref_mut(),
+                ),
+                &mut ticks,
+            );
+        } else {
+            self.hired_advisors
+                .fail_capture(hour, force_full, super::NOT_RECORDED);
+        }
         self.ticks = ticks;
     }
 }
@@ -2375,6 +2426,9 @@ pub(crate) struct GatedPacks {
     pub(crate) fog: fog::Captured,
     pub(crate) projects: projects::Captured,
     pub(crate) construction: construction::Captured,
+    /// False when the capture mode records none of the projects tables:
+    /// their walks do not run.
+    pub(crate) projects_recorded: bool,
     pub(crate) ticks: [u64; TABLE_COUNT],
 }
 
@@ -2445,6 +2499,7 @@ impl GatedPacks {
             fog: fog::Captured::vacant(),
             projects: projects::Captured::vacant(),
             construction: construction::Captured::vacant(),
+            projects_recorded: true,
             ticks: [0; TABLE_COUNT],
         }))
     }
@@ -2474,20 +2529,25 @@ impl GatedPacks {
                 .capture_growing(memory, base, game_state, hour, force_full),
             &mut ticks,
         );
-        scatter(
-            &projects::TABLES,
-            self.projects.capture_selected(
-                memory,
-                roster,
-                base,
-                game_state,
-                hour,
-                force_full,
-                projects,
-                &crate::country_input_changes::Observer,
-            ),
-            &mut ticks,
-        );
+        if self.projects_recorded {
+            scatter(
+                &projects::TABLES,
+                self.projects.capture_selected(
+                    memory,
+                    roster,
+                    base,
+                    game_state,
+                    hour,
+                    force_full,
+                    projects,
+                    &crate::country_input_changes::Observer,
+                ),
+                &mut ticks,
+            );
+        } else {
+            self.projects
+                .fail_gated_capture(hour, force_full, super::NOT_RECORDED);
+        }
         self.ticks = ticks;
     }
 }

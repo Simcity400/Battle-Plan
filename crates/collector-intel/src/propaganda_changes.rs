@@ -651,7 +651,14 @@ impl Hooks {
     /// # Safety
     /// The host authenticated this executable and owns hook restoration and
     /// quiescence before unloading this module.
-    pub unsafe fn new(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+    pub unsafe fn new(
+        memory: &impl Memory,
+        base: usize,
+        capture: bool,
+    ) -> Result<Self, &'static str> {
+        if !capture {
+            return Ok(Self { hooks: Vec::new() });
+        }
         let state = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|state| usize::try_from(state).ok())
             .ok_or("propaganda bootstrap game state unreadable")?;
@@ -700,6 +707,9 @@ impl Hooks {
         Ok(Self { hooks })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
+        if self.hooks.is_empty() {
+            return Ok(true);
+        }
         if !enabled {
             ENABLED.store(false, Ordering::Release);
         }

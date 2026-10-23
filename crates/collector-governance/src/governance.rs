@@ -198,6 +198,8 @@ struct TacticRow {
 }
 
 pub struct Captured {
+    /// The tables the capture mode leaves out ([`Self::leave_out`]).
+    left_out: [bool; N],
     nested_bytes: OnceLock<usize>,
     breakdowns: Vec<rows::PowerBalanceModifierBreakdownRow>,
     breakdown_outcome: Outcome,
@@ -625,6 +627,17 @@ impl ResearchPart {
 }
 
 impl Captured {
+    /// Leave out the tables `left_out` marks: their walks do not run and they
+    /// are reported skipped. Politics keeps ActiveIdeas and PartyLeaders,
+    /// whose walks certify its election cache.
+    pub fn leave_out(&mut self, mut left_out: [bool; N]) {
+        if !left_out[5] {
+            left_out[7] = false;
+            left_out[21] = false;
+        }
+        self.left_out = left_out;
+    }
+
     /// Loan the research rows to their own job. Allocation-free: the
     /// placeholders have no capacity, and `capture` leaves them untouched.
     pub fn take_research(&mut self) -> ResearchPart {
@@ -760,6 +773,7 @@ impl Captured {
             dictionary: owned_vec(default_vec(capacity.dictionary)),
             dictionary_required: 0,
             research_loaned: false,
+            left_out: [false; N],
             research_selection: SliceSelection::new(capacity.rows[18] != 0),
             technology_selection: SliceSelection::new(capacity.rows[2] != 0),
             technology_changed: crate::slicing::Changed::default(),
@@ -1288,6 +1302,9 @@ impl Captured {
         // The research tables belong to `ResearchPart`, walked by its own job.
         for index in RESEARCH {
             walk[index] = false;
+        }
+        for (walk, &left_out) in walk.iter_mut().zip(&self.left_out) {
+            *walk &= !left_out;
         }
         self.definitions_pending = defer_definitions && walk[2];
         let first = acquire(

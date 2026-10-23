@@ -13,6 +13,7 @@
 # Decode panic routes install only the standard panic handler and read its retained
 # diagnostic. Conditional event-feed status uses bool::then; detach retains the
 # panic-handler owner and preserves the first decode failure.
+# Capture-mode scope (extended::records_any) only tests the session's table list.
 call:Arc::as_ptr
 call:Arc::clone
 call:Arc::new
@@ -90,6 +91,7 @@ call:crate::country_scale::presize_table_inputs
 call:crate::country_scale::source_demand::Demand::observe
 call:crate::division_panel_forwarder::attach
 call:crate::equipment_destruction::capacity
+call:crate::extended::records_any
 call:crate::equipment_destruction::prepare
 call:crate::equipment_destruction::release
 call:crate::experience_gains::prepare

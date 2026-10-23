@@ -5126,6 +5126,269 @@ mod tests {
     }
 
     #[test]
+    fn a_map_session_holds_full_s_tables_for_every_table_map_records() {
+        use crate::acquisition_jobs::Role;
+        use crate::sampling::capture_scope_test_kit::{self as kit, Fixture};
+        use replay_data::scope::{self, CaptureMode};
+        use replay_frame::frame::FrameDecoder;
+        const CHILD: &str = "BATTLE_PLAN_MAP_DISPATCH_EQUIVALENCE";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "spooling::tests::a_map_session_holds_full_s_tables_for_every_table_map_records", "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let exclusive_roles = [
+            Role::World,
+            Role::Presentation,
+            Role::PresentationPrepare,
+            Role::PresentationStatus,
+            Role::PresentationPreparation,
+            Role::PresentationSettle,
+            Role::PresentationSpeedTerms,
+            Role::RaidTargets,
+            Role::Research,
+            Role::Intel,
+            Role::AirStats,
+            Role::Sunk,
+            Role::Projects,
+            Role::Session,
+            Role::Stability,
+            Role::WarOverview,
+            Role::IndustrialOrganisations,
+            Role::ProductionDaily,
+            Role::ProductionModifierParts,
+            Role::SupplyTrains,
+            Role::Fronts,
+            Role::CountryLeaderRoles,
+            Role::AdvisorRoles,
+        ];
+        let exclusive_tables: Vec<_> = crate::extended::mode_gated_walks()
+            .into_iter()
+            .flat_map(|(_, tables)| tables)
+            .chain([TableId::ScriptFlags, TableId::ScriptVariables])
+            .chain(crate::extended::intel::TABLES)
+            .chain(crate::extended::governance::TABLES)
+            // FinalInputs uses DivisionStatus as the anchor for its shared reads.
+            .filter(|&table| {
+                table != TableId::DivisionStatus && !scope::records(CaptureMode::Map, table)
+            })
+            .collect();
+        let frames = |mode: CaptureMode, fixture: Fixture, refuse: bool| {
+            let directory = scratch_root(&format!("capture-scope-{mode}-{fixture:?}-{refuse}"));
+            let mut start = session();
+            start.capture_mode = mode;
+            let mut processor =
+                Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+            kit::capture(mode, fixture, refuse, |frame, trace, roles| {
+                let hour = frame.clock.as_ref().unwrap().hour;
+                if mode == CaptureMode::Map {
+                    assert!(
+                        roles.iter().all(|role| !exclusive_roles.contains(role)),
+                        "{fixture:?} hour {hour}: {roles:?}"
+                    );
+                    assert!(trace.iter().all(|span| {
+                        span.role
+                            .is_none_or(|role| !exclusive_roles.contains(&role))
+                    }));
+                    for &table in &exclusive_tables {
+                        assert_eq!(
+                            frame.table_reads[table.index()],
+                            engine_native::memory::ReadCounts::ZERO,
+                            "{fixture:?} hour {hour} {table:?}"
+                        );
+                    }
+                } else if hour == 0 {
+                    for role in [Role::Research, Role::Intel, Role::AirStats] {
+                        assert!(roles.contains(&role), "Full must exercise {role:?}");
+                    }
+                }
+                for field in [
+                    engine_native::cgame_state::GLOBAL_FLAGS,
+                    engine_native::cgame_state::GLOBAL_VARIABLES,
+                ] {
+                    let field = frame.clock.as_ref().unwrap().game_state as usize + field;
+                    let touched = trace.iter().any(|span| {
+                        span.address < field + 8 && field < span.address.saturating_add(span.len)
+                    });
+                    if mode == CaptureMode::Map {
+                        assert!(
+                            !touched,
+                            "omitted script source read at hour {hour}: {trace:?}"
+                        );
+                    } else if hour == 0 {
+                        assert!(touched, "Full did not exercise the script source");
+                    }
+                }
+                if matches!(fixture, Fixture::Divisions) {
+                    if refuse && matches!(hour, 2 | 13) {
+                        assert!(matches!(
+                            frame.divisions_result,
+                            Outcome::Unavailable { .. }
+                        ));
+                    } else {
+                        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+                    }
+                }
+                processor.frame(frame).unwrap();
+            });
+            processor.detach().unwrap();
+            let campaign = processor
+                .campaigns
+                .get_mut(std::str::from_utf8(kit::ID).unwrap())
+                .unwrap();
+            let mut spools: Vec<_> = fs::read_dir(&campaign.directory)
+                .unwrap()
+                .flatten()
+                .filter(|file| file.file_name().to_string_lossy().starts_with("spool."))
+                .map(|file| file.path())
+                .collect();
+            spools.sort();
+            let mut decoder = FrameDecoder::new();
+            let mut frames = Vec::new();
+            for spool in spools {
+                for record in replay::spool::recover_prefix(&fs::read(spool).unwrap()).records {
+                    let Record::Frame(frame) = record else {
+                        continue;
+                    };
+                    assert_eq!(frame.capture_mode().unwrap(), mode);
+                    let decoded = decoder.apply(&frame).unwrap();
+                    let hour = frames.len();
+                    match fixture {
+                        Fixture::Divisions => {
+                            let table = &*decoded.tables[TableId::DivisionEquipment.index()];
+                            if refuse && (2..26).contains(&hour) {
+                                assert!(
+                                    matches!(table, TableView::Unavailable { .. }),
+                                    "{mode} hour {hour}: {table:?}"
+                                );
+                            } else {
+                                let TableView::Complete(TableRows::DivisionEquipment(rows)) = table
+                                else {
+                                    panic!(
+                                        "{mode} hour {hour}: expected populated equipment: {table:?}"
+                                    );
+                                };
+                                let sample_hour = if hour >= 26 {
+                                    26
+                                } else if hour >= 13 {
+                                    13
+                                } else if hour >= 2 {
+                                    2
+                                } else {
+                                    0
+                                };
+                                let first = rows
+                                    .iter()
+                                    .find(|row| row.division == 101 && row.ordinal == 0)
+                                    .unwrap();
+                                assert_eq!(
+                                    first.amount_raw,
+                                    100 + sample_hour,
+                                    "{mode} held equipment at hour {hour}"
+                                );
+                            }
+                        }
+                        Fixture::Wars if !refuse || !matches!(hour, 2 | 13) => {
+                            let table = &*decoded.tables[TableId::WarRelations.index()];
+                            let TableView::Complete(TableRows::WarRelations(rows)) = table else {
+                                panic!("{mode} hour {hour}: expected populated wars: {table:?}");
+                            };
+                            let war = rows
+                                .iter()
+                                .find(|row| row.first_country == 3 && row.second_country == 1)
+                                .unwrap();
+                            assert_eq!(
+                                war.first_casualties,
+                                11 + hour as i64,
+                                "{mode} hourly war at hour {hour}"
+                            );
+                        }
+                        Fixture::Wars => {}
+                    }
+                    frames.push(
+                        TableId::ALL
+                            .map(|table| (*decoded.tables[table.index()]).clone())
+                            .to_vec(),
+                    );
+                }
+            }
+            drop(processor);
+            fs::remove_dir_all(directory).unwrap();
+            frames
+        };
+        for fixture in [Fixture::Divisions, Fixture::Wars] {
+            for refuse in [false, true] {
+                let full = frames(CaptureMode::Full, fixture, refuse);
+                let map = frames(CaptureMode::Map, fixture, refuse);
+                assert_eq!((full.len(), map.len()), (27, 27));
+                let mut omitted_slice_reads = 0;
+                for (hour, (full, map)) in full.iter().zip(&map).enumerate() {
+                    for table in TableId::ALL {
+                        if !table.last_change().present(replay_data::FORMAT_VERSION) {
+                            continue;
+                        }
+                        let index = table.index();
+                        if table == TableId::SliceReads {
+                            let (
+                                TableView::Complete(TableRows::SliceReads(full)),
+                                TableView::Complete(TableRows::SliceReads(map)),
+                            ) = (&full[index], &map[index])
+                            else {
+                                panic!("SliceReads must be complete");
+                            };
+                            let kept: Vec<_> = full
+                                .iter()
+                                .filter(|row| {
+                                    scope::records(
+                                        CaptureMode::Map,
+                                        TableId::ALL[row.table as usize],
+                                    )
+                                })
+                                .cloned()
+                                .collect();
+                            omitted_slice_reads += full.len() - kept.len();
+                            assert_eq!(
+                                *map, kept,
+                                "{fixture:?} refusal={refuse} hour {hour} SliceReads"
+                            );
+                        } else if scope::records(CaptureMode::Map, table) {
+                            if scope::records(CaptureMode::Full, table) {
+                                assert_eq!(
+                                    map[index], full[index],
+                                    "{fixture:?} refusal={refuse} hour {hour} {table:?}"
+                                );
+                            }
+                        } else {
+                            assert_eq!(
+                                map[index],
+                                TableView::NotRecorded {
+                                    mode: CaptureMode::Map
+                                },
+                                "{table:?}"
+                            );
+                        }
+                    }
+                }
+                if matches!(fixture, Fixture::Wars) {
+                    assert!(
+                        omitted_slice_reads > 0,
+                        "exercise the omitted RelationOpinions witnesses"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn spool_validation_detail_survives_ordinary_failure_and_detach() {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";

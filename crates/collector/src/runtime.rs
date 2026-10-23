@@ -849,13 +849,37 @@ fn run(
     })?;
 
     let mut propaganda_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::propaganda_changes::Hooks::new(&memory, base)
+        crate::propaganda_changes::Hooks::new(
+            &memory,
+            base,
+            crate::extended::records_any(
+                session.capture_mode,
+                &[replay_data::rows::TableId::PropagandaEfforts],
+            ),
+        )
     })?;
     let mut intel_source_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::intel_source_changes::Hooks::new(&memory, base)
+        crate::intel_source_changes::Hooks::new(
+            &memory,
+            base,
+            crate::extended::records_any(
+                session.capture_mode,
+                &[
+                    replay_data::rows::TableId::IntelContributions,
+                    replay_data::rows::TableId::IntelSources,
+                ],
+            ),
+        )
     })?;
     let mut network_auxiliary_hooks = FamilyHooks::construct(base, || unsafe {
-        crate::network_auxiliary::Hooks::new(&memory, base)
+        crate::network_auxiliary::Hooks::new(
+            &memory,
+            base,
+            crate::extended::records_any(
+                session.capture_mode,
+                &[replay_data::rows::TableId::IntelNetworkAuxiliaries],
+            ),
+        )
     })?;
     let naval_state = read::<u64>(&memory, base + cgame_state::SINGLETON_RVA)
         .and_then(|pointer| usize::try_from(pointer).ok())
@@ -935,10 +959,14 @@ fn run(
     let mut fuel_hooks = FamilyHooks::construct(base, || {
         Ok(unsafe { crate::fuel_awards::Hooks::new(&memory, base) })
     })?;
+    // A capture mode that records no operation completion installs none of their hooks.
+    let operation_outcomes = config.operation_outcomes
+        && crate::extended::records_any(
+            session.capture_mode,
+            &crate::extended::operation_outcomes::TABLES,
+        );
     let mut operation_hooks = FamilyHooks::construct(base, || {
-        Ok(unsafe {
-            crate::operation_outcomes::Hooks::new(&memory, base, config.operation_outcomes)
-        })
+        Ok(unsafe { crate::operation_outcomes::Hooks::new(&memory, base, operation_outcomes) })
     })?;
     let mut politics_hooks = FamilyHooks::construct(base, || {
         Ok(unsafe { crate::politics_changes::Hooks::new(&memory, base, config.politics_capture) })

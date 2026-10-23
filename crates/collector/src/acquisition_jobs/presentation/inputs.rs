@@ -18,6 +18,9 @@ struct State {
     failure: Option<&'static str>,
     request: Option<PresentationRequest>,
     pending: Option<RangeTicket>,
+    /// The capture mode leaves the status side out: the last publisher joins
+    /// the census and submits nothing.
+    omit_status: bool,
     movement: Option<PresentationMovementRequest>,
     speed_terms: Option<PresentationSpeedTermsRequest>,
     split: bool,
@@ -51,6 +54,7 @@ impl PresentationInputs {
         request: PresentationRequest,
         count: usize,
         store: Option<Arc<division_presentation::held_store::Slot>>,
+        omit_status: bool,
     ) {
         let mut state = lock_callback(&self.state, Site::Inputs);
         assert!(state.closed && state.request.is_none() && state.pending.is_none());
@@ -59,6 +63,7 @@ impl PresentationInputs {
             count,
             request: Some(request),
             store,
+            omit_status,
             ..Default::default()
         };
     }
@@ -196,6 +201,9 @@ impl acquisition::Publication for PresentationInputs {
             None
         };
         state.joined = true;
+        if state.omit_status {
+            return;
+        }
         let mut request = state.request.take().unwrap();
         request.inputs = inputs;
         if crate::allocation::failed() {

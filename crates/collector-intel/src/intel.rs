@@ -603,6 +603,8 @@ impl<'a> IntelConversion<'a> {
 
 pub struct Captured {
     relation_active: [bool; 2],
+    /// The residual tables the capture mode leaves out: their walks do not run.
+    left_out: [bool; N],
     capitulation: CaptureRows<cdiplomacy_status::CapitulationRow>,
     /// Capitulation rows' owned war-goal recipients, grown by the worker walk.
     war_goal_recipients: Vec<u32>,
@@ -689,6 +691,12 @@ impl Captured {
     pub fn set_relation_activity(&mut self, active: [bool; 2]) {
         self.relation_active = active;
     }
+    /// Leave out the residual tables `left_out` marks: the residual capture
+    /// reads none of them and reports them skipped.
+    pub fn leave_out(&mut self, left_out: [bool; N]) {
+        self.left_out = left_out;
+    }
+
     /// Empty ownership placeholder, with no rows or scratch allocated.
     pub fn vacant() -> Self {
         Self::build(
@@ -809,6 +817,7 @@ impl Captured {
             relations_raw_mode: false,
             relations_selection: SliceSelection::new(capacity.rows[13] != 0),
             relation_active: [false; 2],
+            left_out: [false; N],
             capitulation_raw_mode: false,
         }
     }
@@ -1299,6 +1308,11 @@ impl Captured {
         } else {
             self.relation_active = [active[13], active[14]];
         }
+        if include_residual {
+            for (active, &left_out) in active.iter_mut().zip(&self.left_out) {
+                *active &= !left_out;
+            }
+        }
         macro_rules! skip {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
                 if !active[$index] {
@@ -1391,41 +1405,43 @@ impl Captured {
                 },
             );
             ticks[2] = elapsed(begin);
-            let begin = qpc();
-            let result = read_accounting::with_table(TABLES[3], || {
-                cintelligence_agency::walk_with_upgrades_growing(
-                    memory,
-                    base,
-                    state,
-                    &mut self.agencies.rows,
-                    &mut self.agency_names.first,
-                    &mut self.agency_upgrades.rows,
-                    &mut self.agency_upgrade_catalog,
-                )
-            });
-            first_named(
-                &mut self.agencies,
-                &mut self.agency_names,
-                ArenaRead::from(result.agencies),
-            );
-            self.agency_upgrades.outcome =
-                bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
-            self.agency_upgrade_required = result.upgrades.required_rows;
-            AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
-                result.upgrades.required_rows,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
-                u64::from(result.upgrades.omitted_rows),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            for (counter, count) in AGENCY_UPGRADE_REFUSALS
-                .iter()
-                .zip(result.upgrades.refusal_counts)
-            {
-                counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+            if !(self.left_out[3] && self.left_out[17]) {
+                let begin = qpc();
+                let result = read_accounting::with_table(TABLES[3], || {
+                    cintelligence_agency::walk_with_upgrades_growing(
+                        memory,
+                        base,
+                        state,
+                        &mut self.agencies.rows,
+                        &mut self.agency_names.first,
+                        &mut self.agency_upgrades.rows,
+                        &mut self.agency_upgrade_catalog,
+                    )
+                });
+                first_named(
+                    &mut self.agencies,
+                    &mut self.agency_names,
+                    ArenaRead::from(result.agencies),
+                );
+                self.agency_upgrades.outcome =
+                    bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
+                self.agency_upgrade_required = result.upgrades.required_rows;
+                AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
+                    result.upgrades.required_rows,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
+                    u64::from(result.upgrades.omitted_rows),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                for (counter, count) in AGENCY_UPGRADE_REFUSALS
+                    .iter()
+                    .zip(result.upgrades.refusal_counts)
+                {
+                    counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+                }
+                ticks[3] = elapsed(begin);
             }
-            ticks[3] = elapsed(begin);
             if active[4] {
                 let begin = qpc();
                 capture_named(

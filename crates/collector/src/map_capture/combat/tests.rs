@@ -197,7 +197,7 @@ impl Memory for NoReads {
 #[test]
 fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_failure() {
     let mut map = empty_map();
-    let request = map.take_combat_request(0, 0, progress());
+    let request = map.take_combat_request(0, 0, progress(), true);
     let unavailable = Outcome::Unavailable {
         reason: "combat worker rejected",
     };
@@ -216,7 +216,7 @@ fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_fail
 
     map.reset();
     let world = World::new(1, 2);
-    let mut request = map.take_combat_request(0, world.state(), returned);
+    let mut request = map.take_combat_request(0, world.state(), returned, true);
     let report = request.capture(&world);
     request.naval_finished = false;
     let returned = map.restore_combat_request(request, report, Some("naval worker panicked"));
@@ -237,7 +237,7 @@ fn combat_log_rejected_request_is_terminal_and_finished_land_survives_later_fail
 fn combat_log_take_restore_moves_owned_storage_without_callback_allocation() {
     let world = World::new(1, 2);
     let mut map = empty_map();
-    let mut request = map.take_combat_request(0, world.state(), progress());
+    let mut request = map.take_combat_request(0, world.state(), progress(), true);
     let report = request.capture(&world);
     let progress = map.restore_combat_request(request, report, None);
     let original = (
@@ -245,11 +245,11 @@ fn combat_log_take_restore_moves_owned_storage_without_callback_allocation() {
         map.land_participants.as_ptr(),
     );
     let request = crate::test_support::with_allocations_denied(|| {
-        let request = map.take_combat_request(0, world.state(), progress);
+        let request = map.take_combat_request(0, world.state(), progress, true);
         assert_eq!(map.land_combats.rows.capacity(), 0);
         assert_eq!(map.land_participants.capacity(), 0);
         let progress = map.restore_combat_request(request, report, None);
-        map.take_combat_request(0, world.state(), progress)
+        map.take_combat_request(0, world.state(), progress, true)
     });
     map.restore_combat_request(request, report, None);
     assert_eq!(

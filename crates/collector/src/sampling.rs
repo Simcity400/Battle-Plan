@@ -2448,6 +2448,15 @@ impl Drop for CallbackPriority {
 /// hook. The trampoline has not run, so the state is the settled end-of-hour
 /// boundary, read exactly as the original collector did.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
+    let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+    unsafe { acquire_with_memory(shared, dispatch, memory) };
+}
+
+unsafe fn acquire_with_memory(
+    shared: &Shared,
+    dispatch: Dispatch<'_>,
+    memory: CountedMemory<impl Memory>,
+) {
     let _callback_parks = crate::acquisition::callback_parks::Scope::enter();
     let Dispatch {
         world_generation,
@@ -2460,7 +2469,6 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
     } = dispatch;
     reset_hour_joins();
     let growths_before = engine_allocation::growths();
-    let memory = CountedMemory::new(unsafe { LiveMemory::new() });
 
     if let Some(index) = index {
         let reset_begin = qpc();
@@ -2683,6 +2691,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             frame
                 .extended
                 .set_load_signal(clock.play_session_started_at);
+            frame.extended.set_capture_mode(shared.capture_mode);
             frame.extended.prepare_hour(clock.hour, force_full);
             if let Some(store) = &shared.army_stat_store {
                 store.prepare_hour(clock.hour, force_full);
@@ -2886,6 +2895,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         .unwrap_or(u32::MAX),
                 )
             };
+            // Without the status side the presentation reads only the movement pass.
+            let status_recorded = frame
+                .extended
+                .records_any(&extended::division_presentation::STATUS_TABLES);
+            let intel_recorded = frame.extended.records_any(&decode::INTEL);
             let mut input_payload = decode::acquire_divisions_job();
             input_payload.slots = (split != 0).then(|| slots(0));
             // SAFETY: only this callback reads and writes the split.
@@ -2901,8 +2915,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 );
                 request.inputs = None;
                 request.captured.status_workers = acquisition.worker_count();
+                if !status_recorded {
+                    return batch.arm_presentation_inputs(request, split, None, true);
+                }
                 batch.arm_presentation(&mut request);
-                batch.arm_presentation_inputs(request, split, shared.army_stat_store.clone())
+                batch.arm_presentation_inputs(request, split, shared.army_stat_store.clone(), false)
             });
             // The optional native witness still belongs to this callback,
             // before any presentation worker borrows the input packet.
@@ -3047,6 +3064,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 || extended::character_inputs::TABLES
                     .iter()
                     .any(|&table| replay_data::cadence::should_walk(table, clock.hour, force_full));
+            let character_part_recorded = |part: usize| {
+                decode::CHARACTERS
+                    .iter()
+                    .zip(extended::characters::PART_MASKS[part])
+                    .any(|(&table, member)| {
+                        member && replay_data::scope::records(shared.capture_mode, table)
+                    })
+            };
             let roster_active = character_part(0);
             if characters_refresh && roster_active.iter().any(|&value| value) {
                 characters_pending[0] = Some(queue!(acquisition::Job::Characters(
@@ -3071,20 +3096,24 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // frame. The construction rest's verdict, installed in the Gated
             // packs before they leave, is whether its part was scheduled:
             // `settle_world` set it to exactly this.
-            let (world_pending, construction_active) = out_of_line(|| {
-                let request = acquire_world_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                );
-                let construction_active = request.construction.is_some();
-                (
-                    queue!(acquisition::Job::World(request)),
-                    construction_active,
-                )
+            // A World its capture mode leaves out stands as a failed one: its
+            // scheduled parts keep their raw verdicts, so neither Gated nor
+            // FinalInputs walks them, and refuse after the assembly.
+            let world_scheduled = world_schedule(clock.hour, force_full);
+            let world_pending = (frame.extended.records_any(&decode::PRODUCTION_REST)
+                || frame.extended.records_any(&decode::CONSTRUCTION_REST))
+            .then(|| {
+                out_of_line(|| {
+                    queue!(acquisition::Job::World(acquire_world_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                    )))
+                })
             });
+            let construction_active = world_scheduled.1;
             let economy_pending = queue!(acquisition::Job::Economy(acquire_economy_request(
                 &country_snapshot,
                 shared.base,
@@ -3094,21 +3123,29 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 force_full,
             )));
             // The research tables are loaned before the family that owns them.
-            // SAFETY: only this callback takes and returns the store.
-            let fingerprints =
-                unsafe { &mut *shared.slice_fingerprints[crate::slicing::RESEARCH].get() }
-                    .take()
-                    .expect("research fingerprints returned by the previous callback");
-            let research_pending = queue!(acquisition::Job::Research(
-                frame.extended.take_research_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    fingerprints,
+            let research_pending = frame
+                .extended
+                .records_any(
+                    &extended::governance::RESEARCH
+                        .map(|index| extended::governance::TABLES[index]),
                 )
-            ));
+                .then(|| {
+                    // SAFETY: only this callback takes and returns the store.
+                    let fingerprints =
+                        unsafe { &mut *shared.slice_fingerprints[crate::slicing::RESEARCH].get() }
+                            .take()
+                            .expect("research fingerprints returned by the previous callback");
+                    queue!(acquisition::Job::Research(
+                        frame.extended.take_research_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                            fingerprints,
+                        )
+                    ))
+                });
             let (governance_pending, governance_bytes) = {
                 let mut bytes = 0;
                 let pending = queue!(acquisition::Job::Governance({
@@ -3209,25 +3246,26 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // The daily production slot's walks, beside Slow, at that slot.
             // MIO is the longest independent walk, so submit it before the
             // modifier ranges. All still join at the late assembly barrier.
-            let industrial_organisations_pending =
-                extended::ProductionDailyPacks::due(clock.hour, force_full).then(|| {
-                    queue!(acquisition::Job::IndustrialOrganisations(
-                        frame.extended.take_industrial_organisations_request(
-                            &country_snapshot,
-                            shared.base,
-                            state,
-                            clock.hour,
-                            force_full,
-                        )
-                    ))
-                });
+            let production_daily_due = extended::ProductionDailyPacks::due(clock.hour, force_full)
+                && extended::ProductionDailyPacks::recorded(shared.capture_mode);
+            let industrial_organisations_pending = production_daily_due.then(|| {
+                queue!(acquisition::Job::IndustrialOrganisations(
+                    frame.extended.take_industrial_organisations_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                    )
+                ))
+            });
             // On its slot the production modifier capture splits at the last
             // slot hour's balance. Loan the extra ranges before range zero's
             // pack leaves; all modifier ranges join in slot order.
             let mut production_part_pending: [Option<PendingAcquisition>;
                 extended::production_modifiers::MAX_PARTS - 1] =
                 [const { None }; extended::production_modifiers::MAX_PARTS - 1];
-            if extended::ProductionDailyPacks::due(clock.hour, force_full) {
+            if production_daily_due {
                 // SAFETY: only this callback reads and writes the split.
                 let (starts, split) = unsafe { *shared.production_part_starts.get() };
                 let parts = frame.extended.prepare_production_modifier_parts(
@@ -3252,10 +3290,24 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     )));
                 }
             }
-            let production_daily_pending =
-                extended::ProductionDailyPacks::due(clock.hour, force_full).then(|| {
-                    queue!(acquisition::Job::ProductionDaily(
-                        frame.extended.take_production_daily_request(
+            let production_daily_pending = production_daily_due.then(|| {
+                queue!(acquisition::Job::ProductionDaily(
+                    frame.extended.take_production_daily_request(
+                        &country_snapshot,
+                        shared.base,
+                        state,
+                        clock.hour,
+                        force_full,
+                    )
+                ))
+            });
+            // The war overview, beside Slow.
+            let war_overview_pending = frame
+                .extended
+                .records_any(&extended::war_overview::TABLES)
+                .then(|| {
+                    queue!(acquisition::Job::WarOverview(
+                        frame.extended.take_war_overview_request(
                             &country_snapshot,
                             shared.base,
                             state,
@@ -3264,31 +3316,27 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         )
                     ))
                 });
-            // The war overview, beside Slow.
-            let war_overview_pending = queue!(acquisition::Job::WarOverview(
-                frame.extended.take_war_overview_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                )
-            ));
             // The stability tables, beside Slow. Their store travels with the
             // job; missing it drops only that family's early reads this hour.
-            // SAFETY: only this callback takes and returns the store.
-            let stability_store =
-                unsafe { (*shared.slice_fingerprints[crate::slicing::STABILITY].get()).take() };
-            let stability_pending = queue!(acquisition::Job::Stability(
-                frame.extended.take_stability_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                    stability_store,
-                )
-            ));
+            let stability_pending = frame
+                .extended
+                .records_any(&extended::country_stability::TABLES)
+                .then(|| {
+                    // SAFETY: only this callback takes and returns the store.
+                    let stability_store = unsafe {
+                        (*shared.slice_fingerprints[crate::slicing::STABILITY].get()).take()
+                    };
+                    queue!(acquisition::Job::Stability(
+                        frame.extended.take_stability_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                            stability_store,
+                        )
+                    ))
+                });
             // The relations context, activity and owner slice come from the
             // real Intel pack: IntelResidual borrows it from here to its join,
             // leaving a vacant placeholder with no rows and no selection.
@@ -3331,6 +3379,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     payload,
                 }))
             };
+            // Without their stores the Factions walk visits no goal or companion.
+            let goals_recorded = frame.extended.records_any(&crate::faction_goals::TABLES);
+            let companions_recorded = frame
+                .extended
+                .records_any(&crate::faction_companions::TABLES);
+            if !goals_recorded {
+                frame.faction_goals.failure = Some(extended::NOT_RECORDED);
+            }
+            if !companions_recorded {
+                frame.faction_companions.refuse(extended::NOT_RECORDED);
+            }
             let factions_pending =
                 queue!(acquisition::Job::Factions(acquisition_factions::Request {
                     countries: Arc::clone(&country_snapshot),
@@ -3348,10 +3407,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         &mut frame.faction_members
                     ),
                     // SAFETY: the callback alone loans and restores this store.
-                    goal_store: unsafe { (*shared.faction_goal_store.get()).take() },
+                    goal_store: goals_recorded
+                        .then(|| unsafe { (*shared.faction_goal_store.get()).take() })
+                        .flatten(),
                     goals: std::mem::take(&mut frame.faction_goals),
                     // SAFETY: the callback alone loans and restores this store.
-                    companion_store: unsafe { (*shared.faction_companion_store.get()).take() },
+                    companion_store: companions_recorded
+                        .then(|| unsafe { (*shared.faction_companion_store.get()).take() })
+                        .flatten(),
                     companions: std::mem::take(&mut frame.faction_companions),
                     force_full,
                 }));
@@ -3372,11 +3435,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 hour: clock.hour,
                 force_full,
             };
-            let air_stats_pending = if replay_data::cadence::should_walk(
-                TableId::AirStatistics,
-                clock.hour,
-                force_full,
-            ) {
+            // A raw-copy job its capture mode leaves out stands as a failed one: its
+            // raw verdict keeps the typed fallback from reading and its failure
+            // refuses the tables after the joins.
+            let air_stats_due =
+                replay_data::cadence::should_walk(TableId::AirStatistics, clock.hour, force_full);
+            let air_stats_omitted =
+                air_stats_due && !frame.extended.records_any(&decode::AIR_STATS);
+            let air_stats_pending = if air_stats_due && !air_stats_omitted {
                 Some(queue!(acquisition::Job::AirStats(
                     acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
@@ -3385,7 +3451,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     }
                 )))
             } else {
-                frame.extended.air_stats_pilot().stats_raw_mode = false;
+                frame.extended.air_stats_pilot().stats_raw_mode = air_stats_omitted;
                 None
             };
             let supremacy_ctx = extended::naval_history::SupremacyCopyContext {
@@ -3416,17 +3482,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 hour: clock.hour,
                 force_full,
             };
-            let sunk_pending =
-                if replay_data::cadence::should_walk(TableId::SunkShips, clock.hour, force_full) {
-                    Some(queue!(acquisition::Job::Sunk(acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: sunk_ctx,
-                        payload: decode::acquire_sunk_job(),
-                    })))
-                } else {
-                    frame.extended.sunk_pilot().sunk_raw_mode = false;
-                    None
-                };
+            let sunk_due =
+                replay_data::cadence::should_walk(TableId::SunkShips, clock.hour, force_full);
+            let sunk_omitted = sunk_due && !frame.extended.records_any(&decode::SUNK);
+            let sunk_pending = if sunk_due && !sunk_omitted {
+                Some(queue!(acquisition::Job::Sunk(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: sunk_ctx,
+                    payload: decode::acquire_sunk_job(),
+                })))
+            } else {
+                frame.extended.sunk_pilot().sunk_raw_mode = sunk_omitted;
+                None
+            };
             let radar_ctx = frame.extended.radar_pilot().radar_copy_context(
                 shared.base,
                 state,
@@ -3452,7 +3520,9 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 game_state: state,
                 active: projects_refresh,
             };
-            let projects_pending = if projects_refresh {
+            let projects_omitted =
+                projects_refresh && !frame.extended.records_any(&decode::PROJECTS);
+            let projects_pending = if projects_refresh && !projects_omitted {
                 Some(queue!(acquisition::Job::Projects(
                     acquisition::RawRequest {
                         countries: Arc::clone(&country_snapshot),
@@ -3480,18 +3550,19 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 hour: clock.hour,
                 force_full,
             };
-            let session_pending =
-                if replay_data::cadence::should_walk(TableId::WorldTension, clock.hour, force_full)
-                {
-                    Some(queue!(acquisition::Job::Session(acquisition::RawRequest {
-                        countries: Arc::clone(&country_snapshot),
-                        context: session_ctx,
-                        payload: decode::acquire_session_job(),
-                    })))
-                } else {
-                    frame.extended.session_pilot().raw_mode = false;
-                    None
-                };
+            let session_due =
+                replay_data::cadence::should_walk(TableId::WorldTension, clock.hour, force_full);
+            let session_omitted = session_due && !frame.extended.records_any(&decode::SESSION);
+            let session_pending = if session_due && !session_omitted {
+                Some(queue!(acquisition::Job::Session(acquisition::RawRequest {
+                    countries: Arc::clone(&country_snapshot),
+                    context: session_ctx,
+                    payload: decode::acquire_session_job(),
+                })))
+            } else {
+                frame.extended.session_pilot().raw_mode = session_omitted;
+                None
+            };
             // SAFETY: only this callback takes and returns the stores.
             let (launch_store, state_stores) = unsafe {
                 (
@@ -3513,15 +3584,20 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     state_stores,
                 )
             ));
-            let raid_targets_pending = queue!(acquisition::Job::RaidTargets(
-                frame.extended.take_raid_targets_request(
-                    &country_snapshot,
-                    shared.base,
-                    state,
-                    clock.hour,
-                    force_full,
-                )
-            ));
+            let raid_targets_pending = frame
+                .extended
+                .records_any(&extended::raid_target_statuses::TABLES)
+                .then(|| {
+                    queue!(acquisition::Job::RaidTargets(
+                        frame.extended.take_raid_targets_request(
+                            &country_snapshot,
+                            shared.base,
+                            state,
+                            clock.hour,
+                            force_full,
+                        )
+                    ))
+                });
             let raid_launch_pending = queue!(acquisition::Job::RaidLaunch(
                 frame.extended.take_raid_launch_request(
                     &country_snapshot,
@@ -3546,7 +3622,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             }
             let mut supply_trains_pending: [Option<PendingAcquisition>; SUPPLY_PARTS] =
                 [const { None }; SUPPLY_PARTS];
-            for (part, pending) in supply_trains_pending.iter_mut().enumerate() {
+            let supply_trains_parts =
+                if frame.extended.records_any(&extended::supply_trains::TABLES) {
+                    SUPPLY_PARTS
+                } else {
+                    0
+                };
+            for (part, pending) in supply_trains_pending
+                .iter_mut()
+                .enumerate()
+                .take(supply_trains_parts)
+            {
                 // Part 0 carries the family's owner selection and store.
                 let fingerprints = (part == 0).then(|| {
                     // SAFETY: only this callback takes and returns the store.
@@ -3567,7 +3653,13 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // The battles, participants and casualty visitors the map sample
             // installs; joined right before it.
             let progress = frame.extended.take_combat_progress();
-            let combat_request = frame.map.take_combat_request(shared.base, state, progress);
+            let progress_recorded = frame
+                .extended
+                .records_any(&extended::combat_progress::TABLES);
+            let combat_request =
+                frame
+                    .map
+                    .take_combat_request(shared.base, state, progress, progress_recorded);
             let combat_bytes = combat_request.allocated_bytes();
             let combat_pending = queue!(acquisition::Job::MapCombats(combat_request));
             // RaidAirScores and the shared rail tables read only the game
@@ -3613,6 +3705,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             )> = None;
             let mut stitch_pending = None;
             let mut stitch_failure = StitchFailureBarrier::default();
+            // Unread bound fronts fail at the plans' capture, reading nothing.
+            let fronts_recorded = frame.extended.records_any(&[TableId::Fronts]);
             let mut stitched_orders = None;
             let mut naval_pending = None;
             let mut child_fronts_pending = None;
@@ -3664,10 +3758,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let mut naval_failure = None;
             let mut players_failure = None;
             let mut radar_failure = None;
-            let mut projects_failure = None;
-            let mut air_stats_failure = None;
+            let mut projects_failure = projects_omitted.then_some(extended::NOT_RECORDED);
+            let mut air_stats_failure = air_stats_omitted.then_some(extended::NOT_RECORDED);
             let mut supremacy_failure = None;
-            let mut sunk_failure = None;
+            let mut sunk_failure = sunk_omitted.then_some(extended::NOT_RECORDED);
             let mut world_active = Default::default();
             let mut world_report = acquisition::WorldReport::default();
             let mut world_failure = None;
@@ -3713,7 +3807,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let mut session_pending = session_pending;
             let mut variants_pending = Some(variants_pending);
             let mut capitulation_failure = None;
-            let mut session_failure = None;
+            let mut session_failure = session_omitted.then_some(extended::NOT_RECORDED);
             let mut relations_failure = None;
             let mut final_inputs_pending = None;
             let mut final_sources_done = false;
@@ -3953,7 +4047,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             radar_pending.as_ref(),
                             projects_pending.as_ref(),
                             Some(&economy_pending),
-                            Some(&world_pending),
+                            world_pending.as_ref(),
                             Some(&players_pending),
                             air_stats_pending.as_ref(),
                             supremacy_pending.as_ref(),
@@ -4180,8 +4274,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             request.countries = Some(Arc::clone(&country_snapshot));
                             // SAFETY: only this callback takes and returns the store.
                             request.store = unsafe { (*shared.state_store.get()).take() };
-                            request.occupation_store =
-                                unsafe { (*shared.occupation_store.get()).take() };
+                            // Without its store the States job reads no occupation.
+                            if frame.extended.records_any(&[TableId::StateResistance]) {
+                                request.occupation_store =
+                                    unsafe { (*shared.occupation_store.get()).take() };
+                            }
                             request
                         })));
                         let weather_ctx = extended::weather::WeatherCopyContext {
@@ -4348,92 +4445,123 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         // installed above; it leaves as soon as those exist, its status
                         // side, movement and speed terms as independent jobs.
                         // Out of line: the job-sized requests stay off the hourly body's frame.
-                        let (pending, movement, speed_terms, bytes, split) = out_of_line(|| {
-                            if let Some((pending, movement, speed_terms, bytes, split)) =
-                                presentation_inputs.take_dispatched()
-                            {
-                                let (ticket, parked) = batch.adopt_presentation_ticket(pending);
-                                let pending = if parked {
-                                    PendingAcquisition::Rejected(ticket)
-                                } else {
-                                    PendingAcquisition::Accepted(ticket)
-                                };
-                                let speed_terms =
-                                    queue!(acquisition::Job::PresentationSpeedTerms(speed_terms));
-                                let movement =
-                                    queue!(acquisition::Job::PresentationMovement(movement));
-                                return (pending, movement, speed_terms, bytes, split);
-                            }
-                            let mut presentation_request = presentation_inputs
-                                .take_request()
-                                .expect("presentation retained");
-                            if presentation_request.army_stats.is_none() {
-                                presentation_request.army_stats = shared.take_army_stat_store();
-                            }
-                            if presentation_request.army_stats.is_some() {
-                                presentation_request.captured.enable_owned_settlement();
-                            }
-                            presentation_request.inputs = inputs.clone();
-                            #[cfg(feature = "movement_witness")]
-                            if let Some(inputs) = presentation_request.inputs.as_deref() {
-                                // SAFETY: this is the stopped simulation's callback thread;
-                                // native queries finish before workers borrow its census.
-                                unsafe {
-                                    presentation_request.captured.capture_movement_witness(
-                                        &memory,
-                                        shared.base,
-                                        state,
-                                        inputs.seeds(),
+                        let (pending, movement, speed_terms, bytes, split, omitted) =
+                            out_of_line(|| {
+                                if let Some((pending, movement, speed_terms, bytes, split)) =
+                                    presentation_inputs.take_dispatched()
+                                {
+                                    let (ticket, parked) = batch.adopt_presentation_ticket(pending);
+                                    let pending = if parked {
+                                        PendingAcquisition::Rejected(ticket)
+                                    } else {
+                                        PendingAcquisition::Accepted(ticket)
+                                    };
+                                    let speed_terms = queue!(
+                                        acquisition::Job::PresentationSpeedTerms(speed_terms)
+                                    );
+                                    let movement =
+                                        queue!(acquisition::Job::PresentationMovement(movement));
+                                    return (
+                                        Some(pending),
+                                        movement,
+                                        Some(speed_terms),
+                                        bytes,
+                                        split,
+                                        None,
                                     );
                                 }
-                            }
-                            presentation_request.captured.status_workers =
-                                acquisition.worker_count();
-                            let movement_request = presentation_request.take_movement();
-                            let speed_terms_request = presentation_request.take_speed_terms();
-                            let presentation_bytes = presentation_request.allocated_bytes()
-                                + movement_request.allocated_bytes()
-                                + speed_terms_request.allocated_bytes();
-                            let divisions =
-                                presentation_request.inputs.as_deref().map_or(0, |inputs| {
-                                    inputs.outcome().len().min(inputs.seeds().len())
-                                });
-                            let split = extended::division_presentation::status_parts_for(
-                                divisions,
-                                acquisition.worker_count(),
-                            ) > 1;
-                            let presentation_pending = if split {
-                                batch.arm_presentation(&mut presentation_request);
-                                queue!(acquisition::Job::PresentationPrepare(presentation_request))
-                            } else {
-                                queue!(acquisition::Job::Presentation(presentation_request))
-                            };
-                            let speed_terms_pending = queue!(
-                                acquisition::Job::PresentationSpeedTerms(speed_terms_request)
-                            );
-                            let movement_pending =
-                                queue!(acquisition::Job::PresentationMovement(movement_request));
-                            (
-                                presentation_pending,
-                                movement_pending,
-                                speed_terms_pending,
-                                presentation_bytes,
-                                split,
-                            )
-                        });
+                                let mut presentation_request = presentation_inputs
+                                    .take_request()
+                                    .expect("presentation retained");
+                                if status_recorded && presentation_request.army_stats.is_none() {
+                                    presentation_request.army_stats = shared.take_army_stat_store();
+                                }
+                                if presentation_request.army_stats.is_some() {
+                                    presentation_request.captured.enable_owned_settlement();
+                                }
+                                presentation_request.inputs = inputs.clone();
+                                #[cfg(feature = "movement_witness")]
+                                if let Some(inputs) = presentation_request.inputs.as_deref() {
+                                    // SAFETY: this is the stopped simulation's callback thread;
+                                    // native queries finish before workers borrow its census.
+                                    unsafe {
+                                        presentation_request.captured.capture_movement_witness(
+                                            &memory,
+                                            shared.base,
+                                            state,
+                                            inputs.seeds(),
+                                        );
+                                    }
+                                }
+                                presentation_request.captured.status_workers =
+                                    acquisition.worker_count();
+                                let mut movement_request = presentation_request.take_movement();
+                                if !status_recorded {
+                                    movement_request.pass.omit_status();
+                                    // Held to the final join, which installs the movement pass.
+                                    let presentation_bytes = presentation_request.allocated_bytes()
+                                        + movement_request.allocated_bytes();
+                                    let movement_pending = queue!(
+                                        acquisition::Job::PresentationMovement(movement_request)
+                                    );
+                                    return (
+                                        None,
+                                        movement_pending,
+                                        None,
+                                        presentation_bytes,
+                                        false,
+                                        Some(presentation_request),
+                                    );
+                                }
+                                let speed_terms_request = presentation_request.take_speed_terms();
+                                let presentation_bytes = presentation_request.allocated_bytes()
+                                    + movement_request.allocated_bytes()
+                                    + speed_terms_request.allocated_bytes();
+                                let divisions =
+                                    presentation_request.inputs.as_deref().map_or(0, |inputs| {
+                                        inputs.outcome().len().min(inputs.seeds().len())
+                                    });
+                                let split = extended::division_presentation::status_parts_for(
+                                    divisions,
+                                    acquisition.worker_count(),
+                                ) > 1;
+                                let presentation_pending = if split {
+                                    batch.arm_presentation(&mut presentation_request);
+                                    queue!(acquisition::Job::PresentationPrepare(
+                                        presentation_request
+                                    ))
+                                } else {
+                                    queue!(acquisition::Job::Presentation(presentation_request))
+                                };
+                                let speed_terms_pending = queue!(
+                                    acquisition::Job::PresentationSpeedTerms(speed_terms_request)
+                                );
+                                let movement_pending = queue!(
+                                    acquisition::Job::PresentationMovement(movement_request)
+                                );
+                                (
+                                    Some(presentation_pending),
+                                    movement_pending,
+                                    Some(speed_terms_pending),
+                                    presentation_bytes,
+                                    split,
+                                    None,
+                                )
+                            });
                         let intel_ctx = frame
                             .extended
                             .intel_pilot()
                             .intel_copy_context(shared.base, state);
-                        intel_pending =
-                            Some(queue!(acquisition::Job::Intel(acquisition::IntelRequest {
+                        intel_pending = intel_recorded.then(|| {
+                            queue!(acquisition::Job::Intel(acquisition::IntelRequest {
                                 countries: Arc::clone(&country_snapshot),
                                 context: intel_ctx,
                                 payload: decode::acquire_intel_job(),
                                 inputs: inputs.clone(),
                                 input_failure: input_failure.or((!inputs_ok)
                                     .then_some("division input acquisition could not complete")),
-                            })));
+                            }))
+                        });
                         // Every verdict the Gated packs read is settled once its job is
                         // queued, so they leave here instead of after the joins: each
                         // raw-copy join turns an incomplete acquisition into a failure
@@ -4449,7 +4577,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         }
                         frame.extended.radar_pilot().registrations_raw_mode = true;
                         frame.extended.intel_pilot().intel_raw_mode = true;
-                        if projects_pending.is_some() {
+                        if projects_pending.is_some() || projects_omitted {
                             frame.extended.projects_pilot().raw_mode = true;
                         }
                         frame.extended.construction_rest_pilot().rest_raw_mode =
@@ -4478,13 +4606,16 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                                 )
                             )));
                         release!();
-                        if split {
-                            presentation.prepare = Some(pending);
-                        } else {
-                            presentation.pending = Some(pending);
+                        if let Some(pending) = pending {
+                            if split {
+                                presentation.prepare = Some(pending);
+                            } else {
+                                presentation.pending = Some(pending);
+                            }
                         }
+                        presentation.omitted = omitted;
                         movement_pending = Some(movement);
-                        speed_terms_pending = Some(speed_terms);
+                        speed_terms_pending = speed_terms;
                         presentation_bytes = bytes;
                         division_input_failure = input_failure;
                         inputs_done = true;
@@ -4616,6 +4747,20 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                         for (part, pending) in characters_pending.iter_mut().enumerate().skip(1) {
                             let active = character_part(part);
                             if characters_refresh && active.iter().any(|&value| value) {
+                                if !character_part_recorded(part) {
+                                    // As a failed part: FinalInputs leaves its tables alone.
+                                    for (raw, active) in frame
+                                        .extended
+                                        .characters_pilot()
+                                        .raw_active
+                                        .iter_mut()
+                                        .zip(active)
+                                    {
+                                        *raw |= active;
+                                    }
+                                    characters_failure[part] = Some(extended::NOT_RECORDED);
+                                    continue;
+                                }
                                 *pending = Some(queue!(acquisition::Job::Characters(
                                     acquisition::CharactersRequest {
                                         final_inputs: Some(Arc::clone(&final_inputs_dispatch)),
@@ -4807,17 +4952,24 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             economy_failure,
                             economy_rest_payload,
                         );
-                        let (world, report, failure) = completed!(world_pending, World);
-                        world_report = report;
-                        world_failure = failure;
-                        world_active = settle_world(
-                            &mut frame.extended,
-                            world,
-                            &mut world_report,
-                            world_failure,
-                            production_rest_payload,
-                            construction_rest_payload,
-                        );
+                        if let Some(pending) = world_pending {
+                            let (world, report, failure) = completed!(pending, World);
+                            world_report = report;
+                            world_failure = failure;
+                            world_active = settle_world(
+                                &mut frame.extended,
+                                world,
+                                &mut world_report,
+                                world_failure,
+                                production_rest_payload,
+                                construction_rest_payload,
+                            );
+                        } else {
+                            frame.extended.production_rest_pilot().rest_raw_mode =
+                                world_scheduled.0;
+                            world_failure = Some(extended::NOT_RECORDED);
+                            world_active = world_scheduled;
+                        }
                         production_rest_report = world_report.production;
                         construction_rest_report = world_report.construction;
                         // Out of line: the job-sized request stays off the hourly body's frame.
@@ -4897,12 +5049,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                             debug_assert!(!report.contained_panic && failure.is_none());
                             // SAFETY: only the callback reads and writes the split.
                             unsafe { end_order_parts(shared, &request.orders) };
-                            fronts_pending = Some(queue!(acquisition::Job::Fronts(
-                                acquisition::FrontsRequest {
-                                    base: shared.base,
-                                    fronts: request.plans.take_fronts(),
-                                }
-                            )));
+                            if fronts_recorded {
+                                fronts_pending = Some(queue!(acquisition::Job::Fronts(
+                                    acquisition::FrontsRequest {
+                                        base: shared.base,
+                                        fronts: request.plans.take_fronts(),
+                                    }
+                                )));
+                            }
                             // Keep the large request in the existing executor
                             // storage until the Naval and wing producers return.
                             // Batch also drains this loan on callback unwind.
@@ -4970,12 +5124,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                                 );
                                 // SAFETY: only the callback reads and writes the split.
                                 unsafe { end_order_parts(shared, &request.orders) };
-                                fronts_pending = Some(queue!(acquisition::Job::Fronts(
-                                    acquisition::FrontsRequest {
-                                        base: shared.base,
-                                        fronts: request.plans.take_fronts(),
-                                    }
-                                )));
+                                if fronts_recorded {
+                                    fronts_pending = Some(queue!(acquisition::Job::Fronts(
+                                        acquisition::FrontsRequest {
+                                            base: shared.base,
+                                            fronts: request.plans.take_fronts(),
+                                        }
+                                    )));
+                                }
                                 request
                             };
                             if naval_report.raw_ok && naval_failure.is_none() {
@@ -5259,10 +5415,11 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             segment!(1);
             let late_pending = late_pending.expect("late dispatch");
             let (final_pending, final_bytes) = final_inputs_pending.expect("final input dispatch");
-            let fronts_pending = fronts_pending.expect("fronts dispatch");
+            let fronts_pending = fronts_recorded.then(|| fronts_pending.expect("fronts dispatch"));
             let movement_pending = movement_pending.expect("movement dispatch");
-            let speed_terms_pending = speed_terms_pending.expect("speed terms dispatch");
-            let intel_pending = intel_pending.expect("intel dispatch");
+            let speed_terms_pending =
+                status_recorded.then(|| speed_terms_pending.expect("speed terms dispatch"));
+            let intel_pending = intel_recorded.then(|| intel_pending.expect("intel dispatch"));
             let gated_pending = gated_pending.expect("gated dispatch");
             let province_unit_order_pending =
                 province_unit_order_pending.expect("province order dispatch");
@@ -5587,21 +5744,25 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 // SAFETY: the existing Slow job has joined and returned its loan.
                 unsafe { *shared.doctrine_store.get() = Some(store) };
             }
-            let (war_overview_request, _, war_overview_failure) =
-                completed!(war_overview_pending, WarOverview);
-            frame
-                .extended
-                .restore_war_overview_request(war_overview_request, war_overview_failure.is_none());
-            let (stability_request, _, stability_failure) =
-                completed!(stability_pending, Stability);
-            let stability_store = frame
-                .extended
-                .restore_stability_request(stability_request, stability_failure.is_none());
-            if let Some(store) = stability_store {
-                // SAFETY: only this callback takes and returns the store.
-                unsafe {
-                    *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store)
-                };
+            if let Some(pending) = war_overview_pending {
+                let (war_overview_request, _, war_overview_failure) =
+                    completed!(pending, WarOverview);
+                frame.extended.restore_war_overview_request(
+                    war_overview_request,
+                    war_overview_failure.is_none(),
+                );
+            }
+            if let Some(pending) = stability_pending {
+                let (stability_request, _, stability_failure) = completed!(pending, Stability);
+                let stability_store = frame
+                    .extended
+                    .restore_stability_request(stability_request, stability_failure.is_none());
+                if let Some(store) = stability_store {
+                    // SAFETY: only this callback takes and returns the store.
+                    unsafe {
+                        *shared.slice_fingerprints[crate::slicing::STABILITY].get() = Some(store)
+                    };
+                }
             }
             for pending in air_relations_pending.into_iter().flatten() {
                 let (request, _, failure) = completed!(pending, AirRelations);
@@ -5614,11 +5775,14 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             let state_stores = frame
                 .extended
                 .restore_raid_state_request(raid_state_request, raid_state_failure.is_none());
-            let (raid_targets_request, _, raid_targets_failure) =
-                completed!(raid_targets_pending, RaidTargets);
-            frame
-                .extended
-                .restore_raid_targets_request(raid_targets_request, raid_targets_failure.is_none());
+            if let Some(pending) = raid_targets_pending {
+                let (raid_targets_request, _, raid_targets_failure) =
+                    completed!(pending, RaidTargets);
+                frame.extended.restore_raid_targets_request(
+                    raid_targets_request,
+                    raid_targets_failure.is_none(),
+                );
+            }
             let (raid_launch_request, _, raid_launch_failure) =
                 completed!(raid_launch_pending, RaidLaunch);
             let launch_store = frame
@@ -5718,14 +5882,20 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                 frame.extended.take_event_feed_seal()
             ));
             // Research returns into the restored family and charges its costs there.
-            let (research_request, research_report) = collected!(research_pending, Research);
-            let fingerprints = frame
-                .extended
-                .restore_research_request(research_request, research_report);
-            // SAFETY: only this callback takes and returns the store.
-            unsafe {
-                *shared.slice_fingerprints[crate::slicing::RESEARCH].get() = Some(fingerprints)
-            };
+            if let Some(pending) = research_pending {
+                let (research_request, research_report) = collected!(pending, Research);
+                let fingerprints = frame
+                    .extended
+                    .restore_research_request(research_request, research_report);
+                // SAFETY: only this callback takes and returns the store.
+                unsafe {
+                    *shared.slice_fingerprints[crate::slicing::RESEARCH].get() = Some(fingerprints)
+                };
+            } else {
+                frame
+                    .extended
+                    .omit_research(shared.base, state, clock.hour, force_full);
+            }
             // No later census can repair the detail parts' first result.
             // Join the last-dispatched parts first: any still queued then run
             // inline here instead of parking. Part 0, the family's own capture,
@@ -5867,7 +6037,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     report.ticks,
                 );
             }
-            if extended::ProductionDailyPacks::due(clock.hour, force_full) {
+            if production_daily_due {
                 // SAFETY: only this callback reads and writes the split.
                 unsafe {
                     let starts = &mut *shared.production_part_starts.get();
@@ -5890,14 +6060,16 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             );
             // The fronts join the plans the Late job returned. The ChildFronts
             // join released their storage from the Orders job's bytes.
-            let (fronts_request, _, fronts_failure) = completed!(fronts_pending, Fronts);
-            shared.pool_bytes.fetch_add(
-                fronts_request.fronts.allocated_bytes() as u64,
-                Ordering::Relaxed,
-            );
-            frame
-                .extended
-                .install_fronts(fronts_request.fronts, fronts_failure.is_none());
+            if let Some(pending) = fronts_pending {
+                let (fronts_request, _, fronts_failure) = completed!(pending, Fronts);
+                shared.pool_bytes.fetch_add(
+                    fronts_request.fronts.allocated_bytes() as u64,
+                    Ordering::Relaxed,
+                );
+                frame
+                    .extended
+                    .install_fronts(fronts_request.fronts, fronts_failure.is_none());
+            }
             // Out of line: the job-sized request stays off the hourly body's frame.
             out_of_line(|| {
                 // Only this original Presentation join may wait solely for preparation.
@@ -5911,13 +6083,18 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
                     movement_report,
                     presentation_report,
                 );
-                let (speed_terms_request, speed_terms_report) =
-                    collected!(speed_terms_pending, PresentationSpeedTerms);
-                let presentation_report = presentation_request.restore_speed_terms(
-                    speed_terms_request,
-                    speed_terms_report,
-                    presentation_report,
-                );
+                let presentation_report = match speed_terms_pending {
+                    Some(pending) => {
+                        let (speed_terms_request, speed_terms_report) =
+                            collected!(pending, PresentationSpeedTerms);
+                        presentation_request.restore_speed_terms(
+                            speed_terms_request,
+                            speed_terms_report,
+                            presentation_report,
+                        )
+                    }
+                    None => presentation_report,
+                };
                 let acquired_bytes = presentation_request.allocated_bytes();
                 if acquired_bytes >= presentation_bytes {
                     shared.pool_bytes.fetch_add(
@@ -5993,22 +6170,26 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
             // UnitIntel joins here, at its first reader: nothing before reads
             // its rows, report or failure, and its worker finished long ago.
             // Out of line: the job-sized request stays off the hourly body's frame.
-            let intel_failure = out_of_line(|| {
-                let (request, report, failure) = completed!(intel_pending, Intel);
-                let failure = failure
-                    .or((!report.raw_ok).then_some("Intel owned acquisition could not complete"));
-                intel_report = report;
-                if report.raw_ok && failure.is_none() {
-                    *intel_payload = Some(request.payload);
-                } else {
-                    decode::recycle_intel_job(request.payload);
-                }
+            let intel_failure = match intel_pending {
+                None => Some(extended::NOT_RECORDED),
+                Some(intel_pending) => out_of_line(|| {
+                    let (request, report, failure) = completed!(intel_pending, Intel);
+                    let failure = failure
+                        .or((!report.raw_ok)
+                            .then_some("Intel owned acquisition could not complete"));
+                    intel_report = report;
+                    if report.raw_ok && failure.is_none() {
+                        *intel_payload = Some(request.payload);
+                    } else {
+                        decode::recycle_intel_job(request.payload);
+                    }
 
-                // Release the shared seed leases before the Census can be
-                // cleared on the decode worker during payload retirement.
-                drop(request.inputs);
-                failure
-            });
+                    // Release the shared seed leases before the Census can be
+                    // cleared on the decode worker during payload retirement.
+                    drop(request.inputs);
+                    failure
+                }),
+            };
             // AirBases joins here, at its first reader: nothing before reads
             // its payload, report, failure or registration store, and its
             // verdicts were set before the Gated dispatch.
@@ -6902,6 +7083,9 @@ struct PresentationPending {
     prepared: Option<acquisition::Ticket>,
     failure: Option<acquisition::Failure>,
     pending: Option<PendingAcquisition>,
+    /// The request whose status side the capture mode leaves out, held to
+    /// the final join.
+    omitted: Option<acquisition::PresentationRequest>,
 }
 
 impl PresentationPending {
@@ -7194,6 +7378,10 @@ impl PresentationPending {
         acquisition::PresentationRequest,
         Result<extended::division_presentation::CaptureReport, acquisition::Failure>,
     ) {
+        if let Some(mut request) = self.omitted.take() {
+            let report = request.captured.omit_status(extended::NOT_RECORDED);
+            return (request, Ok(report));
+        }
         // SAFETY: forwarded from the caller.
         unsafe { self.wait_for(shared, batch, None) };
         if let Some(pending) = self.pending.take() {
@@ -7548,23 +7736,26 @@ pub(crate) fn acquire_world_request(
     hour: i32,
     force_full: bool,
 ) -> acquisition::WorldRequest {
+    let (production, construction) = world_schedule(hour, force_full);
     acquisition::WorldRequest {
         countries: Arc::clone(countries),
-        production: replay_data::cadence::should_walk(TableId::ProductionLines, hour, force_full)
-            .then(|| acquisition::WorldPart {
-                context: extended::production::ProductionRestCopyContext { base, game_state },
-                payload: decode::acquire_production_rest_job(),
-            }),
-        construction: replay_data::cadence::should_walk(
-            TableId::StateBaseResources,
-            hour,
-            force_full,
-        )
-        .then(|| acquisition::WorldPart {
+        production: production.then(|| acquisition::WorldPart {
+            context: extended::production::ProductionRestCopyContext { base, game_state },
+            payload: decode::acquire_production_rest_job(),
+        }),
+        construction: construction.then(|| acquisition::WorldPart {
             context: extended::construction::ConstructionRestCopyContext { base, game_state },
             payload: decode::acquire_construction_rest_job(),
         }),
     }
+}
+
+/// Whether the World job's production and construction rests are scheduled.
+fn world_schedule(hour: i32, force_full: bool) -> (bool, bool) {
+    (
+        replay_data::cadence::should_walk(TableId::ProductionLines, hour, force_full),
+        replay_data::cadence::should_walk(TableId::StateBaseResources, hour, force_full),
+    )
 }
 
 /// The Economy job: the economy rest runs every hour (province supply, the
@@ -7876,3 +8067,6 @@ mod role_timeline_tests {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod capture_scope_test_kit;

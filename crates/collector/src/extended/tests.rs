@@ -3567,3 +3567,145 @@ fn a_split_production_modifier_capture_follows_its_loans_through_assembly() {
         captured.reset();
     }
 }
+
+/// Every walk the hourly acquisition gates by capture mode, by the tables it
+/// writes: each is a job, sub-pack or walk none of whose tables Map records.
+pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
+    let research = governance::RESEARCH.map(|index| governance::TABLES[index]);
+    let character_part = |part: usize| {
+        crate::decode::CHARACTERS
+            .iter()
+            .zip(characters::PART_MASKS[part])
+            .filter_map(|(&table, member)| member.then_some(table))
+            .collect()
+    };
+    vec![
+        (
+            "division status side",
+            division_presentation::STATUS_TABLES.to_vec(),
+        ),
+        ("stability", country_stability::TABLES.to_vec()),
+        ("war overview", war_overview::TABLES.to_vec()),
+        (
+            "raid target statuses",
+            raid_target_statuses::TABLES.to_vec(),
+        ),
+        ("supply trains", supply_trains::TABLES.to_vec()),
+        (
+            "industrial organisations",
+            industrial_organisations::TABLES.to_vec(),
+        ),
+        (
+            "production modifiers",
+            production_modifiers::TABLES.to_vec(),
+        ),
+        ("research", research.to_vec()),
+        ("fronts", vec![TableId::Fronts]),
+        ("air statistics", crate::decode::AIR_STATS.to_vec()),
+        ("sunk ships", crate::decode::SUNK.to_vec()),
+        ("project programs", crate::decode::PROJECTS.to_vec()),
+        ("world tension", crate::decode::SESSION.to_vec()),
+        ("unit intel", crate::decode::INTEL.to_vec()),
+        ("country leader roles", character_part(1)),
+        ("advisor roles", character_part(2)),
+        ("production rest", crate::decode::PRODUCTION_REST.to_vec()),
+        (
+            "construction rest",
+            crate::decode::CONSTRUCTION_REST.to_vec(),
+        ),
+        ("projects family", projects::TABLES.to_vec()),
+        (
+            "stationed units",
+            vec![TableId::TheatreAreas, TableId::StationedUnits],
+        ),
+        ("combat progress", combat_progress::TABLES.to_vec()),
+        ("peace bids", peace_bids::TABLES.to_vec()),
+        ("logistics", logistics::TABLES.to_vec()),
+        ("country factories", country_factories::TABLES.to_vec()),
+        ("hired advisors", hired_advisors::TABLES.to_vec()),
+        (
+            "doctrines",
+            collector_slow_tables::doctrines::TABLES.to_vec(),
+        ),
+        ("occupation", vec![TableId::StateResistance]),
+        ("faction goals", crate::faction_goals::TABLES.to_vec()),
+        (
+            "faction companions",
+            crate::faction_companions::TABLES.to_vec(),
+        ),
+        ("operation outcomes", operation_outcomes::TABLES.to_vec()),
+    ]
+}
+
+/// Map leaves out every gated walk; Full records a table of each, so it runs
+/// them all, as before capture modes gated anything.
+#[test]
+fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
+    use replay_data::scope::{self, CaptureMode};
+    for (name, tables) in mode_gated_walks() {
+        assert!(!tables.is_empty(), "{name}");
+        assert!(!records_any(CaptureMode::Map, &tables), "{name}");
+        assert!(
+            tables
+                .iter()
+                .all(|&table| scope::records(CaptureMode::Full, table)),
+            "{name}"
+        );
+    }
+    // The masked walks of mixed packs: Map leaves out exactly the tables it
+    // does not record, and Full none.
+    for table in governance::TABLES
+        .into_iter()
+        .chain(intel::TABLES)
+        .chain(division_presentation::TABLES)
+    {
+        assert!(scope::records(CaptureMode::Full, table), "{table:?}");
+    }
+    assert!(scope::records(CaptureMode::Map, TableId::DivisionMovement));
+    assert!(scope::records(CaptureMode::Map, TableId::Politics));
+}
+
+/// A Map assembly refuses, without walking them, the packs whose jobs Map
+/// leaves out, where Full's direct-walk fixtures walk them, and refuses no
+/// table Map records.
+#[test]
+fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
+    use replay_data::scope::{self, CaptureMode};
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let gated: Vec<TableId> = [
+        &country_stability::TABLES[..],
+        &war_overview::TABLES,
+        &raid_target_statuses::TABLES,
+        &supply_trains::TABLES,
+        &industrial_organisations::TABLES,
+        &production_modifiers::TABLES,
+    ]
+    .concat();
+    // The daily production slot, on a full hour: every gated walk is due.
+    let hour = 8;
+    let outcomes = [CaptureMode::Full, CaptureMode::Map].map(|mode| {
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.set_capture_mode(mode);
+        assert_eq!(captured.capture_mode(), mode);
+        captured.capture_tables(&NoRead, 11, 0x1000, hour, true);
+        captured.outcomes()
+    });
+    let [full, map] = outcomes;
+    let not_recorded = Outcome::Unavailable {
+        reason: NOT_RECORDED,
+    };
+    for table in TableId::ALL {
+        let index = table.index();
+        if gated.contains(&table) {
+            assert_eq!(map[index], not_recorded, "{table:?}");
+            assert_ne!(full[index], not_recorded, "{table:?}");
+        } else if scope::records(CaptureMode::Map, table) {
+            assert_ne!(map[index], not_recorded, "{table:?}");
+        }
+    }
+}

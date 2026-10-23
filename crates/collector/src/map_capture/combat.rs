@@ -23,6 +23,9 @@ pub(crate) struct CombatRequest {
     naval_groups: Vec<usize>,
     naval_groups_required: usize,
     progress: combat_progress::Captured,
+    /// False when the capture mode leaves out the progress tables: the walk
+    /// visits no combat for them.
+    progress_recorded: bool,
     land_finished: bool,
     naval_finished: bool,
 }
@@ -43,7 +46,10 @@ impl CombatRequest {
         let mut reads = crate::read_accounting::table(TableId::LandCombats);
         let begin = qpc();
         let progress_begin = qpc();
-        self.progress.begin();
+        let recorded = self.progress_recorded;
+        if recorded {
+            self.progress.begin();
+        }
         report.progress_ticks = elapsed(progress_begin);
         let land = cland_combat::walk_with_growing(
             memory,
@@ -53,13 +59,21 @@ impl CombatRequest {
             &mut self.land_participants,
             &mut self.land_classes,
             |source| {
-                let begin = qpc();
-                self.progress.visit(memory, self.base, source);
-                report.progress_ticks = report.progress_ticks.saturating_add(elapsed(begin));
+                if recorded {
+                    let begin = qpc();
+                    self.progress.visit(memory, self.base, source);
+                    report.progress_ticks = report.progress_ticks.saturating_add(elapsed(begin));
+                }
             },
         );
         let progress_begin = qpc();
-        self.progress.finish(land.outcome);
+        self.progress.finish(if recorded {
+            land.outcome
+        } else {
+            Outcome::Unavailable {
+                reason: crate::extended::NOT_RECORDED,
+            }
+        });
         report.progress_ticks = report
             .progress_ticks
             .saturating_add(elapsed(progress_begin));
@@ -111,10 +125,12 @@ impl MapCaptured {
         base: usize,
         state: usize,
         progress: combat_progress::Captured,
+        progress_recorded: bool,
     ) -> CombatRequest {
         CombatRequest {
             base,
             state,
+            progress_recorded,
             land: std::mem::replace(&mut self.land_combats, CaptureRows::new(0)),
             land_participants: std::mem::take(&mut self.land_participants),
             land_classes: std::mem::take(&mut self.land_classes),

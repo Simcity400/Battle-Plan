@@ -62,6 +62,13 @@ impl ObserverBoundaryRequest {
             + self.politics.allocated_bytes()) as u64
     }
     pub(crate) fn capture(&mut self) -> ObserverBoundaryReport {
+        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        self.capture_with_memory(&memory)
+    }
+    pub(crate) fn capture_with_memory(
+        &mut self,
+        memory: &impl engine_native::Memory,
+    ) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         crate::market_changes::boundary(
             self.market_clock,
@@ -126,8 +133,7 @@ impl ObserverBoundaryRequest {
         let begin = qpc();
         self.construction.drain_growing();
         if prepare_outputs_at(self.hour, self.continuous, self.recovery) {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
-            prepare_outputs(&memory, self.base);
+            prepare_outputs(memory, self.base);
         }
         crate::construction_ic::install_offered();
         crate::line_output::install_offered();

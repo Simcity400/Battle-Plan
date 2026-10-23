@@ -16,9 +16,22 @@ use engine_allocation::{copy_vec, filled, owned_vec};
 use engine_native::{Memory, cair_wing, cequipment_variant_pool::DivisionSource, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
+use replay_data::scope::CaptureMode;
 use replay_frame::frame::TableInput;
 use std::mem::size_of;
 use std::sync::Arc;
+
+/// The refusal of a pack its session's capture mode leaves out; the spool
+/// replaces it with NotRecorded before the frame is written.
+pub(crate) const NOT_RECORDED: &str = "not recorded in this capture mode";
+
+/// Whether `mode` records any of `tables`: a job or walk none of whose tables
+/// `mode` records does not run.
+pub(crate) fn records_any(mode: CaptureMode, tables: &[TableId]) -> bool {
+    tables
+        .iter()
+        .any(|&table| replay_data::scope::records(mode, table))
+}
 
 pub(crate) use collector_division_parts::division_land;
 #[cfg(test)]
@@ -419,6 +432,7 @@ macro_rules! packs {
             registry: Registry,
             air_root: Option<Outcome>,
             overhead: [u64; TABLE_COUNT],
+            capture_mode: CaptureMode,
         }
         /// The stores a Governance job returns: the technology and focus
 /// fingerprint stores and the held building, party-leader and party stores.
@@ -480,6 +494,7 @@ impl Captured {
                     character_inputs_ticks: None,
                     registry: Registry::new(capacity.variant_registry),
                     air_root: None, overhead: [0; TABLE_COUNT],
+                    capture_mode: CaptureMode::Full,
                 };
                 captured.division_presentation.reserve_sources(capacity.division_sources);
                 captured.plans.reserve_units(capacity.division_sources);
@@ -1281,6 +1296,21 @@ impl Captured {
         &mut self.line_output
     }
 
+    /// The session's capture mode; the callback sets it before each hour's dispatch.
+    pub(crate) fn set_capture_mode(&mut self, mode: CaptureMode) {
+        self.capture_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_mode(&self) -> CaptureMode {
+        self.capture_mode
+    }
+
+    /// Whether this frame's capture mode records any of `tables`.
+    pub(crate) fn records_any(&self, tables: &[TableId]) -> bool {
+        records_any(self.capture_mode, tables)
+    }
+
     pub(crate) fn prepare_hour(&mut self, hour: i32, force_full: bool) {
         // The hour's sampled verification slice, for every job it dispatches.
         crate::sampled_verify::begin_hour(hour);
@@ -1651,6 +1681,22 @@ impl Captured {
         }
     }
 
+    /// Refuse the research tables a capture mode leaves out, after the family
+    /// returned and without their job.
+    pub(crate) fn omit_research(&mut self, base: usize, state: usize, hour: i32, force_full: bool) {
+        let mut part = self.governance.take_research();
+        part.fail(
+            governance::CaptureContext {
+                base,
+                game_state: state,
+                hour,
+                force_full,
+            },
+            NOT_RECORDED,
+        );
+        self.governance.restore_research(part);
+    }
+
     pub(crate) fn weather_suspend_failure(&self) -> Option<&'static str> {
         self.visibility.weather_suspend_failure()
     }
@@ -1761,6 +1807,9 @@ impl Captured {
         party_store: Option<Box<governance::PartyStore>>,
     ) -> crate::acquisition_jobs::GovernanceRequest {
         self.governance_report = None;
+        self.governance.leave_out(
+            governance::TABLES.map(|table| !replay_data::scope::records(self.capture_mode, table)),
+        );
         crate::acquisition_jobs::GovernanceRequest {
             technology_fingerprints,
             focus_fingerprints,
@@ -1979,6 +2028,9 @@ impl Captured {
         context: supply_trains::CaptureContext,
     ) -> supply_trains::CaptureReport {
         self.supply_trains_report.take().unwrap_or_else(|| {
+            if !records_any(self.capture_mode, &supply_trains::TABLES) {
+                return self.supply_trains.fail_owned_capture(NOT_RECORDED);
+            }
             #[cfg(test)]
             {
                 self.supply_trains.capture_owned(memory, context)
@@ -2553,10 +2605,14 @@ impl Captured {
         variables: Option<Box<intel::VariableStore>>,
     ) -> crate::acquisition_jobs::IntelResidualRequest {
         self.intel_residual_report = None;
+        let mut captured = std::mem::replace(&mut self.intel, intel::Captured::vacant());
+        captured.leave_out(
+            intel::TABLES.map(|table| !replay_data::scope::records(self.capture_mode, table)),
+        );
         crate::acquisition_jobs::IntelResidualRequest {
             countries: Arc::clone(countries),
             context,
-            captured: std::mem::replace(&mut self.intel, intel::Captured::vacant()),
+            captured,
             flags,
             variables,
         }
@@ -3092,6 +3148,8 @@ impl Captured {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
+        } else if !ProductionDailyPacks::recorded(self.capture_mode) {
+            self.fail_missing_production_daily(current_hour, force_full, NOT_RECORDED);
         } else if !ProductionDailyPacks::due(current_hour, force_full) || inline {
             if !ProductionDailyPacks::due(current_hour, force_full) {
                 self.production_daily_ticks = None;
@@ -3113,7 +3171,11 @@ impl Captured {
             );
             scatter(&production_modifiers::TABLES, cost, ticks);
         } else {
-            self.fail_missing_production_daily(current_hour, force_full);
+            self.fail_missing_production_daily(
+                current_hour,
+                force_full,
+                "slow acquisition not supplied",
+            );
         }
         if let Some(reason) = self.slow_refusal {
             self.industrial_organisations
@@ -3212,6 +3274,8 @@ impl Captured {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
+        } else if !self.records_any(&country_stability::TABLES) {
+            self.fail_missing_stability(current_hour, force_full, NOT_RECORDED);
         } else {
             #[cfg(test)]
             {
@@ -3228,7 +3292,11 @@ impl Captured {
             }
             #[cfg(not(test))]
             {
-                self.fail_missing_stability(current_hour, force_full);
+                self.fail_missing_stability(
+                    current_hour,
+                    force_full,
+                    "stability acquisition not supplied",
+                );
             }
         }
         // A missing job on its slot fails its tables outside unit tests;
@@ -3246,6 +3314,8 @@ impl Captured {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
+        } else if !self.records_any(&war_overview::TABLES) {
+            self.fail_missing_war_overview(current_hour, force_full, NOT_RECORDED);
         } else {
             #[cfg(test)]
             {
@@ -3253,7 +3323,11 @@ impl Captured {
             }
             #[cfg(not(test))]
             {
-                self.fail_missing_war_overview(current_hour, force_full);
+                self.fail_missing_war_overview(
+                    current_hour,
+                    force_full,
+                    "war overview acquisition not supplied",
+                );
             }
         }
         // The Countries job read the template dictionary with its naming.
@@ -3291,6 +3365,8 @@ impl Captured {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
+        } else if !self.records_any(&raid_target_statuses::TABLES) {
+            self.fail_missing_raid_targets(current_hour, force_full, NOT_RECORDED);
         } else {
             #[cfg(test)]
             {
@@ -3298,7 +3374,11 @@ impl Captured {
             }
             #[cfg(not(test))]
             {
-                self.fail_missing_raid_targets(current_hour, force_full);
+                self.fail_missing_raid_targets(
+                    current_hour,
+                    force_full,
+                    "raid target acquisition not supplied",
+                );
             }
         }
         if let Some(done) = self.raid_launch_ticks.replace([0; TABLE_COUNT]) {
@@ -3756,6 +3836,9 @@ impl Divisions {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::mode_gated_walks;
 
 /// The naval live shape's hour, captured as production captures it.
 #[cfg(test)]
