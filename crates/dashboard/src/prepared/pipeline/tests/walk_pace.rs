@@ -401,3 +401,257 @@ fn a_five_thousand_country_recording_has_the_serial_payloads_and_named_readers()
             .all(|family| family.next_block == 2)
     );
 }
+
+const PENDING_UNDER_COUNTED: &[&str] = &[
+    // AirMissionsObserver omits hourly refusal keys from Scan::buffered_bytes.
+    "air-missions",
+    // AirStatisticsObserver omits hourly refusal keys from Scan::buffered_bytes.
+    "air-statistics",
+    // Flush seals the uncharged hours run and publishes private group diagnostics.
+    "air_superiority",
+    // The catalogue advances scan.last without project records.
+    "construction",
+    // Flush seals unchanged identity and unresolved runs outside the batch charge.
+    "diplomacy_state",
+    // DoctrineMasteryObserver refusal counters are outside Scan::buffered_bytes.
+    "doctrine-mastery",
+    // Flush seals carried read-version runs outside pending loss rows.
+    "equipment_losses",
+    // FeedBranch::pending omits the private HistoryScan its flush writes.
+    "event_feed",
+    // Flush seals the uncharged roster and unavailable-channel runs.
+    "faction_state",
+    // Availability and settlement catalogue frontiers advance without fuel rows.
+    "fuel",
+    // GroupsBranch::pending omits Changes::flush_as diagnostic counters.
+    "groups",
+    // IdentitiesBranch::pending is zero while flush writes the sealed HistoryScan.
+    "identities",
+    // Refused summaries advance the uncharged Scan catalogue frontier.
+    "intel-network-coverage",
+    // Flush emits closed observation spans outside pending leader runs.
+    "leaders",
+    // MinefieldsObserver refusal counters are outside Scan::buffered_bytes.
+    "minefields",
+    // NavalSupremacyObserver refusal counters are outside Scan::buffered_bytes.
+    "naval-supremacy",
+    // Quiet unknown-force mixes and unread diagnostics escape the batch charge.
+    "navy",
+    // Refused manpower reads advance the uncharged Scan catalogue frontier.
+    "occupation-reserve",
+    // Flush seals the uncharged unavailable run and publishes the catalogue frontier.
+    "parties",
+    // Flush replaces uncharged snapshots and missing-input/gap continuation records.
+    "peace",
+    // Flush seals constant accepted/census runs outside the batch charge.
+    "politics_ledger",
+    // Flush publishes an open endpoint and its TimeEntry outside the spent/held charge.
+    "production",
+    // Unavailable weather advances the uncharged Scan catalogue frontier.
+    "regional-weather",
+    // A rename adds catalogue keys and parts without numeric repair rates.
+    "repairs",
+    // Choices::advance moves catalogue bounds without value or choice rows.
+    "stockpile",
+    // The catalogue counts incomplete hours outside pending subject events.
+    "subjects",
+    // The whole-scan catalogue advances without available tension values.
+    "tension",
+    // Territory::bytes omits the private HistoryScan its flush writes.
+    "territory",
+    // The observer snapshot and walk tail are outside pending change inputs.
+    "wars",
+];
+const PUBLISHED_PER_HELD: i128 = 8;
+
+fn under_counted(audit: &pace::PendingAudit) -> bool {
+    audit.record_bytes() > i128::from(audit.held) * PUBLISHED_PER_HELD
+}
+
+#[test]
+fn framing_does_not_hide_an_unaccounted_record() {
+    use dashboard_base::prepared::series::tests::Fixture as SeriesFixture;
+    use dashboard_base::prepared::{pages::framing, series::Accumulator, series::Run};
+
+    let fixture = SeriesFixture::new();
+    let mut writer = fixture.writer();
+    let mut series = Accumulator::default();
+    let cancelled = AtomicBool::new(false);
+    for (hour, record) in [(100, false), (101, true)] {
+        series.advance(hour).unwrap();
+        series.observe(0, hour, None, false);
+        if record {
+            series.push(0, Run::new(hour, hour, 42, false));
+            series.event(0, hour, &"unaccounted record").unwrap();
+        }
+        let before = (writer.payload_bytes_change(), framing::bytes());
+        series.flush(&mut writer, "control", 0, &cancelled).unwrap();
+        let audit = pace::PendingAudit {
+            family: "control",
+            branch: 1,
+            held: 0,
+            published: writer.payload_bytes_change() - before.0,
+            framing: framing::bytes() - before.1,
+        };
+        assert_eq!(under_counted(&audit), record, "{audit:?}");
+        if !record {
+            assert_eq!(audit.record_bytes(), 0, "unknown keys contain no records");
+        }
+    }
+}
+
+#[test]
+fn unavailable_fuel_consumers_count_the_catalogue_their_flush_publishes() {
+    use dashboard_base::prepared::series::tests::Fixture as SeriesFixture;
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, pages::framing};
+    use dashboard_economy::products::fuel_branches;
+
+    let fixture = SeriesFixture::new();
+    let mut prepared = fuel_branches::Prepared::default();
+    let mut writer = fixture.writer();
+    for (hours, expected) in [(1..=50, 12_438), (51..=130, 19_838)] {
+        let derived = 256
+            + hours.clone().map(|hour| {
+                let reason = format!("fuel consumers unavailable: hour {hour} CountryFuelConsumers is unavailable: outside country fixture");
+                2 * reason.len() + 20 + 32
+            }).sum::<usize>();
+        assert_eq!(
+            derived, expected,
+            "fixed refusal text lengths plus catalogue/edit margins"
+        );
+        let mut changes = FrameChangeTracker::new();
+        for hour in hours {
+            let frame = frame(1, hour, 2);
+            let changes = changes.observe(&frame, replay_data::format::FormatVersion::CURRENT);
+            prepared.observe_changes(&frame, &changes).unwrap();
+        }
+        let before = (writer.payload_bytes_change(), framing::bytes());
+        let held = prepared.bytes() as u64;
+        assert_eq!(
+            held, expected as u64,
+            "the catalogue margin and each changed refusal"
+        );
+        prepared
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        let audit = pace::PendingAudit {
+            family: "fuel_branches",
+            branch: 1,
+            held,
+            published: writer.payload_bytes_change() - before.0,
+            framing: framing::bytes() - before.1,
+        };
+        assert!(
+            !under_counted(&audit),
+            "pending covers the refusal catalogue: {audit:?}"
+        );
+        assert_eq!(
+            prepared.bytes(),
+            0,
+            "publication releases the catalogue change charge"
+        );
+    }
+}
+
+#[test]
+fn unavailable_nukes_exclude_empty_pages_but_not_refusal_records() {
+    use crate::products::country_nukes::prepared::{IncreaseCatalogue, Prepared};
+    use dashboard_base::prepared::series::tests::Fixture as SeriesFixture;
+    use dashboard_base::prepared::{frame_changes::FrameChangeTracker, pages::framing, series};
+
+    let replay = pages_recording();
+    let fixture = SeriesFixture::new();
+    let mut prepared = Prepared::default();
+    for (batch, hours) in [1..=50, 51..=130].into_iter().enumerate() {
+        let last = *hours.end();
+        let mut changes = FrameChangeTracker::new();
+        for hour in hours {
+            let frame = frame(1, hour, 2);
+            let changes = changes.observe(&frame, replay.format);
+            prepared.observe(&frame, &replay, &changes).unwrap();
+        }
+        let pending = prepared.bytes();
+        assert!(
+            pending > 0,
+            "unavailable stockpiles still publish refusal catalogues"
+        );
+        let mut writer = fixture.writer();
+        let before = (writer.bytes_written(), framing::bytes());
+        prepared
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        let empty_pages: u64 = ["ranks", "values", "parts", "mixes", "increases"]
+            .into_iter()
+            .map(|kind| {
+                writer
+                    .read_at(&format!("nukes-{kind}-1"), batch as u64)
+                    .unwrap()
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        let written = writer.bytes_written() - before.0;
+        let framing = framing::bytes() - before.1;
+        assert!(framing >= empty_pages, "all five empty pages are framing");
+        // Gross record bytes prove classification, not whether net growth crosses the oracle.
+        assert!(
+            written > framing,
+            "the catalogues still contain record data"
+        );
+        assert!(
+            written - framing <= 8 * pending as u64,
+            "pending covers both catalogues"
+        );
+        assert_eq!(prepared.bytes(), 0, "no unpublished catalogue remains");
+        writer.commit().unwrap();
+        let (_, catalogue) = series::read_catalogue::<IncreaseCatalogue>(
+            &fixture.store,
+            &fixture.key,
+            "nukes-increases",
+            1,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(catalogue.read_spans.is_empty());
+        assert_eq!(catalogue.refusals.len(), 1);
+        let spans = catalogue.refusals.values().next().unwrap();
+        assert_eq!(spans.len(), 1, "contiguous refusals extend one span");
+        assert_eq!((spans[0].first_hour, spans[0].last_hour), (1, last));
+    }
+}
+
+#[test]
+fn every_family_counts_as_pending_what_its_commits_publish() {
+    let mut under: BTreeMap<&str, Vec<(u64, u64, i128, u64, i128)>> = BTreeMap::new();
+    for replay in [
+        pages_recording(),
+        super::independent_groups::scenario(6, true),
+    ] {
+        let mut fixture = Fixture::new(&replay);
+        let source = fixture.source("pending");
+        measured(&source);
+        let mut created = std::collections::BTreeSet::new();
+        let audit = independent::take_pending_audit();
+        let families: std::collections::BTreeSet<_> = audit.iter().map(|row| row.family).collect();
+        assert_eq!(
+            families.into_iter().collect::<Vec<_>>(),
+            independent::names()
+        );
+        for row in audit {
+            if !created.insert((row.family, row.branch)) && under_counted(&row) {
+                under.entry(row.family).or_default().push((
+                    row.branch,
+                    row.held,
+                    row.published,
+                    row.framing,
+                    row.record_bytes(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        under.keys().copied().collect::<Vec<_>>(),
+        PENDING_UNDER_COUNTED,
+        "(branch, held, published, framing, records) for each under-counted commit: {under:?}"
+    );
+}

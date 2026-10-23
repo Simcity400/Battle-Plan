@@ -1043,6 +1043,8 @@ impl OwnBranch {
     pub fn publish_windows(&mut self, writer: &mut store::Writer, branch: u64) -> io::Result<()> {
         for (ordinal, window) in self.windows.drain(..) {
             writer.write_at(&pairs_section(branch), ordinal, window.as_slice())?;
+            #[cfg(any(test, feature = "test-support"))]
+            dashboard_base::prepared::pages::framing::note_compressed(&window);
         }
         match self.failed.take() {
             Some(error) => Err(error),

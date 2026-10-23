@@ -54,11 +54,16 @@ impl HeldWindow {
             self.window,
             self.page.as_slice(),
         )?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::prepared::pages::framing::note_compressed(&self.page);
         writer.write_at(
             &format!("occupied-states-manifest-{}", self.branch),
             0,
             self.manifest.as_slice(),
-        )
+        )?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::prepared::pages::framing::note_compressed(&self.manifest);
+        Ok(())
     }
 
     /// The bytes held.

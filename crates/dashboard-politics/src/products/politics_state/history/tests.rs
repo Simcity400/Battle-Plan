@@ -431,3 +431,63 @@ fn an_exile_window_clips_carried_daily_reads_and_needs_bounds() {
         .is_err()
     );
 }
+
+#[test]
+fn unavailable_parts_count_their_catalogue_without_numeric_runs() {
+    let fixture = Fixture::new();
+    let mut state = Prepared::default();
+    let mut expected = Metadata {
+        tags: BTreeMap::from([(3, vec![(10, "AAA".to_owned())])]),
+        ..Default::default()
+    };
+    for hour in [10, 11] {
+        let mut at = frame(hour);
+        countries(&mut at, &[(7, 3, "AAA")], &[]);
+        for (table, scope) in [
+            (TableId::Politics, "election schedules"),
+            (TableId::CountryStabilityInputs, "exile status"),
+            (TableId::PowerBalances, "balance reads"),
+            (TableId::CountryCivilWars, "civil-war lists"),
+        ] {
+            *at.tables[table.index()] = TableView::Unavailable {
+                reason: "fixture refusal".into(),
+            };
+            expected.refusals.insert(
+                format!(
+                    "{scope} unavailable: hour {hour} {table:?} is unavailable: fixture refusal"
+                ),
+                1,
+            );
+        }
+        state.step(&at);
+        assert_eq!(state.values.bytes(), 0, "no part supplied numeric values");
+        assert_eq!(state.metadata, expected);
+        let pending = state.bytes();
+        let text = serde_json::to_vec(&(BTreeMap::<String, u64>::new(), &expected)).unwrap();
+        assert_eq!(
+            pending,
+            text.len(),
+            "exact text of all four named refusals and the holder"
+        );
+        let mut writer = fixture.writer();
+        let before = writer.payload_bytes_change();
+        state
+            .flush(&mut writer, 1, &AtomicBool::new(false))
+            .unwrap();
+        assert!(writer.payload_bytes_change() - before <= 8 * pending as i128);
+        assert_eq!(
+            state.bytes(),
+            0,
+            "publication releases the catalogue charge"
+        );
+        writer.commit().unwrap();
+        let (_, metadata) =
+            series::read_catalogue::<Metadata>(&fixture.store, &fixture.key, FAMILY, 1)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            metadata, expected,
+            "accounting preserves every refusal and its order"
+        );
+    }
+}

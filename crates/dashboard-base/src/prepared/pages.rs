@@ -19,6 +19,69 @@ thread_local! {
     pub static TEST_BATCH_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(BATCH_BYTES) };
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod framing {
+    use std::cell::Cell;
+
+    thread_local! {
+        static WRITTEN: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub fn bytes() -> u64 {
+        WRITTEN.get()
+    }
+
+    pub(crate) fn note(bytes: usize) {
+        WRITTEN.set(
+            WRITTEN
+                .get()
+                .checked_add(bytes as u64)
+                .expect("framing bytes"),
+        );
+    }
+
+    pub fn note_compressed(bytes: &[u8]) {
+        note(compressed(bytes));
+    }
+
+    // Count the emitted frame and block envelopes, never the compressed record payload.
+    pub fn compressed(bytes: &[u8]) -> usize {
+        if bytes.is_empty() {
+            return 0;
+        }
+        assert_eq!(&bytes[..4], &0xfd2fb528_u32.to_le_bytes());
+        let descriptor = bytes[4];
+        let single = descriptor & 0x20 != 0;
+        let dictionary = [0, 1, 2, 4][usize::from(descriptor & 3)];
+        let content = match descriptor >> 6 {
+            0 => usize::from(single),
+            1 => 2,
+            2 => 4,
+            3 => 8,
+            _ => unreachable!(),
+        };
+        let mut at = 5 + usize::from(!single) + dictionary + content;
+        let mut framing = at;
+        loop {
+            let header = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], 0]);
+            at += 3;
+            framing += 3;
+            let kind = (header >> 1) & 3;
+            assert_ne!(kind, 3, "reserved compressed block");
+            at += if kind == 1 { 1 } else { (header >> 3) as usize };
+            if header & 1 != 0 {
+                break;
+            }
+        }
+        if descriptor & 4 != 0 {
+            at += 4;
+            framing += 4;
+        }
+        assert_eq!(at, bytes.len(), "one complete compressed frame");
+        framing
+    }
+}
+
 /// Whether this block publishes the family's pending rows and held pages.
 pub fn publication_due(
     continues: bool,
@@ -38,6 +101,11 @@ pub fn publication_due(
 
 /// A writer of prepared pages.
 pub trait Pages {
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_framing(&mut self, _section: &str, _range: u64, bytes: usize) {
+        framing::note(bytes);
+    }
+
     /// Write `range` of `section`: one it holds, or the next.
     fn write_at(&mut self, section: &str, range: u64, data: &[u8]) -> io::Result<()>;
     /// Append a range to `section`; its range number.
@@ -102,6 +170,8 @@ pub struct HeldPages {
     /// Each section's range count: committed, then as held writes grow it.
     counts: BTreeMap<String, u64>,
     bytes: usize,
+    #[cfg(any(test, feature = "test-support"))]
+    framing: HashMap<(String, u64), usize>,
 }
 
 /// The pages committed before the held ones: a family's committed store
@@ -173,7 +243,11 @@ impl HeldPages {
         for write in held.writes {
             match write {
                 Write::At(section, range, data) => {
-                    writer.write_at(&section, range, data.as_slice())?
+                    writer.write_at(&section, range, data.as_slice())?;
+                    #[cfg(any(test, feature = "test-support"))]
+                    if let Some(&bytes) = held.framing.get(&(section, range)) {
+                        framing::note(bytes);
+                    }
                 }
                 Write::Append(section, range, data) => {
                     let written = writer.write(&section, data.as_slice())?;
@@ -181,6 +255,10 @@ impl HeldPages {
                         return Err(io::Error::other(format!(
                             "Held range {range} of {section} was committed at {written}"
                         )));
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    if let Some(&bytes) = held.framing.get(&(section, range)) {
+                        framing::note(bytes);
                     }
                 }
             }
@@ -201,6 +279,11 @@ impl HeldView<'_, '_> {
 }
 
 impl Pages for HeldView<'_, '_> {
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_framing(&mut self, section: &str, range: u64, bytes: usize) {
+        self.held.framing.insert((section.to_owned(), range), bytes);
+    }
+
     fn write_at(&mut self, section: &str, range: u64, data: &[u8]) -> io::Result<()> {
         let count = self.count(section)?;
         if range > count {
@@ -211,6 +294,8 @@ impl Pages for HeldView<'_, '_> {
         let held = &mut *self.held;
         held.bytes += data.len();
         let key = (section.to_owned(), range);
+        #[cfg(any(test, feature = "test-support"))]
+        held.framing.remove(&key);
         match held.at.get(&key) {
             // A later write of a range replaces the held one where it stands,
             // an appended one keeping its append, as the store replaces it.
@@ -258,6 +343,59 @@ impl Pages for HeldView<'_, '_> {
 mod tests {
     use super::*;
     use crate::prepared::series::tests::Fixture;
+
+    #[test]
+    fn compressed_framing_counts_actual_headers_not_block_payloads() {
+        // Single-segment raw and RLE blocks, then a two-block frame with a checksum.
+        for (descriptor, content, blocks, checksum, expected) in [
+            (0x20, vec![3], vec![25, 0, 0, 10, 20, 30], vec![], 9),
+            (0x20, vec![3], vec![27, 0, 0, 42], vec![], 9),
+            (
+                0x24,
+                vec![3],
+                vec![8, 0, 0, 10, 17, 0, 0, 20, 30],
+                vec![0; 4],
+                16,
+            ),
+            (0x40, vec![0, 0, 0], vec![1, 0, 0], vec![], 11),
+        ] {
+            let mut bytes = 0xfd2fb528_u32.to_le_bytes().to_vec();
+            bytes.push(descriptor);
+            bytes.extend(content);
+            bytes.extend(blocks);
+            bytes.extend(checksum);
+            assert_eq!(framing::compressed(&bytes), expected);
+        }
+    }
+
+    #[test]
+    fn held_framing_is_reported_once_when_its_latest_ranges_are_written() {
+        let fixture = Fixture::new();
+        let mut held = HeldPages::default();
+        let before = framing::bytes();
+        {
+            let mut view = held.view(Committed {
+                store: &fixture.store,
+                key: &fixture.key,
+                saved: None,
+            });
+            let range = view.write("page", b"old").unwrap();
+            view.note_framing("page", range, 3);
+            view.write_at("page", range, b"replacement").unwrap();
+            view.note_framing("page", range, 2);
+            view.write_at("plain", 0, b"old").unwrap();
+            view.note_framing("plain", 0, 3);
+            view.write_at("plain", 0, b"not framed").unwrap();
+            view.write_at("new", 0, b"frame and records").unwrap();
+            view.note_framing("new", 0, 5);
+        }
+        assert_eq!(framing::bytes(), before, "not written to the store yet");
+        let mut writer = fixture.writer();
+        held.write(&mut writer).unwrap();
+        assert_eq!(framing::bytes() - before, 7);
+        held.write(&mut writer).unwrap();
+        assert_eq!(framing::bytes() - before, 7, "not reported twice");
+    }
 
     /// Pages held over a commit read their own writes, then the committed
     /// pages, and their commit writes exactly what writing them directly

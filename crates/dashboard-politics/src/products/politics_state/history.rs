@@ -232,6 +232,8 @@ pub struct Prepared {
     values: Accumulator,
     keys: BTreeMap<String, u64>,
     metadata: Metadata,
+    #[serde(skip)]
+    catalogue_pending: bool,
     last: Option<i32>,
     /// Each part's keys holding a value at its last observation.
     #[serde(default)]
@@ -342,6 +344,7 @@ impl Prepared {
         if parts.is_empty() {
             return;
         }
+        self.catalogue_pending = true;
         let tags = match Tags::new(frame) {
             Ok(tags) => Some(tags),
             Err(error) => {
@@ -594,7 +597,11 @@ impl Prepared {
     }
 
     pub fn bytes(&self) -> usize {
-        self.values.bytes()
+        self.values.bytes().saturating_add(if self.catalogue_pending {
+            series::catalogue_bytes(&self.keys, &self.metadata)
+        } else {
+            0
+        })
     }
 
     pub fn flush(
@@ -605,7 +612,9 @@ impl Prepared {
     ) -> io::Result<()> {
         self.values
             .flush(writer, &values_section(branch), 0, cancelled)?;
-        series::write_catalogue(writer, FAMILY, branch, &self.keys, &self.metadata)
+        series::write_catalogue(writer, FAMILY, branch, &self.keys, &self.metadata)?;
+        self.catalogue_pending = false;
+        Ok(())
     }
 }
 

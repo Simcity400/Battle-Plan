@@ -637,6 +637,8 @@ impl OwnBranch {
         for held in std::mem::take(&mut self.held) {
             for (section, range, page) in &held.pages {
                 writer.write_at(section, *range, page.as_slice())?;
+                #[cfg(any(test, feature = "test-support"))]
+                dashboard_base::prepared::pages::framing::note_compressed(page);
             }
             if let Some(error) = held.error {
                 return Err(error);

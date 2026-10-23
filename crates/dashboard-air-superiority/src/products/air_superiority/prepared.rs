@@ -844,7 +844,12 @@ impl Prepared {
         series::write_catalogue(writer, "air-superiority", branch, &self.keys, &())?;
         let bytes =
             dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)?;
-        writer.write_at(&format!("air-superiority-{branch}"), 0, bytes.as_slice())
+        let result = writer.write_at(&format!("air-superiority-{branch}"), 0, bytes.as_slice());
+        #[cfg(any(test, feature = "test-support"))]
+        if result.is_ok() {
+            dashboard_base::prepared::pages::framing::note_compressed(&bytes);
+        }
+        result
     }
     pub fn read(
         store: &store::Store,

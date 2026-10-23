@@ -1830,3 +1830,87 @@ fn pages_that_leave_the_retained_source_block_release_it_and_native_requests_rea
     same(&mut paged, &mut plain, 1, 170, 170).0.unwrap();
     same(&mut paged, &mut plain, 1, 105, 105).0.unwrap();
 }
+
+#[test]
+fn page_framing_is_reported_at_publication_with_its_length_and_compression_envelopes() {
+    use super::super::pages::{Producer, read_page};
+    use crate::prepared::pages::framing;
+    use replay_frame::frame::RecordedFrame;
+
+    // Map magic/branch/stride/from/to/block/version, length, then the zstd envelope.
+    const EXPECTED_FRAMING: u64 = (8 + 8 + 4 + 4 + 4 + 8 + 2) + 8 + (4 + 1 + 2 + 3 + 4);
+    let selected = &[TableId::Campaign];
+    let strides = &[1];
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 1,
+        metrics: Default::default(),
+        tables: std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "not selected".into(),
+            }
+            .into()
+        }),
+    };
+    frame.tables[TableId::Campaign.index()] =
+        TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+            id: b"framing".to_vec(),
+        }]))
+        .into();
+    let mut producer = Producer::new(selected, strides).unwrap();
+    producer.observe(&frame, None::<&RecordedFrame>).unwrap();
+    frame.hour = 2;
+    producer.observe(&frame, None::<&RecordedFrame>).unwrap();
+    let before = framing::bytes();
+    let mut fold = PageFold::new(1, selected, strides, None).unwrap();
+    fold.fold(0, producer.finish()).unwrap();
+    assert_eq!(fold.pages().chains.len(), 1);
+    assert_eq!(fold.pages().chains[0].ranges, 1);
+    assert!(fold.pending() > 0);
+    assert_eq!(framing::bytes(), before, "held pages report no framing");
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    fold.publish(&mut writer).unwrap();
+    let mut bytes = Vec::new();
+    writer
+        .read_at(&section(1, 1), 0)
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert_eq!(HEADER_BYTES, 38);
+    assert_eq!(&bytes[..8], b"HOIPAG01");
+    let payload_size = u64::from_le_bytes(bytes[38..46].try_into().unwrap());
+    let compressed = &bytes[46..];
+    assert_eq!(&compressed[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+    assert_eq!(
+        compressed[4], 0x64,
+        "single segment, two-byte content size, checksum, no dictionary/window"
+    );
+    assert_eq!(
+        u64::from(u16::from_le_bytes([compressed[5], compressed[6]])) + 256,
+        payload_size
+    );
+    let block = u32::from_le_bytes([compressed[7], compressed[8], compressed[9], 0]);
+    assert_eq!(block & 7, 5, "one final compressed block");
+    assert_eq!(compressed.len(), 10 + (block >> 3) as usize + 4);
+    let (header, _) = read_page(bytes.as_slice(), selected).unwrap();
+    assert_eq!(
+        header,
+        Header {
+            branch: 1,
+            stride: 1,
+            from: 1,
+            to: 2,
+            block: 0,
+        }
+    );
+    assert_eq!(framing::bytes() - before, EXPECTED_FRAMING);
+    assert_eq!(fold.pending(), 0);
+    fold.publish(&mut writer).unwrap();
+    assert_eq!(
+        framing::bytes() - before,
+        EXPECTED_FRAMING,
+        "empty publication writes no framing"
+    );
+}

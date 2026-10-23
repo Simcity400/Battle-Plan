@@ -132,6 +132,8 @@ impl Published {
         if self.stored.is_empty() {
             let range = base(text)?;
             writer.write_at(&self.section, 0, &range)?;
+            #[cfg(any(test, feature = "test-support"))]
+            writer.note_framing(&self.section, 0, framing(&range));
             self.stored.push(range);
         } else {
             if self.text == text {
@@ -169,6 +171,8 @@ impl Published {
                 None => (0, base(text)?),
             };
             writer.write_at(&self.section, slot as u64, &range)?;
+            #[cfg(any(test, feature = "test-support"))]
+            writer.note_framing(&self.section, slot as u64, framing(&range));
             for stale in slot + 1..=newest {
                 writer.write_at(&self.section, stale as u64, &[])?;
             }
@@ -179,6 +183,19 @@ impl Published {
         self.text.extend_from_slice(text);
         Ok(())
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn framing(range: &[u8]) -> usize {
+    let mut payload = &range[1..];
+    if range[0] == PATCH {
+        take(&mut payload).expect("written catalogue source length");
+        take(&mut payload).expect("written catalogue result length");
+        payload = &payload[HASH..];
+    } else {
+        assert_eq!(range[0], BASE);
+    }
+    range.len() - payload.len() + crate::prepared::pages::framing::compressed(payload)
 }
 
 /// The current text of a catalogue whose ranges `open` returns by ordinal.

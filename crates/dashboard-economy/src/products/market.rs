@@ -403,8 +403,9 @@ impl Prepared {
         });
     }
 
+    /// Bytes the next commit publishes and releases.
     pub fn bytes(&self) -> usize {
-        self.keyed.bytes()
+        self.keyed.pending()
     }
 
     pub fn flush(&mut self, writer: &mut store::Writer, branch: u64, cancelled: &AtomicBool) -> io::Result<()> {

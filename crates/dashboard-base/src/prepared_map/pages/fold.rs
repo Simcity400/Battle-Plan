@@ -210,6 +210,12 @@ impl PageFold {
         for held in self.held.drain(..) {
             let stride = self.pages.chains[held.chain].stride;
             let range = writer.write(&section(self.branch, stride), held.bytes.as_slice())?;
+            #[cfg(any(test, feature = "test-support"))]
+            crate::prepared::pages::framing::note(
+                HEADER_BYTES
+                    + 8
+                    + crate::prepared::pages::framing::compressed(&held.bytes[HEADER_BYTES + 8..]),
+            );
             if range != held.range {
                 return Err(invalid("map page ordinal differs from progress"));
             }

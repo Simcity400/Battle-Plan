@@ -286,6 +286,8 @@ impl Prepared {
     pub fn publish_windows(&mut self, writer: &mut store::Writer) -> io::Result<()> {
         for (section, window, page) in std::mem::take(&mut self.windows) {
             writer.write_at(&section, window, page.as_slice())?;
+            #[cfg(any(test, feature = "test-support"))]
+            dashboard_base::prepared::pages::framing::note_compressed(&page);
         }
         Ok(())
     }
@@ -304,7 +306,10 @@ impl Prepared {
         series::write_catalogue(writer, "air-aces", branch, &self.keys, &())?;
         let bytes =
             dashboard_base::prepared::series::compress(serde_json::to_vec(self)?.as_slice(), 3)?;
-        writer.write_at(&format!("air-aces-{branch}"), 0, bytes.as_slice())
+        writer.write_at(&format!("air-aces-{branch}"), 0, bytes.as_slice())?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::prepared::pages::framing::note_compressed(&bytes);
+        Ok(())
     }
     fn read(
         store: &store::Store,

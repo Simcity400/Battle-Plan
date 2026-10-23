@@ -423,3 +423,91 @@ fn catalogue_revalidates_other_publishers_replacement_clear_and_abandoned_writes
         );
     }
 }
+
+#[test]
+fn framing_reports_only_the_ranges_a_catalogue_actually_writes() {
+    use crate::prepared::pages::{Committed, HeldPages, Pages, framing as written};
+
+    const TEXT: &[u8] = br#"[{},{"fixed":"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ","value":1}]"#;
+    const UPDATED: &[u8] = br#"[{},{"fixed":"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ","value":2}]"#;
+    // Base marker, zstd magic, descriptor, one-byte content size, one block header.
+    const BASE_FRAMING: u64 = 1 + (4 + 1 + 1 + 3);
+    // Patch marker, two one-byte lengths, 16-byte hash, then the same zstd envelope.
+    const PATCH_FRAMING: u64 = 1 + 1 + 1 + 16 + (4 + 1 + 1 + 3);
+
+    fn assert_frame(frame: &[u8]) {
+        assert_eq!(&frame[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+        assert_eq!(
+            frame[4], 0x20,
+            "single segment, one-byte content size, no dictionary/window/checksum"
+        );
+        let block = u32::from_le_bytes([frame[6], frame[7], frame[8], 0]);
+        assert_eq!(block & 7, 1, "one final raw block");
+        assert_eq!(block >> 3, u32::from(frame[5]));
+        assert_eq!(frame.len(), 9 + usize::from(frame[5]));
+    }
+
+    let fixture = Fixture::new();
+    let mut held = HeldPages::default();
+    let keys = BTreeMap::new();
+    let mut metadata = json!({
+        "fixed": "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "value": 1,
+    });
+    let section = series::catalogue_section("framing", 1);
+    let before = written::bytes();
+    {
+        let mut view = held.view(Committed {
+            store: &fixture.store,
+            key: &fixture.key,
+            saved: None,
+        });
+        series::write_catalogue(&mut view, "framing", 1, &keys, &json!({})).unwrap();
+        series::write_catalogue(&mut view, "framing", 1, &keys, &metadata).unwrap();
+        let base = view.read_at(&section, 0).unwrap().unwrap();
+        assert_eq!(base[0], b'B', "the tiny first base was replaced");
+        assert_frame(&base[1..]);
+        assert_eq!(decompress(&base[1..]).unwrap(), TEXT);
+        assert!(view.read_at(&section, 1).unwrap().is_none());
+    }
+    assert_eq!(written::bytes(), before);
+    let mut writer = fixture.writer();
+    held.write(&mut writer).unwrap();
+    assert_eq!(written::bytes() - before, BASE_FRAMING);
+    let unchanged = written::bytes();
+    held.write(&mut writer).unwrap();
+    assert_eq!(written::bytes(), unchanged, "held framing is not repeated");
+    series::write_catalogue(&mut writer, "framing", 1, &keys, &metadata).unwrap();
+    assert_eq!(
+        written::bytes(),
+        unchanged,
+        "unchanged catalogue writes nothing"
+    );
+    metadata["value"] = json!(2);
+    series::write_catalogue(&mut writer, "framing", 1, &keys, &metadata).unwrap();
+    let patch = Pages::read_at(&mut writer, &section, 1).unwrap().unwrap();
+    assert_eq!(TEXT.len(), 89);
+    assert_eq!(UPDATED.len(), 89);
+    assert_eq!(&patch[..3], &[b'P', 89, 89]);
+    assert_eq!(&patch[3..19], &blake3::hash(UPDATED).as_bytes()[..16]);
+    assert_frame(&patch[19..]);
+    assert_eq!(written::bytes() - unchanged, PATCH_FRAMING);
+    let after_patch = written::bytes();
+    series::write_catalogue(&mut writer, "framing", 1, &keys, &metadata).unwrap();
+    assert_eq!(written::bytes(), after_patch);
+    writer.commit().unwrap();
+    assert_eq!(published(&fixture, &section), UPDATED);
+}
+
+#[test]
+fn catalogue_pending_counts_the_exact_escaped_publication_text() {
+    let keys = BTreeMap::from([("a".to_owned(), 0)]);
+    let metadata = BTreeMap::from([("note", "x\ny")]);
+    let expected = br#"[{"a":0},{"note":"x\ny"}]"#;
+    assert_eq!(series::catalogue_bytes(&keys, &metadata), expected.len());
+    let fixture = Fixture::new();
+    let mut writer = fixture.writer();
+    series::write_catalogue(&mut writer, "sized", 1, &keys, &metadata).unwrap();
+    writer.commit().unwrap();
+    assert_eq!(published(&fixture, "sized-1-catalogue"), expected.as_slice());
+}

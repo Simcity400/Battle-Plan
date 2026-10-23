@@ -52,12 +52,31 @@ impl Snapshot {
 // Cancellation and pool wake-ups are not signalled through every reader condvar.
 pub(crate) const POLL: Duration = Duration::from_millis(25);
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct PendingAudit {
+    pub(crate) family: &'static str,
+    pub(crate) branch: u64,
+    pub(crate) held: u64,
+    pub(crate) published: i128,
+    pub(crate) framing: u64,
+}
+
+#[cfg(test)]
+impl PendingAudit {
+    pub(crate) fn record_bytes(&self) -> i128 {
+        self.published - i128::from(self.framing)
+    }
+}
+
 pub(crate) struct WalkPace {
     state: Mutex<Snapshot>,
     #[cfg(test)]
     pub(crate) reads: (Mutex<super::pipeline::independent::TestReads>, Condvar),
     #[cfg(test)]
     pub(crate) family_claims: Mutex<Vec<(usize, Snapshot)>>,
+    #[cfg(test)]
+    pub(crate) pending_audit: Mutex<Vec<PendingAudit>>,
     /// Notified at every change, for readers waiting on the walk.
     changed: Condvar,
     /// Each lifecycle it took, in order, in tests.
@@ -86,6 +105,8 @@ impl WalkPace {
             ),
             #[cfg(test)]
             family_claims: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            pending_audit: Mutex::new(Vec::new()),
             #[cfg(test)]
             history: Mutex::new(vec![lifecycle]),
         })

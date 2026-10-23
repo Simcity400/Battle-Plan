@@ -2835,7 +2835,10 @@ pub trait PageWrites {
 
 impl PageWrites for store::Writer {
     fn write_range(&mut self, section: &str, ordinal: u64, bytes: Vec<u8>) -> io::Result<()> {
-        self.write_at(section, ordinal, bytes.as_slice())
+        self.write_at(section, ordinal, bytes.as_slice())?;
+        #[cfg(any(test, feature = "test-support"))]
+        crate::prepared::pages::framing::note_compressed(&bytes);
+        Ok(())
     }
 
     fn append(&mut self, section: &str, _next: u64, bytes: Vec<u8>) -> io::Result<u64> {
@@ -2872,7 +2875,9 @@ impl HeldPages {
         for (section, write, bytes) in std::mem::take(&mut self.writes) {
             match write {
                 HeldWrite::Range(ordinal) => {
-                    writer.write_at(&section, ordinal, bytes.as_slice())?
+                    writer.write_at(&section, ordinal, bytes.as_slice())?;
+                    #[cfg(any(test, feature = "test-support"))]
+                    crate::prepared::pages::framing::note_compressed(&bytes);
                 }
                 HeldWrite::Append(expected) => {
                     if writer.write(&section, bytes.as_slice())? != expected {

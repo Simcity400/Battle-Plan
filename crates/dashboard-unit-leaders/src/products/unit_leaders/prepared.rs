@@ -345,11 +345,11 @@ impl Prepared {
     ) -> io::Result<()> {
         self.own(|state| state.publish_own(writer, branch, content, content_errors, cancelled))?;
         // The saved state includes this flush's own refusals.
-        writer.write_at(
-            &format!("unit-leaders-{branch}"),
-            0,
-            self.saved_bytes()?.as_slice(),
-        )
+        let bytes = self.saved_bytes()?;
+        writer.write_at(&format!("unit-leaders-{branch}"), 0, bytes.as_slice())?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::prepared::pages::framing::note_compressed(&bytes);
+        Ok(())
     }
     fn publish_own(
         &mut self,

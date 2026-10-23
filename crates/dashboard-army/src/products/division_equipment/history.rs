@@ -2157,6 +2157,14 @@ impl Prepared {
                 self.published.pages,
                 page.as_slice(),
             )?;
+            #[cfg(any(test, feature = "test-support"))]
+            dashboard_base::prepared::pages::Pages::note_framing(
+                writer,
+                &catalogue_section(branch),
+                self.published.pages,
+                8 + u64::from_le_bytes(page[..8].try_into().expect("catalogue directory length"))
+                    as usize,
+            );
             self.published = Published {
                 pages: self.published.pages + 1,
                 counts,

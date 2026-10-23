@@ -2229,6 +2229,12 @@ fn prepare_family(
                     .field("hour", hour)
                     .field("pending", state.pending())
             });
+            #[cfg(test)]
+            let audit = (
+                state.pending().saturating_add(pages.bytes()) as u64,
+                writer.payload_bytes_change(),
+                dashboard_base::prepared::pages::framing::bytes(),
+            );
             let refused = progress.refused.entry(branch).or_default();
             // The pages of the blocks it went through, refused since or
             // not: those each block published, then those it holds.
@@ -2247,6 +2253,15 @@ fn prepare_family(
                 refused.check(name, hour, result)?;
             }
             census.mark("flush", writer);
+            #[cfg(test)]
+            note_pending_audit(
+                phase.walk_pace,
+                name,
+                branch,
+                audit.0,
+                writer.payload_bytes_change() - audit.1,
+                dashboard_base::prepared::pages::framing::bytes() - audit.2,
+            );
             if refused.open(name) {
                 let result = {
                     let _cpu = ::replay_frame::cpu::scope("fold save", None);
@@ -2963,6 +2978,39 @@ pub(super) fn wait_for_test_reads(done: impl Fn(&TestReads) -> bool) {
             .wait(reads)
             .unwrap_or_else(PoisonError::into_inner);
     }
+}
+
+#[cfg(test)]
+fn note_pending_audit(
+    pace: &crate::prepared::pace::WalkPace,
+    family: &'static str,
+    branch: u64,
+    held: u64,
+    published: i128,
+    framing: u64,
+) {
+    pace.pending_audit
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(crate::prepared::pace::PendingAudit {
+            family,
+            branch,
+            held,
+            published,
+            framing,
+        });
+}
+
+#[cfg(test)]
+pub(super) fn take_pending_audit() -> Vec<crate::prepared::pace::PendingAudit> {
+    crate::prepared::pace::started().map_or_else(Vec::new, |pace| {
+        std::mem::take(
+            &mut *pace
+                .pending_audit
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    })
 }
 
 /// Run `run` with the families named `names` paced against the walk.

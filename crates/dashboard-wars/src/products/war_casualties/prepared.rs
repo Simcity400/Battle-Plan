@@ -468,7 +468,10 @@ impl Prepared {
         last_hour: i32,
     ) -> io::Result<()> {
         let (ordinal, window) = self.finish_block_window(first_hour, last_hour)?;
-        writer.write_at(&pairs_section(branch), ordinal, window.as_slice())
+        writer.write_at(&pairs_section(branch), ordinal, window.as_slice())?;
+        #[cfg(any(test, feature = "test-support"))]
+        dashboard_base::prepared::pages::framing::note_compressed(&window);
+        Ok(())
     }
 
     /// The pair window of the block `first_hour..=last_hour` and its ordinal,

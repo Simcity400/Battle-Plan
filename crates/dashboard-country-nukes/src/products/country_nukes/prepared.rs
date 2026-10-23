@@ -34,6 +34,15 @@ pub struct IncreaseCatalogue {
     pub types: Vec<NukeTypeInfo>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IncreaseCatalogueView<'a> {
+    read_spans: &'a [HourSpan],
+    refusals: &'a BTreeMap<String, Vec<HourSpan>>,
+    refused_types: &'a BTreeMap<u32, usize>,
+    types: Vec<NukeTypeInfo>,
+}
+
 /// Complete numeric tables used by the stateless stockpile sample.
 pub(crate) const TABLES: &[TableId] = &[TableId::Countries, TableId::CountryLinks, TableId::Nukes];
 
@@ -338,12 +347,34 @@ impl Prepared {
         self.advance(hour, None)?;
         Ok(true)
     }
+    fn increase_catalogue(&self) -> IncreaseCatalogueView<'_> {
+        let types: BTreeMap<_, _> = native_type_info(&self.scan.scanned, |_| None)
+            .into_iter()
+            .chain(type_info(&self.scan.scanned, |_| None))
+            .map(|info| (info.ordinal, info))
+            .collect();
+        IncreaseCatalogueView {
+            read_spans: &self.feed_reads,
+            refusals: &self.feed_refusals,
+            refused_types: &self.scan.scanned.refused,
+            types: types.into_values().collect(),
+        }
+    }
     pub fn bytes(&self) -> usize {
-        self.values.bytes()
+        let series = self.values.bytes()
             + self.ranks.bytes()
             + self.parts.bytes()
             + self.mixes.bytes()
-            + self.increases.bytes()
+            + self.increases.bytes();
+        if self.first.is_none() {
+            return series;
+        }
+        series
+            .saturating_add(series::catalogue_bytes(&self.keys, &self.scan.scanned))
+            .saturating_add(series::catalogue_bytes(
+                &BTreeMap::new(),
+                &self.increase_catalogue(),
+            ))
     }
     pub fn flush(
         &mut self,
@@ -410,22 +441,12 @@ impl Prepared {
                 track.segments.drain(..track.segments.len() - 1);
             }
         }
-        let types: BTreeMap<_, _> = native_type_info(&self.scan.scanned, |_| None)
-            .into_iter()
-            .chain(type_info(&self.scan.scanned, |_| None))
-            .map(|info| (info.ordinal, info))
-            .collect();
         series::write_catalogue(
             writer,
             INCREASES,
             branch,
             &BTreeMap::new(),
-            &IncreaseCatalogue {
-                read_spans: self.feed_reads.clone(),
-                refusals: self.feed_refusals.clone(),
-                refused_types: self.scan.scanned.refused.clone(),
-                types: types.into_values().collect(),
-            },
+            &self.increase_catalogue(),
         )?;
         series::write_catalogue(writer, "nukes", branch, &self.keys, &self.scan.scanned)
     }

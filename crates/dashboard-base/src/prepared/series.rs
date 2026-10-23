@@ -1067,6 +1067,13 @@ fn parse_catalogue<T: DeserializeOwned>(text: Option<Vec<u8>>) -> io::Result<Opt
     text.map(|text| serde_json::from_slice(&text).map_err(io::Error::from))
         .transpose()
 }
+/// The uncompressed catalogue text compared by the next publication; a failed size cannot hide pending work.
+pub fn catalogue_bytes(keys: &BTreeMap<String, u64>, metadata: &impl Serialize) -> usize {
+    super::state_census::json_bytes(&(keys, metadata))
+        .ok()
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(usize::MAX)
+}
 /// All families publish the same catalogue shape, the JSON text of
 /// `(keys, metadata)`. A flush writes only what changed in that text since
 /// the last flush (a base range, then patches: `series/catalogue.rs`).
@@ -1476,6 +1483,8 @@ impl Batch {
         let count = keys.len();
         let mut empty_keys = 0_usize;
         let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
+        #[cfg(any(test, feature = "test-support"))]
+        let mut framing = bytes.len();
         put(&mut bytes, 0, &first.to_le_bytes());
         put(&mut bytes, 4, &last.to_le_bytes());
         put(&mut bytes, 8, &(keys.len() as u64).to_le_bytes());
@@ -1500,6 +1509,10 @@ impl Batch {
                 at + 56,
                 &state.last.map_or(first, |run| run.last_hour).to_le_bytes(),
             );
+            #[cfg(any(test, feature = "test-support"))]
+            let empty_payload = runs.is_empty()
+                && events.is_empty()
+                && state.partial.iter().all(Option::is_none);
             #[cfg(not(test))]
             let inactive = true;
             #[cfg(test)]
@@ -1520,6 +1533,10 @@ impl Batch {
                     blob(&mut bytes, at + 8, vec![0; LEVELS.len() * 2], &mut blobs)?;
                     empty = Some((offset, bytes.len() - offset));
                 }
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    framing += bytes.len() - offset;
+                }
                 continue;
             }
             // Numeric keys often hold the same runs and incoming summaries.
@@ -1538,6 +1555,10 @@ impl Batch {
                 put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
                 put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
                 state.partial = partial;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    framing += super::pages::framing::compressed(&bytes[offset..]);
+                }
                 continue;
             }
             let idle_identity = input
@@ -1555,6 +1576,10 @@ impl Batch {
                     (offset, payload.len(), *partial),
                 );
                 state.partial = *partial;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    framing += super::pages::framing::compressed(&bytes[offset..]);
+                }
                 continue;
             }
             let identity = input.map(|input| (first, last, decimals, input));
@@ -1573,6 +1598,10 @@ impl Batch {
                     idle.insert(identity, payload.clone(), *partial);
                 }
                 state.partial = *partial;
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    framing += super::pages::framing::compressed(&bytes[offset..]);
+                }
                 continue;
             }
             #[cfg(test)]
@@ -1643,6 +1672,14 @@ impl Batch {
             }
             let offset = bytes.len();
             blob(&mut bytes, at + 8, raw, &mut blobs)?;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                framing += if empty_payload {
+                    bytes.len() - offset
+                } else {
+                    super::pages::framing::compressed(&bytes[offset..])
+                };
+            }
             if let Some(input) = input {
                 payloads.insert(input, (offset, bytes.len() - offset, state.partial));
             }
@@ -1660,7 +1697,9 @@ impl Batch {
         }
         check_cancel(cancelled)?;
         let _cpu = ::replay_frame::cpu::scope_phase("series:write_page");
-        writer.write(section, bytes.as_slice())?;
+        let _range = writer.write(section, bytes.as_slice())?;
+        #[cfg(any(test, feature = "test-support"))]
+        writer.note_framing(section, _range, framing);
         if super::state_census::on() {
             super::state_census::Line::new("series")
                 .field("section", section)
@@ -3669,7 +3708,14 @@ pub fn write_reply<W: super::pages::Pages + ?Sized>(
 ) -> io::Result<()> {
     let json = serde_json::to_vec(value)?;
     let compressed = compress(json.as_slice(), 3)?;
-    writer.write_at(section, ordinal, compressed.as_slice())
+    writer.write_at(section, ordinal, compressed.as_slice())?;
+    #[cfg(any(test, feature = "test-support"))]
+    writer.note_framing(
+        section,
+        ordinal,
+        super::pages::framing::compressed(&compressed),
+    );
+    Ok(())
 }
 pub fn read_reply<T: serde::de::DeserializeOwned>(
     store: &store::Store,
