@@ -697,7 +697,11 @@ fn locals_by_name(animation: &Animation, frame: u32) -> BTreeMap<&str, Transform
 /// stream whose float count is not a multiple of its component count, and for a
 /// triangle index outside the vertex streams.
 pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
-    let root = parse(bytes)?;
+    read_tree(&parse(bytes)?)
+}
+
+/// Projects a parsed container, preserving `read`'s post-parse validation order.
+pub fn read_tree(root: &Node) -> io::Result<Mesh> {
     let object = root
         .child("object")
         .ok_or_else(|| invalid("a PDX mesh carries no [object] node"))?;

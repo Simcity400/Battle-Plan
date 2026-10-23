@@ -11,11 +11,12 @@ use std::{cmp::Reverse, collections::BTreeMap, io, ops::Deref};
 use viewer_foundation::table_access::TokenNames;
 
 pub(crate) mod facts;
+pub(crate) mod model_facts;
 pub(crate) mod profile;
 use profile::{Stage, Stages};
 
 #[derive(Clone, Debug, Default)]
-pub struct Content(shared::Content, facts::Retained);
+pub struct Content(shared::Content, facts::Retained, model_facts::Retained);
 impl Deref for Content {
     type Target = shared::Content;
     fn deref(&self) -> &Self::Target {
@@ -28,14 +29,25 @@ impl Content {
         self.1.hour(frame)
     }
 
+    pub(crate) fn model_facts(&self) -> &model_facts::Retained {
+        &self.2
+    }
+
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
-        shared::Content::load(layers).map(|content| Self(content, facts::Retained::default()))
+        shared::Content::load(layers).map(|content| {
+            Self(
+                content,
+                facts::Retained::default(),
+                model_facts::Retained::default(),
+            )
+        })
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_test_documents(documents: &[&[u8]]) -> Self {
         Self(
             shared::Content::from_test_documents(documents),
             facts::Retained::default(),
+            model_facts::Retained::default(),
         )
     }
     /// Supply only this division's equipment rows, in any order;

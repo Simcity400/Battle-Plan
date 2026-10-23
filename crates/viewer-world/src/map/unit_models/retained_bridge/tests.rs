@@ -550,7 +550,7 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         // sides preserve the same baked library's slot history across hours.
         reference.sub_units = content();
         reference.conventional = RetainedBridge::default();
-        let direct = bridge::Prepared::read(&frame, &reference.sub_units)
+        let direct = bridge::reference::read(&frame, &reference.sub_units)
             .map(|value| value.comparison_state());
         let retained = new
             .conventional
@@ -777,3 +777,6 @@ fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
         assert!(reached.contains(stage), "must reach {stage}: {reached:?}");
     }
 }
+
+#[path = "model_facts_tests.rs"]
+mod model_facts;

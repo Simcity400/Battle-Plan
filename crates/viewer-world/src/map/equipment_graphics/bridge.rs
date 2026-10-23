@@ -18,7 +18,8 @@ use replay_frame::frame::DecodedFrame;
 
 use super::{Candidate, legacy};
 use {
-    crate::map::model_selection::Content, crate::map::model_selection::SubUnit,
+    crate::map::model_selection::Content, crate::map::model_selection::EquipmentModel,
+    crate::map::model_selection::SubUnit, crate::map::model_selection::model_facts,
     installed_content_equipment_graphics::equipment_graphics::countries::ModelCountry,
     viewer_foundation::map::tables::rows,
 };
@@ -300,6 +301,7 @@ impl<'a> Prepared<'a> {
         let mut states = Vec::with_capacity(definitions.len());
         let mut invalid_by_archetype = BTreeMap::new();
         let mut invalid_unknown = None;
+        let mut facts = content.model_facts().census(module_categories);
         for row in definitions {
             match build_variant(
                 content,
@@ -307,7 +309,7 @@ impl<'a> Prepared<'a> {
                 row,
                 &links,
                 &upgrade_sums,
-                module_categories,
+                &mut facts,
             ) {
                 Ok(variant) => {
                     states.push(VariantState::Ready(variants.len()));
@@ -334,6 +336,7 @@ impl<'a> Prepared<'a> {
                 }
             }
         }
+        facts.commit();
         let available = join_available(available, &by_handle, &links)?;
         Ok(Self {
             variants: Variants::Borrowed(variants),
@@ -464,18 +467,30 @@ impl<'a> Prepared<'a> {
     }
 }
 
+/// A key's authored model operands: an earlier census's success, or derived now.
+enum Authored<'a> {
+    Held(model_facts::Fact),
+    Derived(EquipmentModel<'a>),
+}
+
 fn build_variant<'a>(
     content: &'a Content,
     tokens: &TokenNames<'_>,
     row: &'a VariantDefinitionRow,
     links: &BTreeMap<u32, u32>,
     upgrade_sums: &BTreeMap<u64, i32>,
-    module_categories: u64,
+    facts: &mut model_facts::View<'a>,
 ) -> Result<legacy::Variant<'a>, String> {
     let key = content.equipment_key(tokens, row)?;
-    let model = content
-        .equipment_model(key)
-        .map_err(|error| format!("variant {}: {error}", row.id))?;
+    // Only both authored calls succeeding can bypass their original validation order.
+    let authored = match facts.get(key) {
+        Some(fact) => Authored::Held(fact),
+        None => Authored::Derived(
+            content
+                .equipment_model(key)
+                .map_err(|error| format!("variant {}: {error}", row.id))?,
+        ),
+    };
     let creator_reference = row.creator_link as i32;
     // A nonpositive reference has no canonical country object. Give a
     // negative sentinel its own slot to avoid falsely aliasing another
@@ -490,9 +505,35 @@ fn build_variant<'a>(
     } else {
         creator_reference
     };
-    let has_enabled_module_slots = content
-        .has_enabled_module_slots(key, module_categories)
-        .map_err(|error| format!("variant {}: {error}", row.id))?;
+    let equipment = match authored {
+        Authored::Held(fact) => held_equipment(content, fact),
+        Authored::Derived(model) => {
+            let has_enabled_module_slots = content
+                .has_enabled_module_slots(key, facts.module_categories())
+                .map_err(|error| format!("variant {}: {error}", row.id))?;
+            let at = content.equipment_content().get(key);
+            facts.insert(
+                key,
+                model_facts::Fact {
+                    equipment: at.expect("resolved authored equipment"),
+                    archetype: model.archetype_ordinal,
+                    visual_level: model.visual_level,
+                    model_priority: model.model_priority,
+                    depth: model.depth,
+                    has_enabled_module_slots,
+                },
+            );
+            legacy::Equipment {
+                archetype: model.archetype,
+                archetype_ordinal: model.archetype_ordinal,
+                sprite: model.model,
+                visual_level: model.visual_level,
+                model_priority: model.model_priority,
+                parent_depth: model.depth,
+                has_enabled_module_slots,
+            }
+        }
+    };
     Ok(legacy::Variant {
         handle: row.id,
         // A variant handle's low word is the reference type;
@@ -501,16 +542,25 @@ fn build_variant<'a>(
         creator_reference,
         creator_slot,
         upgrade_sum: upgrade_sums.get(&row.id).copied().unwrap_or_default(),
-        equipment: legacy::Equipment {
-            archetype: model.archetype,
-            archetype_ordinal: model.archetype_ordinal,
-            sprite: model.model,
-            visual_level: model.visual_level,
-            model_priority: model.model_priority,
-            parent_depth: model.depth,
-            has_enabled_module_slots,
-        },
+        equipment,
     })
+}
+
+// Borrow validated spellings from the same catalogue, never from a prior variant.
+fn held_equipment(content: &Content, fact: model_facts::Fact) -> legacy::Equipment<'_> {
+    let equipment = &content.equipment_content().equipment;
+    legacy::Equipment {
+        archetype: equipment[fact.archetype]
+            .name_str()
+            .expect("validated archetype spelling"),
+        archetype_ordinal: fact.archetype,
+        sprite: installed_content_core::parser::text(&equipment[fact.equipment].model)
+            .expect("validated model spelling"),
+        visual_level: fact.visual_level,
+        model_priority: fact.model_priority,
+        parent_depth: fact.depth,
+        has_enabled_module_slots: fact.has_enabled_module_slots,
+    }
 }
 
 fn complete<T: TableSchema>(frame: &DecodedFrame) -> Result<&[T::Row], String> {
@@ -885,3 +935,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "bridge_reference.rs"]
+pub(crate) mod reference;

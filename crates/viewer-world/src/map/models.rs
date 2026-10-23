@@ -1058,7 +1058,8 @@ impl ModelLibrary {
             let locators =
                 super::mesh_pose::binary_locators(&tree, &skeleton, entity.definition.scale)
                     .map_err(cannot_load)?;
-            let decoded = mesh::read(&bytes).map_err(cannot_load)?;
+            // Project only after the native skeleton and locators have validated the same tree.
+            let decoded = mesh::read_tree(&tree).map_err(cannot_load)?;
             (path, decoded, skeleton, locators)
         } else {
             (String::new(), mesh::Mesh::default(), Vec::new(), Vec::new())

@@ -1191,3 +1191,6 @@ fn the_comparison_tells_apart_what_derived_equality_does_not() {
         .map(|animation| Arc::new((**animation).clone()));
     assert!(refused(&base, &separate));
 }
+
+#[path = "projection_tests.rs"]
+mod projection;

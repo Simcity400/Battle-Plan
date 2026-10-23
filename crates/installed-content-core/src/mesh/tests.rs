@@ -973,6 +973,320 @@ fn bad_input_is_refused_without_panicking() {
     assert!(parse(&bytes).is_err());
 }
 
+// Exhaustive destructuring makes new retained fields extend this bitwise comparison.
+fn mesh_bits(mesh: &Mesh) -> Vec<String> {
+    fn flat<const N: usize>(rows: &[[f32; N]]) -> Vec<u32> {
+        rows.iter().flatten().map(|value| value.to_bits()).collect()
+    }
+    let Mesh {
+        lod_distances,
+        shapes,
+        skeleton,
+        locators,
+    } = mesh;
+    let lod_distances: Vec<_> = lod_distances.iter().map(|value| value.to_bits()).collect();
+    let mut out = vec![format!("{lod_distances:?} {locators:?}")];
+    for Joint {
+        name,
+        index,
+        parent,
+        inverse_bind,
+    } in skeleton
+    {
+        let bind = inverse_bind
+            .map(|Transform { basis, translation }| (flat(&basis), translation.map(f32::to_bits)));
+        out.push(format!("{name:?} {index} {parent:?} {bind:?}"));
+    }
+    for Shape { name, lod, meshes } in shapes {
+        out.push(format!("{name:?} {lod:?}"));
+        for SubMesh {
+            child_index,
+            positions,
+            normals,
+            tangents,
+            uv0,
+            uv1,
+            uv2,
+            uv3,
+            indices,
+            bounds,
+            material,
+            skin,
+        } in meshes
+        {
+            let bounds =
+                bounds.map(|Bounds { min, max }| (min.map(f32::to_bits), max.map(f32::to_bits)));
+            let skin = skin.as_ref().map(
+                |Skin {
+                     bones,
+                     joints,
+                     weights,
+                 }| (bones, joints, flat(weights)),
+            );
+            out.push(format!(
+                "{child_index} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {indices:?} {bounds:?} \
+                 {material:?} {skin:?}",
+                flat(positions),
+                flat(normals),
+                flat(tangents),
+                flat(uv0),
+                uv1.as_deref().map(flat),
+                uv2.as_deref().map(flat),
+                uv3.as_deref().map(flat),
+            ));
+        }
+    }
+    out
+}
+
+/// Retained float bits the decoder must copy unchanged.
+const ODD_FLOATS: [f32; 6] = [
+    0.0,
+    -0.0,
+    f32::from_bits(0x7fc0_0123),
+    f32::from_bits(0xffc0_4567),
+    f32::INFINITY,
+    f32::from_bits(1),
+];
+
+// Both skeleton placements, skipped children, short bounds and unusual retained float bits.
+fn mixed_mesh() -> Vec<u8> {
+    let tx = [ODD_FLOATS, ODD_FLOATS].concat();
+    Builder::new()
+        .node(1, "object")
+        .floats("loddist", &ODD_FLOATS)
+        .node(2, "skeleton")
+        .node(3, "root")
+        .ints("ix", &[0])
+        .floats("tx", &tx)
+        .node(3, "child")
+        .ints("ix", &[1])
+        .ints("pa", &[0])
+        .node(3, "unindexed")
+        .node(2, "properties")
+        .ints("lod", &[1])
+        .node(2, "empty")
+        .node(3, "notmesh")
+        .node(2, "s")
+        .ints("lod", &[0])
+        .node(3, "mesh")
+        .floats("p", &ODD_FLOATS[..3])
+        .floats("n", &ODD_FLOATS[3..])
+        .floats("u2", &ODD_FLOATS[1..])
+        .ints("tri", &[0, 0, 0])
+        .node(4, "aabb")
+        .floats("min", &ODD_FLOATS[..3])
+        .floats("max", &[1.0, 2.0])
+        .node(4, "skin")
+        .ints("bones", &[-3])
+        .ints("ix", &[2, -1, 0, -1])
+        .floats("w", &ODD_FLOATS[2..])
+        .node(3, "skeleton")
+        .node(4, "j")
+        .ints("ix", &[2])
+        .node(1, "locator")
+        .node(2, "a")
+        .node(2, "b")
+        .bytes
+}
+
+/// One shape of one `[mesh]` whose streams the caller supplies.
+fn one_mesh(streams: impl FnOnce(Builder) -> Builder) -> Vec<u8> {
+    streams(
+        Builder::new()
+            .node(1, "object")
+            .node(2, "s")
+            .node(3, "mesh"),
+    )
+    .bytes
+}
+
+// These containers distinguish projection refusals from parse refusals.
+fn projection_cases() -> Vec<(&'static str, Vec<u8>)> {
+    let vertex = |builder: Builder| builder.floats("p", &[0.0, 1.0, 2.0]);
+    let mut bad_magic = triangle_mesh();
+    bad_magic[0] = b'#';
+    let mut truncated = triangle_mesh();
+    truncated.truncate(truncated.len() - 3);
+    let mut unknown_type = MAGIC.to_vec();
+    unknown_type.extend_from_slice(b"!\x01xq\x01\x00\x00\x00\x00");
+    vec![
+        ("triangle", triangle_mesh()),
+        ("mixed", mixed_mesh()),
+        (
+            "ragged optional streams",
+            one_mesh(|b| {
+                vertex(b)
+                    .floats("n", &[1.0])
+                    .floats("ta", &[1.0, 2.0])
+                    .floats("u1", &[3.0])
+            }),
+        ),
+        ("no object", MAGIC.to_vec()),
+        ("ragged positions", one_mesh(|b| b.floats("p", &[0.0, 0.0]))),
+        (
+            "odd triangle list",
+            one_mesh(|b| vertex(b).ints("tri", &[0, 0])),
+        ),
+        (
+            "index outside the streams",
+            one_mesh(|b| vertex(b).ints("tri", &[0, 1, 2])),
+        ),
+        (
+            "negative index",
+            one_mesh(|b| vertex(b).ints("tri", &[-1, 0, 0])),
+        ),
+        (
+            "short skin",
+            one_mesh(|b| {
+                vertex(b)
+                    .node(4, "skin")
+                    .ints("ix", &[0, 0])
+                    .floats("w", &[1.0])
+            }),
+        ),
+        (
+            "a later shape refuses after a decoded one",
+            one_mesh(|b| {
+                vertex(b)
+                    .ints("tri", &[0, 0, 0])
+                    .node(2, "t")
+                    .node(3, "mesh")
+                    .floats("p", &[0.0])
+            }),
+        ),
+        ("bad magic", bad_magic),
+        ("truncated", truncated),
+        ("unknown property type", unknown_type),
+    ]
+}
+
+fn expected_projection(label: &str, bytes: &[u8]) -> Result<Mesh, String> {
+    let shape = |name: &str, lod, meshes| Shape {
+        name: name.into(),
+        lod,
+        meshes,
+    };
+    match label {
+        "triangle" => Ok(Mesh {
+            lod_distances: vec![0., 100.],
+            shapes: vec![shape("planeShape", Some(0), vec![SubMesh {
+                child_index: 0,
+                positions: vec![[-1., 0., -1.], [1., 0., -1.], [0., 0.5, 1.]],
+                normals: vec![[0., 1., 0.]; 3],
+                tangents: vec![[1., 0., 0., 1.], [1., 0., 0., 1.], [1., 0., 0., -1.]],
+                uv0: vec![[0., 0.], [1., 0.], [0.5, 1.]],
+                uv1: Some(vec![[0.25, 0.75]; 3]),
+                uv2: None,
+                uv3: None,
+                indices: vec![0, 1, 2],
+                bounds: Some(Bounds { min: [-1., 0., -1.], max: [1., 0.5, 1.] }),
+                material: Some(Material {
+                    shader: Some("PdxMeshAdvancedSnow".into()),
+                    shader_file: None,
+                    diffuse: "leaf_diffuse.dds".into(),
+                    normal: "leaf_normal.dds".into(),
+                    specular: "nospec.dds".into(),
+                }),
+                skin: None,
+            }])],
+            skeleton: vec![],
+            locators: vec!["attach_01".into()],
+        }),
+        "mixed" => {
+            let [a, b, c, d, e, f] = ODD_FLOATS;
+            Ok(Mesh {
+                lod_distances: ODD_FLOATS.to_vec(),
+                shapes: vec![shape("empty", None, vec![]), shape("s", Some(0), vec![SubMesh {
+                    child_index: 0,
+                    positions: vec![[a, b, c]],
+                    normals: vec![[d, e, f]],
+                    tangents: vec![],
+                    uv0: vec![],
+                    uv1: None,
+                    uv2: Some(vec![]),
+                    uv3: None,
+                    indices: vec![0, 0, 0],
+                    bounds: None,
+                    material: None,
+                    skin: Some(Skin {
+                        bones: 4,
+                        joints: vec![[2, -1, 0, -1]],
+                        weights: vec![[c, d, e, f]],
+                    }),
+                }])],
+                skeleton: vec![
+                    Joint { name: "root".into(), index: 0, parent: None,
+                        inverse_bind: Some(Transform {
+                            basis: [[a, b, c], [d, e, f], [a, b, c]],
+                            translation: [d, e, f],
+                        }) },
+                    Joint { name: "child".into(), index: 1, parent: Some(0), inverse_bind: None },
+                    Joint { name: "j".into(), index: 2, parent: None, inverse_bind: None },
+                ],
+                locators: vec!["a".into(), "b".into()],
+            })
+        }
+        "ragged optional streams" => Ok(Mesh {
+            shapes: vec![shape("s", None, vec![SubMesh {
+                positions: vec![[0., 1., 2.]],
+                uv1: Some(vec![]),
+                ..SubMesh::default()
+            }])],
+            ..Mesh::default()
+        }),
+        "no object" => Err("a PDX mesh carries no [object] node".into()),
+        "ragged positions" => Err("the PDX mesh shape \"s\" has 2 floats in \"p\", not a multiple of 3".into()),
+        "odd triangle list" => Err("the PDX mesh shape \"s\" has 2 triangle indices, not a multiple of three".into()),
+        "index outside the streams" => Err("the PDX mesh shape \"s\" indexes vertex 1 of 1".into()),
+        "negative index" => Err("the PDX mesh shape \"s\" indexes vertex -1 of 1".into()),
+        "short skin" => Err("the PDX mesh shape \"s\" has 2 skin indices and 1 weights for 1 vertices, not 4 of each".into()),
+        "a later shape refuses after a decoded one" => Err("the PDX mesh shape \"t\" has 1 floats in \"p\", not a multiple of 3".into()),
+        "bad magic" => Err("not a PDX binary asset: the file does not start with the magic \"@@b@\"".into()),
+        "truncated" => Err(format!("a PDX asset node name at offset {} has no end", bytes.len() - 7)),
+        "unknown property type" => Err("the PDX asset property \"x\" has the unknown type byte 0x71".into()),
+        _ => panic!("no fixed projection for {label}"),
+    }
+}
+
+#[test]
+fn a_parsed_tree_projects_fixed_mesh_bits_and_ordered_refusals() {
+    let (mut decoded, mut refused, mut unparsed) = (0, 0, 0);
+    for (label, bytes) in projection_cases() {
+        let expected = expected_projection(label, &bytes)
+            .map(|mesh| mesh_bits(&mesh))
+            .map_err(|error| (std::io::ErrorKind::InvalidData, error));
+        let direct = read(&bytes)
+            .map(|mesh| mesh_bits(&mesh))
+            .map_err(|error| (error.kind(), error.to_string()));
+        assert_eq!(direct, expected, "byte entry: {label}");
+        let tree = match parse(&bytes) {
+            Ok(tree) => tree,
+            Err(error) => {
+                assert_eq!(
+                    Err((error.kind(), error.to_string())),
+                    expected,
+                    "parse: {label}"
+                );
+                unparsed += 1;
+                continue;
+            }
+        };
+        for _ in 0..2 {
+            let projected = read_tree(&tree)
+                .map(|mesh| mesh_bits(&mesh))
+                .map_err(|error| (error.kind(), error.to_string()));
+            assert_eq!(projected, expected, "borrowed projection: {label}");
+        }
+        if expected.is_ok() {
+            decoded += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert_eq!((decoded, refused, unparsed), (3, 7, 3));
+}
+
 #[test]
 fn optional_stream_counts_are_preserved_and_invalid_triangles_are_named() {
     let short = Builder::new()
@@ -1698,4 +2012,31 @@ fn bound_sampled_pose_matches_name_join_for_reordered_partial_and_duplicate_join
             }
         }
     }
+}
+
+#[test]
+fn animation_sample_storage_observes_borrowed_banks_without_changes() {
+    let mut translations = Vec::with_capacity(17);
+    translations.extend([1.0, -0.0, 3.0]);
+    let animation = Animation {
+        translations,
+        rotations: vec![0.0, 0.0, 0.0, 1.0],
+        ..Default::default()
+    };
+    let before = animation.clone();
+    let banks = animation.sample_storage();
+    for ((values, capacity), original) in banks.into_iter().zip([
+        &animation.translations,
+        &animation.rotations,
+        &animation.scales,
+    ]) {
+        assert_eq!(values.as_ptr(), original.as_ptr());
+        assert_eq!(values.len(), original.len());
+        assert_eq!(capacity, original.capacity());
+        assert_eq!(
+            values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            original.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(animation, before);
 }
