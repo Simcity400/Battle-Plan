@@ -1296,7 +1296,11 @@ countryIdentities: Array<CountryIdentityHistory>,
  */
 unobserved: UnobservedHours, warnings: Array<string>, };
 export type FactionChannelCoverage = { channel: string, known: Array<HourSpan>, read: Array<HourSpan>, };
-export type FactionStateParams = { "view": "influence", branchId: string, faction: string, } | { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, };
+export type FactionStateParams = { "view": "influence", branchId: string, faction: string, } | { "view": "rules", branchId: string, faction: string, } | { "view": "manpower", branchId: string, faction: string, } | { "view": "goals", branchId: string, faction: string,
+/**
+ * The first and last hours asked for; null leaves that end open.
+ */
+firstHour: number | null, lastHour: number | null, };
 export type FactionShareRun = { firstHour: number, lastHour: number, shareRaw: string | null, startsSegment: boolean, };
 export type FactionInfluenceAccount = { key: string, tag: string, slot: number | null, countryId: number | null, runs: Array<FactionShareRun>, member: Array<HourSpan>,
 /**
@@ -1313,7 +1317,41 @@ export type FactionManpowerMember = { key: string, tag: string, slot: number | n
 export type FactionInfluenceReply = { accounts: Array<FactionInfluenceAccount>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
 export type FactionRulesReply = { rules: Array<FactionSelectionLane>, programmes: Array<FactionSelectionLane>, minimums: Array<FactionMinimumLane>, members: Array<FactionMemberUpgradeLane>, doctrines: Array<FactionSelectionLane>, groups: Array<FactionUpgradeGroup>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
 export type FactionManpowerReply = { members: Array<FactionManpowerMember>, total: Array<FactionManpowerRun>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
-export type FactionStateReply = FactionInfluenceReply | FactionRulesReply | FactionManpowerReply;
+export type FactionGoalListRun = { firstHour: number, lastHour: number,
+/**
+ * The held lists, an index into the reply's `lists`.
+ */
+list: number, startsSegment: boolean, };
+export type FactionHeldGoal = { ordinal: number,
+/**
+ * An index into the reply's `definitions`.
+ */
+definition: number, status: number, };
+export type FactionGoalList = {
+/**
+ * The hour's complete faction roster does not list the faction.
+ */
+absent: boolean,
+/**
+ * Why the hour's goal lists are unavailable; they are then empty.
+ */
+reason: string | null, goals: Array<FactionHeldGoal>, completed: Array<number>, cancelled: Array<number>, };
+export type FactionGoalProgressRun = { firstHour: number, lastHour: number,
+/**
+ * Exact retained fixed-point cache as decimal text.
+ */
+progressRaw: string, progressPercent: number | null, startsSegment: boolean, };
+export type FactionGoalProgressLane = {
+/**
+ * The held goal's ordinal in the runtime list.
+ */
+ordinal: number, runs: Array<FactionGoalProgressRun>, };
+export type FactionGoalsReply = { runs: Array<FactionGoalListRun>, lists: Array<FactionGoalList>,
+/**
+ * Goals as faction details name them, without their authored checks.
+ */
+definitions: Array<FactionGoalDefinition>, progress: Array<FactionGoalProgressLane>, unobserved: Array<HourSpan>, pending: Array<HourSpan>, coverage: PreparedCoverage, channels: Array<FactionChannelCoverage>, warnings: Array<string>, };
+export type FactionStateReply = FactionInfluenceReply | FactionRulesReply | FactionManpowerReply | FactionGoalsReply;
 export type WarsParams = { branchId: string,
 /**
  * None follows the recording client's playing/observer country.

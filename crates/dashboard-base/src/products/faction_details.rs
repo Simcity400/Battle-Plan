@@ -481,18 +481,9 @@ fn needs_environment(
                 (field.keyword_is("on_activate") || field.keyword_is("on_deactivate"))
                     && field.value.items().is_some_and(|body| !body.is_empty())
             })
+            || expands(definition, cat, lexical)
         {
             return true;
-        }
-        for bound in [&definition.name, &definition.description] {
-            if !bound.is_empty()
-                && faction_names::bound_name(bound, &cat.localisation, |name| {
-                    lexical.token_of(name)
-                })
-                .is_ok_and(|text| text.contains('['))
-            {
-                return true;
-            }
         }
     }
     false
@@ -569,6 +560,123 @@ fn collect_icon_refusals(reply: &mut FactionDetailReply) {
     );
 }
 
+/// A goal token's texts at an hour; its artwork depends on content alone ([`finish_goal`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GoalLabel {
+    pub token: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub category: Option<String>,
+    pub category_name: Option<String>,
+    /// Whether its definition was reached, so its artwork is drawn.
+    pub reached: bool,
+    pub group: Option<Vec<u8>>,
+    /// The refusal before the definition, or each text that failed.
+    pub failures: Vec<String>,
+}
+fn label<'d>(
+    frame: &DecodedFrame,
+    token: Option<u32>,
+    texts: Option<&presentations::Texts<'_>>,
+    definitions: Option<&'d installed_content_core::faction_goals::Catalog>,
+    lexical: &faction_names::LexicalNames,
+) -> (
+    GoalLabel,
+    Option<&'d installed_content_core::faction_goals::Definition>,
+) {
+    let mut label = GoalLabel::default();
+    let Some(token) = token else {
+        return (label, None);
+    };
+    let mut reach = || -> Result<_, String> {
+        let spelling = faction_names::template_spelling(frame, Some(token))?
+            .ok_or("Faction goal token is absent")?;
+        label.token = Some(spelling.clone());
+        let definition = definitions
+            .ok_or("Faction goal names need the recorded game folders")?
+            .get(&spelling)?
+            .ok_or_else(|| format!("Faction goal {spelling:?} is absent from recorded content"))?;
+        Ok((
+            definition,
+            texts.ok_or("Faction goal names need localisation")?,
+        ))
+    };
+    let (definition, texts) = match reach() {
+        Ok(reached) => reached,
+        Err(why) => {
+            label.failures.push(why);
+            return (label, None);
+        }
+    };
+    label.reached = true;
+    label.group = definition.group.clone();
+    let cat = texts.cat();
+    let render =
+        |bound: &installed_content_core::gui::native::BoundLocalization| -> Result<String, String> {
+            if bound.is_empty() {
+                return Ok(String::new());
+            }
+            let text =
+                faction_names::bound_name(bound, &cat.localisation, |name| lexical.token_of(name))?;
+            let text = if text.contains('[') {
+                texts.viewer()?.expand_faction(&text, texts.faction())?
+            } else {
+                text
+            };
+            catalogue::plain_text(&text)
+        };
+    match render(&definition.name) {
+        Ok(text) => label.name = Some(text),
+        Err(reason) => label.failures.push(reason),
+    };
+    match render(&definition.description) {
+        Ok(text) => label.description = Some(text),
+        Err(reason) => label.failures.push(reason),
+    };
+    match definition
+        .category
+        .as_deref()
+        .map(|value| std::str::from_utf8(value).map(str::to_owned))
+        .transpose()
+    {
+        Ok(category) => label.category = category,
+        Err(_) => label
+            .failures
+            .push("Faction goal category is not UTF-8".into()),
+    }
+    label.category_name = label
+        .category
+        .as_deref()
+        .and_then(|category| term_name(&cat.localisation, category));
+    (label, Some(definition))
+}
+/// A goal as faction details show it without its checks, artwork refusals first.
+pub fn finish_goal(label: &GoalLabel, cat: Option<&catalogue::Catalogue>) -> FactionGoalDefinition {
+    let mut failures = Vec::new();
+    let mut icon = None;
+    if label.reached {
+        match cat.map(|cat| goal_icon(cat, label.group.as_deref())) {
+            Some(Ok(drawn)) => icon = drawn,
+            Some(Err(why)) => failures.push(why),
+            None => failures.push("Faction goal artwork needs the recorded content".into()),
+        }
+    }
+    failures.extend(label.failures.iter().cloned());
+    FactionGoalDefinition {
+        progress: Vec::new(),
+        sections: Vec::new(),
+        conditions: Vec::new(),
+        rewards: Vec::new(),
+        flags: Vec::new(),
+        token: label.token.clone(),
+        name: label.name.clone(),
+        description: label.description.clone(),
+        icon,
+        category: label.category.clone(),
+        category_name: label.category_name.clone(),
+        reason: (!failures.is_empty()).then(|| failures.join("; ")),
+    }
+}
 fn definition(
     frame: &DecodedFrame,
     token: Option<u32>,
@@ -576,91 +684,86 @@ fn definition(
     definitions: Option<&installed_content_core::faction_goals::Catalog>,
     lexical: &faction_names::LexicalNames,
 ) -> FactionGoalDefinition {
-    let mut reply = FactionGoalDefinition {
-        progress: Vec::new(),
-        sections: Vec::new(),
-        conditions: Vec::new(),
-        rewards: Vec::new(),
-        flags: Vec::new(),
-        token: None,
-        name: None,
-        description: None,
-        icon: None,
-        category: None,
-        category_name: None,
-        reason: None,
-    };
-    let Some(token) = token else {
-        return reply;
-    };
-    let result = (|| -> Result<(), String> {
-        let spelling = faction_names::template_spelling(frame, Some(token))?
-            .ok_or("Faction goal token is absent")?;
-        reply.token = Some(spelling.clone());
-        let definition = definitions
-            .ok_or("Faction goal names need the recorded game folders")?
-            .get(&spelling)?
-            .ok_or_else(|| format!("Faction goal {spelling:?} is absent from recorded content"))?;
-        let texts = texts.ok_or("Faction goal names need localisation")?;
-        let cat = texts.cat();
-        let render =
-            |bound: &installed_content_core::gui::native::BoundLocalization| -> Result<String, String> {
-                if bound.is_empty() {
-                    return Ok(String::new());
-                }
-                let text = faction_names::bound_name(bound, &cat.localisation, |name| {
-                    lexical.token_of(name)
-                })?;
-                let text = if text.contains('[') {
-                    texts.viewer()?.expand_faction(&text, texts.faction())?
-                } else {
-                    text
-                };
-                catalogue::plain_text(&text)
-            };
-        let mut failures = Vec::new();
-        match goal_icon(cat, definition.group.as_deref()) {
-            Ok(icon) => reply.icon = icon,
-            Err(why) => failures.push(why),
-        }
+    let (label, reached) = label(frame, token, texts, definitions, lexical);
+    let mut reply = finish_goal(&label, texts.map(presentations::Texts::cat));
+    if let (Some(definition), Some(texts)) = (reached, texts) {
         presentations::attach(texts, definition, &mut reply);
-        match render(&definition.name) {
-            Ok(text) => reply.name = Some(text),
-            Err(reason) => failures.push(reason),
-        };
-        match render(&definition.description) {
-            Ok(text) => reply.description = Some(text),
-            Err(reason) => failures.push(reason),
-        };
-        match definition
-            .category
-            .as_deref()
-            .map(|value| std::str::from_utf8(value).map(str::to_owned))
-            .transpose()
-        {
-            Ok(category) => reply.category = category,
-            Err(_) => failures.push("Faction goal category is not UTF-8".into()),
-        }
-        reply.category_name = reply
-            .category
-            .as_deref()
-            .and_then(|category| term_name(&cat.localisation, category));
-        if !failures.is_empty() {
-            return Err(failures.join("; "));
-        }
-        Ok(())
-    })();
-    if let Err(reason) = result {
-        reply.reason = Some(reason);
     }
     reply
 }
-fn read(
+/// Each token's goal label at the frame's hour, as faction details label it.
+pub fn goal_labels(
     frame: &DecodedFrame,
-    params: &FactionDetailParams,
     faction: u64,
-    mut definition: impl FnMut(Option<u32>) -> FactionGoalDefinition,
-) -> io::Result<FactionDetailReply> {
+    cat: Option<&catalogue::Catalogue>,
+    tokens: impl IntoIterator<Item = Option<u32>>,
+) -> Vec<GoalLabel> {
+    let definitions =
+        cat.and_then(|cat| installed_content_core::faction_goals::cached(&cat.content.layers).ok());
+    let lexical =
+        faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+    let defines = SharedDefines::default();
+    let texts = cat.map(|cat| presentations::Texts::new(frame, faction, cat, &defines));
+    tokens
+        .into_iter()
+        .map(|token| {
+            label(
+                frame,
+                token,
+                texts.as_ref(),
+                definitions.as_deref(),
+                &lexical,
+            )
+            .0
+        })
+        .collect()
+}
+/// The goal content's own refusals, as faction details report them.
+pub fn goal_content_warnings(cat: &catalogue::Catalogue) -> Vec<String> {
+    match installed_content_core::faction_goals::cached(&cat.content.layers) {
+        Ok(definitions) => definitions.warnings.clone(),
+        Err(reason) => vec![reason],
+    }
+}
+/// Whether a goal's texts expand scripted text; None while its spelling is unread.
+pub fn goal_label_expands(
+    frame: &DecodedFrame,
+    cat: &catalogue::Catalogue,
+    token: u32,
+) -> Option<bool> {
+    let Ok(definitions) = installed_content_core::faction_goals::cached(&cat.content.layers) else {
+        return Some(false);
+    };
+    let spelling = faction_names::template_spelling(frame, Some(token)).ok()??;
+    let Ok(Some(definition)) = definitions.get(&spelling) else {
+        return Some(false);
+    };
+    let lexical =
+        faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+    Some(expands(definition, cat, &lexical))
+}
+fn expands(
+    definition: &installed_content_core::faction_goals::Definition,
+    cat: &catalogue::Catalogue,
+    lexical: &faction_names::LexicalNames,
+) -> bool {
+    [&definition.name, &definition.description]
+        .into_iter()
+        .any(|bound| {
+            !bound.is_empty()
+                && faction_names::bound_name(bound, &cat.localisation, |name| {
+                    lexical.token_of(name)
+                })
+                .is_ok_and(|text| text.contains('['))
+        })
+}
+/// One faction's goal lists at an hour, each kind's ordinals proven contiguous.
+pub struct HeldGoals<'a> {
+    pub manifest: Option<u32>,
+    /// Ordered by list kind, then ordinal.
+    pub entries: &'a [replay_data::rows::FactionGoalEntryRow],
+}
+pub fn held_goals(frame: &DecodedFrame, faction: u64) -> io::Result<HeldGoals<'_>> {
     let headers = frame.complete::<tables::FactionGoalStatus>()?;
     let entries = frame.complete::<tables::FactionGoalEntries>()?;
     let header = headers
@@ -668,11 +771,34 @@ fn read(
         .ok()
         .map(|index| &headers[index])
         .ok_or_else(|| invalid("Faction goal status is absent"))?;
+    let entries = companions::selected(entries, faction, |row| row.faction);
+    let mut next = [0; 5];
+    for row in entries {
+        let expected = next
+            .get_mut(row.kind as usize)
+            .ok_or_else(|| invalid("Unknown faction goal list kind"))?;
+        if row.ordinal != *expected {
+            return Err(invalid("Faction goal ordinals are not contiguous"));
+        }
+        *expected += 1;
+    }
+    Ok(HeldGoals {
+        manifest: header.manifest,
+        entries,
+    })
+}
+fn read(
+    frame: &DecodedFrame,
+    params: &FactionDetailParams,
+    faction: u64,
+    mut definition: impl FnMut(Option<u32>) -> FactionGoalDefinition,
+) -> io::Result<FactionDetailReply> {
+    let held = held_goals(frame, faction)?;
     let mut reply = FactionDetailReply {
         branch_id: params.branch_id.clone(),
         hour: params.hour,
         faction: params.faction.clone(),
-        manifest: header.manifest.map(|token| definition(Some(token))),
+        manifest: held.manifest.map(|token| definition(Some(token))),
         goals: Vec::new(),
         completed: Vec::new(),
         cancelled: Vec::new(),
@@ -681,15 +807,7 @@ fn read(
         warnings: Vec::new(),
         ..Default::default()
     };
-    let mut next = [0; 5];
-    for row in companions::selected(entries, faction, |row| row.faction) {
-        let expected = next
-            .get_mut(row.kind as usize)
-            .ok_or_else(|| invalid("Unknown faction goal list kind"))?;
-        if row.ordinal != *expected {
-            return Err(invalid("Faction goal ordinals are not contiguous"));
-        }
-        *expected += 1;
+    for row in held.entries {
         match row.kind {
             0 => reply.goals.push(FactionGoalDetail {
                 ordinal: row.ordinal,
@@ -901,6 +1019,62 @@ mod artwork_tests {
         assert_eq!(reply.refusals[0].count, 2);
         assert!(reply.refusals[0].reason.contains("GFX_mod_missing; group"));
         assert_eq!(reply.completed[0].name.as_deref(), Some("Still known"));
+    }
+    #[test]
+    fn a_finished_goal_names_artwork_before_its_texts_and_an_unreached_one_draws_none() {
+        let (cat, _guard) = catalogue::tests::folder_catalogue(&[]);
+        let reached = GoalLabel {
+            token: Some("mod_goal".into()),
+            name: Some("Mod goal".into()),
+            reached: true,
+            group: None,
+            failures: vec!["description failed".into()],
+            ..Default::default()
+        };
+        let shown = finish_goal(&reached, Some(&cat));
+        assert_eq!(shown.name.as_deref(), Some("Mod goal"));
+        let reason = shown.reason.unwrap();
+        assert!(reason.starts_with("Faction goal artwork: group is not authored"));
+        assert!(reason.ends_with("; description failed"));
+        let unreached = GoalLabel {
+            token: Some("mod_goal".into()),
+            failures: vec!["Faction goal names need localisation".into()],
+            ..Default::default()
+        };
+        let shown = finish_goal(&unreached, Some(&cat));
+        assert!(shown.icon.is_none());
+        assert_eq!(
+            shown.reason.as_deref(),
+            Some("Faction goal names need localisation")
+        );
+        assert!(finish_goal(&GoalLabel::default(), None).reason.is_none());
+    }
+    #[test]
+    fn goal_labels_without_content_keep_the_token_and_the_detail_refusal() {
+        use replay_data::rows::{LexicalTokenRow, TableRows};
+        use replay_frame::frame::TableView;
+        let mut frame = crate::test_fixtures::source(1, 100, Some(0));
+        *frame.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 1,
+                literal: b"mod_goal".to_vec(),
+            }]));
+        let labels = goal_labels(&frame, 9, None, [Some(1), None, Some(2)]);
+        let lexical =
+            faction_names::LexicalNames::new(frame.tables[TableId::LexicalTokens.index()].clone());
+        for (label, token) in labels.iter().zip([Some(1), None, Some(2)]) {
+            assert_eq!(
+                serde_json::to_value(finish_goal(label, None)).unwrap(),
+                serde_json::to_value(definition(&frame, token, None, None, &lexical)).unwrap()
+            );
+        }
+        assert_eq!(labels[0].token.as_deref(), Some("mod_goal"));
+        assert_eq!(
+            labels[0].failures,
+            ["Faction goal names need the recorded game folders"]
+        );
+        assert_eq!(labels[1], GoalLabel::default());
+        assert!(labels[2].failures[0].contains("no LexicalTokens spelling"));
     }
     #[test]
     #[ignore = "requires DXC and a GPU; synthetic mod content only"]

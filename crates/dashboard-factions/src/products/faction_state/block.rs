@@ -43,6 +43,7 @@ pub const TABLES: &[TableId] = &[
     TableId::FactionProjection,
     TableId::FactionUnlocks,
     TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
     TableId::FactionRules,
     TableId::FactionPrograms,
     TableId::FactionMinimumUpgrades,
@@ -103,7 +104,7 @@ enum Hour {
     Quiet {
         first: i32,
         last: i32,
-        reads: [bool; 7],
+        reads: [bool; super::prepared::CHANNELS.len()],
     },
 }
 struct Facts {

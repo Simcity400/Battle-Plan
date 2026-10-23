@@ -1,7 +1,8 @@
-//! Observed faction account and selection histories; never a voting or command ledger.
+//! Observed faction account, selection and goal histories; never a voting or command ledger.
 use dashboard_base::{
     prepared::coverage::Coverage,
     products::country_groups::HourSpan,
+    products::faction_details::FactionGoalDefinition,
     products::{LoadContext, Product},
 };
 use serde::{Deserialize, Serialize};
@@ -30,13 +31,26 @@ pub enum FactionStateParams {
         branch_id: String,
         faction: String,
     },
+    Goals {
+        #[serde(rename = "branchId")]
+        branch_id: String,
+        faction: String,
+        /// The first and last hours asked for; null leaves that end open.
+        #[serde(rename = "firstHour")]
+        first_hour: Option<i32>,
+        #[serde(rename = "lastHour")]
+        last_hour: Option<i32>,
+    },
 }
 impl FactionStateParams {
     pub fn identity(&self) -> (&str, &str) {
         match self {
             Self::Influence { branch_id, faction }
             | Self::Rules { branch_id, faction }
-            | Self::Manpower { branch_id, faction } => (branch_id, faction),
+            | Self::Manpower { branch_id, faction }
+            | Self::Goals {
+                branch_id, faction, ..
+            } => (branch_id, faction),
         }
     }
 }
@@ -159,11 +173,71 @@ pub struct FactionManpowerReply {
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionGoalListRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// The held lists, an index into the reply's `lists`.
+    pub list: u32,
+    pub starts_segment: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionHeldGoal {
+    pub ordinal: u32,
+    /// An index into the reply's `definitions`.
+    pub definition: u32,
+    pub status: i32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionGoalList {
+    /// The hour's complete faction roster does not list the faction.
+    pub absent: bool,
+    /// Why the hour's goal lists are unavailable; they are then empty.
+    pub reason: Option<String>,
+    pub goals: Vec<FactionHeldGoal>,
+    pub completed: Vec<u32>,
+    pub cancelled: Vec<u32>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionGoalProgressRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Exact retained fixed-point cache as decimal text.
+    pub progress_raw: String,
+    pub progress_percent: Option<f64>,
+    pub starts_segment: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionGoalProgressLane {
+    /// The held goal's ordinal in the runtime list.
+    pub ordinal: u32,
+    pub runs: Vec<FactionGoalProgressRun>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactionGoalsReply {
+    pub runs: Vec<FactionGoalListRun>,
+    pub lists: Vec<FactionGoalList>,
+    /// Goals as faction details name them, without their authored checks.
+    pub definitions: Vec<FactionGoalDefinition>,
+    pub progress: Vec<FactionGoalProgressLane>,
+    pub unobserved: Vec<HourSpan>,
+    pub pending: Vec<HourSpan>,
+    pub coverage: Coverage,
+    pub channels: Vec<FactionChannelCoverage>,
+    pub warnings: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(untagged)]
 pub enum FactionStateReply {
     Influence(FactionInfluenceReply),
     Rules(FactionRulesReply),
     Manpower(FactionManpowerReply),
+    Goals(FactionGoalsReply),
 }
 impl dashboard_base::products::ReplyWarnings for FactionStateReply {
     fn warnings_mut(&mut self) -> &mut Vec<String> {
@@ -171,6 +245,7 @@ impl dashboard_base::products::ReplyWarnings for FactionStateReply {
             Self::Influence(r) => &mut r.warnings,
             Self::Rules(r) => &mut r.warnings,
             Self::Manpower(r) => &mut r.warnings,
+            Self::Goals(r) => &mut r.warnings,
         }
     }
 }
@@ -202,6 +277,12 @@ impl Product for FactionState {
             FactionInfluenceReply::decl(),
             FactionRulesReply::decl(),
             FactionManpowerReply::decl(),
+            FactionGoalListRun::decl(),
+            FactionHeldGoal::decl(),
+            FactionGoalList::decl(),
+            FactionGoalProgressRun::decl(),
+            FactionGoalProgressLane::decl(),
+            FactionGoalsReply::decl(),
             FactionStateReply::decl(),
         ]
     }

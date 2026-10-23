@@ -10,7 +10,7 @@ use dashboard_base::{
     },
     products::{
         check_reply_budget,
-        faction_details::{FactionRuleDetail, selectors},
+        faction_details::{self, FactionRuleDetail, GoalLabel, selectors},
     },
     triggers::inputs as reuse,
 };
@@ -22,7 +22,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 const NULL: i128 = i64::MIN as i128 - 1;
-pub const CHANNELS: [(&str, TableId); 7] = [
+pub const CHANNELS: [(&str, TableId); 8] = [
     ("influence", TableId::FactionAccounts),
     ("rules", TableId::FactionRules),
     ("programmes", TableId::FactionPrograms),
@@ -30,6 +30,7 @@ pub const CHANNELS: [(&str, TableId); 7] = [
     ("members", TableId::FactionAccounts),
     ("doctrines", TableId::FactionDoctrine),
     ("manpower", TableId::FactionManpower),
+    ("goals", TableId::FactionGoalEntries),
 ];
 pub const FAMILY: &str = "faction-state";
 pub fn state_section(branch: u64) -> String {
@@ -54,6 +55,9 @@ enum Kind {
     ManpowerDiagnostic,
     Total,
     Group,
+    GoalList,
+    GoalProgress,
+    Roster,
 }
 impl Kind {
     fn selection_name(self) -> &'static str {
@@ -124,13 +128,15 @@ fn selected<T: SelectionTable>(
         failure,
     }
 }
-const DIFF_TABLES: [TableId; 6] = [
+const DIFF_TABLES: [TableId; 8] = [
     TableId::FactionAccounts,
     TableId::FactionRules,
     TableId::FactionPrograms,
     TableId::FactionMinimumUpgrades,
     TableId::FactionDoctrine,
     TableId::FactionManpower,
+    TableId::FactionGoalStatus,
+    TableId::FactionGoalEntries,
 ];
 struct Previous {
     tables: [SharedView; DIFF_TABLES.len()],
@@ -286,6 +292,8 @@ struct Lane {
     group: u32,
     choices: Vec<Choice>,
 }
+mod goals;
+use goals::{GoalList, GoalPages};
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Catalogue {
     lanes: BTreeMap<u64, Lane>,
@@ -320,6 +328,18 @@ pub struct Prepared {
     labels: BTreeMap<(u64, Kind, u32), reuse::Inputs>,
     #[serde(skip)]
     dynamic: BTreeMap<u32, bool>,
+    /// Each faction's goal lists and labels, each published as its own page.
+    goal_pages: GoalPages,
+    /// Labels of goals whose texts read only the goal tables, for `goal_dictionary`.
+    #[serde(skip)]
+    goal_labels: BTreeMap<Option<u32>, GoalLabel>,
+    #[serde(skip)]
+    goal_expands: BTreeMap<u32, bool>,
+    #[serde(skip)]
+    goal_dictionary: Option<replay_frame::frame::ViewIdentity>,
+    /// Scripted goal texts' inputs, by faction; held, they need whole frames.
+    #[serde(skip)]
+    goal_inputs: BTreeMap<u64, reuse::Inputs>,
 }
 impl Prepared {
     fn dynamic_name(
@@ -368,7 +388,8 @@ impl Prepared {
         context: &LoadContext,
         frame: &DecodedFrame,
     ) -> bool {
-        if !self.labels.is_empty() {
+        self.goal_dictionary(frame);
+        if !self.labels.is_empty() || !self.goal_inputs.is_empty() {
             return true;
         }
         let Some(cat) = context
@@ -391,19 +412,62 @@ impl Prepared {
                     .map(|row| row.token),
             )
             .collect();
+        let goals: Vec<u32> = frame
+            .complete::<tables::FactionGoalEntries>()
+            .into_iter()
+            .flatten()
+            .filter(|row| row.kind <= 2)
+            .filter_map(|row| row.token)
+            .collect();
         tokens
             .into_iter()
             .any(|token| self.dynamic_name(frame, token, Some(&*cat)))
+            || goals
+                .into_iter()
+                .any(|token| self.goal_expands(frame, token, &cat))
+    }
+    /// Goal label caches hold for one dictionary read; another read clears them.
+    fn goal_dictionary(&mut self, frame: &DecodedFrame) {
+        let table = &frame.tables[TableId::LexicalTokens.index()];
+        if !self
+            .goal_dictionary
+            .as_ref()
+            .is_some_and(|held| held.is(table))
+        {
+            self.goal_expands.clear();
+            self.goal_labels.clear();
+            self.goal_dictionary = Some(table.identity());
+        }
+    }
+    fn goal_expands(
+        &mut self,
+        frame: &DecodedFrame,
+        token: u32,
+        cat: &catalogue::Catalogue,
+    ) -> bool {
+        if let Some(&expands) = self.goal_expands.get(&token) {
+            return expands;
+        }
+        // An unresolved spelling or definition is asked again, never held as static.
+        match faction_details::goal_label_expands(frame, cat, token) {
+            Some(expands) => *self.goal_expands.entry(token).or_insert(expands),
+            None => false,
+        }
     }
     #[cfg(test)]
     pub fn country_rebuilds(&self) -> usize {
         self.countries.rebuilds
     }
     pub fn bytes(&self) -> usize {
-        self.series.bytes()
+        self.series.bytes() + self.goal_pages.pending()
     }
-    pub fn quiet(&mut self, first: i32, last: i32, reads: [bool; 7]) -> io::Result<()> {
-        if !self.labels.is_empty() {
+    pub fn quiet(
+        &mut self,
+        first: i32,
+        last: i32,
+        reads: [bool; CHANNELS.len()],
+    ) -> io::Result<()> {
+        if !self.labels.is_empty() || !self.goal_inputs.is_empty() {
             return Err(io::Error::other(
                 "Faction dynamic names are observed on whole frames",
             ));
@@ -568,6 +632,14 @@ impl Prepared {
             )
             .collect();
         let dirty = self.changed(frame, changes, continues);
+        self.goal_dictionary(frame);
+        if dirty.refresh {
+            self.goal_labels.clear();
+        }
+        // Absence before a faction's first lane is proven only by a complete roster.
+        let roster = self.lane(0, Kind::Roster, "", "", None, (0, 0));
+        let complete = frame.complete::<tables::Factions>().is_ok();
+        self.value(roster, frame.hour, i128::from(complete), !continues);
         let supplying = dirty.supplying(source, frame, cancelled)?;
         let accounts = self.changed_accounts(frame, &dirty, &joins);
         self.accounts(frame, accounts, joins.joined, !continues, cat.as_deref());
@@ -585,6 +657,14 @@ impl Prepared {
                 stale.insert(faction);
             }
         }
+        self.goal_inputs
+            .retain(|faction, _| owners.contains(faction));
+        let mut stale_goals = BTreeSet::new();
+        for (&faction, inputs) in &mut self.goal_inputs {
+            if viewer_changed || !since.as_ref().is_some_and(|since| inputs.advance(since)) {
+                stale_goals.insert(faction);
+            }
+        }
         for faction in owners {
             check_cancel(cancelled)?;
             let owner_known = witnessed.contains(&faction);
@@ -594,6 +674,7 @@ impl Prepared {
             let doctrines = selected::<tables::FactionDoctrine>(frame, faction, owner_known);
             let manpower = selected::<tables::FactionManpower>(frame, faction, owner_known);
             let accounts_known = owner_known && joins.joined && joins.accounts_joined;
+            let goals_absent = goal_absent(frame, faction);
             let available = [
                 accounts_known,
                 rules.available(),
@@ -602,6 +683,7 @@ impl Prepared {
                 accounts_known,
                 doctrines.available(),
                 manpower.available(),
+                !goals_absent && faction_details::held_goals(frame, faction).is_ok(),
             ];
             for (index, (channel, table)) in CHANNELS.iter().enumerate() {
                 self.known(
@@ -662,6 +744,12 @@ impl Prepared {
                 || !owner_known
             {
                 self.manpower(frame, faction, !continues, owner_known);
+            }
+            if dirty.affects(Kind::GoalList, faction)
+                || stale_goals.contains(&faction)
+                || !owner_known
+            {
+                self.goals(frame, faction, goals_absent, cat.as_deref(), !continues);
             }
         }
         self.previous = Some(Previous::read(frame));
@@ -740,6 +828,7 @@ impl Prepared {
             ),
             (Kind::Doctrine, dirty!(FactionDoctrine).map(owner_keys)),
             (Kind::Manpower, dirty!(FactionManpower).map(owner_keys)),
+            (Kind::GoalList, self.goal_owners(frame, changes, continues)),
         ]);
         let refresh =
             !self.ready || !continues || changes.rows_changed[TableId::LexicalTokens.index()];
@@ -1169,6 +1258,141 @@ impl Prepared {
             starts,
         );
     }
+    /// Factions whose goal lists may differ from the hour before; None for all.
+    fn goal_owners(
+        &self,
+        frame: &DecodedFrame,
+        changes: &FrameChanges,
+        continues: bool,
+    ) -> Option<BTreeSet<u64>> {
+        if changes.rows_changed[TableId::Factions.index()] {
+            return None;
+        }
+        let entries = self.dirty::<tables::FactionGoalEntries>(
+            frame,
+            changes,
+            TableId::FactionGoalEntries,
+            continues,
+        )?;
+        let status = self.dirty::<tables::FactionGoalStatus>(
+            frame,
+            changes,
+            TableId::FactionGoalStatus,
+            continues,
+        )?;
+        Some(
+            entries
+                .into_iter()
+                .map(|key| (key >> 40) as u64)
+                .chain(status.into_iter().map(|key| key as u64))
+                .collect(),
+        )
+    }
+    fn goal_labels(
+        &mut self,
+        frame: &DecodedFrame,
+        faction: u64,
+        cat: Option<&catalogue::Catalogue>,
+        tokens: &[Option<u32>],
+    ) -> Vec<GoalLabel> {
+        self.goal_inputs.remove(&faction);
+        let mut expands = false;
+        if let Some(cat) = cat {
+            for token in tokens.iter().flatten() {
+                expands |= self.goal_expands(frame, *token, cat);
+            }
+        }
+        if expands {
+            let (labels, inputs) = reuse::capture(frame, || {
+                faction_details::goal_labels(frame, faction, cat, tokens.iter().copied())
+            });
+            self.goal_inputs.insert(faction, inputs);
+            return labels;
+        }
+        let missing: BTreeSet<Option<u32>> = tokens
+            .iter()
+            .filter(|token| !self.goal_labels.contains_key(token))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            let labels = faction_details::goal_labels(frame, faction, cat, missing.iter().copied());
+            self.goal_labels.extend(missing.into_iter().zip(labels));
+        }
+        tokens
+            .iter()
+            .map(|token| self.goal_labels[token].clone())
+            .collect()
+    }
+    fn goals(
+        &mut self,
+        frame: &DecodedFrame,
+        faction: u64,
+        absent: bool,
+        cat: Option<&catalogue::Catalogue>,
+        starts: bool,
+    ) {
+        let key = self.lane(faction, Kind::GoalList, "", "", None, (0, 0));
+        let mut list = GoalList {
+            absent,
+            ..Default::default()
+        };
+        let mut progress = Vec::new();
+        let held = if absent {
+            None
+        } else {
+            match faction_details::held_goals(frame, faction) {
+                Ok(held) => Some(held),
+                Err(why) => {
+                    list.reason = Some(why.to_string());
+                    None
+                }
+            }
+        };
+        match held {
+            None => {
+                self.goal_inputs.remove(&faction);
+            }
+            Some(held) => {
+                let rows: Vec<_> = held.entries.iter().filter(|row| row.kind <= 2).collect();
+                let tokens: Vec<_> = rows.iter().map(|row| row.token).collect();
+                let labels = self.goal_labels(frame, faction, cat, &tokens);
+                for (row, label) in rows.into_iter().zip(labels) {
+                    let label = self.goal_pages.label(faction, label);
+                    match row.kind {
+                        0 => {
+                            list.goals.push((row.ordinal, label, row.status));
+                            progress.push((row.ordinal, row.progress_raw));
+                        }
+                        1 => list.completed.push(label),
+                        _ => list.cancelled.push(label),
+                    }
+                }
+            }
+        }
+        let value = self.goal_pages.list(faction, list);
+        self.value(key, frame.hour, value as i128, starts);
+        let mut now = BTreeSet::new();
+        for (ordinal, raw) in progress {
+            let key = self.lane(
+                faction,
+                Kind::GoalProgress,
+                &ordinal.to_string(),
+                "",
+                None,
+                (ordinal, 0),
+            );
+            now.insert(key);
+            self.value(key, frame.hour, i128::from(raw), starts);
+        }
+        self.finish_group(
+            group_key(faction, Kind::GoalProgress),
+            now,
+            frame.hour,
+            None,
+            false,
+            starts,
+        );
+    }
     pub fn flush(
         &mut self,
         writer: &mut store::Writer,
@@ -1176,6 +1400,7 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         self.series.flush(writer, &section(branch), 0, cancelled)?;
+        self.goal_pages.flush(writer, branch, cancelled)?;
         self.publisher
             .write(writer, FAMILY, branch, &self.keys, &self.catalogue)
     }
@@ -1187,6 +1412,12 @@ impl Prepared {
     }
 }
 
+/// The hour's complete faction roster does not list `faction`.
+fn goal_absent(frame: &DecodedFrame, faction: u64) -> bool {
+    frame
+        .complete::<tables::Factions>()
+        .is_ok_and(|rows| !rows.iter().any(|row| row.id == faction))
+}
 fn spans(runs: &[series::Run], value: i128) -> Vec<HourSpan> {
     let mut result: Vec<HourSpan> = Vec::new();
     for run in runs.iter().filter(|run| run.value == value) {
@@ -1275,6 +1506,37 @@ pub fn query(
     let (keys, catalogue) =
         series::read_catalogue::<Catalogue>(store, key, FAMILY, branch)?.unwrap_or_default();
     let mut reader = Reader::new(store, key, section(branch), cancelled)?;
+    if let FactionStateParams::Goals {
+        first_hour,
+        last_hour,
+        ..
+    } = params
+    {
+        let at = goals::Asked {
+            branch,
+            faction,
+            first_hour: *first_hour,
+            last_hour: *last_hour,
+        };
+        let mut reply = FactionStateReply::Goals(goals::query(
+            source,
+            context,
+            (store, key),
+            (&keys, &catalogue, &mut reader),
+            at,
+            prefix,
+            cancelled,
+        )?);
+        if let Some(options) = &context.content {
+            dashboard_base::content::check_replay(
+                source.replay_ref(),
+                options.allow_unverified,
+                dashboard_base::products::ReplyWarnings::warnings_mut(&mut reply),
+            )?;
+        }
+        check_reply_budget(&reply)?;
+        return Ok(reply);
+    }
     // A requested prefix can end inside a committed batch. These observations
     // never revise an earlier hour, so clip each requested run, not whole batches.
     let from = prefix.coverage.first_hour;
@@ -1283,6 +1545,7 @@ pub fn query(
         FactionStateParams::Influence { .. } => "influence",
         FactionStateParams::Rules { .. } => "rules",
         FactionStateParams::Manpower { .. } => "manpower",
+        FactionStateParams::Goals { .. } => unreachable!("goal views are answered above"),
     };
     let wanted: &[&str] = match mode {
         "influence" => &["influence"],
@@ -1515,6 +1778,7 @@ pub fn query(
         FactionStateParams::Influence { .. } => FactionStateReply::Influence(influence),
         FactionStateParams::Rules { .. } => FactionStateReply::Rules(rules),
         FactionStateParams::Manpower { .. } => FactionStateReply::Manpower(manpower),
+        FactionStateParams::Goals { .. } => unreachable!("goal views are answered above"),
     };
     dashboard_base::products::ReplyWarnings::warnings_mut(&mut reply).extend(
         warnings

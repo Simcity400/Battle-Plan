@@ -771,7 +771,9 @@ fn an_unknown_manpower_span_can_cover_many_hours_without_numeric_bucket_overflow
     let mut state = Prepared::default();
     observe(&mut state, &source, &first);
     observe(&mut state, &source, &second);
-    state.quiet(102, 200, [true; 7]).unwrap();
+    state
+        .quiet(102, 200, [true; prepared::CHANNELS.len()])
+        .unwrap();
     let files = Fixture::new();
     publish(&mut state, &files);
     let FactionStateReply::Manpower(history) = reply(
@@ -1236,4 +1238,402 @@ fn an_intervening_native_holder_cannot_restore_an_old_departed_account_owner() {
     assert_eq!(result.accounts.len(), 1);
     assert_eq!(result.accounts[0].runs.last().unwrap().last_hour, 100);
     assert!(result.accounts[0].retained.is_empty());
+}
+
+
+fn goals_params(faction: &str, first_hour: Option<i32>, last_hour: Option<i32>) -> FactionStateParams {
+    FactionStateParams::Goals {
+        branch_id: "1".into(),
+        faction: faction.into(),
+        first_hour,
+        last_hour,
+    }
+}
+fn goals_reply(
+    source: &Source,
+    files: &Fixture,
+    context: &LoadContext,
+    params: FactionStateParams,
+    last: i32,
+    complete: bool,
+) -> FactionGoalsReply {
+    let prefix = Prefix::new(
+        source,
+        1,
+        Coverage {
+            schema: SCHEMA,
+            first_hour: 100,
+            last_hour: last,
+            complete,
+        },
+        None,
+    );
+    match prepared::query(
+        source,
+        &params,
+        context,
+        &files.store,
+        &files.key,
+        prefix,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    {
+        FactionStateReply::Goals(reply) => reply,
+        _ => unreachable!(),
+    }
+}
+fn goal_frame(hour: i32, entries: Vec<FactionGoalEntryRow>) -> DecodedFrame {
+    let mut frame = frame(hour);
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 1,
+                literal: b"mod_goal".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 2,
+                literal: b"mod_scripted".to_vec(),
+            },
+        ]));
+    *frame.tables[TableId::FactionGoalStatus.index()] =
+        TableView::Complete(TableRows::FactionGoalStatus(vec![FactionGoalStatusRow {
+            faction: 9,
+            manifest: None,
+        }]));
+    *frame.tables[TableId::FactionGoalEntries.index()] =
+        TableView::Complete(TableRows::FactionGoalEntries(entries));
+    frame
+}
+fn held(faction: u64, kind: u8, ordinal: u32, token: u32, status: i32, progress_raw: i64) -> FactionGoalEntryRow {
+    FactionGoalEntryRow {
+        faction,
+        kind,
+        ordinal,
+        token: Some(token),
+        status,
+        progress_raw,
+        ..Default::default()
+    }
+}
+/// What the widget shows of one goal.
+fn shown(definition: &dashboard_base::products::faction_details::FactionGoalDefinition) -> serde_json::Value {
+    serde_json::json!([definition.token, definition.name, definition.description, definition.icon,
+        definition.category, definition.category_name, definition.reason])
+}
+/// The history's lists at `hour` as the widget reads them; None leaves the hour to its details.
+fn goals_at(reply: &FactionGoalsReply, hour: i32) -> Option<serde_json::Value> {
+    let run = reply
+        .runs
+        .iter()
+        .find(|run| run.first_hour <= hour && hour <= run.last_hour)?;
+    let list = &reply.lists[run.list as usize];
+    if list.absent {
+        return Some(serde_json::json!("absent"));
+    }
+    if let Some(reason) = &list.reason {
+        return Some(serde_json::json!({ "reason": reason }));
+    }
+    let definition = |index: u32| shown(&reply.definitions[index as usize]);
+    let goals: Vec<_> = list
+        .goals
+        .iter()
+        .map(|goal| {
+            let progress = reply
+                .progress
+                .iter()
+                .find(|lane| lane.ordinal == goal.ordinal)
+                .and_then(|lane| {
+                    lane.runs
+                        .iter()
+                        .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                });
+            serde_json::json!([
+                goal.ordinal,
+                definition(goal.definition),
+                goal.status,
+                progress.map(|run| run.progress_raw.clone()),
+                progress.and_then(|run| run.progress_percent)
+            ])
+        })
+        .collect();
+    Some(serde_json::json!({
+        "goals": goals,
+        "completed": list.completed.iter().map(|index| definition(*index)).collect::<Vec<_>>(),
+        "cancelled": list.cancelled.iter().map(|index| definition(*index)).collect::<Vec<_>>(),
+    }))
+}
+/// The same projection of the hour's own faction-details reply.
+fn details_at(source: &Source, context: &LoadContext, faction: &str, hour: i32) -> Result<serde_json::Value, String> {
+    let reply = dashboard_base::products::faction_details::FactionDetails::load(
+        source,
+        &dashboard_base::products::faction_details::FactionDetailParams {
+            branch_id: "1".into(),
+            hour,
+            faction: faction.into(),
+        },
+        context,
+        &AtomicBool::new(false),
+    )
+    .map_err(|why| why.to_string())?;
+    if let Some(reason) = reply.goal_reason {
+        return Ok(serde_json::json!({ "reason": reason }));
+    }
+    Ok(serde_json::json!({
+        "goals": reply.goals.iter().map(|goal| serde_json::json!([goal.ordinal, shown(&goal.definition), goal.status,
+            Some(goal.progress_raw.clone()), goal.progress_percent])).collect::<Vec<_>>(),
+        "completed": reply.completed.iter().map(shown).collect::<Vec<_>>(),
+        "cancelled": reply.cancelled.iter().map(shown).collect::<Vec<_>>(),
+    }))
+}
+/// Prepares each block through the family's change pre-pass and fold, with `restore` continuing from saved state.
+fn prepare_by_blocks(source: &Source, context: &LoadContext, restore: bool) -> Fixture {
+    use replay::container::BlockChange;
+    let replay = source.replay_ref();
+    let files = Fixture::new();
+    let flag = AtomicBool::new(false);
+    let fields = (block::FAMILY.fields.unwrap())().unwrap();
+    let mut state = Prepared::default();
+    let mut previous: Option<i32> = None;
+    for index in &replay.index {
+        let mut extract = (block::FAMILY.start)(replay.format);
+        extract.read_by_changes();
+        replay
+            .read_block_changes(
+                index,
+                &fields,
+                |change| match change {
+                    BlockChange::Changed { frame, rebuilt, .. } => {
+                        let continues =
+                            previous.and_then(|hour| hour.checked_add(1)) == Some(frame.hour);
+                        previous = Some(frame.hour);
+                        let changes =
+                            FrameChanges::rebuilt(frame, replay.format, continues, |table| {
+                                rebuilt.contains(&table)
+                            });
+                        extract.observe(replay, frame, &changes)
+                    }
+                    BlockChange::Quiet(hours) => {
+                        previous = Some(hours.last());
+                        extract.quiet(replay, hours, 0..hours.hours().len())
+                    }
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        block::fold(
+            &mut state,
+            extract.finish().unwrap(),
+            source,
+            context,
+            replay,
+            index,
+            &mut |_, result| result.map(|_| true),
+            &mut || Ok(()),
+            &flag,
+        )
+        .unwrap();
+        publish(&mut state, &files);
+        if restore {
+            let file = files
+                .store
+                .read(&files.key, &prepared::state_section(1), 0)
+                .unwrap()
+                .unwrap();
+            state = serde_json::from_reader(zstd::stream::Decoder::new(file).unwrap()).unwrap();
+        }
+    }
+    files
+}
+const GOAL_CONTENT: &str = "mod_goal = { name = MOD_GOAL description = MOD_GOAL_DESC category = short_term group = mod_group }\nmod_scripted = { name = MOD_SCRIPTED category = long_term }\n";
+const GOAL_NAMES: &str = "\u{feff}l_english:\n MOD_GOAL:0 \"Mod goal\"\n MOD_GOAL_DESC:0 \"A modded goal\"\n MOD_SCRIPTED:0 \"[ROOT.GetTag] pact goal\"\n SHORT_TERM:0 \"Mod short term\"\n";
+/// Faction 11 founded at 103 after an unreadable roster at 102, the dictionary lost at 104, the viewer changing from 109.
+fn goal_hour(hour: i32) -> DecodedFrame {
+    let mut entries = match hour {
+        100 => vec![held(9, 0, 0, 1, 0, 25_000)],
+        101 => vec![held(9, 0, 0, 1, 0, 50_000)],
+        _ => vec![held(9, 0, 0, 2, 0, 1_000 * i64::from(hour)), held(9, 1, 0, 1, 0, 0)],
+    };
+    if hour >= 105 {
+        entries.push(held(11, 0, 0, 1, 4, i64::MIN));
+    }
+    let mut frame = goal_frame(hour, entries);
+    let mut status = vec![FactionGoalStatusRow {
+        faction: 9,
+        manifest: None,
+    }];
+    if hour >= 103 {
+        status.push(FactionGoalStatusRow {
+            faction: 11,
+            manifest: None,
+        });
+    }
+    *frame.tables[TableId::FactionGoalStatus.index()] =
+        TableView::Complete(TableRows::FactionGoalStatus(status));
+    let mut factions = vec![9, 10];
+    if hour >= 103 {
+        factions.push(11);
+    }
+    *frame.tables[TableId::Factions.index()] = if hour == 102 {
+        TableView::Unavailable {
+            reason: "synthetic roster gap".into(),
+        }
+    } else {
+        TableView::Complete(TableRows::Factions(
+            factions
+                .into_iter()
+                .map(|id| FactionRow {
+                    id,
+                    ..Default::default()
+                })
+                .collect(),
+        ))
+    };
+    if hour == 104 {
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
+            reason: "synthetic dictionary gap".into(),
+        };
+    }
+    if hour >= 109 {
+        *frame.tables[TableId::LocalPlayer.index()] =
+            TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                country: 101,
+                observer_country: 0,
+            }]));
+    }
+    if hour >= 110
+        && let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"mod_b".to_vec();
+    }
+    frame
+}
+/// Four recorded blocks of three hours each, the first one's replay given.
+fn goal_blocks(first: Arc<replay::container::Replay>, revision: &str) -> Source {
+    let hours: Vec<_> = (100..112).map(goal_hour).collect();
+    let mut replay = first;
+    for chunk in hours[3..].chunks(3) {
+        replay = Arc::new(
+            replay
+                .append(&[fixtures::continuation_records(&replay, 1, chunk.to_vec())])
+                .unwrap(),
+        );
+    }
+    assert_eq!(replay.index.len(), 4);
+    Source::from_replay(
+        SourceKey {
+            source_id: "faction-goal-parity".into(),
+            revision: revision.into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+}
+/// The only hour any faction's history may leave to its details: 11's, before founding, over an unreadable roster.
+const UNPROVEN: (&str, i32) = ("11", 102);
+/// Every hour of factions 9, 10 and 11 answered by the history, equal to that hour's own faction details.
+fn assert_goal_parity(source: &Source, context: &LoadContext, files: &Fixture, run: &str) {
+    for faction in ["9", "10", "11"] {
+        let reply = goals_reply(source, files, context, goals_params(faction, None, None), 111, true);
+        for hour in 100..112 {
+            let at = format!("{run}: faction {faction} hour {hour}");
+            let history = goals_at(&reply, hour);
+            let details = details_at(source, context, faction, hour);
+            if (faction, hour) == UNPROVEN {
+                assert_eq!(history, None, "an unreadable roster is no proof of absence: {at}");
+                assert!(details.is_ok(), "{at}");
+                continue;
+            }
+            let history = history.unwrap_or_else(|| panic!("the history must answer {at}"));
+            match details {
+                Ok(details) => assert_eq!(history, details, "{at}"),
+                Err(why) => {
+                    assert!(why.contains("absent"), "{at}: {why}");
+                    assert_eq!(history, serde_json::json!("absent"), "{at}");
+                }
+            }
+        }
+    }
+    assert_eq!(
+        goals_at(&goals_reply(source, files, context, goals_params("11", None, None), 111, true), 101),
+        Some(serde_json::json!("absent")),
+        "{run}: a complete roster without the faction proves it absent"
+    );
+    let nine = goals_reply(source, files, context, goals_params("9", None, None), 111, true);
+    // The lost dictionary refuses its names at 104; its return names them again.
+    assert_ne!(goals_at(&nine, 104), goals_at(&nine, 105), "{run}");
+    assert_eq!(
+        goals_at(&nine, 103),
+        goals_at(&nine, 105).map(|mut value| {
+            value["goals"][0][3] = serde_json::json!("103000");
+            value["goals"][0][4] = serde_json::json!(103.0);
+            value
+        }),
+        "{run}"
+    );
+}
+#[test]
+fn goal_history_without_content_shows_every_hour_as_that_hours_faction_details_reply() {
+    let first = (100..103).map(goal_hour).collect();
+    let first = Arc::new(
+        replay::container::Replay::from_records(
+            fixtures::CAMPAIGN.into(),
+            &[fixtures::records(1, first)],
+        )
+        .unwrap(),
+    );
+    let source = goal_blocks(first, "synthetic");
+    let context = LoadContext { content: None };
+    for restore in [false, true] {
+        let files = prepare_by_blocks(&source, &context, restore);
+        assert_goal_parity(&source, &context, &files, &format!("synthetic, restore {restore}"));
+    }
+}
+#[test]
+fn goal_history_with_mod_content_shows_every_hour_as_that_hours_faction_details_reply() {
+    let machine = dashboard_base::test_fixtures::visual_mods::Machine::new("faction_goal_parity");
+    machine.write("common/factions/goals/mod.txt", GOAL_CONTENT.as_bytes());
+    machine.write("localisation/english/mod_l_english.yml", GOAL_NAMES.as_bytes());
+    let (first, options) = machine.open_frames((100..103).map(goal_hour).collect());
+    let source = goal_blocks(first.replay(), "mod content");
+    let context = LoadContext {
+        content: Some(options),
+    };
+    for restore in [false, true] {
+        let files = prepare_by_blocks(&source, &context, restore);
+        assert_goal_parity(&source, &context, &files, &format!("mod content, restore {restore}"));
+    }
+}
+#[test]
+fn a_goal_prefix_names_later_hours_pending_and_leaks_no_later_list() {
+    let hours = vec![
+        goal_frame(100, vec![held(9, 0, 0, 1, 0, 25_000)]),
+        goal_frame(101, vec![held(9, 1, 0, 1, 0, 0)]),
+    ];
+    let source = source(hours.clone());
+    let mut state = Prepared::default();
+    for frame in &hours {
+        observe(&mut state, &source, frame);
+    }
+    let files = Fixture::new();
+    publish(&mut state, &files);
+    let context = LoadContext { content: None };
+    let reply = goals_reply(&source, &files, &context, goals_params("9", None, None), 100, false);
+    assert_eq!(reply.pending[0].first_hour, 101);
+    assert!(reply.runs.iter().all(|run| run.last_hour <= 100));
+    assert_eq!(reply.lists.len(), 1);
+    assert!(reply.lists[0].completed.is_empty());
+    assert!(goals_at(&reply, 101).is_none());
+    // Asked hours clip the runs, the progress and the pending hours alike.
+    let early = goals_reply(&source, &files, &context, goals_params("9", Some(100), Some(100)), 101, true);
+    let late = goals_reply(&source, &files, &context, goals_params("9", Some(101), None), 101, true);
+    assert_eq!((early.runs.len(), early.runs[0].last_hour), (1, 100));
+    assert!(early.lists[0].completed.is_empty());
+    assert_eq!(late.runs[0].first_hour, 101);
+    assert_eq!(late.lists[0].completed.len(), 1);
+    assert!(late.progress.is_empty());
+    assert!(early.pending.is_empty() && late.pending.is_empty());
 }

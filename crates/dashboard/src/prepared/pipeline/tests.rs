@@ -27,6 +27,7 @@ mod independent_air;
 mod independent_census;
 mod independent_economy;
 mod independent_evaluated;
+mod independent_factions;
 mod independent_families;
 mod independent_feed;
 mod independent_focus;
