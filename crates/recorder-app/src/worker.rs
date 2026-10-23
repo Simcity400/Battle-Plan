@@ -11,6 +11,7 @@ use recorder::controller::{
     self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, Stage,
 };
 use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay_data::scope::CaptureMode;
 use serde_json::Value;
 use std::{
     cell::{Cell, RefCell},
@@ -201,6 +202,8 @@ struct SessionAdmission<'a> {
     settings: &'a Path,
     root: &'a Path,
     target: &'a Path,
+    /// The session's capture mode, fixed at attach.
+    mode: CaptureMode,
     manual: bool,
     manual_campaign: RefCell<Option<String>>,
     /// The campaign the session's spool shows loaded first, if any: Record
@@ -232,7 +235,8 @@ impl SessionAdmission<'_> {
             return Err(Refusal::Off);
         }
         // Its folder (a pending New file starting one) must be this session's.
-        let target = targets::session_target_at(self.settings, self.root, campaign, recorded);
+        let target =
+            targets::session_target_at(self.settings, self.root, campaign, recorded, self.mode);
         if let Ok((_, true)) = target {
             (self.used_up)();
         }
@@ -619,7 +623,8 @@ impl Recorder {
             let root = save_root(settings)?;
             let target = match &loaded {
                 Some(loaded) => {
-                    let (target, used_up) = targets::session_target(&root, &loaded.campaign)?;
+                    let (target, used_up) =
+                        targets::session_target(&root, &loaded.campaign, settings.capture_mode)?;
                     if used_up {
                         settings_used(app);
                     }
@@ -668,6 +673,7 @@ impl Recorder {
             inner.snapshot = Snapshot {
                 phase: Phase::Waiting,
                 automatic,
+                capture_mode: Some(settings.capture_mode.name()),
                 ..Snapshot::default()
             };
             // A loaded campaign is recording from attachment; its first hour
@@ -693,6 +699,7 @@ impl Recorder {
             settings: &settings_path,
             root: &root,
             target: &target,
+            mode: settings.capture_mode,
             manual,
             manual_campaign: RefCell::new(
                 manual
@@ -743,6 +750,7 @@ impl Recorder {
             game_score: settings.game_score,
             operation_outcomes: settings.operation_outcomes,
             politics_capture: settings.politics,
+            capture_mode: settings.capture_mode,
             admit: &admit,
             loaded: &current,
             // Attached for this load: it records even if the game closes before
@@ -871,6 +879,7 @@ impl Recorder {
         if outcome.discarded {
             self.update(app, |inner| {
                 inner.capturing = false;
+                inner.snapshot.capture_mode = None;
                 inner.result = true;
                 let snapshot = &mut inner.snapshot;
                 snapshot.phase = Phase::Discarded;
@@ -904,6 +913,7 @@ impl Recorder {
                 let bytes = fs::metadata(&path).ok().map(|metadata| metadata.len());
                 self.update(app, |inner| {
                     inner.capturing = false;
+                    inner.snapshot.capture_mode = None;
                     inner.result = true;
                     let snapshot = &mut inner.snapshot;
                     snapshot.phase = Phase::Saved;
@@ -924,6 +934,7 @@ impl Recorder {
             // until the panel has shown it.
             None => self.update(app, |inner| {
                 inner.capturing = false;
+                inner.snapshot.capture_mode = None;
                 inner.snapshot.stopping = false;
                 inner.snapshot.progress = None;
                 if omitted.is_some() {
@@ -944,6 +955,7 @@ impl Recorder {
         };
         self.update(app, |inner| {
             inner.capturing = false;
+            inner.snapshot.capture_mode = None;
             inner.sticky = Some(problem.clone());
             let snapshot = &mut inner.snapshot;
             snapshot.phase = Phase::NotRecording;
@@ -985,6 +997,7 @@ mod tests {
             settings,
             root,
             target,
+            mode: CaptureMode::Full,
             manual,
             manual_campaign: RefCell::new(None),
             first_loaded: Box::new(|| None),

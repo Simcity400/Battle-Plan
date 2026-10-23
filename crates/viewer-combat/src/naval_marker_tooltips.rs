@@ -51,6 +51,9 @@ fn whole<'a, T: TableSchema>(table: &Available<'a, T>, name: &str) -> Result<&'a
             Err(format!("{name} is truncated ({missing} rows unread)"))
         }
         Available::Unavailable { reason } => Err(format!("{name} is unavailable ({reason})")),
+        Available::NotRecorded { mode } => {
+            Err(format!("{name} is not recorded in a {mode} recording"))
+        }
     }
 }
 

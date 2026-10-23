@@ -18,6 +18,7 @@ fn selected_parsing_still_rejects_malformed_omitted_updates() {
     header.u64().unwrap();
     header.i32().unwrap();
     header.bool().unwrap();
+    header.u8().unwrap();
     header.u64().unwrap();
     // Timing entries exist only for the tables the format records.
     for _ in TableId::ALL
@@ -88,6 +89,9 @@ fn selected_delta_test_wire(
     bytes.extend_from_slice(&1_u64.to_le_bytes());
     bytes.extend_from_slice(&1_i32.to_le_bytes());
     bytes.push(u8::from(keyframe));
+    if format.version() >= crate::rows::compatibility::CAPTURE_MODE_FORMAT {
+        bytes.push(crate::scope::CaptureMode::Full.byte());
+    }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     for recorded in TableId::ALL {
         if recorded.last_change().present(format.version()) {
@@ -3371,4 +3375,102 @@ fn containment_cannot_hide_clock_or_encoder_context_failures() {
             ))
             .is_err()
     );
+}
+
+#[test]
+fn a_map_frame_stores_nothing_for_the_tables_its_mode_leaves_out() {
+    use crate::scope::{self, CaptureMode};
+    let full = source(1, 0);
+    let mut map = FrameInput::from(full.clone());
+    map.scope_to(CaptureMode::Map);
+    assert_eq!(map.capture_mode().unwrap(), CaptureMode::Map);
+    let full_frame = FrameEncoder::new().encode(full, true).unwrap();
+    let map_frame = FrameEncoder::new().encode_input(map, true).unwrap();
+    assert_eq!(full_frame.capture_mode().unwrap(), CaptureMode::Full);
+    assert_eq!(map_frame.capture_mode().unwrap(), CaptureMode::Map);
+    let (mut full_bytes, mut map_bytes) = (Vec::new(), Vec::new());
+    let full_sizes = full_frame.encode_with_sizes(&mut full_bytes).unwrap();
+    let map_sizes = map_frame.encode_with_sizes(&mut map_bytes).unwrap();
+    let not_recorded = TableUpdate::NotRecorded {
+        mode: CaptureMode::Map,
+    };
+    let mut omitted = 0;
+    let mut left_out = 0;
+    for table in TableId::ALL {
+        let index = table.index();
+        if table.last_change().present(crate::FORMAT_VERSION)
+            && !scope::records(CaptureMode::Map, table)
+        {
+            assert_eq!(map_frame.tables[index], not_recorded, "{table:?}");
+            assert_eq!(map_sizes[index], 0, "{table:?}");
+            omitted += 8 + full_sizes[index];
+            left_out += 1;
+        } else {
+            assert_eq!(
+                map_frame.tables[index], full_frame.tables[index],
+                "{table:?}"
+            );
+            assert_eq!(map_sizes[index], full_sizes[index], "{table:?}");
+        }
+    }
+    assert!(left_out > 300 && scope::records(CaptureMode::Map, TableId::Divisions));
+    assert_eq!(full_bytes.len() - map_bytes.len(), omitted);
+    let decoded = FrameDecoder::new()
+        .apply(&Frame::decode(&mut Decoder::new(&map_bytes)).unwrap())
+        .unwrap();
+    let full_decoded = FrameDecoder::new().apply(&full_frame).unwrap();
+    assert_eq!(decoded.capture_mode().unwrap(), CaptureMode::Map);
+    for table in TableId::ALL {
+        let view = &*decoded.tables[table.index()];
+        if map_frame.tables[table.index()] == not_recorded {
+            assert_eq!(
+                *view,
+                TableView::NotRecorded {
+                    mode: CaptureMode::Map
+                }
+            );
+            assert_eq!(decoded.metrics.table_ns[table.index()], 0);
+        } else {
+            assert_eq!(*view, *full_decoded.tables[table.index()], "{table:?}");
+        }
+    }
+    let error = decoded
+        .complete::<crate::rows::tables::DivisionStatus>()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("DivisionStatus is not recorded in a map recording"),
+        "{error}"
+    );
+    let mut checkpoint = Vec::new();
+    decoded.encode_checkpoint(&mut checkpoint).unwrap();
+    let restored = DecodedFrame::decode_checkpoint(&mut Decoder::new(&checkpoint)).unwrap();
+    assert_eq!(restored, decoded);
+}
+
+#[test]
+fn a_frame_refuses_a_mix_of_capture_modes_and_tables() {
+    use crate::scope::CaptureMode;
+    let mut map = FrameInput::from(source(1, 0));
+    map.scope_to(CaptureMode::Map);
+    // A table Map leaves out, sampled anyway.
+    let mut extra = map.clone();
+    extra.tables[TableId::DivisionStatus.index()] =
+        TableView::Complete(TableRows::empty(TableId::DivisionStatus)).into();
+    // A table Map records, left out.
+    let mut missing = map.clone();
+    missing.tables[TableId::Divisions.index()] = TableView::NotRecorded {
+        mode: CaptureMode::Map,
+    }
+    .into();
+    // A table Full records, left out.
+    let mut full = FrameInput::from(source(1, 0));
+    full.tables[TableId::DivisionStatus.index()] = TableView::NotRecorded {
+        mode: CaptureMode::Full,
+    }
+    .into();
+    for input in [extra, missing, full] {
+        assert!(input.capture_mode().is_err());
+        assert!(FrameEncoder::new().prepare_bytes(input, true).is_err());
+    }
 }

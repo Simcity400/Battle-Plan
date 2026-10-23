@@ -232,6 +232,9 @@ pub(super) fn province_display_name(
             Available::Unavailable { reason } => Err(format!(
                 "the ProvinceNames table is unavailable this hour ({reason})"
             )),
+            Available::NotRecorded { mode } => Err(format!(
+                "the ProvinceNames table is not recorded in a {mode} recording"
+            )),
         },
     };
     // The picked province's state from Provinces.state, its names

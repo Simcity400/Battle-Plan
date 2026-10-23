@@ -191,6 +191,10 @@ pub(crate) fn table<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], String)
             format!("the table is truncated ({missing} rows missing)"),
         ),
         TableView::Unavailable { reason } => (&[], format!("the table is unavailable: {reason}")),
+        TableView::NotRecorded { mode } => (
+            &[],
+            format!("the table is not recorded in a {mode} recording"),
+        ),
     }
 }
 

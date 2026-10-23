@@ -703,3 +703,29 @@ fn the_built_textures_paint_the_country_layer_second_and_the_strategic_one_first
         );
     }
 }
+
+#[test]
+fn a_map_recording_holds_the_political_map_labels_and_weather() {
+    use viewer_foundation::map::test_support::{
+        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    };
+    let map = map();
+    let mut frame = complete_frame(11, |table| {
+        replay_data::rows::sample_extended_table(table, 0)
+    });
+    put_sample_campaign(&mut frame);
+    let frame = map_scoped(frame);
+    assert_reads_recorded(&frame, &[], || {
+        build(&map, &frame).unwrap();
+        FrameKey::new(&frame).unwrap();
+        crate::map::labels::LabelTables::read(&frame, 1, &Default::default()).unwrap();
+        let weather = MapData {
+            width: 8,
+            height: 4,
+            province_ids: [1, 2, 3, 4, 5, 5, 5, 5].repeat(4),
+            ..map.clone()
+        };
+        crate::map::weather::grid(&weather, &[false; 32], &frame).unwrap();
+        crate::map::weather_effects::field(&frame).unwrap();
+    });
+}

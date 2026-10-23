@@ -5187,6 +5187,7 @@ mod tests {
                         assert_ne!(reason, replay_data::cadence::SKIPPED_REASON, "{id:?}");
                     }
                     TableView::Truncated { .. } => panic!("unexpected incomplete {id:?}"),
+                    TableView::NotRecorded { .. } => panic!("unexpected unrecorded {id:?}"),
                 }
             }
         }

@@ -125,6 +125,9 @@ impl Impacts {
             Available::Unavailable { reason } => out.refused.push(format!(
                 "NuclearStrikes unavailable ({reason}): impacts have no effect"
             )),
+            Available::NotRecorded { mode } => out.refused.push(format!(
+                "NuclearStrikes not recorded in a {mode} recording: impacts have no effect"
+            )),
         }
         let mut unplaced = 0usize;
         for row in available.rows() {

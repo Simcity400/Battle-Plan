@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, spanText, stopPromptVisible, untilNextMinute, whatToRecord } from './status.ts';
+import { captureModeFixed, discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, spanText, stopPromptVisible, untilNextMinute, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot } from './status.ts';
 
 const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
@@ -11,7 +11,7 @@ const MB = 2 ** 20;
 
 function snapshot(change: Partial<Snapshot>): Snapshot {
   return { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null, bytes: null, progress: null,
-    startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, ...change };
+    startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: null, ...change };
 }
 const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', hour: hour(1943, 6, 12), bytes: 380 * MB, ...change });
 
@@ -98,14 +98,24 @@ test('the Stop prompt asks about this session and says what Discard deletes', ()
 
 test('campaign choices follow the global default until set', () => {
   const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-    operationOutcomes: true, politics: true, campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
+    operationOutcomes: true, politics: true, captureMode: 'full', campaigns: { [CAMPAIGN]: { record: false, next: 'newFile' } }, effectiveSaveFolder: 'C:\\r' };
   assert.equal(recordsAutomatically(settings, CAMPAIGN), false);
   assert.equal(nextLoad(settings, CAMPAIGN), 'newFile');
   assert.equal(recordsAutomatically(settings, 'other'), true);
   assert.equal(recordsAutomatically({ ...settings, recordEveryCampaign: false }, 'other'), false);
   assert.equal(nextLoad(settings, 'other'), 'continue');
-  assert.equal(whatToRecord(settings), 'Everything');
-  assert.equal(whatToRecord({ ...settings, politics: false }), 'Custom');
+  assert.equal(whatToRecord(settings), 'Full');
+  assert.equal(whatToRecord({ ...settings, politics: false }), 'Full, custom');
+  // Map leaves operation outcomes and politics out whatever their switches say.
+  assert.equal(whatToRecord({ ...settings, captureMode: 'map', politics: false }), 'Map');
+  assert.equal(whatToRecord({ ...settings, captureMode: 'map', gameScore: false }), 'Map, custom');
+});
+
+test('the capture mode is fixed while a session is attached, even at the game menu', () => {
+  for (const phase of ['waiting', 'recording', 'saving'] as const)
+    assert.equal(captureModeFixed(recording({ phase, captureMode: 'map' })), true, phase);
+  for (const phase of ['waiting', 'notRecording', 'saved', 'discarded'] as const)
+    assert.equal(captureModeFixed(recording({ phase, captureMode: null })), false, phase);
 });
 
 test('settings reads and saves run one at a time, and a failed save is followed by a read', async () => {

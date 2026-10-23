@@ -44,7 +44,7 @@ function country(id = '1', tag = 'GER'): CountryMetadata {
 }
 function source(id = 'lease-a', firstHour = 1000, countries = [country()]): DashboardSource {
   return { id, path: `C:/recordings/${id}.battleplan`, revision: `revision-${id}`, metadata: {
-    path: `C:/recordings/${id}.battleplan`, revision: `revision-${id}`, name: id, format: 1, campaignKey: 'c0ffee',
+    path: `C:/recordings/${id}.battleplan`, revision: `revision-${id}`, name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee',
     branches: [{ id: '7', sessionId: '9', firstHour, lastHour: firstHour + 1000,
       parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
     countries, playerCountryId: countries[0]?.id ?? null, contentVerified: false, partial: null, warnings: [],

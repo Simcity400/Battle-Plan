@@ -995,7 +995,8 @@ fn table_bytes(table: &replay_frame::frame::TableView) -> u64 {
     match table {
         replay_frame::frame::TableView::Complete(rows)
         | replay_frame::frame::TableView::Truncated { rows, .. } => rows.allocated_bytes() as u64,
-        replay_frame::frame::TableView::Unavailable { .. } => 0,
+        replay_frame::frame::TableView::Unavailable { .. }
+        | replay_frame::frame::TableView::NotRecorded { .. } => 0,
     }
 }
 

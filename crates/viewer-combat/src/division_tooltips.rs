@@ -977,6 +977,11 @@ fn reserve_sources(
                         "ReserveModifierTrees is unavailable this hour ({reason})"
                     ));
                 }
+                Available::NotRecorded { mode } => {
+                    return Err(format!(
+                        "ReserveModifierTrees is not recorded in a {mode} recording"
+                    ));
+                }
             };
         let definitions = rows::<tables::ModifierDefinitions>(frame).map_err(|e| e.to_string())?;
         if !definitions.is_complete() {
@@ -1564,16 +1569,17 @@ pub(super) fn bind(
                                 .ok()
                                 .map(|i| &rows[i])
                         })
-                        .zip(
+                        // Only with a status row are the land inputs read.
+                        .and_then(|status| {
                             frame
                                 .complete::<tables::DivisionLandInputs>()
                                 .ok()
                                 .and_then(|rows| {
                                     rows.binary_search_by_key(unit, |r| r.division)
                                         .ok()
-                                        .map(|i| &rows[i])
-                                }),
-                        )
+                                        .map(|i| (status, &rows[i]))
+                                })
+                        })
                         .and_then(|(status, inputs)| {
                             status.normalized_experience(
                                 inputs

@@ -7,7 +7,7 @@ use crate::{
 };
 
 const MAGIC: &[u8; 4] = b"H4CP";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 
 impl DecodedFrame {
     /// Append a prepared snapshot, keeping decoded values and sample provenance
@@ -63,6 +63,10 @@ impl DecodedFrame {
                     Value::encode(&2_u8, output)?;
                     put_string(output, reason)?;
                 }
+                TableView::NotRecorded { mode } => {
+                    Value::encode(&3_u8, output)?;
+                    Value::encode(&mode.byte(), output)?;
+                }
             }
         }
         Ok(())
@@ -109,6 +113,9 @@ impl DecodedFrame {
                     }
                     TableView::Unavailable { reason }
                 }
+                3 => TableView::NotRecorded {
+                    mode: CaptureMode::from_byte(input.u8()?)?,
+                },
                 _ => return Err(invalid_static("invalid checkpoint availability")),
             };
             tables.push(SharedView::from(view));

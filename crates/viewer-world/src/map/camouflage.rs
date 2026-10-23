@@ -241,7 +241,7 @@ impl<'a> Context<'a> {
                     .checked_add(*missing as usize)
                     .ok_or_else(|| invalid("weather province count overflows"))?,
             ),
-            Available::Unavailable { .. } => None,
+            Available::Unavailable { .. } | Available::NotRecorded { .. } => None,
         };
         let mut weather_snow = BTreeMap::new();
         for (slot, row) in weather.rows().iter().enumerate() {

@@ -1,8 +1,9 @@
 use super::*;
 use replay::spool::Record;
 use replay_data::{
-    identity::Roster, identity::SampleBoundary, identity::SessionStart, identity::Verification,
-    rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow, rows::SunkShipsRow, rows::TableRows,
+    identity::CaptureMode, identity::Roster, identity::SampleBoundary, identity::SessionStart,
+    identity::Verification, rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow,
+    rows::SunkShipsRow, rows::TableRows,
 };
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
@@ -351,6 +352,7 @@ fn replay_of(frames: Vec<DecodedFrame>) -> Replay {
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
         identity: replay_data::identity::Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

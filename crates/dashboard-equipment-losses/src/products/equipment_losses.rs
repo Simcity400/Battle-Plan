@@ -1002,6 +1002,13 @@ fn destruction_from(
             state.destruction_withheld = Some(reason);
             return Ok(());
         }
+        replay_frame::frame::TableView::NotRecorded { mode } => {
+            let reason = format!("EquipmentDestruction is not recorded in a {mode} recording");
+            scanned.destruction_cover(hour, hour, Some(reason.clone()));
+            scanned.destruction_unknown(hour, UnknownReason::DestructionWithheld, reason.clone());
+            state.destruction_withheld = Some(reason);
+            return Ok(());
+        }
     };
     // A country absent from complete identity tables cannot own a removal,
     // including one missed by an unavailable supplemental writer.

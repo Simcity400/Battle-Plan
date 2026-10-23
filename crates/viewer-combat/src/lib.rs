@@ -861,6 +861,8 @@ pub fn window_layer(quads: usize) -> u64 {
 }
 
 #[cfg(test)]
+mod capture_scope_tests;
+#[cfg(test)]
 mod tests {
     /// A land window hides for an unengaged combat and refreshes on an undecided flag; a naval
     /// one refreshes only while engaged and holds otherwise, reporting an undecided or absent

@@ -28,7 +28,7 @@ fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<(&[T::Row], bool)> {
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) => Ok((typed(rows)?, true)),
         TableView::Truncated { rows, .. } => Ok((typed(rows)?, false)),
-        TableView::Unavailable { .. } => Ok((&[], false)),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => Ok((&[], false)),
     }
 }
 

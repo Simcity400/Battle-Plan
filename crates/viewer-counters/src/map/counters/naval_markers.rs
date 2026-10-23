@@ -194,6 +194,9 @@ fn whole<T: replay_data::rows::TableSchema>(
         Available::Unavailable { reason } => {
             Some(format!("the {name} table is unavailable ({reason})"))
         }
+        Available::NotRecorded { mode } => Some(format!(
+            "the {name} table is not recorded in a {mode} recording"
+        )),
     }
 }
 
@@ -208,6 +211,9 @@ fn missing<T: replay_data::rows::TableSchema>(
         Available::Truncated { .. } => format!("the truncated {name} table did not reach {key}"),
         Available::Unavailable { reason } => {
             format!("the {name} table is unavailable ({reason}), so {key} is unknown")
+        }
+        Available::NotRecorded { mode } => {
+            format!("the {name} table is not recorded in a {mode} recording, so {key} is unknown")
         }
     }
 }

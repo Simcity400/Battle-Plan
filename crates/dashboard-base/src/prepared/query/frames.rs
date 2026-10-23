@@ -821,7 +821,7 @@ pub(crate) fn update_bytes(update: &TableUpdate) -> usize {
                     .sum::<usize>()
                 + deleted.capacity() * std::mem::size_of::<u128>()
         }
-        TableUpdate::Unchanged { .. } => 0,
+        TableUpdate::Unchanged { .. } | TableUpdate::NotRecorded { .. } => 0,
         TableUpdate::Unavailable { reason } | TableUpdate::Incompatible { reason, .. } => {
             reason.capacity()
         }
@@ -844,6 +844,7 @@ pub(crate) fn view_bytes(view: &TableView) -> usize {
     let held = match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows_bytes(rows),
         TableView::Unavailable { reason } => reason.capacity(),
+        TableView::NotRecorded { .. } => 0,
     };
     std::mem::size_of::<TableView>() + 2 * std::mem::size_of::<usize>() + held
 }
@@ -856,6 +857,7 @@ fn independent_keyframe(frame: &Frame) -> bool {
                 update,
                 TableUpdate::Snapshot(_)
                     | TableUpdate::Unavailable { .. }
+                    | TableUpdate::NotRecorded { .. }
                     | TableUpdate::Incompatible { .. }
             )
         })

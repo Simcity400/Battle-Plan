@@ -524,7 +524,6 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
     trailer[lengths_at..lengths_at + 8].copy_from_slice(&(compressed.len() as u64).to_le_bytes());
     trailer[lengths_at + 8..].copy_from_slice(&(raw.len() as u64).to_le_bytes());
     let mut bytes = current.bytes()[..block.offset as usize].to_vec();
-    bytes[4..6].copy_from_slice(&format.version().to_le_bytes());
     bytes.extend_from_slice(&compressed);
     let trailer_start = bytes.len() as u64;
     bytes.extend_from_slice(&trailer);
@@ -532,6 +531,7 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
     bytes.extend_from_slice(&trailer_start.to_le_bytes());
     bytes.extend_from_slice(&(trailer.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&crc32fast::hash(&trailer).to_le_bytes());
+    let bytes = replay::container::relabelled(&bytes, format.version()).unwrap();
     let replay = Arc::new(Replay::open(bytes).unwrap());
     let metadata = crate::metadata::read(
         &replay,

@@ -2,7 +2,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { UnlistenFn } from '@tauri-apps/api/event';
-import type { NextLoad, RecorderSettings, Snapshot } from './status';
+import type { CaptureMode, NextLoad, RecorderSettings, Snapshot } from './status';
 
 export interface SettingsPatch {
   recordEveryCampaign?: boolean;
@@ -11,6 +11,7 @@ export interface SettingsPatch {
   gameScore?: boolean;
   operationOutcomes?: boolean;
   politics?: boolean;
+  captureMode?: CaptureMode;
 }
 
 export const recorderStatus = () => invoke<Snapshot>('recorder_status');

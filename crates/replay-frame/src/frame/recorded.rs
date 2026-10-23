@@ -384,7 +384,7 @@ pub fn update_bytes(update: &TableUpdate) -> usize {
         TableUpdate::Unavailable { reason } | TableUpdate::Incompatible { reason, .. } => {
             reason.capacity()
         }
-        TableUpdate::Unchanged { .. } => 0,
+        TableUpdate::Unchanged { .. } | TableUpdate::NotRecorded { .. } => 0,
     }
 }
 
@@ -432,6 +432,7 @@ fn copy_update(update: &TableUpdate) -> io::Result<TableUpdate> {
         TableUpdate::Unavailable { reason } => TableUpdate::Unavailable {
             reason: allocation::string(reason)?,
         },
+        TableUpdate::NotRecorded { mode } => TableUpdate::NotRecorded { mode: *mode },
         TableUpdate::Incompatible {
             reason,
             source_format,

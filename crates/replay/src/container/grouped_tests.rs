@@ -112,7 +112,7 @@ fn grouped_frame_headers_cost_bytes_not_a_word_per_table_and_keep_read_hours() {
 
 /// One block written directly, given its frames.
 fn written_block(frames: &[Frame], layout: grouped::Layout) -> CompressedBlock {
-    let mut block = grouped::BlockWriter::with_layout(&frames[0], layout);
+    let mut block = grouped::BlockWriter::with_layout(&frames[0], layout).unwrap();
     let mut decoder = FrameDecoder::new();
     let mut anchors = grouped::Anchors::default();
     let mut aliases = aliases::Encoder::default();
@@ -510,8 +510,7 @@ fn hostile_grouped_blocks_are_refused() {
     bytes[(block.offset + block.length) as usize - 1] ^= 0x40;
     read(bytes);
     // Grouped blocks belong to grouped-format recordings only.
-    let mut bytes = replay.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&101_u16.to_le_bytes());
+    let bytes = super::relabelled(replay.bytes(), 101).unwrap();
     if let Ok(old) = Replay::open(bytes) {
         assert!(
             old.read_block(&old.index[0])

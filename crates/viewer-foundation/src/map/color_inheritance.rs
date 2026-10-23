@@ -164,5 +164,8 @@ fn table_gap<T: replay_data::rows::TableSchema>(
             Some(format!("{name} is truncated ({missing} missing rows)"))
         }
         Available::Unavailable { reason } => Some(format!("{name} is unavailable: {reason}")),
+        Available::NotRecorded { mode } => {
+            Some(format!("{name} is not recorded in a {mode} recording"))
+        }
     }
 }

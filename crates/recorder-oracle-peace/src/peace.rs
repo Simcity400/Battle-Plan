@@ -393,6 +393,11 @@ fn compare_settlements_after<F: std::borrow::Borrow<DecodedFrame>>(
         }
         TableView::Unavailable { .. } if drain_busy(frame) => (&[][..], 0),
         TableView::Unavailable { reason } => return Err(invalid(reason.clone())),
+        TableView::NotRecorded { mode } => {
+            return Err(invalid(format!(
+                "PeaceSettlements is not recorded in a {mode} recording"
+            )));
+        }
     };
     let captured = census_rows
         .iter()

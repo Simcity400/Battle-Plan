@@ -170,6 +170,10 @@ pub fn complete_table(frame: &DecodedFrame, table: TableId) -> io::Result<&Table
             "hour {} {table:?} is unavailable: {reason}",
             frame.hour
         ))),
+        TableView::NotRecorded { mode } => Err(invalid(format!(
+            "hour {} {table:?} is not recorded in a {mode} recording",
+            frame.hour
+        ))),
     }
 }
 

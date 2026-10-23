@@ -21,8 +21,8 @@ pub const ALLOCATION_CAMPAIGN: &[u8; 36] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a
 pub fn allocation_records() -> Vec<replay::spool::Record> {
     use replay::{spool::ControlRecord, spool::Record};
     use replay_data::{
-        identity::Identity, identity::SampleBoundary, identity::SessionStart,
-        identity::Verification,
+        identity::CaptureMode, identity::Identity, identity::SampleBoundary,
+        identity::SessionStart, identity::Verification,
     };
     use replay_frame::{branches::BranchReason, branches::BranchStart, branches::Parentage};
     let mut records = vec![
@@ -32,6 +32,7 @@ pub fn allocation_records() -> Vec<replay::spool::Record> {
             process_start_time: 13,
             qpc_frequency: 100,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

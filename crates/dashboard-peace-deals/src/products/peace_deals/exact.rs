@@ -231,7 +231,7 @@ impl Observed {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
                 rows.rows::<tables::PeaceSettlements>()
             }
-            TableView::Unavailable { .. } => None,
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
         };
         let Some(rows) = rows else {
             return;
@@ -677,6 +677,9 @@ pub(super) fn missing_reason(view: &TableView) -> Option<String> {
             "Finalizer table truncated: at least {missing} lost conferences or unread operands."
         )),
         TableView::Unavailable { reason } => Some(format!("Finalizer table unavailable: {reason}")),
+        TableView::NotRecorded { mode } => Some(format!(
+            "Finalizer table not recorded in a {mode} recording."
+        )),
     }
 }
 fn action(

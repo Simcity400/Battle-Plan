@@ -57,6 +57,9 @@ impl<'a> Sources<'a> {
             Available::Unavailable { reason } => Err(format!(
                 "the naval source trees are not available this hour (NavalModifierTrees: {reason})"
             )),
+            Available::NotRecorded { mode } => Err(format!(
+                "the naval source trees are not recorded in a {mode} recording"
+            )),
         };
         let definitions = match rows::<tables::ModifierDefinitions>(frame)? {
             Available::Complete(rows) => Ok(rows.iter().map(|row| (row.index, row)).collect()),

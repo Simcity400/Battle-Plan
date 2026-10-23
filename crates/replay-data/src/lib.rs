@@ -17,6 +17,7 @@ pub mod naval_trees;
 mod nuclear_rows;
 mod peace_rows;
 pub mod rows;
+pub mod scope;
 pub mod sliced;
 pub mod temperature;
 #[cfg(any(test, feature = "test-support"))]
@@ -30,7 +31,7 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The recording version this build writes. Reader history lives beside TableId.
-pub const FORMAT_VERSION: u16 = rows::compatibility::PANEL_SUPPRESSION_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::CAPTURE_MODE_FORMAT;
 
 pub mod country_stability;
 pub mod war_participation;

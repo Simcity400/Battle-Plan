@@ -197,5 +197,8 @@ pub fn table_missing_reason(
                 reason.clone()
             })
         }
+        TableView::NotRecorded { mode } => {
+            Some(format!("{table:?} is not recorded in a {mode} recording"))
+        }
     }
 }

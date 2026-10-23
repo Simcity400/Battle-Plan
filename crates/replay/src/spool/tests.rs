@@ -1151,6 +1151,7 @@ fn two_loads_during_disk_outage_preserve_fresh_and_resumed_branch_gaps() {
             process_start_time: 34,
             qpc_frequency: 10_000_000,
             sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+            capture_mode: crate::identity::CaptureMode::Full,
             identity: Identity {
                 game_version: "test".into(),
                 exe_hash: [1; 32],

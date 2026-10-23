@@ -536,6 +536,7 @@ pub(crate) mod tests {
             process_start_time: id,
             qpc_frequency: 10_000_000,
             sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            capture_mode: replay_data::identity::CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

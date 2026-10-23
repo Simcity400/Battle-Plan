@@ -146,6 +146,7 @@ pub fn keyframe_update(update: &TableUpdate) -> bool {
         update,
         TableUpdate::Snapshot(_)
             | TableUpdate::Unavailable { .. }
+            | TableUpdate::NotRecorded { .. }
             | TableUpdate::Incompatible { .. }
     )
 }
@@ -245,6 +246,7 @@ fn apply_table(
             }
             .into())
         }
+        TableUpdate::NotRecorded { mode } => Ok(TableView::NotRecorded { mode: *mode }.into()),
         TableUpdate::Delta { baseline, .. } | TableUpdate::Unchanged { baseline } => {
             let Some((_, previous_view)) =
                 previous.filter(|(previous_hour, _)| previous_hour == baseline && *baseline < hour)

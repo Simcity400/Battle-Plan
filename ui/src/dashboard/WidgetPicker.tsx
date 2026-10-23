@@ -8,7 +8,7 @@ import { widgetDefinitions } from './definitions';
 import type { WidgetDefinition, WidgetPresets, WidgetRuntime } from './definitions';
 import type { BoundTrack, WidgetSpec } from './model';
 import { useProduct } from './products';
-import { availabilityReason, availabilityRequest, validateWidgetAvailability } from './widgetAvailability';
+import { availabilityReason, availabilityRequest, scopeReason, validateWidgetAvailability } from './widgetAvailability';
 import WidgetPreview from './WidgetPreview';
 import { catalogueEntries, matchesWidget, placedCount, widgetGroups } from './widgetCategories';
 import type { CatalogueEntry, WidgetGroup } from './widgetCategories';
@@ -32,8 +32,9 @@ function useAdded(): [boolean, () => void] {
 
 /** Why a gated widget cannot be added to this recording, or null. */
 function useUnavailable(definition: WidgetDefinition, { runtime, track, active }: Shared) {
-  const { data, error } = useProduct(runtime.client, availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
-  return availabilityReason(!!definition.availability, !!track, data, error);
+  const scoped = scopeReason(definition, track?.source.metadata.captureMode);
+  const { data, error } = useProduct(runtime.client, scoped ? null : availabilityRequest(definition, track), active, validateWidgetAvailability, track?.source);
+  return scoped ?? availabilityReason(!!definition.availability, !!track, data, error);
 }
 
 /** A group's colour is its Analytics page's icon colour, so the catalogue matches the sidebar. */

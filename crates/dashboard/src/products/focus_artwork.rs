@@ -235,6 +235,7 @@ impl FrameCache {
                         rows.allocated_bytes()
                     }
                     TableView::Unavailable { reason } => reason.capacity(),
+                    TableView::NotRecorded { .. } => 0,
                 };
                 bytes
                     .saturating_add(size_of::<TableView>() + 2 * size_of::<usize>())

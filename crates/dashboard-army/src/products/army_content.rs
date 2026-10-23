@@ -69,6 +69,9 @@ pub fn unavailable(frame: &DecodedFrame, id: TableId) -> Option<String> {
     match &*frame.tables[id.index()] {
         TableView::Complete(_) => None,
         TableView::Unavailable { reason } => Some(format!("{id:?}: {reason}")),
+        TableView::NotRecorded { mode } => {
+            Some(format!("{id:?}: not recorded in a {mode} recording"))
+        }
         TableView::Truncated { .. } => Some(format!("{id:?}: incomplete read")),
     }
 }

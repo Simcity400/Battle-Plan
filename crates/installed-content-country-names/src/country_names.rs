@@ -410,7 +410,7 @@ fn partial<T: TableSchema>(frame: &DecodedFrame) -> (&[T::Row], bool) {
     match &*frame.tables[T::ID.index()] {
         TableView::Complete(rows) => (rows.rows::<T>().unwrap_or(&[]), true),
         TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or(&[]), false),
-        TableView::Unavailable { .. } => (&[], false),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => (&[], false),
     }
 }
 

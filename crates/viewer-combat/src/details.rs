@@ -140,6 +140,9 @@ fn absence<T: TableSchema>(table: &Available<'_, T>) -> String {
             format!("the table is truncated, {missing} rows unread")
         }
         Available::Unavailable { reason } => format!("the table is unavailable: {reason}"),
+        Available::NotRecorded { mode } => {
+            format!("the table is not recorded in a {mode} recording")
+        }
     }
 }
 // Signed 64-bit multiplication precedes the fixed5 division.

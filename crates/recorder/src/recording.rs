@@ -10,7 +10,7 @@ use installed_content_core::{content::GatherOptions, content::GatheredContent, c
 use installed_content_localisation::localisation::Localisation;
 use replay::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
-use replay_data::identity::SessionStart;
+use replay_data::{identity::SessionStart, scope::CaptureMode};
 use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
 use serde_json::{Value, json};
 use std::{
@@ -287,6 +287,7 @@ struct Options {
     game_score: bool,
     operation_outcomes: bool,
     politics_capture: bool,
+    capture_mode: CaptureMode,
     #[cfg(feature = "alloc-fault-injection")]
     alloc_fault: Option<AllocationFault>,
 }
@@ -357,7 +358,7 @@ fn usage() -> String {
     #[cfg(not(feature = "alloc-fault-injection"))]
     let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -402,6 +403,7 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
         game_score: true,
         operation_outcomes: true,
         politics_capture: true,
+        capture_mode: CaptureMode::Full,
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
     };
@@ -413,6 +415,13 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
                 options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
             Some("--once") if command == "record" => options.once = true,
+            Some("--capture-mode") if command == "record" => {
+                let name = args.next().ok_or_else(usage)?;
+                options.capture_mode = name
+                    .to_str()
+                    .and_then(CaptureMode::from_name)
+                    .ok_or_else(|| format!("--capture-mode must be full or map, not {name:?}"))?;
+            }
             Some("--no-game-score") if command == "record" => options.game_score = false,
             Some("--disable-operation-outcomes") if command == "record" => {
                 options.operation_outcomes = false
@@ -660,6 +669,8 @@ pub(crate) struct CaptureOptions<'a> {
     pub game_score: bool,
     pub operation_outcomes: bool,
     pub politics_capture: bool,
+    /// Which tables the session records; one mode per recording file.
+    pub capture_mode: CaptureMode,
     /// A session that reached no spool (the game closed at its menu, say) ends
     /// quietly instead of as a failed finalization.
     pub nothing_recorded_is_ok: bool,
@@ -697,6 +708,7 @@ fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
         game_score: options.game_score,
         operation_outcomes: options.operation_outcomes,
         politics_capture: options.politics_capture,
+        capture_mode: options.capture_mode,
         nothing_recorded_is_ok: false,
         live_status: false,
         admit: None,
@@ -855,6 +867,7 @@ pub(crate) fn capture(
         game_score,
         operation_outcomes,
         politics_capture,
+        capture_mode,
         nothing_recorded_is_ok,
         live_status,
         admit,
@@ -974,6 +987,7 @@ pub(crate) fn capture(
         process_start_time: process.start_time,
         qpc_frequency: frequency as u64,
         sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+        capture_mode,
         identity,
     };
     let mut session_bytes = Vec::new();
@@ -2436,6 +2450,26 @@ mod tests {
         assert_eq!(options.output, PathBuf::from("output"));
         assert_eq!(options.user, Some(PathBuf::from("user")));
         assert!(usage().contains("[--no-game-score]"));
+    }
+
+    #[test]
+    fn capture_mode_cli_defaults_full_and_names_only_known_modes() {
+        assert_eq!(
+            parse_options("record", Vec::new()).unwrap().capture_mode,
+            CaptureMode::Full
+        );
+        let options = parse_options("record", vec!["--capture-mode".into(), "map".into()]).unwrap();
+        assert_eq!(options.capture_mode, CaptureMode::Map);
+        for refused in [
+            vec!["--capture-mode".into(), "light".into()],
+            vec!["--capture-mode".into()],
+        ] {
+            assert!(parse_options("record", refused).is_err());
+        }
+        for command in ["detach", "refresh", "finalize"] {
+            assert!(parse_options(command, vec!["--capture-mode".into(), "map".into()]).is_err());
+        }
+        assert!(usage().contains("[--capture-mode full|map]"));
     }
 
     #[test]

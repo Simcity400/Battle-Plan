@@ -128,7 +128,8 @@ fn combat_log(frame: &DecodedFrame) -> &[replay_data::rows::CombatLogEquipmentRo
         | replay_frame::frame::TableView::Truncated { rows, .. } => rows
             .rows::<tables::CombatLogEquipment>()
             .unwrap_or_default(),
-        replay_frame::frame::TableView::Unavailable { .. } => &[],
+        replay_frame::frame::TableView::Unavailable { .. }
+        | replay_frame::frame::TableView::NotRecorded { .. } => &[],
     }
 }
 
@@ -607,6 +608,9 @@ impl Prepared {
                     DESTRUCTION_TRUNCATED.to_owned()
                 }
                 replay_frame::frame::TableView::Unavailable { reason } => reason.clone(),
+                replay_frame::frame::TableView::NotRecorded { mode } => {
+                    format!("EquipmentDestruction is not recorded in a {mode} recording")
+                }
             };
             let before = self.joins.drain_status.as_ref();
             if restoring || before.is_none_or(|old| old.0 != status) {

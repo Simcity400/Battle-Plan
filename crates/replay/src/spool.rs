@@ -314,6 +314,7 @@ impl Record {
     }
 
     fn decode_version(input: &mut Decoder<'_>, format: FormatVersion) -> io::Result<Self> {
+        input.format = format.version();
         Ok(match input.u8()? {
             0 => Self::SessionStart(SessionStart::decode(input)?),
             1 => Self::BranchStart(BranchStart::decode(input)?),

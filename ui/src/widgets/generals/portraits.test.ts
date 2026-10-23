@@ -105,7 +105,7 @@ test('actual portrait fact stores retain refusals only within the same edge, rec
       const branch: BoundTrack['branch'] = { id: '1', sessionId: '1', firstHour: 100, lastHour: 100,
         parentId: null, parentHour: null, sampleBoundary: 'Synthetic boundary', gaps: [] };
       const path = `memory/${id}.battleplan`;
-      return { source: { id, path, revision: '1', metadata: { path, name: id, revision: '1', format: 1,
+      return { source: { id, path, revision: '1', metadata: { path, name: id, revision: '1', format: 1, captureMode: 'full',
         campaignKey: 'c0ffee', branches: [branch], countries: [], playerCountryId: null,
         contentVerified: false, partial: null, warnings: [] } }, branch };
     };

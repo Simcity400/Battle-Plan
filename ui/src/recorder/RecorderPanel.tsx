@@ -8,8 +8,8 @@ import { Select } from '../components/Select';
 import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, stopPromptVisible, untilNextMinute, whatToRecord } from './status';
-import type { Head, NextLoad, RecorderSettings, Snapshot } from './status';
+import { captureModeFixed, discardTooltip, head, nextLoad, recordsAutomatically, sessionLength, settingsQueue, stopPromptVisible, untilNextMinute, whatToRecord } from './status';
+import type { CaptureMode, Head, NextLoad, RecorderSettings, Snapshot } from './status';
 import './recorder.css';
 
 export type View = 'main' | 'settings' | 'record';
@@ -45,9 +45,27 @@ export interface PanelViewProps {
 
 const folderName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 
-function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return <label className="recorder-row"><span>{label}</span>
-    <input type="checkbox" role="switch" checked={checked} onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)} /></label>;
+function Switch({ label, checked, onChange, unavailable }: { label: string; checked: boolean; onChange: (checked: boolean) => void; unavailable?: string }) {
+  return <label className={`recorder-row${unavailable ? ' is-unavailable' : ''}`}><span>{label}{unavailable && <span className="recorder-hint">{unavailable}</span>}</span>
+    <input type="checkbox" role="switch" checked={!unavailable && checked} disabled={!!unavailable}
+      onChange={(event: ChangeEvent<HTMLInputElement>) => onChange(event.target.checked)} /></label>;
+}
+
+const CAPTURE_MODES: readonly { value: CaptureMode; title: string; text: string; tag?: string }[] = [
+  { value: 'full', title: 'Full', text: 'Everything: the map, battle windows, division details and every dashboard.' },
+  { value: 'map', title: 'Map', text: 'Campaign map, counters and battle windows; no dashboards or division details.', tag: 'Smaller files' },
+];
+
+/** The two capture modes as cards; a running session's mode is shown fixed. */
+function CaptureModeChoice({ value, fixed, onChange }: { value: CaptureMode; fixed: boolean; onChange: (mode: CaptureMode) => void }) {
+  return <div className={`recorder-modes${fixed ? ' is-fixed' : ''}`} role="radiogroup" aria-label="Capture mode">
+    {CAPTURE_MODES.map(mode => <label key={mode.value} className={`recorder-mode${value === mode.value ? ' is-selected' : ''}`}>
+      <input type="radio" name="recorder-capture-mode" value={mode.value} checked={value === mode.value} disabled={fixed}
+        onChange={() => onChange(mode.value)} />
+      <span className="recorder-mode-title">{mode.title}{mode.tag && <span className="recorder-mode-tag">{mode.tag}</span>}</span>
+      <span className="recorder-mode-text">{mode.text}</span>
+    </label>)}
+  </div>;
 }
 
 function State({ head: shown }: { head: Head }) {
@@ -70,15 +88,29 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
   if (view !== 'main' && settings) {
     const back = <button type="button" className="icon-button" aria-label="Back" onClick={() => actions.view(view === 'record' ? 'settings' : 'main')}>
       <Icon name="chevron-left" /></button>;
-    if (view === 'record') return <div ref={root} className="recorder">
-      <div className="recorder-top">{back}What to record</div>
-      {error && notice}
-      <section className="recorder-section is-first is-last">
-        <Switch label="Game score" checked={settings.gameScore} onChange={gameScore => actions.settings({ gameScore })} />
-        <Switch label="Operation outcomes" checked={settings.operationOutcomes} onChange={operationOutcomes => actions.settings({ operationOutcomes })} />
-        <Switch label="Politics" checked={settings.politics} onChange={politics => actions.settings({ politics })} />
-      </section>
-    </div>;
+    if (view === 'record') {
+      const fixed = captureModeFixed(snapshot);
+      // While attached, the mode the session records, not one chosen since.
+      const mode = snapshot.captureMode ?? settings.captureMode;
+      const fullOnly = mode === 'map' ? 'Full only' : undefined;
+      return <div ref={root} className="recorder">
+        <div className="recorder-top">{back}What to record</div>
+        {error && notice}
+        <section className="recorder-section is-first">
+          <div className="recorder-label">Capture mode</div>
+          <CaptureModeChoice value={mode} fixed={fixed} onChange={captureMode => actions.settings({ captureMode })} />
+          <p className="recorder-note"><Icon name="info" /><span>{fixed
+            ? 'Fixed while attached to the game, including at its menu. A different mode starts a new recording file.'
+            : 'A campaign recorded in the other mode continues in a new recording file.'}</span></p>
+        </section>
+        <section className="recorder-section is-last">
+          <Switch label="Game score" checked={settings.gameScore} onChange={gameScore => actions.settings({ gameScore })} />
+          <Switch label="Operation outcomes" checked={settings.operationOutcomes} unavailable={fullOnly}
+            onChange={operationOutcomes => actions.settings({ operationOutcomes })} />
+          <Switch label="Politics" checked={settings.politics} unavailable={fullOnly} onChange={politics => actions.settings({ politics })} />
+        </section>
+      </div>;
+    }
     const userOptions = [{ value: 'automatic', label: 'Automatic' },
       ...(settings.userFolder ? [{ value: 'custom', label: folderName(settings.userFolder), reason: settings.userFolder }] : []),
       { value: 'choose', label: 'Choose folder…' }];

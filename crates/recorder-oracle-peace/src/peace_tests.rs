@@ -553,8 +553,8 @@ fn busy_drain_span_never_bridges_an_unrecorded_hour_or_another_branch() {
 fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
     use replay::spool::Record;
     use replay_data::{
-        identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-        identity::Verification,
+        identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+        identity::SessionStart, identity::Verification,
     };
     use replay_frame::{
         branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
@@ -566,6 +566,7 @@ fn settlement_replay(frames: Vec<DecodedFrame>) -> Replay {
             process_start_time: 1,
             qpc_frequency: 10_000_000,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

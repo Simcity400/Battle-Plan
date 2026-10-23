@@ -23,8 +23,8 @@ use std::{
     fmt, io,
 };
 
-use replay_data::{rows::RelationLinkRow, rows::TableId, rows::tables};
-use replay_frame::frame::DecodedFrame;
+use replay_data::{rows::RelationLinkRow, rows::TableId, rows::tables, scope, scope::CaptureMode};
+use replay_frame::frame::{DecodedFrame, TableView};
 
 use super::{
     allegiance,
@@ -288,6 +288,20 @@ pub fn viewer(
     })
 }
 
+/// The unit-sight and province-sight inputs a capture mode may leave out.
+const FOG_TABLES: [TableId; 5] = [
+    TableId::UnitIntel,
+    TableId::CountryVisibility,
+    TableId::CountryIntel,
+    TableId::StateVisibility,
+    TableId::RadarCoverage,
+];
+
+/// A recording without the fog inputs draws no fog.
+pub fn fog_recorded(mode: CaptureMode) -> bool {
+    FOG_TABLES.iter().all(|table| scope::records(mode, *table))
+}
+
 /// What one country can see this hour.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Vision {
@@ -340,10 +354,13 @@ impl Vision {
         fog: Result<&FogContent, &'static str>,
     ) -> io::Result<Self> {
         let (ours, resolution) = viewer(frame, links, tags, &choice.country)?;
+        let unrecorded = FOG_TABLES
+            .iter()
+            .any(|table| matches!(*frame.tables[table.index()], TableView::NotRecorded { .. }));
         let mut vision = Self {
             ours,
             resolution,
-            fog: choice.fog,
+            fog: choice.fog && !unrecorded,
             ..Self::default()
         };
 
@@ -358,7 +375,7 @@ impl Vision {
 
         let intel = rows::<tables::UnitIntel>(frame)?;
         match &intel {
-            Available::Unavailable { .. } => {
+            Available::Unavailable { .. } | Available::NotRecorded { .. } => {
                 vision.undecided.get_or_insert("UnitIntel");
             }
             Available::Truncated { .. } => vision.truncated.push("UnitIntel"),
@@ -422,7 +439,7 @@ impl Vision {
                 .collect();
         }
 
-        if choice.fog {
+        if vision.fog {
             let rebuilt = fog.and_then(|content| {
                 let relations = relations?.with_attaches(frame, links)?;
                 let bytes = visibility::derive(frame, links, ours, content, &relations)?;

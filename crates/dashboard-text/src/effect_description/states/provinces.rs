@@ -120,6 +120,11 @@ impl Renderer<'_, '_, '_> {
                         "victory-point raw-name fallback: ProvinceNames unavailable: {reason}"
                     ));
                 }
+                TableView::NotRecorded { mode } => {
+                    return Err(format!(
+                        "victory-point raw-name fallback: ProvinceNames is not recorded in a {mode} recording"
+                    ));
+                }
             };
             if let Some(row) = raw {
                 if row.name.contains(&0) {

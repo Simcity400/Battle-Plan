@@ -1,5 +1,8 @@
 use crate::invalid;
-use replay_data::{Hour, rows::LexicalTokenRow, rows::TableRows, rows::TableSchema, rows::tables};
+use replay_data::{
+    Hour, rows::LexicalTokenRow, rows::TableRows, rows::TableSchema, rows::tables,
+    scope::CaptureMode,
+};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{collections::BTreeMap, io};
 
@@ -16,14 +19,16 @@ pub enum Available<'a, T: TableSchema> {
     Truncated { rows: &'a [T::Row], missing: u32 },
     /// The table failed for this hour, with the collector's own reason.
     Unavailable { reason: &'a str },
+    /// The recording's capture mode leaves the table out.
+    NotRecorded { mode: CaptureMode },
 }
 
 impl<'a, T: TableSchema> Available<'a, T> {
-    /// The rows the hour holds. An unavailable table holds none.
+    /// The rows the hour holds. An unavailable or unrecorded table holds none.
     pub fn rows(&self) -> &'a [T::Row] {
         match self {
             Available::Complete(rows) | Available::Truncated { rows, .. } => rows,
-            Available::Unavailable { .. } => &[],
+            Available::Unavailable { .. } | Available::NotRecorded { .. } => &[],
         }
     }
 
@@ -56,6 +61,9 @@ pub fn country_slot(
         Available::Unavailable { reason } => format!(
             "the CountryLinks table is unavailable this hour ({reason}), so country {country} is unresolved"
         ),
+        Available::NotRecorded { mode } => format!(
+            "the CountryLinks table is not recorded in a {mode} recording, so country {country} is unresolved"
+        ),
     })
 }
 
@@ -71,6 +79,7 @@ pub fn rows<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Available<'_, T>
             missing: *missing,
         }),
         TableView::Unavailable { reason } => Ok(Available::Unavailable { reason }),
+        TableView::NotRecorded { mode } => Ok(Available::NotRecorded { mode: *mode }),
     }
 }
 

@@ -83,6 +83,9 @@ pub struct Snapshot {
     pub flag: Option<FlagImage>,
     /// Loads the finished session recorded but left out of its recordings.
     pub omitted: Option<OmittedLoads>,
+    /// The name of the mode the session attached to the game records, even at its menu: fixed
+    /// until it detaches.
+    pub capture_mode: Option<&'static str>,
 }
 
 /// The fields of one collector status publication the panel uses.

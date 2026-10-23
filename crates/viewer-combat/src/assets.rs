@@ -1063,7 +1063,7 @@ impl Assets {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// Glyph inventory from the parsed sub-unit database. Both NATO frames
 /// use the same declaration; missing declarations draw nothing.

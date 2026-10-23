@@ -79,6 +79,11 @@ impl<'a> Labels<'a> {
                 Available::Unavailable { reason } => {
                     return Err(format!("CountryAppearance unavailable: {reason}"));
                 }
+                Available::NotRecorded { mode } => {
+                    return Err(format!(
+                        "CountryAppearance is not recorded in a {mode} recording"
+                    ));
+                }
             };
             Ok(countries
                 .iter()

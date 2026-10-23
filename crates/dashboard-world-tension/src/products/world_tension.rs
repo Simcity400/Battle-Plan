@@ -255,7 +255,7 @@ fn source_operands(frame: &DecodedFrame) -> Option<(Vec<SourceOperand>, bool)> {
     let (rows, complete) = match &*frame.tables[TableId::ThreatSources.index()] {
         TableView::Complete(rows) => (rows.rows::<tables::ThreatSources>()?, true),
         TableView::Truncated { rows, .. } => (rows.rows::<tables::ThreatSources>()?, false),
-        TableView::Unavailable { .. } => return None,
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return None,
     };
     Some((
         rows.iter()

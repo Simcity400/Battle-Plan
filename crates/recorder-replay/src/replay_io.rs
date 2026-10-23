@@ -2725,10 +2725,10 @@ impl Summary {
         let timed = hour.metrics.table_times_recorded();
         self.untimed_hours += u64::from(!timed);
         for table in TableId::ALL {
-            if !self.recorded(table) {
+            let i = table.index();
+            if !self.recorded(table) || hour.updates[i] == UpdateKind::NotRecorded {
                 continue;
             }
-            let i = table.index();
             self.table_bytes[i] += hour.sizes[i] as u64;
             if timed {
                 self.table_times[i].push(hour.metrics.table_ns[i]);
@@ -2739,6 +2739,7 @@ impl Summary {
                 UpdateKind::Unchanged => 2,
                 UpdateKind::Truncated => 3,
                 UpdateKind::Unavailable | UpdateKind::Incompatible => 4,
+                UpdateKind::NotRecorded => unreachable!("skipped above"),
             };
             self.states[i][state] += 1;
         }
@@ -2801,10 +2802,12 @@ impl Summary {
             "table raw_encoded_bytes bytes_per_hour read_p50_ms read_p95_ms read_max_ms snapshots deltas unchanged truncated unavailable"
         );
         for table in TableId::ALL {
-            if !self.recorded(table) {
+            let i = table.index();
+            // Every hour counts each table but one its capture mode leaves out: no row, not zeros.
+            if !self.recorded(table) || (hours != 0 && self.states[i].iter().all(|&count| count == 0))
+            {
                 continue;
             }
-            let i = table.index();
             let times = self.read_times(table);
             let [snapshots, deltas, unchanged, truncated, unavailable] = self.states[i];
             let per_hour = if hours == 0 {
@@ -5044,6 +5047,7 @@ mod tests {
             process_start_time: 3,
             qpc_frequency: 100,
             sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            capture_mode: replay_data::identity::CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

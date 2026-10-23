@@ -10,9 +10,9 @@ const CAMPAIGN = '00000000-0000-4000-8000-000000000000';
 const PATH = `C:\\Recordings\\Germany 1936–1943.battleplan`;
 const STARTED = Date.UTC(2026, 9, 12, 12, 0);
 const settings: RecorderSettings = { recordEveryCampaign: true, startWithWindows: false, startWithReplay: true, gameScore: true,
-  operationOutcomes: true, politics: true, campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
+  operationOutcomes: true, politics: true, captureMode: 'full', campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000, firstHour: null,
-  bytes: 380 * 2 ** 20, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true, session: null, flag: null };
+  bytes: 380 * 2 ** 20, progress: null, startedAt: STARTED, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: 'full' };
 const actions = new Proxy({}, { get: () => () => {} }) as PanelActions;
 const text = (html: string) => html.replace(/<[^>]*>/g, ' ').replace(/&#x27;/g, '\'').replace(/\s+/g, ' ');
 
@@ -60,7 +60,32 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     const panelSettings = text(render({ view: 'settings' }));
     assert.match(panelSettings, /Settings Record every campaign Save to C:\\Recordings Paradox user folder Automatic/);
     assert.doesNotMatch(panelSettings, /File size|Fast|Small/);
-    assert.match(panelSettings, /Start With Windows With Battle Plan What to record Everything/);
-    assert.match(text(render({ view: 'record' })), /What to record Game score Operation outcomes Politics/);
+    assert.match(panelSettings, /Start With Windows With Battle Plan What to record Full/);
+    assert.match(text(render({ view: 'settings', settings: { ...settings, captureMode: 'map' } })), /What to record Map/,
+      'the summary names the mode');
+
+    // What to record: the two modes as radio cards, each saying what it keeps and leaves out.
+    const idle = { ...recording, phase: 'notRecording', captureMode: null } as const;
+    const record = render({ view: 'record', snapshot: idle });
+    assert.match(text(record), /What to record Capture mode Full Everything: the map, battle windows, division details and every dashboard\. Map Smaller files Campaign map, counters and battle windows; no dashboards or division details\./);
+    assert.match(record, /role="radiogroup" aria-label="Capture mode"/);
+    assert.match(record, /<label class="recorder-mode is-selected"><input type="radio" name="recorder-capture-mode" checked="" value="full"/);
+    assert.doesNotMatch(record, /type="radio"[^>]*disabled/, 'the modes can be chosen between sessions');
+    assert.match(text(record), /continues in a new recording file\. Game score Operation outcomes Politics/);
+    assert.doesNotMatch(record, /Full only/);
+    const map = render({ view: 'record', snapshot: idle, settings: { ...settings, captureMode: 'map' } });
+    assert.match(map, /<label class="recorder-mode is-selected"><input type="radio" name="recorder-capture-mode" checked="" value="map"/);
+    assert.match(text(map), /Game score Operation outcomes Full only Politics Full only/);
+    const switches = (map.match(/<input[^>]*role="switch"[^>]*>/g) ?? []).map(input => [/checked=""/.test(input), /disabled=""/.test(input)]);
+    assert.deepEqual(switches, [[true, false], [false, true], [false, true]], 'Map shows operation outcomes and politics off and disabled');
+    // While recording the mode is shown fixed, and the note says why.
+    const fixed = render({ view: 'record' });
+    assert.match(fixed, /class="recorder-modes is-fixed"/);
+    assert.equal(fixed.match(/type="radio"[^>]*disabled=""/g)?.length, 2);
+    assert.match(text(fixed), /Fixed while attached to the game, including at its menu\. A different mode starts a new recording file\./);
+    // Attached at the game's menu in Map while the settings now say Full: the session's mode shows, fixed.
+    const menu = render({ view: 'record', snapshot: { ...recording, phase: 'waiting', captureMode: 'map' } });
+    assert.match(menu, /class="recorder-modes is-fixed"/);
+    assert.match(menu, /checked=""[^>]*value="map"/);
   } finally { await vite.close(); }
 });

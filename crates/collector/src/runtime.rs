@@ -7709,6 +7709,7 @@ mod tests {
             process_start_time: 1000,
             qpc_frequency: 1,
             sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            capture_mode: replay_data::identity::CaptureMode::Full,
             identity: replay_data::identity::Identity {
                 game_version: "fixture".into(),
                 exe_hash: [1; 32],

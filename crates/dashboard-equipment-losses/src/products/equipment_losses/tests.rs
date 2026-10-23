@@ -162,8 +162,8 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
 }
 use replay::spool::Record;
 use replay_data::{
-    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-    identity::Verification, rows::CampaignRow, rows::CombatLogEquipmentRow,
+    identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+    identity::SessionStart, identity::Verification, rows::CampaignRow, rows::CombatLogEquipmentRow,
     rows::CombatLogStateRow, rows::CountryLinkRow, rows::CountryRow, rows::LendLeaseEquipmentRow,
     rows::PlayerRow, rows::SliceReadRow, rows::SunkConvoyRow, rows::SunkShipEntry,
     rows::SunkShipsRow, rows::TableRows, rows::VariantDefinitionRow,
@@ -188,6 +188,7 @@ fn session() -> SessionStart {
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

@@ -110,6 +110,7 @@ fn session(id: u64) -> SessionStart {
         process_start_time: id,
         qpc_frequency: 10_000_000,
         sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+        capture_mode: crate::identity::CaptureMode::Full,
         identity: Identity {
             game_version: "test".into(),
             exe_hash: [1; 32],
@@ -418,6 +419,115 @@ pub(super) fn records(id: u64, hours: &[i32]) -> Vec<Record> {
     records
 }
 
+/// [`records`] of a session that records in Map mode.
+fn map_records(id: u64, hours: &[i32]) -> Vec<Record> {
+    let mut encoder = FrameEncoder::new();
+    let mut start = session(id);
+    start.capture_mode = CaptureMode::Map;
+    let mut records = vec![
+        Record::SessionStart(start),
+        Record::BranchStart(branch(id, hours[0])),
+    ];
+    for &hour in hours {
+        let mut input = crate::frame::FrameInput::from(source(id, hour));
+        input.scope_to(CaptureMode::Map);
+        records.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
+    }
+    records
+}
+
+/// A table a current Map recording leaves out.
+fn left_out(table: TableId) -> bool {
+    table.last_change().present(FORMAT_VERSION) && !crate::scope::records(CaptureMode::Map, table)
+}
+
+#[test]
+fn a_map_recording_stores_no_section_for_a_table_it_leaves_out() {
+    let hours = [1, 2, 3];
+    let map = Replay::from_records(CAMPAIGN.into(), &[map_records(1, &hours)]).unwrap();
+    let full = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+    let reopened = Replay::open(map.bytes().to_vec()).unwrap();
+    assert_eq!(reopened.capture_mode, CaptureMode::Map);
+    assert_eq!(full.capture_mode, CaptureMode::Full);
+    let length = map.bytes().len() as u64;
+    let summary =
+        Replay::read_trailer_summary(&mut std::io::Cursor::new(map.bytes()), length).unwrap();
+    assert_eq!(summary.2, CaptureMode::Map);
+    for block in &reopened.index {
+        let sections = reopened.block_sections(block).unwrap().unwrap();
+        let stored = |table| {
+            sections.iter().any(|size| {
+                matches!(size.section, grouped::Section::Keyframe(id) | grouped::Section::Later(id) if id == table)
+            })
+        };
+        assert!(stored(TableId::Divisions));
+        for table in TableId::ALL.into_iter().filter(|table| left_out(*table)) {
+            assert!(!stored(table), "{table:?}");
+        }
+    }
+    assert!(map.bytes().len() < full.bytes().len());
+    for replay in [&reopened, &interleaved_copy(&reopened)] {
+        for hour in hours {
+            let (SeekResult::Frame(map), SeekResult::Frame(full)) =
+                (replay.seek(1, hour).unwrap(), full.seek(1, hour).unwrap())
+            else {
+                panic!("hour {hour} is recorded");
+            };
+            for table in TableId::ALL {
+                let view = &*map.tables[table.index()];
+                if left_out(table) {
+                    assert_eq!(
+                        *view,
+                        TableView::NotRecorded {
+                            mode: CaptureMode::Map
+                        },
+                        "{table:?}"
+                    );
+                } else {
+                    assert_eq!(*view, *full.tables[table.index()], "{table:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_recording_file_holds_one_capture_mode() {
+    let full = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let Err(error) = full.append(&[map_records(2, &[5, 6])]) else {
+        panic!("a Map session was appended to a Full recording");
+    };
+    assert!(error.to_string().contains("capture mode"), "{error}");
+    assert!(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, &[1, 2]), map_records(2, &[5, 6])]
+        )
+        .is_err()
+    );
+    // A Map session's frames must leave out what Map leaves out.
+    let mut mislabelled = records(3, &[1, 2]);
+    let Record::SessionStart(start) = &mut mislabelled[0] else {
+        unreachable!("records begin with their session");
+    };
+    start.capture_mode = CaptureMode::Map;
+    let Err(error) = Replay::from_records(CAMPAIGN.into(), &[mislabelled]) else {
+        panic!("a Map session wrote Full frames");
+    };
+    assert!(error.to_string().contains("capture mode"), "{error}");
+    // Continuing the campaign in Map mode is refused rather than mixed in.
+    let history = full.into_history().unwrap();
+    let mut next = session(4);
+    next.capture_mode = CaptureMode::Map;
+    let error = history.tracker_for(&next).unwrap_err();
+    assert!(
+        error.to_string().contains("another capture mode"),
+        "{error}"
+    );
+    next.capture_mode = CaptureMode::Full;
+    history.tracker_for(&next).unwrap();
+}
+
 /// The same recording with every block rewritten in the interleaved layout.
 pub(super) fn interleaved_copy(replay: &Replay) -> Replay {
     let mut prefix = replay.bytes()[..replay.header_end].to_vec();
@@ -639,7 +749,7 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
     // Grouped blocks bound each table's plain updates and the plain frame
     // headers (count, length and header of each frame); interleaved blocks
     // bound their whole plain frames.
-    let block = grouped::BlockWriter::new(first);
+    let block = grouped::BlockWriter::new(first).unwrap();
     let header = payload.len() - sizes.iter().sum::<usize>() + 8;
     let exact = header.max(*sizes.iter().max().unwrap());
     assert!(!block.fits(payload.len(), &sizes, exact - 1));
@@ -845,8 +955,9 @@ fn trailer_hour_span_covers_every_branch_without_reading_blocks() {
     )
     .unwrap();
     let length = replay.bytes().len() as u64;
-    let (partial, span) =
+    let (partial, span, mode) =
         Replay::read_trailer_summary(&mut std::io::Cursor::new(replay.bytes()), length).unwrap();
+    assert_eq!(mode, CaptureMode::Full);
     assert!(partial.is_none());
     assert_eq!(span, Some((3, 721)));
     // Block payloads are not read: damaging one leaves the span readable.
@@ -2042,9 +2153,7 @@ fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
             raw.extend(frame);
         }
     });
-    let mut bytes = legacy.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&97_u16.to_le_bytes());
-    let legacy = Replay::open(bytes).unwrap();
+    let legacy = Replay::open(relabelled(legacy.bytes(), 97).unwrap()).unwrap();
     assert_eq!(legacy.format.version(), 97);
     assert!(
         legacy

@@ -520,7 +520,9 @@ impl<'a> Since<'a> {
             view_reads::unrecorded(|| match &*frame.tables[TableId::CountryLinks.index()] {
                 TableView::Complete(rows) => rows.rows::<tables::CountryLinks>(),
                 // A truncated table may lack the row that resolves a key.
-                TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
+                TableView::Truncated { .. }
+                | TableView::Unavailable { .. }
+                | TableView::NotRecorded { .. } => None,
             })
         });
         match links {
@@ -564,7 +566,7 @@ fn ended(frame: &DecodedFrame, read: &TableRead, from: Hour, to: Hour) -> bool {
     ) -> bool {
         let rows = match view {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
-            TableView::Unavailable { .. } => return false,
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => return false,
         };
         rows.rows::<T>().is_none_or(|rows| {
             rows.iter().any(|row| {

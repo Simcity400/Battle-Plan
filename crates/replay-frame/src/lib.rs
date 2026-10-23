@@ -10,7 +10,7 @@ pub mod rows;
 pub(crate) use replay_data::value;
 pub use replay_data::{
     BranchId, FORMAT_VERSION, Hour, SessionId, cadence, codec, country_flags, day_night, display,
-    event_feed_rows, fixed_point, format, identity, naval_trees, sliced, temperature,
+    event_feed_rows, fixed_point, format, identity, naval_trees, scope, sliced, temperature,
 };
 
 pub const KEYFRAME_INTERVAL: u32 = 720;

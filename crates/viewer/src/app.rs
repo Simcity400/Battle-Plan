@@ -447,6 +447,27 @@ fn start_prompt(mode: CameraMode) -> &'static str {
     }
 }
 
+/// The capture mode of a recording that leaves tables out, and what it leaves out.
+pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
+    let mode = replay.capture_mode;
+    if let Some(omits) = replay_data::scope::omits(mode) {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(
+                egui::Color32::YELLOW,
+                format!("{} recording:", mode_name(mode)),
+            );
+            ui.colored_label(egui::Color32::YELLOW, format!("not recorded: {omits}."));
+        });
+    }
+}
+
+fn mode_name(mode: replay_data::scope::CaptureMode) -> &'static str {
+    match mode {
+        replay_data::scope::CaptureMode::Full => "Full",
+        replay_data::scope::CaptureMode::Map => "Map",
+    }
+}
+
 pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
     if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
         ui.horizontal_wrapped(|ui| {
@@ -5022,12 +5043,14 @@ impl Viewer {
         let partial = document.playback.replay().is_partial()
             && self.embedded.is_some()
             && !self.dashboard_map;
+        // Every map of a recording that leaves tables out says so.
+        let scoped = replay_data::scope::omits(document.capture_mode()).is_some();
         // A fly or walk mode chosen from the map says how to choose where it starts.
         let start_prompt = self
             .start_pick
             .choosing()
             .then(|| start_prompt(self.camera_mode));
-        if software || diagnostics || partial || start_prompt.is_some() {
+        if software || diagnostics || partial || scoped || start_prompt.is_some() {
             map_overlay(
                 ui,
                 rect.intersect(ui.clip_rect()),
@@ -5039,6 +5062,9 @@ impl Viewer {
                     }
                     if partial {
                         partial_notice(ui, document.playback.replay());
+                    }
+                    if scoped {
+                        capture_mode_notice(ui, document.playback.replay());
                     }
                     if software {
                         ui.colored_label(egui::Color32::YELLOW, SOFTWARE_RENDERER_NOTICE);
@@ -6957,8 +6983,8 @@ pub(crate) mod tests {
     fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
         use replay::{container::Replay, spool::Record};
         use replay_data::{
-            identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-            identity::Verification,
+            identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+            identity::SessionStart, identity::Verification,
         };
         let path = PathBuf::from("memory.battleplan");
         let session = SessionStart {
@@ -6967,6 +6993,7 @@ pub(crate) mod tests {
             process_start_time: 1,
             qpc_frequency: 10_000_000,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],
@@ -7253,6 +7280,45 @@ pub(crate) mod tests {
                 .any(|text| text == "collector allocation failed")
         );
         assert!(!text.iter().any(|text| text.contains("hour")));
+    }
+
+    #[test]
+    fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
+        use replay::{container::Replay, spool::Record};
+        use replay_data::scope::CaptureMode;
+        let healthy = crate::playback::tests::fixture();
+        let mut session = healthy.sessions[0].clone();
+        session.capture_mode = CaptureMode::Map;
+        let map = Replay::from_records(
+            healthy.campaign_id.clone(),
+            &[vec![Record::SessionStart(session)]],
+        )
+        .unwrap();
+        let labels = |replay: &Replay| {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                super::capture_mode_notice(ui, replay)
+            });
+            output.textures_delta.clear();
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(labels(&healthy).is_empty());
+        let text = labels(&map).join(" ");
+        assert!(
+            text.starts_with("Map recording: not recorded: division names"),
+            "{text}"
+        );
+        assert!(
+            text.contains("fog of war") && text.contains("every dashboard"),
+            "{text}"
+        );
     }
 
     #[test]

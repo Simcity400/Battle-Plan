@@ -554,6 +554,7 @@ fn session(id: u64) -> SessionStart {
         process_start_time: u64::MAX - id,
         qpc_frequency: 10_000_000,
         sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+        capture_mode: crate::identity::CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic build".into(),
             exe_hash: [11; 32],
@@ -1676,6 +1677,8 @@ fn synthesize() -> Campaign {
                     coverage.division_unavailable_tables +=
                         usize::from(table == TableId::Divisions);
                 }
+                // Every acceptance source records every table.
+                TableUpdate::NotRecorded { .. } => unreachable!("a full recording"),
                 TableUpdate::Truncated { .. } => {
                     coverage.truncated_tables += 1;
                     if let Some(domain_index) = domain_index {

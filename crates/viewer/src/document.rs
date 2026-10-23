@@ -1313,6 +1313,11 @@ pub fn select_movement(
 }
 
 impl Document {
+    /// Which tables the open recording holds.
+    pub fn capture_mode(&self) -> replay_data::scope::CaptureMode {
+        self.playback.replay().capture_mode
+    }
+
     pub fn load(
         path: &Path,
         options: &ResolveOptions,
@@ -3139,6 +3144,9 @@ impl<'a> Hour<'a> {
                 Ok(Available::Complete(_)) => Ok(true),
                 Ok(Available::Truncated { .. }) => Ok(false),
                 Ok(Available::Unavailable { reason }) => Err(reason.to_string()),
+                Ok(Available::NotRecorded { mode }) => {
+                    Err(format!("not recorded in a {mode} recording"))
+                }
                 Err(error) => Err(error.to_string()),
             }
         }

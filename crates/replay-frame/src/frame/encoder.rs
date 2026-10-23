@@ -1,6 +1,6 @@
 use super::{
     BaselineToken, DecodedFrame, EncodedFrame, Frame, FrameInput, TABLE_COUNT, TableInput,
-    TableView, put_count, validate_complete, validate_rows, validate_singleton,
+    TableView, put_count, validate_complete, validate_rows, validate_singleton, wire::table_stored,
 };
 use crate::{
     BranchId, Hour, KEYFRAME_INTERVAL,
@@ -506,17 +506,16 @@ impl FrameEncoder {
             .ok_or_else(|| invalid("encoder revision space exhausted"))?;
         let context = self.frame_context(source.branch, source.hour, force_keyframe);
         let keyframe = context.keyframe;
-        let mut output = allocation::vec(EncodedFrame::PREFIX_BYTES + 37 + 8 * TABLE_COUNT)?;
+        let mode = source.capture_mode()?;
+        let mut output = allocation::vec(EncodedFrame::PREFIX_BYTES + 38 + 8 * TABLE_COUNT)?;
         output.resize(EncodedFrame::PREFIX_BYTES, 0);
         output.extend_from_slice(&source.branch.to_le_bytes());
         output.extend_from_slice(&source.hour.to_le_bytes());
         output.push(u8::from(keyframe));
+        output.push(mode.byte());
         output.extend_from_slice(&source.metrics.total_ns.to_le_bytes());
         for table in TableId::ALL {
-            if !table
-                .last_change()
-                .present(FormatVersion::CURRENT.version())
-            {
+            if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
             }
             output.extend_from_slice(&source.metrics.table_ns[table.index()].to_le_bytes());
@@ -526,10 +525,7 @@ impl FrameEncoder {
         let mut unchanged = [false; TABLE_COUNT];
         let mut deleted = std::mem::take(&mut self.deleted);
         for table in TableId::ALL {
-            if !table
-                .last_change()
-                .present(FormatVersion::CURRENT.version())
-            {
+            if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
             }
             unchanged[table.index()] = match segments[table.index()].take() {
@@ -727,6 +723,11 @@ impl FrameEncoder {
                     rows.encode_rows(output).map_err(row_encoding)?;
                 }
                 false
+            }
+            TableInput::Sampled(TableView::NotRecorded { .. }) => {
+                return Err(invalid(
+                    "a table its capture mode does not record has no update",
+                ));
             }
             TableInput::Sampled(TableView::Unavailable { reason }) => {
                 if reason.is_empty() {

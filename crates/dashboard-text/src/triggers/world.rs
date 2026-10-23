@@ -323,6 +323,18 @@ fn core_tables(frame: &DecodedFrame) -> (CoreRows<'_>, Vec<(&'static str, Failur
                 ));
                 &[]
             }
+            TableView::NotRecorded { mode } => {
+                gaps.push((
+                    name,
+                    Failure::input(
+                        T::ID,
+                        "",
+                        None,
+                        format!("{name} is not recorded in a {mode} recording"),
+                    ),
+                ));
+                &[]
+            }
         }
     }
     let mut gaps = Vec::new();
@@ -729,7 +741,7 @@ fn required_row<T: TableSchema>(
     let (rows, complete) = match view {
         TableView::Complete(rows) => (rows.rows::<T>().unwrap_or_default(), true),
         TableView::Truncated { rows, .. } => (rows.rows::<T>().unwrap_or_default(), false),
-        TableView::Unavailable { .. } => (&[][..], false),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => (&[][..], false),
     };
     rows.iter()
         .rev()

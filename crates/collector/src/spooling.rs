@@ -1132,6 +1132,7 @@ impl<B: SegmentBackend> Campaign<B> {
                             reason: engine_allocation::string(reason)?,
                         }
                     }
+                    TableInput::Sampled(TableView::NotRecorded { .. }) => continue,
                     // Only hourly tables are compared natively.
                     TableInput::ComparedEqual(_)
                     | TableInput::ComparedChanges { .. }
@@ -1308,13 +1309,14 @@ impl<B: SegmentBackend> Campaign<B> {
     /// thread and `helpers` at once.
     fn write_with(
         &mut self,
-        source: FrameInput,
+        mut source: FrameInput,
         qpc: i64,
         signal: Option<i64>,
         unknown: u64,
         work: &mut WorkSample,
         helpers: Option<crate::spool_helper::Helpers<'_>>,
     ) -> io::Result<()> {
+        source.scope_to(self.session.capture_mode);
         let _details = replay_data::codec::error_details_scope();
         let (branch, hour) = (source.branch, source.hour);
         let held_line_output = crate::extended::line_output::holds_publication(
@@ -4507,6 +4509,61 @@ mod tests {
     }
 
     #[test]
+    fn a_map_session_spools_nothing_for_the_tables_it_leaves_out() {
+        use replay_data::scope::{self, CaptureMode};
+        use replay_frame::frame::FrameDecoder;
+        let directory =
+            std::env::temp_dir().join(format!("hoi4-capture-mode-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let mut start = session();
+        start.capture_mode = CaptureMode::Map;
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+        for hour in [10, 11] {
+            processor.frame(&captured(hour)).unwrap();
+        }
+        processor.detach().unwrap();
+        let campaign = processor
+            .campaigns
+            .get_mut(std::str::from_utf8(ID).unwrap())
+            .unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut frames = 0;
+        for file in fs::read_dir(&campaign.directory).unwrap().flatten() {
+            if !file.file_name().to_string_lossy().starts_with("spool.") {
+                continue;
+            }
+            for record in replay::spool::recover_prefix(&fs::read(file.path()).unwrap()).records {
+                let Record::Frame(frame) = record else {
+                    continue;
+                };
+                assert_eq!(frame.capture_mode().unwrap(), CaptureMode::Map);
+                let decoded = decoder.apply(&frame).unwrap();
+                frames += 1;
+                for table in TableId::ALL {
+                    let left_out = table.last_change().present(replay_data::FORMAT_VERSION)
+                        && !scope::records(CaptureMode::Map, table);
+                    let view = &*decoded.tables[table.index()];
+                    assert_eq!(
+                        left_out,
+                        matches!(
+                            view,
+                            TableView::NotRecorded {
+                                mode: CaptureMode::Map
+                            }
+                        ),
+                        "{table:?}"
+                    );
+                }
+                assert!(decoded.complete::<tables::Clock>().is_ok());
+            }
+        }
+        assert_eq!(frames, 2);
+        drop(processor);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn spool_validation_detail_survives_ordinary_failure_and_detach() {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
@@ -5991,6 +6048,7 @@ mod tests {
             process_start_time: 1000,
             qpc_frequency: 10_000_000,
             sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+            capture_mode: replay_data::identity::CaptureMode::Full,
             identity: Identity {
                 game_version: "fixture".into(),
                 exe_hash: [1; 32],

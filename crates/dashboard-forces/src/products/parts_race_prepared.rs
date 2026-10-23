@@ -299,6 +299,7 @@ fn owned_updates(
                 TableView::Unavailable { reason } => TableUpdate::Unavailable {
                     reason: reason.clone(),
                 },
+                TableView::NotRecorded { mode } => TableUpdate::NotRecorded { mode: *mode },
                 TableView::Truncated { .. } => TableUpdate::Unavailable {
                     reason: String::new(),
                 },
@@ -314,6 +315,7 @@ fn owned_updates(
             TableView::Unavailable { reason } => TableUpdate::Unavailable {
                 reason: reason.clone(),
             },
+            TableView::NotRecorded { mode } => TableUpdate::NotRecorded { mode: *mode },
         };
     }
     result

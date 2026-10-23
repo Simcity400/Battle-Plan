@@ -334,7 +334,8 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
                 let rows = match &*decoded.tables[table.index()] {
                     replay_frame::frame::TableView::Complete(rows)
                     | replay_frame::frame::TableView::Truncated { rows, .. } => rows,
-                    replay_frame::frame::TableView::Unavailable { .. } => continue,
+                    replay_frame::frame::TableView::Unavailable { .. }
+                    | replay_frame::frame::TableView::NotRecorded { .. } => continue,
                 };
                 // Every observed row carries the epoch, including refused census intervals.
                 macro_rules! maximum {
@@ -397,7 +398,7 @@ fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
             for (index, table) in selected.into_iter().enumerate() {
                 let rows = match &*decoded.tables[table.index()] {
                     TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
-                    TableView::Unavailable { .. } => continue,
+                    TableView::Unavailable { .. } | TableView::NotRecorded { .. } => continue,
                 };
                 let last = match table {
                     TableId::AirLossEvents => rows

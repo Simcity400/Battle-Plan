@@ -46,6 +46,7 @@ pub fn typescript_contract() -> String {
     use ts_rs::TS;
     let mut declarations = vec![
         ReplayMetadata::decl(),
+        CaptureMode::decl(),
         PartialRecording::decl(),
         DamagedRecording::decl(),
         BranchMetadata::decl(),

@@ -26,7 +26,7 @@ const data: IdeaHistoryReply = { branchId: '1', tag: 'mod_country', unobserved: 
   artwork: [], holders: [] };
 function source(id: string, firstHour: number, lastHour: number): DashboardSource {
   return { id, path: `C:/recordings/${id}.battleplan`, revision: '1', metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1',
-    name: id, format: 1, campaignKey: 'c0ffee', branches: [{ id: '1', sessionId: '1', firstHour, lastHour,
+    name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee', branches: [{ id: '1', sessionId: '1', firstHour, lastHour,
       parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
     countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } };
 }

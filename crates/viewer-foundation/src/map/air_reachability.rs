@@ -341,7 +341,9 @@ pub fn target_admission(
 fn complete<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Option<&[T::Row]>> {
     Ok(match rows::<T>(frame)? {
         Available::Complete(rows) => Some(rows),
-        Available::Truncated { .. } | Available::Unavailable { .. } => None,
+        Available::Truncated { .. }
+        | Available::Unavailable { .. }
+        | Available::NotRecorded { .. } => None,
     })
 }
 

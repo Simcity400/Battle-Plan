@@ -229,7 +229,7 @@ fn fixture(layout: Layout) -> (Replay, Vec<Frame>) {
 
 fn compare(replay: &Replay, expected: &[Frame], index: &BlockIndex, bytes: &[u8], through: usize) {
     let directory = Directory::parse(bytes, index).unwrap();
-    let present = Present::new(replay.format.version());
+    let present = Present::new(replay.format.version(), replay.capture_mode);
     let header = directory.raw(bytes, HEADER).unwrap().unwrap();
     let (hours, entries) = read_header(&header, index, directory.frames, &present).unwrap();
     let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
@@ -255,7 +255,7 @@ fn compare(replay: &Replay, expected: &[Frame], index: &BlockIndex, bytes: &[u8]
     assert_eq!(expected.len(), through);
     let mut actual: Vec<Frame> = expected.iter().map(|frame| (**frame).clone()).collect();
     for &table in &present.tables {
-        if keyframe_refusal(&directory, replay.format, None, table)
+        if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)
             .unwrap()
             .is_some()
         {
@@ -572,7 +572,7 @@ fn direct_delta_section_refusals_keep_original_framing_and_wire_precedence() {
             columns.marks(table, &[]).unwrap();
             let (index, bytes) = replace_columns(&replay, table, &columns.raw());
             let directory = Directory::parse(&bytes, &index).unwrap();
-            let present = Present::new(replay.format.version());
+            let present = Present::new(replay.format.version(), replay.capture_mode);
             let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
             let (hours, entries) =
                 read_header(&header, &index, directory.frames, &present).unwrap();
@@ -723,7 +723,7 @@ fn direct_delta_malformed_columns_have_fixed_refusals_in_every_layout() {
                 changed.marks(table, marks.unwrap_or(&[])).unwrap();
                 let (index, bytes) = replace_columns(&replay, table, &changed.raw());
                 let directory = Directory::parse(&bytes, &index).unwrap();
-                let present = Present::new(replay.format.version());
+                let present = Present::new(replay.format.version(), replay.capture_mode);
                 let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
                 let (hours, entries) =
                     read_header(&header, &index, directory.frames, &present).unwrap();
@@ -1118,7 +1118,7 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
     for index in &replay.index {
         let bytes = replay.block_bytes(index).unwrap();
         let directory = Directory::parse(&bytes, index).unwrap();
-        let present = Present::new(replay.format.version());
+        let present = Present::new(replay.format.version(), replay.capture_mode);
         let header = directory.raw(&bytes, HEADER).unwrap().unwrap();
         let (hours, entries) = read_header(&header, index, directory.frames, &present).unwrap();
         let memo: Vec<_> = TableId::ALL.iter().map(|_| OnceLock::new()).collect();
@@ -1137,7 +1137,7 @@ fn direct_delta_allocation_failures_propagate_instead_of_retrying() {
             memo: &memo,
         };
         for &table in &present.tables {
-            if keyframe_refusal(&directory, replay.format, None, table)
+            if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)
                 .unwrap()
                 .is_some()
             {

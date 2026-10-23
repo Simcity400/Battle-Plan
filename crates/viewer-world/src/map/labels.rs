@@ -297,6 +297,9 @@ fn gap<T: replay_data::rows::TableSchema>(available: &Available<'_, T>) -> Strin
             format!("the table is truncated ({missing} rows missing)")
         }
         Available::Unavailable { reason } => format!("the table is unavailable: {reason}"),
+        Available::NotRecorded { mode } => {
+            format!("the table is not recorded in a {mode} recording")
+        }
     }
 }
 

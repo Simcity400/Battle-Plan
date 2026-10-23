@@ -71,6 +71,11 @@ pub(super) fn unit(
         Available::Unavailable { reason } => {
             return Ok(Err(Unavailable::FeaturesFailed(reason.to_owned())));
         }
+        Available::NotRecorded { mode } => {
+            return Ok(Err(Unavailable::FeaturesFailed(format!(
+                "not recorded in a {mode} recording"
+            ))));
+        }
     };
     let formation = side.commander_formation;
     if flags.dlc_mask & FORMATIONS_FEATURE == 0 || formation == 0 {
@@ -86,6 +91,10 @@ pub(super) fn unit(
             Available::Unavailable { reason } => Unavailable::FormationsFailed {
                 formation,
                 reason: reason.to_owned(),
+            },
+            Available::NotRecorded { mode } => Unavailable::FormationsFailed {
+                formation,
+                reason: format!("not recorded in a {mode} recording"),
             },
         }));
     };

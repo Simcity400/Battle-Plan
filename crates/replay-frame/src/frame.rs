@@ -4,6 +4,7 @@ use crate::{
     BranchId, Hour,
     codec::{Decoder, invalid_static as invalid},
     rows::{DeltaRow, TableId, TableRows, TableSchema},
+    scope::{self, CaptureMode},
 };
 use std::{
     io,
@@ -98,6 +99,8 @@ pub enum TableView {
     Complete(TableRows),
     Truncated { rows: TableRows, missing: u32 },
     Unavailable { reason: String },
+    /// The recording's capture mode leaves the table out ([`crate::scope`]).
+    NotRecorded { mode: CaptureMode },
 }
 
 /// One decoded table, shared between the hours it did not change in.
@@ -389,7 +392,7 @@ impl TableInput {
                     rows.round_to_display();
                 }
             }
-            Self::Sampled(TableView::Unavailable { .. })
+            Self::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. })
             | Self::ComparedEqual(_)
             | Self::SliceUpdate { .. } => {}
         }
@@ -465,6 +468,10 @@ pub enum TableUpdate {
     },
     Unavailable {
         reason: String,
+    },
+    /// Stored as nothing.
+    NotRecorded {
+        mode: CaptureMode,
     },
     /// Discarded incompatible source update. Retain its length for inspection;
     /// current writers emit only the unavailable reason, never historical rows.
@@ -558,8 +565,83 @@ impl DecodedFrame {
                     format_args!("hour {} {table:?} is unavailable: {reason}", self.hour),
                 )?))
             }
+            TableView::NotRecorded { mode } => Err(crate::codec::invalid(
+                crate::codec::try_format(format_args!(
+                    "hour {} {table:?} is not recorded in a {mode} recording",
+                    self.hour
+                ))?,
+            )),
         }
     }
+
+    pub fn capture_mode(&self) -> io::Result<CaptureMode> {
+        capture_mode(|index| match *self.tables[index] {
+            TableView::NotRecorded { mode } => Some(mode),
+            _ => None,
+        })
+    }
+}
+
+impl FrameInput {
+    pub fn capture_mode(&self) -> io::Result<CaptureMode> {
+        capture_mode(|index| match self.tables[index] {
+            TableInput::Sampled(TableView::NotRecorded { mode }) => Some(mode),
+            _ => None,
+        })
+    }
+
+    pub fn scope_to(&mut self, mode: CaptureMode) {
+        for table in TableId::ALL {
+            if recorded_here(table) && !scope::records(mode, table) {
+                self.tables[table.index()] = TableView::NotRecorded { mode }.into();
+                self.metrics.table_ns[table.index()] = 0;
+            }
+        }
+    }
+}
+
+impl Frame {
+    pub fn capture_mode(&self) -> io::Result<CaptureMode> {
+        capture_mode(|index| match self.tables[index] {
+            TableUpdate::NotRecorded { mode } => Some(mode),
+            _ => None,
+        })
+    }
+}
+
+fn recorded_here(table: TableId) -> bool {
+    table
+        .last_change()
+        .present(crate::format::FormatVersion::CURRENT.version())
+}
+
+/// Refused unless exactly the tables the mode leaves out are NotRecorded.
+fn capture_mode(not_recorded: impl Fn(usize) -> Option<CaptureMode>) -> io::Result<CaptureMode> {
+    let mode = TableId::ALL
+        .into_iter()
+        .filter(|table| recorded_here(*table))
+        .find_map(|table| not_recorded(table.index()))
+        .unwrap_or(CaptureMode::Full);
+    for table in TableId::ALL {
+        if !recorded_here(table) {
+            continue;
+        }
+        match not_recorded(table.index()) {
+            Some(other) if other != mode => {
+                return Err(invalid("frame names more than one capture mode"));
+            }
+            Some(_) if scope::records(mode, table) => {
+                return Err(invalid("frame leaves out a table its capture mode records"));
+            }
+            None if !scope::records(mode, table) => {
+                return Err(invalid(
+                    "frame holds a table its capture mode does not record",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(mode)
 }
 fn validate_rows(table: TableId, rows: &TableRows) -> io::Result<()> {
     if rows.table() != table {

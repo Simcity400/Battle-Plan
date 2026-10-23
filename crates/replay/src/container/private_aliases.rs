@@ -641,6 +641,7 @@ fn transform(
         TableView::Unavailable { reason } => TableView::Unavailable {
             reason: allocation::string(reason)?,
         },
+        TableView::NotRecorded { mode } => TableView::NotRecorded { mode: *mode },
     };
     if !encode && seen != marks.len() {
         return Err(invalid("alias marks name an absent row"));
@@ -782,6 +783,13 @@ impl Encoder {
     ) -> io::Result<Prepared> {
         let mut entries = allocation::vec(TABLES.len())?;
         for &table in TABLES {
+            // A table the capture mode leaves out stores nothing to alias.
+            if matches!(
+                &*decoded.tables[table.index()],
+                TableView::NotRecorded { .. }
+            ) {
+                continue;
+            }
             let sources = allocation::collect_vec(
                 dependencies(table)
                     .iter()
@@ -869,7 +877,7 @@ pub(crate) fn resolve(
         let view = advance_table(table, &raw, before, hours[at], false)?;
         let rows = match &*view {
             TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-            TableView::Unavailable { .. } => 0,
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
         };
         if at == 0 {
             marks = take_marks(table, &mut key_input, &[], rows)?;

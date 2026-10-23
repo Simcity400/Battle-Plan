@@ -146,6 +146,9 @@ fn missing<T: replay_data::rows::TableSchema>(
         Available::Unavailable { reason } => {
             format!("the {name} table is unavailable ({reason}), so {key} is unknown")
         }
+        Available::NotRecorded { mode } => {
+            format!("the {name} table is not recorded in a {mode} recording, so {key} is unknown")
+        }
     }
 }
 

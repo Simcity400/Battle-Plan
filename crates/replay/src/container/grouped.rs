@@ -63,6 +63,7 @@ use crate::{
         Change, Kind, TableId, TableRows, Token,
         compatibility::{HISTORY, LastChange},
     },
+    scope::{self, CaptureMode},
 };
 use std::{
     borrow::Cow,
@@ -339,18 +340,18 @@ fn advance_change(
     Some(i128::from(word(DROPPED)?) - i128::from(word(head)?))
 }
 
-/// Present tables of a format, in TableId order, and their positions.
+/// Tables a format and capture mode store, in TableId order, and their positions.
 struct Present {
     tables: Vec<TableId>,
     ordinal: [usize; TABLE_COUNT],
 }
 
 impl Present {
-    fn new(format: u16) -> Self {
+    fn new(format: u16, mode: CaptureMode) -> Self {
         let mut ordinal = [usize::MAX; TABLE_COUNT];
         let tables: Vec<TableId> = TableId::ALL
             .into_iter()
-            .filter(|table| HISTORY[table.index()].present(format))
+            .filter(|table| HISTORY[table.index()].present(format) && scope::records(mode, *table))
             .collect();
         for (position, table) in tables.iter().enumerate() {
             ordinal[table.index()] = position;
@@ -1552,6 +1553,8 @@ pub(crate) struct BlockWriter {
     pub(crate) branch: BranchId,
     pub(crate) first_hour: Hour,
     pub(crate) last_hour: Hour,
+    /// Every frame's capture mode.
+    mode: CaptureMode,
     pub(crate) frames: u32,
     /// Plain frame headers as an interleaved block would frame them: the
     /// frame count, then each frame's length and header.
@@ -1861,7 +1864,7 @@ fn put_keyframe(
 }
 
 impl BlockWriter {
-    pub(crate) fn new(frame: &Frame) -> Self {
+    pub(crate) fn new(frame: &Frame) -> io::Result<Self> {
         #[cfg(test)]
         let layout = WRITTEN_LAYOUT.get();
         #[cfg(not(test))]
@@ -1870,9 +1873,10 @@ impl BlockWriter {
     }
 
     /// A block in `layout`: only tests write the earlier ones.
-    pub(crate) fn with_layout(frame: &Frame, layout: Layout) -> Self {
+    pub(crate) fn with_layout(frame: &Frame, layout: Layout) -> io::Result<Self> {
         let format = FormatVersion::CURRENT.version();
-        let present = Present::new(format);
+        let mode = frame.capture_mode()?;
+        let present = Present::new(format, mode);
         let tables = present
             .tables
             .iter()
@@ -1892,10 +1896,11 @@ impl BlockWriter {
             })
             .collect();
         let width = present.width();
-        Self {
+        Ok(Self {
             branch: frame.branch,
             first_hour: frame.hour,
             last_hour: frame.hour,
+            mode,
             frames: 0,
             headers: 4,
             plain: vec![0; TABLE_COUNT],
@@ -1913,7 +1918,7 @@ impl BlockWriter {
             force_residual: FORCE_RESIDUAL.get(),
             #[cfg(not(test))]
             force_residual: false,
-        }
+        })
     }
 
     fn layout(&self) -> Layout {
@@ -2019,6 +2024,7 @@ impl BlockWriter {
         if keyframe != frame.keyframe
             || frame.branch != self.branch
             || (!keyframe && frame.hour <= self.last_hour)
+            || frame.capture_mode()? != self.mode
         {
             return Err(invalid(
                 "block frame branch, keyframe, or hour ordering mismatch",
@@ -2837,7 +2843,7 @@ impl Replay {
             )));
         }
         let directory = Directory::read_from_prefix(self, index, prefix)?;
-        let present = Present::new(self.format.version());
+        let present = Present::new(self.format.version(), self.capture_mode);
         check_header_size(directory.frames, &present)?;
         let header = directory.read_raw(self, index, HEADER)?.unwrap_or_default();
         read_header(&header, index, directory.frames, &present)?;
@@ -2860,7 +2866,13 @@ impl Replay {
         };
         let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
         let updates = engine_allocation::collect_vec(TableId::ALL.iter().map(|&table| {
-            if let Some(update) = keyframe_refusal(&directory, self.format, Some(tables), table)? {
+            if let Some(update) = keyframe_refusal(
+                &directory,
+                self.format,
+                self.capture_mode,
+                Some(tables),
+                table,
+            )? {
                 return Updates::new(vec![update]);
             }
             keyframe_admitted(self, &from, &directory, table, &memo)
@@ -3025,8 +3037,13 @@ fn keyframe_admitted(
                 None,
                 true,
                 |source| {
-                    if let Some(update) = keyframe_refusal(directory, replay.format, None, source)?
-                    {
+                    if let Some(update) = keyframe_refusal(
+                        directory,
+                        replay.format,
+                        replay.capture_mode,
+                        None,
+                        source,
+                    )? {
                         return Updates::new(vec![update]);
                     }
                     keyframe_admitted(replay, from, directory, source, memo)
@@ -3069,7 +3086,7 @@ fn read_recorded_through(
         )));
     }
     let directory = Directory::parse(block, index)?;
-    let present = Present::new(format.version());
+    let present = Present::new(format.version(), replay.capture_mode);
     let frames = directory.frames;
     check_header_size(frames, &present)?;
     let header = directory.raw(block, HEADER)?.unwrap_or_default();
@@ -3177,7 +3194,7 @@ pub(crate) fn read_selected_updates(
         )));
     }
     let directory = Directory::parse(block, index)?;
-    let present = Present::new(format.version());
+    let present = Present::new(format.version(), replay.capture_mode);
     let frames = directory.frames;
     check_header_size(frames, &present)?;
     let header = directory.raw(block, HEADER)?.unwrap_or_default();
@@ -3210,7 +3227,13 @@ pub(crate) fn read_selected_updates(
         let wanted = selected.iter().position(|selected| *selected == table);
         // One selection-aware admission per table. A present layout gap
         // still reaches the ordinary decoder even when not selected.
-        let refusal = keyframe_refusal(&directory, format, Some(selected), table)?;
+        let refusal = keyframe_refusal(
+            &directory,
+            format,
+            replay.capture_mode,
+            Some(selected),
+            table,
+        )?;
         let decoded = match (wanted, refusal) {
             (None, Some(_)) => continue,
             (Some(_), Some(update)) => Updates::repeat(update, frames)?,
@@ -3345,6 +3368,7 @@ fn read_diagnostics_prefix(
 fn keyframe_refusal(
     directory: &Directory,
     format: FormatVersion,
+    mode: CaptureMode,
     selected: Option<&[TableId]>,
     table: TableId,
 ) -> io::Result<Option<TableUpdate>> {
@@ -3354,8 +3378,17 @@ fn keyframe_refusal(
     let change = &HISTORY[table.index()];
     let key_id = keyframe_section(table);
     let later_id = later_section(table);
+    let stored = directory.sections[key_id].is_some() || directory.sections[later_id].is_some();
+    if change.present(version) && !scope::records(mode, table) {
+        if stored {
+            return Err(invalid_static(
+                "grouped block stores a table its capture mode leaves out",
+            ));
+        }
+        return Ok(Some(TableUpdate::NotRecorded { mode }));
+    }
     if !change.present(version) {
-        if directory.sections[key_id].is_some() || directory.sections[later_id].is_some() {
+        if stored {
             return Err(invalid_static("grouped block stores an absent table"));
         }
         let reason = change
@@ -3454,9 +3487,13 @@ fn keyframe_update(
 
 fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
     // Unselected tables keep their own compatibility and framing checks.
-    if let Some(update) =
-        keyframe_refusal(context.directory, context.format, context.selected, table)?
-    {
+    if let Some(update) = keyframe_refusal(
+        context.directory,
+        context.format,
+        context.replay.capture_mode,
+        context.selected,
+        table,
+    )? {
         return Updates::repeat(update, context.hours.len());
     }
     table_updates_admitted(context, table)
@@ -3466,7 +3503,13 @@ fn table_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
 // value can enter the cache; selected tables and unselected layout gaps use
 // this identical decoder. Selection below only attributes CPU measurements.
 fn dependency_updates(context: &Context<'_>, table: TableId) -> io::Result<Updates> {
-    if let Some(update) = keyframe_refusal(context.directory, context.format, None, table)? {
+    if let Some(update) = keyframe_refusal(
+        context.directory,
+        context.format,
+        context.replay.capture_mode,
+        None,
+        table,
+    )? {
         return Updates::repeat(update, context.hours.len());
     }
     table_updates_admitted(context, table)

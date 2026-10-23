@@ -193,6 +193,9 @@ impl NativeRelations {
             Available::Unavailable { reason } => {
                 format!("CountryCounterInputs is unavailable ({reason})")
             }
+            Available::NotRecorded { mode } => {
+                format!("CountryCounterInputs is not recorded in a {mode} recording")
+            }
         };
         let mut countries = BTreeMap::new();
         for row in table.rows() {

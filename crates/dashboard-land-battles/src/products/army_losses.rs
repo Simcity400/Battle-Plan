@@ -177,6 +177,7 @@ fn unavailable(frame: &DecodedFrame, id: TableId) -> Option<String> {
     match &*frame.tables[id.index()] {
         TableView::Complete(_) => None,
         TableView::Unavailable { reason } => Some(reason.clone()),
+        TableView::NotRecorded { mode } => Some(format!("not recorded in a {mode} recording")),
         TableView::Truncated { .. } => Some("incomplete read".into()),
     }
 }

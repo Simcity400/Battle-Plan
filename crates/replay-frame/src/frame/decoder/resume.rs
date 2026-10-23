@@ -25,6 +25,7 @@ impl FrameDecoder {
                         return Err(invalid("unavailable checkpoint needs a reason"));
                     }
                 }
+                TableView::NotRecorded { .. } => {}
             }
             if view
                 .sampled_at()

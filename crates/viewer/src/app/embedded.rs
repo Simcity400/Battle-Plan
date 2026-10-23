@@ -607,6 +607,9 @@ impl Viewer {
                             TableView::Unavailable { reason } => {
                                 format!("{table:?}: unavailable ({reason})")
                             }
+                            TableView::NotRecorded { mode } => {
+                                format!("{table:?}: not recorded in a {mode} recording")
+                            }
                         });
                     }
                     messages.push(format!(

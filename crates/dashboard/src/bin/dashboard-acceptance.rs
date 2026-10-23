@@ -860,6 +860,9 @@ fn focus_unavailable(
             if let Some(error) = error {
                 let (reason, missing_rows) = match &*frame.tables[table.index()] {
                     TableView::Unavailable { reason } => (Some(reason.clone()), None),
+                    TableView::NotRecorded { mode } => {
+                        (Some(format!("not recorded in a {mode} recording")), None)
+                    }
                     TableView::Truncated { missing, .. } => (None, Some(missing.to_string())),
                     TableView::Complete(_) => (Some(error.to_string()), None),
                 };

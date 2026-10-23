@@ -253,7 +253,7 @@ mod tests {
     use super::*;
     use replay::spool::Record;
     use replay_data::{
-        identity::{Identity, Roster, SampleBoundary, SessionStart, Verification},
+        identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
         rows::{CampaignRow, ClockRow, CountryRow, TableRows},
     };
     use replay_frame::{
@@ -271,6 +271,7 @@ mod tests {
                 process_start_time: 1,
                 qpc_frequency: 10_000_000,
                 sample_boundary: SampleBoundary::EndOfHour,
+                capture_mode: CaptureMode::Full,
                 identity: Identity {
                     game_version: "synthetic".into(),
                     exe_hash: [1; 32],

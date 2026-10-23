@@ -10,6 +10,7 @@ pub struct ReplayMetadata {
     pub path: String,
     pub name: String,
     pub format: u16,
+    pub capture_mode: CaptureMode,
     /// The recorded campaign identity as hex, the same key the map settings use.
     /// Every recording of one campaign shares it; app settings are stored under it.
     pub campaign_key: String,
@@ -28,6 +29,23 @@ pub struct ReplayMetadata {
     #[ts(optional = nullable)]
     pub damaged: Option<DamagedRecording>,
     pub warnings: Vec<String>,
+}
+
+/// replay-data's `scope::CaptureMode`, as the frontend names it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureMode {
+    Full,
+    Map,
+}
+
+impl From<replay_data::scope::CaptureMode> for CaptureMode {
+    fn from(mode: replay_data::scope::CaptureMode) -> Self {
+        match mode {
+            replay_data::scope::CaptureMode::Full => Self::Full,
+            replay_data::scope::CaptureMode::Map => Self::Map,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]

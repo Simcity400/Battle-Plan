@@ -4,6 +4,7 @@
 use std::io;
 
 use crate::codec::{Decoder, invalid_static as invalid, put_string};
+use crate::rows::compatibility::CAPTURE_MODE_FORMAT;
 use engine_allocation as allocation;
 pub use replay_identity::*;
 
@@ -175,6 +176,7 @@ impl IdentityCodec for SessionStart {
         out.extend_from_slice(&self.process_start_time.to_le_bytes());
         out.extend_from_slice(&self.qpc_frequency.to_le_bytes());
         out.push(self.sample_boundary.byte());
+        out.push(self.capture_mode.byte());
         self.identity.encode(out)
     }
 
@@ -185,6 +187,12 @@ impl IdentityCodec for SessionStart {
             process_start_time: decoder.u64()?,
             qpc_frequency: decoder.u64()?,
             sample_boundary: SampleBoundary::from_byte(decoder.u8()?)?,
+            // Every table was recorded before capture modes existed.
+            capture_mode: if decoder.format < CAPTURE_MODE_FORMAT {
+                CaptureMode::Full
+            } else {
+                CaptureMode::from_byte(decoder.u8()?)?
+            },
             identity: Identity::decode(decoder)?,
         };
         session.validate()?;
@@ -226,6 +234,7 @@ mod tests {
             process_start_time: u64::MAX - 2,
             qpc_frequency: u64::MAX - 3,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Map,
             identity,
         };
         let mut bytes = Vec::new();
@@ -235,6 +244,7 @@ mod tests {
         assert_eq!(&bytes[12..20], &(u64::MAX - 2).to_le_bytes());
         assert_eq!(&bytes[20..28], &(u64::MAX - 3).to_le_bytes());
         assert_eq!(bytes[28], 1);
+        assert_eq!(bytes[29], 1);
         let mut decoder = Decoder::new(&bytes);
         assert_eq!(SessionStart::decode(&mut decoder).unwrap(), start);
         decoder.finish().unwrap();
@@ -251,6 +261,7 @@ mod tests {
             process_start_time: 134_000_000_000_000_000,
             qpc_frequency: 24_000_000,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: fixture(),
         };
         let mut bytes = Vec::new();
@@ -271,6 +282,7 @@ mod tests {
             process_start_time: 2,
             qpc_frequency: 3,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: fixture(),
         };
         let mut current = Vec::new();
@@ -291,6 +303,45 @@ mod tests {
         assert_eq!(decoded, session);
         assert_eq!(decoded.sample_boundary.name(), "after_hourly_update");
         assert_eq!(SampleBoundary::EndOfHour.to_string(), "end_of_hour");
+    }
+
+    #[test]
+    fn capture_mode_is_explicit_and_earlier_formats_recorded_every_table() {
+        let mut session = SessionStart {
+            id: 7,
+            process_id: 1,
+            process_start_time: 2,
+            qpc_frequency: 3,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Map,
+            identity: fixture(),
+        };
+        let mut current = Vec::new();
+        session.encode(&mut current).unwrap();
+        assert_eq!(current[29], 1);
+        assert_eq!(
+            SessionStart::decode(&mut Decoder::new(&current))
+                .unwrap()
+                .capture_mode,
+            CaptureMode::Map
+        );
+        let mut unknown = current.clone();
+        unknown[29] = 2;
+        assert!(SessionStart::decode(&mut Decoder::new(&unknown)).is_err());
+        // An earlier format's session has no mode byte: it recorded everything.
+        session.capture_mode = CaptureMode::Full;
+        let mut earlier = Vec::new();
+        session.encode(&mut earlier).unwrap();
+        earlier.remove(29);
+        let mut decoder = Decoder::new(&earlier);
+        decoder.format = CAPTURE_MODE_FORMAT - 1;
+        assert_eq!(SessionStart::decode(&mut decoder).unwrap(), session);
+        decoder.finish().unwrap();
+        for mode in CaptureMode::ALL {
+            assert_eq!(CaptureMode::from_name(mode.name()), Some(mode));
+            assert_eq!(CaptureMode::from_byte(mode.byte()).unwrap(), mode);
+        }
+        assert_eq!(CaptureMode::from_name("Map"), None);
     }
 
     #[test]

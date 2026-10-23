@@ -131,7 +131,7 @@ impl<'a> Updates<'a> {
             Update::Decoded(Some((changed, deleted))) => changed.len() + deleted.len(),
             Update::Decoded(None) => match &*decoded.tables[table.index()] {
                 TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-                TableView::Unavailable { .. } => 0,
+                TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
             },
         })
         .sum()

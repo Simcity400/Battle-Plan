@@ -662,6 +662,8 @@ pub(super) struct Stack {
     pub(super) hit_points: Vec<i64>,
     /// Each member's fixed5 organisation [`counter_status::ratio`].
     pub(super) organisation: Vec<i64>,
+    /// False when a fully visible member's maxima are not recorded: no bars are drawn.
+    pub(super) bars: bool,
     /// Each member's status, in the order the stack was built.
     pub(super) members: Vec<counter_status::Member>,
     /// Pass every first-fit member to its tooltip, not only visible statuses.
@@ -738,10 +740,7 @@ pub(super) struct CounterTables<'a> {
 
 /// One division's `DivisionStatus` row, plus the one `DivisionMovement` byte the glyphs need.
 ///
-/// A division the hour has no row for takes [`DivisionStatuses::MISSING`]: zero maxima, which
-/// `counter_status::effective_maximum` floors so the bar reads full rather than dividing by zero,
-/// and clear bytes, which draw no glyph. That is the stated fallback, not an invention: a
-/// format-14 replay has no such table at all and the limitation registry says so.
+/// A division without a status row takes [`DivisionStatuses::MISSING`]: no glyph and no bars.
 #[derive(Clone, Copy, Default)]
 pub(super) struct DivisionStatus {
     pub(super) maximum_hit_points: i64,
@@ -789,6 +788,8 @@ pub(super) struct LandUnit<'m> {
     pub(super) hp: i64,
     /// [`counter_status::ratio`] of organisation, fixed5.
     pub(super) org: i64,
+    /// Whether `hp` and `org` divide by recorded maxima.
+    pub(super) bars: bool,
     pub(super) status: counter_status::Member,
     pub(super) movement: Option<&'m Movement>,
     /// Division action; ignored for railway guns, which carry their own classifier below.
@@ -1137,8 +1138,7 @@ pub(super) struct DivisionStatuses {
 }
 
 impl DivisionStatuses {
-    /// What a division with no recorded row shows: an empty supply ratio would draw a red crate on
-    /// every counter, so the seed is the engine's own full `100000`.
+    /// What a division with no recorded row reads as; its counter draws no bars or glyphs from it.
     const MISSING: DivisionStatus = DivisionStatus {
         maximum_hit_points: 0,
         maximum_organisation: 0,
@@ -1186,6 +1186,10 @@ impl DivisionStatuses {
             .get(&division)
             .copied()
             .unwrap_or(Self::MISSING)
+    }
+
+    pub(super) fn recorded(&self, division: u64) -> bool {
+        self.by_division.contains_key(&division)
     }
 }
 
@@ -1596,6 +1600,7 @@ fn add_railway_guns(
                 sight,
                 hp: guns::strength_ratio(gun.current_strength, gun.maximum_strength),
                 org: 0,
+                bars: true,
                 status: counter_status::Member {
                     supply_ratio: gun.received_supply_ratio,
                     naval_transfer: gun.naval_transfer != 0,
@@ -1723,6 +1728,7 @@ pub(super) fn division_counters(
                     status.strength_factor,
                 ),
                 org: counter_status::ratio(division.organisation, status.maximum_organisation),
+                bars: land.status.recorded(division.id),
                 status: counter_status::Member {
                     supply_ratio: status.supply_ratio,
                     naval_transfer: status.naval_transfer,
@@ -2202,6 +2208,7 @@ pub(super) fn land_stack(
         hidden: false,
         hit_points: Vec::new(),
         organisation: Vec::new(),
+        bars: true,
         members: Vec::new(),
         divisions: item.iter().map(|unit| unit.id).collect(),
         timing: item
@@ -2284,6 +2291,7 @@ pub(super) fn land_stack(
             );
             stack.hit_points.push(unit.hp);
             stack.organisation.push(unit.org);
+            stack.bars &= unit.bars;
             stack.members.push(unit.status);
         }
     }
@@ -2314,7 +2322,12 @@ pub(super) fn stack_style(inputs: &CounterInputs<'_>, stack: &Stack) -> StackSty
         None => StackStyle {
             organisation: counter_status::stack_fill(&stack.organisation),
             strength: counter_status::stack_fill(&stack.hit_points),
-            glyphs: counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply)),
+            // Every glyph reads a member's status; one unrecorded withholds them, as it does the bars.
+            glyphs: if stack.bars {
+                counter_status::glyphs(&stack.members, Some(inputs.content.defines.supply))
+            } else {
+                counter_status::Glyphs::default()
+            },
             count,
         },
     }
@@ -2527,8 +2540,8 @@ fn draw_land_children(
     if let Some(sheet) = assets.sheet(&layout.overlay.sprite) {
         draw_child(batch, sheet, &layout.overlay, origin, 0, [1.0; 4]);
     }
-    // Hide both bars when there are no fully visible members.
-    if !stack.members.is_empty() {
+    // No bars without a fully visible member, or when a member's maxima are not recorded.
+    if !stack.members.is_empty() && stack.bars {
         for (child, fill) in [
             (&layout.bar_org, style.organisation),
             (&layout.bar_str, style.strength),
@@ -2998,6 +3011,19 @@ mod tests {
             .map(|division| statuses.get(division).attrition)
             .collect();
         assert_eq!(attrition, [true, false, false, true, false]);
+        assert!(statuses.recorded(1) && !statuses.recorded(5));
+    }
+
+    #[test]
+    fn an_unrecorded_status_table_records_no_maxima() {
+        let mut frame = test_frame(3);
+        *frame.tables[replay_data::rows::TableId::DivisionStatus.index()] =
+            replay_frame::frame::TableView::NotRecorded {
+                mode: replay_data::scope::CaptureMode::Map,
+            };
+        let statuses = DivisionStatuses::read(&frame).unwrap();
+        assert!(!statuses.recorded(1));
+        assert!(!statuses.get(1).attrition && statuses.get(1).has_order.is_none());
     }
 
     #[test]

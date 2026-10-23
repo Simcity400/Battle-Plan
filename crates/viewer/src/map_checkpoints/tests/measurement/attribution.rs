@@ -36,6 +36,7 @@ impl Attribution {
                     total.rows += rows.len() as u64;
                 }
                 TableView::Unavailable { reason } => bytes.extend_from_slice(reason.as_bytes()),
+                TableView::NotRecorded { mode } => bytes.push(mode.byte()),
             }
             total.checkpoints += 1;
             total.raw += bytes.len() as u64;

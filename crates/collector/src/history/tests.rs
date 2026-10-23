@@ -1,6 +1,6 @@
 use super::*;
 use replay::spool::Record;
-use replay_data::{identity::SampleBoundary, identity::Verification};
+use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::Verification};
 
 #[test]
 fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() {
@@ -129,8 +129,7 @@ fn compatibility_old_campaign_is_refused_before_recording_history_is_seeded() {
         Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
     // A new process session can attach without needing an old session's hour to resume.
     let session = SessionStart { id: 2, ..session };
-    let mut bytes = replay.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&94_u16.to_le_bytes());
+    let bytes = replay::container::relabelled(replay.bytes(), 94).unwrap();
     assert_eq!(Replay::open(bytes.clone()).unwrap().format.version(), 94);
     let path = root.join(format!("{id}.battleplan"));
     fs::write(&path, &bytes).unwrap();
@@ -199,6 +198,7 @@ fn session() -> SessionStart {
         process_start_time: 1,
         qpc_frequency: 1,
         sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

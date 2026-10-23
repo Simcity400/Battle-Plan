@@ -85,7 +85,7 @@ fn combat_shortcut_assets_request_the_first_keycap_without_localisation() {
     assert!(!assets.sprites.contains(b"GFX_F12".as_slice()));
 }
 
-fn synthetic_assets(
+pub(crate) fn synthetic_assets(
     name: &str,
     children: &str,
     write: impl FnOnce(&std::path::Path),

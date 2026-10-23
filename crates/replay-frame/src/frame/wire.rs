@@ -7,8 +7,9 @@ use crate::{
     format::FormatVersion,
     rows::{
         self, TableId, TableRows,
-        compatibility::{HISTORY, LastChange},
+        compatibility::{CAPTURE_MODE_FORMAT, HISTORY, LastChange},
     },
+    scope::{self, CaptureMode},
 };
 use engine_allocation as allocation;
 use std::io;
@@ -49,6 +50,7 @@ impl Frame {
                     return Ok(0);
                 }
                 let bytes = match &self.tables[table.index()] {
+                    TableUpdate::NotRecorded { .. } => 0,
                     TableUpdate::Snapshot(rows) => 1 + rows.recorded_rows_bytes()?,
                     TableUpdate::Truncated { rows, .. } => 5 + rows.recorded_rows_bytes()?,
                     TableUpdate::Unavailable { reason } => 5 + reason.len(),
@@ -88,17 +90,16 @@ impl Frame {
     }
 
     pub fn encode_with_sizes(&self, out: &mut Vec<u8>) -> io::Result<[usize; TABLE_COUNT]> {
-        allocation::reserve(out, 37 + 8 * TABLE_COUNT)?;
+        let mode = self.capture_mode()?;
+        allocation::reserve(out, 38 + 8 * TABLE_COUNT)?;
         out.extend_from_slice(&self.branch.to_le_bytes());
         out.extend_from_slice(&self.hour.to_le_bytes());
         out.push(u8::from(self.keyframe));
+        out.push(mode.byte());
         out.extend_from_slice(&self.metrics.total_ns.to_le_bytes());
         // Timing entries and updates use the same table-id order.
         for table in TableId::ALL {
-            if !table
-                .last_change()
-                .present(FormatVersion::CURRENT.version())
-            {
+            if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
             }
             out.extend_from_slice(&self.metrics.table_ns[table.index()].to_le_bytes());
@@ -107,10 +108,7 @@ impl Frame {
         out.extend_from_slice(&self.metrics.dropped_frames.to_le_bytes());
         let mut sizes = [0; TABLE_COUNT];
         for table in TableId::ALL {
-            if !table
-                .last_change()
-                .present(FormatVersion::CURRENT.version())
-            {
+            if !table_stored(table, FormatVersion::CURRENT, mode) {
                 continue;
             }
             allocation::reserve(out, 9)?;
@@ -172,6 +170,9 @@ impl Frame {
                     out.push(4);
                     put_string(out, reason)?;
                 }
+                TableUpdate::NotRecorded { .. } => {
+                    unreachable!("capture_mode refuses a recorded table without an update")
+                }
             }
             sizes[table.index()] = out.len() - table_start;
         }
@@ -210,10 +211,15 @@ impl Frame {
         let branch = input.u64()?;
         let hour = input.i32()?;
         let keyframe = input.bool()?;
+        let mode = if format.version() < CAPTURE_MODE_FORMAT {
+            CaptureMode::Full
+        } else {
+            CaptureMode::from_byte(input.u8()?)?
+        };
         let total_ns = input.u64()?;
         let mut table_ns = [0; TABLE_COUNT];
         for table in TableId::ALL {
-            if history[table.index()].present(format.version()) {
+            if history[table.index()].present(format.version()) && scope::records(mode, table) {
                 table_ns[table.index()] = input.u64()?;
             }
         }
@@ -226,6 +232,10 @@ impl Frame {
         let mut tables = allocation::vec(TABLE_COUNT)?;
         for table in TableId::ALL {
             let change = &history[table.index()];
+            if change.present(format.version()) && !scope::records(mode, table) {
+                tables.push(TableUpdate::NotRecorded { mode });
+                continue;
+            }
             let retain = selected.is_none_or(|tables| tables.contains(&table));
             let update = decode_retained_update(table, change, format, keyframe, retain, input)?;
             tables.push(
@@ -400,6 +410,10 @@ fn decode_retained_update(
         return Err(invalid("keyframe contains a dependent or partial table"));
     }
     Ok(update)
+}
+
+pub(super) fn table_stored(table: TableId, format: FormatVersion, mode: CaptureMode) -> bool {
+    table.last_change().present(format.version()) && scope::records(mode, table)
 }
 
 fn encode_rows(table: TableId, values: &TableRows, out: &mut Vec<u8>) -> io::Result<()> {

@@ -120,7 +120,7 @@ pub fn mode_button(document: &Document, mode: &MapMode) -> ModeButton {
             token: mode.token(),
             frame: Some(*stock as u32),
             sprite_name: None,
-            unavailable: stock.unavailable().map(str::to_owned),
+            unavailable: stock.unavailable_in(document.capture_mode()),
             name: localised(document, &format!("{}_NAME", stock.key())),
             tooltip: localised(document, stock.key()),
             description: localised(document, &format!("{}_DESCRIPTION", stock.key())),
@@ -131,7 +131,7 @@ pub fn mode_button(document: &Document, mode: &MapMode) -> ModeButton {
                 token: mode.token(),
                 frame: None,
                 sprite_name: Some(name.clone()),
-                unavailable: None,
+                unavailable: mode.unavailable_in(document.capture_mode()),
                 name: localised(document, &format!("{key}_NAME")),
                 tooltip: localised(document, &format!("{name}_tooltip")),
                 description: localised(document, &format!("{name}_tooltip_delayed")),
@@ -381,8 +381,13 @@ pub fn click(
 impl Viewer {
     /// Chooses `mode` and tells the host.
     pub(crate) fn choose_map_mode(&mut self, mode: MapMode) {
-        // A mode no recording can draw is offered disabled, and choosing it does nothing.
-        if matches!(&mode, MapMode::Stock(stock) if stock.unavailable().is_some()) {
+        // A mode the recording cannot draw is offered disabled, and choosing it does nothing.
+        if matches!(&mode, MapMode::Stock(stock) if stock.unavailable().is_some())
+            || self
+                .document
+                .as_ref()
+                .is_some_and(|document| mode.unavailable_in(document.capture_mode()).is_some())
+        {
             return;
         }
         if self.map_mode != mode {
@@ -422,6 +427,15 @@ impl Viewer {
         }
         if self.picker.requested.is_none() {
             (self.map_mode, self.picker.slots) = host_choice(options);
+            // Nor a mode this recording leaves out the tables of.
+            if let Some(document) = &self.document
+                && self
+                    .map_mode
+                    .unavailable_in(document.capture_mode())
+                    .is_some()
+            {
+                self.map_mode = MapMode::default();
+            }
         }
     }
 
@@ -442,7 +456,14 @@ impl Viewer {
                     == viewer_counters::map::counters::CounterColorMode::Country,
             ),
             allied_plans: host.then_some(self.graphics.show_allied_plans),
-            fog: Some(self.perspective.fog),
+            // A recording without the fog inputs draws no fog: the toggle is disabled.
+            fog: self
+                .document
+                .as_ref()
+                .is_none_or(|document| {
+                    viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
+                })
+                .then_some(self.perspective.fog),
             radar: Some(self.picker.radar),
         }
     }

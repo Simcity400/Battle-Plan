@@ -1373,6 +1373,101 @@ fn counter_display_hides_kinds_and_owners_it_filters() {
     assert!(!ports.port_item(Some(1)) && !ports.port_item(None) && ports.naval_plate(1));
 }
 
+#[test]
+fn a_member_without_recorded_maxima_withholds_the_stack_bars() {
+    let countries = Arc::new(Countries::default());
+    let templates = Arc::new(TemplateIcons::default());
+    let vision = Arc::new(Vision::sharing(1, []));
+    let abilities = AbilityInputs::default();
+    let tables = CounterTables {
+        type_tints: &Default::default(),
+        countries: &countries,
+        icons: &templates,
+        status: &Default::default(),
+        movement: &Default::default(),
+        actions: &Default::default(),
+        vision: &vision,
+        order: None,
+        native: &Default::default(),
+        orders: &Default::default(),
+        guns: &Default::default(),
+        abilities: &abilities,
+        task_forces: &Default::default(),
+        hq_providers: &Default::default(),
+        portraits: &Default::default(),
+        icon_inputs: &Default::default(),
+    };
+    let stack = |members: &[&LandUnit<'_>]| {
+        land::land_stack(
+            members,
+            &tables,
+            &Default::default(),
+            false,
+            &|_| false,
+            false,
+        )
+    };
+    let recorded = land_unit(1, 1, 10, 10, true);
+    let mut unrecorded = land_unit(2, 1, 10, 10, true);
+    unrecorded.bars = false;
+    assert!(stack(&[&recorded]).bars);
+    assert!(!stack(&[&recorded, &unrecorded]).bars);
+    assert!(!stack(&[&unrecorded, &recorded]).bars);
+}
+
+#[test]
+fn a_member_without_recorded_status_withholds_the_stack_glyphs() {
+    with_counter_inputs_fixture(
+        action_gui(false),
+        |_| {},
+        |_| {},
+        |inputs| {
+            let countries = Arc::new(Countries::default());
+            let templates = Arc::new(TemplateIcons::default());
+            let vision = Arc::new(Vision::sharing(1, []));
+            let abilities = AbilityInputs::default();
+            let tables = CounterTables {
+                type_tints: &Default::default(),
+                countries: &countries,
+                icons: &templates,
+                status: &Default::default(),
+                movement: &Default::default(),
+                actions: &Default::default(),
+                vision: &vision,
+                order: None,
+                native: &Default::default(),
+                orders: &Default::default(),
+                guns: &Default::default(),
+                abilities: &abilities,
+                task_forces: &Default::default(),
+                hq_providers: &Default::default(),
+                portraits: &Default::default(),
+                icon_inputs: &Default::default(),
+            };
+            let glyphs = |members: &[&LandUnit<'_>]| {
+                let stack = land::land_stack(
+                    members,
+                    &tables,
+                    &Default::default(),
+                    false,
+                    &|_| false,
+                    false,
+                );
+                land::stack_style(&inputs, &stack).glyphs
+            };
+            let mut recorded = land_unit(1, 1, 10, 10, true);
+            recorded.status.attrition = true;
+            let mut unrecorded = land_unit(2, 1, 10, 10, true);
+            unrecorded.bars = false;
+            assert!(glyphs(&[&recorded]).attrition);
+            assert_eq!(
+                glyphs(&[&recorded, &unrecorded]),
+                counter_status::Glyphs::default()
+            );
+        },
+    );
+}
+
 /// Native stack fold and production counter drawing, with synthetic content only.
 fn draw_land_action_fixture(
     guis: native::Guis,
@@ -2097,6 +2192,7 @@ fn land_unit(
         sight: Sight::Full,
         hp: counter_status::FIXED,
         org: counter_status::FIXED,
+        bars: true,
         status: counter_status::Member::default(),
         movement: None,
         action: Ok(1),
@@ -5635,4 +5731,5 @@ fn the_navy_mode_draws_armies_at_its_opacity_and_railway_guns_whole() {
     assert_eq!(land::plate_opacity(&Visibility::POLITICAL, false), 1.0);
 }
 
+mod capture_scope;
 mod retained;

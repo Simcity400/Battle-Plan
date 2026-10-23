@@ -287,6 +287,9 @@ fn table_reason(frame: &DecodedFrame, table: TableId) -> Option<String> {
             "{table:?}: {missing} rows not recorded (truncated capture)"
         )),
         TableView::Unavailable { reason } => Some(format!("{table:?}: {reason}")),
+        TableView::NotRecorded { mode } => {
+            Some(format!("{table:?}: not recorded in a {mode} recording"))
+        }
     }
 }
 

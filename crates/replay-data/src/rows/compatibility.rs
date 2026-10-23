@@ -60,6 +60,8 @@ pub const EVENT_FEED_OCCURRENCE_DELTAS_FORMAT: u16 = 119;
 /// Owner-approved DivisionPanelStats.suppression: the stat block's suppression word, the
 /// division designer's witness of its suppression row, read in the panel cache's copy.
 pub const PANEL_SUPPRESSION_FORMAT: u16 = 120;
+/// Sessions and frames name their capture mode; frames omit the tables it leaves out.
+pub const CAPTURE_MODE_FORMAT: u16 = 121;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -4682,10 +4684,11 @@ mod tests {
                 MIO_POLICY_COST_FORMAT,
                 EVENT_FEED_OCCURRENCE_DELTAS_FORMAT,
                 PANEL_SUPPRESSION_FORMAT,
+                CAPTURE_MODE_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120],
+            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121],
         );
-        assert_eq!(FORMAT_VERSION, PANEL_SUPPRESSION_FORMAT);
+        assert_eq!(FORMAT_VERSION, CAPTURE_MODE_FORMAT);
     }
 
     #[test]

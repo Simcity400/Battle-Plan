@@ -132,7 +132,7 @@ impl Country {
 fn more_than_one_player(frame: &DecodedFrame) -> bool {
     match &*frame.tables[TableId::Players.index()] {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len() > 1,
-        TableView::Unavailable { .. } => false,
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => false,
     }
 }
 

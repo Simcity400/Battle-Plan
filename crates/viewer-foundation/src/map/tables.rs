@@ -47,6 +47,10 @@ pub fn core<T: TableSchema>(frame: &DecodedFrame) -> io::Result<&[T::Row]> {
             "hour {hour} {table:?} is unavailable: {reason}; the core tables {CORE} carry the \
              political map itself, so this hour cannot be drawn"
         ))),
+        Available::NotRecorded { mode } => Err(invalid(format!(
+            "hour {hour} {table:?} is not recorded in a {mode} recording; the core tables {CORE} \
+             carry the political map itself, so this hour cannot be drawn"
+        ))),
     }
 }
 
@@ -132,6 +136,9 @@ impl Limitations {
             TableView::Unavailable { reason } => {
                 self.push(format!("Table {table:?} unavailable: {reason}: {affected}"))
             }
+            TableView::NotRecorded { mode } => self.push(format!(
+                "Table {table:?} not recorded in a {mode} recording: {affected}"
+            )),
         }
     }
 
@@ -556,7 +563,7 @@ pub fn limitations(frame: &DecodedFrame) -> Limitations {
     }
     out.note::<tables::DivisionStatus>(
         frame,
-        "a land counter's organisation and strength bars fall back to full for every division          among the missing rows, and its supply, attrition, entrenchment, exercise and no-order          glyphs are not drawn; at close zoom its model number and camouflage are unknown, so it draws no model",
+        "a land counter with a division among the missing rows draws no organisation or strength bars, and that division's supply, attrition, entrenchment, exercise and no-order glyphs are not drawn; at close zoom its model number and camouflage are unknown, so it draws no model",
     );
     // close zoom: the 3D model selectors' daily inputs
     out.note::<tables::DivisionEquipment>(

@@ -32,6 +32,7 @@ pub fn with_demand_parts(
             .ok_or_else(|| invalid("FuelDemandParts view holds another table's rows"))?),
         TableView::Truncated { .. } => Err("fuel demand parts are truncated"),
         TableView::Unavailable { .. } => Err("fuel demand parts are unavailable"),
+        TableView::NotRecorded { .. } => Err("fuel demand parts are not recorded"),
     };
     rows::assemble_demand_parts(&mut rows, parts);
     Ok(rows)

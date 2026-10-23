@@ -27,6 +27,8 @@ export interface Snapshot {
   problem: Problem | null;
   automatic: boolean;
   session: string | null;
+  /** The mode of the session attached to the game, even at its menu; null while none is. */
+  captureMode: CaptureMode | null;
   /** The viewed country's flag from the recording's content; null when none resolves. */
   flag: FlagImage | null;
   /** Loads the finished session left out of its recordings; absent or null when none. */
@@ -34,6 +36,8 @@ export interface Snapshot {
 }
 
 export type NextLoad = 'continue' | 'newFile';
+/** What new recordings hold: everything, or the campaign map with its battle windows. */
+export type CaptureMode = 'full' | 'map';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
   recordEveryCampaign: boolean;
@@ -44,6 +48,7 @@ export interface RecorderSettings {
   gameScore: boolean;
   operationOutcomes: boolean;
   politics: boolean;
+  captureMode: CaptureMode;
   campaigns: Record<string, CampaignChoice>;
   /** The folder recordings are saved to, the default when none is chosen. */
   effectiveSaveFolder: string;
@@ -186,5 +191,11 @@ export function nextLoad(settings: RecorderSettings, campaign: string): NextLoad
 }
 
 export function whatToRecord(settings: RecorderSettings): string {
-  return settings.gameScore && settings.operationOutcomes && settings.politics ? 'Everything' : 'Custom';
+  if (settings.captureMode === 'map') return settings.gameScore ? 'Map' : 'Map, custom';
+  return settings.gameScore && settings.operationOutcomes && settings.politics ? 'Full' : 'Full, custom';
+}
+
+/** An attached session, even at the game's menu, keeps the mode it attached with: its recording file holds one mode. */
+export function captureModeFixed(snapshot: Snapshot): boolean {
+  return snapshot.captureMode !== null;
 }

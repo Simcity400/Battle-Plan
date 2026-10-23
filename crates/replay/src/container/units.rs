@@ -14,6 +14,8 @@ use std::{
 
 struct Planned<'r> {
     position: usize,
+    /// Its session's capture mode.
+    mode: CaptureMode,
     frames: Vec<RecordRef<'r>>,
 }
 
@@ -80,6 +82,12 @@ fn plan<'r, R: SpoolRecord>(
                     if !session.identity.same_content(identity) {
                         return Err(invalid_static("session content differs"));
                     }
+                    if sessions
+                        .values()
+                        .any(|old| old.capture_mode != session.capture_mode)
+                    {
+                        return Err(invalid_static("session capture mode differs"));
+                    }
                     if let Some(previous) = sessions.get(&session.id) {
                         if previous != session {
                             return Err(invalid_static("conflicting session context"));
@@ -127,6 +135,7 @@ fn plan<'r, R: SpoolRecord>(
                         block = Some(hour);
                         planned.push(Planned {
                             position,
+                            mode: sessions[&branches[&branch].session].capture_mode,
                             frames: Vec::new(),
                         });
                     }
@@ -376,7 +385,7 @@ impl Ahead {
                 Some(open) => open,
                 None => {
                     let frame = restore(Some(&read), block.position, block.frames[0])?;
-                    let mut writing = Writing::new(&frame);
+                    let mut writing = Writing::new(&frame, block.mode)?;
                     let mut observed = Vec::new();
                     if !writing.frame(
                         &frame,
@@ -613,7 +622,7 @@ pub(super) fn write<R: SpoolRecord>(
             let started = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 shared.cores.busy(|| -> io::Result<Started> {
                     let frame = restore(read, block.position, block.frames[0])?;
-                    let mut writing = Writing::new(&frame);
+                    let mut writing = Writing::new(&frame, block.mode)?;
                     let mut observed = Vec::new();
                     let written = writing.frame(
                         &frame,

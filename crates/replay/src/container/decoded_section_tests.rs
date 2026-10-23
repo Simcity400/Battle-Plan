@@ -437,7 +437,7 @@ fn selected_and_unselected_admission_preserve_absence_and_layout_gap_checks() {
             };
             for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
                 let (result, counts) =
-                    admissions(|| keyframe_refusal(&directory, format, selection, table));
+                    admissions(|| keyframe_refusal(&directory, format, CaptureMode::Full, selection, table));
                 assert_eq!(counts, [table]);
                 let result = result.unwrap();
                 if !present {
@@ -463,7 +463,14 @@ fn selected_and_unselected_admission_preserve_absence_and_layout_gap_checks() {
                     directory.sections[section] = Some((0, 1, 1));
                     for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
                         assert!(
-                            keyframe_refusal(&directory, format, selection, table).is_err(),
+                            keyframe_refusal(
+                                &directory,
+                                format,
+                                CaptureMode::Full,
+                                selection,
+                                table
+                            )
+                            .is_err(),
                             "stored absent {table:?} at {version} must refuse even when omitted"
                         );
                     }

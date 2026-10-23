@@ -54,6 +54,27 @@
 .recorder-value { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); white-space: nowrap; }
 .recorder-value svg { width: 14px; height: 14px; color: var(--quiet); }
 
+/* Capture mode: two selectable cards, each a native radio for keyboard and screen readers. */
+.recorder-modes { display: grid; gap: 6px; padding: 2px 0 4px; }
+.recorder-mode { position: relative; display: grid; gap: 2px; padding: 9px 12px 9px 34px; border-radius: var(--r-md); cursor: pointer;
+  background: var(--field); box-shadow: inset 0 0 0 1px var(--line-soft); transition: background var(--t) var(--ease), box-shadow var(--t) var(--ease); }
+.recorder-mode:hover { background: var(--hover); }
+.recorder-mode.is-selected { background: var(--accent-softer); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.recorder-mode > input[type='radio'] { position: absolute; top: 11px; left: 12px; }
+.recorder-mode:has(input:focus-visible) { outline: 2px solid color-mix(in srgb, var(--accent) 85%, transparent); outline-offset: 2px; }
+.recorder-mode > input:focus-visible { outline: none; }
+.recorder-mode-title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.recorder-mode-tag { padding: 1px 6px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 0.6875rem; font-weight: 500; }
+.recorder-mode-text { color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
+.recorder-modes.is-fixed .recorder-mode { cursor: default; }
+.recorder-modes.is-fixed .recorder-mode:not(.is-selected) { opacity: .5; }
+.recorder-modes.is-fixed .recorder-mode:hover { background: var(--field); }
+.recorder-modes.is-fixed .recorder-mode.is-selected:hover { background: var(--accent-softer); }
+.recorder-note { display: flex; align-items: flex-start; gap: 6px; margin: 2px 0 4px; color: var(--muted); font-size: 0.71875rem; line-height: 1.4; }
+.recorder-note > svg { flex: none; width: 13px; height: 13px; margin-top: 1px; color: var(--quiet); }
+.recorder-hint { color: var(--quiet); font-size: 0.71875rem; }
+.recorder-row.is-unavailable > span:first-child { color: var(--muted); }
+
 .recorder input[type='checkbox'][role='switch'] { width: 30px; height: 18px; }
 .recorder input[type='checkbox'][role='switch']::before { top: 2px; left: 2px; }
 .recorder input[type='checkbox'][role='switch']:checked::before { transform: translateX(12px); }

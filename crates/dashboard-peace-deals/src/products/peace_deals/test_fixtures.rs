@@ -3,8 +3,8 @@
 use super::*;
 use replay::spool::Record;
 use replay_data::{
-    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-    identity::Verification, rows::*,
+    identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+    identity::SessionStart, identity::Verification, rows::*,
 };
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::FrameEncoder,
@@ -185,6 +185,7 @@ pub fn replay(frames: Vec<DecodedFrame>) -> Replay {
             process_start_time: 1,
             qpc_frequency: 1,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity,
         }),
         Record::BranchStart(BranchStart {

@@ -1,5 +1,9 @@
 //! Where each campaign records: the save folder, or its last New file's folder; one recording each.
-use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings, recording_files};
+use replay::{
+    container::Replay, recorder_settings::NextLoad, recorder_settings::RecorderSettings,
+    recording_files,
+};
+use replay_data::scope::CaptureMode;
 use std::{
     path::{Component, Path, PathBuf},
     time::SystemTime,
@@ -74,44 +78,61 @@ fn new_folder_name(root: &Path, campaign: &str) -> String {
     }
 }
 
+/// An unreadable recording is left to the append, which refuses it by name.
+fn other_mode(folder: &Path, campaign: &str, mode: CaptureMode) -> bool {
+    recording(folder, campaign)
+        .is_some_and(|path| Replay::read_capture_mode(&path).is_ok_and(|recorded| recorded != mode))
+}
+
 /// Where the campaign's next session (or next load) records. A pending New
 /// file starts a new folder when the campaign already has a recording: one in
 /// its current folder, or (`recorded`) hours of an earlier load in the running
 /// session's spool, which become that recording when the session saves. It is
 /// used up either way; the returned flag records consumption under the settings lock.
+/// A recording in another capture mode moves the campaign to a new folder too.
 pub fn session_target_at(
     settings_path: &Path,
     root: &Path,
     campaign: &str,
     recorded: bool,
+    mode: CaptureMode,
 ) -> Result<(PathBuf, bool), String> {
     let settings = RecorderSettings::load_from(settings_path)
         .map_err(|error| format!("Recorder settings could not be read: {error}"))?;
-    if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile) {
-        return Ok((current_folder(&settings, root, campaign), false));
+    let current = current_folder(&settings, root, campaign);
+    if settings.campaigns.get(campaign).map(|choice| choice.next) != Some(NextLoad::NewFile)
+        && !other_mode(&current, campaign, mode)
+    {
+        return Ok((current, false));
     }
     RecorderSettings::update_at(settings_path, |settings| {
         let choice = settings.campaigns.entry(campaign.to_owned()).or_default();
         let current = campaign_folder(root, choice.folder.as_deref());
-        if choice.next != NextLoad::NewFile {
+        let new_file = choice.next == NextLoad::NewFile;
+        let other = other_mode(&current, campaign, mode);
+        if !new_file && !other {
             return (current, false);
         }
         choice.next = NextLoad::Continue;
-        if !recorded && !has_recording(&current, campaign) {
+        if !other && !recorded && !has_recording(&current, campaign) {
             return (current, true);
         }
         let name = new_folder_name(root, campaign);
         let folder = root.join(&name);
         choice.folder = Some(name);
-        (folder, true)
+        (folder, new_file)
     })
     .map(|(_, target)| target)
     .map_err(|error| format!("Recorder settings could not be saved: {error}"))
 }
 
 /// Returns the folder and whether it consumed New file; this session has no spooled hours yet.
-pub fn session_target(root: &Path, campaign: &str) -> Result<(PathBuf, bool), String> {
-    session_target_at(&RecorderSettings::path(), root, campaign, false)
+pub fn session_target(
+    root: &Path,
+    campaign: &str,
+    mode: CaptureMode,
+) -> Result<(PathBuf, bool), String> {
+    session_target_at(&RecorderSettings::path(), root, campaign, false, mode)
 }
 
 #[cfg(test)]
@@ -132,6 +153,7 @@ pub(crate) mod tests {
                     process_start_time: 1,
                     qpc_frequency: 1,
                     sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+                    capture_mode: CaptureMode::Full,
                     identity: replay_data::identity::Identity {
                         game_version: "synthetic".into(),
                         exe_hash: [1; 32],
@@ -165,6 +187,65 @@ pub(crate) mod tests {
         root
     }
 
+    /// A recording of the campaign in `folder` with one session in `mode`.
+    fn recorded_in(folder: &Path, mode: CaptureMode) {
+        use replay::spool::Record;
+        use replay_data::identity::{SampleBoundary, SessionStart};
+        let session = SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: mode,
+            identity: replay_identity::test_fixtures::identity(),
+        };
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[vec![Record::SessionStart(session)]]).unwrap();
+        fs::create_dir_all(folder).unwrap();
+        fs::write(folder.join("Recording.battleplan"), replay.bytes()).unwrap();
+    }
+
+    #[test]
+    fn a_recording_in_another_capture_mode_continues_in_a_new_folder() {
+        let scratch = scratch();
+        let settings = scratch.join("settings.json");
+        let root = scratch.join("recordings");
+        recorded_in(&root, CaptureMode::Full);
+        // The same mode continues the recording.
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
+            (root.clone(), false)
+        );
+        // Another mode starts a new folder without using up a New file.
+        let second = root.join(format!("{CAMPAIGN} (2)"));
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Map).unwrap(),
+            (second.clone(), false)
+        );
+        assert_eq!(
+            Replay::read_capture_mode(&recording(&root, CAMPAIGN).unwrap()).unwrap(),
+            CaptureMode::Full
+        );
+        let saved = RecorderSettings::load_from(&settings).unwrap();
+        assert_eq!(saved.campaigns[CAMPAIGN].next, NextLoad::Continue);
+        assert_eq!(
+            saved.campaigns[CAMPAIGN].folder.as_deref(),
+            Some(&*format!("{CAMPAIGN} (2)"))
+        );
+        // Later Map sessions continue it; a Full one moves on again.
+        recorded_in(&second, CaptureMode::Map);
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Map).unwrap(),
+            (second, false)
+        );
+        assert_eq!(
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
+            (root.join(format!("{CAMPAIGN} (3)")), false)
+        );
+        fs::remove_dir_all(scratch).unwrap();
+    }
+
     #[test]
     fn new_file_starts_a_folder_beside_the_earlier_recording_once() {
         let scratch = scratch();
@@ -173,7 +254,7 @@ pub(crate) mod tests {
         fs::create_dir_all(&root).unwrap();
         // Continue records in the save folder itself.
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (root.clone(), false)
         );
         // New file with no earlier recording: nothing to keep apart; used up.
@@ -182,7 +263,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (root.clone(), true)
         );
         let saved = RecorderSettings::load_from(&settings).unwrap();
@@ -201,7 +282,7 @@ pub(crate) mod tests {
         .unwrap();
         let second = root.join(format!("{CAMPAIGN} (2)"));
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (second.clone(), true)
         );
         assert_eq!(fs::read(&earlier).unwrap(), contents);
@@ -214,7 +295,7 @@ pub(crate) mod tests {
         );
         // Later sessions continue the new recording.
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (second.clone(), false)
         );
         // Another New file skips folders already in use.
@@ -226,7 +307,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (root.join(format!("{CAMPAIGN} (4)")), true)
         );
         fs::remove_dir_all(scratch).unwrap();
@@ -247,13 +328,13 @@ pub(crate) mod tests {
         assert_eq!(recording(&root, CAMPAIGN), None);
         let second = root.join(format!("{CAMPAIGN} (2)"));
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, true).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, true, CaptureMode::Full).unwrap(),
             (second.clone(), true)
         );
         let saved = RecorderSettings::load_from(&settings).unwrap();
         assert_eq!(saved.campaigns[CAMPAIGN].next, NextLoad::Continue);
         assert_eq!(
-            session_target_at(&settings, &root, CAMPAIGN, false).unwrap(),
+            session_target_at(&settings, &root, CAMPAIGN, false, CaptureMode::Full).unwrap(),
             (second, false)
         );
         fs::remove_dir_all(scratch).unwrap();

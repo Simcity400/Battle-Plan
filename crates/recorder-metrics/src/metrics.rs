@@ -135,7 +135,8 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
                     continue;
                 }
                 let reason = match &*decoded.tables[table.index()] {
-                    TableView::Complete(_) => continue,
+                    // The capture mode leaves it out: expected, not a failure.
+                    TableView::Complete(_) | TableView::NotRecorded { .. } => continue,
                     TableView::Truncated { missing, .. } => {
                         format!("truncated: {missing} rows missing")
                     }

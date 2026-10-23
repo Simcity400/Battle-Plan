@@ -12,7 +12,7 @@ fn rows<T: TableSchema>(frame: &DecodedFrame) -> &[T::Row] {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
             rows.rows::<T>().unwrap_or(&[])
         }
-        TableView::Unavailable { .. } => &[],
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => &[],
     }
 }
 

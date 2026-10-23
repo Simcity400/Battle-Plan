@@ -18,6 +18,7 @@ use crate::{
     frame::{DecodedFrame, Frame, FrameDecoder, Metrics, TABLE_COUNT, TableView},
     identity::{Identity, SessionStart, Verification},
     rows::{TableId, TableRows},
+    scope::CaptureMode,
     spool::{
         ControlRecord, FrameMetadata, Record, RecordRef, Recovered, Recovery, SegmentState,
         SpoolRecord,
@@ -74,6 +75,8 @@ pub enum UpdateKind {
     Truncated,
     Unavailable,
     Incompatible,
+    /// The capture mode leaves the table out.
+    NotRecorded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +139,8 @@ impl Observed {
                     ));
                     continue;
                 }
+                // Expected: not incomplete.
+                TableView::NotRecorded { .. } => continue,
             };
             if let Some(previous) = baseline {
                 for gap in previous.field_gaps.iter().filter(|(id, ..)| *id == table) {
@@ -160,13 +165,14 @@ impl Observed {
                 crate::frame::TableUpdate::Truncated { .. } => UpdateKind::Truncated,
                 crate::frame::TableUpdate::Unavailable { .. } => UpdateKind::Unavailable,
                 crate::frame::TableUpdate::Incompatible { .. } => UpdateKind::Incompatible,
+                crate::frame::TableUpdate::NotRecorded { .. } => UpdateKind::NotRecorded,
             }),
             sizes,
             incomplete,
             field_gaps,
             players: match &*decoded.tables[TableId::Players.index()] {
                 TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-                TableView::Unavailable { .. } => 0,
+                TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
             },
         })
     }
@@ -180,7 +186,7 @@ impl Observed {
             })
     }
 }
-type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>);
+type TrailerSummary = (Option<ControlRecord>, Option<(Hour, Hour)>, CaptureMode);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockIndex {
@@ -254,6 +260,8 @@ pub struct Replay {
     pub campaign_id: Vec<u8>,
     pub identity: Identity,
     pub keyframe_interval: u32,
+    /// Every session's capture mode: one per file.
+    pub capture_mode: CaptureMode,
     pub sessions: Vec<SessionStart>,
     pub branches: Vec<BranchStart>,
     pub gaps: Vec<Gap>,
@@ -317,6 +325,15 @@ impl CampaignHistory {
         if !self.identity.same_content(&session.identity) {
             return Err(invalid_static(
                 "existing campaign replay has different content",
+            ));
+        }
+        if self
+            .sessions
+            .iter()
+            .any(|old| old.capture_mode != session.capture_mode)
+        {
+            return Err(invalid_static(
+                "existing campaign replay has another capture mode; record into a new file",
             ));
         }
         let previous = self.sessions.iter().find(|old| old.id == session.id);
@@ -510,6 +527,12 @@ impl Replay {
         Ok(Self::read_trailer_summary(&mut file, length)?.1)
     }
 
+    pub fn read_capture_mode(path: &Path) -> io::Result<CaptureMode> {
+        let mut file = File::open(path)?;
+        let length = file.metadata()?.len();
+        Ok(Self::read_trailer_summary(&mut file, length)?.2)
+    }
+
     /// The partial notice, when readable, and the recorded hour span.
     fn read_trailer_summary(
         file: &mut (impl Read + Seek),
@@ -548,8 +571,10 @@ impl Replay {
             return Err(invalid("truncated replay trailer"));
         }
         let mut trailer = Decoder::new(&bytes);
+        trailer.format = format.version();
         expect_magic(&mut trailer, TRAILER_MAGIC)?;
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
+        let mode = file_capture_mode(&sessions)?;
         let _branches = decode_list(&mut trailer, BranchStart::decode)?;
         let mut warnings = Vec::new();
         let mut damaged_parts = 0;
@@ -590,20 +615,20 @@ impl Replay {
         // hour span. Full opening reports checksum failures and trailing bytes
         // as warnings.
         if validate_partial_controls(&controls).is_err() {
-            return Ok((None, span));
+            return Ok((None, span, mode));
         }
         for control in &controls {
             if !sessions
                 .iter()
                 .any(|session| session.id == control.session())
             {
-                return Ok((None, span));
+                return Ok((None, span, mode));
             }
         }
         let partial = controls
             .into_iter()
             .find(|control| matches!(control, ControlRecord::Partial { .. }));
-        Ok((partial, span))
+        Ok((partial, span, mode))
     }
 
     pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
@@ -936,7 +961,9 @@ impl Replay {
                         rows.first().map(|clock| clock.play_session_started_at)
                     }
                     TableView::Complete(_) => None,
-                    TableView::Truncated { .. } | TableView::Unavailable { .. } => None,
+                    TableView::Truncated { .. }
+                    | TableView::Unavailable { .. }
+                    | TableView::NotRecorded { .. } => None,
                 };
             }
             let tail = SessionTail {
@@ -1036,8 +1063,10 @@ impl Replay {
         identity_decoder.finish()?;
         let header_end = header_bytes.len() - header.remaining();
         let mut trailer = Decoder::new(trailer_bytes);
+        trailer.format = format.version();
         expect_magic(&mut trailer, TRAILER_MAGIC)?;
         let sessions = decode_list(&mut trailer, SessionStart::decode)?;
+        let capture_mode = file_capture_mode(&sessions)?;
         let branches = decode_list(&mut trailer, BranchStart::decode)?;
         let mut damaged_parts = 0;
         let mut gaps = decode_list_recovering(
@@ -1128,6 +1157,7 @@ impl Replay {
             campaign_id,
             identity,
             keyframe_interval,
+            capture_mode,
             sessions,
             branches,
             gaps,
@@ -1948,6 +1978,7 @@ fn decode_list<T>(
     for _ in 0..count {
         let payload = decoder.bytes()?;
         let mut item = Decoder::new(&payload);
+        item.format = decoder.format;
         values.push(decode(&mut item)?);
         item.finish()?;
     }
@@ -1968,6 +1999,7 @@ fn decode_list_recovering<T>(
         // withhold this record without losing subsequent trailer lists/index.
         let payload = decoder.bytes()?;
         let mut item = Decoder::new(&payload);
+        item.format = decoder.format;
         match decode(&mut item).and_then(|value| {
             item.finish()?;
             Ok(value)
@@ -2059,6 +2091,42 @@ fn finish_file(
     bytes.extend_from_slice(&(trailer_length as u64).to_le_bytes());
     bytes.extend_from_slice(&crc.to_le_bytes());
     Ok(())
+}
+
+/// A current recording's header and trailer sessions in `format`'s layout; blocks are the caller's.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn relabelled(bytes: &[u8], format: u16) -> io::Result<Vec<u8>> {
+    let replay = Replay::open(bytes.to_vec())?;
+    let trailer = &bytes[replay.trailer_start..bytes.len() - FOOTER_SIZE];
+    let mut input = Decoder::new(trailer);
+    expect_magic(&mut input, TRAILER_MAGIC)?;
+    let count = input.count(4)?;
+    for _ in 0..count {
+        input.bytes()?;
+    }
+    let rest = &trailer[trailer.len() - input.remaining()..];
+    let mut out = bytes[..replay.trailer_start].to_vec();
+    out[4..6].copy_from_slice(&format.to_le_bytes());
+    let trailer_start = out.len();
+    out.extend_from_slice(TRAILER_MAGIC);
+    encode_list(&mut out, &replay.sessions, |session, out| {
+        let start = out.len();
+        session.encode(out)?;
+        if format < crate::rows::compatibility::CAPTURE_MODE_FORMAT {
+            // Earlier sessions have no capture mode byte.
+            out.remove(start + 29);
+        }
+        Ok(())
+    })?;
+    out.extend_from_slice(rest);
+    let trailer_length = out.len() - trailer_start;
+    let crc = crc32fast::hash(&out[trailer_start..]);
+    out.extend_from_slice(FOOTER_MAGIC);
+    out.extend_from_slice(&(trailer_start as u64).to_le_bytes());
+    out.extend_from_slice(&(trailer_length as u64).to_le_bytes());
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(out)
 }
 
 fn validate_campaign(frame: &DecodedFrame, campaign_id: &[u8]) -> io::Result<()> {
@@ -2252,6 +2320,14 @@ fn write_blocks<R: SpoolRecord>(
                     if !session.identity.same_content(identity) {
                         return Err(invalid("session content differs from replay content"));
                     }
+                    if sessions
+                        .values()
+                        .any(|old| old.capture_mode != session.capture_mode)
+                    {
+                        return Err(invalid(
+                            "session capture mode differs from the replay's; record into a new file",
+                        ));
+                    }
                     if let Some(previous) = sessions.get(&session.id) {
                         if previous != session {
                             return Err(invalid("conflicting session context"));
@@ -2322,6 +2398,13 @@ fn write_blocks<R: SpoolRecord>(
                     if current_branch != Some(frame.branch) {
                         return Err(invalid("frame has no matching branch context"));
                     }
+                    let session_mode = current_session
+                        .and_then(|id| sessions.get(&id))
+                        .map(|session| session.capture_mode)
+                        .ok_or_else(|| invalid("frame has no session context"))?;
+                    if session_mode != frame.capture_mode()? {
+                        return Err(invalid("frame capture mode differs from its session's"));
+                    }
                     if needs_keyframe && !frame.keyframe {
                         return Err(invalid("segment or branch starts without keyframe"));
                     }
@@ -2338,7 +2421,7 @@ fn write_blocks<R: SpoolRecord>(
                         if let Some(previous) = block.take() {
                             packer.submit(previous.finish())?;
                         }
-                        block = Some(Writing::new(frame));
+                        block = Some(Writing::new(frame, session_mode)?);
                     }
                     let current = block
                         .as_mut()
@@ -2400,12 +2483,15 @@ struct Writing {
 }
 
 impl Writing {
-    fn new(keyframe: &Frame) -> Self {
-        Self {
-            block: grouped::BlockWriter::new(keyframe),
+    fn new(keyframe: &Frame, mode: CaptureMode) -> io::Result<Self> {
+        if keyframe.capture_mode()? != mode {
+            return Err(invalid("frame capture mode differs from its session's"));
+        }
+        Ok(Self {
+            block: grouped::BlockWriter::new(keyframe)?,
             decoder: FrameDecoder::new(),
             alias: aliases::Encoder::default(),
-        }
+        })
     }
 
     /// The written block, its decoded hour released before it is compressed.
@@ -2448,7 +2534,7 @@ impl Writing {
             promoted = block_keyframe(decoded)?;
             payload.clear();
             sizes = promoted.encode_with_sizes(&mut payload)?;
-            let next = grouped::BlockWriter::new(&promoted);
+            let next = grouped::BlockWriter::new(&promoted)?;
             aliased = self.alias.prepare(&promoted, decoded, &payload, &sizes)?;
             if !next.fits(payload.len(), &sizes, block_limit)
                 || !next.fits(aliased.stored_len, &aliased.stored_sizes, block_limit)
@@ -2488,6 +2574,9 @@ fn block_keyframe(decoded: &DecodedFrame) -> io::Result<Frame> {
             TableView::Unavailable { reason } => crate::frame::TableUpdate::Unavailable {
                 reason: engine_allocation::string(reason)?,
             },
+            TableView::NotRecorded { mode } => {
+                crate::frame::TableUpdate::NotRecorded { mode: *mode }
+            }
             TableView::Truncated { rows, missing } => {
                 return Err(invalid(format!(
                     "cannot split replay block at hour {}: {table:?} has {} retained rows and {missing} missing rows; keyframes cannot represent truncated tables",
@@ -2503,6 +2592,17 @@ fn block_keyframe(decoded: &DecodedFrame) -> io::Result<Frame> {
         metrics: decoded.metrics.clone(),
         tables: tables.try_into().unwrap(),
     })
+}
+
+fn file_capture_mode(sessions: &[SessionStart]) -> io::Result<CaptureMode> {
+    let mode = sessions
+        .first()
+        .ok_or_else(|| invalid("replay has no sessions"))?
+        .capture_mode;
+    if sessions.iter().any(|session| session.capture_mode != mode) {
+        return Err(invalid("replay sessions name different capture modes"));
+    }
+    Ok(mode)
 }
 
 #[allow(clippy::too_many_arguments)]

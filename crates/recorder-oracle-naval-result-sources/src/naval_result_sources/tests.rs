@@ -103,6 +103,7 @@ fn replay_of(frames: &[DecodedFrame]) -> Replay {
         process_start_time: 1,
         qpc_frequency: 1,
         sample_boundary: replay_data::identity::SampleBoundary::EndOfHour,
+        capture_mode: replay_data::identity::CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

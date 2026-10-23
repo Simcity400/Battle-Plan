@@ -2092,7 +2092,8 @@ fn localise_at<'a>(
                                 states.binary_search_by_key(&state, |row| row.id).is_ok()
                             })
                         }
-                        replay_frame::frame::TableView::Unavailable { .. } => false,
+                        replay_frame::frame::TableView::Unavailable { .. }
+                        | replay_frame::frame::TableView::NotRecorded { .. } => false,
                     };
                 if present {
                     scopes.scopes[0].from = Link::Scope(1);

@@ -69,6 +69,11 @@ fn plain(
             out.push(4);
             put_string(&mut out, reason)?;
         }
+        TableView::NotRecorded { .. } => {
+            return Err(invalid(
+                "a table its capture mode does not record has no update",
+            ));
+        }
     }
     Ok(out)
 }

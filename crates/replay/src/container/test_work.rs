@@ -14,7 +14,7 @@ pub fn with_block_frames(replay: &Replay, frames: &[Frame]) -> io::Result<Replay
         .first()
         .ok_or_else(|| super::invalid("fixture requires at least one frame"))?;
     let cores = super::pack::Cores::new(1);
-    let mut block = super::grouped::BlockWriter::new(first);
+    let mut block = super::grouped::BlockWriter::new(first)?;
     let mut anchors = super::grouped::Anchors::default();
     let mut decoder = FrameDecoder::new();
     for frame in frames {

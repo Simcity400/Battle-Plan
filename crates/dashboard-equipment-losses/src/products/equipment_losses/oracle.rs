@@ -295,7 +295,8 @@ fn combat_log(
         | replay_frame::frame::TableView::Truncated { rows, .. } => {
             rows.rows::<tables::CombatLogEquipment>().unwrap_or(&[])
         }
-        replay_frame::frame::TableView::Unavailable { .. } => return Ok(()),
+        replay_frame::frame::TableView::Unavailable { .. }
+        | replay_frame::frame::TableView::NotRecorded { .. } => return Ok(()),
     };
     for read in unresolved {
         let first = rows.partition_point(|row| row.country < read.owner);

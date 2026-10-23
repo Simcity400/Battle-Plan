@@ -331,7 +331,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     format!("{:?} contains another table's rows", T::ID).into()
                 })
             }
-            replay_frame::frame::TableView::Unavailable { .. } => {
+            replay_frame::frame::TableView::Unavailable { .. }
+            | replay_frame::frame::TableView::NotRecorded { .. } => {
                 self.world().frame().trigger_table::<T>()
             }
         }

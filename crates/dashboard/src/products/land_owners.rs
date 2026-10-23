@@ -151,7 +151,7 @@ impl Scan {
                 self.incomplete = true;
                 rows.rows::<tables::States>()
             }
-            TableView::Unavailable { .. } => None,
+            TableView::Unavailable { .. } | TableView::NotRecorded { .. } => None,
         };
         let (Some(states), Ok(links), Ok(rows)) = (
             states,

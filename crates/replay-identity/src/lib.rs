@@ -131,6 +131,49 @@ impl std::fmt::Display for SampleBoundary {
     }
 }
 
+/// Which tables a recording holds. replay-data's `scope` module lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CaptureMode {
+    Full,
+    Map,
+}
+
+impl CaptureMode {
+    pub const ALL: [Self; 2] = [Self::Full, Self::Map];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Map => "map",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.name() == name)
+    }
+
+    pub const fn byte(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::Map => 1,
+        }
+    }
+
+    pub fn from_byte(byte: u8) -> io::Result<Self> {
+        match byte {
+            0 => Ok(Self::Full),
+            1 => Ok(Self::Map),
+            _ => Err(invalid("unknown capture mode")),
+        }
+    }
+}
+
+impl std::fmt::Display for CaptureMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionStart {
     /// The session's id (replay-data's `SessionId`).
@@ -142,6 +185,8 @@ pub struct SessionStart {
     pub qpc_frequency: u64,
     /// The explicitly recorded acquisition boundary.
     pub sample_boundary: SampleBoundary,
+    /// The same for every session of a recording file.
+    pub capture_mode: CaptureMode,
     pub identity: Identity,
 }
 
@@ -387,7 +432,7 @@ impl Identity {
 
 impl SessionStart {
     pub fn encoded_bytes(&self) -> io::Result<usize> {
-        allocation::add(29, self.identity.encoded_bytes()?)
+        allocation::add(30, self.identity.encoded_bytes()?)
     }
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
@@ -396,6 +441,7 @@ impl SessionStart {
             process_start_time: self.process_start_time,
             qpc_frequency: self.qpc_frequency,
             sample_boundary: self.sample_boundary,
+            capture_mode: self.capture_mode,
             identity: self.identity.try_clone()?,
         })
     }

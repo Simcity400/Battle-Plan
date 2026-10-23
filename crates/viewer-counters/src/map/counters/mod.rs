@@ -3774,6 +3774,9 @@ impl UiColors {
             Available::Unavailable { reason } => {
                 format!("CountryAppearance is unavailable: {reason}")
             }
+            Available::NotRecorded { mode } => {
+                format!("CountryAppearance is not recorded in a {mode} recording")
+            }
         };
         let colors = appearance
             .rows()

@@ -2,9 +2,9 @@ use std::io;
 
 use replay::{container::Replay, spool::ControlRecord, spool::Record};
 use replay_data::{
-    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-    identity::Verification, rows::CampaignRow, rows::CountryLinkRow, rows::CountryRow,
-    rows::TableId, rows::TableRows,
+    identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+    identity::SessionStart, identity::Verification, rows::CampaignRow, rows::CountryLinkRow,
+    rows::CountryRow, rows::TableId, rows::TableRows,
 };
 use replay_frame::{
     branches::BranchReason, branches::BranchStart, branches::Parentage, frame::Frame,
@@ -23,6 +23,7 @@ pub fn recording_sequence(partial: bool, sequence: bool) -> io::Result<Replay> {
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

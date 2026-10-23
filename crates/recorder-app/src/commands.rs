@@ -6,6 +6,7 @@ use crate::{
     worker::{Recorder, save_folder},
 };
 use replay::{recorder_settings::NextLoad, recorder_settings::RecorderSettings};
+use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
 use std::{
     os::windows::process::CommandExt,
@@ -117,6 +118,7 @@ pub struct SettingsPatch {
     game_score: Option<bool>,
     operation_outcomes: Option<bool>,
     politics: Option<bool>,
+    capture_mode: Option<String>,
 }
 
 /// Held while Start with Windows and its saved setting change together.
@@ -127,6 +129,13 @@ pub async fn update_recorder_settings(
     app: AppHandle,
     patch: SettingsPatch,
 ) -> Result<SettingsView, String> {
+    let capture_mode = patch
+        .capture_mode
+        .as_deref()
+        .map(|name| {
+            CaptureMode::from_name(name).ok_or_else(|| format!("Unknown capture mode {name:?}"))
+        })
+        .transpose()?;
     let view = blocking(move || {
         // The Run entry must change before its setting is saved.
         let _serial = START_WITH_WINDOWS
@@ -157,13 +166,16 @@ pub async fn update_recorder_settings(
             set(&mut settings.game_score, patch.game_score);
             set(&mut settings.operation_outcomes, patch.operation_outcomes);
             set(&mut settings.politics, patch.politics);
+            if let Some(mode) = capture_mode {
+                settings.capture_mode = mode;
+            }
         });
         if view.is_err()
             && let Some(previous) = previous
         {
             // A save can fail after replacement; restore the Run entry from what is now saved.
-            let saved = RecorderSettings::load()
-                .map_or(previous, |settings| settings.start_with_windows);
+            let saved =
+                RecorderSettings::load().map_or(previous, |settings| settings.start_with_windows);
             if let Err(error) = startup::set_start_with_windows(saved) {
                 eprintln!("{error}");
             }

@@ -1,5 +1,6 @@
 //! Recorder-owned preferences shared with the replay app.
 
+use replay_data::scope::CaptureMode;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -51,6 +52,28 @@ fn enabled() -> bool {
     true
 }
 
+fn full() -> CaptureMode {
+    CaptureMode::Full
+}
+
+/// A [`CaptureMode`] by its name.
+mod capture_mode {
+    use replay_data::scope::CaptureMode;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(mode: &CaptureMode, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(mode.name())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<CaptureMode, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        CaptureMode::from_name(&name)
+            .ok_or_else(|| D::Error::custom(format!("unknown capture mode {name:?}")))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecorderSettings {
@@ -72,6 +95,9 @@ pub struct RecorderSettings {
     pub operation_outcomes: bool,
     #[serde(default = "enabled")]
     pub politics: bool,
+    /// A campaign recorded in another mode continues in a new file.
+    #[serde(default = "full", with = "capture_mode")]
+    pub capture_mode: CaptureMode,
     #[serde(default)]
     pub campaigns: BTreeMap<String, CampaignChoice>,
     /// Recordings whose name the user chose; later saves keep it.
@@ -117,6 +143,7 @@ impl Default for RecorderSettings {
             game_score: true,
             operation_outcomes: true,
             politics: true,
+            capture_mode: CaptureMode::Full,
             campaigns: BTreeMap::new(),
             chosen_names: Vec::new(),
         }
@@ -276,6 +303,7 @@ mod tests {
         assert!(settings.record_every_campaign);
         assert!(settings.start_with_replay && !settings.start_with_windows);
         assert!(settings.game_score && settings.operation_outcomes && settings.politics);
+        assert_eq!(settings.capture_mode, CaptureMode::Full);
         assert!(settings.save_folder.is_none() && settings.user_folder.is_none());
         assert!(settings.campaigns.is_empty() && settings.chosen_names.is_empty());
         fs::remove_dir_all(root).unwrap();
@@ -323,6 +351,23 @@ mod tests {
             Path::new(r"\\?\UNC\server\share\a.battleplan"),
             Path::new("//server/share/A.battleplan")
         ));
+    }
+
+    #[test]
+    fn capture_mode_is_saved_by_name_and_unknown_names_are_refused() {
+        let root = scratch("capture-mode");
+        let path = root.join("settings.json");
+        RecorderSettings::update_at(&path, |settings| settings.capture_mode = CaptureMode::Map)
+            .unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(r#""captureMode": "map""#), "{saved}");
+        assert_eq!(
+            RecorderSettings::load_from(&path).unwrap().capture_mode,
+            CaptureMode::Map
+        );
+        fs::write(&path, br#"{"captureMode":"light"}"#).unwrap();
+        assert!(RecorderSettings::load_from(&path).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

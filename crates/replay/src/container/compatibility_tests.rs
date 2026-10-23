@@ -567,6 +567,9 @@ fn legacy_frame_with_history(
     bytes.extend_from_slice(&1_u64.to_le_bytes());
     bytes.extend_from_slice(&hour.to_le_bytes());
     bytes.push(u8::from(first));
+    if format.version() >= rows::compatibility::CAPTURE_MODE_FORMAT {
+        bytes.push(CaptureMode::Full.byte());
+    }
     bytes.extend_from_slice(&0_u64.to_le_bytes());
     for table in TableId::ALL {
         if history[table.index()].present(format.version()) {
@@ -600,6 +603,7 @@ fn replace_legacy_snapshot(
     update: &[u8],
 ) -> Vec<u8> {
     let prefix = 37
+        + usize::from(format.version() >= rows::compatibility::CAPTURE_MODE_FORMAT)
         + 8 * TableId::ALL
             .into_iter()
             .filter(|table| table.last_change().present(format.version()))
@@ -646,9 +650,7 @@ fn legacy_replay_with(format: u16, payload: &[u8]) -> Replay {
         raw.extend_from_slice(&1_u32.to_le_bytes());
         put_bytes(raw, payload).unwrap();
     });
-    let mut bytes = replay.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&format.to_le_bytes());
-    Replay::open(bytes).unwrap()
+    Replay::open(relabelled(replay.bytes(), format).unwrap()).unwrap()
 }
 
 #[test]
@@ -1951,8 +1953,7 @@ fn compatibility_framing_change_refuses_the_whole_file_by_name() {
         failed_hour: None,
     }));
     let current = Replay::from_records(CAMPAIGN.into(), &[records]).unwrap();
-    let mut bytes = current.bytes().to_vec();
-    bytes[4..6].copy_from_slice(&91_u16.to_le_bytes());
+    let bytes = relabelled(current.bytes(), 91).unwrap();
     assert_eq!(
         Replay::open(bytes).err().unwrap().to_string(),
         "Partial layout changed at format 92; this recording is format 91"
@@ -1969,6 +1970,12 @@ fn compatibility_old_spool_is_readable_but_cannot_be_rewritten_or_mixed() {
             encoded.truncate(crate::spool::RECORD_HEADER_BYTES);
             encoded.push(2);
             encoded.extend(legacy_frame(format, 1000, true));
+        }
+        if matches!(record, Record::SessionStart(_)) {
+            // Format 94 sessions have no capture mode byte.
+            encoded.remove(crate::spool::RECORD_HEADER_BYTES + 1 + 29);
+        }
+        if matches!(record, Record::Frame(_) | Record::SessionStart(_)) {
             let length = encoded.len() - crate::spool::RECORD_HEADER_BYTES;
             encoded[6..10].copy_from_slice(&(length as u32).to_le_bytes());
             let crc = crc32fast::hash(&encoded[crate::spool::RECORD_HEADER_BYTES..]);
@@ -2041,6 +2048,11 @@ fn compatibility_real_recordings() {
                     match &*decoded.tables[table.index()] {
                         TableView::Unavailable { reason } => {
                             gaps.entry(table).or_default().insert(reason.clone());
+                        }
+                        TableView::NotRecorded { mode } => {
+                            gaps.entry(table)
+                                .or_default()
+                                .insert(format!("not recorded in a {mode} recording"));
                         }
                         TableView::Truncated { missing, .. } => {
                             gaps.entry(table)

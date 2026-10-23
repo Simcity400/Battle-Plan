@@ -198,6 +198,9 @@ fn table_refusals(frame: &DecodedFrame) -> Vec<TableRefusal> {
         let Some(error) = error else { continue };
         let (reason, missing_rows) = match &*frame.tables[table.index()] {
             TableView::Unavailable { reason } => (Some(reason.clone()), None),
+            TableView::NotRecorded { mode } => {
+                (Some(format!("not recorded in a {mode} recording")), None)
+            }
             TableView::Truncated { missing, .. } => (None, Some(missing.to_string())),
             TableView::Complete(_) => (Some(error.to_string()), None),
         };

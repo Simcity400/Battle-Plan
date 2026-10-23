@@ -2891,3 +2891,79 @@ fn scripted_invasion_failures_withhold_colours_on_cold_and_warm_caches() {
         }
     }
 }
+
+#[test]
+fn a_map_recording_offers_only_the_modes_whose_tables_it_records() {
+    use replay_data::scope::CaptureMode;
+    for stock in Stock::ALL {
+        assert_eq!(
+            stock.unavailable_in(CaptureMode::Full).as_deref(),
+            stock.unavailable(),
+            "{stock:?}"
+        );
+    }
+    let offered: BTreeSet<_> = Stock::ALL
+        .into_iter()
+        .filter(|stock| stock.unavailable_in(CaptureMode::Map).is_none())
+        .collect();
+    let expected = [
+        Stock::Default,
+        Stock::States,
+        Stock::Manpower,
+        Stock::Terrain,
+        Stock::Players,
+        Stock::Ideology,
+        // Its wing grids and mission regions are Map's air view.
+        Stock::StrategicAir,
+        // Its trade-route convoys are among Map's animations.
+        Stock::StrategicNavy,
+    ];
+    assert_eq!(offered, expected.into_iter().collect());
+    let refusal = Stock::Diplomacy.unavailable_in(CaptureMode::Map).unwrap();
+    assert!(
+        refusal.starts_with("Not in this recording: a map recording leaves out"),
+        "{refusal}"
+    );
+    let scripted = MapMode::Scripted("synthetic".into());
+    assert!(scripted.unavailable_in(CaptureMode::Full).is_none());
+    assert!(scripted.unavailable_in(CaptureMode::Map).is_some());
+}
+
+#[test]
+fn every_mode_a_map_recording_offers_fills_from_recorded_tables() {
+    use viewer_foundation::map::test_support::{
+        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    };
+    let mut frame = complete_frame(11, |table| {
+        replay_data::rows::sample_extended_table(table, 0)
+    });
+    put_sample_campaign(&mut frame);
+    let frame = map_scoped(frame);
+    let content = content(MapModes::default());
+    let map = map();
+    for stock in Stock::ALL
+        .into_iter()
+        .filter(|stock| stock.unavailable_in(CaptureMode::Map).is_none())
+    {
+        let filled = assert_reads_recorded(&frame, &[], || {
+            fill(
+                &MapMode::Stock(stock),
+                &Inputs {
+                    content: &content,
+                    map: &map,
+                    frame: &frame,
+                    selected: Some(1),
+                    world: None,
+                    colour: None,
+                },
+            )
+        });
+        // The synthetic content may refuse a mode, but never for a table Map leaves out.
+        if let Err(error) = filled {
+            assert!(
+                !error.to_string().contains("not recorded"),
+                "{stock:?}: {error}"
+            );
+        }
+    }
+}

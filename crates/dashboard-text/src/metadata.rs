@@ -66,6 +66,7 @@ fn read_from(
             .to_string_lossy()
             .into_owned(),
         format: replay.format.version(),
+        capture_mode: replay.capture_mode.into(),
         campaign_key: crate::map_settings::try_campaign_key(replay)?,
         branches,
         countries: Vec::new(),
@@ -1124,6 +1125,11 @@ pub fn recorded_rows<T: replay_data::rows::TableSchema>(
             })
         }
         TableView::Unavailable { .. } => Ok(&[]),
+        TableView::NotRecorded { mode } => Err(crate::invalid(format!(
+            "hour {} {:?} is not recorded in a {mode} recording",
+            frame.hour,
+            T::ID
+        ))),
     }
 }
 

@@ -224,6 +224,9 @@ pub fn regions(map: &MapData, frame: &DecodedFrame) -> io::Result<Regions> {
             format!("CountryAppearance is truncated ({missing} missing rows)")
         }
         Available::Unavailable { reason } => format!("CountryAppearance is unavailable: {reason}"),
+        Available::NotRecorded { mode } => {
+            format!("CountryAppearance is not recorded in a {mode} recording")
+        }
     };
     let recorded = appearance
         .rows()

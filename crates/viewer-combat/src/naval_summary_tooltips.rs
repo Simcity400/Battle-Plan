@@ -671,6 +671,9 @@ fn screening_inputs<'a>(
                 Available::Unavailable { reason } => {
                     format!("ShipModels is unavailable this hour ({reason})")
                 }
+                Available::NotRecorded { mode } => {
+                    format!("ShipModels is not recorded in a {mode} recording")
+                }
             }
         })?;
     let screening =

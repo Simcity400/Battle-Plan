@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import type { IconName } from '../components/Icons';
+import type { CaptureMode } from '../generated/dashboard';
 import type { MapOptions } from '../shell/api';
 import type { DashboardClient, ReplayFile } from './client';
 import type { Campaign } from './campaigns';
@@ -103,6 +104,8 @@ export interface WidgetMeta {
   defaultCountries?: CountrySelection;
   /** The widget's own settings, grouped into the panel's sections. */
   options?: readonly OptionField[];
+  /** The capture modes whose recordings hold every table the widget reads; Full only when absent. */
+  captureModes?: readonly CaptureMode[];
   /** A lightweight product reporting whether this recording contains the feature.
    * The picker disables the entry until the reply establishes `available: true`. */
   availability?: { product: string; params: Readonly<Record<string, unknown>> };

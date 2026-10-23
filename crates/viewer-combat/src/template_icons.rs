@@ -6,7 +6,7 @@
 //! country cores. These frames are derived, not recorded.
 use replay_data::{
     rows::DivisionRow, rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::TableSchema,
-    rows::tables,
+    rows::tables, scope::CaptureMode,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, fmt, io};
@@ -24,6 +24,8 @@ pub(super) enum Gap<'a> {
     Unreached,
     /// The table failed this hour, with the collector's reason.
     Unavailable(&'a str),
+    /// The recording's capture mode leaves the table out.
+    NotRecorded(CaptureMode),
 }
 
 /// The recorded row a native operand of an entry flag or exile badge comes
@@ -53,6 +55,10 @@ impl fmt::Display for Refused<'_> {
                     "the {table} table is unavailable ({reason}), so {key} is unknown"
                 )
             }
+            Gap::NotRecorded(mode) => write!(
+                f,
+                "the {table} table is not recorded in a {mode} recording, so {key} is unknown"
+            ),
         }
     }
 }
@@ -93,6 +99,7 @@ impl<'a, K: Ord, V: Copy> Keyed<'a, K, V> {
             Available::Complete(_) => Gap::Absent,
             Available::Truncated { .. } => Gap::Unreached,
             Available::Unavailable { reason } => Gap::Unavailable(reason),
+            Available::NotRecorded { mode } => Gap::NotRecorded(*mode),
         };
         Self {
             rows: available.rows().iter().map(entry).collect(),

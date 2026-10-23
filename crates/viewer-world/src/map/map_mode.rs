@@ -57,7 +57,10 @@ use installed_content_core::{
     defines::Defines, map::MapData, map::ProvinceKind, scripted_map_modes::GameLayer,
     scripted_map_modes::LayerType, scripted_map_modes::MapModes, scripted_map_modes::MapText,
 };
-use replay_data::rows::tables;
+use replay_data::{
+    rows::{TableId, tables},
+    scope::{self, CaptureMode},
+};
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::{
     color_inheritance::{active_subject, slot_of},
@@ -171,6 +174,58 @@ impl Stock {
         match self {
             Self::Supply => Some(SUPPLY_UNAVAILABLE),
             _ => None,
+        }
+    }
+}
+
+impl Stock {
+    /// The recorded tables this mode's own layer and icons read beyond the political map's.
+    pub fn tables(self) -> &'static [TableId] {
+        use TableId::*;
+        match self {
+            Self::Default | Self::States | Self::Manpower | Self::Terrain | Self::Supply => &[],
+            Self::Players => &[Players],
+            Self::Ideology => &[Politics, PoliticalParties],
+            Self::Factions => &[Factions, FactionMembers],
+            Self::Diplomacy => &[Capitulation, Subjects, FactionMembers, RelationOpinions],
+            Self::Resistance | Self::Compliance => &[StateResistance],
+            Self::Operatives => &[IntelNetworks],
+            Self::Infrastructure => &[StateBuildings, ResearchTechnologies, TechnologyDefinitions],
+            Self::StrategicAir => &[RaidAirScores, CountryCounterInputs],
+            Self::StrategicNavy => &[
+                RaidAirScores,
+                CountryCounterInputs,
+                NavalSupremacy,
+                RelationTuples,
+            ],
+            Self::Resources => &[StateResources],
+            Self::Raids => &[RaidTargetStatuses],
+        }
+    }
+
+    pub fn unavailable_in(self, mode: CaptureMode) -> Option<String> {
+        if let Some(reason) = self.unavailable() {
+            return Some(reason.to_owned());
+        }
+        let missing = self
+            .tables()
+            .iter()
+            .find(|table| !scope::records(mode, **table))?;
+        Some(format!(
+            "Not in this recording: a {mode} recording leaves out {missing:?}, which this map mode reads."
+        ))
+    }
+}
+
+impl MapMode {
+    pub fn unavailable_in(&self, mode: CaptureMode) -> Option<String> {
+        match self {
+            Self::Stock(stock) => stock.unavailable_in(mode),
+            Self::Scripted(_) => (mode != CaptureMode::Full).then(|| {
+                format!(
+                    "Not in this recording: content map modes evaluate scripts over data a {mode} recording leaves out."
+                )
+            }),
         }
     }
 }
@@ -919,6 +974,10 @@ fn complete<'a, T: replay_data::rows::TableSchema>(
         )),
         Available::Unavailable { reason } => Err(format!(
             "the {mode} map mode needs {:?}, unavailable this hour: {reason}",
+            T::ID
+        )),
+        Available::NotRecorded { mode: capture } => Err(format!(
+            "the {mode} map mode needs {:?}, not recorded in a {capture} recording",
             T::ID
         )),
     }

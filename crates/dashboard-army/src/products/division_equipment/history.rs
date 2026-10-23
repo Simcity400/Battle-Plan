@@ -796,7 +796,7 @@ fn scanned(rows: usize) {
 fn rows_in(view: &TableView) -> usize {
     match view {
         TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows.len(),
-        TableView::Unavailable { .. } => 0,
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => 0,
     }
 }
 

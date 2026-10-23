@@ -823,6 +823,7 @@ fn active(
         Available::Complete(_) => None,
         Available::Truncated { missing, .. } => Some(format!("{missing} rows not reached")),
         Available::Unavailable { reason } => Some((*reason).to_owned()),
+        Available::NotRecorded { mode } => Some(format!("not recorded in a {mode} recording")),
     };
     // Incoming live ships whose owner's sharing the hour cannot
     // decide, by missing input: their box is unknown, so they are omitted.

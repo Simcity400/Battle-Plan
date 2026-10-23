@@ -5,7 +5,7 @@ use crate::{
     windows::{self, Process, ProcessMemory},
 };
 use engine_executable::{build::PINNED_BUILD, build::hash_executable};
-use replay_data::identity::IdentityCodec;
+use replay_data::{identity::IdentityCodec, scope::CaptureMode};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -24,6 +24,8 @@ pub struct Recording<'a> {
     pub game_score: bool,
     pub operation_outcomes: bool,
     pub politics_capture: bool,
+    /// Which tables the session records ([`replay_data::scope`]).
+    pub capture_mode: CaptureMode,
     /// Whether a load may be recorded in the session, and if not why, asked
     /// once per load: each load the probe names while recording, and at save
     /// each load the spool identifies that was never asked about. The flag
@@ -60,6 +62,7 @@ pub fn record(
         game_score: recording.game_score,
         operation_outcomes: recording.operation_outcomes,
         politics_capture: recording.politics_capture,
+        capture_mode: recording.capture_mode,
         nothing_recorded_is_ok: true,
         live_status: true,
         admit: Some(recording.admit),
@@ -231,8 +234,8 @@ mod tests {
     #[test]
     fn a_sessions_content_identity_comes_from_its_collector_configuration() {
         use replay_data::{
-            identity::Identity, identity::SampleBoundary, identity::SessionStart,
-            identity::Verification,
+            identity::CaptureMode, identity::Identity, identity::SampleBoundary,
+            identity::SessionStart, identity::Verification,
         };
         let session = std::env::temp_dir().join(format!(
             "hoi4-session-identity-{}-{}",
@@ -249,6 +252,7 @@ mod tests {
             process_start_time: 7,
             qpc_frequency: 1,
             sample_boundary: SampleBoundary::EndOfHour,
+            capture_mode: CaptureMode::Full,
             identity: Identity {
                 game_version: "synthetic".into(),
                 exe_hash: [1; 32],

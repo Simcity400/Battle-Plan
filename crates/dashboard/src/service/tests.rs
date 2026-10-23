@@ -7,8 +7,8 @@ use crate::{
 };
 use replay::{container::Replay, spool::Record};
 use replay_data::{
-    identity::Identity, identity::Roster, identity::SampleBoundary, identity::SessionStart,
-    identity::Verification,
+    identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
+    identity::SessionStart, identity::Verification,
 };
 use std::{sync::mpsc, time::Duration};
 
@@ -108,6 +108,7 @@ fn source_with_id(id: &str) -> Arc<Source> {
         process_start_time: 1,
         qpc_frequency: 10_000_000,
         sample_boundary: SampleBoundary::EndOfHour,
+        capture_mode: CaptureMode::Full,
         identity: Identity {
             game_version: "synthetic".into(),
             exe_hash: [1; 32],

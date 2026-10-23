@@ -31,7 +31,7 @@ pub(crate) fn complete<T: TableSchema>(frame: &DecodedFrame) -> io::Result<Optio
             }
             Ok(None)
         }
-        TableView::Unavailable { .. } => Ok(None),
+        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => Ok(None),
     }
 }
 

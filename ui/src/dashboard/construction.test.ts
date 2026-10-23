@@ -56,7 +56,7 @@ test('distinct railway state IDs retain both endpoints even when their recorded 
 test('both construction renderers release dated-name demand outside their branch while preserving held dates', async () => {
   registerWidgets([logDefinition, spendingDefinition]);
   const source = (id: string, firstHour: number, lastHour: number): DashboardSource => ({ id, path: `C:/recordings/${id}.battleplan`, revision: '1',
-    metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1', name: id, format: 1, campaignKey: 'c0ffee',
+    metadata: { path: `C:/recordings/${id}.battleplan`, revision: '1', name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee',
       branches: [{ id: '1', sessionId: '1', firstHour, lastHour, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
       countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [] } });
   const tracks = bindTracks({ version: 1, name: 'Comparison', alignment: 'calendar', widgets: [], layouts: {},

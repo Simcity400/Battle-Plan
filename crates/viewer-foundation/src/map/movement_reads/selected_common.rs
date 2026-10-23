@@ -721,6 +721,11 @@ impl CommonMoveWorld for Moves<'_, '_> {
                     Available::Unavailable { reason } => {
                         return Err(format!("selected NavalCombatDetails unavailable: {reason}"));
                     }
+                    Available::NotRecorded { mode } => {
+                        return Err(format!(
+                            "selected NavalCombatDetails is not recorded in a {mode} recording"
+                        ));
+                    }
                 };
                 let at = rows
                     .binary_search_by_key(&combat.combat, |row| row.combat)
