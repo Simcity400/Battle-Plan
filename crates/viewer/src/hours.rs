@@ -694,6 +694,7 @@ struct Memos {
     snow_shared: Settled<SnowMud>,
     /// The intel map, by the viewing country's rebuilt province bytes.
     intel: Recent<Option<BTreeMap<u32, u8>>, IntelMap>,
+    music: crate::document::music_inputs::Memo,
 }
 
 /// How many recent values each memo keeps: the pool builds several hours at
@@ -708,6 +709,7 @@ impl Memos {
             rails: Recent::new(MEMO_ENTRIES),
             snow_shared: Settled::new(weather::TABLES, MEMO_ENTRIES),
             intel: Recent::new(MEMO_ENTRIES),
+            music: crate::document::music_inputs::Memo::new(MEMO_ENTRIES),
         }
     }
 }
@@ -1878,7 +1880,8 @@ impl coordinator::BuildTarget for Coordinator {
                         view.limitations_with(&fog_perspective, Some(&intel))
                     })?;
                     let music = spans.measure("fog.music", |_| {
-                        view.music_chances(vision.ours()).map(Arc::new)
+                        view.music_chances_cached(vision.ours(), &memos.music)
+                            .map(Arc::new)
                     });
                     let battles =
                         spans.measure("fog.battles", |_| view.battle_sounds().map(Arc::new));

@@ -1,10 +1,12 @@
 use super::*;
-use crate::triggers::{ContentFacts, World, variables::Store, world::Query};
+use crate::triggers::{
+    ContentFacts, Evaluator, Scope, Scopes, World, variables::Store, world::Query,
+};
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow,
-    rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow, rows::PoliticalPartyRow,
-    rows::ScriptFlagRow, rows::SubjectRow, rows::TableRows, rows::TableSchema,
-    rows::WarRelationRow,
+    rows::CountryWarRow, rows::FactionMemberRow, rows::LexicalTokenRow, rows::PartyLeaderRow,
+    rows::PoliticalPartyRow, rows::ScriptFlagRow, rows::SubjectRow, rows::TableRows,
+    rows::TableSchema, rows::WarRelationRow,
 };
 use replay_frame::{frame::Frame, frame::FrameDecoder, frame::FrameEncoder, frame::TableUpdate};
 use std::{
@@ -180,6 +182,58 @@ fn with_world<T>(frame: &DecodedFrame, run: impl FnOnce(&World<'_>) -> T) -> T {
         frame,
         ContentFacts::content_only(&dlcs, &triggers, &aliases),
     ))
+}
+
+#[test]
+fn has_war_records_clock_only_when_scanning_relations() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let body = installed_content_core::parser::parse(b"has_war=yes").unwrap().items;
+    for (hour, enemies, expected, scans) in [
+        (16, Vec::new(), true, true),
+        (21, Vec::new(), false, true),
+        (16, vec![102], true, false),
+        (21, vec![102], true, false),
+    ] {
+        let mut frame = frame(
+            hour,
+            State {
+                war_end: 20,
+                ..BASE
+            },
+        );
+        set::<tables::CountryWars>(
+            &mut frame,
+            vec![CountryWarRow {
+                country: 101,
+                enemies_read: 1,
+                enemies,
+                ..Default::default()
+            }],
+        );
+        let (value, inputs) = with_world(&frame, |world| {
+            let evaluator = Evaluator::new(world, None);
+            capture(&frame, || {
+                evaluator
+                    .evaluate(&body, Scopes::of(Scope::Country(1)))
+                    .decided()
+            })
+        });
+        assert_eq!(value, Ok(expected));
+        assert_eq!(
+            inputs
+                .keys()
+                .any(|key| matches!(key, Key::World(Query::Clock))),
+            scans,
+            "hour {hour}, relation scan {scans}"
+        );
+        assert_eq!(
+            inputs
+                .keys()
+                .any(|key| matches!(key, Key::Table(TableId::WarRelations))),
+            scans,
+            "hour {hour}, relation scan {scans}"
+        );
+    }
 }
 
 /// What an evaluation of country 1's visibility-style triggers reads.

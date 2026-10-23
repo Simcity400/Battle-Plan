@@ -665,7 +665,7 @@ impl Evaluator<'_, '_> {
         }
         let world = self.world();
         for row in recorded::<tables::WarRelations>(world.frame())? {
-            if !super::ongoing(row.start_hour, row.end_hour, world.hour()) {
+            if !super::ongoing(row.start_hour, row.end_hour, world.clock()) {
                 continue;
             }
             let first = world

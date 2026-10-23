@@ -1,5 +1,7 @@
 //! A replay and the verified local game content used to draw its current hour.
 
+pub(crate) mod music_inputs;
+
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
 use crate::map_views::Views;
@@ -3131,23 +3133,18 @@ impl<'a> Hour<'a> {
         }
     }
 
-    /// Each enabled song's chance for `country` at this hour: its `chance`
-    /// body evaluated as a mean-time weight in the country's scope. A body
-    /// whose conditions the recording cannot answer keeps its base chance
-    /// and is named in the refusals. `None` without songs.
-    pub fn music_chances(&self, country: u32) -> Option<viewer_audio::Chances> {
+    pub(crate) fn music_chances_cached(
+        &self,
+        country: u32,
+        memo: &music_inputs::Memo,
+    ) -> Option<viewer_audio::Chances> {
         let audio = self.content.audio.as_ref()?;
-        let content = &audio.content;
-        if content.music.songs.is_empty() {
+        if audio.content.music.songs.is_empty() {
             return None;
         }
-        let evaluator = dashboard::triggers::Evaluator::new(self.trigger_world(), None);
-        let scopes = dashboard::triggers::Scopes::of(dashboard::triggers::Scope::Country(country));
-        Some(song_chances(content, |body| {
-            evaluator
-                .mean_time_to_happen("music chance", body, scopes)
-                .map_err(|why| why.to_string())
-        }))
+        // Build lazy world indexes before capturing each song's own reads.
+        let world = self.trigger_world();
+        Some(memo.chances(self.frame, &audio.content, country, world))
     }
 
     /// The hour's battles for the battle ambience: the game's recorded
@@ -5090,6 +5087,7 @@ const MUSIC_CHANCE_ONE: f64 = 100_000.0;
 /// five-decimal value: `None` for songs of disabled stations; a body
 /// `evaluate` refuses is named and keeps its base chance (the body without
 /// its modifiers).
+#[cfg(test)]
 fn song_chances(
     content: &viewer_audio::Content,
     mut evaluate: impl FnMut(&[installed_content_core::parser::Item]) -> Result<i64, String>,
@@ -5663,7 +5661,9 @@ mod tests {
             Some(vec!["a".into()]),
             0,
         );
+        let mut calls = 0;
         let chances = song_chances(&content, |body| {
+            calls += 1;
             if body.iter().any(|item| item.keyword_is("modifier")) {
                 Err("unanswered".into())
             } else {
@@ -5672,6 +5672,7 @@ mod tests {
         });
         assert_eq!(chances.weights, [Some(1.5), None, Some(3.0)]);
         assert_eq!(chances.refusals, ["song t0: unanswered"]);
+        assert_eq!(calls, 3, "primary, fallback, next enabled song only");
     }
 
     /// Raid icons replaced in place in a drawn overlay equal the overlay
