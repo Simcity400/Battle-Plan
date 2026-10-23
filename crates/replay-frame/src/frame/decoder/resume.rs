@@ -1,5 +1,6 @@
 //! Selected prepared state enters the ordinary decoder at its saved hour.
 use super::*;
+use crate::frame::endpoint_step::EndpointStep;
 
 impl FrameDecoder {
     /// Restore a selected preparation accumulator, including acquisition provenance.
@@ -39,6 +40,26 @@ impl FrameDecoder {
         }
         decoder.current = Some(frame);
         Ok(decoder)
+    }
+
+    pub fn advance_endpoint(&mut self, step: EndpointStep) -> io::Result<&DecodedFrame> {
+        self.advance_endpoint_parallel(step, 1, &|| {})
+    }
+
+    pub fn advance_endpoint_parallel(
+        &mut self,
+        step: EndpointStep,
+        workers: usize,
+        on_worker: &(dyn Fn() + Sync),
+    ) -> io::Result<&DecodedFrame> {
+        let selected = self.selected.as_ref();
+        let tables =
+            (0..TABLE_COUNT).filter(|&index| selected.is_none_or(|selected| selected[index]));
+        if !step.tables().map(TableId::index).eq(tables) {
+            return Err(invalid("endpoint tables differ from the decoder's"));
+        }
+        let reached = step.apply_owned_parallel(self.current.take(), workers, on_worker)?;
+        Ok(self.current.insert(reached))
     }
 
     /// The saved or most recently reconstructed hour.

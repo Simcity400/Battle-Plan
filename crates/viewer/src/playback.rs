@@ -1,6 +1,6 @@
 //! Exact-hour playback through the shared replay decoder, with one cached block.
 
-use std::{io, sync::Arc};
+use std::{io, ops::ControlFlow, sync::Arc};
 
 use crate::blocks::BlockReader;
 use replay::container::Replay;
@@ -40,6 +40,10 @@ pub struct Playback {
     reader: Option<Arc<BlockReader>>,
     checkpoints: Option<crate::map_checkpoints::PreparedMap>,
     checkpoint_source: Option<Arc<crate::map_checkpoints::CheckpointSource>>,
+    page_workers: usize,
+    source_path: Option<bool>,
+    #[cfg(test)]
+    source_paths: Vec<(Hour, bool, Option<Hour>)>,
     #[cfg(test)]
     block_loads: usize,
 }
@@ -75,6 +79,10 @@ impl Playback {
             reader: None,
             checkpoints: None,
             checkpoint_source: None,
+            page_workers: 1,
+            source_path: None,
+            #[cfg(test)]
+            source_paths: Vec::new(),
             #[cfg(test)]
             block_loads: 0,
         })
@@ -94,9 +102,21 @@ impl Playback {
 
     /// Uses prepared selected-table checkpoints on the hour-builder thread.
     /// Hours outside the accepted prefix retain the ordinary replay reader.
-    pub fn with_checkpoints(mut self, checkpoints: crate::map_checkpoints::PreparedMap) -> Self {
+    pub fn with_checkpoints(
+        mut self,
+        mut checkpoints: crate::map_checkpoints::PreparedMap,
+    ) -> Self {
         debug_assert!(Arc::ptr_eq(checkpoints.replay_handle(), &self.replay));
+        checkpoints.set_page_workers(self.page_workers);
         self.checkpoints = Some(checkpoints);
+        self
+    }
+
+    pub fn with_page_workers(mut self, workers: usize) -> Self {
+        self.page_workers = workers;
+        if let Some(map) = &mut self.checkpoints {
+            map.set_page_workers(workers);
+        }
         self
     }
 
@@ -139,12 +159,50 @@ impl Playback {
             return;
         };
         match source.open() {
-            Ok(Some(checkpoints)) => self.checkpoints = Some(checkpoints),
+            Ok(Some(mut checkpoints)) => {
+                checkpoints.set_page_workers(self.page_workers);
+                self.checkpoints = Some(checkpoints);
+            }
             Ok(None) => {}
             Err(error) => {
                 eprintln!("Map checkpoint binding unavailable: {error}; using the replay reader")
             }
         }
+    }
+
+    fn note_source(&mut self, branch: BranchId, hour: Hour, prepared: bool) {
+        let profiling = viewer_foundation::profile_writer::profiling();
+        // Tests follow the source without printing it.
+        #[cfg(not(test))]
+        if !profiling {
+            return;
+        }
+        if self.source_path == Some(prepared) {
+            return;
+        }
+        self.source_path = Some(prepared);
+        let through = self
+            .checkpoints
+            .as_ref()
+            .and_then(|map| prepared_through(map, branch));
+        #[cfg(test)]
+        self.source_paths.push((hour, prepared, through));
+        if profiling {
+            let thread = std::thread::current();
+            viewer_foundation::profile_writer::profile_print(source_path_line(
+                thread.name().unwrap_or("unnamed"),
+                branch,
+                hour,
+                prepared,
+                through,
+            ));
+        }
+    }
+
+    /// Each change of source so far: hour, prepared or not, accepted end.
+    #[cfg(test)]
+    pub(crate) fn source_paths(&self) -> &[(Hour, bool, Option<Hour>)] {
+        &self.source_paths
     }
 
     /// A handle to the same replay for a worker thread.
@@ -296,6 +354,57 @@ impl Playback {
         Ok(())
     }
 
+    pub fn page_entry(&self, branch: BranchId, from: Hour, limit: Hour) -> Option<Hour> {
+        self.checkpoints
+            .as_ref()
+            .filter(|map| map.covers(branch, limit))
+            .and_then(|map| map.page_entry(branch, from, limit))
+    }
+
+    #[cfg(test)]
+    pub fn page_fallbacks(&self) -> u64 {
+        self.checkpoints
+            .as_ref()
+            .map_or(0, |map| map.page_fallbacks)
+    }
+
+    pub fn advance_pages(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        visit_from: Hour,
+        mut wanted: impl FnMut() -> bool,
+    ) -> ControlFlow<(), Option<Hour>> {
+        if !wanted() {
+            return ControlFlow::Break(());
+        }
+        self.refresh_checkpoints(branch, hour);
+        let Some(checkpoints) = self.checkpoints.as_mut() else {
+            return ControlFlow::Continue(None);
+        };
+        let reached = match checkpoints.advance_pages(branch, hour, visit_from, &mut wanted) {
+            Ok(ControlFlow::Break(())) => return ControlFlow::Break(()),
+            Ok(ControlFlow::Continue(Some(reached))) => {
+                self.branch = branch;
+                self.hour = reached;
+                self.current = gap(branch, reached, "hour has not been decoded".into());
+                self.materialized = false;
+                self.cache = None;
+                self.note_source(branch, reached, true);
+                Some(reached)
+            }
+            Ok(ControlFlow::Continue(None)) => None,
+            Err(_) if !wanted() => return ControlFlow::Break(()),
+            Err(error) => {
+                // Prepared files are disposable, as on every other route.
+                eprintln!("Map checkpoint unavailable: {error}; using the replay reader");
+                self.checkpoints = None;
+                None
+            }
+        };
+        ControlFlow::Continue(reached)
+    }
+
     fn seek_to(
         &mut self,
         branch: BranchId,
@@ -323,7 +432,7 @@ impl Playback {
                     .map(|handled| {
                         handled.then(|| gap(branch, hour, "hour has not been decoded".into()))
                     })
-            } else if self.branch == branch && self.hour < hour {
+            } else if self.branch == branch && self.hour <= hour {
                 checkpoints.advance(branch, hour, &mut passed)
             } else {
                 checkpoints.seek_with(branch, hour, &mut passed)
@@ -334,6 +443,7 @@ impl Playback {
                     self.hour = hour;
                     self.current = current;
                     self.cache = None;
+                    self.note_source(branch, hour, true);
                     return Ok(());
                 }
                 Ok(None) => {}
@@ -345,6 +455,7 @@ impl Playback {
                 }
             }
         }
+        self.note_source(branch, hour, false);
         if cached_output && materialize {
             return Ok(());
         }
@@ -509,8 +620,53 @@ fn unknown_branch(branch: BranchId) -> io::Error {
     )
 }
 
+fn prepared_through(map: &crate::map_checkpoints::PreparedMap, branch: BranchId) -> Option<Hour> {
+    let (first, last) = map.range(branch)?;
+    if !map.covers(branch, first) {
+        return None;
+    }
+    let (mut covered, mut beyond) = (i64::from(first), i64::from(last) + 1);
+    while beyond - covered > 1 {
+        let middle = covered + (beyond - covered) / 2;
+        let hour = Hour::try_from(middle).expect("between two hours");
+        if map.covers(branch, hour) {
+            covered = middle;
+        } else {
+            beyond = middle;
+        }
+    }
+    Some(Hour::try_from(covered).expect("an hour"))
+}
+
+fn source_path_line(
+    thread: &str,
+    branch: BranchId,
+    hour: Hour,
+    prepared: bool,
+    through: Option<Hour>,
+) -> String {
+    format!(
+        "PROFILE source_path thread={} branch={branch} hour={hour} path={} prepared_through={}",
+        thread.replace(char::is_whitespace, "_"),
+        if prepared { "prepared" } else { "ordinary" },
+        through.map_or_else(|| "none".to_owned(), |hour| hour.to_string()),
+    )
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn source_path_line_names_the_thread_source_and_accepted_end() {
+        assert_eq!(
+            source_path_line("hour decoder", 1, 101, true, Some(101)),
+            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=prepared prepared_through=101"
+        );
+        assert_eq!(
+            source_path_line("map source decoder", 7, -3, false, None),
+            "PROFILE source_path thread=map_source_decoder branch=7 hour=-3 path=ordinary prepared_through=none"
+        );
+    }
+
     use super::*;
     use replay::{container::SeekResult, spool::Record};
     use replay_data::{

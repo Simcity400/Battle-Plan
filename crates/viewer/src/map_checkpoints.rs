@@ -38,7 +38,38 @@ impl CheckpointSource {
             self.source.replay(),
             prepared_map::selected_tables(),
         )
-        .map(Some)
+        .map(|map| {
+            let (map, bound) = map.with_committed_pages_reporting();
+            if viewer_foundation::profile_writer::profiling() {
+                viewer_foundation::profile_writer::profile_print(bind_line(&map, &bound));
+            }
+            Some(map)
+        })
+    }
+}
+
+fn bind_line(map: &PreparedMap, bound: &io::Result<()>) -> String {
+    match bound {
+        Err(error) => format!("PROFILE map_pages bind failed {error}"),
+        Ok(()) => {
+            let chains = map.page_chains();
+            let detail: Vec<String> = chains
+                .iter()
+                .flat_map(|(branch, pages)| {
+                    pages.chains.iter().map(move |chain| {
+                        format!(
+                            "{branch}/{}:{}:{:?}..{:?}",
+                            chain.stride, chain.ranges, chain.first, chain.last
+                        )
+                    })
+                })
+                .collect();
+            format!(
+                "PROFILE map_pages bind ok branches {} chains {}",
+                chains.len(),
+                detail.join(",")
+            )
+        }
     }
 }
 #[cfg(test)]

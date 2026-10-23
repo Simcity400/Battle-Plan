@@ -717,7 +717,7 @@ fn the_registry_decides_what_the_hourly_walk_skips_keeps_and_gates() {
     let kept: [&str; 0] = [];
     let names = independent::names();
     assert!(
-        ["identities", "territory"]
+        ["identities", "territory", "map-pages"]
             .iter()
             .all(|name| names.contains(name))
     );

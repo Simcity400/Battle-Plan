@@ -35,6 +35,7 @@ mod independent_groups;
 mod independent_identities;
 mod independent_intelligence;
 mod independent_keyed;
+mod independent_map_pages;
 mod independent_leaders;
 mod independent_ledgers;
 mod independent_politics;

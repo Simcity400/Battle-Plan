@@ -14,6 +14,7 @@ use std::{
 pub(crate) mod checkpoint;
 mod decoder;
 mod encoder;
+pub mod endpoint_step;
 mod provenance;
 #[doc(hidden)]
 pub mod recorded;

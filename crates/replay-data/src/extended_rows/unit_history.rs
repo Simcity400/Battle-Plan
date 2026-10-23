@@ -119,6 +119,32 @@ impl RowCodec for SharedDivisionHistoryRow {
     fn round_to_display(&mut self) {}
 }
 impl crate::checkpoint::rows::Row for SharedDivisionHistoryRow {
+    #[inline(never)]
+    fn encode_endpoint_fields(&self, mask: u64, output: &mut Vec<u8>) -> io::Result<()> {
+        crate::checkpoint::rows::Row::encode_endpoint_fields(self.as_ref(), mask, output)
+    }
+    #[inline(never)]
+    fn decode_endpoint_fields(key: u128, mask: u64, input: &mut Decoder<'_>) -> io::Result<Self> {
+        <DivisionHistoryRow as crate::checkpoint::rows::Row>::decode_endpoint_fields(
+            key, mask, input,
+        )
+        .map(Arc::new)
+    }
+    #[inline(never)]
+    fn install_endpoint_fields(&mut self, next: Self, mask: u64) -> io::Result<()> {
+        let next = match Arc::try_unwrap(next) {
+            Ok(row) => row,
+            Err(row) => RowCodec::try_clone_validated(row.as_ref())?,
+        };
+        if Arc::get_mut(self).is_none() {
+            *self = Arc::new(RowCodec::try_clone_validated(self.as_ref())?);
+        }
+        crate::checkpoint::rows::Row::install_endpoint_fields(
+            Arc::get_mut(self).unwrap(),
+            next,
+            mask,
+        )
+    }
     fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> io::Result<()> {
         crate::checkpoint::rows::Row::encode_checkpoint_fields(self.as_ref(), output)
     }
@@ -272,6 +298,32 @@ impl RowCodec for SharedDivisionPanelSourceRow {
     fn round_to_display(&mut self) {}
 }
 impl crate::checkpoint::rows::Row for SharedDivisionPanelSourceRow {
+    #[inline(never)]
+    fn encode_endpoint_fields(&self, mask: u64, output: &mut Vec<u8>) -> io::Result<()> {
+        crate::checkpoint::rows::Row::encode_endpoint_fields(self.as_ref(), mask, output)
+    }
+    #[inline(never)]
+    fn decode_endpoint_fields(key: u128, mask: u64, input: &mut Decoder<'_>) -> io::Result<Self> {
+        <DivisionPanelSourceRow as crate::checkpoint::rows::Row>::decode_endpoint_fields(
+            key, mask, input,
+        )
+        .map(Arc::new)
+    }
+    #[inline(never)]
+    fn install_endpoint_fields(&mut self, next: Self, mask: u64) -> io::Result<()> {
+        let next = match Arc::try_unwrap(next) {
+            Ok(row) => row,
+            Err(row) => RowCodec::try_clone_validated(row.as_ref())?,
+        };
+        if Arc::get_mut(self).is_none() {
+            *self = Arc::new(RowCodec::try_clone_validated(self.as_ref())?);
+        }
+        crate::checkpoint::rows::Row::install_endpoint_fields(
+            Arc::get_mut(self).unwrap(),
+            next,
+            mask,
+        )
+    }
     fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> io::Result<()> {
         crate::checkpoint::rows::Row::encode_checkpoint_fields(self.as_ref(), output)
     }

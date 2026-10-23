@@ -1109,3 +1109,264 @@ fn a_reused_hour_leaves_its_successor_no_buildings_state_to_wait_for() {
     assert!(waited.recv_timeout(TEST_HANG_GUARD).unwrap());
     successor.join().unwrap();
 }
+
+fn paged_map(
+    replay: &Arc<Replay>,
+) -> (
+    crate::map_checkpoints::PreparedMap,
+    std::path::PathBuf,
+    uuid::Uuid,
+) {
+    use dashboard_base::prepared_map::{
+        Builder, Position, Progress,
+        pages::{self, BlockPages, PageFold},
+        selected_tables,
+    };
+    use replay_frame::frame::FrameDecoder;
+    let id = uuid::Uuid::new_v4();
+    let path = std::env::temp_dir().join(format!("paged-lane-{id}.battleplan"));
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let key = store::SourceKey::capture(&path, &[]).unwrap();
+    let store = store::Store::local(id).unwrap();
+    let selected = selected_tables();
+    let mut builder = Builder::new(
+        std::num::NonZeroU32::new(720).unwrap(),
+        selected,
+        Progress::default(),
+    )
+    .unwrap();
+    builder.set_ranges(replay);
+    let mut writer = store.replace(key.clone()).unwrap();
+    let mut decoder = FrameDecoder::for_tables(selected);
+    let mut folds: BTreeMap<BranchId, PageFold> = BTreeMap::new();
+    for (block, index) in replay.index.iter().enumerate() {
+        for (offset, frame) in replay
+            .read_block_selected(index, selected)
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            let decoded = decoder.advance(frame).unwrap();
+            let position = Position {
+                block,
+                next_frame: offset + 1,
+            };
+            builder
+                .accept(&mut writer, frame, decoded, position)
+                .unwrap();
+        }
+        let fold = folds
+            .entry(index.branch)
+            .or_insert_with(|| PageFold::new(index.branch, selected, &[20, 40], None).unwrap());
+        let produced = BlockPages::produce(replay, block, selected, &[20, 40], || Ok(())).unwrap();
+        assert_eq!(fold.fold(block, produced).unwrap(), None);
+    }
+    for (&branch, fold) in &mut folds {
+        fold.publish(&mut writer).unwrap();
+        let chains = serde_json::to_vec(fold.pages()).unwrap();
+        writer
+            .write_at(&pages::progress_section(branch), 0, chains.as_slice())
+            .unwrap();
+        fold.save_states(&mut writer).unwrap();
+    }
+    builder.save_gaps(&mut writer, &replay.gaps).unwrap();
+    let progress = builder.progress().clone();
+    writer.commit().unwrap();
+    let map = crate::map_checkpoints::PreparedMap::new(
+        store::Store::local(id).unwrap(),
+        key,
+        progress,
+        Arc::clone(replay),
+        selected,
+    )
+    .unwrap()
+    .with_committed_pages();
+    (map, path, id)
+}
+
+/// The native route's answer at `hour`, as the selected replay reader gives it.
+fn assert_native(actual: &Current, replay: &Replay, hour: Hour) {
+    use replay::container::SeekResult;
+    let expected = replay
+        .seek_selected(
+            1,
+            hour,
+            Some(dashboard_base::prepared_map::selected_tables()),
+        )
+        .unwrap();
+    match (actual, expected) {
+        (Current::Frame(actual), SeekResult::Frame(expected)) => {
+            assert_eq!(actual.as_ref(), expected.as_ref(), "hour {hour}");
+            for (actual, expected) in actual.tables.iter().zip(&expected.tables) {
+                assert_eq!(actual.sampled_at(), expected.sampled_at(), "hour {hour}");
+            }
+        }
+        (
+            Current::Gap { reason: actual, .. },
+            SeekResult::Gap {
+                reason: expected, ..
+            },
+        ) => {
+            assert_eq!(actual, &expected, "hour {hour}")
+        }
+        pair => panic!("hour {hour}: {pair:?}"),
+    }
+}
+
+fn walk_and_export(
+    shared: &LaneShared,
+    playback: &mut Playback,
+    replay: &Replay,
+    hour: Hour,
+    behind: i32,
+) {
+    {
+        let mut state = Mutex::lock(&shared.state).unwrap();
+        state.behind = behind;
+        state.urgent = Some((1, hour));
+    }
+    assert!(DecodeLane::walk(shared, playback, (1, hour)));
+    let mut passed = Vec::new();
+    playback
+        .seek_with(1, hour, |decoded| {
+            if hour - decoded.hour <= behind {
+                passed.push(Current::Frame(Arc::new(decoded.clone())));
+            }
+        })
+        .unwrap();
+    assert_native(playback.current(), replay, hour);
+    assert_eq!(
+        passed
+            .iter()
+            .map(|frame| match frame {
+                Current::Frame(frame) => frame.hour,
+                Current::Gap { .. } => panic!("only recorded visitors"),
+            })
+            .collect::<Vec<_>>(),
+        (hour - behind..hour).collect::<Vec<_>>(),
+        "visitor hours at {hour}",
+    );
+    for frame in &passed {
+        if let Current::Frame(decoded) = frame {
+            assert_native(frame, replay, decoded.hour);
+        }
+    }
+}
+
+#[test]
+fn a_lane_walk_reaches_grid_targets_by_prepared_pages_and_exports_the_native_frames() {
+    // Three blocks of recorded hours, with a hole holding grid hour 760.
+    let hours: Vec<Hour> = (10..=1500).filter(|hour| *hour != 760).collect();
+    let replay = long_replay(&hours);
+    assert!(replay.index.len() > 2, "the targets cross blocks");
+    let (map, path, id) = paged_map(&replay);
+    let reference = Replay::open(replay.bytes().to_vec()).unwrap();
+    reference.cache_decoded_sections(false);
+    let mut playback = Playback::unloaded(Arc::clone(&replay))
+        .unwrap()
+        .with_checkpoints(map)
+        .with_page_workers(4);
+    let shared = LaneShared {
+        mailbox: OnceLock::new(),
+        state: Mutex::new(LaneState::default()),
+        changed: Condvar::new(),
+    };
+    let mut paged = Vec::new();
+    for hour in (20..=1500).step_by(20) {
+        walk_and_export(&shared, &mut playback, &reference, hour, 0);
+        if playback.checkpoint_metrics() == Some((0, 0, 0)) {
+            paged.push(hour);
+        }
+    }
+    let expected: Vec<Hour> = (40..=1500)
+        .step_by(20)
+        .filter(|hour| ![760, 780].contains(hour))
+        .collect();
+    assert_eq!(paged, expected);
+    playback.seek(1, 10).unwrap();
+    for hour in (40..=400).step_by(40) {
+        walk_and_export(&shared, &mut playback, &reference, hour, 2);
+        if hour > 40 {
+            assert_eq!(
+                playback.checkpoint_metrics().map(|metrics| metrics.0),
+                Some(20),
+                "hour {hour}"
+            );
+        }
+    }
+    let _ = store::Store::local(id).unwrap().clear();
+    let _ = std::fs::remove_file(path);
+}
+
+thread_local! {
+    static WALK_WANTED: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_walk_wanted() {
+    WALK_WANTED.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+#[test]
+fn a_page_walk_cancellation_does_not_enter_native_fallback_or_publish_the_endpoint() {
+    let replay = long_replay(&(10..=400).collect::<Vec<_>>());
+    let (map, path, id) = paged_map(&replay);
+    let reference = Replay::open(replay.bytes().to_vec()).unwrap();
+    reference.cache_decoded_sections(false);
+    let mut playback = Playback::unloaded(Arc::clone(&replay))
+        .unwrap()
+        .with_checkpoints(map);
+    playback.seek(1, 120).unwrap();
+    let before = playback.current().clone();
+    let shared = Arc::new(LaneShared {
+        mailbox: OnceLock::new(),
+        state: Mutex::new(LaneState::default()),
+        changed: Condvar::new(),
+    });
+    Mutex::lock(&shared.state).unwrap().urgent = Some((1, 360));
+    let checks = std::rc::Rc::new(std::cell::Cell::new(0));
+    WALK_WANTED.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new({
+            let checks = std::rc::Rc::clone(&checks);
+            let shared = Arc::clone(&shared);
+            move || {
+                checks.set(checks.get() + 1);
+                // Three search-header checks precede the post-first-payload cancellation.
+                if checks.get() == 9 {
+                    Mutex::lock(&shared.state).unwrap().stop = true;
+                }
+            }
+        }))
+    });
+    let walked = DecodeLane::walk(&shared, &mut playback, (1, 360));
+    WALK_WANTED.with(|hook| *hook.borrow_mut() = None);
+    assert!(!walked);
+    assert_eq!(
+        checks.get(),
+        10,
+        "the page cancellation returns before any native-walk check"
+    );
+    assert_eq!(playback.hour(), 120);
+    assert_eq!(playback.current(), &before);
+    assert_eq!(
+        playback.checkpoint_metrics(),
+        Some((0, 0, 0)),
+        "no native fallback was loaded or applied"
+    );
+    assert_eq!(playback.page_fallbacks(), 0);
+    playback
+        .seek_with(1, 129, |frame| {
+            assert_native(
+                &Current::Frame(Arc::new(frame.clone())),
+                &reference,
+                frame.hour,
+            );
+        })
+        .unwrap();
+    assert_native(playback.current(), &reference, 129);
+    let _ = store::Store::local(id).unwrap().clear();
+    let _ = std::fs::remove_file(path);
+}

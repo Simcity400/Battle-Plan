@@ -260,6 +260,110 @@ impl RowCodec for EventFeedHistoryRow {
     }
 }
 impl crate::checkpoint::rows::Row for EventFeedHistoryRow {
+    #[inline(never)]
+    fn encode_endpoint_fields(&self, mask: u64, output: &mut Vec<u8>) -> io::Result<()> {
+        if mask & (1 << 0) != 0 {
+            Value::encode(&self.generation, output)?;
+        }
+        if mask & (1 << 1) != 0 {
+            Value::encode(&self.read_hour, output)?;
+        }
+        if mask & (1 << 2) != 0 {
+            Value::encode(&self.coverage, output)?;
+        }
+        if mask & (1 << 3) != 0 {
+            Value::encode(&self.counts, output)?;
+        }
+        if mask & (1 << 4) != 0 {
+            Value::encode(&self.outstanding, output)?;
+        }
+        if mask & (1 << 5) != 0 {
+            Value::encode(&self.failure, output)?;
+        }
+        if mask & (1 << 6) != 0 {
+            Value::encode(&self.events, output)?;
+        }
+        if mask & (1 << 7) != 0 {
+            Value::encode(&self.script_tokens, output)?;
+        }
+        if mask & (1 << 8) != 0 {
+            Value::encode(&self.script_scopes, output)?;
+        }
+        if mask & (1 << 9) != 0 {
+            Value::encode(&self.script_refusals, output)?;
+        }
+        Ok(())
+    }
+    #[inline(never)]
+    fn decode_endpoint_fields(key: u128, mask: u64, input: &mut Decoder<'_>) -> io::Result<Self> {
+        check_native_key(key, 0)?;
+        let mut row = Self::default();
+        if mask & (1 << 0) != 0 {
+            row.generation = Value::decode(input)?;
+        }
+        if mask & (1 << 1) != 0 {
+            row.read_hour = Value::decode(input)?;
+        }
+        if mask & (1 << 2) != 0 {
+            row.coverage = Value::decode(input)?;
+        }
+        if mask & (1 << 3) != 0 {
+            row.counts = Value::decode(input)?;
+        }
+        if mask & (1 << 4) != 0 {
+            row.outstanding = Value::decode(input)?;
+        }
+        if mask & (1 << 5) != 0 {
+            row.failure = Value::decode(input)?;
+        }
+        if mask & (1 << 6) != 0 {
+            row.events = Value::decode(input)?;
+        }
+        if mask & (1 << 7) != 0 {
+            row.script_tokens = Value::decode(input)?;
+        }
+        if mask & (1 << 8) != 0 {
+            row.script_scopes = Value::decode(input)?;
+        }
+        if mask & (1 << 9) != 0 {
+            row.script_refusals = Value::decode(input)?;
+        }
+        Ok(row)
+    }
+    #[inline(never)]
+    fn install_endpoint_fields(&mut self, next: Self, mask: u64) -> io::Result<()> {
+        if mask & (1 << 0) != 0 {
+            self.generation = next.generation;
+        }
+        if mask & (1 << 1) != 0 {
+            self.read_hour = next.read_hour;
+        }
+        if mask & (1 << 2) != 0 {
+            self.coverage = next.coverage;
+        }
+        if mask & (1 << 3) != 0 {
+            self.counts = next.counts;
+        }
+        if mask & (1 << 4) != 0 {
+            self.outstanding = next.outstanding;
+        }
+        if mask & (1 << 5) != 0 {
+            self.failure = next.failure;
+        }
+        if mask & (1 << 6) != 0 {
+            self.events = next.events;
+        }
+        if mask & (1 << 7) != 0 {
+            self.script_tokens = next.script_tokens;
+        }
+        if mask & (1 << 8) != 0 {
+            self.script_scopes = next.script_scopes;
+        }
+        if mask & (1 << 9) != 0 {
+            self.script_refusals = next.script_refusals;
+        }
+        Ok(())
+    }
     fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> io::Result<()> {
         Value::encode(self, output)
     }

@@ -1328,18 +1328,88 @@ impl DecodeLane {
         Self::walk_for(shared, playback, target, None)
     }
 
-    fn walk_for(shared: &LaneShared, playback: &mut Playback, target: (BranchId, Hour),
-        read: Option<&SourceRead>) -> bool {
-        if read.is_some_and(|read| read.cancelled()) { return false }
+    fn walk_for(
+        shared: &LaneShared,
+        playback: &mut Playback,
+        target: (BranchId, Hour),
+        read: Option<&SourceRead>,
+    ) -> bool {
+        if read.is_some_and(|read| read.cancelled()) {
+            return false;
+        }
         let (branch, hour) = target;
-        let mut from = playback.walk_start(branch, hour);
+        let wanted = || {
+            #[cfg(test)]
+            tests::before_walk_wanted();
+            !read.is_some_and(|read| read.cancelled()) && Self::lock(shared).still_wanted(target)
+        };
+        if (playback.branch(), playback.hour()) == (branch, hour) {
+            return true;
+        }
+        let behind = Self::lock(shared).behind;
+        let visit_from = hour.saturating_sub(behind);
+        let limit = if visit_from >= hour {
+            hour
+        } else {
+            visit_from.saturating_sub(1)
+        };
+        let mut paged = match playback.advance_pages(branch, hour, visit_from, &wanted) {
+            std::ops::ControlFlow::Continue(reached) => reached,
+            std::ops::ControlFlow::Break(()) => return false,
+        };
+        if !wanted() {
+            return false;
+        }
+        let mut from = match paged {
+            Some(reached) if reached == hour => {
+                return true;
+            }
+            _ => playback.walk_start(branch, hour),
+        };
+        if paged.is_none()
+            && let Some(start) = from.and_then(|at| Hour::try_from(at).ok())
+            && let Some(entry) = playback.page_entry(branch, start, limit)
+            && entry > start
+        {
+            while let Some(at) = from.filter(|at| *at < i64::from(entry)) {
+                let step = (at + i64::from(DECODE_STEP)).min(i64::from(entry));
+                let Ok(step) = Hour::try_from(step) else {
+                    break;
+                };
+                if playback.advance_without_output(branch, step).is_err() {
+                    break;
+                }
+                from = Some(i64::from(step));
+                if !wanted() {
+                    return false;
+                }
+            }
+            paged = match playback.advance_pages(branch, hour, visit_from, &wanted) {
+                std::ops::ControlFlow::Continue(reached) => reached,
+                std::ops::ControlFlow::Break(()) => return false,
+            };
+            if !wanted() {
+                return false;
+            }
+            match paged {
+                Some(reached) if reached == hour => {
+                    return true;
+                }
+                Some(reached) => from = Some(i64::from(reached)),
+                None => from = playback.walk_start(branch, hour),
+            }
+        }
+        // Native steps for the rest; the last is the caller's.
         while let Some(at) = from.filter(|at| i64::from(hour) - at > i64::from(DECODE_STEP)) {
-            let Ok(step) = Hour::try_from(at + i64::from(DECODE_STEP)) else { break };
+            let Ok(step) = Hour::try_from(at + i64::from(DECODE_STEP)) else {
+                break;
+            };
             if playback.advance_without_output(branch, step).is_err() {
                 break;
             }
             from = Some(i64::from(step));
-            if read.is_some_and(|read| read.cancelled()) || !Self::lock(shared).still_wanted(target) {
+            if read.is_some_and(|read| read.cancelled()) || !Self::lock(shared).still_wanted(target)
+            {
                 return false;
             }
         }
@@ -2046,7 +2116,12 @@ impl Pipeline {
             Some(_) => None,
             None => {
                 let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
-                let mut playback = Playback::unloaded(Arc::clone(&replay))?.with_reader(reader);
+                let page_workers = viewer_foundation::parallel::usable_processors()
+                    .saturating_sub(viewer_foundation::parallel::Spawn::threads(&*pool))
+                    .max(1);
+                let mut playback = Playback::unloaded(Arc::clone(&replay))?
+                    .with_reader(reader)
+                    .with_page_workers(page_workers);
                 if let Some(checkpoints) = checkpoints {
                     playback = playback.with_checkpoint_source(checkpoints);
                 }

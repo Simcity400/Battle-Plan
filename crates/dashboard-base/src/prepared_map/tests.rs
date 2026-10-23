@@ -1120,3 +1120,6 @@ fn cancellation_endpoints_preserve_sparse_gap_seek_and_visitor_values_without_ou
 
 mod coverage;
 mod selection;
+
+mod endpoint_alias_tests;
+mod pages;

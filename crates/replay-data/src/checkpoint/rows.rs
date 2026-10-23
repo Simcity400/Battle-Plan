@@ -9,6 +9,9 @@ use std::io;
 pub(crate) trait Row: RowCodec {
     fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> io::Result<()>;
     fn decode_checkpoint_fields(key: u128, input: &mut Decoder<'_>) -> io::Result<Self>;
+    fn encode_endpoint_fields(&self, mask: u64, output: &mut Vec<u8>) -> io::Result<()>;
+    fn decode_endpoint_fields(key: u128, mask: u64, input: &mut Decoder<'_>) -> io::Result<Self>;
+    fn install_endpoint_fields(&mut self, next: Self, mask: u64) -> io::Result<()>;
 }
 
 fn check_key<T: RowCodec>(key: u128) -> io::Result<()> {
@@ -50,6 +53,33 @@ macro_rules! row {
         impl $crate::checkpoint::rows::Row for $ty {
             fn encode_checkpoint_fields(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
                 $($crate::rows::checkpoint::Native::encode(&self.$($field)+, output)?;)+
+                Ok(())
+            }
+            #[inline(never)]
+            fn encode_endpoint_fields(&self, mask: u64, output: &mut Vec<u8>) -> std::io::Result<()> {
+                let mut bit = 1u64;
+                $(if mask & bit != 0 { $crate::rows::checkpoint::Native::encode(&self.$($field)+, output)?; }
+                  bit = bit.checked_shl(1).unwrap_or(0);)+
+                let _ = bit;
+                Ok(())
+            }
+            #[inline(never)]
+            #[allow(clippy::field_reassign_with_default)]
+            fn decode_endpoint_fields(key: u128, mask: u64, input: &mut $crate::codec::Decoder<'_>) -> std::io::Result<Self> {
+                let $key_name = key;
+                let mut row = $initial;
+                let mut bit = 1u64;
+                $(if mask & bit != 0 { row.$($field)+ = $crate::rows::checkpoint::Native::decode($crate::rows::Kind::$kind, input)?; }
+                  bit = bit.checked_shl(1).unwrap_or(0);)+
+                let _ = bit;
+                Ok(row)
+            }
+            #[inline(never)]
+            fn install_endpoint_fields(&mut self, next: Self, mask: u64) -> std::io::Result<()> {
+                let mut bit = 1u64;
+                $(if mask & bit != 0 { self.$($field)+ = next.$($field)+; }
+                  bit = bit.checked_shl(1).unwrap_or(0);)+
+                let _ = bit;
                 Ok(())
             }
             #[allow(clippy::field_reassign_with_default)]

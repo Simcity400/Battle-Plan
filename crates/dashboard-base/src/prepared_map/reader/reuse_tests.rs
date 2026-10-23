@@ -614,7 +614,7 @@ fn admitted_source_is_loaded_without_applying_or_advancing_the_published_cursor(
     drop(map.seek(1, 100).unwrap());
     let cursor = map.cursor.unwrap();
     let admitted = map
-        .admit(1, 124, Some(100), cursor, Load::AcceptedBlockOrPrefix)
+        .admit(1, 124, Some(100), cursor, false, Load::AcceptedBlockOrPrefix)
         .unwrap();
     assert_eq!(map.decoder.current().unwrap().hour, 100);
     assert_eq!(map.cursor, Some(cursor));

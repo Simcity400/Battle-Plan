@@ -1304,3 +1304,33 @@ fn prepared_hours_preserve_native_ordinals_and_market_route_state_endpoints() {
 }
 
 mod selection;
+
+#[test]
+fn source_path_follows_each_change_between_the_map_and_the_replay_reader() {
+    let replay = Arc::new(status_replay(&[100, 101, 102, 821, 823]));
+    let fixture = Fixture::new(&replay);
+    let mut progress = prepare(&fixture, &replay, 64, SELECTED);
+    let branch = progress.branches.get_mut(&1).unwrap();
+    branch.last_hour = Some(101);
+    branch.last_block = Some(0);
+    branch.since_checkpoint = 1;
+    let mut playback = crate::playback::Playback::unloaded(Arc::clone(&replay)).unwrap();
+    playback.seek(1, 100).unwrap();
+    // The host commits the map while this playback runs.
+    let mut playback =
+        playback.with_checkpoints(fixture.reader(progress, Arc::clone(&replay), SELECTED));
+    for hour in [101, 102, 821, 823, 100, 101] {
+        playback.seek(1, hour).unwrap();
+    }
+    playback.advance_without_output(1, 823).unwrap();
+    assert_eq!(
+        playback.source_paths(),
+        [
+            (100, false, None),
+            (101, true, Some(101)),
+            (102, false, Some(101)),
+            (100, true, Some(101)),
+            (823, false, Some(101)),
+        ]
+    );
+}

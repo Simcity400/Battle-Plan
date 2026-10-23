@@ -1,12 +1,21 @@
 //! One exact-hour map reader for viewer playback and acceptance measurements.
+use super::pages::{
+    BranchPages, Header, chain_point, check_step, read_page, section as page_section,
+};
 use super::{
-    Checkpoint, Current, Position, Progress, decode_checkpoint, gap_reason, header, invalid,
-    section, validate_selection,
+    Checkpoint, Current, Position, Progress, decode_checkpoint, gap_reason, header, inflate,
+    invalid, section, validate_selection,
 };
 use replay::{container::Parallel, container::Replay};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
+use replay_frame::frame::endpoint_step::EndpointStep;
 use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
-use std::{io, ops::Range, sync::Arc, time::Instant};
+use std::{
+    io,
+    ops::{ControlFlow, Range},
+    sync::Arc,
+    time::Instant,
+};
 use store::{SourceKey, Store};
 
 mod load;
@@ -30,6 +39,159 @@ struct Admitted {
     cursor: Position,
 }
 
+struct Attempt {
+    decoder: FrameDecoder,
+    reached: Hour,
+    cursor: Position,
+    tail: Option<Admitted>,
+    pages: u64,
+    bytes: u64,
+    stride: u32,
+    next: Option<u64>,
+}
+
+struct DecodedPage {
+    step: EndpointStep,
+    #[cfg(test)]
+    live: LivePage,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct PagePayloads {
+    live: std::sync::atomic::AtomicUsize,
+    maximum: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+struct LivePage(Arc<PagePayloads>);
+
+#[cfg(test)]
+impl LivePage {
+    fn new(payloads: &Arc<PagePayloads>) -> Self {
+        use std::sync::atomic::Ordering::SeqCst;
+        let live = payloads.live.fetch_add(1, SeqCst) + 1;
+        payloads.maximum.fetch_max(live, SeqCst);
+        Self(Arc::clone(payloads))
+    }
+}
+
+#[cfg(test)]
+impl Drop for LivePage {
+    fn drop(&mut self) {
+        self.0
+            .live
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct Prefetch {
+    branch: BranchId,
+    stride: u32,
+    from: Hour,
+    range: u64,
+    read: Option<std::thread::JoinHandle<io::Result<Prefetched>>>,
+}
+
+struct Prefetched {
+    id: store::RangeId,
+    header: Header,
+    payload: DecodedPage,
+}
+
+impl Prefetch {
+    fn is(&self, branch: BranchId, stride: u32, from: Hour, range: u64) -> bool {
+        (self.branch, self.stride, self.from, self.range) == (branch, stride, from, range)
+    }
+
+    /// The page once read; None when its read failed.
+    fn finish(mut self) -> Option<Prefetched> {
+        self.read.take()?.join().ok()?.ok()
+    }
+}
+
+impl Drop for Prefetch {
+    fn drop(&mut self) {
+        if let Some(read) = self.read.take() {
+            let _finished = read.join();
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Called after each checked page is speculatively applied.
+    static PAGE_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Called after each chain-search header read.
+    static PAGE_HEADER_READ: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Whether this thread is reading or applying pages.
+    static PAGE_WORK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Page ranges this thread's readers opened, headers included.
+    static PAGE_RANGES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Pages this thread's readers applied from a read ahead.
+    static PAGES_READ_AHEAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `hook` after each speculative page application, for fault tests.
+#[cfg(test)]
+pub(super) fn on_page_read(hook: Option<Box<dyn FnMut()>>) {
+    PAGE_READ.with(|read| *read.borrow_mut() = hook);
+}
+
+#[cfg(test)]
+pub(super) fn on_page_header_read(hook: Option<Box<dyn FnMut()>>) {
+    PAGE_HEADER_READ.with(|read| *read.borrow_mut() = hook);
+}
+
+/// Whether this thread is reading or applying pages, for fault tests.
+#[cfg(test)]
+pub(super) fn in_page_work() -> bool {
+    PAGE_WORK.with(std::cell::Cell::get)
+}
+
+/// Page ranges this thread's readers opened, headers included.
+#[cfg(test)]
+pub(super) fn page_ranges_read() -> u64 {
+    PAGE_RANGES.with(std::cell::Cell::get)
+}
+
+/// Pages this thread's readers applied from a read ahead.
+#[cfg(test)]
+pub(super) fn pages_read_ahead() -> u64 {
+    PAGES_READ_AHEAD.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+struct PageWork(bool);
+
+#[cfg(test)]
+impl PageWork {
+    fn enter() -> Self {
+        Self(PAGE_WORK.with(|work| work.replace(true)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for PageWork {
+    fn drop(&mut self) {
+        PAGE_WORK.with(|work| work.set(self.0));
+    }
+}
+
+fn page_worker_priority() -> impl Fn() + Copy + Send + Sync + 'static {
+    || {
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::System::Threading::{
+                GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+            };
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
+}
+
 /// Restores a sparse native checkpoint, then reads the recording's selected
 /// updates through the target. Displayed-hour presentation and clocks stay with
 /// the caller. Only one parsed source block is retained between requests.
@@ -44,10 +206,20 @@ pub struct Reader {
     block: Option<Block>,
     requested: Option<(BranchId, Hour)>,
     workers: usize,
+    pages: Option<Vec<(BranchId, BranchPages)>>,
+    page_cursor: bool,
+    page_workers: usize,
+    prefetch: Option<Prefetch>,
+    #[cfg(test)]
+    page_payloads: Arc<PagePayloads>,
     #[cfg(test)]
     source_read_hook: Option<SourceReadHook>,
     /// Native frames applied by the most recent request.
     pub applied_frames: u64,
+    pub applied_pages: u64,
+    pub page_bytes: u64,
+    pub page_fallbacks: u64,
+    pub page_skip: Option<&'static str>,
     /// Checkpoint headers read by the most recent seek.
     pub checkpoint_reads: u64,
     /// Whole checkpoint range bytes read by the most recent request.
@@ -96,6 +268,16 @@ impl Reader {
             workers: std::thread::available_parallelism()
                 .map_or(1, |count| count.get() / 2)
                 .max(1),
+            pages: None,
+            page_cursor: false,
+            page_workers: 1,
+            prefetch: None,
+            #[cfg(test)]
+            page_payloads: Arc::default(),
+            applied_pages: 0,
+            page_bytes: 0,
+            page_fallbacks: 0,
+            page_skip: None,
             #[cfg(test)]
             source_read_hook: None,
             applied_frames: 0,
@@ -107,6 +289,60 @@ impl Reader {
             source_load_us: 0,
             retained_source_frames: 0,
         })
+    }
+
+    pub fn with_pages(mut self, pages: Vec<(BranchId, BranchPages)>) -> io::Result<Self> {
+        self.bind_pages(pages)?;
+        Ok(self)
+    }
+
+    pub fn with_committed_pages(self) -> Self {
+        self.with_committed_pages_reporting().0
+    }
+
+    pub fn with_committed_pages_reporting(mut self) -> (Self, io::Result<()>) {
+        let bound = super::pages::committed(&self.store, &self.key, &self.progress)
+            .and_then(|pages| self.bind_pages(pages));
+        (self, bound)
+    }
+
+    /// The committed chains bound, in branch order; none without pages.
+    pub fn page_chains(&self) -> &[(BranchId, BranchPages)] {
+        self.pages.as_deref().unwrap_or(&[])
+    }
+
+    #[cfg(test)]
+    pub fn held_hour(&self) -> Option<Hour> {
+        self.decoder.current().map(|frame| frame.hour)
+    }
+
+    pub fn page_entry(&self, branch: BranchId, from: Hour, limit: Hour) -> Option<Hour> {
+        let (_, pages) = self.page_chains().iter().find(|(at, _)| *at == branch)?;
+        pages.chains.iter().rev().find_map(|chain| {
+            let stride = i64::from(chain.stride);
+            let entry = (i64::from(from) + stride - 1).div_euclid(stride) * stride;
+            let fits = entry + stride <= i64::from(limit)
+                && chain.first.is_some_and(|first| i64::from(first) <= entry)
+                && chain
+                    .last
+                    .is_some_and(|last| entry + stride <= i64::from(last));
+            fits.then(|| Hour::try_from(entry).ok()).flatten()
+        })
+    }
+
+    pub fn set_page_workers(&mut self, workers: usize) {
+        self.page_workers = workers.max(1);
+    }
+
+    fn bind_pages(&mut self, pages: Vec<(BranchId, BranchPages)>) -> io::Result<()> {
+        if pages.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(invalid("map page branches are not distinct and ascending"));
+        }
+        for (_, branch) in &pages {
+            branch.check(&self.progress.selected)?;
+        }
+        self.pages = Some(pages);
+        Ok(())
     }
 
     pub fn replay_handle(&self) -> &Arc<Replay> {
@@ -189,11 +425,13 @@ impl Reader {
         passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<bool> {
         self.reset_metrics();
+        self.prefetch = None;
         if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
             return Ok(false);
         }
         let (before, reads) = self.find_before(branch, hour)?;
         self.checkpoint_reads = reads;
+        self.page_cursor = false;
         let Some((range, checkpoint_hour)) = before else {
             self.decoder = FrameDecoder::for_tables(&self.selected);
             self.cursor = None;
@@ -241,23 +479,482 @@ impl Reader {
         passed: impl FnMut(&DecodedFrame),
     ) -> io::Result<bool> {
         self.reset_metrics();
+        let ahead = self.prefetch.take().filter(|ahead| {
+            ahead.branch == branch
+                && ahead.from == hour
+                && self
+                    .decoder
+                    .current()
+                    .is_some_and(|frame| frame.branch == branch && frame.hour == hour)
+        });
         if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
             return Ok(false);
         }
-        if self
-            .decoder
-            .current()
-            .is_none_or(|frame| frame.branch != branch || frame.hour > hour)
-            || (!self.steps_to(branch, hour)
-                && self.decoder.current().is_some_and(|frame| {
-                    i64::from(hour) - i64::from(frame.hour) >= i64::from(self.progress.stride)
-                }))
-        {
+        if !self.continues(branch, hour) {
             return self.seek_native(branch, hour, passed);
         }
-        self.advance_to(branch, hour, passed, self.load(branch, hour))?;
+        let load = self.load(branch, hour);
+        self.advance_to(branch, hour, passed, load)?;
         self.requested = Some((branch, hour));
+        self.prefetch = ahead;
         Ok(true)
+    }
+
+    pub fn advance_paged(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        visit_from: Hour,
+        passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<Option<Current>> {
+        if self.advance_paged_without_output(branch, hour, visit_from, passed)? {
+            self.current_at(branch, hour).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn advance_paged_without_output(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        visit_from: Hour,
+        mut passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<bool> {
+        let mut visit = |frame: &DecodedFrame| {
+            if frame.hour >= visit_from {
+                passed(frame);
+            }
+        };
+        let limit = if visit_from >= hour {
+            Some(hour)
+        } else {
+            visit_from.checked_sub(1)
+        };
+        let at = self.decoder.current().map(|frame| frame.hour);
+        let Some((limit, at)) = limit
+            .zip(at)
+            .filter(|&(_, at)| self.pages.is_some() && at < hour && self.continues(branch, hour))
+        else {
+            return self.advance_without_output(branch, hour, &mut visit);
+        };
+        self.reset_metrics();
+        let ahead = self.prefetch.take();
+        if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
+            return Ok(false);
+        }
+        self.gap(branch, hour)?;
+        let retained = (self.block.clone(), self.retained_source_frames);
+        let attempt = {
+            #[cfg(test)]
+            let _work = PageWork::enter();
+            self.attempt_pages(branch, at, limit, ahead, &mut || true)
+                .map(|attempt| match attempt {
+                    ControlFlow::Continue(attempt) => attempt,
+                    ControlFlow::Break(()) => unreachable!("uncancellable page request"),
+                })
+                .and_then(|attempt| match attempt {
+                    Some(mut attempt) if attempt.reached != hour => {
+                        let load = self.load(branch, hour);
+                        let tail = self.admit(
+                            branch,
+                            hour,
+                            Some(attempt.reached),
+                            attempt.cursor,
+                            true,
+                            load,
+                        )?;
+                        attempt.tail = Some(tail);
+                        Ok(Some(attempt))
+                    }
+                    attempt => Ok(attempt),
+                })
+        };
+        let attempt = match attempt {
+            Ok(Some(attempt)) => attempt,
+            Ok(None) => return self.advance_without_output(branch, hour, &mut visit),
+            Err(_) => {
+                (self.block, self.retained_source_frames) = retained;
+                let handled = self.advance_without_output(branch, hour, &mut visit);
+                self.page_fallbacks = 1;
+                return handled;
+            }
+        };
+        if !self.store.is_reusable(&self.key)? {
+            (self.block, self.retained_source_frames) = retained;
+            return Ok(false);
+        }
+        self.decoder = attempt.decoder;
+        match attempt.tail {
+            Some(tail) => self.apply_admitted(hour, tail, &mut visit)?,
+            None => {
+                self.cursor = Some(attempt.cursor);
+                self.page_cursor = true;
+            }
+        }
+        self.requested = Some((branch, hour));
+        self.applied_pages = attempt.pages;
+        self.page_bytes = attempt.bytes;
+        if attempt.reached == hour
+            && let Some(range) = attempt.next
+        {
+            self.read_ahead(branch, hour, attempt.stride, range);
+        }
+        Ok(true)
+    }
+
+    pub fn advance_pages(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        visit_from: Hour,
+        mut wanted: impl FnMut() -> bool,
+    ) -> io::Result<ControlFlow<(), Option<Hour>>> {
+        if !wanted() {
+            return Ok(ControlFlow::Break(()));
+        }
+        let limit = if visit_from >= hour {
+            Some(hour)
+        } else {
+            visit_from.checked_sub(1)
+        };
+        let at = self
+            .decoder
+            .current()
+            .filter(|frame| frame.branch == branch)
+            .map(|frame| frame.hour);
+        self.page_skip = if self.pages.is_none() {
+            Some("unbound")
+        } else {
+            match limit.zip(at) {
+                None => Some("no-held-state"),
+                Some((limit, at)) if at >= limit => Some("held-at-or-past-limit"),
+                Some(_) => None,
+            }
+        };
+        let Some((limit, at)) = limit.zip(at).filter(|_| self.page_skip.is_none()) else {
+            return Ok(ControlFlow::Continue(None));
+        };
+        self.reset_metrics();
+        let ahead = self.prefetch.take();
+        if !self.store.is_reusable(&self.key)? || !self.covers(branch, hour) {
+            self.page_skip = Some("store-not-reusable");
+            return Ok(ControlFlow::Continue(None));
+        }
+        self.gap(branch, hour)?;
+        let attempt = {
+            #[cfg(test)]
+            let _work = PageWork::enter();
+            self.attempt_pages(branch, at, limit, ahead, &mut wanted)
+        };
+        if !wanted() || matches!(&attempt, Ok(ControlFlow::Break(()))) {
+            return Ok(ControlFlow::Break(()));
+        }
+        let on_grid = self.page_chains().iter().any(|(_, pages)| {
+            pages
+                .chains
+                .iter()
+                .any(|chain| chain_point(at, chain.stride))
+        });
+        self.page_skip = match &attempt {
+            Ok(ControlFlow::Continue(Some(_))) => None,
+            Ok(ControlFlow::Continue(None)) if on_grid => Some("no-page-from-held"),
+            Ok(ControlFlow::Continue(None)) => Some("held-off-every-grid"),
+            Ok(ControlFlow::Break(())) => unreachable!("cancellation already returned"),
+            Err(_) => Some("page-refused"),
+        };
+        match attempt {
+            Ok(ControlFlow::Continue(Some(attempt))) => {
+                self.decoder = attempt.decoder;
+                self.cursor = Some(attempt.cursor);
+                self.page_cursor = true;
+                self.applied_pages = attempt.pages;
+                self.page_bytes = attempt.bytes;
+                if attempt.reached == hour
+                    && let Some(range) = attempt.next
+                {
+                    self.read_ahead(branch, hour, attempt.stride, range);
+                }
+                Ok(ControlFlow::Continue(Some(attempt.reached)))
+            }
+            Ok(ControlFlow::Continue(None)) => Ok(ControlFlow::Continue(None)),
+            Ok(ControlFlow::Break(())) => unreachable!("cancellation already returned"),
+            Err(_) => {
+                self.page_fallbacks = 1;
+                Ok(ControlFlow::Continue(None))
+            }
+        }
+    }
+
+    fn continues(&self, branch: BranchId, hour: Hour) -> bool {
+        self.decoder.current().is_some_and(|frame| {
+            frame.branch == branch
+                && frame.hour <= hour
+                && (self.steps_to(branch, hour)
+                    || i64::from(hour) - i64::from(frame.hour) < i64::from(self.progress.stride))
+        })
+    }
+
+    fn attempt_pages(
+        &self,
+        branch: BranchId,
+        at: Hour,
+        limit: Hour,
+        mut ahead: Option<Prefetch>,
+        wanted: &mut impl FnMut() -> bool,
+    ) -> io::Result<ControlFlow<(), Option<Attempt>>> {
+        if !wanted() {
+            return Ok(ControlFlow::Break(()));
+        }
+        let progress = self
+            .progress
+            .branches
+            .get(&branch)
+            .ok_or_else(|| invalid("map page branch is not accepted"))?;
+        let (last_hour, last_block) = progress
+            .last_hour
+            .zip(progress.last_block)
+            .ok_or_else(|| invalid("map page branch is not accepted"))?;
+        let Some((_, pages)) = self.pages.as_ref().and_then(|pages| {
+            pages
+                .binary_search_by_key(&branch, |&(branch, _)| branch)
+                .ok()
+                .map(|at| &pages[at])
+        }) else {
+            return Ok(ControlFlow::Continue(None));
+        };
+        for chain in pages.chains.iter().rev().filter(|chain| {
+            chain.ranges > 0
+                && chain_point(at, chain.stride)
+                && i64::from(at) + i64::from(chain.stride) <= i64::from(limit)
+        }) {
+            let (stride, ranges) = (chain.stride, chain.ranges);
+            let first = match self.page_from(branch, stride, ranges, at, wanted)? {
+                ControlFlow::Break(()) => return Ok(ControlFlow::Break(())),
+                ControlFlow::Continue(None) => continue,
+                ControlFlow::Continue(Some(first)) => first,
+            };
+            let mut decoder = self.decoder.clone();
+            let on_worker = page_worker_priority();
+            let (mut count, mut total_bytes) = (0, 0);
+            let mut last = None;
+            let (mut from, mut next) = (at, first);
+            for range in first..ranges {
+                if !wanted() {
+                    return Ok(ControlFlow::Break(()));
+                }
+                let mut file = self.page_range(branch, stride, range)?;
+                let bytes = file.len();
+                let read = ahead
+                    .take()
+                    .filter(|ahead| ahead.is(branch, stride, from, range))
+                    .and_then(Prefetch::finish)
+                    .filter(|page| page.id == file.id());
+                let header = match &read {
+                    Some(page) => page.header,
+                    None => Header::read(&mut file)?,
+                };
+                if header.to > limit || header.to > last_hour {
+                    break;
+                }
+                let source = self.replay.index.get(header.block).is_some_and(|index| {
+                    index.branch == branch
+                        && header.block <= last_block
+                        && index.first_hour <= header.to
+                        && header.to <= index.last_hour
+                });
+                if header.branch != branch
+                    || header.stride != stride
+                    || header.from != from
+                    || !source
+                {
+                    return Err(invalid("map page does not continue its chain"));
+                }
+                let payload = match read {
+                    // Read from these bytes and checked as below.
+                    Some(page) => {
+                        #[cfg(test)]
+                        PAGES_READ_AHEAD.with(|pages| pages.set(pages.get() + 1));
+                        page.payload
+                    }
+                    None => {
+                        let step = EndpointStep::decode(&inflate(file)?)?;
+                        check_step(&header, &step, &self.selected)?;
+                        DecodedPage {
+                            step,
+                            #[cfg(test)]
+                            live: LivePage::new(&self.page_payloads),
+                        }
+                    }
+                };
+                if !wanted() {
+                    return Ok(ControlFlow::Break(()));
+                }
+                let DecodedPage {
+                    step,
+                    #[cfg(test)]
+                    live,
+                } = payload;
+                let reached =
+                    decoder.advance_endpoint_parallel(step, self.page_workers, &on_worker)?;
+                #[cfg(test)]
+                drop(live);
+                Self::validate_campaign(&self.replay.campaign_id, reached)?;
+                count += 1;
+                total_bytes += bytes;
+                last = Some(header);
+                #[cfg(test)]
+                PAGE_READ.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().as_mut() {
+                        hook();
+                    }
+                });
+                from = header.to;
+                next = range + 1;
+            }
+            if !wanted() {
+                return Ok(ControlFlow::Break(()));
+            }
+            let Some(last) = last else { continue };
+            if !self.store.is_reusable(&self.key)? {
+                return Err(invalid("map store was cleared during page read"));
+            }
+            return Ok(ControlFlow::Continue(Some(Attempt {
+                decoder,
+                reached: last.to,
+                cursor: Position {
+                    block: last.block,
+                    next_frame: 0,
+                },
+                tail: None,
+                pages: count,
+                bytes: total_bytes,
+                stride,
+                next: (next < ranges).then_some(next),
+            })));
+        }
+        Ok(ControlFlow::Continue(None))
+    }
+
+    fn read_ahead(&mut self, branch: BranchId, from: Hour, stride: u32, range: u64) {
+        let Ok(selected) = engine_allocation::copy_vec(&self.selected) else {
+            return;
+        };
+        let (store, key) = (Arc::clone(&self.store), self.key.clone());
+        let priority = page_worker_priority();
+        #[cfg(test)]
+        let payloads = Arc::clone(&self.page_payloads);
+        let read = std::thread::Builder::new()
+            .name("map page read-ahead".into())
+            .spawn(move || -> io::Result<Prefetched> {
+                priority();
+                let mut file = store
+                    .read(&key, &page_section(branch, stride), range)?
+                    .ok_or_else(|| invalid("map page is missing"))?;
+                let id = file.id();
+                let (header, step) = read_page(&mut file, &selected)?;
+                Ok(Prefetched {
+                    id,
+                    header,
+                    payload: DecodedPage {
+                        step,
+                        #[cfg(test)]
+                        live: LivePage::new(&payloads),
+                    },
+                })
+            });
+        self.prefetch = read.ok().map(|read| Prefetch {
+            branch,
+            stride,
+            from,
+            range,
+            read: Some(read),
+        });
+    }
+
+    #[cfg(test)]
+    pub(super) fn page_payload_counts(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (
+            self.page_payloads.live.load(SeqCst),
+            self.page_payloads.maximum.load(SeqCst),
+        )
+    }
+
+    /// The page being read ahead: its branch, stride, chain point and range.
+    #[cfg(test)]
+    pub(super) fn reading_ahead(&self) -> Option<(BranchId, u32, Hour, u64)> {
+        self.prefetch
+            .as_ref()
+            .map(|ahead| (ahead.branch, ahead.stride, ahead.from, ahead.range))
+    }
+
+    /// The range of `stride`'s page that starts at `at`, if one does.
+    fn page_from(
+        &self,
+        branch: BranchId,
+        stride: u32,
+        ranges: u64,
+        at: Hour,
+        wanted: &mut impl FnMut() -> bool,
+    ) -> io::Result<ControlFlow<(), Option<u64>>> {
+        let (mut low, mut high) = (0, ranges);
+        let mut after = None;
+        while low < high {
+            if !wanted() {
+                return Ok(ControlFlow::Break(()));
+            }
+            let mid = low + (high - low) / 2;
+            let page = Header::read(self.page_range(branch, stride, mid)?)?;
+            #[cfg(test)]
+            PAGE_HEADER_READ.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook();
+                }
+            });
+            if page.branch != branch || page.stride != stride {
+                return Err(invalid("map page belongs to another chain"));
+            }
+            if page.to > at {
+                after = Some((mid, page.from));
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        Ok(ControlFlow::Continue(
+            after
+                .filter(|&(_, from)| from == at)
+                .map(|(range, _)| range),
+        ))
+    }
+
+    fn page_range(&self, branch: BranchId, stride: u32, range: u64) -> io::Result<store::Range> {
+        #[cfg(test)]
+        PAGE_RANGES.with(|ranges| ranges.set(ranges.get() + 1));
+        self.store
+            .read(&self.key, &page_section(branch, stride), range)?
+            .ok_or_else(|| invalid("map page is missing"))
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    pub(super) fn continuation(
+        &self,
+    ) -> (
+        Option<Position>,
+        bool,
+        Option<(BranchId, Hour)>,
+        Option<(usize, Hour)>,
+    ) {
+        (
+            self.cursor,
+            self.page_cursor,
+            self.requested,
+            self.block
+                .as_ref()
+                .map(|block| (block.index, block.through)),
+        )
     }
 
     fn current_at(&self, branch: BranchId, hour: Hour) -> io::Result<Current> {
@@ -271,6 +968,9 @@ impl Reader {
 
     fn reset_metrics(&mut self) {
         self.applied_frames = 0;
+        self.applied_pages = 0;
+        self.page_bytes = 0;
+        self.page_fallbacks = 0;
         self.checkpoint_reads = 0;
         self.checkpoint_bytes = 0;
         self.source_reads = 0;
@@ -320,7 +1020,7 @@ impl Reader {
             return Ok(());
         };
         let previous = self.decoder.current().map(|frame| frame.hour);
-        let admitted = self.admit(branch, hour, previous, cursor, load)?;
+        let admitted = self.admit(branch, hour, previous, cursor, self.page_cursor, load)?;
         self.apply_admitted(hour, admitted, passed)
     }
 
@@ -330,6 +1030,7 @@ impl Reader {
         hour: Hour,
         mut previous: Option<Hour>,
         mut cursor: Position,
+        page_end: bool,
         load: Load,
     ) -> io::Result<Admitted> {
         let progress = &self.progress.branches[&branch];
@@ -337,6 +1038,7 @@ impl Reader {
             .last_block
             .ok_or_else(|| invalid("map accepted source cursor is missing"))?;
         let last_hour = progress.last_hour.unwrap();
+        let mut page_end = page_end.then_some(cursor.block);
         let mut admitted = Vec::new();
         // Admit every source load before visitors, so a refusal cannot repeat their history.
         while cursor.block <= last_block {
@@ -409,6 +1111,15 @@ impl Reader {
                 });
             }
             let block = self.block.as_ref().unwrap();
+            if page_end == Some(cursor.block) {
+                page_end = None;
+                cursor.next_frame = block
+                    .frames
+                    .partition_point(|frame| Some(frame.hour) <= previous);
+                if cursor.next_frame == 0 {
+                    return Err(invalid("map page end is not a source frame"));
+                }
+            }
             if cursor.next_frame > block.frames.len()
                 || (cursor.next_frame > 0
                     && block
@@ -469,12 +1180,14 @@ impl Reader {
                         block: block.index,
                         next_frame: offset + 1,
                     });
+                    self.page_cursor = false;
                     return Ok(());
                 }
                 passed(decoded);
             }
         }
         self.cursor = Some(admitted.cursor);
+        self.page_cursor = false;
         Ok(())
     }
 

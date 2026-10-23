@@ -8,7 +8,7 @@ use std::{io, sync::LazyLock};
 
 mod resume;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct FrameDecoder {
     current: Option<DecodedFrame>,
     selected: Option<[bool; TABLE_COUNT]>,

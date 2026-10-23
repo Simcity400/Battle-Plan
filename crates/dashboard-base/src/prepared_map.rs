@@ -17,6 +17,7 @@ use replay_frame::{
 };
 use store::{SourceKey, Store, Writer};
 
+pub mod pages;
 mod reader;
 pub use reader::Reader;
 
@@ -635,8 +636,10 @@ pub fn section(branch: BranchId) -> String {
 fn compress(payload: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
     let mut compressor = zstd::bulk::Compressor::new(9)?;
     compressor.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
+    let compressed = compressor.compress(payload)?;
+    engine_allocation::reserve(out, engine_allocation::add(8, compressed.len())?)?;
     out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    out.extend_from_slice(&compressor.compress(payload)?);
+    out.extend_from_slice(&compressed);
     Ok(())
 }
 

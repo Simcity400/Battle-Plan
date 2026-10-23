@@ -1,4 +1,7 @@
 //! Engine-native typed tables and lossless field-mask codecs.
+/// Sparse absolute typed rows in a prepared endpoint.
+pub use crate::checkpoint::endpoint::EndpointRows;
+
 use crate::codec::{Decoder, invalid_static as invalid, put_bytes, put_varint};
 use crate::display::{Rounding, Step};
 pub use crate::event_feed_rows::EventFeedHistoryRow;
@@ -688,6 +691,7 @@ impl<T> Recorded<T> {
 macro_rules! define_tables {
     ($($table:ident = $id:literal => $variant:ident($row:ident)),+ $(,)?) => {
         $crate::checkpoint::rows::tables! { $($table => $row),+ }
+        $crate::checkpoint::endpoint::tables! { $($table => $row),+ }
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u16)]
         pub enum TableId { $($table = $id),+ }
@@ -2452,6 +2456,24 @@ macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
         $crate::checkpoint::rows::row!($ty, |$key_name| $initial, { $(($($field)+): $kind),+ });
+        #[cfg(test)]
+        impl $crate::checkpoint::endpoint::tests::SparseReference for $ty {
+            fn sparse_fixture(&self, field: usize) -> $crate::checkpoint::endpoint::tests::SparseFixture<Self> {
+                use $crate::checkpoint::endpoint::tests::{SparseFixture, different, native_bytes, native_copy};
+                let baseline = RowCodec::try_clone_validated(self).unwrap();
+                let mut source = RowCodec::try_clone_validated(self).unwrap();
+                $(source.$($field)+ = different(&baseline.$($field)+, Kind::$kind, $index);)+
+                let mut expected = RowCodec::try_clone_validated(&baseline).unwrap();
+                let payload = match field {
+                    $($index => {
+                        expected.$($field)+ = native_copy(&source.$($field)+, Kind::$kind);
+                        native_bytes(&source.$($field)+)
+                    },)+
+                    _ => panic!("unknown schema field {field}"),
+                };
+                SparseFixture { baseline, source, expected, payload }
+            }
+        }
         impl Fields for $ty {
             const SCHEMA: &'static [Kind] = &[$(Kind::$kind),+];
             const STEPS: &'static [Option<$crate::display::Step>] = &[$($crate::value::display_step!($($step)?)),+];

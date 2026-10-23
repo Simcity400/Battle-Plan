@@ -396,6 +396,7 @@ static GROUPS: Groups = Groups;
 
 /// Every family prepared on its own, in registry order.
 static REGISTRY: &[&dyn Own] = &[
+    &map_pages::MAP_PAGES,
     &GROUPS,
     &IDENTITIES,
     &WARS,
@@ -458,6 +459,8 @@ static REGISTRY: &[&dyn Own] = &[
 /// One read of each block for the families that observe every block hour by
 /// hour on their own thread.
 pub(super) mod shared;
+
+pub(super) mod map_pages;
 
 /// Subjects, peace outcomes and idea history.
 pub(super) mod quiet_politics;
