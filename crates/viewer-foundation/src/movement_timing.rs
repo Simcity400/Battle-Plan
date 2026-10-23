@@ -20,6 +20,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+mod worker;
+pub use worker::WorkerEtas;
+
 /// The branch and recorded hour one cached derivation is for.
 pub type Key = (replay_data::BranchId, replay_data::Hour);
 

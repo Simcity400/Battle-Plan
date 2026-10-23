@@ -28,6 +28,9 @@ use crate::{
     state_resources::{Links, ONE, StateResources},
 };
 
+#[path = "world/literals.rs"]
+mod literals;
+
 type Index<T> = OnceLock<super::refusal::Resolved<Result<T, Failure>>>;
 
 type OperandLoader<'a, T> = (
@@ -466,7 +469,7 @@ pub struct World<'a> {
     recorded: OnceLock<RecordedScopes>,
     /// The lexer folds ([`FOLDS`]).
     names: Index<Arc<Folds>>,
-    literals: Index<BTreeMap<u32, &'a [u8]>>,
+    literals: Index<literals::Lookup<'a>>,
     factions: Index<Linked<BTreeMap<u32, u64>>>,
     wars: Index<Linked<BTreeSet<(u32, u32)>>>,
     overlords: Index<Linked<BTreeMap<u32, u32>>>,
@@ -1777,19 +1780,16 @@ impl<'a> World<'a> {
     }
 
     fn token_unrecorded(&self, token: u32) -> Result<Option<&'a [u8]>, Failure> {
-        {
-            let literals = get(&self.literals, || {
-                Ok(table::<tables::LexicalTokens>(self.frame)?
-                    .iter()
-                    .map(|row| (row.token, row.literal.as_slice()))
-                    .collect())
-            })?;
-            Ok(super::refusal::reference(
-                literals.get(&token).copied(),
-                token != 0,
-                || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
-            ))
-        }
+        let literals = get(&self.literals, || {
+            Ok(literals::Lookup::new(table::<tables::LexicalTokens>(
+                self.frame,
+            )?))
+        })?;
+        Ok(super::refusal::reference(
+            literals.get(token),
+            token != 0,
+            || super::refusal::missing_reference(tables::LexicalTokens::ID, None),
+        ))
     }
 
     /// The lexer token of a name: the one whose literal equals it under the
@@ -4399,3 +4399,7 @@ mod lookup_tests;
 #[cfg(test)]
 #[path = "world/zero_countries_tests.rs"]
 mod zero_countries_tests;
+
+#[cfg(test)]
+#[path = "world/literal_tests.rs"]
+mod literal_tests;

@@ -2212,3 +2212,89 @@ fn noncore_supply_uses_only_the_selected_ground_or_air_define() {
         );
     }
 }
+
+#[test]
+fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals() {
+    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    let cache = EtaCache::default();
+    let map = content(two_leg_map());
+    let mut scenarios = Vec::new();
+    for (branch, scale) in [(1, 1), (2, 3)] {
+        for (at, speed) in [
+            Some(SPEED * scale).into(),
+            Recorded::Value(None),
+            Recorded::NotRecorded,
+            Some(SPEED * 2 * scale).into(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut frame = hour(speed);
+            frame.branch = branch;
+            frame.hour += at as i32;
+            scenarios.push((frame, true));
+        }
+    }
+    // Equal hours differ by branch, so a cache key without the branch would show.
+    assert_ne!(
+        Etas::read(&scenarios[0].0, Some(&map)).unwrap().by_division,
+        Etas::read(&scenarios[4].0, Some(&map)).unwrap().by_division
+    );
+    let mut empty = frame();
+    empty.hour += 10;
+    put(
+        &mut empty,
+        TableRows::DivisionMovement(vec![DivisionMovementRow {
+            division: DIVISION,
+            path_total: 0,
+            ..Default::default()
+        }]),
+    );
+    scenarios.push((empty, false));
+    let mut missing = frame();
+    missing.hour += 20;
+    scenarios.push((missing, false));
+    let mut partial = hour(Some(SPEED).into());
+    partial.hour += 21;
+    *partial.tables[replay_data::rows::TableId::DivisionMovement.index()] = TableView::Truncated {
+        rows: TableRows::DivisionMovement(vec![moving(Some(SPEED).into())]),
+        missing: 1,
+    };
+    scenarios.push((partial, true));
+    let mut no_content = hour(Some(SPEED).into());
+    no_content.hour += 22;
+    scenarios.push((no_content, false));
+    let mut malformed = frame();
+    malformed.hour += 23;
+    *malformed.tables[replay_data::rows::TableId::DivisionMovement.index()] =
+        TableView::Complete(TableRows::Countries(Vec::new()));
+    scenarios.push((malformed, false));
+    for (frame, use_content) in scenarios {
+        let movement = use_content.then_some(&map);
+        // This reference bypasses both caches and the ticket gate.
+        let expected = Etas::read(&frame, movement);
+        let ticket = WorkerEtas::default();
+        for _ in 0..2 {
+            let result = ticket.get_or_try_init(|| cache.etas(&frame, movement));
+            match (&expected, result) {
+                (Ok(expected), Ok(result)) => {
+                    assert_eq!(result.by_division, expected.by_division);
+                    assert_eq!(result.estimate_gaps, expected.estimate_gaps);
+                    assert_eq!(result.progress, expected.progress);
+                    assert_eq!(result.progress_gaps, expected.progress_gaps);
+                    assert_eq!(result.report, expected.report);
+                    assert_eq!(result.report.line(), expected.report.line());
+                    for id in [0, DIVISION, u64::MAX] {
+                        assert_eq!(arrival(&result, id, true), arrival(expected, id, true));
+                        assert_eq!(arrival(&result, id, false), arrival(expected, id, false));
+                    }
+                }
+                (Err(expected), Err(error)) => {
+                    assert_eq!(error.kind(), expected.kind());
+                    assert_eq!(error.to_string(), expected.to_string());
+                }
+                _ => panic!("worker ticket changed ETA success or refusal"),
+            }
+        }
+    }
+}

@@ -453,6 +453,7 @@ pub struct Hour<'a> {
     vision_cache: RefCell<Option<(perspective::Choice, Arc<perspective::Vision>)>>,
     trigger_world: OnceCell<dashboard::triggers::World<'a>>,
     pool_limits: viewer_world::map::equipment_graphics::LimitValues,
+    worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
 }
 
 impl std::ops::Deref for Hour<'_> {
@@ -3182,7 +3183,16 @@ impl<'a> Hour<'a> {
             vision_cache: RefCell::new(None),
             trigger_world: OnceCell::new(),
             pool_limits: Default::default(),
+            worker_etas: None,
         }
+    }
+
+    pub(crate) fn with_worker_etas(
+        mut self,
+        worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
+    ) -> Self {
+        self.worker_etas = worker_etas;
+        self
     }
 
     pub(crate) fn music_chances_cached(
@@ -3307,7 +3317,11 @@ impl<'a> Hour<'a> {
     /// on workers that run ahead of it, so the cache lives on the shared
     /// [`Content`] and holds the hours in flight rather than only the last one.
     pub fn etas(&self) -> io::Result<Arc<Etas>> {
-        self.eta_cache.etas(self.frame, self.movement.as_deref())
+        let build = || self.eta_cache.etas(self.frame, self.movement.as_deref());
+        match &self.worker_etas {
+            Some(gate) => gate.get_or_try_init(build),
+            None => build(),
+        }
     }
 
     /// The heightmap as the map passes sample it.

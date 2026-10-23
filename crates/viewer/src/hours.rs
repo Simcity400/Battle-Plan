@@ -1942,6 +1942,8 @@ impl coordinator::BuildTarget for Coordinator {
         // pool therefore took first; a cancelled or panicked part still fills
         // its slots, so no wait is for ever.
         self.slots.insert((branch, hour), slots.clone());
+        // Only overlay and movers share these immutable inputs within this ticket.
+        let worker_etas = Arc::new(viewer_foundation::movement_timing::WorkerEtas::default());
         let mut jobs = VecDeque::new();
         let mut submit = |name: &'static str, work: PartWork| {
             let content = Arc::clone(&self.content);
@@ -1950,6 +1952,8 @@ impl coordinator::BuildTarget for Coordinator {
             let events = self.events.clone();
             trace.enqueue(name);
             let job_trace = trace.clone();
+            let worker_etas =
+                matches!(name, "overlay" | "movers").then(|| Arc::clone(&worker_etas));
             jobs.push_back(HeldJob { name, work: Box::new(move || {
                 job_trace.start(name);
                 if !alive.load(Ordering::Relaxed) {
@@ -1958,7 +1962,7 @@ impl coordinator::BuildTarget for Coordinator {
                     return;
                 }
                 let started = Instant::now();
-                let view = HourView::new(&content, &frame, 0.0);
+                let view = HourView::new(&content, &frame, 0.0).with_worker_etas(worker_etas);
                 let profiling = viewer_foundation::profile_writer::profiling();
                 let mut children = BuilderSpans::new(profiling);
                 let cpu_started = profiling
