@@ -6,14 +6,28 @@ use super::{
 use replay::{container::Parallel, container::Replay};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
-use std::{io, sync::Arc, time::Instant};
+use std::{io, ops::Range, sync::Arc, time::Instant};
 use store::{SourceKey, Store};
+
+mod load;
+use load::Load;
+
+#[cfg(test)]
+mod reuse_tests;
+
+#[cfg(test)]
+type SourceReadHook = Box<dyn FnMut(Hour, &io::Result<Vec<Frame>>) + Send + Sync>;
 
 #[derive(Clone)]
 struct Block {
     index: usize,
     through: Hour,
     frames: Arc<Vec<Frame>>,
+}
+
+struct Admitted {
+    frames: Vec<(Block, Range<usize>)>,
+    cursor: Position,
 }
 
 /// Restores a sparse native checkpoint, then reads the recording's selected
@@ -30,6 +44,8 @@ pub struct Reader {
     block: Option<Block>,
     requested: Option<(BranchId, Hour)>,
     workers: usize,
+    #[cfg(test)]
+    source_read_hook: Option<SourceReadHook>,
     /// Native frames applied by the most recent request.
     pub applied_frames: u64,
     /// Checkpoint headers read by the most recent seek.
@@ -80,6 +96,8 @@ impl Reader {
             workers: std::thread::available_parallelism()
                 .map_or(1, |count| count.get() / 2)
                 .max(1),
+            #[cfg(test)]
+            source_read_hook: None,
             applied_frames: 0,
             checkpoint_reads: 0,
             checkpoint_bytes: 0,
@@ -192,7 +210,7 @@ impl Reader {
         self.validate_checkpoint(branch, &checkpoint)?;
         self.cursor = Some(checkpoint.position);
         self.decoder = FrameDecoder::resume_for_tables(&self.selected, checkpoint.frame)?;
-        self.advance_to(branch, hour, passed, false)?;
+        self.advance_to(branch, hour, passed, Load::RequestedPrefix)?;
         self.requested = Some((branch, hour));
         Ok(true)
     }
@@ -237,7 +255,7 @@ impl Reader {
         {
             return self.seek_native(branch, hour, passed);
         }
-        self.advance_to(branch, hour, passed, self.steps_to(branch, hour))?;
+        self.advance_to(branch, hour, passed, self.load(branch, hour))?;
         self.requested = Some((branch, hour));
         Ok(true)
     }
@@ -266,6 +284,16 @@ impl Reader {
             .is_some_and(|(b, h)| b == branch && h.checked_add(1) == Some(hour))
     }
 
+    fn load(&self, branch: BranchId, hour: Hour) -> Load {
+        if self.steps_to(branch, hour) {
+            Load::AcceptedBlock
+        } else if self.requested.is_some_and(|(b, h)| b == branch && h < hour) {
+            Load::AcceptedBlockOrPrefix
+        } else {
+            Load::RequestedPrefix
+        }
+    }
+
     fn page(&self, branch: BranchId, range: u64) -> io::Result<store::Range> {
         self.store
             .read(&self.key, &section(branch), range)?
@@ -276,8 +304,8 @@ impl Reader {
         &mut self,
         branch: BranchId,
         hour: Hour,
-        mut passed: impl FnMut(&DecodedFrame),
-        preload: bool,
+        passed: impl FnMut(&DecodedFrame),
+        load: Load,
     ) -> io::Result<()> {
         if self
             .decoder
@@ -286,21 +314,31 @@ impl Reader {
         {
             return Ok(());
         }
-        // Validate the gap metadata before exposing any visitor, even when the
-        // caller does not need an endpoint snapshot.
+        // Validate gap metadata before any visitor, even without an endpoint snapshot.
         self.gap(branch, hour)?;
-        let Some(mut cursor) = self.cursor else {
+        let Some(cursor) = self.cursor else {
             return Ok(());
         };
+        let previous = self.decoder.current().map(|frame| frame.hour);
+        let admitted = self.admit(branch, hour, previous, cursor, load)?;
+        self.apply_admitted(hour, admitted, passed)
+    }
+
+    fn admit(
+        &mut self,
+        branch: BranchId,
+        hour: Hour,
+        mut previous: Option<Hour>,
+        mut cursor: Position,
+        load: Load,
+    ) -> io::Result<Admitted> {
         let progress = &self.progress.branches[&branch];
         let last_block = progress
             .last_block
             .ok_or_else(|| invalid("map accepted source cursor is missing"))?;
         let last_hour = progress.last_hour.unwrap();
-        let mut previous = self.decoder.current().map(|frame| frame.hour);
         let mut admitted = Vec::new();
-        // Admit selected source prefixes before exposing passed hours. A bad
-        // source cursor or failed load cannot replay a visitor's history twice.
+        // Admit every source load before visitors, so a refusal cannot repeat their history.
         while cursor.block <= last_block {
             let index = self
                 .replay
@@ -315,24 +353,18 @@ impl Reader {
             if index.first_hour > hour {
                 break;
             }
-            // A checkpoint at this block's last hour has already consumed it.
-            // Stepping into the next block must not decode the old block just
-            // to rediscover its final frame ordinal.
+            // A checkpoint at the block's last hour already consumed its final frame.
             if previous == Some(index.last_hour) {
                 cursor.block += 1;
                 cursor.next_frame = 0;
                 continue;
             }
             let accepted_end = index.last_hour.min(last_hour);
-            let through = if preload {
-                accepted_end
-            } else {
-                hour.min(accepted_end)
-            };
+            let required = load.required(hour, accepted_end);
             if self
                 .block
                 .as_ref()
-                .is_none_or(|block| block.index != cursor.block || block.through < through)
+                .is_none_or(|block| block.index != cursor.block || block.through < required)
             {
                 self.block = None;
                 self.retained_source_frames = 0;
@@ -350,14 +382,22 @@ impl Reader {
                     on_worker: &on_worker,
                 };
                 let started = Instant::now();
-                let frames = self.replay.read_block_selected_through(
-                    index,
-                    Some(&self.selected),
-                    through,
-                    (self.workers > 1).then_some(&parallel),
-                )?;
+                let result = load.read(required, accepted_end, |through| {
+                    let result = self.replay.read_block_selected_through(
+                        index,
+                        Some(&self.selected),
+                        through,
+                        (self.workers > 1).then_some(&parallel),
+                    );
+                    #[cfg(test)]
+                    if let Some(hook) = self.source_read_hook.as_mut() {
+                        hook(through, &result);
+                    }
+                    result
+                });
                 self.source_load_us +=
                     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+                let (through, frames) = result?;
                 self.source_reads += 1;
                 self.source_block_bytes += index.length;
                 self.source_decoded_frames += frames.len() as u64;
@@ -394,9 +434,10 @@ impl Reader {
                 cursor.next_frame += 1;
             }
             if start != cursor.next_frame {
+                engine_allocation::reserve(&mut admitted, 1)?;
                 admitted.push((block.clone(), start..cursor.next_frame));
             }
-            if cursor.next_frame < block.frames.len() || through < index.last_hour {
+            if cursor.next_frame < block.frames.len() || block.through < index.last_hour {
                 break;
             }
             cursor.block += 1;
@@ -406,7 +447,19 @@ impl Reader {
         if self.source_reads != 0 && !self.store.is_reusable(&self.key)? {
             return Err(invalid("map store was cleared during source read"));
         }
-        for (block, range) in admitted {
+        Ok(Admitted {
+            frames: admitted,
+            cursor,
+        })
+    }
+
+    fn apply_admitted(
+        &mut self,
+        hour: Hour,
+        admitted: Admitted,
+        mut passed: impl FnMut(&DecodedFrame),
+    ) -> io::Result<()> {
+        for (block, range) in admitted.frames {
             for offset in range {
                 let decoded = self.decoder.advance(&block.frames[offset])?;
                 Self::validate_campaign(&self.replay.campaign_id, decoded)?;
@@ -421,7 +474,7 @@ impl Reader {
                 passed(decoded);
             }
         }
-        self.cursor = Some(cursor);
+        self.cursor = Some(admitted.cursor);
         Ok(())
     }
 

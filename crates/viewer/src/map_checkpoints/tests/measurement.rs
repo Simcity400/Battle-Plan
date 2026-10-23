@@ -11,6 +11,7 @@ use std::{
 
 mod aircraft_resolve;
 mod attribution;
+mod prefix_walk;
 mod prefixes;
 mod recording;
 mod resources;

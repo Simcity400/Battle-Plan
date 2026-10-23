@@ -86,12 +86,17 @@ mod group;
 mod keyed;
 mod modelled;
 mod predicted;
+#[cfg(any(test, feature = "test-support"))]
+mod prefix_fixture;
 mod ramp;
 mod schedule;
 #[cfg(test)]
 mod test_recording;
 #[cfg(test)]
 mod through_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use prefix_fixture::trailing_control;
 
 use crate::frame::recorded::Updates;
 use std::sync::{Arc, OnceLock};

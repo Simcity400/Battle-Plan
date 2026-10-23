@@ -46,6 +46,27 @@ pub fn with_block_frames(replay: &Replay, frames: &[Frame]) -> io::Result<Replay
     Replay::open(bytes)
 }
 
+/// Add a trailing table control byte; shorter prefixes stay valid but whole reads refuse.
+pub fn with_trailing_table_control(replay: &Replay, table: TableId) -> io::Result<Replay> {
+    if replay.index.len() != 1 {
+        return Err(super::invalid("fixture requires a one-block recording"));
+    }
+    let (mut index, block) = super::grouped::trailing_control(replay, table)?;
+    let mut bytes = replay.bytes[..replay.header_end].to_vec();
+    index.offset = bytes.len() as u64;
+    bytes.extend_from_slice(&block);
+    super::finish_file(
+        &mut bytes,
+        &replay.sessions,
+        &replay.branches,
+        &replay.gaps,
+        &replay.controls,
+        &replay.recovery_notes,
+        &[index],
+    )?;
+    Replay::open(bytes)
+}
+
 type Decodes = Vec<(u64, i32, TableId, usize)>;
 
 thread_local! {
