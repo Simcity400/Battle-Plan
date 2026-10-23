@@ -7,6 +7,8 @@
 //! applies requests and erasures, icon visibility and placement, grid appends and
 //! layout, at-sea counters, then one tick and the windows' draws.
 
+mod draw_parts;
+
 use super::*;
 use std::collections::{HashMap, HashSet};
 use viewer_foundation::combat_selection::Hit;
@@ -1019,9 +1021,7 @@ pub(super) fn present(
             } else {
                 vec![Vec::new(); layout.holders.len()]
             };
-        let mut composed_layout = layout.clone();
-        composed_layout.parts = layout.composed_parts(&composed).cloned().collect();
-        let parts = plate.column.holder.place(place, &composed_layout);
+        let parts = draw_parts::place(&plate.column.holder, place, &layout, &composed);
         let drawn = gui_windows::draw_held(
             &plate.column.holder,
             parts,
@@ -3624,9 +3624,7 @@ fn draw_ports(
             } else {
                 vec![Vec::new(); layout.holders.len()]
             };
-            let mut composed_layout = layout.clone();
-            composed_layout.parts = layout.composed_parts(&composed).cloned().collect();
-            let parts = holder.place(place, &composed_layout);
+            let parts = draw_parts::place(&holder, place, &layout, &composed);
             let first = batch.quads.len();
             let drawn = gui_windows::draw_held(&holder, parts, origin, resources, batch, key)?;
             if !inputs.display.port_item(owner) {

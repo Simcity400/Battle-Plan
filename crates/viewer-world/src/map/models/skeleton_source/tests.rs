@@ -869,6 +869,31 @@ fn skeleton_only_bakes_keep_geometry_palette_rig_and_merge_bytes() {
             .flat_map(|rig| &rig.nodes)
             .any(|node| !node.mesh.skeleton.is_empty())
     );
+    let mut warnings = Vec::new();
+    let names = ["parent", "child", "parent", "other", "missing", "missing"].map(str::to_owned);
+    let before = viewer_foundation::worker_priority::current_priority();
+    let actual = ModelLibrary::load(
+        &layers,
+        Decode::default(),
+        &descriptors,
+        &names,
+        &mut warnings,
+    )
+    .unwrap();
+    assert_eq!(
+        viewer_foundation::worker_priority::current_priority(),
+        before
+    );
+    new.failed
+        .insert("missing".into(), "no pdxmesh or entity declares it".into());
+    libraries_equal(&actual, &new);
+    assert_eq!(
+        warnings,
+        vec![(
+            installed_content_core::DiagnosticKind::Refused,
+            "No mesh resolved for missing (no pdxmesh or entity declares it); those objects are not drawn.".into(),
+        )]
+    );
     std::fs::remove_file(root.join("body.mesh")).unwrap();
     std::fs::remove_dir(root).unwrap();
 }

@@ -1,3 +1,6 @@
+mod bake;
+pub use bake::at_bake_priority;
+
 pub fn background_priority() {
     #[cfg(windows)]
     {

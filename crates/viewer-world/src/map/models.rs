@@ -513,19 +513,21 @@ impl ModelLibrary {
                 let mut worker = spans.fork();
                 let asset_namespace = Arc::clone(&asset_namespace);
                 handles.push(scope.spawn(move || {
-                    let baked = worker.measure(labels.worker, |_| {
-                        let mut library = ModelLibrary {
-                            asset_namespace: Some(asset_namespace),
-                            decode,
-                            ..Default::default()
-                        };
-                        let mut missing = Vec::new();
-                        for name in shard_names {
-                            if let Err(error) = library.add(layers, descriptors, name) {
-                                missing.push(((*name).clone(), error.to_string()));
+                    let baked = viewer_foundation::worker_priority::at_bake_priority(|| {
+                        worker.measure(labels.worker, |_| {
+                            let mut library = ModelLibrary {
+                                asset_namespace: Some(asset_namespace),
+                                decode,
+                                ..Default::default()
+                            };
+                            let mut missing = Vec::new();
+                            for name in shard_names {
+                                if let Err(error) = library.add(layers, descriptors, name) {
+                                    missing.push(((*name).clone(), error.to_string()));
+                                }
                             }
-                        }
-                        (library, missing)
+                            (library, missing)
+                        })
                     });
                     (baked, worker)
                 }));
