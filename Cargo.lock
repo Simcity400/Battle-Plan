@@ -7879,6 +7879,7 @@ dependencies = [
  "installed-content-scripted-localisation",
  "installed-content-states",
  "installed-content-weather",
+ "job-priority",
  "recorder-derived",
  "recorder-metrics",
  "recorder-movement-oracle",

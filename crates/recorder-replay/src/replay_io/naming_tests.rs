@@ -373,8 +373,10 @@ fn a_failed_rename_keeps_the_saved_recording_and_the_next_save_retries() {
         &|| Ok(()),
         None,
         fixture.naming(true),
+        false,
         |replay, destination| replay.write_atomic(destination),
         |_, _| Err(std::io::Error::other("held open by another program")),
+        &mut |_, _, _| {},
     )
     .unwrap();
     // Saved in full under the old name, reported, never duplicated.

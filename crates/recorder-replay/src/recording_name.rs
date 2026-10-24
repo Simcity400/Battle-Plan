@@ -194,6 +194,15 @@ pub struct SpoolName {
 }
 
 impl SpoolName {
+    /// What naming keeps of the hours read once a checkpoint saved them: their span and roster.
+    pub fn carried(&self) -> Self {
+        Self {
+            span: self.span,
+            multiplayer: self.multiplayer,
+            ..Self::default()
+        }
+    }
+
     pub fn observe(&mut self, segment: u32, placement: Placement, frame: &Frame) {
         let latest = self.span.is_none_or(|(_, last)| frame.hour >= last);
         self.span = Some(self.span.map_or((frame.hour, frame.hour), |(first, last)| {

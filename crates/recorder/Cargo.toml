@@ -26,6 +26,7 @@ engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 engine-dlc.workspace = true
+job-priority.workspace = true
 replay-frame.workspace = true
 serde.workspace = true
 installed-content-core.workspace = true

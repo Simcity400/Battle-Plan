@@ -1,6 +1,8 @@
 #[path = "aliases_tests.rs"]
 mod aliases_tests;
 use super::*;
+#[path = "commit_tests.rs"]
+mod commit_tests;
 #[path = "file_backed_tests.rs"]
 mod file_backed_tests;
 use crate::{
@@ -551,6 +553,15 @@ pub(super) fn interleaved_copy(replay: &Replay) -> Replay {
     let mut index = Vec::new();
     append_blocks(&mut prefix, &mut index, &blocks).unwrap();
     Replay::open(rebuild(replay, prefix, &index)).unwrap()
+}
+
+/// A recording's bytes without its commit slot, which names each file's own newest save.
+pub(super) fn unslotted(replay: &Replay) -> Vec<u8> {
+    let mut bytes = replay.bytes().to_vec();
+    if let Some(slot) = replay.slot {
+        bytes[slot..slot + super::commit::SLOT_SIZE].fill(0);
+    }
+    bytes
 }
 
 fn rebuild(replay: &Replay, prefix: Vec<u8>, index: &[BlockIndex]) -> Vec<u8> {
@@ -1126,9 +1137,10 @@ fn exact_seek_reports_holes_and_append_preserves_blocks_and_session_provenance()
     assert!(!appended.content_verified());
     assert_eq!(appended.sessions.len(), 2);
     assert_eq!(appended.sessions[0], old.sessions[0]);
+    // Every byte of the earlier save is kept but the slot naming the newest one.
     assert_eq!(
-        &appended.bytes()[..old.trailer_start],
-        &old.bytes()[..old.trailer_start]
+        &unslotted(&appended)[..old.bytes().len()],
+        &unslotted(&old)[..]
     );
     for entry in &old.index {
         let range = entry.offset as usize..(entry.offset + entry.length) as usize;
@@ -1176,8 +1188,8 @@ fn compact_trailer_controls_preserve_order_duplicates_and_session_context() {
     assert_eq!(appended.controls[..controls.len()], controls);
     assert_eq!(appended.controls.last(), Some(&next_control));
     assert_eq!(
-        appended.bytes()[..reopened.trailer_start],
-        reopened.bytes()[..reopened.trailer_start]
+        unslotted(&appended)[..reopened.bytes().len()],
+        unslotted(&reopened)[..]
     );
 
     let mut invalid_context = records(1, &[1]);

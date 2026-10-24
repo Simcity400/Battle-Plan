@@ -31,7 +31,7 @@ pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
 /// The recording version this build writes. Reader history lives beside TableId.
-pub const FORMAT_VERSION: u16 = rows::compatibility::DIVISION_MODEL_INPUTS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::CHECKPOINT_FORMAT;
 
 pub mod country_stability;
 pub mod war_participation;

@@ -74,59 +74,8 @@ impl Replay {
     }
 
     pub(super) fn open_file_metadata(file: &mut (impl Read + Seek)) -> io::Result<Self> {
-        let length = file.seek(SeekFrom::End(0))?;
-        if length < FOOTER_SIZE as u64 {
-            return Err(invalid("missing replay footer"));
-        }
-        file.seek(SeekFrom::Start(length - FOOTER_SIZE as u64))?;
-        let mut bytes = [0; FOOTER_SIZE];
-        file.read_exact(&mut bytes)?;
-        let mut footer = Decoder::new(&bytes);
-        expect_magic(&mut footer, FOOTER_MAGIC)?;
-        let start = footer.u64()?;
-        let trailer_length = footer.u64()?;
-        let crc = footer.u32()?;
-        footer.finish()?;
-        if start.checked_add(trailer_length) != Some(length - FOOTER_SIZE as u64) {
-            return Err(invalid("invalid trailer extent"));
-        }
-        let read = |file: &mut dyn Read, length: u64| -> io::Result<Vec<u8>> {
-            let mut bytes = engine_allocation::filled(to_usize(length)?, 0)?;
-            file.read_exact(&mut bytes)?;
-            Ok(bytes)
-        };
-        file.seek(SeekFrom::Start(start))?;
-        let trailer = read(file, trailer_length)?;
-        let mut warnings = Vec::new();
-        if crc32fast::hash(&trailer) != crc {
-            engine_allocation::reserve(&mut warnings, 1)?;
-            warnings.push("trailer CRC mismatch".into());
-        }
-        // The existing header has two length-prefixed values after its fixed prefix.
-        if start < 14 {
-            return Err(invalid("truncated field"));
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let mut prefix = [0; 14];
-        file.read_exact(&mut prefix)?;
-        let identity_at = 14_u64
-            .checked_add(u64::from(u32::from_le_bytes(
-                prefix[10..14].try_into().unwrap(),
-            )))
-            .filter(|end| end.checked_add(4).is_some_and(|end| end <= start))
-            .ok_or_else(|| invalid("truncated field"))?;
-        file.seek(SeekFrom::Start(identity_at))?;
-        let mut size = [0; 4];
-        file.read_exact(&mut size)?;
-        let end = identity_at
-            .checked_add(4)
-            .and_then(|end| end.checked_add(u64::from(u32::from_le_bytes(size))))
-            .filter(|end| *end <= start)
-            .ok_or_else(|| invalid("truncated field"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let header = read(file, end)?;
-        let mut replay = Self::open_metadata(&header, &trailer, to_usize(start)?, warnings)?;
-        replay.held_length = length;
+        let mut replay = Self::open_metadata(commit::locate(&mut commit::Seeking(file))?)?;
+        replay.held_length = replay.revision.end;
         Ok(replay)
     }
 
@@ -137,13 +86,23 @@ impl Replay {
         let length = if self.file.is_some() {
             self.held_length
         } else {
-            self.bytes.len() as u64
+            self.revision.end
         };
         let mut buffer = [0; 64 * 1024];
         let mut offset = 0;
         while offset < length {
             let count = (length - offset).min(buffer.len() as u64) as usize;
             self.read_at(offset, &mut buffer[..count])?;
+            // The live slot moves; a held revision's byte stream must not.
+            if let Some(slot) = self.slot {
+                let start = (slot as u64).max(offset);
+                let end = ((slot + commit::SLOT_SIZE) as u64).min(offset + count as u64);
+                if start < end {
+                    let saved = self.revision.slot();
+                    buffer[(start - offset) as usize..(end - offset) as usize]
+                        .copy_from_slice(&saved[(start - slot as u64) as usize..(end - slot as u64) as usize]);
+                }
+            }
             visit(&buffer[..count])?;
             offset += count as u64;
         }
@@ -154,15 +113,16 @@ impl Replay {
         self.file.is_some()
     }
 
-    /// Whether this recording holds the one at `earlier` unchanged, as an append leaves it: its
-    /// header and blocks byte for byte, and each trailer list as the start of this one's. Replacing
-    /// `earlier` with this then loses nothing. A damaged recording is never held.
+    /// Whether this recording holds the one at `earlier` unchanged, as an append leaves it: every
+    /// byte of its saves but its commit slot, and each trailer list as the start of this one's.
+    /// Replacing `earlier` with this then loses nothing. A damaged recording is never held.
     pub fn holds(&self, earlier: &Path) -> io::Result<bool> {
-        self.require_resident()?;
         let earlier = Self::open_path(earlier)?;
+        let end = earlier.revision.end;
         if self.needed_recovery()
             || earlier.needed_recovery()
-            || earlier.trailer_start > self.trailer_start
+            || earlier.slot != self.slot
+            || end > self.revision.end
             || !self.sessions.starts_with(&earlier.sessions)
             || !self.branches.starts_with(&earlier.branches)
             || !self.gaps.starts_with(&earlier.gaps)
@@ -172,15 +132,28 @@ impl Replay {
         {
             return Ok(false);
         }
-        let mut chunk = engine_allocation::filled(earlier.trailer_start.min(1 << 20), 0)?;
+        // The slot names each file's own newest save.
+        let slot = earlier
+            .slot
+            .map_or(0..0, |slot| slot as u64..(slot + commit::SLOT_SIZE) as u64);
+        let mut theirs = engine_allocation::filled(end.min(1 << 20) as usize, 0)?;
+        let mut ours = engine_allocation::filled(theirs.len(), 0)?;
         let mut at = 0;
-        while at < earlier.trailer_start {
-            let length = chunk.len().min(earlier.trailer_start - at);
-            earlier.read_at(at as u64, &mut chunk[..length])?;
-            if chunk[..length] != self.bytes[at..at + length] {
+        while at < end {
+            let length = (theirs.len() as u64).min(end - at) as usize;
+            let (theirs, ours) = (&mut theirs[..length], &mut ours[..length]);
+            earlier.read_at(at, theirs)?;
+            self.read_at(at, ours)?;
+            let blank = slot.start.max(at)..slot.end.min(at + length as u64);
+            if !blank.is_empty() {
+                let blank = (blank.start - at) as usize..(blank.end - at) as usize;
+                theirs[blank.clone()].fill(0);
+                ours[blank].fill(0);
+            }
+            if theirs != ours {
                 return Ok(false);
             }
-            at += length;
+            at += length as u64;
         }
         Ok(true)
     }

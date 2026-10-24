@@ -82,6 +82,8 @@ fn declared_lengths_do_not_abort_on_allocation_failure() {
                 for _ in 0..5 {
                     prefix.extend_from_slice(&0_u32.to_le_bytes());
                 }
+                // No earlier trailer.
+                prefix.extend_from_slice(&[0; 16]);
                 prefix.extend_from_slice(&count.to_le_bytes());
                 prefix.resize(prefix.len() + count as usize * 40, 0);
                 let trailer = &prefix[replay.trailer_start..];

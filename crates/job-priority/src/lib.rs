@@ -8,7 +8,7 @@
 //! first with [`JobPriority::enter`].
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -17,6 +17,25 @@ use std::{
 
 thread_local! {
     static JOB: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    /// The thread runs in background mode, and so do the threads it starts.
+    static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run the calling thread in background mode from now on, at the lowest CPU, I/O and memory
+/// priority, and so every thread it starts with [`JobPriority::current`]: work no one waits for.
+pub fn background_thread() {
+    BACKGROUND.set(true);
+    enter_background_mode();
+}
+
+fn enter_background_mode() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+        };
+        SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    }
 }
 
 /// The level a thread runs at in a job the user is waiting for.
@@ -32,12 +51,12 @@ pub enum Level {
 /// flag is shared with the job's progress, so a job the user joins stops
 /// lowering the threads it starts from then on.
 #[derive(Clone, Debug, Default)]
-pub struct JobPriority(Option<Arc<AtomicBool>>);
+pub struct JobPriority(Option<Arc<AtomicBool>>, bool);
 
 impl JobPriority {
     /// The job this thread works for, to hand to a thread it starts.
     pub fn current() -> Self {
-        JOB.with(|job| Self(job.borrow().clone()))
+        JOB.with(|job| Self(job.borrow().clone(), BACKGROUND.get()))
     }
 
     /// Run `work` at the coordinator level for the job whose flag is
@@ -74,11 +93,16 @@ impl JobPriority {
     }
 
     /// Enter the job on a new or reused thread, which runs at `level`, one
-    /// step lower while the job is ahead of the user.
+    /// step lower while the job is ahead of the user; in background mode when
+    /// the thread that started it is.
     pub fn enter(self, level: Level) {
         let lowered = self.background();
         JOB.with(|job| *job.borrow_mut() = self.0);
-        set_thread_priority(level, lowered);
+        if self.1 {
+            background_thread();
+        } else {
+            set_thread_priority(level, lowered);
+        }
     }
 }
 
@@ -247,6 +271,39 @@ mod tests {
             background.store(false, Ordering::Release);
             assert_eq!(started_at(&job, Level::Normal), THREAD_PRIORITY_NORMAL);
         });
+    }
+
+    #[test]
+    fn threads_a_background_thread_starts_run_in_background_mode() {
+        let (started, nested) = std::thread::spawn(|| {
+            background_thread();
+            let job = JobPriority::current();
+            std::thread::spawn(move || {
+                job.enter(Level::Normal);
+                let inner = JobPriority::current();
+                (
+                    BACKGROUND.get(),
+                    std::thread::spawn(move || {
+                        inner.enter(Level::BelowNormal);
+                        BACKGROUND.get()
+                    })
+                    .join()
+                    .unwrap(),
+                )
+            })
+            .join()
+            .unwrap()
+        })
+        .join()
+        .unwrap();
+        assert!(started && nested);
+        let outside = std::thread::spawn(|| {
+            JobPriority::current().enter(Level::Normal);
+            BACKGROUND.get()
+        })
+        .join()
+        .unwrap();
+        assert!(!outside);
     }
 
     #[test]

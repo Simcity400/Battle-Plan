@@ -65,6 +65,9 @@ pub const CAPTURE_MODE_FORMAT: u16 = 121;
 /// Owner-approved DivisionModelInputs: the land model's three DivisionStatus columns,
 /// recorded in Map, which leaves DivisionStatus out.
 pub const DIVISION_MODEL_INPUTS_FORMAT: u16 = 122;
+/// Recordings grow in place: the header names the last complete save, and each
+/// save's trailer adds to the one before it. Earlier recordings have neither.
+pub const CHECKPOINT_FORMAT: u16 = 123;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;

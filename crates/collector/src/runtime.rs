@@ -5685,13 +5685,22 @@ struct HistoryRequests {
 pub(crate) const HISTORY_REQUEST: &str = "history.request";
 pub(crate) const HISTORY_ACK: &str = "history.ack";
 
+fn take_history_request(session: &Path) -> io::Result<Option<String>> {
+    let request = session.join(HISTORY_REQUEST);
+    let processing = session.join("history.processing");
+    match fs::rename(&request, &processing) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        result => result?,
+    }
+    let text = fs::read_to_string(&processing)?;
+    fs::remove_file(&processing)?;
+    Ok(Some(text))
+}
+
 impl HistoryRequests {
     fn poll(&mut self, session: &Path, processor: &mut Processor) -> io::Result<()> {
-        let request = session.join(HISTORY_REQUEST);
-        let text = match fs::read_to_string(&request) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(error),
+        let Some(text) = take_history_request(session)? else {
+            return Ok(());
         };
         let token = text.split_whitespace().next().unwrap_or_default();
         if token.is_empty() || self.last.as_deref() == Some(token) {
@@ -5699,8 +5708,7 @@ impl HistoryRequests {
         }
         let ack = processor.history_request(&text);
         self.last = Some(token.to_owned());
-        // Consumed before acknowledged: once acknowledged, the recorder's next request may replace it.
-        fs::remove_file(&request)?;
+        // A late lend must never remove the recorder's newer retake request.
         fs::write(session.join(HISTORY_ACK), ack)
     }
 }
@@ -6111,6 +6119,32 @@ mod equipment_destruction_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_lend_cannot_consume_the_retake_sent_after_its_deadline() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-history-request-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let request = root.join(HISTORY_REQUEST);
+        fs::write(&request, "1 lend campaign").unwrap();
+        let lent = take_history_request(&root).unwrap().unwrap();
+        fs::write(&request, "2 retake campaign").unwrap();
+        assert_eq!(lent, "1 lend campaign");
+        fs::write(root.join(HISTORY_ACK), "1 ok").unwrap();
+        assert_eq!(
+            take_history_request(&root).unwrap().as_deref(),
+            Some("2 retake campaign")
+        );
+        assert!(take_history_request(&root).unwrap().is_none());
+        fs::remove_file(root.join(HISTORY_ACK)).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     /// Two logical processors per `(group, scheduling class, efficiency class,
     /// core index)`, with ids from `first`.

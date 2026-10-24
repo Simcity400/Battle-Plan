@@ -33,6 +33,8 @@ const FOOTER_SIZE: usize = 24;
 mod aliases;
 mod changes;
 mod check;
+mod commit;
+pub use commit::Revision;
 mod decoded_sections;
 pub use decoded_sections::{SectionCacheCensus, SectionConsumer};
 #[cfg(any(test, feature = "test-support"))]
@@ -289,7 +291,20 @@ pub struct Replay {
     /// partway through it.
     verified: Vec<AtomicBool>,
     header_end: usize,
+    /// The newest trailer's first byte.
     trailer_start: usize,
+    /// The commit slot's first byte, in formats that have one.
+    slot: Option<usize>,
+    revision: Revision,
+    /// Each earlier trailer with its footer, which lie among the blocks.
+    regions: Vec<(u64, u64)>,
+    /// The trailer the newest one adds to.
+    previous: Option<(u64, u64)>,
+    /// The sessions, branches, gaps, controls and recovery notes earlier trailers hold.
+    earlier: [usize; 5],
+    /// Opened to be added to in place.
+    appendable: bool,
+    append_path: Option<PathBuf>,
     partial_control: Option<usize>,
 }
 
@@ -504,7 +519,7 @@ impl Replay {
     pub fn read_partial(path: &Path) -> io::Result<Option<ControlRecord>> {
         let mut file = File::open(path)?;
         let length = file.metadata()?.len();
-        Self::read_partial_from(&mut file, length)
+        Ok(Self::read_trailer_summary(&mut file, length)?.0)
     }
 
     /// Read terminal metadata from a seekable recording, using its actual byte length.
@@ -512,6 +527,9 @@ impl Replay {
         file: &mut (impl Read + Seek),
         length: u64,
     ) -> io::Result<Option<ControlRecord>> {
+        if file.seek(SeekFrom::End(0))? != length {
+            return Err(invalid("replay length differs from stream"));
+        }
         Ok(Self::read_trailer_summary(file, length)?.0)
     }
 
@@ -553,82 +571,60 @@ impl Replay {
     /// The partial notice, when readable, and the recorded hour span.
     fn read_trailer_summary(
         file: &mut (impl Read + Seek),
-        length: u64,
+        _length: u64,
     ) -> io::Result<TrailerSummary> {
-        if length < (FOOTER_SIZE + 6) as u64 {
-            return Err(invalid("missing replay footer"));
-        }
-        if file.seek(SeekFrom::End(0))? != length {
-            return Err(invalid("replay length differs from stream"));
-        }
-        file.seek(SeekFrom::Start(0))?;
-        let mut prefix = [0; 6];
-        file.read_exact(&mut prefix)?;
-        if &prefix[..4] != HEADER_MAGIC {
-            return Err(invalid("invalid replay header magic"));
-        }
-        let format = FormatVersion::read(u16::from_le_bytes(prefix[4..].try_into().unwrap()))?;
-        file.seek(SeekFrom::End(-(FOOTER_SIZE as i64)))?;
-        let mut footer_bytes = [0; FOOTER_SIZE];
-        file.read_exact(&mut footer_bytes)?;
-        let mut footer = Decoder::new(&footer_bytes);
-        expect_magic(&mut footer, FOOTER_MAGIC)?;
-        let start = footer.u64()?;
-        let trailer_length = footer.u64()?;
-        let _checksum = footer.u32()?;
-        if start < 6 || start.checked_add(trailer_length) != Some(length - FOOTER_SIZE as u64) {
-            return Err(invalid("invalid trailer extent"));
-        }
-        let mut bytes = engine_allocation::vec(to_usize(trailer_length)?)?;
-        file.seek(SeekFrom::Start(start))?;
-        file.take(trailer_length)
-            .read_to_end(&mut bytes)
-            .map_err(engine_allocation::allocation_error)?;
-        if bytes.len() as u64 != trailer_length {
-            return Err(invalid("truncated replay trailer"));
-        }
-        let mut trailer = Decoder::new(&bytes);
-        trailer.format = format.version();
-        expect_magic(&mut trailer, TRAILER_MAGIC)?;
-        let sessions = decode_list(&mut trailer, SessionStart::decode)?;
-        let mode = file_capture_mode(&sessions)?;
-        let ids = sessions.iter().map(|session| session.id).collect();
-        let _branches = decode_list(&mut trailer, BranchStart::decode)?;
+        let located = commit::locate(&mut commit::Seeking(file))?;
+        let format =
+            FormatVersion::read(u16::from_le_bytes(located.header[4..6].try_into().unwrap()))?;
+        let mut sessions = Vec::new();
+        let mut controls = Vec::new();
         let mut warnings = Vec::new();
         let mut damaged_parts = 0;
-        let _gaps = decode_list_recovering(
-            &mut trailer,
-            Gap::decode,
-            "gap",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let controls = decode_list_recovering(
-            &mut trailer,
-            |input| ControlRecord::decode_version(input, format),
-            "control",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let _recovery = decode_list_recovering(
-            &mut trailer,
-            RecoveryNote::decode,
-            "recovery note",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let count = trailer.count(40)?;
         let mut span: Option<(Hour, Hour)> = None;
-        for _ in 0..count {
-            let _branch = trailer.u64()?;
-            let first = trailer.i32()?;
-            let last = trailer.i32()?;
-            trailer.take(24)?;
-            span = Some(match span {
-                Some((low, high)) => (low.min(first), high.max(last)),
-                None => (first, last),
-            });
+        for (_, bytes) in &located.trailers {
+            let mut trailer = Decoder::new(bytes);
+            trailer.format = format.version();
+            expect_magic(&mut trailer, TRAILER_MAGIC)?;
+            sessions.append(&mut decode_list(&mut trailer, SessionStart::decode)?);
+            let _branches = decode_list(&mut trailer, BranchStart::decode)?;
+            let _gaps = decode_list_recovering(
+                &mut trailer,
+                Gap::decode,
+                "gap",
+                &mut warnings,
+                &mut damaged_parts,
+            )?;
+            controls.append(&mut decode_list_recovering(
+                &mut trailer,
+                |input| ControlRecord::decode_version(input, format),
+                "control",
+                &mut warnings,
+                &mut damaged_parts,
+            )?);
+            let _recovery = decode_list_recovering(
+                &mut trailer,
+                RecoveryNote::decode,
+                "recovery note",
+                &mut warnings,
+                &mut damaged_parts,
+            )?;
+            if located.slot.is_some() {
+                trailer.take(16)?;
+            }
+            let count = trailer.count(40)?;
+            for _ in 0..count {
+                let _branch = trailer.u64()?;
+                let first = trailer.i32()?;
+                let last = trailer.i32()?;
+                trailer.take(24)?;
+                span = Some(match span {
+                    Some((low, high)) => (low.min(first), high.max(last)),
+                    None => (first, last),
+                });
+            }
         }
+        let mode = file_capture_mode(&sessions)?;
+        let ids = sessions.iter().map(|session| session.id).collect();
         // A readable trailer prefix still supplies the terminal notice and the
         // hour span. Full opening reports checksum failures and trailing bytes
         // as warnings.
@@ -688,6 +684,8 @@ impl Replay {
         let mut encoded_identity = Vec::new();
         identity.encode(&mut encoded_identity)?;
         put_bytes(&mut bytes, &encoded_identity)?;
+        let slot = bytes.len();
+        bytes.extend_from_slice(&[0; commit::SLOT_SIZE]);
         let pending = collect(
             segments,
             &identity,
@@ -710,10 +708,11 @@ impl Replay {
             &[],
             &index,
         )?;
+        commit::stamp_slot(&mut bytes, Some(slot))?;
         Self::open(bytes)
     }
 
-    /// Existing compressed blocks and their original offsets are copied verbatim.
+    /// Existing saves are copied verbatim, and a trailer adding the new blocks follows them.
     pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
         let segments: Vec<_> = segments.iter().map(Vec::as_slice).collect();
         self.append_record_slices(&segments, Observer::Nothing, Frames::Kept, None)
@@ -747,26 +746,27 @@ impl Replay {
             MAX_BLOCK_RAW_BYTES,
             ahead,
         )?;
-        let mut bytes = self.bytes[..self.trailer_start].to_vec();
-        let mut index = self.index.clone();
+        if self.slot.is_none() {
+            return Err(invalid(format!(
+                "Replay append requires format {FORMAT_VERSION}; this recording is format {}; open it read-only and record into a new file",
+                self.format.version()
+            )));
+        }
+        let mut bytes = self.bytes().to_vec();
+        let mut index = Vec::new();
         append_owned_blocks(&mut bytes, &mut index, pending.blocks)?;
-        let mut sessions = self.sessions.clone();
-        sessions.extend(pending.sessions);
-        let mut branches = self.branches.clone();
-        branches.extend(pending.branches);
-        let mut gaps = self.gaps.clone();
-        gaps.extend(pending.gaps);
-        let mut controls = self.controls.clone();
-        controls.extend(pending.controls);
-        finish_file(
+        commit::encode_trailer(
             &mut bytes,
-            &sessions,
-            &branches,
-            &gaps,
-            &controls,
-            &self.recovery_notes,
+            0,
+            &pending.sessions,
+            &pending.branches,
+            &pending.gaps,
+            &pending.controls,
+            &[],
+            Some((self.revision.trailer, self.revision.length)),
             &index,
         )?;
+        commit::stamp_slot(&mut bytes, self.slot)?;
         Self::open(bytes)
     }
 
@@ -881,37 +881,41 @@ impl Replay {
         segments: &[(u32, Recovery<R>)],
     ) -> io::Result<Self> {
         self.require_undamaged()?;
-        let mut sorted: Vec<_> = segments.iter().collect();
-        sorted.sort_unstable_by_key(|(number, _)| *number);
-        for (number, recovery) in sorted {
-            let session = recovery
-                .records
-                .first()
-                .and_then(|record| match record.view() {
-                    RecordRef::SessionStart(session) => Some(session.id),
-                    RecordRef::BranchStart(branch) => Some(branch.session),
-                    _ => None,
-                });
-            if let Some(reason) = &recovery.damage {
-                self.recovery_notes.push(RecoveryNote {
-                    session,
-                    segment: *number,
-                    valid_bytes: recovery.valid_bytes as u64,
-                    reason: reason.clone(),
-                });
-            }
+        let notes = commit::recovery_notes(segments)?;
+        if notes.is_empty() {
+            return Ok(self);
         }
+        self.recovery_notes.extend(notes);
+        // The newest trailer is written again with the notes.
+        let [sessions, branches, gaps, controls, recovery] = self.earlier;
+        let blocks = self.index.len() - self.newest_blocks();
         self.bytes.truncate(self.trailer_start);
-        finish_file(
+        commit::encode_trailer(
             &mut self.bytes,
-            &self.sessions,
-            &self.branches,
-            &self.gaps,
-            &self.controls,
-            &self.recovery_notes,
-            &self.index,
+            0,
+            &self.sessions[sessions..],
+            &self.branches[branches..],
+            &self.gaps[gaps..],
+            &self.controls[controls..],
+            &self.recovery_notes[recovery..],
+            self.previous,
+            &self.index[blocks..],
         )?;
+        commit::stamp_slot(&mut self.bytes, self.slot)?;
         Self::open(self.bytes)
+    }
+
+    /// The index entries the newest trailer adds.
+    fn newest_blocks(&self) -> usize {
+        self.index
+            .iter()
+            .rev()
+            .take_while(|block| {
+                self.regions
+                    .last()
+                    .is_none_or(|(_, end)| block.offset >= *end)
+            })
+            .count()
     }
 
     pub fn content_verified(&self) -> bool {
@@ -926,7 +930,7 @@ impl Replay {
             self.file.is_none(),
             "file-backed replay has no in-memory byte slice"
         );
-        &self.bytes
+        &self.bytes[..to_usize(self.revision.end).unwrap_or(self.bytes.len())]
     }
 
     /// Exact recoverable frame hours, never the index's range with holes filled.
@@ -1025,46 +1029,23 @@ impl Replay {
     }
 
     pub fn open(bytes: Vec<u8>) -> io::Result<Self> {
-        if bytes.len() < FOOTER_SIZE {
-            return Err(invalid("missing replay footer"));
-        }
-        let footer_start = bytes.len() - FOOTER_SIZE;
-        let mut footer = Decoder::new(&bytes[footer_start..]);
-        expect_magic(&mut footer, FOOTER_MAGIC)?;
-        let trailer_start = to_usize(footer.u64()?)?;
-        let trailer_length = to_usize(footer.u64()?)?;
-        let trailer_crc = footer.u32()?;
-        footer.finish()?;
-        if trailer_start.checked_add(trailer_length) != Some(footer_start) {
-            return Err(invalid("invalid trailer extent"));
-        }
-        let trailer_bytes = bytes
-            .get(trailer_start..footer_start)
-            .ok_or_else(|| invalid("trailer outside replay"))?;
-        let mut warnings = Vec::new();
-        if crc32fast::hash(trailer_bytes) != trailer_crc {
-            engine_allocation::reserve(&mut warnings, 1)?;
-            warnings.push("trailer CRC mismatch".into());
-        }
-        let mut replay = Self::open_metadata(
-            &bytes[..trailer_start],
-            trailer_bytes,
-            trailer_start,
-            warnings,
-        )?;
+        let located = commit::locate(&mut commit::Resident(&bytes))?;
+        let mut replay = Self::open_metadata(located)?;
         replay.bytes = bytes;
         Ok(replay)
     }
 
-    /// Container metadata validation;
-    /// `warnings` carries what the caller already found (a trailer checksum failure).
-    fn open_metadata(
-        header_bytes: &[u8],
-        trailer_bytes: &[u8],
-        trailer_start: usize,
-        mut warnings: Vec<String>,
-    ) -> io::Result<Self> {
-        let mut header = Decoder::new(header_bytes);
+    /// Container metadata validation; `located` carries what finding the trailers found
+    /// (a trailer checksum failure).
+    fn open_metadata(located: commit::Located) -> io::Result<Self> {
+        let commit::Located {
+            header: header_bytes,
+            slot,
+            trailers,
+            revision,
+            mut warnings,
+        } = located;
+        let mut header = Decoder::new(&header_bytes);
         expect_magic(&mut header, HEADER_MAGIC)?;
         let format = FormatVersion::read(header.u16()?)?;
         let keyframe_interval = header.u32()?;
@@ -1079,51 +1060,80 @@ impl Replay {
         let mut identity_decoder = Decoder::new(&identity_bytes);
         let identity = Identity::decode(&mut identity_decoder)?;
         identity_decoder.finish()?;
-        let header_end = header_bytes.len() - header.remaining();
-        let mut trailer = Decoder::new(trailer_bytes);
-        trailer.format = format.version();
-        expect_magic(&mut trailer, TRAILER_MAGIC)?;
-        let sessions = decode_list(&mut trailer, SessionStart::decode)?;
-        let capture_mode = file_capture_mode(&sessions)?;
-        let branches = decode_list(&mut trailer, BranchStart::decode)?;
+        if slot.is_some() {
+            header.take(commit::SLOT_SIZE)?;
+        }
+        header.finish()?;
+        let header_end = header_bytes.len();
+        let mut sessions = Vec::new();
+        let mut branches = Vec::new();
         let mut damaged_parts = 0;
-        let mut gaps = decode_list_recovering(
-            &mut trailer,
-            Gap::decode,
-            "gap",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let mut controls = decode_list_recovering(
-            &mut trailer,
-            |input| ControlRecord::decode_version(input, format),
-            "control",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let recovery_notes = decode_list_recovering(
-            &mut trailer,
-            RecoveryNote::decode,
-            "recovery note",
-            &mut warnings,
-            &mut damaged_parts,
-        )?;
-        let count = trailer.count(40)?;
-        let mut index = engine_allocation::vec(count)?;
-        for _ in 0..count {
-            index.push(BlockIndex {
-                branch: trailer.u64()?,
-                first_hour: trailer.i32()?,
-                last_hour: trailer.i32()?,
-                offset: trailer.u64()?,
-                length: trailer.u64()?,
-                raw_length: trailer.u64()?,
-            });
+        let mut gaps = Vec::new();
+        let mut controls = Vec::new();
+        let mut recovery_notes = Vec::new();
+        let mut index = Vec::new();
+        let mut earlier = [0; 5];
+        let mut previous = None;
+        for (position, (_, bytes)) in trailers.iter().enumerate() {
+            if position + 1 == trailers.len() {
+                earlier = [
+                    sessions.len(),
+                    branches.len(),
+                    gaps.len(),
+                    controls.len(),
+                    recovery_notes.len(),
+                ];
+            }
+            let mut trailer = Decoder::new(bytes);
+            trailer.format = format.version();
+            expect_magic(&mut trailer, TRAILER_MAGIC)?;
+            sessions.append(&mut decode_list(&mut trailer, SessionStart::decode)?);
+            branches.append(&mut decode_list(&mut trailer, BranchStart::decode)?);
+            gaps.append(&mut decode_list_recovering(
+                &mut trailer,
+                Gap::decode,
+                "gap",
+                &mut warnings,
+                &mut damaged_parts,
+            )?);
+            controls.append(&mut decode_list_recovering(
+                &mut trailer,
+                |input| ControlRecord::decode_version(input, format),
+                "control",
+                &mut warnings,
+                &mut damaged_parts,
+            )?);
+            recovery_notes.append(&mut decode_list_recovering(
+                &mut trailer,
+                RecoveryNote::decode,
+                "recovery note",
+                &mut warnings,
+                &mut damaged_parts,
+            )?);
+            if slot.is_some() {
+                let link = (trailer.u64()?, trailer.u64()?);
+                previous = (link != (0, 0)).then_some(link);
+            }
+            let count = trailer.count(40)?;
+            engine_allocation::reserve(&mut index, count)?;
+            for _ in 0..count {
+                index.push(BlockIndex {
+                    branch: trailer.u64()?,
+                    first_hour: trailer.i32()?,
+                    last_hour: trailer.i32()?,
+                    offset: trailer.u64()?,
+                    length: trailer.u64()?,
+                    raw_length: trailer.u64()?,
+                });
+            }
+            if trailer.remaining() != 0 {
+                engine_allocation::reserve(&mut warnings, 1)?;
+                warnings.push("trailing bytes in replay trailer".into());
+            }
         }
-        if trailer.remaining() != 0 {
-            engine_allocation::reserve(&mut warnings, 1)?;
-            warnings.push("trailing bytes in replay trailer".into());
-        }
+        let capture_mode = file_capture_mode(&sessions)?;
+        let trailer_start = trailers.last().map_or(header_end, |(start, _)| *start);
+        let regions = commit::trailer_regions(&trailers);
         let mut damaged_range = None;
         let mut ordinals = Vec::new();
         let control_check = validate_partial_controls(&controls).and_then(|()| {
@@ -1155,6 +1165,7 @@ impl Replay {
             &mut ordinals,
             header_end,
             trailer_start,
+            &regions,
             keyframe_interval,
             &mut warnings,
             &mut damaged_parts,
@@ -1190,6 +1201,13 @@ impl Replay {
             ordinals,
             header_end,
             trailer_start,
+            slot,
+            revision,
+            regions,
+            previous,
+            earlier,
+            appendable: false,
+            append_path: None,
             partial_control,
         })
     }
@@ -1776,7 +1794,7 @@ impl Replay {
             }
         }
         if segments.is_empty() {
-            return Self::open(self.bytes.clone());
+            return Self::open(self.bytes().to_vec());
         }
         // Frames in block order, one block in memory.
         let mut blocks = self.index.iter();
@@ -1814,6 +1832,7 @@ impl Replay {
             &self.recovery_notes,
             &replay.index,
         )?;
+        commit::stamp_slot(&mut replay.bytes, replay.slot)?;
         Self::open(replay.bytes)
     }
 
@@ -1863,23 +1882,27 @@ impl Replay {
     ) -> io::Result<()> {
         self.require_resident()?;
         self.require_undamaged()?;
+        let bytes = self.bytes();
         let mut file = publisher.create()?;
         checkpoint(PublishStage::TempCreated)?;
-        file.write_all(&self.bytes[..self.header_end])?;
+        file.write_all(&bytes[..self.header_end])?;
         checkpoint(PublishStage::HeaderWritten)?;
+        // Earlier trailers between the blocks are written with the block after them.
+        let mut written = self.header_end;
         for (position, block) in self.index.iter().enumerate() {
             let start = to_usize(block.offset)?;
             let end = to_usize(block.offset + block.length)?;
             let midpoint = start + (end - start) / 2;
-            file.write_all(&self.bytes[start..midpoint])?;
+            file.write_all(&bytes[written..midpoint])?;
             checkpoint(PublishStage::BlockPartWritten(position))?;
-            file.write_all(&self.bytes[midpoint..end])?;
+            file.write_all(&bytes[midpoint..end])?;
             checkpoint(PublishStage::BlockWritten(position))?;
+            written = end;
         }
-        let footer_start = self.bytes.len() - FOOTER_SIZE;
-        file.write_all(&self.bytes[self.trailer_start..footer_start])?;
+        let footer_start = bytes.len() - FOOTER_SIZE;
+        file.write_all(&bytes[written..footer_start])?;
         checkpoint(PublishStage::TrailerWritten)?;
-        file.write_all(&self.bytes[footer_start..])?;
+        file.write_all(&bytes[footer_start..])?;
         checkpoint(PublishStage::FooterWritten)?;
         publisher.sync(&mut file)?;
         checkpoint(PublishStage::Flushed)?;
@@ -2094,6 +2117,7 @@ fn append_blocks(
     Ok(())
 }
 
+/// End a resident recording with its first trailer and footer.
 #[allow(clippy::too_many_arguments)]
 fn finish_file(
     bytes: &mut Vec<u8>,
@@ -2104,29 +2128,18 @@ fn finish_file(
     recovery_notes: &[RecoveryNote],
     index: &[BlockIndex],
 ) -> io::Result<()> {
-    let trailer_start = bytes.len();
-    bytes.extend_from_slice(TRAILER_MAGIC);
-    encode_list(bytes, sessions, |session, out| session.encode(out))?;
-    encode_list(bytes, branches, BranchStart::encode)?;
-    encode_list(bytes, gaps, Gap::encode)?;
-    encode_list(bytes, controls, ControlRecord::encode)?;
-    encode_list(bytes, recovery_notes, RecoveryNote::encode)?;
-    put_count(bytes, index.len())?;
-    for block in index {
-        bytes.extend_from_slice(&block.branch.to_le_bytes());
-        bytes.extend_from_slice(&block.first_hour.to_le_bytes());
-        bytes.extend_from_slice(&block.last_hour.to_le_bytes());
-        bytes.extend_from_slice(&block.offset.to_le_bytes());
-        bytes.extend_from_slice(&block.length.to_le_bytes());
-        bytes.extend_from_slice(&block.raw_length.to_le_bytes());
-    }
-    let trailer_length = bytes.len() - trailer_start;
-    let crc = crc32fast::hash(&bytes[trailer_start..]);
-    bytes.extend_from_slice(FOOTER_MAGIC);
-    bytes.extend_from_slice(&(trailer_start as u64).to_le_bytes());
-    bytes.extend_from_slice(&(trailer_length as u64).to_le_bytes());
-    bytes.extend_from_slice(&crc.to_le_bytes());
-    Ok(())
+    commit::encode_trailer(
+        bytes,
+        0,
+        sessions,
+        branches,
+        gaps,
+        controls,
+        recovery_notes,
+        None,
+        index,
+    )
+    .map(|_| ())
 }
 
 /// A current recording's header and trailer sessions in `format`'s layout; blocks are the caller's.
@@ -2134,15 +2147,42 @@ fn finish_file(
 #[doc(hidden)]
 pub fn relabelled(bytes: &[u8], format: u16) -> io::Result<Vec<u8>> {
     let replay = Replay::open(bytes.to_vec())?;
-    let trailer = &bytes[replay.trailer_start..bytes.len() - FOOTER_SIZE];
+    if replay.previous.is_some() {
+        return Err(invalid("only a recording saved once can be relabelled"));
+    }
+    let trailer = &bytes[replay.trailer_start..replay.bytes().len() - FOOTER_SIZE];
     let mut input = Decoder::new(trailer);
     expect_magic(&mut input, TRAILER_MAGIC)?;
     let count = input.count(4)?;
     for _ in 0..count {
         input.bytes()?;
     }
-    let rest = &trailer[trailer.len() - input.remaining()..];
-    let mut out = bytes[..replay.trailer_start].to_vec();
+    let mut rest = trailer[trailer.len() - input.remaining()..].to_vec();
+    let (mut out, shift) = match replay.slot {
+        // Earlier headers have no commit slot, so every block starts that much sooner.
+        Some(slot) if format < crate::rows::compatibility::CHECKPOINT_FORMAT => {
+            let mut lists = Decoder::new(&rest);
+            for _ in 0..4 {
+                let count = lists.count(4)?;
+                for _ in 0..count {
+                    lists.bytes()?;
+                }
+            }
+            let link = rest.len() - lists.remaining();
+            rest.drain(link..link + 16);
+            let count = Decoder::new(&rest[link..]).count(40)?;
+            for entry in 0..count {
+                let at = link + 4 + entry * 40 + 16;
+                let offset = u64::from_le_bytes(rest[at..at + 8].try_into().unwrap());
+                rest[at..at + 8]
+                    .copy_from_slice(&(offset - commit::SLOT_SIZE as u64).to_le_bytes());
+            }
+            let mut out = bytes[..slot].to_vec();
+            out.extend_from_slice(&bytes[slot + commit::SLOT_SIZE..replay.trailer_start]);
+            (out, None)
+        }
+        slot => (bytes[..replay.trailer_start].to_vec(), slot),
+    };
     out[4..6].copy_from_slice(&format.to_le_bytes());
     let trailer_start = out.len();
     out.extend_from_slice(TRAILER_MAGIC);
@@ -2155,13 +2195,14 @@ pub fn relabelled(bytes: &[u8], format: u16) -> io::Result<Vec<u8>> {
         }
         Ok(())
     })?;
-    out.extend_from_slice(rest);
+    out.extend_from_slice(&rest);
     let trailer_length = out.len() - trailer_start;
     let crc = crc32fast::hash(&out[trailer_start..]);
     out.extend_from_slice(FOOTER_MAGIC);
     out.extend_from_slice(&(trailer_start as u64).to_le_bytes());
     out.extend_from_slice(&(trailer_length as u64).to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
+    commit::stamp_slot(&mut out, shift)?;
     Ok(out)
 }
 
@@ -2652,6 +2693,7 @@ fn validate_metadata(
     ordinals: &mut Vec<usize>,
     header_end: usize,
     trailer_start: usize,
+    regions: &[(u64, u64)],
     interval: u32,
     warnings: &mut Vec<String>,
     damaged_parts: &mut usize,
@@ -2716,8 +2758,19 @@ fn validate_metadata(
     let mut previous_branch = None;
     let mut previous_session = None;
     let mut kept = 0;
+    // Earlier trailers lie between the blocks the saves before them wrote; one
+    // after bytes no one names is passed with them.
+    let mut regions = regions.iter().peekable();
     for position in 0..index.len() {
         let block = &index[position];
+        while let Some(&&(start, end)) = regions.peek() {
+            if start == expected_offset {
+                expected_offset = end;
+            } else if end > block.offset {
+                break;
+            }
+            regions.next();
+        }
         let known_branch = branch_ids.contains_key(&block.branch);
         let valid_hours = block.first_hour <= block.last_hour
             && i64::from(block.last_hour) - i64::from(block.first_hour) < i64::from(interval)
@@ -2732,6 +2785,9 @@ fn validate_metadata(
         } else if block.offset < expected_offset
             || block.length == 0
             || end.is_none_or(|end| end > trailer_start as u64)
+            || regions
+                .peek()
+                .is_some_and(|(start, _)| end.is_none_or(|end| end > *start))
             || block.raw_length < 4
             || block.raw_length > MAX_BLOCK_RAW_BYTES as u64
         {
@@ -2791,7 +2847,10 @@ fn validate_metadata(
         kept += 1;
     }
     index.truncate(kept);
-    if expected_offset != trailer_start as u64 {
+    while let Some((_, end)) = regions.next_if(|(start, _)| *start == expected_offset) {
+        expected_offset = *end;
+    }
+    if expected_offset != trailer_start as u64 || regions.next().is_some() {
         engine_allocation::reserve(warnings, 1)?;
         warnings.push("unindexed bytes before replay trailer".into());
         *damaged_parts += 1;

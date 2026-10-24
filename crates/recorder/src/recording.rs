@@ -38,6 +38,178 @@ fn writes_ahead(speed: Option<i32>) -> bool {
     speed.is_some_and(|speed| speed < FASTEST_SPEED)
 }
 
+/// Recorded hours a campaign's spool holds before a checkpoint saves them: an in-game year.
+const CHECKPOINT_HOURS: usize = 365 * 24;
+/// Spool bytes a campaign's spool holds before a checkpoint saves them.
+const CHECKPOINT_BYTES: u64 = 5 << 30;
+/// A checkpoint that saved nothing or failed is tried again after this long.
+const CHECKPOINT_RETRY: Duration = Duration::from_secs(10 * 60);
+
+/// Whether a campaign's spool holds enough for a checkpoint.
+fn checkpoint_due(hours: usize, bytes: u64) -> bool {
+    hours >= CHECKPOINT_HOURS || bytes >= CHECKPOINT_BYTES
+}
+
+/// Saves the campaign being recorded as it grows, on the finalize-ahead thread in background
+/// mode, so its spool stays small and the save at the end covers only the hours since.
+#[derive(Default)]
+struct Checkpoints {
+    /// When a campaign whose last checkpoint saved nothing or failed is tried again.
+    retry: BTreeMap<String, Instant>,
+}
+
+impl Checkpoints {
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        session: &Path,
+        target: &Path,
+        ahead: &mut replay_io::Ahead,
+        settling: Option<&Settling>,
+        naming: replay_io::Naming<'_>,
+        stopped: &AtomicBool,
+    ) {
+        let Ok(campaigns) = replay_io::spooled_campaigns(session) else {
+            return;
+        };
+        for campaign in campaigns {
+            if stopped.load(Ordering::Acquire) {
+                return;
+            }
+            let directory = session.join(&campaign);
+            if let Err(error) = replay_io::drop_checkpointed(&directory) {
+                eprintln!("Checkpointed spool segments could not be deleted: {error}");
+            }
+            // A Battle Plan Recorder session checkpoints the campaign the game has loaded; settling
+            // saves the ones it set aside.
+            if settling.is_some_and(|settling| {
+                locked(&settling.loaded).as_deref() != Some(campaign.as_str())
+            }) || !ahead
+                .unsaved(&directory)
+                .is_some_and(|(hours, bytes)| checkpoint_due(hours, bytes))
+                || self
+                    .retry
+                    .get(&campaign)
+                    .is_some_and(|retry| Instant::now() < *retry)
+            {
+                continue;
+            }
+            // The collector writes only the newest segment: closed now, it is saved with the rest.
+            let Some((through, newest)) = replay_io::segment_paths(&directory)
+                .ok()
+                .and_then(|paths| paths.last().cloned())
+            else {
+                continue;
+            };
+            if replay_io::open_held(&newest).is_ok() {
+                continue;
+            }
+            let began = Instant::now();
+            ahead.hold_through(&directory, through);
+            let auto_save = settling.is_none_or(|settling| settling.save.load(Ordering::Acquire));
+            let interrupted = || {
+                if stopped.load(Ordering::Acquire) {
+                    Err(std::io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(())
+                }
+            };
+            // The collector holds the recording the checkpoint adds to, so lends it meanwhile.
+            let result = ask_collector_until(session, "close", &campaign, stopped)
+                .and_then(|()| ahead.read(session, target).map(|_| ()))
+                .and_then(|()| {
+                    with_lent_history(
+                        |action| {
+                            if action == "retake" {
+                                ask_collector(session, action, &campaign)
+                            } else {
+                                ask_collector_until(session, action, &campaign, stopped)
+                            }
+                        },
+                        || {
+                            replay_io::checkpoint_campaign(
+                                session,
+                                target,
+                                &campaign,
+                                through,
+                                auto_save,
+                                ahead,
+                                naming,
+                                &interrupted,
+                            )
+                        },
+                    )
+                });
+            ahead.forget(&directory);
+            match result {
+                Ok(Some(done)) => {
+                    println!(
+                        "Checkpoint: {} hours of campaign {campaign} saved into {} in {:.1} s; {} spool segments deleted.",
+                        done.hours,
+                        done.recording.display(),
+                        began.elapsed().as_secs_f64(),
+                        done.deleted
+                    );
+                    if done.deleted == 0 {
+                        self.retry
+                            .insert(campaign, Instant::now() + CHECKPOINT_RETRY);
+                    } else {
+                        self.retry.remove(&campaign);
+                    }
+                }
+                Ok(None) => {
+                    self.retry
+                        .insert(campaign, Instant::now() + CHECKPOINT_RETRY);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Checkpoint of campaign {campaign} failed; its spool keeps its hours for the session's save: {error}"
+                    );
+                    self.retry
+                        .insert(campaign, Instant::now() + CHECKPOINT_RETRY);
+                }
+            }
+        }
+    }
+}
+
+struct RetakeHistory<F: FnMut(&str) -> Result<(), String>> {
+    request: F,
+    armed: bool,
+}
+
+impl<F: FnMut(&str) -> Result<(), String>> Drop for RetakeHistory<F> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = (self.request)("retake") {
+                eprintln!("The collector could not hold its history again: {error}");
+            }
+        }
+    }
+}
+
+fn with_lent_history<T>(
+    request: impl FnMut(&str) -> Result<(), String>,
+    work: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = RetakeHistory {
+        request,
+        armed: true,
+    };
+    let result = (guard.request)("lend").and_then(|()| work());
+    let retaken = (guard.request)("retake");
+    guard.armed = false;
+    match (result, retaken) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(format!(
+            "the collector could not hold its history again: {error}"
+        )),
+        (Err(error), Err(retake)) => {
+            Err(format!("{error}; history could not be retaken: {retake}"))
+        }
+    }
+}
+
 /// A campaign the running session set aside (the game loaded another), not saved yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Waiting {
@@ -103,12 +275,16 @@ fn ask_collector_until(
     stopped: &AtomicBool,
 ) -> Result<(), String> {
     let cancelled = || Err("the capture ended first".to_owned());
+    let deadline = Instant::now() + Duration::from_secs(10);
     let _one = loop {
         match ASKING.try_lock() {
             Ok(guard) => break guard,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) if stopped.load(Ordering::Acquire) => {
                 return cancelled();
+            }
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() >= deadline => {
+                return Err("the collector request lane stayed busy".into());
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 std::thread::sleep(Duration::from_millis(20));
@@ -128,7 +304,6 @@ fn ask_collector_until(
     fs::write(&temporary, format!("{token} {action} {subject}"))
         .and_then(|()| fs::rename(&temporary, &request))
         .map_err(|error| failure_text(&request, error))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !stopped.load(Ordering::Acquire) {
         if let Ok(answer) = fs::read_to_string(session.join(HISTORY_ACK))
             && let Some(answer) = answer.strip_prefix(&token)
@@ -236,11 +411,11 @@ fn settle(
         changed = true;
         if request == Some(true) {
             let discarded = with_history(settling, session, &campaign, || {
-                // First, since it refuses an ambiguous unsaved recording before deleting anything.
+                replay::recording_files::unsaved_recording(target, campaign.as_bytes())
+                    .map_err(|error| failure_text(target, error))?;
+                replay_io::discard_checkpoints(session, &campaign)?;
                 discard_recording(root, target, &campaign)?;
-                unsaved.iter().try_for_each(|(_, path, _)| {
-                    fs::remove_file(path).map_err(|error| failure_text(path, error))
-                })
+                replay_io::discard_unsaved(session, &campaign)
             });
             let Some(discarded) = discarded else {
                 locked(&settling.requests).push((campaign, true));
@@ -273,7 +448,8 @@ fn settle(
             *locked(&settling.waiting) = Some(waiting_list(settled));
             let saved = with_history(settling, session, &campaign, || {
                 // Hours earlier sessions left waiting are saved first, in order.
-                save_recording(root, target, &campaign, naming)?;
+                let earlier =
+                    save_recording_except(root, target, &campaign, naming, Some(session))?;
                 replay_io::save_campaign(
                     session,
                     target,
@@ -283,6 +459,7 @@ fn settle(
                     ahead,
                     naming,
                 )
+                .map(|(replay, omitted)| (replay.or(earlier), omitted))
             });
             let Some(saved) = saved else {
                 settled.insert(campaign.clone(), (Vec::new(), Some(waiting.clone()), false));
@@ -331,7 +508,7 @@ fn settle(
                 continue;
             }
             match with_history(settling, session, &campaign, || {
-                save_recording(root, target, &campaign, naming)
+                save_recording_except(root, target, &campaign, naming, Some(session))
             }) {
                 None => {
                     locked(&settling.left).insert(campaign);
@@ -358,7 +535,7 @@ fn settle(
             if discard {
                 discard_recording(root, target, &campaign).map(|()| None)
             } else {
-                save_recording(root, target, &campaign, naming).map(Some)
+                save_recording_except(root, target, &campaign, naming, Some(session)).map(Some)
             }
         });
         let Some(result) = result else {
@@ -412,11 +589,8 @@ impl FinalizingAhead {
         let thread = std::thread::Builder::new()
             .name("finalize ahead".into())
             .spawn(move || {
-                use windows_sys::Win32::System::Threading::{
-                    GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
-                };
-                // SAFETY: the calling thread's own pseudo-handle.
-                unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
+                // So are the threads its checkpoints and saves start.
+                job_priority::background_thread();
                 // The session's own content stack names its countries as the game does.
                 let localisation = installed_content_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
@@ -434,6 +608,7 @@ impl FinalizingAhead {
                     }
                 };
                 let mut settled = Settled::new();
+                let mut checkpoints = Checkpoints::default();
                 let settings = RecorderSettings::path();
                 while !stopped() {
                     let before = thread_cpu();
@@ -461,6 +636,14 @@ impl FinalizingAhead {
                     {
                         eprintln!("Set-aside campaigns could not be looked at: {error}");
                     }
+                    checkpoints.run(
+                        &session,
+                        &target,
+                        &mut ahead,
+                        settling.as_deref(),
+                        naming,
+                        &stopping,
+                    );
                     if writes_ahead(ahead.speed()) {
                         let began = Instant::now();
                         let busy = || stopped() || began.elapsed() >= Duration::from_secs(1);
@@ -926,15 +1109,85 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
                     process_exited,
                 );
             }
-            let finalized = replay_io::finalize_session_outcome(&session, &options.output)?;
-            if finalized.errors.is_empty() {
-                Ok(())
-            } else {
-                Err(finalized.errors.join("\n"))
-            }
+            finalize_cli_session(&session, &options.output, process_exited)
         }
         _ => Err(usage()),
     }
+}
+
+fn finalize_cli_session(session: &Path, output: &Path, process_exited: bool) -> Result<(), String> {
+    let finalized = replay_io::finalize_session_outcome(session, output)?;
+    complete_cli_finalization(
+        session,
+        output,
+        &finalized,
+        json!({
+            "detach_requested": false, "detached": !process_exited, "process_exited": process_exited,
+            "partial": !finalized.errors.is_empty(), "issues": finalized.errors,
+            "omitted": finalized.omitted.iter().map(Omission::to_json).collect::<Vec<_>>(),
+        }),
+    )?;
+    if finalized.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(finalized.errors.join("\n"))
+    }
+}
+
+fn complete_cli_finalization(
+    session: &Path,
+    output: &Path,
+    finalized: &replay_io::Finalized,
+    details: Value,
+) -> Result<(), String> {
+    let path = waiting_record(session);
+    let mut completed = if path.exists() {
+        read_status(&path).ok_or_else(|| failure_text(&path, "unreadable; spool retained"))?
+    } else {
+        json!({})
+    };
+    if !completed.is_object() {
+        return Err(failure_text(
+            &path,
+            "invalid completion record; spool retained",
+        ));
+    }
+    let mut waiting = match completed.get("waiting") {
+        Some(waiting) => waiting
+            .as_array()
+            .cloned()
+            .ok_or_else(|| failure_text(&path, "invalid waiting list; spool retained"))?,
+        None => Vec::new(),
+    };
+    waiting.retain(|entry| {
+        !entry["campaign"].as_str().is_some_and(|campaign| {
+            finalized.saved_campaigns.contains(campaign)
+                || finalized.failed_campaigns.contains(campaign)
+        })
+    });
+    for campaign in &finalized.failed_campaigns {
+        let unsaved = replay_io::unsaved(session, campaign).ok().flatten();
+        waiting.push(waiting_json(campaign, unsaved.as_ref()));
+    }
+    let mut replays = completed["replays"].as_array().cloned().unwrap_or_default();
+    for replay in &finalized.replays {
+        let replay = json!(replay);
+        if !replays.contains(&replay) {
+            replays.push(replay);
+        }
+    }
+    for (key, value) in details.as_object().unwrap() {
+        completed[key] = value.clone();
+    }
+    completed["replays"] = json!(replays);
+    completed["target"] = json!(output);
+    completed["waiting"] = json!(waiting);
+    replay_io::write_session_end(session, output, "completed.json", &completed)?;
+    if session.join(WAITING_FILE).exists() {
+        fs::remove_file(session.join(WAITING_FILE))
+            .map_err(|error| failure_text(&session.join(WAITING_FILE), error))?;
+    }
+    Ok(())
 }
 
 /// `finalize` of a session whose collector failed: publish what recovery
@@ -963,9 +1216,11 @@ fn finalize_failed_session(
             .map(|error| format!("replay finalization failed: {error}")),
     );
     let omitted: Vec<_> = finalized.omitted.iter().map(Omission::to_json).collect();
-    write_json(
-        &session.join("completed.json"),
-        &json!({
+    complete_cli_finalization(
+        session,
+        output,
+        &finalized,
+        json!({
             "replays":finalized.replays,"detach_requested":true,"detached":!process_exited,
             "process_exited":process_exited,"drain_complete":witness.drain_complete,
             "capture_failed":true,"failure_code":"allocation_failed",
@@ -1755,11 +2010,14 @@ pub(crate) fn capture(
         // Discard drops the campaign in progress; the others keep theirs.
         if let Some(current) = current.as_ref().filter(|current| spooled.contains(current)) {
             println!("Discarding campaign {current} of this session.");
+            replay_io::discard_checkpoints(&directory, current)?;
             replay_io::discard_unsaved(&directory, current)?;
         }
     } else if discarding {
-        // The user chose Discard. Nothing from this session is finalized, so a
-        // recording it would have continued keeps exactly its earlier contents.
+        // Published checkpoint hours stay; only this session's unsaved hours are discarded.
+        for campaign in &spooled {
+            replay_io::discard_checkpoints(&directory, campaign)?;
+        }
         if process_exited {
             println!("Game process exited; discarding this session.");
         } else {
@@ -1767,8 +2025,10 @@ pub(crate) fn capture(
                 "Collector absence confirmed in the running game process; discarding this session."
             );
         }
-        write_json(
-            &directory.join("completed.json"),
+        replay_io::write_session_end(
+            &directory,
+            target,
+            "completed.json",
             &json!({
                 "replays":[],"discarded":true,"detach_requested":requested_detach,
                 "detached":!process_exited,"process_exited":process_exited,
@@ -1856,64 +2116,12 @@ pub(crate) fn capture(
     let spooled = replay_io::spooled_campaigns(&directory)?;
     let admitted = admit.is_some().then_some(&admission.admitted);
     let _lock = finalization_lock(target)?;
-    let (continued, blocked) = save_continued(
-        output,
-        target,
-        &spooled,
-        admitted,
-        &|campaign| destination(campaign) == replay_io::Destination::Recording,
-        naming,
-    );
-    outcome.issues.extend(blocked.values().cloned());
-    // Nothing recorded means no spooled hours at all. Hours left out of the
-    // recordings are reported by finalization, never as nothing recorded.
-    if nothing_recorded_is_ok
-        && outcome.recovery_allowed
-        && outcome.issues.is_empty()
-        && outcome.witness.is_none()
-        && spooled.is_empty()
-    {
-        if continued.is_empty() {
-            println!("Nothing was recorded in this session.");
-        }
-        write_json(
-            &directory.join("completed.json"),
-            &json!({
-                "replays":continued,"nothing_recorded":continued.is_empty(),
-                "discarded_campaign":current.as_ref().filter(|_| discarding),
-                "detach_requested":requested_detach,
-                "detached":!process_exited,"process_exited":process_exited,
-                "drain_complete":outcome.drain_complete,"capture_failed":false,
-                "partial":false,"issues":[],"warnings":outcome.warnings,
-            }),
-        )?;
-        remove_active(&active, &directory)?;
-        return Ok(CaptureOutcome {
-            detach_requested: requested_detach,
-            process_exited,
-            replays: continued,
-            discarded: discarding,
-            rerouted,
-            omitted: Vec::new(),
-            waiting: Vec::new(),
-            unrenamed: Vec::new(),
-        });
-    }
-    // Hours behind older ones that could not be saved stay in the spool, waiting with them.
-    let destination = |campaign: &str| {
-        if blocked.contains_key(campaign) {
-            replay_io::Destination::Neither
-        } else {
-            destination(campaign)
-        }
-    };
     let recovery_allowed = outcome.recovery_allowed;
     // A campaign without an admitted load is only reported left out: it neither saves nor waits.
     let saving_now = |campaign: &str| {
         recovery_allowed
             && publishes(admitted, campaign)
-            && (blocked.contains_key(campaign)
-                || destination(campaign) == replay_io::Destination::Recording)
+            && destination(campaign) == replay_io::Destination::Recording
     };
     let mut waiting = Vec::new();
     for campaign in spooled.iter().filter(|campaign| {
@@ -1943,12 +2151,68 @@ pub(crate) fn capture(
                 .map(|campaign| waiting_json(campaign, None)),
         )
         .collect();
-    if !listed.is_empty() {
-        write_json(
-            &directory.join(WAITING_FILE),
+    if !spooled.is_empty() {
+        replay_io::write_session_end(
+            &directory,
+            target,
+            WAITING_FILE,
             &json!({"target":target, "waiting":listed}),
         )?;
     }
+    let (continued, blocked) = save_continued(
+        output,
+        Some(&directory),
+        target,
+        &spooled,
+        admitted,
+        &|campaign| destination(campaign) == replay_io::Destination::Recording,
+        naming,
+    );
+    outcome.issues.extend(blocked.values().cloned());
+    // Nothing recorded means no spooled hours at all. Hours left out of the
+    // recordings are reported by finalization, never as nothing recorded.
+    if nothing_recorded_is_ok
+        && outcome.recovery_allowed
+        && outcome.issues.is_empty()
+        && outcome.witness.is_none()
+        && spooled.is_empty()
+    {
+        if continued.is_empty() {
+            println!("Nothing was recorded in this session.");
+        }
+        replay_io::write_session_end(
+            &directory,
+            target,
+            "completed.json",
+            &json!({
+                "replays":continued,"nothing_recorded":continued.is_empty(),
+                "discarded_campaign":current.as_ref().filter(|_| discarding),
+                "detach_requested":requested_detach,
+                "detached":!process_exited,"process_exited":process_exited,
+                "drain_complete":outcome.drain_complete,"capture_failed":false,
+                "partial":false,"issues":[],"warnings":outcome.warnings,
+            }),
+        )?;
+        remove_active(&active, &directory)?;
+        return Ok(CaptureOutcome {
+            detach_requested: requested_detach,
+            process_exited,
+            replays: continued,
+            discarded: discarding,
+            rerouted,
+            omitted: Vec::new(),
+            waiting: Vec::new(),
+            unrenamed: Vec::new(),
+        });
+    }
+    // Hours behind older ones that could not be saved stay in the spool, waiting with them.
+    let destination = |campaign: &str| {
+        if blocked.contains_key(campaign) {
+            replay_io::Destination::Neither
+        } else {
+            destination(campaign)
+        }
+    };
     let saving = |records| stage(Stage::Saving { records });
     let progress = FinalizationProgress::new(&directory, &saving);
     if spooled
@@ -2023,7 +2287,7 @@ pub(crate) fn capture(
         "issues":outcome.issues,
         "warnings":outcome.warnings,
     });
-    write_json(&directory.join("completed.json"), &completed)?;
+    replay_io::write_session_end(&directory, target, "completed.json", &completed)?;
     // The completion record lists them now.
     let _ = fs::remove_file(directory.join(WAITING_FILE));
     remove_active(&active, &directory)?;
@@ -3032,9 +3296,25 @@ fn save_recording(
     campaign: &str,
     naming: replay_io::Naming<'_>,
 ) -> Result<Option<PathBuf>, String> {
-    let mut saved = None;
+    save_recording_except(root, target, campaign, naming, None)
+}
+
+fn save_recording_except(
+    root: &Path,
+    target: &Path,
+    campaign: &str,
+    naming: replay_io::Naming<'_>,
+    current: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let mut saved = match current {
+        Some(session) => replay_io::publish_checkpointed(session, target, campaign, naming)?,
+        None => None,
+    };
     // Each session's spool, in order: hours already staged are matched, any not staged are added.
-    for session in waiting_sessions(root, target, campaign) {
+    for session in waiting_sessions(root, target, campaign)
+        .into_iter()
+        .filter(|session| Some(session.as_path()) != current)
+    {
         let (replay, _) = replay_io::save_campaign(
             &session,
             target,
@@ -3047,6 +3327,7 @@ fn save_recording(
         .map_err(|error| format!("{error}; spool retained"))?;
         saved = replay.or(saved);
         unlist_waiting(&session, campaign)?;
+        replay_io::reconcile_session_checkpoints(&session, target)?;
     }
     // Staged by a session that ended before listing it.
     Ok(replay_io::publish_unsaved(target, campaign, naming)?.or(saved))
@@ -3063,6 +3344,7 @@ fn publishes(admitted: Option<&replay_io::Admissions>, campaign: &str) -> bool {
 /// those without an hour, and each campaign whose hours could not be saved, with why.
 fn save_continued(
     root: &Path,
+    current: Option<&Path>,
     target: &Path,
     spooled: &[String],
     admitted: Option<&replay_io::Admissions>,
@@ -3079,7 +3361,7 @@ fn save_continued(
         .chain(unspooled)
         .filter(|campaign| publishes(admitted, campaign) && saves(campaign))
     {
-        match save_recording(root, target, campaign, naming) {
+        match save_recording_except(root, target, campaign, naming, current) {
             Ok(saved) if !spooled.contains(campaign) => continued.extend(saved),
             Ok(_) => {}
             Err(error) => {
@@ -3095,6 +3377,10 @@ fn save_continued(
 /// would continue a history without those hours, and the others record.
 fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>, String> {
     let mut refused = BTreeMap::new();
+    let _lock = finalization_lock(target)?;
+    for session in session_folders(root) {
+        replay_io::reconcile_session_checkpoints(&session, target)?;
+    }
     let campaigns: BTreeSet<_> = session_folders(root)
         .iter()
         .flat_map(|session| waiting_campaigns(session))
@@ -3104,7 +3390,6 @@ fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>,
     if campaigns.is_empty() {
         return Ok(refused);
     }
-    let _lock = finalization_lock(target)?;
     // Staging names no recording.
     let settings = RecorderSettings::path();
     let naming = replay_io::Naming {
@@ -3135,8 +3420,12 @@ fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>,
 
 /// Drop a recording's hours waiting from ended sessions, keeping what it saved.
 fn discard_recording(root: &Path, target: &Path, campaign: &str) -> Result<(), String> {
+    let sessions = waiting_sessions(root, target, campaign);
+    for session in &sessions {
+        replay_io::reconcile_session_checkpoints(session, target)?;
+    }
     replay_io::discard_unsaved_recording(target, campaign)?;
-    for session in waiting_sessions(root, target, campaign) {
+    for session in sessions {
         replay_io::discard_unsaved(&session, campaign)?;
         unlist_waiting(&session, campaign)?;
     }
@@ -3174,6 +3463,82 @@ pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lend_ack_loss_timeout_and_cancellation_always_retake_without_running_the_checkpoint() {
+        for failure in [
+            "lost acknowledgement",
+            "deadline passed",
+            "capture cancelled",
+        ] {
+            let actions = RefCell::new(Vec::new());
+            let protected = Cell::new(true);
+            let result = with_lent_history(
+                |action| {
+                    actions.borrow_mut().push(action.to_owned());
+                    match action {
+                        "lend" => {
+                            protected.set(false);
+                            Err(failure.to_owned())
+                        }
+                        "retake" => {
+                            protected.set(true);
+                            Ok(())
+                        }
+                        _ => unreachable!(),
+                    }
+                },
+                || -> Result<(), String> {
+                    panic!("unacknowledged lend cannot start a checkpoint")
+                },
+            );
+            assert!(result.unwrap_err().contains(failure));
+            assert!(protected.get());
+            assert_eq!(*actions.borrow(), ["lend", "retake"]);
+        }
+    }
+
+    #[test]
+    fn checkpoint_errors_cancellation_and_unwinding_retake_history() {
+        for outcome in 0..4 {
+            let actions = RefCell::new(Vec::new());
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_lent_history(
+                    |action| {
+                        actions.borrow_mut().push(action.to_owned());
+                        Ok(())
+                    },
+                    || match outcome {
+                        0 => Ok(()),
+                        1 => Err("checkpoint failed".to_owned()),
+                        2 => Err("capture cancelled".to_owned()),
+                        _ => panic!("checkpoint panicked"),
+                    },
+                )
+            }));
+            assert_eq!(*actions.borrow(), ["lend", "retake"]);
+            assert_eq!(result.is_err(), outcome == 3);
+        }
+    }
+
+    #[test]
+    fn a_failed_retake_is_reported_even_when_the_lend_also_failed() {
+        for lent in [false, true] {
+            let result = with_lent_history(
+                |action| match action {
+                    "lend" if lent => Ok(()),
+                    "lend" => Err("lost lend ack".to_owned()),
+                    _ => Err("retake deadline passed".to_owned()),
+                },
+                || Ok(()),
+            );
+            let error = result.unwrap_err();
+            assert!(error.contains("retake deadline passed"));
+            if !lent {
+                assert!(error.contains("lost lend ack"));
+            }
+        }
+    }
+
     #[test]
     fn only_a_speed_below_the_fastest_writes_ahead() {
         use super::{FASTEST_SPEED, writes_ahead};
@@ -3318,6 +3683,477 @@ mod tests {
     }
 
     #[test]
+    fn saving_a_set_aside_checkpoint_manually_or_with_auto_save_keeps_the_session_usable() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
+            recorded_frames, write_load_segment,
+        };
+        use replay::spool::{Record, encode_record, recover_prefix};
+        use replay_data::rows::{CampaignRow, TableId, TableRows};
+        use replay_frame::frame::TableUpdate;
+
+        const CURRENT: &str = "00000000-0000-4000-8000-000000000001";
+        for auto_save in [false, true] {
+            for earlier_waiting in [false, true] {
+                for context_only in [false, true] {
+                    let directory = allocation_test_directory(&format!(
+                        "settle-checkpoint-save-{auto_save}-{earlier_waiting}-{context_only}"
+                    ));
+                    let target = directory.join("target");
+                    let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+                    let earlier = earlier_waiting.then(|| {
+                        let earlier =
+                            ended_waiting(&directory, "1-1", name, 8, 1..=1, FIRST_LOAD - 1);
+                        assert!(stage_waiting(&directory, &target).unwrap().is_empty());
+                        earlier
+                    });
+                    let session = directory.join("sessions/1-2");
+                    let campaign = session.join(name);
+                    replay_io::begin_admissions(&session, &target).unwrap();
+                    let mut admissions = replay_io::Admissions::default();
+                    for load in [FIRST_LOAD, RELOAD] {
+                        admissions.admit(&session, &target, name, load).unwrap();
+                    }
+                    admissions
+                        .admit(&session, &target, CURRENT, THIRD_LOAD)
+                        .unwrap();
+                    let first = write_load_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+                    if context_only {
+                        let context = recover_prefix(&fs::read(&first).unwrap());
+                        assert!(context.damage.is_none());
+                        fs::write(
+                            campaign.join("spool.0001.h4s"),
+                            context
+                                .records
+                                .iter()
+                                .filter(|record| !matches!(record, Record::Frame(_)))
+                                .flat_map(|record| encode_record(record).unwrap())
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap();
+                    } else {
+                        write_load_segment(&campaign, 1, 10, 5..=6, RELOAD);
+                    }
+                    let mut ahead = replay_io::Ahead::default();
+                    let checkpoint = replay_io::checkpoint_campaign(
+                        &session,
+                        &target,
+                        name,
+                        0,
+                        false,
+                        &mut ahead,
+                        unnamed(),
+                        &|| Ok(()),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!(checkpoint.deleted, 1);
+                    assert!(campaign.join("checkpoint.json").exists());
+                    let current = session.join(CURRENT);
+                    for (number, branch, hours) in [(0, 11, 7..=8), (1, 12, 9..=10)] {
+                        let path = write_load_segment(&current, number, branch, hours, THIRD_LOAD);
+                        let mut recovered = recover_prefix(&fs::read(&path).unwrap());
+                        assert!(recovered.damage.is_none());
+                        for record in &mut recovered.records {
+                            if let Record::Frame(frame) = record {
+                                frame.tables[TableId::Campaign.index()] =
+                                    TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
+                                        id: CURRENT.as_bytes().to_vec(),
+                                    }]));
+                            }
+                        }
+                        fs::write(
+                            &path,
+                            recovered
+                                .records
+                                .iter()
+                                .flat_map(|record| encode_record(record).unwrap())
+                                .collect::<Vec<_>>(),
+                        )
+                        .unwrap();
+                    }
+                    let settling = Settling::default();
+                    *locked(&settling.loaded) = Some(CURRENT.to_owned());
+                    let mut settled = Settled::new();
+                    settle(
+                        &session,
+                        &target,
+                        &mut ahead,
+                        &settling,
+                        &mut settled,
+                        unnamed(),
+                    )
+                    .unwrap();
+                    assert!(take_done(&settling).is_empty());
+                    assert!(settled[name].1.is_some());
+                    if auto_save {
+                        settling.save.store(true, Ordering::Release);
+                    } else {
+                        locked(&settling.requests).push((name.to_owned(), false));
+                    }
+                    settle(
+                        &session,
+                        &target,
+                        &mut ahead,
+                        &settling,
+                        &mut settled,
+                        unnamed(),
+                    )
+                    .unwrap();
+                    let saved = replay::recording_files::recording_of(&target, ALLOCATION_CAMPAIGN)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        take_done(&settling),
+                        [SetAside::Saved(name.to_owned(), Some(saved.clone()))]
+                    );
+                    let mut expected = vec![(9, 2), (9, 3), (9, 4)];
+                    if earlier_waiting {
+                        expected.insert(0, (8, 1));
+                    }
+                    if !context_only {
+                        expected.extend([(10, 5), (10, 6)]);
+                    }
+                    assert_eq!(recorded_frames(&saved), expected);
+                    assert!(
+                        replay::recording_files::recording_of(&target, CURRENT.as_bytes())
+                            .unwrap()
+                            .is_none()
+                    );
+                    assert!(!checkpoint.recording.exists());
+                    assert!(!campaign.join("checkpoint.json").exists());
+                    if let Some(earlier) = earlier {
+                        assert!(waiting_campaigns(&earlier).is_empty());
+                    }
+                    let next = replay_io::checkpoint_campaign(
+                        &session,
+                        &target,
+                        CURRENT,
+                        0,
+                        auto_save,
+                        &mut ahead,
+                        unnamed(),
+                        &|| Ok(()),
+                    )
+                    .unwrap()
+                    .unwrap();
+                    assert_eq!((next.hours, next.deleted), (2, 1));
+                    let done = replay_io::finalize_session_ahead(
+                        &session,
+                        &target,
+                        &|| Ok(()),
+                        ahead,
+                        unnamed(),
+                        &|_| replay_io::Destination::Recording,
+                    )
+                    .unwrap();
+                    assert!(done.errors.is_empty(), "{:?}", done.errors);
+                    assert_eq!(recorded_frames(&saved), expected);
+                    let current_saved =
+                        replay::recording_files::recording_of(&target, CURRENT.as_bytes())
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(
+                        recorded_frames(&current_saved),
+                        [(11, 7), (11, 8), (12, 9), (12, 10)]
+                    );
+                    replay_io::write_session_end(
+                        &session, &target, "completed.json",
+                        &json!({"target": target, "replays": [saved, current_saved], "waiting": []}),
+                    )
+                    .unwrap();
+                    assert!(session.join("completed.json").exists());
+                    assert!(!current.join("checkpoint.json").exists());
+                    fs::remove_dir_all(directory).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saving_older_checkpoint_only_waiting_sessions_proves_their_revisions_in_the_grown_copy() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, recorded_frames, write_load_segment,
+        };
+        use replay::spool::{Record, encode_record, recover_prefix};
+
+        for published_first in [false, true] {
+            let directory = allocation_test_directory(&format!(
+                "waiting-checkpoint-ancestors-{published_first}"
+            ));
+            let target = directory.join("target");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let mut sessions = Vec::new();
+            for (id, branch, hours, load) in [
+                ("1-1", 8, 1..=2, 17),
+                ("1-2", 9, 3..=4, 19),
+                ("1-3", 10, 5..=6, 21),
+            ] {
+                let session = directory.join("sessions").join(id);
+                let campaign = session.join(name);
+                replay_io::begin_admissions(&session, &target).unwrap();
+                replay_io::select_recordings(&session, &target).unwrap();
+                replay_io::Admissions::default()
+                    .admit(&session, &target, name, load)
+                    .unwrap();
+                let first = write_load_segment(&campaign, 0, branch, hours, load);
+                let recovered = recover_prefix(&fs::read(&first).unwrap());
+                assert!(recovered.damage.is_none());
+                let tail = campaign.join("spool.0001.h4s");
+                fs::write(
+                    &tail,
+                    recovered
+                        .records
+                        .iter()
+                        .filter(|record| !matches!(record, Record::Frame(_)))
+                        .flat_map(|record| encode_record(record).unwrap())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+                let checkpoint = replay_io::checkpoint_campaign(
+                    &session,
+                    &target,
+                    name,
+                    0,
+                    false,
+                    &mut replay_io::Ahead::default(),
+                    unnamed(),
+                    &|| Ok(()),
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!((checkpoint.hours, checkpoint.deleted), (2, 1));
+                assert!(!first.exists());
+                assert_eq!(replay_io::segment_paths(&campaign).unwrap(), [(1, tail)]);
+                let waiting = replay_io::unsaved(&session, name).unwrap().unwrap();
+                replay_io::write_session_end(
+                    &session,
+                    &target,
+                    "completed.json",
+                    &json!({"target": target, "waiting": [waiting_json(name, Some(&waiting))]}),
+                )
+                .unwrap();
+                assert!(!campaign.join("checkpoint.json").exists());
+                sessions.push(session);
+            }
+            let staged = replay::publication::unsaved_path(&target, name);
+            let bytes = fs::read(&staged).unwrap();
+            if published_first {
+                assert!(
+                    replay_io::publish_unsaved(&target, name, unnamed())
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            let saved = save_waiting(&sessions[0], name).unwrap().unwrap();
+            assert_eq!(
+                fs::read(&saved).unwrap(),
+                bytes,
+                "no hours or metadata added"
+            );
+            assert_eq!(
+                recorded_frames(&saved),
+                [(8, 1), (8, 2), (9, 3), (9, 4), (10, 5), (10, 6)]
+            );
+            let revision = replay::container::Replay::open_path(&saved)
+                .unwrap()
+                .revision();
+            for session in sessions {
+                assert!(waiting_campaigns(&session).is_empty());
+                assert!(
+                    replay_io::segment_paths(&session.join(name))
+                        .unwrap()
+                        .is_empty()
+                );
+                let bookkeeping = read_status(&session.join(name).join("saved.json")).unwrap();
+                assert_eq!(bookkeeping["replay"], json!(saved));
+                assert_eq!(
+                    bookkeeping["revision"],
+                    json!([
+                        revision.end,
+                        revision.trailer,
+                        revision.length,
+                        revision.crc,
+                    ])
+                );
+                assert_eq!(
+                    replay_io::save_campaign(
+                        &session,
+                        &target,
+                        name,
+                        false,
+                        &|| Ok(()),
+                        &mut replay_io::Ahead::default(),
+                        unnamed(),
+                    )
+                    .unwrap()
+                    .0,
+                    Some(saved.clone())
+                );
+                assert_eq!(fs::read(&saved).unwrap(), bytes);
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn discarding_a_set_aside_campaign_keeps_published_hours_and_drops_unsaved_checkpoints() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
+            write_load_segment,
+        };
+        let directory = allocation_test_directory("settle-checkpoint-discard");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let earlier = directory.join("earlier");
+        write_load_segment(&earlier.join(name), 0, 8, 1..=1, FIRST_LOAD - 1);
+        let saved = replay_io::finalize_session(&earlier, &target)
+            .unwrap()
+            .remove(0);
+        let session = directory.join("sessions/current");
+        let campaign = session.join(name);
+        write_load_segment(&campaign, 0, 9, 2..=4, FIRST_LOAD);
+        write_load_segment(&campaign, 1, 10, 5..=6, RELOAD);
+        replay_io::checkpoint_campaign(
+            &session,
+            &target,
+            name,
+            0,
+            true,
+            &mut replay_io::Ahead::default(),
+            unnamed(),
+            &|| Ok(()),
+        )
+        .unwrap();
+        let published = fs::read(&saved).unwrap();
+        assert_eq!(
+            crate::test_support::recorded_frames(&saved),
+            [(8, 1), (9, 2), (9, 3), (9, 4)]
+        );
+        write_load_segment(&campaign, 2, 11, 7..=8, THIRD_LOAD);
+        replay_io::checkpoint_campaign(
+            &session,
+            &target,
+            name,
+            1,
+            false,
+            &mut replay_io::Ahead::default(),
+            unnamed(),
+            &|| Ok(()),
+        )
+        .unwrap();
+        let staged = replay::publication::unsaved_path(&target, name);
+        assert!(staged.exists());
+        let settling = Settling::default();
+        locked(&settling.requests).push((name.to_owned(), true));
+        settle(
+            &session,
+            &target,
+            &mut replay_io::Ahead::default(),
+            &settling,
+            &mut Settled::new(),
+            unnamed(),
+        )
+        .unwrap();
+        assert_eq!(take_done(&settling), [SetAside::Discarded(name.to_owned())]);
+        assert_eq!(fs::read(&saved).unwrap(), published);
+        assert_eq!(
+            crate::test_support::recorded_frames(&saved),
+            [(8, 1), (9, 2), (9, 3), (9, 4)]
+        );
+        assert!(!staged.exists());
+        assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn waiting_discard_keeps_published_checkpoints_after_final_staging_and_later_sessions() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, write_load_segment,
+        };
+        for later in [false, true] {
+            let directory =
+                allocation_test_directory(&format!("waiting-checkpoint-discard-{later}"));
+            let target = directory.join("target");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let earlier = directory.join("earlier");
+            write_load_segment(&earlier.join(name), 0, 8, 1..=1, 17);
+            let saved = replay_io::finalize_session(&earlier, &target)
+                .unwrap()
+                .remove(0);
+            let session = directory.join("sessions/1-1");
+            let campaign = session.join(name);
+            write_load_segment(&campaign, 0, 9, 2..=4, 19);
+            write_load_segment(&campaign, 1, 10, 5..=6, 21);
+            replay_io::checkpoint_campaign(
+                &session,
+                &target,
+                name,
+                0,
+                true,
+                &mut replay_io::Ahead::default(),
+                unnamed(),
+                &|| Ok(()),
+            )
+            .unwrap();
+            let original = fs::read(&saved).unwrap();
+            write_load_segment(&campaign, 2, 11, 7..=8, 23);
+            replay_io::checkpoint_campaign(
+                &session,
+                &target,
+                name,
+                1,
+                false,
+                &mut replay_io::Ahead::default(),
+                unnamed(),
+                &|| Ok(()),
+            )
+            .unwrap();
+            let stage = |session: &Path| {
+                replay_io::save_campaign(
+                    session,
+                    &target,
+                    name,
+                    true,
+                    &|| Ok(()),
+                    &mut replay_io::Ahead::default(),
+                    unnamed(),
+                )
+                .unwrap();
+                let unsaved = replay_io::unsaved(session, name).unwrap();
+                replay_io::write_session_end(
+                    session,
+                    &target,
+                    "completed.json",
+                    &json!({"target": target, "waiting": [waiting_json(name, unsaved.as_ref())]}),
+                )
+                .unwrap();
+            };
+            stage(&session);
+            assert!(!campaign.join("checkpoint.json").exists());
+            let next = directory.join("sessions/1-2");
+            if later {
+                write_load_segment(&next.join(name), 0, 12, 9..=10, 25);
+                stage(&next);
+            }
+            discard_waiting(&session, name).unwrap();
+            assert_eq!(fs::read(&saved).unwrap(), original);
+            assert!(!replay::publication::unsaved_path(&target, name).exists());
+            assert!(waiting_campaigns(&session).is_empty());
+            assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
+            if later {
+                assert!(waiting_campaigns(&next).is_empty());
+                assert!(
+                    replay_io::segment_paths(&next.join(name))
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
     fn waiting_hours_never_staged_or_never_completed_are_still_saved() {
         use crate::test_support::{
             ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, THIRD_LOAD, allocation_test_directory,
@@ -3393,13 +4229,29 @@ mod tests {
         let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         let recording = target.join("Campaign.battleplan");
         // Each session ends with Auto save off: its hours are staged; only the disk knows.
-        let session = |folder: &str, branch, load, hours| {
+        let session = |folder: &str, branch, load, hours: std::ops::RangeInclusive<i32>| {
             let session = directory.join("sessions").join(folder);
             replay_io::begin_admissions(&session, &target).unwrap();
             replay_io::Admissions::default()
                 .admit(&session, &target, name, load)
                 .unwrap();
-            write_load_segment(&session.join(name), 0, branch, hours, load);
+            let first = *hours.start();
+            write_load_segment(&session.join(name), 0, branch, hours.clone(), load);
+            write_load_segment(&session.join(name), 1, branch, first..=first - 1, load);
+            let checkpoint = replay_io::checkpoint_campaign(
+                &session,
+                &target,
+                name,
+                0,
+                false,
+                &mut replay_io::Ahead::default(),
+                unnamed(),
+                &|| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(checkpoint.deleted, 1);
+            assert!(!session.join(name).join("spool.0000.h4s").exists());
             let unsaved = replay_io::unsaved(&session, name).unwrap();
             replay_io::save_campaign(
                 &session,
@@ -3411,11 +4263,14 @@ mod tests {
                 unnamed(),
             )
             .unwrap();
-            write_json(
-                &session.join("completed.json"),
+            replay_io::write_session_end(
+                &session,
+                &target,
+                "completed.json",
                 &json!({"target": target, "waiting": [waiting_json(name, unsaved.as_ref())]}),
             )
             .unwrap();
+            assert!(!session.join(name).join("checkpoint.json").exists());
             session
         };
         let first = session("1-1", 9, FIRST_LOAD, 2..=4);
@@ -3583,6 +4438,7 @@ mod tests {
         let end = |saves: &dyn Fn(&str) -> bool| {
             save_continued(
                 &directory,
+                None,
                 &target,
                 &spooled,
                 Some(&admitted),
@@ -3598,6 +4454,72 @@ mod tests {
         assert_eq!(recorded_frames(&recording), [(9, 2), (9, 3), (9, 4)]);
         assert!(waiting_campaigns(&first).is_empty());
         assert_eq!(waiting_campaigns(&broken).len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn ending_a_session_lists_it_before_saving_older_hours_without_consuming_its_final_callback() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, FIRST_LOAD, RELOAD, allocation_test_directory, recorded_frames,
+            write_load_segment,
+        };
+        let directory = allocation_test_directory("save-continued-current-checkpoints");
+        let target = directory.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let earlier = ended_waiting(&directory, "1-1", name, 9, 2..=4, FIRST_LOAD);
+        assert!(stage_waiting(&directory, &target).unwrap().is_empty());
+        let session = directory.join("sessions/1-2");
+        write_load_segment(&session.join(name), 0, 10, 5..=6, RELOAD);
+        let unsaved = replay_io::unsaved(&session, name).unwrap();
+        replay_io::write_session_end(
+            &session,
+            &target,
+            WAITING_FILE,
+            &json!({"target":target,"waiting":[waiting_json(name, unsaved.as_ref())]}),
+        )
+        .unwrap();
+        let (_, blocked) = save_continued(
+            &directory,
+            Some(&session),
+            &target,
+            &[name.to_owned()],
+            None,
+            &|_| true,
+            unnamed(),
+        );
+        assert!(blocked.is_empty());
+        assert!(waiting_campaigns(&earlier).is_empty());
+        assert_eq!(waiting_campaigns(&session).len(), 1);
+        let recording = replay::recording_files::recording_of(&target, ALLOCATION_CAMPAIGN)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded_frames(&recording), [(9, 2), (9, 3), (9, 4)]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&seen);
+        let mut ahead = replay_io::Ahead::default();
+        ahead.on_committed(Box::new(move |_, replay, blocks| {
+            locked(&observed).extend(
+                blocks
+                    .iter()
+                    .flat_map(|block| replay.read_block(block).unwrap())
+                    .map(|frame| (frame.branch, frame.hour)),
+            );
+        }));
+        let done = replay_io::finalize_session_ahead(
+            &session,
+            &target,
+            &|| Ok(()),
+            ahead,
+            unnamed(),
+            &|_| replay_io::Destination::Recording,
+        )
+        .unwrap();
+        assert!(done.errors.is_empty());
+        assert_eq!(*locked(&seen), [(10, 5), (10, 6)]);
+        assert_eq!(
+            recorded_frames(&done.replays[0]),
+            [(9, 2), (9, 3), (9, 4), (10, 5), (10, 6)]
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -4606,6 +5528,76 @@ mod tests {
         assert_eq!(
             published_hours(&finalized.replays[0]),
             [(9, 2), (9, 3), (9, 4)]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cli_finalize_durably_completes_and_unlists_saved_campaigns_before_cleanup() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, write_load_segment,
+        };
+        for waiting in [false, true] {
+            let root = allocation_test_directory(&format!("cli-finalize-cleanup-{waiting}"));
+            let session = root.join("sessions/1-1");
+            let target = root.join("target");
+            let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+            let campaign = session.join(name);
+            write_load_segment(&campaign, 0, 9, 2..=4, 19);
+            if waiting {
+                replay_io::save_campaign(
+                    &session,
+                    &target,
+                    name,
+                    true,
+                    &|| Ok(()),
+                    &mut replay_io::Ahead::default(),
+                    unnamed(),
+                )
+                .unwrap();
+                replay_io::write_session_end(
+                    &session,
+                    &target,
+                    WAITING_FILE,
+                    &json!({"target": target, "waiting": [{"campaign": name}]}),
+                )
+                .unwrap();
+            }
+            finalize_cli_session(&session, &target, true).unwrap();
+            assert!(waiting_campaigns(&session).is_empty());
+            assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
+            let completed = read_status(&session.join("completed.json")).unwrap();
+            assert_eq!(completed["process_exited"], true);
+            assert_eq!(completed["waiting"], json!([]));
+            assert_eq!(completed["replays"].as_array().unwrap().len(), 1);
+            finalize_cli_session(&session, &target, true).unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn cli_finalize_keeps_failed_campaigns_waiting_without_blocking_successful_cleanup() {
+        use crate::test_support::{
+            ALLOCATION_CAMPAIGN, allocation_test_directory, write_load_segment,
+        };
+        let root = allocation_test_directory("cli-finalize-partial-cleanup");
+        let session = root.join("sessions/1-1");
+        let target = root.join("target");
+        let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
+        let campaign = session.join(name);
+        write_load_segment(&campaign, 0, 9, 2..=4, 19);
+        let refused = "00000000-0000-4000-8000-000000000000";
+        let spool = write_load_segment(&session.join(refused), 0, 10, 5..=6, 21);
+        let before = fs::read(&spool).unwrap();
+        assert!(finalize_cli_session(&session, &target, true).is_err());
+        assert!(replay_io::segment_paths(&campaign).unwrap().is_empty());
+        assert_eq!(fs::read(&spool).unwrap(), before);
+        let waiting = waiting_campaigns(&session);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].campaign, refused);
+        assert_eq!(
+            read_status(&session.join("completed.json")).unwrap()["partial"],
+            true
         );
         fs::remove_dir_all(root).unwrap();
     }

@@ -3001,7 +3001,16 @@ impl Processor {
         Ok(())
     }
 
-    /// Answer the recorder's `<token> release|retake <campaign>` with `<token> ok|refused <reason>`.
+    /// The recorder checkpoints the campaign being recorded: it adds the hours closed segments hold
+    /// to the end of the history file, which keeps every hour it had. Let go of the file meanwhile.
+    pub(crate) fn lend_history(&mut self, id: &str) {
+        match self.campaigns.get_mut(id) {
+            Some(campaign) => campaign.history_lease = None,
+            None => self.history.release(id),
+        }
+    }
+
+    /// Answer the recorder's `<token> release|lend|retake <campaign>` with `<token> ok|refused <reason>`.
     pub(crate) fn history_request(&mut self, request: &str) -> String {
         let mut words = request.split_whitespace();
         let (token, action, campaign) = (words.next(), words.next(), words.next());
@@ -3011,6 +3020,10 @@ impl Processor {
             action,
         ) {
             (Some(Ok(campaign)), Some("release")) => self.release_history(&campaign).err(),
+            (Some(Ok(campaign)), Some("lend")) => {
+                self.lend_history(&campaign);
+                None
+            }
             (Some(Ok(campaign)), Some("close")) => self.close_campaign(&campaign, load).err(),
             (Some(Ok(campaign)), Some("retake")) => self
                 .retake_history(&campaign)
@@ -4964,10 +4977,32 @@ mod tests {
             "no one replaces a history the collector holds"
         );
         assert_eq!(fs::read(&recording).unwrap(), held);
-        // The campaign being recorded keeps its history.
+        // The campaign being recorded keeps its history, but lends it to a checkpoint.
         assert_eq!(
             processor.history_request(&format!("1 release {other}")),
             "1 refused the campaign is recording"
+        );
+        assert_eq!(processor.history_request(&format!("5 lend {name}")), "5 ok");
+        assert!(
+            fs::OpenOptions::new().write(true).open(&recording).is_ok(),
+            "lent"
+        );
+        assert_eq!(
+            processor.history_request(&format!("6 retake {name}")),
+            "6 ok"
+        );
+        assert!(
+            fs::OpenOptions::new().write(true).open(&recording).is_err(),
+            "held again after the checkpoint"
+        );
+        // A checkpoint borrows the history of the campaign the game is recording too.
+        assert_eq!(
+            processor.history_request(&format!("7 lend {other}")),
+            "7 ok"
+        );
+        assert_eq!(
+            processor.history_request(&format!("8 retake {other}")),
+            "8 ok"
         );
         assert_eq!(
             processor.history_request(&format!("2 release {name}")),
