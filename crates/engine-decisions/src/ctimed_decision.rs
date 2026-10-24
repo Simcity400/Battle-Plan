@@ -3,7 +3,7 @@
 use crate::Memory;
 
 /// CTimedDecision primary vtable.
-pub const VTABLE_RVA: usize = 0x027d_4fd0;
+pub const VTABLE_RVA: usize = 0x027e_b4a0;
 /// CTimedDecision CDecision definition pointer.
 pub const DEFINITION: usize = 0x10;
 /// CTimedDecision i32 remaining days.

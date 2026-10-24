@@ -327,11 +327,11 @@ public sealed class Hoi4ClockBaseline : IDisposable {
     }
     bool Presentation(Clock clock) {
         // The game idler and camera root: read only, never call engine code.
-        if (!Read(image + 0x33172e0, 8)) return false;
+        if (!Read(image + 0x0332f698, 8)) return false;
         ulong idler = BitConverter.ToUInt64(bytes, 0);
         if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
-        if (!Read(image + 0x33172e8, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x2952510) return false;
+        if (!Read(image + 0x0332f6a0, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
+        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x02968ff0) return false;
         if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
         clock.paused = bytes[0];
         // The live root member is a pointer.
@@ -355,13 +355,13 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         clock.viewport = new int[4];
         for (int n = 0; n < 4; n++) clock.viewport[n] = BitConverter.ToInt32(bytes, n * 4);
 
-        if (!Read(image + 0x3317048, 8)) return false;
+        if (!Read(image + 0x0332f418, 8)) return false;
         clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
         return true;
     }
     Clock Once() {
         // Read the game-state singleton, clock fields and load witness.
-        if (!Read(image + 0x3316e90, 8)) return null;
+        if (!Read(image + 0x0332f260, 8)) return null;
         ulong state = BitConverter.ToUInt64(bytes, 0);
         if (state == 0 || state > long.MaxValue - 0x800) return null;
         var clock = new Clock();
@@ -378,7 +378,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         clock.tick_busy = bytes[0];
         clock.presentation_valid = Presentation(clock);
         if (!clock.presentation_valid) { clock.eye = null; clock.look_at = null; clock.viewport = null; }
-        if (!Read(image + 0x3316e90, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
+        if (!Read(image + 0x0332f260, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
         return clock;
     }
     public Clock Sample() {
@@ -421,8 +421,8 @@ function Invoke-FullSmoke {
     $selection = if (Test-Path -LiteralPath $selectionPath) { ,[IO.File]::ReadAllBytes($selectionPath) } else { $null }
     if (-not (Test-Path -LiteralPath $sourceSave -PathType Leaf)) { throw 'Expected save is missing.' }
     if (@(Get-Process -Name the game,recorder -ErrorAction SilentlyContinue).Count) { throw 'Smoke will not take over another running game or recorder.' }
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 55680632 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') { throw 'Unsupported game build.' }
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 55778424 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '7dc947be34970da1e1c787bcddbe7f62b610ff258aebf8f06aa8b348f3a031d5') { throw 'Unsupported game build.' }
     $ui = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $UiConfig)) | ConvertFrom-Json
     foreach ($name in @('menu','speed_up','speed_down','pause','save_menu','save_name','save_confirm','save_back','menu_close','exit_game','exit_confirm','map_center','capture_cursor')) {
         $point = $ui.$name
@@ -598,15 +598,15 @@ function Invoke-FullSmoke {
         $git=(Get-Command git -ErrorAction Stop).Source
         $report.source_commit=Confirm-Source 'source'
         $report.source_clean=$true
-        $formatMatch=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (?:(\d+)|rows::compatibility::(\w+));')
+        $formatMatch=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay-data\src\lib.rs')),'FORMAT_VERSION: u16 = (?:(\d+)|rows::compatibility::(\w+));')
         $formatText=$formatMatch.Groups[1].Value
         if ($formatMatch.Groups[2].Success) {
             $formatName=[regex]::Escape($formatMatch.Groups[2].Value)
-            $formatCatalog=[IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\rows\compatibility.rs'))
+            $formatCatalog=[IO.File]::ReadAllText((Join-Path $repo 'crates\replay-data\src\rows\compatibility.rs'))
             $formatText=[regex]::Match($formatCatalog,"const ${formatName}: u16 = (\d+);").Groups[1].Value
         }
         $format=[int]$formatText
-        if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay/src/lib.rs.' }
+        if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay-data/src/lib.rs.' }
         $binarySource=Join-Path $repo '.cargo-target\release'
         $expectedBinaries=@()
         if ($Checkpoint) {
@@ -957,8 +957,8 @@ $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
 if ($Action -eq 'Clock') {
-    if ((Get-Item -LiteralPath $gamePath).Length -ne 55680632 -or
-        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad') {
+    if ((Get-Item -LiteralPath $gamePath).Length -ne 55778424 -or
+        (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash -ine '7dc947be34970da1e1c787bcddbe7f62b610ff258aebf8f06aa8b348f3a031d5') {
         throw 'Unsupported game build for clock reading.'
     }
     Initialize-SmokeClock
@@ -982,14 +982,14 @@ if ($Action -eq 'Baseline') {
     }
     if (Test-Path -LiteralPath $capturePath) { throw "Baseline already exists: $capturePath" }
     # Supported executable identity for clock reading.
-    $wantedSize = [int64]55680632
-    $wantedHash = '870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad'
+    $wantedSize = [int64]55778424
+    $wantedHash = '7dc947be34970da1e1c787bcddbe7f62b610ff258aebf8f06aa8b348f3a031d5'
     $actualSize = (Get-Item -LiteralPath $gamePath).Length
     $actualHash = (Get-FileHash -LiteralPath $gamePath -Algorithm SHA256).Hash
     if ($actualSize -ne $wantedSize -or $actualHash -ine $wantedHash) {
         throw "Unsupported build: wanted $wantedSize bytes / $wantedHash; got $actualSize bytes / $actualHash."
     }
-    $versionTextRva = [uint32]0x02701108
+    $versionTextRva = [uint32]0x02717128
     $exeVersion = Read-ExecutableVersionText -Path $gamePath -VersionTextRva $versionTextRva
     if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
         throw 'The free-run baseline requires collector.dll to be detached first.'

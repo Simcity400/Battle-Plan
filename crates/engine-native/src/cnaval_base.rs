@@ -1,7 +1,7 @@
 //! CNavalBase layout.
 
 /// CNavalBase constructor.
-pub const CONSTRUCT_RVA: usize = 0x00e8_a080;
+pub const CONSTRUCT_RVA: usize = 0x00e9_f210;
 /// Native object allocation size.
 pub const SIZE: usize = 0x58;
 /// Owning country-holder pointer.
@@ -14,7 +14,7 @@ pub const HEALTHY_LEVEL: usize = 0x14;
 pub const LEVEL: usize = 0x18;
 
 /// CNavalBase vtable.
-pub const VTABLE_RVA: usize = 0x0295_c5a0;
+pub const VTABLE_RVA: usize = 0x0297_31c0;
 /// Per-base country list: pointer, count and one u32 tag per entry. Membership supplies the
 /// prohibition overlay for the viewer.
 pub const COUNTRY_LIST: usize = 0x40;

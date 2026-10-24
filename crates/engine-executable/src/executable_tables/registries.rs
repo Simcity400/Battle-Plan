@@ -8,29 +8,29 @@ use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKi
 
 use super::{keywords::KeywordTables, leak_string, pe::PeImage, verify_digest};
 
-const TRIGGER_REGISTRATION: u32 = 0x0054_3E30;
-const EFFECT_REGISTRATION: u32 = 0x0053_4C90;
-const OBJECT_ALLOCATION: u32 = 0x021B_4B50;
+const TRIGGER_REGISTRATION: u32 = 0x0055_0970;
+const EFFECT_REGISTRATION: u32 = 0x0054_15a0;
+const OBJECT_ALLOCATION: u32 = 0x021c_9af0;
 const ENTRY_FACTORY: u32 = 8;
 const TRIGGER_VALUE_READER: u32 = 40;
 const TRIGGER_KEY_READER: u32 = 48;
 const TRIGGER_SCOPE_MASK: u32 = 112;
 const EFFECT_VALUE_READER: u32 = 24;
 const EFFECT_KEY_READER: u32 = 32;
-const ASSIGN_READER: u32 = 0x0139_5A40;
-const COMPARISON_READER: u32 = 0x0139_4DF0;
-const BODY_READER: u32 = 0x0054_31C0;
-const CONTEXT_EFFECT_VTABLE: u32 = 0x0299_F6F8;
-const SCRIPTED_EFFECT_VTABLE: u32 = 0x0299_F7C8;
+const ASSIGN_READER: u32 = 0x013a_aaa0;
+const COMPARISON_READER: u32 = 0x013a_9e50;
+const BODY_READER: u32 = 0x0054_fd00;
+const CONTEXT_EFFECT_VTABLE: u32 = 0x029b_6608;
+const SCRIPTED_EFFECT_VTABLE: u32 = 0x029b_66d8;
 
-const TRIGGERS_DIGEST: &str = "538adf79d6265b9db5657312a2798e240922312731b3e03885fa2e28c882d690";
+const TRIGGERS_DIGEST: &str = "45eca230216f9caba21253e16055b62a0430b0c3c6338d5eda04c49ab5c9796d";
 const EFFECTS_DIGEST: &str = "5bc2422fcf914a6cfdf3dd9a3edefdcb74d30d6d20d584f7c89bf249b5b21473";
 const TRIGGER_CLASSES_DIGEST: &str =
-    "c3de2f0e745a535df9009c1677f7be7f9e88c4ef1ac609ad42f4d9a07da3c618";
+    "0bee60c6641f03c44aa5b6e908ee3a1d7a5182e1464a970723dead61a9514a98";
 const EFFECT_READERS_DIGEST: &str =
-    "cac4ea3c61ede17083eef3c563fa44e5a13673e31094f520c13456aec367a11c";
+    "fed49b4f06a22421c58cd4baacb2bdbbe4f801372a76c74a6f8fad0df7bec24c";
 const EFFECT_IDENTITIES_DIGEST: &str =
-    "9642949fd78a41b1cc68e694cd12a7c2e11d809d22896e3148d75b81795d63ec";
+    "8f8129cef0b9006262c60585c30ee3c6f6d183ec4b1bf539c97769c5970a9c63";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TriggerReader {
@@ -115,7 +115,7 @@ impl RegistryTables {
     }
 
     fn verify(&self) -> io::Result<()> {
-        verify_names("triggers", &self.triggers, 593, TRIGGERS_DIGEST)?;
+        verify_names("triggers", &self.triggers, 595, TRIGGERS_DIGEST)?;
         verify_names("effects", &self.effects, 553, EFFECTS_DIGEST)?;
         let mut text = String::new();
         for &(token, mask, reader) in &self.trigger_classes {
@@ -127,7 +127,7 @@ impl RegistryTables {
             };
             writeln!(text, "{token}\t{mask}\t{reader}").unwrap();
         }
-        verify_count("trigger classes", self.trigger_classes.len(), 593)?;
+        verify_count("trigger classes", self.trigger_classes.len(), 595)?;
         verify_digest("trigger classes", text.as_bytes(), TRIGGER_CLASSES_DIGEST)?;
         text.clear();
         for &(token, value, key) in &self.effect_classes {
@@ -1212,7 +1212,7 @@ mod tests {
     #[test]
     #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
     fn installed_trigger_registry_digest() {
-        verify_names("triggers", &installed().triggers, 593, TRIGGERS_DIGEST).unwrap();
+        verify_names("triggers", &installed().triggers, 595, TRIGGERS_DIGEST).unwrap();
     }
 
     #[test]

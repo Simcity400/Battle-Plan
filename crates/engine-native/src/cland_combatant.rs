@@ -4,7 +4,7 @@
 //! an exhaustive writer or thread lifetime.
 
 /// CLandCombatant primary vtable.
-pub const VTABLE_RVA: usize = 0x0299_13c0;
+pub const VTABLE_RVA: usize = 0x029a_82c0;
 /// CLandCombatant u32 indicator flags.
 pub const FLAGS: usize = 0x08;
 /// CLandCombatant parent CLandCombat pointer.
@@ -111,38 +111,38 @@ pub fn contains_country(
     Ok(capture_country_membership(memory, base, state, side, raw)?.contains_country())
 }
 /// CLandCombatant attacker discriminator byte.
-pub const IS_ATTACKER: usize = 0xb8;
+pub const IS_ATTACKER: usize = 0xd8;
 /// CLandCombatant committed unit pointer array.
-pub const COMMITTED: usize = 0xc8;
+pub const COMMITTED: usize = 0xe8;
 /// CLandCombatant reserve unit pointer array.
-pub const RESERVES: usize = 0xe0;
+pub const RESERVES: usize = 0x100;
 /// CLandCombatant CCombatTactic pointer.
-pub const TACTIC: usize = 0x110;
+pub const TACTIC: usize = 0x130;
 /// Air-support pointer array; display sums each entry signed i32 strength.
-pub const AIR_SUPPORT: usize = 0x120;
+pub const AIR_SUPPORT: usize = 0x140;
 /// Signed fixed5 border modifier; the tooltip tests it for presence.
-pub const BORDER_MODIFIER: usize = 0x4d8;
+pub const BORDER_MODIFIER: usize = 0x4f8;
 /// Border-conflict dig-in factor.
-pub const BORDER_DIG_IN_FACTOR: usize = 0x540;
+pub const BORDER_DIG_IN_FACTOR: usize = 0x560;
 /// Border-conflict terrain factor.
-pub const BORDER_TERRAIN_FACTOR: usize = 0x548;
+pub const BORDER_TERRAIN_FACTOR: usize = 0x568;
 /// CLandCombatant anti-air attack i64 /100000.
-pub const ANTI_AIR_ATTACK: usize = 0x138;
+pub const ANTI_AIR_ATTACK: usize = 0x158;
 /// CLandCombatant air-kill u32 count.
-pub const AIR_KILLS: usize = 0x140;
+pub const AIR_KILLS: usize = 0x160;
 /// CLandCombatant air strength damage i64 /100000.
-pub const AIR_STRENGTH_DAMAGE: usize = 0x148;
+pub const AIR_STRENGTH_DAMAGE: usize = 0x168;
 /// CLandCombatant pointer to i64 /100000 organisation-loss samples.
-pub const ORGANISATION_LOSS_WINDOW: usize = 0x178;
+pub const ORGANISATION_LOSS_WINDOW: usize = 0x198;
 /// CLandCombatant organisation-loss u32 sample count.
-pub const ORGANISATION_LOSS_COUNT: usize = 0x1ac;
+pub const ORGANISATION_LOSS_COUNT: usize = 0x1cc;
 /// Embedded combat statistics observer.
-pub const STATS_OBSERVER: usize = 0x1b0;
+pub const STATS_OBSERVER: usize = 0x1d0;
 /// Signed fixed5 observer progress, saved, loaded and compared as a qword.
-pub const PROGRESS: usize = 0x418;
+pub const PROGRESS: usize = 0x438;
 /// Embedded observer outcome u8 flags. The setter adds bit 1;
 /// load and save retain it, and finalization reads the same flags.
-pub const OUTCOME_FLAGS: usize = 0x498;
+pub const OUTCOME_FLAGS: usize = 0x4b8;
 /// CLandCombatant flag bits 14/15 read for air frames.
 pub const AIR_FLAGS: u32 = (1 << 14) | (1 << 15);
 

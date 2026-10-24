@@ -3,7 +3,7 @@
 use crate::{Memory, cscript_flag, memory::RecordSources, read, walk::Outcome};
 
 /// CFlagManager primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_6bf8;
+pub const VTABLE_RVA: usize = 0x0295_d3d8;
 /// CFlagManager primary vtable pointer.
 pub const VTABLE: usize = 0x00;
 /// CFlagManager dense flag-row array pointer.

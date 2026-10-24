@@ -60,17 +60,17 @@ pub const DEFINES: [Define; 11] = [
 ];
 
 /// The out-of-supply speed penalty at full severity.
-pub const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0331_94e0;
+pub const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0333_1968;
 /// The retreating speed term.
-pub const RETREAT_SPEED_RVA: usize = 0x0331_9758;
+pub const RETREAT_SPEED_RVA: usize = 0x0333_1c28;
 /// The term a withdrawing (non-retreating) division adds.
-pub const WITHDRAWAL_SPEED_RVA: usize = 0x0331_9808;
+pub const WITHDRAWAL_SPEED_RVA: usize = 0x0333_1cd8;
 /// The fuel ratio's floor.
-pub const OUT_OF_FUEL_SPEED_RVA: usize = 0x0331_9f90;
+pub const OUT_OF_FUEL_SPEED_RVA: usize = 0x0333_25f0;
 /// The scale of the stat block's fuel word into the fuel ratio's capacity.
-pub const FUEL_CAPACITY_SCALE_RVA: usize = 0x0331_97d0;
+pub const FUEL_CAPACITY_SCALE_RVA: usize = 0x0333_1d68;
 /// The enemy air superiority speed scale.
-pub const AIR_SPEED_RVA: usize = 0x0331_ddd8;
+pub const AIR_SPEED_RVA: usize = 0x0333_6aa8;
 
 /// Each define's value, refused alone.
 pub fn capture(memory: &impl Memory, base: usize) -> [Result<i64, &'static str>; DEFINES.len()] {

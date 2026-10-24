@@ -105,7 +105,7 @@ fn bench_province_gates_and_border_conflicts() {
                     (cland_combat::DEFENDER, handles[0]),
                     (cland_combat::ATTACKER, handles[1]),
                 ] {
-                    let side = arena.alloc(0x4d0);
+                    let side = arena.alloc(0x4f0);
                     arena.u64(combat + offset, side as u64);
                     arena.u64(side, arena.rva(cland_border_war_combatant::VTABLE_RVA));
                     arena.u64(side + BORDER_WAR_SIDE_GROUP, handle);

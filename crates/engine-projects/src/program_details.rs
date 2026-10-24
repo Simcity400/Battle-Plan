@@ -33,14 +33,14 @@ const SCIENTIST_MODIFIERS: usize = 0x58;
 const TRAIT_MODIFIERS: usize = 0x58;
 const BREAKTHROUGH_MODIFIER: u32 = 0x27b;
 const TECHNOLOGY_MODIFIER: u32 = 0x27a;
-const MINIMUM_SUPPLY_RVA: usize = 0x331_9fc8;
-const MINIMUM_RESOURCES_RVA: usize = 0x331_a4e0;
-const SUPPORT_FRACTION_RVA: usize = 0x331_b770;
-const INJURY_FACTOR_RVA: usize = 0x331_ae88;
-const BREAKTHROUGH_SKILL_GAIN_RVA: usize = 0x331_aabc;
-const TECHNOLOGY_BONUS_RVA: usize = 0x331_abb8;
-const BASIC_EXPERIENCE_RVA: usize = 0x331_b5f0;
-const SKILL_SPEED_ARRAY_RVA: usize = 0x332_0aa0;
+const MINIMUM_SUPPLY_RVA: usize = 0x333_2638;
+const MINIMUM_RESOURCES_RVA: usize = 0x333_2bf0;
+const SUPPORT_FRACTION_RVA: usize = 0x333_4058;
+const INJURY_FACTOR_RVA: usize = 0x333_36b0;
+const BREAKTHROUGH_SKILL_GAIN_RVA: usize = 0x333_3284;
+const TECHNOLOGY_BONUS_RVA: usize = 0x333_3378;
+const BASIC_EXPERIENCE_RVA: usize = 0x333_3eb0;
+const SKILL_SPEED_ARRAY_RVA: usize = 0x333_9a10;
 const ONE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

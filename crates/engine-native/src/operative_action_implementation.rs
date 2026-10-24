@@ -9,21 +9,21 @@ pub const BOOST_IDEOLOGY: usize = 0x40;
 
 /// Concrete action vtables in dispatch order, independent of authored mission definitions.
 pub const VTABLE_RVAS: [usize; 8] = [
-    0x02a0_8b18,
-    0x02a0_9268,
-    0x02a0_8f40,
-    0x02a0_9458,
-    0x02a0_8888,
-    0x02a0_8da0,
-    0x02a0_90a0,
-    0x02a1_2848,
+    0x02a1_f878,
+    0x02a1_ffc8,
+    0x02a1_fca0,
+    0x02a2_01b8,
+    0x02a1_f5e8,
+    0x02a1_fb00,
+    0x02a1_fe00,
+    0x02a2_95a8,
 ];
 
 /// Country-tag virtual dispatch shared by concrete action implementations.
 /// Authenticate each executable vtable once per walk, retaining failures, while
 /// checking every object's own vtable.
 pub(crate) const COUNTRY_GETTER_SLOT: usize = 0x50;
-pub(crate) const COUNTRY_GETTER_RVA: usize = 0x01a1_dd30;
+pub(crate) const COUNTRY_GETTER_RVA: usize = 0x01a3_14f0;
 
 /// A mission implementation's stored targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

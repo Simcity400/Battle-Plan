@@ -25,18 +25,18 @@ pub const KEYS: [u32; 11] = [
 ];
 /// Seven production categories mapped through the runtime token table, distinct from token IDs.
 pub const BONUS_COUNT: usize = 7;
-const BONUS_KEYS_RVA: usize = 0x0337_1600;
+const BONUS_KEYS_RVA: usize = 0x0338_a560;
 
 /// Signed i32 start/cap percentages, signed fixed5 gain/balance and four fixed5 factory rates.
 const DEFINE_RVAS: [usize; 8] = [
-    0x0331_db08,
-    0x0331_db88,
-    0x0331_dc08,
-    0x0331_dc88,
-    0x0331_d8e0,
-    0x0331_da78,
-    0x0331_d850,
-    0x0331_d9e8,
+    0x0333_6790,
+    0x0333_6830,
+    0x0333_68b0,
+    0x0333_6940,
+    0x0333_6508,
+    0x0333_66e0,
+    0x0333_6468,
+    0x0333_6638,
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -74,11 +74,11 @@ impl Context {
             result
                 .retention
                 .iter_mut()
-                .zip([0x0331_dcec, 0x0331_dd6c, 0x0331_de00, 0x0331_de9c])
+                .zip([0x0333_69c0, 0x0333_6a58, 0x0333_6ad8, 0x0333_6b90])
         {
             *value = i64::from(field::<i32>(memory, base, rva)?).wrapping_mul(1000);
         }
-        result.conversion = field(memory, base, 0x0331_f158)?;
+        result.conversion = field(memory, base, 0x0333_8068)?;
         // Equipment-category feature gates.
         let mask = field::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
         result.module_mask = (if mask & (1 << 4) != 0 {
@@ -669,8 +669,8 @@ fn capture_buffer(
             // Refit selects true; the others select zero. Refuse a different implementation.
             let refit_output =
                 match field::<u64>(memory, vtable as usize, 0xd8)?.checked_sub(base as u64) {
-                    Some(0x0018_02a0) => true,
-                    Some(0x0011_cd10) => false,
+                    Some(0x0018_07b0) => true,
+                    Some(0x0011_d220) => false,
                     _ => return Err("unreached production refit virtual implementation"),
                 };
             out.lines[out.line_len] = Line {

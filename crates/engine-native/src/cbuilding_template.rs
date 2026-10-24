@@ -3,7 +3,7 @@
 /// Real-definition allocation size.
 pub const SIZE: usize = 0x510;
 /// Primary template vtable.
-pub const VTABLE_RVA: usize = 0x027c_dd90;
+pub const VTABLE_RVA: usize = 0x027e_4260;
 /// Signed naval, military, general and rocket production words, reduced with wrapping i32 arithmetic.
 pub const WAR_OVERVIEW_PRODUCTION: [usize; 4] = [0x2f8, 0x2fc, 0x300, 0x30c];
 /// Lexer token id, u32.
@@ -19,4 +19,4 @@ pub const DATABASE_ORDINAL: usize = 0x2e0;
 /// Movement fort weight, i32, multiplied by each building's healthy level before the fort test.
 pub const MOVEMENT_FORT_WEIGHT: usize = 0x308;
 /// Real-definition constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x014a_4470;
+pub const CONSTRUCTOR_RVA: usize = 0x014b_6780;

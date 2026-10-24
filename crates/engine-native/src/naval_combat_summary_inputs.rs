@@ -21,8 +21,8 @@ const LIST_COUNT: usize = COUNTRY_COUNT - COUNTRIES;
 pub const NODE_TAG: usize = 0;
 pub const NODE_NEXT: usize = 0x10;
 /// Positioning subtracts recent joins and adds raw convoy-escort values.
-pub const RECENT_JOIN: usize = 0x140;
-pub const ESCORT: usize = 0x148;
+pub const RECENT_JOIN: usize = 0x160;
+pub const ESCORT: usize = 0x168;
 /// Sorted raw lookup keys:initial positioning, screening, positioning,
 /// convoy-only screening, opponent-admiral ship-ratio penalty.
 pub const MODIFIER_KEYS: [u32; 5] = [

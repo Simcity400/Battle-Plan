@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// CCryptology primary vtable.
-pub const VTABLE_RVA: usize = 0x029a_6540;
+pub const VTABLE_RVA: usize = 0x029b_d450;
 /// CCryptology inline CCountryDecryptionState array data pointer.
 pub const DECRYPTION_STATES: usize = 0x28;
 /// Decryption-state signed i32 count, incremented after each 0x38-byte inline row.
@@ -24,7 +24,7 @@ pub const DECRYPTION_STATE_CAPACITY: usize = 0x30;
 pub const OWNER_COUNTRY: usize = 0x08;
 /// CCryptology container Save.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x013e_3d30;
+pub const SAVE_RVA: usize = 0x013f_9120;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

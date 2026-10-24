@@ -1,7 +1,7 @@
 //! Referenced division-template identity and retained model preferences.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_8f70;
+pub const VTABLE_RVA: usize = 0x0294_f5b0;
 /// CReferencedDivisionTemplate reference type.
 pub const REFERENCE_TYPE: u32 = 52;
 /// CReferencedDivisionTemplate u32 type word.

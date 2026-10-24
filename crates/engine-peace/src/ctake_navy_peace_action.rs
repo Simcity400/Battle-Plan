@@ -1,11 +1,11 @@
 //! Take-navy peace-action layout for the supported executable.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_c770;
+pub const VTABLE_RVA: usize = 0x029d_3360;
 
 /// Installed image literal passed for localisation. Read its bytes from
 /// the installation rather than duplicating a key spelling.
-pub const LABEL_LITERAL_RVA: usize = 0x0295_8c18;
+pub const LABEL_LITERAL_RVA: usize = 0x0296_f7c8;
 /// Image literal storage length excluding its terminating NUL.
 pub const LABEL_LITERAL_BYTES: usize = 22;
 /// Optional ship pointer serialized as a full handle when present.

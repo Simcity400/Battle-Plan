@@ -154,13 +154,13 @@ fn eta_fixture() -> EtaMemory {
         bytes,
         refused: None,
         defines: vec![
-            (0x0331_cf40, 200_000_i64.to_le_bytes().to_vec()),
-            (0x0331_cfd0, 1_000_000_i64.to_le_bytes().to_vec()),
-            (0x0331_d068, 100_000_i64.to_le_bytes().to_vec()),
-            (0x0331_d0e8, 1_000_000_i64.to_le_bytes().to_vec()),
-            (0x0331_bfe0, 5_i32.to_le_bytes().to_vec()),
-            (0x0331_6a58, 0x6000_u64.to_le_bytes().to_vec()),
-            (0x0331_b5b4, 5_i32.to_le_bytes().to_vec()),
+            (0x0333_5a40, 200_000_i64.to_le_bytes().to_vec()),
+            (0x0333_5ae0, 1_000_000_i64.to_le_bytes().to_vec()),
+            (0x0333_5b88, 100_000_i64.to_le_bytes().to_vec()),
+            (0x0333_5c10, 1_000_000_i64.to_le_bytes().to_vec()),
+            (0x0333_49d8, 5_i32.to_le_bytes().to_vec()),
+            (0x0332_ee28, 0x6000_u64.to_le_bytes().to_vec()),
+            (0x0333_3dc8, 5_i32.to_le_bytes().to_vec()),
         ],
     }
 }
@@ -449,7 +449,7 @@ fn eta_rail_fixedpoint_retains_native_sentinels_and_signed_levels() {
     memory
         .defines
         .iter_mut()
-        .find(|(at, _)| *at == 0x0331_bfe0)
+        .find(|(at, _)| *at == 0x0333_49d8)
         .unwrap()
         .1 = 0_i32.to_le_bytes().to_vec();
     assert_eq!(

@@ -35,12 +35,12 @@ const REACHED_ENTRY: usize = 0x10;
 /// Console efficiency overrides: a PdxArray of 16-byte canonical-slot i32,
 /// padding and fixed5 i64 entries, unique by slot. A matching effective-country
 /// slot supplies the result before any other term or clamp.
-const EFFICIENCY_OVERRIDES_RVA: usize = 0x0331_7208;
+const EFFICIENCY_OVERRIDES_RVA: usize = 0x0332_f5d8;
 /// Console command's sole detection-vector writer and verified entry fingerprint.
-pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0026_86b0;
+pub const DETECTION_OVERRIDE_WRITER_RVA: usize = 0x0026_8ad0;
 pub const DETECTION_OVERRIDE_WRITER_PREFIX_HASH: u64 = 0x18aa_1a4c_14d9_dba7;
 /// The console's country-keyed fixed5 detection vector.
-const DETECTION_OVERRIDES_RVA: usize = 0x0331_7220;
+const DETECTION_OVERRIDES_RVA: usize = 0x0332_f5f0;
 const OVERRIDE_ENTRY: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

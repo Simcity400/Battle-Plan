@@ -8133,10 +8133,11 @@ mod tests {
                 }
                 let mut bytes = [0_u8; 0x300];
                 bytes[..8].copy_from_slice(&(craid_system::VTABLE_RVA as u64).to_le_bytes());
-                let memo = raid_path_memo::MEMO;
-                bytes[memo + 8..memo + 16].copy_from_slice(&0x10_0000_u64.to_le_bytes());
-                bytes[memo + 0x14..memo + 0x18].copy_from_slice(&self.mask.get().to_le_bytes());
-                bytes[memo + 0x18] = (self.mask.get() + 1).ilog2() as u8 + 2;
+                for memo in [raid_path_memo::LAND_MEMO, raid_path_memo::NAVAL_MEMO] {
+                    bytes[memo + 8..memo + 16].copy_from_slice(&0x10_0000_u64.to_le_bytes());
+                    bytes[memo + 0x14..memo + 0x18].copy_from_slice(&self.mask.get().to_le_bytes());
+                    bytes[memo + 0x18] = (self.mask.get() + 1).ilog2() as u8 + 2;
+                }
                 if let Some(source) = address
                     .checked_sub(SYSTEM)
                     .and_then(|offset| bytes.get(offset..offset + output.len()))

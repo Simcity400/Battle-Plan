@@ -68,9 +68,9 @@ fn packets_preserve_native_values_exact_spans_and_every_fault_prefix() {
         (0x1040, (-1_i64).to_le_bytes().to_vec()),
         (0x1058, 0_i64.to_le_bytes().to_vec()),
         (0x1498, i32::MIN.to_le_bytes().to_vec()),
-        (0x0331_91c0, i32::MAX.to_le_bytes().to_vec()),
-        (0x0331_9394, (-1_i32).to_le_bytes().to_vec()),
-        (0x0331_94e0, (-987_654_i64).to_le_bytes().to_vec()),
+        (0x0333_1604, i32::MAX.to_le_bytes().to_vec()),
+        (0x0333_1818, (-1_i32).to_le_bytes().to_vec()),
+        (0x0333_1968, (-987_654_i64).to_le_bytes().to_vec()),
     ];
     let values = [
         0xff,
@@ -663,7 +663,7 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     m.array(WEATHER + cweather_manager::REGIONS, 0, 0);
     m.u32(metadata::TRADE_FEATURE_FLAGS_RVA, 1 << 4);
     m.u64(metadata::ELIGIBILITY_CALLBACK_RVA, 0);
-    m.u64(0x0331_7cc8, DEFINITIONS as u64);
+    m.u64(0x0333_0098, DEFINITIONS as u64);
     m.u64(DEFINITIONS + 0xf8, STATIC as u64);
     m.u64(STATIC, cstatic_modifier::VTABLE_RVA as u64);
     m.array(STATIC + cstatic_modifier::ACCUMULATOR, 0, 0);
@@ -672,7 +672,7 @@ fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
         META + 0x29 * metadata::STRIDE + metadata::CATEGORY_MASK,
         0xabc,
     );
-    for (index, rva) in [0x0331_e100, 0x0331_d5b0, 0x0331_d620, 0x0331_e550]
+    for (index, rva) in [0x0333_6ed0, 0x0333_6168, 0x0333_61e0, 0x0333_7368]
         .into_iter()
         .enumerate()
     {

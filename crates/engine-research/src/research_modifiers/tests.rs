@@ -1053,7 +1053,7 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
     f.array(0x8130, 0x8300, 1);
     f.put(0x8300, 2_500_i64.to_le_bytes());
     f.put(0x8148, (TEMPLATE2 as u64).to_le_bytes());
-    f.put(TEMPLATE2, 0x0292_d8f0_u64.to_le_bytes());
+    f.put(TEMPLATE2, 0x0294_3f30_u64.to_le_bytes());
     f.text(TEMPLATE2 + 0x10, b"faction_share");
     f.put(TEMPLATE2 + 0x78, [1]);
     f.put(

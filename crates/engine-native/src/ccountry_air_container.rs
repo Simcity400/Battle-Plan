@@ -2,7 +2,7 @@
 //! CStrategicAir object in the strategic air manager's country table.
 
 /// Country air-container vtable.
-pub const VTABLE_RVA: usize = 0x0294_1f30;
+pub const VTABLE_RVA: usize = 0x0295_8710;
 /// Allocation size.
 pub const SIZE: usize = 0xf8;
 /// Inherited supply ratio, signed fixed5.

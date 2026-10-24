@@ -8,9 +8,9 @@ use crate::{
 };
 
 /// Strategic-navy primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_c640;
+pub const VTABLE_RVA: usize = 0x0297_3260;
 /// Secondary vtable (`SECONDARY`).
-pub const SECONDARY_VTABLE_RVA: usize = 0x0295_c670;
+pub const SECONDARY_VTABLE_RVA: usize = 0x0297_3290;
 /// Secondary subobject displacement.
 pub const SECONDARY: usize = 8;
 /// Owner raw country reference resolved through country links.

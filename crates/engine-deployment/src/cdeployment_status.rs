@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// CDeploymentStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x2949128;
+pub const VTABLE_RVA: usize = 0x295fc38;
 /// CDeploymentStatus conveyor CPdxArray.
 pub const CONVEYORS: usize = 0x48;
 /// CDeploymentStatus conveyor-array pointer stride.

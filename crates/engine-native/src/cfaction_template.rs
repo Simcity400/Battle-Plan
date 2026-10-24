@@ -12,7 +12,7 @@
 //! the template binding; a missing template yields empty text.
 
 /// CFactionTemplate primary vtable.
-pub const VTABLE_RVA: usize = 0x0270_4100;
+pub const VTABLE_RVA: usize = 0x0271_a120;
 /// CFactionTemplate native u32 LexerToken.
 pub const IDENTIFIER_TOKEN: usize = 0x08;
 /// Embedded bound-localisation object used for template display.

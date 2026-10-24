@@ -3738,5 +3738,32 @@ fn shared_trigger_kit_keeps_unit_scope_and_country_ace_operands() {
     assert!(super::RECORDED_TABLES.contains(&replay_data::rows::TableId::CountryCommandPower));
 }
 
+#[test]
+fn new_assignment_triggers_refuse_unrecorded_predicates_in_their_accepted_scopes() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let frame = frame(&[(100, 1, "AAA", 1, "", "")], &[]);
+    with_world(&frame, "", Err("none"), |world| {
+        for (name, operand, scope) in [
+            ("is_fighting_in_strategic_region", "37", Scope::Combat),
+            ("is_deployed", "yes", Scope::Character(7)),
+            ("is_deployed", "no", Scope::Character(7)),
+        ] {
+            let trigger = items(&format!("{name} = {operand}"));
+            let why = world
+                .evaluate(&trigger, Scopes::of(scope))
+                .decided()
+                .unwrap_err();
+            assert!(why.contains(name), "{why}");
+            assert!(why.contains("trigger "), "{why}");
+            assert_eq!(
+                world.evaluate(&trigger, Scopes::of(Scope::Country(1))),
+                Eval::False,
+                "{name} must retain its executable scope mask"
+            );
+        }
+    });
+}
+
 #[path = "recorded_source_tests.rs"]
 mod recorded_source;

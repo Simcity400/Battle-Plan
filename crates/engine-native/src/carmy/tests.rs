@@ -1199,12 +1199,12 @@ fn normal_route_fixture() -> PresentationMemory {
         (0x17000, 0x16000, 123_u32, 1_u32, 12_345_i64),
         (0x17400, 0x16028, 124, 2, -10_001),
     ] {
-        p64(b, terrain, 0x029a_a2b0);
+        p64(b, terrain, 0x029c_0ea0);
         p32(b, terrain + 8, token);
         p32(b, terrain + 0x88, index);
-        p64(b, terrain + 0x168, 0x0277_3a70);
+        p64(b, terrain + 0x168, 0x0278_9cd0);
         p64(b, terrain + 0x188, (-2_345_i64) as u64);
-        p64(b, entry, 0x0277_3a70);
+        p64(b, entry, 0x0278_9cd0);
         p32(b, entry + 8, token);
         p64(b, entry + 0x20, speed as u64);
     }
@@ -1246,12 +1246,12 @@ fn normal_route_fixture() -> PresentationMemory {
         7_i64.to_le_bytes().to_vec(),
     );
     for (rva, value) in [
-        (0x0331_cec0, 50_000_i64),
-        (0x0331_97d0, 100_000),
-        (0x0331_9f90, 25_000),
-        (0x0331_d688, 100_003),
-        (0x0331_9758, 25_003),
-        (0x0331_efe0, 33_333),
+        (0x0333_59b8, 50_000_i64),
+        (0x0333_1d68, 100_000),
+        (0x0333_25f0, 25_000),
+        (0x0333_6258, 100_003),
+        (0x0333_1c28, 25_003),
+        (0x0333_7f78, 33_333),
     ] {
         memory.globals.insert(rva, value.to_le_bytes().to_vec());
     }

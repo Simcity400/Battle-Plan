@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Candidate collection identity word; not used for authentication.
-pub const IDENTITY_WORD_RVA_CANDIDATE: usize = 0x0306_d170;
+pub const IDENTITY_WORD_RVA_CANDIDATE: usize = 0x0308_5170;
 /// Candidate module-container data pointer.
 pub const ENTRIES_CANDIDATE: usize = 0x08;
 

@@ -1,7 +1,7 @@
 //! CNavalRegionDominance, owned by the strategic region (`cstrategic_region::NAVAL_DOMINANCE`).
 
 /// CNavalRegionDominance primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_e010;
+pub const VTABLE_RVA: usize = 0x0298_4c40;
 /// CNavalRegionDominance owning CStrategicRegion pointer.
 pub const REGION: usize = 0x08;
 /// CNavalRegionDominance country/value entry array.

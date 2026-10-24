@@ -2,7 +2,7 @@
 //! technology progress.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_e328;
+pub const VTABLE_RVA: usize = 0x0297_4f50;
 /// Technology definition handle, u32, matched against its token identity.
 pub const TECHNOLOGY_HANDLE: usize = 0x08;
 /// Owning technology-status pointer authenticated by backlink.

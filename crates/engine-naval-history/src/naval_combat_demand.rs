@@ -214,7 +214,7 @@ fn demand_advisory(
                     insert(&mut groups, group)?;
                 }
             }
-            count_planes(memory, base, array(memory, side, 0xe0)?, &mut demand)?;
+            count_planes(memory, base, array(memory, side, 0x100)?, &mut demand)?;
             if array(memory, side, cnaval_combatant::GROUPS)? != forward {
                 return Err("naval demand group roster changed");
             }
@@ -501,7 +501,7 @@ mod tests {
                     0x200_0018 | 0x300_0018 => {
                         bytes[..8].copy_from_slice(&0x100_0000_u64.to_le_bytes());
                     }
-                    0x200_0290 | 0x300_0290 | 0x500_0000 => {
+                    0x200_02b0 | 0x300_02b0 | 0x500_0000 => {
                         bytes[..8].copy_from_slice(&0x500_0000_u64.to_le_bytes());
                     }
                     _ => (),

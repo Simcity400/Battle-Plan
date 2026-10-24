@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Lend-lease exchange primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_9df8;
+pub const VTABLE_RVA: usize = 0x02a2_0b58;
 /// The exchange's reference (u32 type, u32 id) of its CReferenceObject base.
 pub const HANDLE: usize = 0x08;
 /// The receiver's raw country reference.
@@ -52,22 +52,22 @@ pub const LAST_FUEL_DELIVERED: usize = 0x370;
 /// Only these call sites supply a lend-lease update; additions to other pools
 /// must not acquire lend-lease identities or appear as deliveries.
 #[cfg(test)]
-pub const DELIVERED_POOL_RETURN_RVA: usize = 0x195897a;
+pub const DELIVERED_POOL_RETURN_RVA: usize = 0x196c02a;
 #[cfg(test)]
-pub const SUNK_POOL_RETURN_RVA: usize = 0x195a9af;
+pub const SUNK_POOL_RETURN_RVA: usize = 0x196e05f;
 #[cfg(test)]
-pub const POOL_ADDITION_RVA: usize = 0xff7830;
+pub const POOL_ADDITION_RVA: usize = 0x100cae0;
 #[cfg(test)]
 pub const DELIVERED_POOL_CALL_RVA: usize = DELIVERED_POOL_RETURN_RVA - 5;
 #[cfg(test)]
 pub const SUNK_POOL_CALL_RVA: usize = SUNK_POOL_RETURN_RVA - 5;
 #[cfg(test)]
 pub const DELIVERED_POOL_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0xb6, 0xee, 0x69, 0xff, 0x4d, 0x8b, 0xb5, 0xb0, 0x00, 0x00, 0x00, 0x49, 0x8d, 0x4e, 0x20,
+    0xe8, 0xb6, 0x0a, 0x6a, 0xff, 0x4d, 0x8b, 0xb5, 0xb0, 0x00, 0x00, 0x00, 0x49, 0x8d, 0x4e, 0x20,
 ];
 #[cfg(test)]
 pub const SUNK_POOL_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x81, 0xce, 0x69, 0xff, 0x44, 0x8b, 0xc6, 0x48, 0x8b, 0xd5, 0x48, 0x8b, 0xcf, 0xe8, 0x43,
+    0xe8, 0x81, 0xea, 0x69, 0xff, 0x44, 0x8b, 0xc6, 0x48, 0x8b, 0xd5, 0x48, 0x8b, 0xcf, 0xe8, 0xe3,
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

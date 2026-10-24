@@ -22,10 +22,10 @@ const MISSIONS: usize = 0x28;
 /// Counterintelligence modifier object, with its embedded accumulator.
 const OPERATIVE_MODIFIER: usize = 0x408;
 /// Bound static modifier selected when the subject occurs in sorted operative nationalities.
-const STATIC_DATABASE_RVA: usize = 0x0331_7cc8;
+const STATIC_DATABASE_RVA: usize = 0x0333_0098;
 const NATIONALITY_MODIFIER: usize = 0x130;
 /// Counterintelligence mission country-tag virtual dispatch.
-const MISSION_VTABLE_RVA: usize = 0x02a0_8f40;
+const MISSION_VTABLE_RVA: usize = 0x02a1_fca0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Row {

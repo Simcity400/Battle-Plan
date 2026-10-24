@@ -1447,7 +1447,11 @@ impl Hooks {
         BASE.store(base, Ordering::Relaxed);
         let mut hooks = Vec::new();
         for (slot, rva, sentinel, callback) in sites {
-            let hook = unsafe { Hook::new(base + rva, callback, sentinel) }?;
+            let hook = if slot == WIPE_ORIGINAL {
+                unsafe { Hook::new_push_frame(base + rva, callback, sentinel) }?
+            } else {
+                unsafe { Hook::new(base + rva, callback, sentinel) }?
+            };
             ORIGINAL[slot].store(hook.trampoline(), Ordering::Release);
             hooks.push(hook);
         }
@@ -2498,9 +2502,9 @@ mod tests {
     core::arch::global_asm!(
         ".text", ".globl land_wipe_test_site", ".seh_proc land_wipe_test_site",
         "land_wipe_test_site:",
-        // Same five-byte displaced instruction as the native lifecycle entry.
-        "mov [rsp + 8], rbx", ".seh_endprologue",
-        "jmp {native}", ".rept 16", "nop", ".endr", ".seh_endproc",
+        ".byte 0x40", "push rbx", ".seh_pushreg rbx", "push r15", ".seh_pushreg r15",
+        "sub rsp, 0x58", ".seh_stackalloc 0x58", ".seh_endprologue",
+        "mov rax, [rdx]", "add rsp, 0x58", "pop r15", "pop rbx", "jmp {native}", ".rept 16", "nop", ".endr", ".seh_endproc",
         native = sym land_wipe_test_native);
     unsafe extern "system-unwind" {
         fn land_wipe_test_caller(output: *mut u64, army: usize) -> u64;
@@ -2509,7 +2513,7 @@ mod tests {
         fn land_wipe_test_return();
     }
     #[test]
-    fn wipe_observation_bridge_preserves_native_caller_registers_and_flags() {
+    fn wipe_observation_bridge_preserves_native_caller_registers_and_stack_effects() {
         let _guard = exclusive();
         let enabled = ENABLED.swap(true, Ordering::SeqCst);
         let base = BASE.swap(0, Ordering::SeqCst);
@@ -2520,24 +2524,35 @@ mod tests {
             .try_into()
             .unwrap();
         assert_eq!(
-            sentinel[..5],
-            engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL[..5]
+            sentinel[..8],
+            engine_land_inputs::land_wipe::LIFECYCLE_SENTINEL[..8]
         );
         let mut hook =
-            unsafe { Hook::new(site, land_wipe_entry as *const () as usize, sentinel) }.unwrap();
+            unsafe { Hook::new_push_frame(site, land_wipe_entry as *const () as usize, sentinel) }
+                .unwrap();
         let previous = ORIGINAL[WIPE_ORIGINAL].swap(hook.trampoline(), Ordering::SeqCst);
+        let mut baseline = None;
         for tapped in [false, true, false] {
             assert!(hook.set_enabled(tapped).unwrap());
             let mut output = [0u64; 20];
-            let flags = unsafe { land_wipe_test_caller(output.as_mut_ptr(), 0x202) };
-            assert_eq!(&output[..6], &[0x101, 0x202, 0x808, 0x909, 0xa0a, 0xb0b]);
+            let army = 0x101_u64;
+            let army_pointer = &army as *const u64 as usize;
+            let _flags = unsafe { land_wipe_test_caller(output.as_mut_ptr(), army_pointer) };
+            assert_eq!(
+                &output[..6],
+                &[0x101, army_pointer as u64, 0x808, 0x909, 0xa0a, 0xb0b]
+            );
             // The mock unit deletion receives the CALL's original return PC,
             // including through the installed relay, bridge and trampoline.
             assert_eq!(
                 output[6],
                 land_wipe_test_return as *const () as usize as u64
             );
-            assert_eq!(output[7], flags);
+            if let Some(expected) = baseline {
+                assert_eq!(output, expected);
+            } else {
+                baseline = Some(output);
+            }
             for n in 0..6 {
                 assert_eq!(&output[8 + n * 2..10 + n * 2], &[n as u64 + 1; 2]);
             }

@@ -668,9 +668,9 @@ fn game_score_wing_uses_stored_mission_one_record_and_shared_plane_read() {
 
 #[test]
 fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
-    const FIRST: usize = 0x0331_ebf8;
-    let offsets = [0, 0x98, 0x130, 0x1c0, 0x258, 0x300];
-    let mut bytes = vec![0; 0x308];
+    const FIRST: usize = 0x0333_7a68;
+    let offsets = [0, 0xa8, 0x158, 0x1f0, 0x298, 0x360];
+    let mut bytes = vec![0; 0x368];
     for (index, offset) in offsets.into_iter().enumerate() {
         u64_at(&mut bytes, offset, (index as i64 - 2) as u64);
     }
@@ -695,7 +695,7 @@ fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
     struct MissingArmy<'a>(&'a [u8]);
     impl Memory for MissingArmy<'_> {
         fn copy(&self, at: usize, output: &mut [u8]) -> bool {
-            at != FIRST + 0x98
+            at != FIRST + 0xa8
                 && SliceMemory {
                     base: FIRST,
                     bytes: self.0,

@@ -3,22 +3,22 @@
 use crate::{Memory, cfex_member, cpdx_array::Array, cship, memory::Raw, read};
 
 /// CNavalCombatant vtable.
-pub const VTABLE_RVA: usize = 0x029c_d298;
+pub const VTABLE_RVA: usize = 0x029e_3e98;
 /// CNavalCombatant parent CNavalCombat pointer.
 pub const COMBAT: usize = 0x18;
 /// Task-force pointer array: data, capacity and count. Admission requires naval units;
 /// serialization retains every full handle.
 pub const UNITS: usize = 0x20;
 /// CNavalCombatant engaged byte.
-pub const ENGAGED: usize = 0xba;
+pub const ENGAGED: usize = 0xda;
 /// CNavalCombatant CFEXGroup pointer array.
-pub const GROUPS: usize = 0xc8;
+pub const GROUPS: usize = 0xe8;
 /// CNavalCombatant group count i32.
-pub const GROUPS_COUNT: usize = 0xd4;
+pub const GROUPS_COUNT: usize = 0xf4;
 /// CNavalCombatant positioning i64/100000.
-pub const POSITIONING: usize = 0x138;
+pub const POSITIONING: usize = 0x158;
 /// CNavalCombatant anti-air i64/100000.
-pub const ANTI_AIR: usize = 0x150;
+pub const ANTI_AIR: usize = 0x170;
 
 /// Current commander pointer shown by the naval window. Null remains no commander without fallback
 /// to the retained last leader after it. Selection keeps the first highest-skill candidate, or null
@@ -26,9 +26,9 @@ pub const ANTI_AIR: usize = 0x150;
 /// rebuild publish this selection; only nonnull selections replace the last leader. Both initialize
 /// to zero. Saves restore only last leader; a null selection at any later tick also leaves that
 /// retained identity unchanged.
-pub const COMMANDER: usize = 0x110;
+pub const COMMANDER: usize = 0x130;
 /// Stored screening operands.
-pub const SCREENING: usize = 0x128;
+pub const SCREENING: usize = 0x148;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
@@ -81,8 +81,8 @@ fn walk_damage_by_type(
     used: &mut usize,
     required: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
-    let sentinel = field::<u64>(memory, side, 0x290)? as usize;
-    let count = field::<u64>(memory, side, 0x298)?;
+    let sentinel = field::<u64>(memory, side, 0x2b0)? as usize;
+    let count = field::<u64>(memory, side, 0x2b8)?;
     let count = usize::try_from(count).map_err(|_| "naval damage source count overflow")?;
     let start = *used;
     let end = start
@@ -117,8 +117,8 @@ fn walk_damage_by_type(
         return Err("naval damage source list exceeds native count");
     }
     if output.is_none()
-        && (field::<u64>(memory, side, 0x290)? as usize != sentinel
-            || field::<u64>(memory, side, 0x298)? != count as u64)
+        && (field::<u64>(memory, side, 0x2b0)? as usize != sentinel
+            || field::<u64>(memory, side, 0x2b8)? != count as u64)
     {
         return Err("naval damage source header changed");
     }
@@ -249,7 +249,7 @@ pub(crate) fn details(
         }
         handle
     };
-    let history: [u8; 36 * 8] = field(memory, side.pointer, 0x168)?;
+    let history: [u8; 36 * 8] = field(memory, side.pointer, 0x188)?;
     let mut damage_history = [[0; 6]; 6];
     for (value, bytes) in damage_history
         .iter_mut()
@@ -260,8 +260,8 @@ pub(crate) fn details(
     }
     Ok(DetailsRow {
         damage_history,
-        original_health: field(memory, side.pointer, 0x158)?,
-        total_damage: field(memory, side.pointer, 0x160)?,
+        original_health: field(memory, side.pointer, 0x178)?,
+        total_damage: field(memory, side.pointer, 0x180)?,
         damage_by_type: damage_by_type(
             memory,
             side.pointer,
@@ -271,7 +271,7 @@ pub(crate) fn details(
         )?,
         commander,
         engaged: field(memory, side.pointer, ENGAGED)?,
-        retreating: field(memory, side.pointer, 0x120)?,
+        retreating: field(memory, side.pointer, 0x140)?,
         capital_screening: field(memory, side.pointer, SCREENING)?,
         carrier_screening: field(memory, side.pointer, SCREENING + 8)?,
         positioning: field(memory, side.pointer, POSITIONING)?,
@@ -513,8 +513,8 @@ mod damage_source_tests {
         let sentinel = 0x500;
         let first = 0x540;
         let second = 0x580;
-        put64(&mut bytes, side + 0x290, sentinel as u64);
-        put64(&mut bytes, side + 0x298, 2);
+        put64(&mut bytes, side + 0x2b0, sentinel as u64);
+        put64(&mut bytes, side + 0x2b8, 2);
         put64(&mut bytes, sentinel, first as u64);
         put64(&mut bytes, first, second as u64);
         put64(&mut bytes, second, sentinel as u64);
@@ -571,8 +571,8 @@ mod damage_source_tests {
         impl Memory for Torn {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let value = match address {
-                    0x390 | 0x500 => 0x500_u64,
-                    0x398 => {
+                    0x3b0 | 0x500 => 0x500_u64,
+                    0x3b8 => {
                         let count = self.0.get();
                         self.0.set(count + 1);
                         u64::from(count != 0)
@@ -595,8 +595,8 @@ mod damage_source_tests {
         impl Memory for Cycle {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 let value = match address {
-                    0x390 | 0x548 => 0x500_u64,
-                    0x398 => u64::MAX,
+                    0x3b0 | 0x548 => 0x500_u64,
+                    0x3b8 => u64::MAX,
                     0x500 | 0x540 => 0x540,
                     _ => return false,
                 };
@@ -622,8 +622,8 @@ mod damage_source_tests {
             let put = |bytes: &mut [u8], at: usize, value: u64| {
                 bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
             };
-            put(&mut bytes, SIDE + 0x290, SENTINEL as u64);
-            put(&mut bytes, SIDE + 0x298, count as u64);
+            put(&mut bytes, SIDE + 0x2b0, SENTINEL as u64);
+            put(&mut bytes, SIDE + 0x2b8, count as u64);
             put(&mut bytes, SENTINEL, NODES as u64);
             put(&mut bytes, SIDE + UNITS, POINTERS as u64);
             put(

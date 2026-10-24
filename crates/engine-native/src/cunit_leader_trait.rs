@@ -1,7 +1,7 @@
 //! CUnitLeaderTrait definitions are individually allocated; their database also holds sentinel objects.
 
 /// CUnitLeaderTrait vtable.
-pub const VTABLE_RVA: usize = 0x0292_f160;
+pub const VTABLE_RVA: usize = 0x0294_57a0;
 /// CUnitLeaderTrait allocation extent.
 pub const SIZE: usize = 0xa90;
 /// CUnitLeaderTrait lexer-token ID i32.
@@ -17,4 +17,4 @@ pub const CATEGORY_MASK: usize = 0x8ac;
 /// CUnitLeaderTrait kind u32.
 pub const KIND: usize = 0x920;
 /// CUnitLeaderTrait constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00ad_4ba0;
+pub const CONSTRUCTOR_RVA: usize = 0x00ae_3c60;

@@ -2,7 +2,7 @@
 //! cache only when its validity byte is set.
 
 /// Convoy-state primary vtable.
-pub const VTABLE_RVA: usize = 0x027d_0c60;
+pub const VTABLE_RVA: usize = 0x027e_7130;
 /// Owner country link, u32, copied during construction.
 pub const COUNTRY: usize = 8;
 /// Embedded convoy equipment pool.

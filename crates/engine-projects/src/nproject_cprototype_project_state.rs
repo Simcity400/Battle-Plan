@@ -1,7 +1,7 @@
 //! Prototype project state with signed fixed5 progress and a signed whole-unit target.
 
 /// Prototype-state primary vtable.
-pub const VTABLE_RVA: usize = 0x02a1_9300;
+pub const VTABLE_RVA: usize = 0x02a3_0060;
 /// Signed i64 fixed5 phase progress.
 pub const PHASE_PROGRESS: usize = 0x48;
 /// Signed i32 whole-unit phase target, converted to fixed5 for comparison.

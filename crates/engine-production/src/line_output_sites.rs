@@ -59,13 +59,13 @@ pub const PRODUCERS: [&str; 4] = ["military", "naval", "railway gun", "ship refi
 /// line at entry. Its entry instruction spills RBX to the stack.
 pub const CREDIT: HookSite = HookSite {
     name: "credit",
-    rva: 0x0192_0af0,
+    rva: 0x0193_41a0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x48, 0x83, 0xec, 0x20,
         0x48,
     ],
 
-    callers: [0x00f5_9887, 0x00f5_a280, 0x00f5_af5c, 0x00f5_cac5],
+    callers: [0x00f6_ea07, 0x00f6_f400, 0x00f7_00dc, 0x00f7_1c45],
 };
 
 /// Delivery entry: RCX is the country's logistics status, RDX the variant
@@ -74,19 +74,19 @@ pub const CREDIT: HookSite = HookSite {
 /// to the stack.
 pub const DELIVERY: HookSite = HookSite {
     name: "delivery",
-    rva: 0x0135_f0e0,
+    rva: 0x0137_4140,
     sentinel: [
         0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
         0x41,
     ],
 
-    callers: [0x00f5_9824, 0x00f5_a1f4, 0x00f5_abdd, 0x00f5_caa0],
+    callers: [0x00f6_e9a4, 0x00f6_f374, 0x00f6_fd5d, 0x00f7_1c20],
 };
 
 /// Rocket production entry; RCX is the line. Its six-byte entry prefix has
 /// no relative operands. The daily caller ignores RAX, which observers preserve.
 pub const ROCKET_ADVANCE: EntrySite = EntrySite {
-    rva: 0x00f5_c150,
+    rva: 0x00f7_12d0,
     sentinel: [
         0x40, 0x57, 0x48, 0x83, 0xec, 0x20, 0x4c, 0x8b, 0x41, 0x40, 0x48, 0x8b, 0xf9, 0x4d, 0x85,
         0xc0,
@@ -94,9 +94,9 @@ pub const ROCKET_ADVANCE: EntrySite = EntrySite {
 };
 
 /// DELIVERY's rocket-production caller.
-pub const ROCKET_DELIVERY_RETURN: usize = 0x00f5_c24a;
+pub const ROCKET_DELIVERY_RETURN: usize = 0x00f7_13ca;
 /// Rocket primary vtable.
-pub const ROCKET_VTABLE: usize = 0x0296_5630;
+pub const ROCKET_VTABLE: usize = 0x0297_c260;
 /// Rocket's owning production status.
 pub const ROCKET_STATUS: usize = 0x38;
 /// Rocket's bound variant pointer, passed to DELIVERY.
@@ -194,7 +194,7 @@ pub fn converting(memory: &impl Memory, line: usize) -> Result<bool, &'static st
 }
 
 /// Console flag tested by naval and railway-gun production.
-pub const INSTANT_ARMY_TRAINING: usize = 0x0331_725b;
+pub const INSTANT_ARMY_TRAINING: usize = 0x0332_f62b;
 
 /// Classifies the already-applied CREDIT RDX input. Owner and producer must be
 /// authenticated first. A refusal affects both spending fields, not the

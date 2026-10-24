@@ -54,6 +54,41 @@ pub fn folder_files(
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_assignment_triggers_keep_their_reader_class_and_scalar_arguments() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let names = KeyNames::default();
+        for (name, token, mask, operand) in [
+            ("is_fighting_in_strategic_region", 0x2e4f, 0x10, "0x25"),
+            ("is_deployed", 0x432d, 0x8, "yes"),
+        ] {
+            assert_eq!(
+                crate::trigger_keys::registered_trigger(name.as_bytes()),
+                Some(token)
+            );
+            assert_eq!(
+                crate::trigger_keys::trigger_class(token),
+                Some((mask, crate::trigger_keys::Reader::Assign))
+            );
+            for operand in [operand.to_owned(), format!("\"{operand}\"")] {
+                let read = read(
+                    format!("{name} = {operand} always = yes").as_bytes(),
+                    &names,
+                );
+                assert!(read.unsettled.is_none(), "{name}: {read:?}");
+                assert!(read.misreads.is_empty(), "{name}: {read:?}");
+                assert_eq!(read.items.len(), 2, "{name}: {read:?}");
+                assert!(read.items[0].keyword_is(name));
+                assert_eq!(
+                    read.items[0].value.scalar(),
+                    Some(operand.trim_matches('"').as_bytes())
+                );
+                assert!(read.items[1].keyword_is("always"));
+            }
+        }
+    }
+
     /// Collection size/input/operators/limit uses CONTROLLER. Collections and
     /// railway priority must keep the enclosing trigger-dispatch names
     /// through the public reader.

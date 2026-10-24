@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Primary vtable at subobject offset zero.
-pub const VTABLE_RVA: usize = 0x029a_76c0;
+pub const VTABLE_RVA: usize = 0x029b_e5d0;
 /// Packed full reference, u64: low word type and high word instance ID.
 pub const HANDLE: usize = 0x08;
 /// Known operation-instance reference type. Admission uses the dynamic full
@@ -89,10 +89,10 @@ pub const REQUIREMENT_EQUIPMENT: usize = 0x10;
 pub const REQUIREMENT_USES_TIME: usize = 0x18;
 /// Operation-instance serializer.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x013e_f710;
+pub const SAVE_RVA: usize = 0x0140_4b00;
 /// Operation-instance loader.
 #[cfg(test)]
-pub const LOADER_RVA: usize = 0x013e_d380;
+pub const LOADER_RVA: usize = 0x0140_2770;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn serializer_rvas_match_supported_operation_layout() {
-        assert_eq!(SAVE_RVA, 0x13EF710);
-        assert_eq!(LOADER_RVA, 0x13ED380);
+        assert_eq!(SAVE_RVA, 0x1404B00);
+        assert_eq!(LOADER_RVA, 0x1402770);
     }
 }

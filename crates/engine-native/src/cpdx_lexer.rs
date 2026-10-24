@@ -19,29 +19,29 @@ pub const IDLE_RESEARCH_TOKEN: u32 = 0x2a4e;
 pub const MAXIMUM_SPEED_TOKEN: u32 = 0x2eb2;
 
 /// Lexer initialized byte required to be one.
-pub const INITIALIZED_RVA: usize = 0x35c8b50;
+pub const INITIALIZED_RVA: usize = 0x035e1ab0;
 /// Maximum admitted token ID, signed i32, used as an inclusive bound.
-pub const MAX_TOKEN_ID_RVA: usize = 0x35c8b54;
+pub const MAX_TOKEN_ID_RVA: usize = 0x035e1ab4;
 /// Static maximum calculated from loaded static token definitions.
-pub const STATIC_MAX_TOKEN_ID_RVA: usize = 0x35c8b5c;
+pub const STATIC_MAX_TOKEN_ID_RVA: usize = 0x035e1abc;
 /// Dynamic-record pointer to its separate 0x48-byte-record array.
-pub const DYNAMIC_TOKENS_RVA: usize = 0x35c8b60;
+pub const DYNAMIC_TOKENS_RVA: usize = 0x035e1ac0;
 /// Dynamic-array signed capacity, compared against count.
-pub const DYNAMIC_CAPACITY_RVA: usize = 0x35c8b68;
+pub const DYNAMIC_CAPACITY_RVA: usize = 0x035e1ac8;
 /// Dynamic count, incremented before reverse-name assignment or rebuild.
-pub const DYNAMIC_COUNT_RVA: usize = 0x35c8b6c;
+pub const DYNAMIC_COUNT_RVA: usize = 0x035e1acc;
 /// Exclusive flag set atomically and decremented on release.
-pub const WRITER_FLAG_RVA: usize = 0x35c8b7c;
+pub const WRITER_FLAG_RVA: usize = 0x035e1adc;
 /// Token-name table pointer.
-pub const TOKEN_NAMES_RVA: usize = 0x35c8b80;
+pub const TOKEN_NAMES_RVA: usize = 0x035e1ae0;
 /// Reverse-string allocation capacity used during lookup rebuilding.
-pub const TOKEN_ALLOCATION_RVA: usize = 0x35c8b88;
+pub const TOKEN_ALLOCATION_RVA: usize = 0x035e1ae8;
 /// Token-name capacity, signed i32, validated against the maximum token ID.
-pub const TOKEN_CAPACITY_RVA: usize = 0x35c8b8c;
+pub const TOKEN_CAPACITY_RVA: usize = 0x035e1aec;
 /// MSVC string entry stride for token-name lookup.
 pub const TOKEN_NAME_STRIDE: usize = 0x20;
 /// Dynamic-token wrapper used during strategic-resource loading.
-pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x24a6500;
+pub const ADD_DYNAMIC_TOKEN_RVA: usize = 0x024bb460;
 /// Static long-fixed token formatted as fixed15 numeric text instead of its
 /// spelling; saves never serialize the name.
 pub const FIXED15_TOKEN: u32 = 0x167;

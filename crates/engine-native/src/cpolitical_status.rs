@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Political-status primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_9768;
+pub const VTABLE_RVA: usize = 0x0294_fda8;
 /// Owning-country pointer authenticated by backlink.
 pub const COUNTRY: usize = 0xc8;
 /// Political power, signed i64/100000, accumulated and clamped as a full qword.
@@ -30,7 +30,7 @@ pub const IDEA_COUNT: usize = 0x5c;
 pub const TIMED_IDEAS: usize = 0x68;
 pub const TIMED_IDEA_STRIDE: usize = 0x18;
 /// Timed-idea primary vtable for roster entries.
-pub const TIMED_IDEA_VTABLE_RVA: usize = 0x0293_9718;
+pub const TIMED_IDEA_VTABLE_RVA: usize = 0x0294_fd58;
 /// Last-election raw hour, i32, written by the election and daily update paths.
 pub const LAST_ELECTION: usize = 0xa0;
 /// Cached date needed only when an initializer last date is ambiguous.

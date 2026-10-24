@@ -1,12 +1,12 @@
 //! COccupationLaw layout. Preserve its string token as identity.
 
 /// COccupationLaw vtable.
-pub const VTABLE_RVA: usize = 0x0292_8218;
+pub const VTABLE_RVA: usize = 0x0293_e818;
 /// COccupationLaw embedded MSVC string token.
 pub const NAME: usize = 0x10;
 
 /// Occupation-policy database singleton pointer.
-pub const DATABASE_RVA: usize = 0x0331_6bc8;
+pub const DATABASE_RVA: usize = 0x0332_ef98;
 pub const DATABASE_FALLBACK: usize = 0x48;
 
 use crate::{Memory, msvc_string, read, read_slice};

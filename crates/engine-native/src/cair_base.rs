@@ -74,7 +74,7 @@ pub fn carrier_host_name_demand(
 }
 
 /// Air-base vtable.
-pub const VTABLE_RVA: usize = 0x0294_1fa0;
+pub const VTABLE_RVA: usize = 0x0295_8780;
 /// Air-base allocation size.
 pub const SIZE: usize = 0x90;
 /// Reference type value checked against the low handle word.
@@ -100,11 +100,11 @@ pub const CAPACITY: usize = 0x78;
 /// Signed base kind, i32, set by construction; dispatch branches on zero, one and two.
 pub const KIND: usize = 0x7c;
 /// Container allocation and indexing path.
-pub const CREATE_COUNTRY_CONTAINER_RVA: usize = 0x00c3_c2b0;
+pub const CREATE_COUNTRY_CONTAINER_RVA: usize = 0x00c4_b9f0;
 /// Pool registration resolving the owner ordinal and appending to its container.
-pub const REGISTER_POOL_RVA: usize = 0x00c3_c860;
+pub const REGISTER_POOL_RVA: usize = 0x00c4_bfa0;
 /// Pool erasure scanning the country's registered vector.
-pub const ERASE_POOL_RVA: usize = 0x00c5_4220;
+pub const ERASE_POOL_RVA: usize = 0x00c6_3960;
 /// Pool batch width for the stored wing vector.
 const BATCH: usize = 64;
 /// Wing identity span.

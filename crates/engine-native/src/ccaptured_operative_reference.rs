@@ -1,7 +1,7 @@
 //! CCapturedOperativeReference, walked by CIntelligenceAgency at Daily(16).
 
 /// Captured-operative reference vtable.
-pub const VTABLE_RVA: usize = 0x0296_b388;
+pub const VTABLE_RVA: usize = 0x0298_1fb8;
 
 /// Inline element stride.
 pub const STRIDE: usize = 0x38;
@@ -9,4 +9,4 @@ pub const STRIDE: usize = 0x38;
 #[cfg(test)]
 pub const OPERATIVE_HANDLE: usize = 0x0c;
 /// Constructor copying the full operative handle.
-pub const CONSTRUCTOR_RVA: usize = 0x01a2_15f0;
+pub const CONSTRUCTOR_RVA: usize = 0x01a3_4db0;

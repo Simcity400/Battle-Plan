@@ -282,10 +282,10 @@ pub fn states_buffer_extent(
 
 /// Human-AI debug byte ORed into every country AI verdict; console and
 /// debug UI actions toggle it.
-pub const HUMAN_AI_RVA: usize = 0x0331_7269;
+pub const HUMAN_AI_RVA: usize = 0x0332_f639;
 
 /// Debug byte used by removal delay and toggled by the console.
-pub const INSTANT_DECISIONS_RVA: usize = 0x0331_7263;
+pub const INSTANT_DECISIONS_RVA: usize = 0x0332_f633;
 
 pub fn instant_decisions(memory: &impl Memory, base: usize) -> Result<u8, &'static str> {
     base.checked_add(INSTANT_DECISIONS_RVA)

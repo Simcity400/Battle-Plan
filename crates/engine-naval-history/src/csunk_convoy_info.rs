@@ -4,7 +4,7 @@
 //! separate event observation and cannot be recovered from aggregates.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_d008;
+pub const VTABLE_RVA: usize = 0x0297_3c28;
 /// CSunkConvoyInfo complete read extent.
 pub const READ_EXTENT: usize = 0x18;
 /// CSunkConvoyInfo native i32 month bucket.

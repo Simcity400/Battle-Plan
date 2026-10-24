@@ -1,6 +1,6 @@
 //! Raw convoy-ship bar operands, separate from transport-order objects.
 use crate::{Memory, cnaval_combatant::field};
-pub const VTABLE_RVA: usize = 0x02a2_3ed8;
+pub const VTABLE_RVA: usize = 0x02a3_ac18;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     /// Stored variant speed.

@@ -10,23 +10,23 @@
 use crate::{Memory, cgame_state, creference_registry, cship, read};
 
 /// Theater-group index global, saved with token 0x35d2 and restored through its setter.
-pub const THEATER_GROUP_INDEX_RVA: usize = 0x0306_f258;
+pub const THEATER_GROUP_INDEX_RVA: usize = 0x0308_7258;
 /// Deployment-line index global, saved with token 0x34b3 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: usize = 0x0306_f25c;
+pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: usize = 0x030b_1358;
 /// Deployment-conveyor index global, saved with token 0x34b4 and restored through its setter.
-pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: usize = 0x0306_f260;
+pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: usize = 0x030b_135c;
 /// Order index global, saved with token 0x3036 and restored directly.
-pub const ORDER_INDEX_RVA: usize = 0x0306_f26c;
+pub const ORDER_INDEX_RVA: usize = 0x0308_7260;
 /// Front index global, saved with token 0x35ad and restored directly.
-pub const FRONT_INDEX_RVA: usize = 0x0306_f270;
+pub const FRONT_INDEX_RVA: usize = 0x0308_7264;
 /// Theatre index global, saved with token 0x35ae and restored directly.
-pub const THEATRE_INDEX_RVA: usize = 0x0306_f274;
+pub const THEATRE_INDEX_RVA: usize = 0x0308_7268;
 /// Country-leader index global, saved with token 0x393b and restored directly.
-pub const COUNTRY_LEADER_INDEX_RVA: usize = 0x0309_92c0;
+pub const COUNTRY_LEADER_INDEX_RVA: usize = 0x030b_12d0;
 /// Equipment-variant index global, saved with token 0x3643 and restored through its setter.
-pub const EQUIPMENT_VARIANT_INDEX_RVA: usize = 0x0309_9318;
+pub const EQUIPMENT_VARIANT_INDEX_RVA: usize = 0x030b_1328;
 /// RNG draw counter, saved with token 0x2cc3; wraps as signed i32.
-pub const MULTIPLAYER_RANDOM_COUNT_RVA: usize = 0x0343_95c0;
+pub const MULTIPLAYER_RANDOM_COUNT_RVA: usize = 0x0345_2520;
 
 /// One passive sample of the counters the save header serializer emits.
 ///
@@ -94,8 +94,8 @@ impl AllocationCounters {
             self.front_index.is_some(),
             self.theatre_index.is_some(),
             self.theater_group_index.is_some(),
-            self.military_deployment_line_index.is_some(),
             self.military_deployment_conveyor_index.is_some(),
+            self.military_deployment_line_index.is_some(),
             self.equipment_variant_index.is_some(),
             self.country_leader_index.is_some(),
             self.navy_id.is_some(),
@@ -140,7 +140,7 @@ mod tests {
     const STATE: usize = 0x1000_0000;
 
     fn fixture() -> (Vec<u8>, Vec<u8>) {
-        let mut globals = vec![0_u8; 0x0344_0000];
+        let mut globals = vec![0_u8; 0x0346_0000];
         let put = |bytes: &mut Vec<u8>, rva: usize, value: i32| {
             bytes[rva..rva + 4].copy_from_slice(&value.to_le_bytes());
         };

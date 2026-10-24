@@ -28,12 +28,12 @@
 use crate::{Memory, ccountry, cgame_state, cpdx_array::Array, cprovince, cstate, cunit, read};
 
 /// A forced scripted map refresh, after its native mode-name and limit gates.
-pub const SCRIPTED_REFRESH_CALL_RVA: usize = 0x0035_71d1;
+pub const SCRIPTED_REFRESH_CALL_RVA: usize = 0x0035_7851;
 pub const SCRIPTED_REFRESH_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0xfa, 0xe8, 0xbc, 0x00, 0x4c, 0x8d, 0x9c, 0x24, 0xe0, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x5b,
+    0xe8, 0xfa, 0x33, 0xbe, 0x00, 0x4c, 0x8d, 0x9c, 0x24, 0xe0, 0x00, 0x00, 0x00, 0x49, 0x8b, 0x5b,
 ];
 /// The current map-mode object; its first word is the selected mode.
-pub const MAP_MODE_SINGLETON_RVA: usize = 0x0332_4028;
+pub const MAP_MODE_SINGLETON_RVA: usize = 0x0333_cfb8;
 /// The first scripted mode follows the native modes.
 pub const FIRST_SCRIPTED_MAP_MODE: i32 = 40;
 
@@ -51,37 +51,37 @@ pub fn scripted_map_mode(memory: &impl Memory, base: usize) -> Result<u32, &'sta
 
 /// The call asking the local viewer's intel level of a revealed fake division
 /// (`RCX`, the division), after the queued-for-deletion refusal.
-pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: usize = 0x012a_6060;
+pub const FAKE_REVEAL_VISIBILITY_CALL_RVA: usize = 0x012b_b120;
 pub const FAKE_REVEAL_VISIBILITY_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x5b, 0x08, 0x36, 0x00, 0x3c, 0x96, 0x0f, 0x82, 0xf3, 0x00, 0x00, 0x00, 0x33, 0xd2, 0x48,
+    0xe8, 0x9b, 0xdc, 0x35, 0x00, 0x3c, 0x96, 0x0f, 0x82, 0xf3, 0x00, 0x00, 0x00, 0x33, 0xd2, 0x48,
 ];
 /// The overrun entry: `RCX` the gun, `RDX` its province, `R8` the province
 /// it is overrun into, where the text stands.
-pub const RAILWAY_OVERRUN_RVA: usize = 0x00e7_6e90;
+pub const RAILWAY_OVERRUN_RVA: usize = 0x00e8_c020;
 pub const RAILWAY_OVERRUN_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x55,
 ];
 /// The first instruction after the critical branch's random draw returns:
 /// it loads the bombarded province's building list from `R13`, the province.
-pub const CRITICAL_BOMBARDMENT_TAP_RVA: usize = 0x0129_6e2a;
+pub const CRITICAL_BOMBARDMENT_TAP_RVA: usize = 0x012a_beea;
 pub const CRITICAL_BOMBARDMENT_TAP_SENTINEL: [u8; 16] = [
-    0x49, 0x8b, 0x85, 0xe0, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x34, 0xc8, 0x48, 0x8b, 0x0d, 0xac, 0x04,
+    0x49, 0x8b, 0x85, 0xe0, 0x01, 0x00, 0x00, 0x48, 0x8b, 0x34, 0xc8, 0x48, 0x8b, 0x0d, 0xa4, 0x37,
 ];
 /// The capture notification call: `RCX` the general's unit leader, `RDX` the
 /// captor's country reference, `R8` the province (null shows no text).
-pub const GENERAL_CAPTURE_CALL_RVA: usize = 0x00c0_2dd0;
+pub const GENERAL_CAPTURE_CALL_RVA: usize = 0x00c1_2320;
 pub const GENERAL_CAPTURE_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0x1b, 0x11, 0x01, 0x00, 0x4c, 0x8b, 0xac, 0x24, 0x38, 0x01, 0x00, 0x00, 0x48, 0x81, 0xc4,
+    0xe8, 0x2b, 0x11, 0x01, 0x00, 0x4c, 0x8b, 0xac, 0x24, 0x38, 0x01, 0x00, 0x00, 0x48, 0x81, 0xc4,
 ];
 /// The landing notification call: `RCX` the province, `RDX` the dropping
 /// country's reference, `R8B` whether the landing took losses.
-pub const PARADROP_LANDING_CALL_RVA: usize = 0x00f6_f87d;
+pub const PARADROP_LANDING_CALL_RVA: usize = 0x00f8_49fd;
 pub const PARADROP_LANDING_CALL_SENTINEL: [u8; 16] = [
-    0xe8, 0xee, 0xac, 0xef, 0xff, 0x49, 0x8b, 0x4f, 0x28, 0xe8, 0x05, 0x1f, 0xfe, 0xff, 0x49, 0x8b,
+    0xe8, 0x6e, 0xa4, 0xef, 0xff, 0x49, 0x8b, 0x4f, 0x28, 0xe8, 0x05, 0x1f, 0xfe, 0xff, 0x49, 0x8b,
 ];
 /// The activity execution entry: `RCX` the state's resistance, `RDX` the
 /// activity definition.
-pub const RESISTANCE_ACTIVITY_RVA: usize = 0x00f8_31c0;
+pub const RESISTANCE_ACTIVITY_RVA: usize = 0x00f9_8340;
 pub const RESISTANCE_ACTIVITY_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x55,
 ];
@@ -89,13 +89,13 @@ pub const RESISTANCE_ACTIVITY_SENTINEL: [u8; 16] = [
 /// source (its first dword is the reason), `R8W` the level, `R9` that level's
 /// health before the change, then a byte that enables the client branch and a
 /// byte that enables its text.
-pub const BUILDING_NOTIFICATION_RVA: usize = 0x010c_69f0;
+pub const BUILDING_NOTIFICATION_RVA: usize = 0x010d_bd30;
 pub const BUILDING_NOTIFICATION_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48,
 ];
 
 /// The game's fog of war switch, a byte: zero shows every province.
-pub const FOG_OF_WAR_RVA: usize = 0x0331_726a;
+pub const FOG_OF_WAR_RVA: usize = 0x0332_f63a;
 
 /// A unit's intel array (the unit viewer entries): 24-byte entries holding
 /// a canonical country ordinal and, at [`INTEL_LEVEL`], a signed level.

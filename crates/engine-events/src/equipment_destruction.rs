@@ -84,7 +84,7 @@ pub const LAND: Site = Site {
     id: SiteId::Land,
     kind: SiteKind::Entry,
     name: "land_damage",
-    rva: 0xc7bfc0,
+    rva: 0xc8b710,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
         0x41,
@@ -102,19 +102,19 @@ pub const ATTRITION: Site = Site {
         target: ATTRITION_TARGET,
     },
     name: "attrition_removal_tap",
-    rva: 0xc5eac4,
+    rva: 0xc6e204,
     sentinel: [
-        0xe8, 0xd7, 0xea, 0x39, 0x00, 0x48, 0x8b, 0x47, 0x10, 0x48, 0x8b, 0x08, 0x48, 0x85, 0xc9,
+        0xe8, 0x47, 0x46, 0x3a, 0x00, 0x48, 0x8b, 0x47, 0x10, 0x48, 0x8b, 0x08, 0x48, 0x85, 0xc9,
         0x74,
     ],
 };
-pub const ATTRITION_TARGET: usize = 0xffd5a0;
+pub const ATTRITION_TARGET: usize = 0x1012850;
 /// Win64 RCX wing, EDX signed requested count, R8D source country; void.
 pub const AIR: Site = Site {
     id: SiteId::Air,
     kind: SiteKind::Entry,
     name: "airplanes",
-    rva: 0xf4e400,
+    rva: 0xf63580,
     sentinel: [
         0x48, 0x8b, 0xc4, 0x44, 0x89, 0x40, 0x18, 0x53, 0x41, 0x55, 0x41, 0x57, 0x48, 0x83, 0xec,
         0x70,
@@ -125,7 +125,7 @@ pub const GARRISON: Site = Site {
     id: SiteId::Garrison,
     kind: SiteKind::Entry,
     name: "garrison_resistance",
-    rva: 0xfdfa80,
+    rva: 0xff4d30,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54,
         0x41,
@@ -137,7 +137,7 @@ pub const DELETE: Site = Site {
     id: SiteId::Delete,
     kind: SiteKind::Entry,
     name: "division_delete_scope",
-    rva: 0x1d6210,
+    rva: 0x1d6690,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54,
         0x41,
@@ -153,13 +153,13 @@ pub const RETURN: Site = Site {
         target: RETURN_TARGET,
     },
     name: "division_equipment_return_tap",
-    rva: 0x1d6718,
+    rva: 0x1d6b98,
     sentinel: [
-        0xe8, 0x33, 0x5e, 0xc7, 0x00, 0x48, 0x8b, 0xd3, 0xeb, 0xc7, 0x48, 0x0f, 0xaf, 0x1d, 0xd6,
-        0x3d,
+        0xe8, 0xb3, 0xa2, 0xc8, 0x00, 0x48, 0x8b, 0xd3, 0xeb, 0xc7, 0x48, 0x0f, 0xaf, 0x1d, 0xae,
+        0xbf,
     ],
 };
-pub const RETURN_TARGET: usize = 0xe4c550;
+pub const RETURN_TARGET: usize = 0xe60e50;
 /// RCX primary division, EDX deleting flags; returns the original pointer.
 /// The destructor clears and frees the live equipment pool. Secondary-base
 /// thunks tail-jump here and retain the original caller return address.
@@ -167,7 +167,7 @@ pub const DIVISION_FREE: Site = Site {
     id: SiteId::DivisionFree,
     kind: SiteKind::Entry,
     name: "division_equipment_discard",
-    rva: 0xc5f080,
+    rva: 0xc6e7c0,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x8b, 0xda, 0x48, 0x8b, 0xf9,
         0xe8,
@@ -179,7 +179,7 @@ pub const QUEUE: Site = Site {
     id: SiteId::Queue,
     kind: SiteKind::Entry,
     name: "division_deletion_queue_scope",
-    rva: 0x1d6fe0,
+    rva: 0x1d7460,
     sentinel: [
         0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73, 0x20,
         0x57,
@@ -192,7 +192,7 @@ pub const PARADROP: Site = Site {
     id: SiteId::Paradrop,
     kind: SiteKind::Entry,
     name: "paradrop_disruption",
-    rva: 0xc7ae10,
+    rva: 0xc8a550,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41,
         0x56,
@@ -207,9 +207,9 @@ pub const VOLUNTEER_TRANSFER: Site = Site {
         target: TRANSFER_TARGET,
     },
     name: "volunteer_roster_transfer_tap",
-    rva: 0x1511023,
+    rva: 0x1523333,
     sentinel: [
-        0xe8, 0x88, 0x24, 0x1f, 0xff, 0x49, 0x8b, 0xcf, 0xe8, 0x10, 0x22, 0x1e, 0xff, 0x84, 0xc0,
+        0xe8, 0x08, 0xce, 0x1e, 0xff, 0x49, 0x8b, 0xcf, 0xe8, 0x70, 0xca, 0x1d, 0xff, 0x84, 0xc0,
         0x74,
     ],
 };
@@ -222,13 +222,13 @@ pub const EXILE_TRANSFER: Site = Site {
         target: TRANSFER_TARGET,
     },
     name: "exile_roster_transfer_tap",
-    rva: 0x15015d3,
+    rva: 0x15138e3,
     sentinel: [
-        0xe8, 0xd8, 0x1e, 0x20, 0xff, 0x49, 0x8b, 0xce, 0xe8, 0x60, 0x1c, 0x1f, 0xff, 0x84, 0xc0,
+        0xe8, 0x58, 0xc8, 0x1f, 0xff, 0x49, 0x8b, 0xce, 0xe8, 0xc0, 0xc4, 0x1e, 0xff, 0x84, 0xc0,
         0x74,
     ],
 };
-pub const TRANSFER_TARGET: usize = 0x7034b0;
+pub const TRANSFER_TARGET: usize = 0x710140;
 /// RCX primary division, EDX boolean; returns void. Observe scaling and
 /// integral rounding together so rounding gains remain in the exact net loss.
 /// Other work clears the movement target, rebuilds abilities and cancels
@@ -239,7 +239,7 @@ pub const SET_EXILED: Site = Site {
     id: SiteId::SetExiled,
     kind: SiteKind::Entry,
     name: "exile_equipment",
-    rva: 0xc7f020,
+    rva: 0xc8e770,
     sentinel: [
         0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x48, 0x81, 0xec, 0x70,
         0x01,
@@ -247,7 +247,7 @@ pub const SET_EXILED: Site = Site {
 };
 /// Scale taps return void, with RCX pool and RDX fixed5 factor. Replace only
 /// the five-byte CALL; scaling does not call other pool writers.
-pub const SCALE_TARGET: usize = 0xffbcc0;
+pub const SCALE_TARGET: usize = 0x1010f70;
 /// Returning volunteers scale their live pool with the content-loaded return
 /// ratio. The removed difference is logged as loss without a source-reserve
 /// credit. Surviving armies and pools return to the roster. The stored transfer
@@ -258,9 +258,9 @@ pub const VOLUNTEER_RETURN_LOSS: Site = Site {
         target: SCALE_TARGET,
     },
     name: "volunteer_return_equipment_tap",
-    rva: 0x1510d60,
+    rva: 0x1523070,
     sentinel: [
-        0xe8, 0x5b, 0xaf, 0xae, 0xff, 0x48, 0x8d, 0x96, 0x48, 0x03, 0x00, 0x00, 0x48, 0x8d, 0x4c,
+        0xe8, 0xfb, 0xde, 0xae, 0xff, 0x48, 0x8d, 0x96, 0x48, 0x03, 0x00, 0x00, 0x48, 0x8d, 0x4c,
         0x24,
     ],
 };
@@ -272,9 +272,9 @@ pub const CAPITULATION_ESCAPE_LOSS: Site = Site {
         target: SCALE_TARGET,
     },
     name: "capitulation_escape_equipment_tap",
-    rva: 0x6d7c58,
+    rva: 0x6e4878,
     sentinel: [
-        0xe8, 0x63, 0x40, 0x92, 0x00, 0x48, 0x8d, 0x55, 0xf7, 0x48, 0x8d, 0x0d, 0xa8, 0x58, 0xc4,
+        0xe8, 0xf3, 0xc6, 0x92, 0x00, 0x48, 0x8d, 0x55, 0xf7, 0x48, 0x8d, 0x0d, 0x28, 0x18, 0xc5,
         0x02,
     ],
 };
@@ -286,9 +286,9 @@ pub const SCRIPTED_EQUIPMENT_FRACTION: Site = Site {
         target: SCALE_TARGET,
     },
     name: "scripted_division_equipment_fraction_tap",
-    rva: 0x49b2f3,
+    rva: 0x49d023,
     sentinel: [
-        0xe8, 0xc8, 0x09, 0xb6, 0x00, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xe0, 0x48, 0x8b,
+        0xe8, 0x48, 0x3f, 0xb7, 0x00, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xe0, 0x48, 0x8b,
         0x5c,
     ],
 };
@@ -301,9 +301,9 @@ pub const SCRIPTED_RESERVE_EQUIPMENT_FRACTION: Site = Site {
         target: SCALE_TARGET,
     },
     name: "scripted_reserve_equipment_fraction_tap",
-    rva: 0x49b2c0,
+    rva: 0x49cff0,
     sentinel: [
-        0xe8, 0xfb, 0x09, 0xb6, 0x00, 0x48, 0x8b, 0xcf, 0xe8, 0xe3, 0x72, 0x22, 0x00, 0x48, 0x8b,
+        0xe8, 0x7b, 0x3f, 0xb7, 0x00, 0x48, 0x8b, 0xcf, 0xe8, 0xf3, 0x20, 0x23, 0x00, 0x48, 0x8b,
         0xf8,
     ],
 };
@@ -334,7 +334,7 @@ pub const MERGE: Site = Site {
     id: SiteId::Merge,
     kind: SiteKind::Entry,
     name: "division_merge_pools",
-    rva: 0x134ece0,
+    rva: 0x1363da0,
     sentinel: [
         0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
         0x41,
@@ -348,9 +348,9 @@ pub const HQ_RETURN: Site = Site {
         target: RETURN_TARGET,
     },
     name: "hq_equipment_return_tap",
-    rva: 0xbe4c9c,
+    rva: 0xbf41ac,
     sentinel: [
-        0xe8, 0xaf, 0x78, 0x26, 0x00, 0xba, 0xa0, 0x86, 0x01, 0x00, 0x48, 0x8d, 0x8b, 0xd0, 0x03,
+        0xe8, 0x9f, 0xcc, 0x26, 0x00, 0xba, 0xa0, 0x86, 0x01, 0x00, 0x48, 0x8d, 0x8b, 0xd0, 0x03,
         0x00,
     ],
 };
@@ -437,14 +437,14 @@ pub fn canceled_delivery_pools(
     // Parent requests point to their division; children retain the owning division.
     if field::<u64>(memory, requests, 0)?
         != base
-            .checked_add(0x29bb490)
+            .checked_add(0x29d2080)
             .ok_or("merge requests vtable overflow")? as u64
         || pointer(memory, requests, 8)? != army
     {
         return Err("merge army requests identity mismatch");
     }
     for (offset, vtable, data, pool) in [
-        (0x10, 0x29bb1d0, 0x28, 0x38),
+        (0x10, 0x29d1dc0, 0x28, 0x38),
         (
             crate::carmy_upgrades_requests::IN_ARMY_REQUESTS,
             crate::carmy_upgrades_requests::VTABLE_RVA,
@@ -621,45 +621,45 @@ pub enum QueuedContext {
 /// Actual return addresses include tail-jump routes. Transfer readers preserve
 /// their original parser dispatch return through unit deletion; combat lifecycle
 /// cleanup also retains the original caller return through its intervening dispatches.
-pub const COMBAT_DELETION_RETURN: usize = 0x13ce9f6;
-pub const QUEUED_DELETE_RETURN: usize = 0x1d5fc4;
-pub const READ_CONTEXT_RETURN: usize = 0x24a9b05;
+pub const COMBAT_DELETION_RETURN: usize = 0x13e3d16;
+pub const QUEUED_DELETE_RETURN: usize = 0x1d6444;
+pub const READ_CONTEXT_RETURN: usize = 0x24bea65;
 pub const DELETION_CAUSES: [(usize, Cause); 15] = [
     (COMBAT_DELETION_RETURN, Cause::DivisionDestroyed),
     // Unit-deletion effects retain their requested-return flag through the
     // exact reserve-return tap; it is not interpreted as a loss predicate.
-    (0x354980, Cause::DivisionScripted),
-    (0x354ffe, Cause::DivisionScripted),
+    (0x355000, Cause::DivisionScripted),
+    (0x35567e, Cause::DivisionScripted),
     // Destruction effects retain the return address through scope-validated virtual dispatch.
-    (0x531310, Cause::DivisionScripted),
-    (0x700c06, Cause::DivisionTemplateRemoved),
-    (0x1501127, Cause::DivisionTemplateRemoved),
-    (0x1351072, Cause::DivisionDisbanded),
-    (0x6d5094, Cause::DivisionCapitulation),
+    (0x53dc20, Cause::DivisionScripted),
+    (0x70d890, Cause::DivisionTemplateRemoved),
+    (0x1513437, Cause::DivisionTemplateRemoved),
+    (0x1366132, Cause::DivisionDisbanded),
+    (0x6e1ca4, Cause::DivisionCapitulation),
     // Annex/OOB replacement wipes; initial OOB loading passes wipe=false.
-    (0x6dc460, Cause::DivisionDeleted),
-    (0x6dc570, Cause::DivisionDeleted),
+    (0x6e9010, Cause::DivisionDeleted),
+    (0x6e9120, Cause::DivisionDeleted),
     // Country army validation and orphan exile/volunteer transfer cleanup.
-    (0x706e08, Cause::DivisionDeleted),
-    (0x14ff6e0, Cause::DivisionDeleted),
-    (0x150e151, Cause::DivisionDeleted),
+    (0x713a38, Cause::DivisionDeleted),
+    (0x15119f0, Cause::DivisionDeleted),
+    (0x1520461, Cause::DivisionDeleted),
     // Appearance reset also supports gameplay country reuse. Runtime reset
     // is excluded by RESETTING rather than by shared return addresses.
-    (0x6d68ee, Cause::DivisionDeleted),
-    (0x6d6a01, Cause::DivisionDeleted),
+    (0x6e34fe, Cause::DivisionDeleted),
+    (0x6e3611, Cause::DivisionDeleted),
 ];
 /// Failed save-reader validation and rejected scripted unit creation delete
 /// parsed allocations before roster attachment or stockpile supply.
-pub const FAILED_CREATE_RETURN: usize = 0x3527be;
+pub const FAILED_CREATE_RETURN: usize = 0x352e3e;
 pub const IGNORED_DELETIONS: [usize; 4] = [
-    0x6fa567,
-    0x6fa81c,
+    0x7070d7,
+    0x70738c,
     READ_CONTEXT_RETURN,
     FAILED_CREATE_RETURN,
 ];
 /// Merge copies source pools into its aggregate before disposal. Unchanged
 /// source pools are therefore transfers rather than losses.
-pub const MERGED_DELETION_RETURN: usize = 0x134facd;
+pub const MERGED_DELETION_RETURN: usize = 0x1364b8d;
 
 pub fn deletion_context(caller_rva: usize) -> DeletionContext {
     if IGNORED_DELETIONS.contains(&caller_rva) {
@@ -682,21 +682,21 @@ pub fn deletion_context(caller_rva: usize) -> DeletionContext {
 /// deletion cause until disposal. HQ cleanup credits its complete pool before
 /// queueing, so that disposal is a transfer.
 pub const QUEUED_DELETION_CAUSES: [(usize, Cause); 7] = [
-    (0xc7a306, Cause::DivisionOverrun),
+    (0xc89a46, Cause::DivisionOverrun),
     // Hourly attrition completes before the content-loaded strength threshold
     // and deletion scheduling.
-    (0xc78f76, Cause::DivisionDeleted),
-    (0xde32d8, Cause::DivisionDeleted),
-    (0x70b56d, Cause::DivisionDeleted),
-    (0x150f0ad, Cause::DivisionDeleted),
-    (0x9d08a4, Cause::DivisionDeleted),
+    (0xc886b6, Cause::DivisionDeleted),
+    (0xdf7bd8, Cause::DivisionDeleted),
+    (0x71819d, Cause::DivisionDeleted),
+    (0x15213bd, Cause::DivisionDeleted),
+    (0x9dd6f4, Cause::DivisionDeleted),
     // Immediate damage finishes its removal before this strength test.
-    (0x342aa6, Cause::DivisionScripted),
+    (0x343126, Cause::DivisionScripted),
 ];
-pub const HQ_PROVIDER_RETURN: usize = 0xbe4dc4;
+pub const HQ_PROVIDER_RETURN: usize = 0xbf42d4;
 /// Reveal-skip selects deception armies. Combat joining refuses those
 /// objects, so their disposal is outside inventory loss.
-pub const FAKE_INTEL_QUEUE_RETURN: usize = 0x12a624b;
+pub const FAKE_INTEL_QUEUE_RETURN: usize = 0x12bb30b;
 
 pub fn queued_context(caller_rva: usize) -> QueuedContext {
     if caller_rva == HQ_PROVIDER_RETURN {
@@ -776,13 +776,13 @@ pub fn army_identity(memory: &impl Memory, base: usize, army: usize) -> Result<u
 
 /// Direct combat-damage caller return addresses. Combat end flushes accumulated
 /// losses and applies the content-loaded combat-loss factor before damage.
-pub const LAND_COMBAT_RETURN: usize = 0xc7b6b8;
+pub const LAND_COMBAT_RETURN: usize = 0xc8adf8;
 /// Lost transports remove convoys and damage carried divisions in proportion
 /// to the lost transport amount.
-pub const NAVAL_TRANSPORT_RETURN: usize = 0xe13a70;
+pub const NAVAL_TRANSPORT_RETURN: usize = 0xe28370;
 /// Immediate damage applies strength and organization operands before
 /// equipment damage.
-pub const IMMEDIATE_RETURN: usize = 0xc80225;
+pub const IMMEDIATE_RETURN: usize = 0xc8f975;
 
 pub fn land_cause(caller_rva: usize) -> Cause {
     match caller_rva {
@@ -798,27 +798,27 @@ pub fn land_cause(caller_rva: usize) -> Cause {
 /// source-country arguments do not establish a finer cause.
 pub const AIR_CAUSES: [(usize, Cause); 11] = [
     // Nuclear airbase damage removes aircraft from every wing.
-    (0x1084bf3, Cause::AirNuclear),
+    (0x1099ea3, Cause::AirNuclear),
     // Accident losses apply the country loss roll and update the wing accumulator.
-    (0xf48c72, Cause::AirAccident),
+    (0xf5ddf2, Cause::AirAccident),
     // Strategic bombing applies content-loaded aircraft hit and damage factors.
-    (0xc4bde1, Cause::AirStrategic),
+    (0xc5b521, Cause::AirStrategic),
     // Strategic hourly processing removes aircraft during its wing pass.
-    (0xc50482, Cause::AirStrategic),
+    (0xc5fbc2, Cause::AirStrategic),
     // Train anti-air losses use the content-loaded hit and amount factors.
-    (0xf6125e, Cause::AirMissionAa),
+    (0xf763de, Cause::AirMissionAa),
     // Mission anti-air applies the mission-dependent wing loss.
-    (0xf6e8e6, Cause::AirMissionAa),
+    (0xf83a66, Cause::AirMissionAa),
     // Mission anti-air damage uses content-loaded chance and damage factors.
-    (0xf71e60, Cause::AirMissionAa),
+    (0xf86fe0, Cause::AirMissionAa),
     // Mission processing flushes its accumulated losses with their stored attribution.
-    (0xf724f7, Cause::AirMissionAa),
+    (0xf87677, Cause::AirMissionAa),
     // Land anti-air applies the night-attack and anti-air content factors.
-    (0x1296683, Cause::AirLandCombatCas),
+    (0x12ab743, Cause::AirLandCombatCas),
     // Scripted raid-unit damage reaches this aircraft-removal channel.
-    (0x14547d8, Cause::AirRaid),
+    (0x1466ae8, Cause::AirRaid),
     // Naval anti-air callers remove aircraft through their shared exchange channel.
-    (0x1966bdc, Cause::AirNavalAa),
+    (0x197a28c, Cause::AirNavalAa),
 ];
 
 pub fn air_cause(caller_rva: usize) -> Cause {

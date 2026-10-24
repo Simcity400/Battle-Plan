@@ -1,8 +1,7 @@
-//! Raid-system path-distance memo shared by land and naval lookup.
-//! The key contains source and target province IDs only, so the first computed
-//! path kind wins for that pair during the session, including failures. The memo
-//! is not saved. Buckets retain hash, occupancy/probe distance, province IDs and
-//! distance/success fields.
+//! Separate raid-system land and naval session path-distance memos.
+//! Each key contains source and target province IDs; failures are cached too.
+//! Neither memo is saved. Buckets retain hash, occupancy/probe distance,
+//! province IDs and distance/success fields.
 //!
 //! Game writers hold a spin lock across lookup, insertion and rehash. Capture
 //! does not take that lock: it snapshots header and lock before and after copying,
@@ -12,8 +11,22 @@
 
 use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
 
-/// The raid system's path distance memo.
-pub const MEMO: usize = 0x230;
+pub const LAND_MEMO: usize = 0x258;
+pub const NAVAL_MEMO: usize = 0x230;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatcher {
+    Land,
+    Naval,
+}
+impl Dispatcher {
+    fn offset(self) -> usize {
+        match self {
+            Self::Land => LAND_MEMO,
+            Self::Naval => NAVAL_MEMO,
+        }
+    }
+}
 const BUCKETS: usize = 0x08;
 const COUNT: usize = 0x10;
 const MASK: usize = 0x14;
@@ -43,8 +56,13 @@ pub struct Row {
 /// Header-only sizing hint; no value here is recorded. Rehash allocates the
 /// bucket and probe-tail extent plus a separate sentinel. Inserts keep that
 /// geometry, bounding output even if count grows before the next sizing poll.
-pub fn required_rows(memory: &impl Memory, base: usize, game_state: usize) -> Option<usize> {
-    let memo = memo_address(memory, base, game_state).ok()?;
+pub fn required_rows(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    dispatcher: Dispatcher,
+) -> Option<usize> {
+    let memo = memo_address(memory, base, game_state, dispatcher).ok()?;
     table_slots(&read_header(memory, memo).ok()?).ok()
 }
 
@@ -55,6 +73,7 @@ pub fn walk(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    dispatcher: Dispatcher,
     rows: &mut [Row],
     torn: &mut u32,
 ) -> Outcome {
@@ -62,6 +81,7 @@ pub fn walk(
         memory,
         base,
         game_state,
+        dispatcher,
         crate::walk::Buffer::Fixed(rows),
         torn,
     )
@@ -71,6 +91,7 @@ pub fn walk_growing(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    dispatcher: Dispatcher,
     rows: &mut Vec<Row>,
     torn: &mut u32,
 ) -> Outcome {
@@ -78,6 +99,7 @@ pub fn walk_growing(
         memory,
         base,
         game_state,
+        dispatcher,
         crate::walk::Buffer::Growing(rows),
         torn,
     )
@@ -87,10 +109,11 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    dispatcher: Dispatcher,
     rows: crate::walk::Buffer<'_, Row>,
     torn: &mut u32,
 ) -> Outcome {
-    match walk_rows(memory, base, game_state, rows, torn) {
+    match walk_rows(memory, base, game_state, dispatcher, rows, torn) {
         Ok(outcome) => outcome,
         Err(reason) => Outcome::Unavailable { reason },
     }
@@ -100,10 +123,11 @@ fn walk_rows(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    dispatcher: Dispatcher,
     rows: crate::walk::Buffer<'_, Row>,
     torn: &mut u32,
 ) -> Result<Outcome, &'static str> {
-    let memo = memo_address(memory, base, game_state)?;
+    let memo = memo_address(memory, base, game_state, dispatcher)?;
     let before = read_header(memory, memo)?;
     let copied = copy_table(memory, &before, rows);
     let after = read_header(memory, memo)?;
@@ -120,6 +144,7 @@ fn memo_address(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
+    dispatcher: Dispatcher,
 ) -> Result<usize, &'static str> {
     let system = game_state
         .checked_add(cgame_state::RAID_SYSTEM)
@@ -134,7 +159,7 @@ fn memo_address(
         return Err("raid system vtable mismatch");
     }
     system
-        .checked_add(MEMO)
+        .checked_add(dispatcher.offset())
         .ok_or("raid path memo address overflow")
 }
 
@@ -268,12 +293,16 @@ mod tests {
         );
         put(
             &mut bytes,
-            SYSTEM + MEMO + BUCKETS,
+            SYSTEM + NAVAL_MEMO + BUCKETS,
             &(TABLE as u64).to_le_bytes(),
         );
-        put(&mut bytes, SYSTEM + MEMO + COUNT, &count.to_le_bytes());
-        put(&mut bytes, SYSTEM + MEMO + MASK, &mask.to_le_bytes());
-        put(&mut bytes, SYSTEM + MEMO + MAX_PROBE, &[probe]);
+        put(
+            &mut bytes,
+            SYSTEM + NAVAL_MEMO + COUNT,
+            &count.to_le_bytes(),
+        );
+        put(&mut bytes, SYSTEM + NAVAL_MEMO + MASK, &mask.to_le_bytes());
+        put(&mut bytes, SYSTEM + NAVAL_MEMO + MAX_PROBE, &[probe]);
         let slots = mask as usize + usize::from(probe) + 1;
         put(&mut bytes, TABLE + slots * BUCKET + PROBE, &[END]);
         for &(slot, probe, source, target, distance, ok) in buckets {
@@ -289,14 +318,75 @@ mod tests {
 
     fn run(bytes: &[u8], rows: &mut [Row]) -> Outcome {
         let mut torn = 0;
-        let outcome = walk(&SliceMemory { base: 0, bytes }, 0, GAME, rows, &mut torn);
+        let outcome = walk(
+            &SliceMemory { base: 0, bytes },
+            0,
+            GAME,
+            Dispatcher::Naval,
+            rows,
+            &mut torn,
+        );
         assert_eq!(torn, 0, "a quiet table is never torn");
         outcome
     }
 
     #[test]
+    fn dispatchers_read_only_their_own_native_memo() {
+        let mut bytes = fixture(&[(0, 1, 7, 9, 500_000, 1)], 1, 1, 1);
+        let land_table = TABLE + 0x400;
+        let header = bytes[SYSTEM + NAVAL_MEMO + BUCKETS..SYSTEM + NAVAL_MEMO + LOCK + 4].to_vec();
+        put(&mut bytes, SYSTEM + LAND_MEMO + BUCKETS, &header);
+        put(
+            &mut bytes,
+            SYSTEM + LAND_MEMO + BUCKETS,
+            &(land_table as u64).to_le_bytes(),
+        );
+        let buckets = bytes[TABLE..TABLE + 4 * BUCKET].to_vec();
+        put(&mut bytes, land_table, &buckets);
+        put(
+            &mut bytes,
+            land_table + DISTANCE,
+            &900_000_i64.to_le_bytes(),
+        );
+        let mut rows = [Row::default(); 1];
+        for (dispatcher, distance) in [(Dispatcher::Land, 900_000), (Dispatcher::Naval, 500_000)] {
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            assert_eq!(required_rows(&memory, 0, GAME, dispatcher), Some(3));
+            assert_eq!(
+                walk(&memory, 0, GAME, dispatcher, &mut rows, &mut 0),
+                Outcome::Rows { len: 1 }
+            );
+            assert_eq!(
+                (rows[0].source, rows[0].target, rows[0].distance),
+                (7, 9, distance)
+            );
+        }
+        put(&mut bytes, SYSTEM + LAND_MEMO + LOCK, &1_u32.to_le_bytes());
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let mut torn = 0;
+        assert!(matches!(
+            walk(&memory, 0, GAME, Dispatcher::Land, &mut rows, &mut torn),
+            Outcome::Unavailable { .. }
+        ));
+        assert_eq!(torn, 1);
+        assert_eq!(
+            walk(&memory, 0, GAME, Dispatcher::Naval, &mut rows, &mut torn),
+            Outcome::Rows { len: 1 }
+        );
+        assert_eq!(torn, 1);
+    }
+
+    #[test]
     fn required_rows_reads_slot_geometry_without_buckets() {
-        let size = |bytes: &[u8]| required_rows(&SliceMemory { base: 0, bytes }, 0, GAME);
+        let size = |bytes: &[u8]| {
+            required_rows(&SliceMemory { base: 0, bytes }, 0, GAME, Dispatcher::Naval)
+        };
         let cases = [(0, 0, 0, 1), (7, 1, 0, 9), (7, 4, 1, 12), (7, 4, 4, 12)];
         for (mask, probe, count, required) in cases {
             let bytes = fixture(&[], mask, probe, count);
@@ -305,11 +395,14 @@ mod tests {
         }
         let mut bytes = fixture(&[], 7, 4, 0);
         for mask in [2, u32::MAX] {
-            put(&mut bytes, SYSTEM + MEMO + MASK, &mask.to_le_bytes());
+            put(&mut bytes, SYSTEM + NAVAL_MEMO + MASK, &mask.to_le_bytes());
             assert_eq!(size(&bytes), None);
         }
         let bytes = fixture(&[], 7, 4, 0);
-        assert_eq!(size(&bytes[..SYSTEM + MEMO + BUCKETS + HEADER - 1]), None);
+        assert_eq!(
+            size(&bytes[..SYSTEM + NAVAL_MEMO + BUCKETS + HEADER - 1]),
+            None
+        );
         let mut bytes = bytes;
         put(&mut bytes, SYSTEM, &0_u64.to_le_bytes());
         assert_eq!(size(&bytes), None);
@@ -325,6 +418,7 @@ mod tests {
             },
             0,
             GAME,
+            Dispatcher::Naval,
         )
         .unwrap();
         // Inserts grow COUNT without changing the mask or the probe limit.
@@ -344,7 +438,11 @@ mod tests {
         let mut rows = [Row::default(); 4];
         // Held by a writer: this hour's table is not published.
         let mut locked = fixture(&buckets, 7, 1, 1);
-        put(&mut locked, SYSTEM + MEMO + LOCK, &1_u32.to_le_bytes());
+        put(
+            &mut locked,
+            SYSTEM + NAVAL_MEMO + LOCK,
+            &1_u32.to_le_bytes(),
+        );
         let mut torn = 0;
         let outcome = walk(
             &SliceMemory {
@@ -353,6 +451,7 @@ mod tests {
             },
             0,
             GAME,
+            Dispatcher::Naval,
             &mut rows,
             &mut torn,
         );
@@ -367,7 +466,7 @@ mod tests {
         };
         let mut torn = 0;
         assert_eq!(
-            walk(&memory, 0, GAME, &mut rows, &mut torn),
+            walk(&memory, 0, GAME, Dispatcher::Naval, &mut rows, &mut torn),
             Outcome::Unavailable {
                 reason: "raid path memo was written during the read"
             }
@@ -390,7 +489,7 @@ mod tests {
                 bytes: &bytes,
             }
             .copy(address, destination);
-            if address == SYSTEM + MEMO + BUCKETS {
+            if address == SYSTEM + NAVAL_MEMO + BUCKETS {
                 let reads = self.reads.get() + 1;
                 self.reads.set(reads);
                 if reads == 1 {
@@ -408,7 +507,11 @@ mod tests {
                         TABLE + 5 * BUCKET + TARGET,
                         &9_u32.to_le_bytes(),
                     );
-                    put(&mut bytes, SYSTEM + MEMO + COUNT, &2_u32.to_le_bytes());
+                    put(
+                        &mut bytes,
+                        SYSTEM + NAVAL_MEMO + COUNT,
+                        &2_u32.to_le_bytes(),
+                    );
                 }
             }
             copied
@@ -487,20 +590,20 @@ mod tests {
         );
         put(
             &mut bytes,
-            SYSTEM + MEMO + BUCKETS,
+            SYSTEM + NAVAL_MEMO + BUCKETS,
             &(table as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
-            SYSTEM + MEMO + COUNT,
+            SYSTEM + NAVAL_MEMO + COUNT,
             &(entries as u32).to_le_bytes(),
         );
         put(
             &mut bytes,
-            SYSTEM + MEMO + MASK,
+            SYSTEM + NAVAL_MEMO + MASK,
             &((slots - 1) as u32).to_le_bytes(),
         );
-        put(&mut bytes, SYSTEM + MEMO + MAX_PROBE, &[1]);
+        put(&mut bytes, SYSTEM + NAVAL_MEMO + MAX_PROBE, &[1]);
         put(&mut bytes, table + (slots + 1) * BUCKET + PROBE, &[END]);
         for entry in 0..entries {
             let at = table + entry * BUCKET;
@@ -531,7 +634,8 @@ mod tests {
                     }
                 );
             }
-            let mut rows = vec![Row::default(); required_rows(&memory, 0, GAME).unwrap()];
+            let mut rows =
+                vec![Row::default(); required_rows(&memory, 0, GAME, Dispatcher::Naval).unwrap()];
             assert_eq!(run(&bytes, &mut rows), Outcome::Rows { len: entries });
         }
     }
@@ -547,7 +651,7 @@ mod tests {
                 &format!("RaidPathDistances {entries} entries"),
                 20,
                 |memory| {
-                    let outcome = walk(memory, 0, GAME, &mut rows, &mut 0);
+                    let outcome = walk(memory, 0, GAME, Dispatcher::Naval, &mut rows, &mut 0);
                     assert_eq!(outcome, Outcome::Rows { len: entries });
                     format!("{entries} rows")
                 },

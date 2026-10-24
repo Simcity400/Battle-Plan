@@ -13,13 +13,13 @@ pub const PERSISTENT_RECEIVER: usize = 8;
 
 /// Sole point writers, native sliced decay, and complete lifecycle writers.
 pub const WRITERS: [(&str, usize, u64); 7] = [
-    ("mine region addition", 0x00e8_a000, 0x6e94_eeb3_2e37_fce3),
-    ("mine index addition", 0x00e8_a040, 0xfb65_e768_acf6_996e),
-    ("mine peace decay", 0x00e8_e4f0, 0x4922_ae21_0537_1896),
-    ("navy construction", 0x00e8_8190, 0x60d3_e0d8_0296_fbf8),
-    ("navy regional growth", 0x00e9_2ae0, 0xb4b9_d7f9_399a_125d),
-    ("navy reset", 0x00e9_6510, 0x60d3_efd8_0297_1575),
-    ("navy persistent load", 0x00e9_7960, 0xe688_884a_0a9a_e2ff),
+    ("mine region addition", 0x00e9_f190, 0x6e94_eeb3_2e37_fce3),
+    ("mine index addition", 0x00e9_f1d0, 0xfb65_e768_acf6_996e),
+    ("mine peace decay", 0x00ea_3680, 0x4849_8d21_047e_efc3),
+    ("navy construction", 0x00e9_d320, 0x60d3_e0d8_0296_fbf8),
+    ("navy regional growth", 0x00ea_7c70, 0xb4b9_d7f9_399a_125d),
+    ("navy reset", 0x00ea_b6a0, 0x60d3_efd8_0297_1575),
+    ("navy persistent load", 0x00ea_caf0, 0xe688_884a_0a9a_e2ff),
 ];
 
 /// The caller supplies a navy authenticated by the current physical census.

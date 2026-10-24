@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// CUnitLeader base vtable.
-pub const VTABLE_RVA: usize = 0x0293_f420;
+pub const VTABLE_RVA: usize = 0x0295_5b90;
 /// CUnitLeader reference type u32.
 pub const REFERENCE_TYPE: u32 = 4713;
 /// CUnitLeader reference type u32.
@@ -60,11 +60,11 @@ pub const CHARACTER_ID: usize = 0xf4c;
 /// CUnitLeader copied character-reference type u32.
 pub const CHARACTER_TYPE: usize = 0xf48;
 /// CUnitLeader base constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00bf_ccb0;
+pub const CONSTRUCTOR_RVA: usize = 0x00c0_c200;
 /// CUnitLeader experience update.
-pub const ADD_EXPERIENCE_RVA: usize = 0x00c0_5400;
+pub const ADD_EXPERIENCE_RVA: usize = 0x00c1_4950;
 /// CUnitLeader name/token updater.
-pub const SET_NAME_RVA: usize = 0x00c1_6fb0;
+pub const SET_NAME_RVA: usize = 0x00c2_6510;
 
 /// Raw army-category formation reference used by late-join scaling and communications.
 /// The caller supplies the authenticated kind and category from the established

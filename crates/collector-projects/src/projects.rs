@@ -723,10 +723,9 @@ impl Captured {
         if active[12] {
             let _reads = read_accounting::table(TABLES[12]);
             let begin = qpc();
-            let torn = &mut self.raid_reads.torn_memo_reads;
-            capture_rows(&mut self.raid_paths, |rows| {
-                raid_path_memo::walk_growing(memory, base, game_state, rows, torn)
-            });
+            self.raid_paths.outcome = Outcome::Unavailable {
+                reason: "RaidPathDistances unavailable: separate land/naval memos require dispatcher-aware recorded keys",
+            };
             ticks[12] = elapsed(begin);
         } else {
             self.raid_paths.outcome = Outcome::Unavailable {

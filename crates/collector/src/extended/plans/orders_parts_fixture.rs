@@ -16,9 +16,9 @@ pub(super) const FRONTS: usize = 2;
 // child-front data and its signed count spans.
 const CHILD_DATA: usize = 0x380;
 const CHILD_STRIDE: usize = 0x48;
-const CHILD_VTABLE: usize = 0x0296_fa98;
+const CHILD_VTABLE: usize = 0x0298_66c8;
 // Order serialization preserves the constructed subscriber counts.
-const SUBSCRIBER_VTABLE: usize = 0x0294_5910;
+const SUBSCRIBER_VTABLE: usize = 0x0295_c0f0;
 
 pub(super) fn build() -> World {
     // As in bench_world, the sizing pass's pointers are never read. The final

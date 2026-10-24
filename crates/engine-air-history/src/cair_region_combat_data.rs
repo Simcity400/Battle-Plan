@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// Regional combat-data vtable.
-pub const VTABLE_RVA: usize = 0x0294_2188;
+pub const VTABLE_RVA: usize = 0x0295_8968;
 /// First wing-combat-record vector.
 pub const FIRST_RECORDS: usize = 0x08;
 /// First-vector count, i32.
@@ -23,12 +23,12 @@ pub const SECOND_RECORDS: usize = 0x20;
 /// Raw owner-country link, including zero, copied from strategic air.
 pub const OWNER: usize = 0x38;
 /// Record update accumulating flags, masks, plane high-water count and damage.
-pub const UPDATE_RECORD_RVA: usize = 0x0194_f590;
+pub const UPDATE_RECORD_RVA: usize = 0x0196_2c40;
 /// Pruning records older than the runtime timeout from both vectors.
-pub const PRUNE_RVA: usize = 0x0195_01b0;
+pub const PRUNE_RVA: usize = 0x0196_3860;
 /// `NGame.AIR_LOG_TIMEOUT_HOURS`, loaded as an i32 and subtracted from the game clock
 /// (`cgame_state::CURRENT_HOUR`) when pruning air records.
-pub const LOG_TIMEOUT_RVA: usize = 0x0331_da14;
+pub const LOG_TIMEOUT_RVA: usize = 0x0333_6678;
 
 /// One non-null slot from a completely enumerated, authenticated CStrategicAir
 /// region table. The slot index is the native strategic-region id. Addresses

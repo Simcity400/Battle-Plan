@@ -3,7 +3,7 @@
 //! Required and allocation pools also have distinct entry layouts.
 
 /// Required archetype-pool primary vtable.
-pub const VTABLE_RVA: usize = 0x0277_39d0;
+pub const VTABLE_RVA: usize = 0x0278_9c30;
 
 /// Garrison equipment-pool data pointer.
 pub const DATA: usize = 0x08;

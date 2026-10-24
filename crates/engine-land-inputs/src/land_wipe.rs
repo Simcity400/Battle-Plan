@@ -6,6 +6,7 @@
 //! without selecting a killer division. Tail-jump deletion bypasses the separate
 //! selected-killer destruction route.
 //!
+//! The later leader on-action chooses its own country; it does not change casualty attribution.
 //! Attribution uses the opposite side's first raw country. An empty side selects
 //! the first raw link to reserved slot zero, or zero when no link matches. Keep
 //! the triggering combat separate from remaining references because it is already
@@ -20,12 +21,12 @@ use crate::{
     cprovince, cunit, read,
 };
 
-pub const RETURN_RVA: usize = 0x13ce9f6;
+pub const RETURN_RVA: usize = 0x13e3d16;
 /// Base lifecycle after land leader-experience effects. Naval combatants
 /// share this virtual path and their vtable is excluded below.
-pub const LIFECYCLE_RVA: usize = 0x13cc5b0;
+pub const LIFECYCLE_RVA: usize = 0x13e1760;
 pub const LIFECYCLE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48,
+    0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x02, 0x4c, 0x8b, 0xfa, 0x48, 0x89,
 ];
 /// CPdxArray<u32>; base lifecycle loads its data and signed count.
 const COUNTRY_ARRAY: usize = 0x68;

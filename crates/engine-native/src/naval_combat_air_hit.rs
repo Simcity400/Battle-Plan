@@ -2,7 +2,7 @@
 use crate::{Memory, cequipment_variant, cnaval_combatant::field};
 
 /// Aircraft-loss entry primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_7198;
+pub const VTABLE_RVA: usize = 0x029d_dd88;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// CIntelligenceAgency primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_b338;
+pub const VTABLE_RVA: usize = 0x0298_1f68;
 /// CIntelligenceAgency inline COperativeRecruitment.
 pub const RECRUITMENT: usize = 0x08;
 /// CIntelligenceAgency owning CCountry pointer.
@@ -49,9 +49,9 @@ pub const CRYPTOLOGY: usize = 0x120;
 /// CIntelligenceAgency signed i64 defense /100000.
 pub const DEFENSE: usize = 0x128;
 /// CIntelligenceAgency constructor RVA.
-pub const CONSTRUCTOR_RVA: usize = 0x00fc_1d70;
+pub const CONSTRUCTOR_RVA: usize = 0x00fd_7020;
 /// Operative-admission override byte; nonzero permits count above ceiling.
-pub const ADMISSION_OVERRIDE_RVA: usize = 0x0331_725e;
+pub const ADMISSION_OVERRIDE_RVA: usize = 0x0332_f62e;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

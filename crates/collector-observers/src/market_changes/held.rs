@@ -12,7 +12,7 @@ use std::{
     sync::Mutex,
 };
 const PENDING_REQUESTS: usize = 0x60;
-const REQUEST_VTABLE_RVA: usize = 0x2a12170;
+const REQUEST_VTABLE_RVA: usize = 0x2a28ed0;
 mod worker;
 
 static EPOCH: AtomicU64 = AtomicU64::new(1);

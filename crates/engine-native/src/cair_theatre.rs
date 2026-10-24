@@ -12,7 +12,7 @@ pub struct Row {
 }
 
 /// Air-theatre primary vtable.
-pub const VTABLE_RVA: usize = 0x027d_0ef0;
+pub const VTABLE_RVA: usize = 0x027e_73c0;
 /// Reference type checked against the handle.
 pub const TYPE: u32 = 77;
 /// Full handle containing u32 type and id.

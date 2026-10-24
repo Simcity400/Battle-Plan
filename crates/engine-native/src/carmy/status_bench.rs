@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{hint::black_box, time::Instant};
 
-const IMAGE_BYTES: usize = 0x0344_0000;
+const IMAGE_BYTES: usize = 0x0346_0000;
 const RUNS: usize = 25;
 
 struct Arena {

@@ -6,7 +6,7 @@
 //! pointer CPdxArray with data, capacity, count and allocator fields.
 
 /// Group-log primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_70a8;
+pub const VTABLE_RVA: usize = 0x0295_d888;
 /// Enemy equipment destroyed by this group, recorded by retained-history events.
 pub const ENEMY_LOSSES: usize = 0x08;
 /// Recovered equipment after combat, grouped by month with reason zero.

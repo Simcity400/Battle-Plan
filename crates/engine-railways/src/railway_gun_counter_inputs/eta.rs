@@ -18,11 +18,11 @@ const VARIANT: usize = 0x338;
 // Independent supply storage, separate from the supply consumer's received ratio.
 const SUPPLY_CAPACITY: usize = 0x400;
 const SUPPLY_REMAINING: usize = 0x410;
-const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0331_9050;
+const OUT_OF_SUPPLY_SPEED_RVA: usize = 0x0333_1528;
 // Signed fixed5 speed globals.
-const LAND_SCALE_RVA: usize = 0x0331_d688;
-const NAVAL_SCALE_RVA: usize = 0x0331_efe0;
-const RAIL_MAX_RVA: usize = 0x0331_d0e8;
+const LAND_SCALE_RVA: usize = 0x0333_6258;
+const NAVAL_SCALE_RVA: usize = 0x0333_7f78;
+const RAIL_MAX_RVA: usize = 0x0333_5c10;
 
 fn field<T: crate::memory::Raw>(
     memory: &impl Memory,

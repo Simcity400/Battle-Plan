@@ -29,7 +29,7 @@ pub const CANCEL: usize = 0x48;
 pub const RETIRED: usize = 0x49;
 
 /// Base relation constructor installing vtable and passed type.
-pub const CONSTRUCTOR_RVA: usize = 0x00d0_3390;
+pub const CONSTRUCTOR_RVA: usize = 0x00d1_7ab0;
 
 /// Supported relation subclasses as primary vtable RVA and type-word pairs.
 /// War and subject relations have separate recorded tables but remain admitted

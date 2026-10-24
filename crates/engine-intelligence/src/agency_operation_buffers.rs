@@ -13,7 +13,7 @@ use crate::{
 use engine_native::{cprovince, creference_registry, cstate};
 
 /// Inline agency UI operation buffer in the authenticated executable image.
-pub const BUFFER_RVA: usize = 0x0332_4490;
+pub const BUFFER_RVA: usize = 0x0333_d420;
 /// Completed, running, ready preparation, unready preparation: native visit order.
 pub const BUCKET_OFFSETS: [usize; 4] = [0x00, 0x48, 0x18, 0x30];
 /// UI buffer publication counter; used only to reject a changing observation.

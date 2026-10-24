@@ -36,28 +36,28 @@
 
 pub use crate::advisor_mutations::MutationSite;
 
-const UPDATE_ACTIVE_STATS_RVA: usize = 0xc7_deb0;
+const UPDATE_ACTIVE_STATS_RVA: usize = 0xc8_d600;
 
 /// The writers, in callback order: `update_active_stats` (RCX the primary
 /// division), `refresh_cached_name` (RCX the member) and `refresh_country_names`
 /// (RCX the group and tracker, RDX the country). A detour forwards RCX..R9
 /// and returns RAX unchanged.
-const AWARD_EXPERIENCE_RVA: usize = 0xc5f3a0;
-const ADD_MANPOWER_EXPERIENCE_RVA: usize = 0xc5f4d0;
-const REFRESH_EXPERIENCE_RVA: usize = 0xc80830;
-const REBIND_EXPERIENCE_RVA: usize = 0xc6a2c0;
+const AWARD_EXPERIENCE_RVA: usize = 0xc6eae0;
+const ADD_MANPOWER_EXPERIENCE_RVA: usize = 0xc6ec10;
+const REFRESH_EXPERIENCE_RVA: usize = 0xc8ff80;
+const REBIND_EXPERIENCE_RVA: usize = 0xc79a00;
 
-const CONSTRUCT_DIVISION_HISTORY_RVA: usize = 0x1433ad0;
-const DESTROY_DIVISION_HISTORY_RVA: usize = 0x1434090;
-const APPEND_DIVISION_HISTORY_RVA: usize = 0x14344f0;
-const APPLY_DIVISION_AWARD_RVA: usize = 0x1434ac0;
-const CLEAR_MEDAL_INHERITANCE_RVA: usize = 0x1438df0;
-const CONSTRUCT_MEDAL_STORE_RVA: usize = 0x1433fe0;
-const BIND_DIVISION_TEMPLATE_RVA: usize = 0xc7ee00;
-const ADD_OFFICER_EXPERIENCE_RVA: usize = 0x13d_3b00;
-const SET_OFFICER_EXPERIENCE_RVA: usize = 0x13d_5960;
-const PROMOTE_DIVISION_OFFICER_RVA: usize = 0x143e500;
-const DESTROY_MEDAL_STORE_RVA: usize = 0x1434450;
+const CONSTRUCT_DIVISION_HISTORY_RVA: usize = 0x1445e90;
+const DESTROY_DIVISION_HISTORY_RVA: usize = 0x1446450;
+const APPEND_DIVISION_HISTORY_RVA: usize = 0x14468b0;
+const APPLY_DIVISION_AWARD_RVA: usize = 0x1446e80;
+const CLEAR_MEDAL_INHERITANCE_RVA: usize = 0x144b1b0;
+const CONSTRUCT_MEDAL_STORE_RVA: usize = 0x14463a0;
+const BIND_DIVISION_TEMPLATE_RVA: usize = 0xc8e550;
+const ADD_OFFICER_EXPERIENCE_RVA: usize = 0x13e_8e50;
+const SET_OFFICER_EXPERIENCE_RVA: usize = 0x13e_acb0;
+const PROMOTE_DIVISION_OFFICER_RVA: usize = 0x14507d0;
+const DESTROY_MEDAL_STORE_RVA: usize = 0x1446810;
 
 pub const MUTATIONS: [MutationSite; 19] = [
     // The five-byte RBX store to R8's home slot relocates, followed by saves of
@@ -75,7 +75,7 @@ pub const MUTATIONS: [MutationSite; 19] = [
     // of the address calculation placing the member's cached name in RSI.
     MutationSite {
         name: "refresh_cached_name",
-        rva: 0x9b_4c40,
+        rva: 0x9c_1a90,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
             0x20, 0x48,
@@ -85,7 +85,7 @@ pub const MUTATIONS: [MutationSite; 19] = [
     // RDX store to its home slot and saves of RBX/RBP/RSI/RDI/R12.
     MutationSite {
         name: "refresh_country_names",
-        rva: 0x9a_d440,
+        rva: 0x9b_a290,
         sentinel: [
             0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57,
             0x41, 0x54,
@@ -143,8 +143,8 @@ pub const MUTATIONS: [MutationSite; 19] = [
         name: "destroy_division_history",
         rva: DESTROY_DIVISION_HISTORY_RVA,
         sentinel: [
-            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0xd7,
-            0x6b, 0x57,
+            0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8d, 0x05, 0x07,
+            0xb4, 0x57,
         ],
     },
     MutationSite {
@@ -232,8 +232,8 @@ pub const HISTORY_FIRST: usize = 8;
 mod tests {
     use super::*;
 
-    const EXPECTED_CACHED_NAME_RVA: usize = 0x9b_4c40;
-    const EXPECTED_COUNTRY_NAMES_RVA: usize = 0x9a_d440;
+    const EXPECTED_CACHED_NAME_RVA: usize = 0x9c_1a90;
+    const EXPECTED_COUNTRY_NAMES_RVA: usize = 0x9b_a290;
 
     /// The sentinel opens with the five-byte store the hook relocates and
     /// the seven pushes of the prologue; the site is the function the carmy

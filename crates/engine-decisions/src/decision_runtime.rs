@@ -136,7 +136,7 @@ pub const IGNORED_TOKENS: usize = 0x14f8;
 pub const REMOVAL_PASS_ACTIVE: usize = 0x1c1;
 pub const EXPLICIT_TARGETS: usize = 0x21;
 
-pub const ADMISSION_OVERRIDE_RVA: usize = 0x03317262;
+pub const ADMISSION_OVERRIDE_RVA: usize = 0x0332f632;
 
 #[cfg(test)]
 mod tests {

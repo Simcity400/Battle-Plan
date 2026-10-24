@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Front-section primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_eec0;
+pub const VTABLE_RVA: usize = 0x0297_5af0;
 /// Front-section id used for section lookup.
 pub const ID: usize = 8;
 /// Owning front pointer.

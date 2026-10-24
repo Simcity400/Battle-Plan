@@ -2,7 +2,7 @@
 //! air-base country containers.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_2118;
+pub const VTABLE_RVA: usize = 0x0295_88f8;
 /// Country-slot strategic-air pointer-vector data.
 pub const COUNTRY_AIR: usize = 0x30;
 /// State-indexed first-province lists for ordinary, kind-1 and kind-2 bases,
@@ -19,6 +19,6 @@ pub const STATE_GUN_BASES: usize = 0xc0;
 /// Dense stateless air-base pointer vector.
 pub const STATELESS_AIR_BASES: usize = 0xd8;
 /// Carrier-air-base registration storing the ship handle.
-pub const ADD_CARRIER_AIR_BASE_RVA: usize = 0x00c3_be60;
+pub const ADD_CARRIER_AIR_BASE_RVA: usize = 0x00c4_b5a0;
 /// Manager constructor initializing independent vector headers.
-pub const CONSTRUCTOR_RVA: usize = 0x00c3_8a40;
+pub const CONSTRUCTOR_RVA: usize = 0x00c4_8180;

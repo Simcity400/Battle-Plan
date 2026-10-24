@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// COrdersGroup vtable.
-pub const VTABLE_RVA: usize = 0x0293_bc60;
+pub const VTABLE_RVA: usize = 0x0295_22b0;
 /// COrdersGroup reference type.
 pub const REFERENCE_TYPE: u32 = 53;
 /// COrdersGroup packed type/id u64 handle.
@@ -77,7 +77,7 @@ pub const THEATRE: usize = 0x40;
 /// COrdersGroup allocation size.
 pub const SIZE: usize = 0x230;
 /// Group constructor initializing the non-group discriminator.
-pub const CONSTRUCTOR_RVA: usize = 0x00bd_a700;
+pub const CONSTRUCTOR_RVA: usize = 0x00be_9c10;
 
 mod counter_tooltips;
 

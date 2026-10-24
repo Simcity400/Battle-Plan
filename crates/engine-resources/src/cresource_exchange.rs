@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// CResourceExchange primary vtable.
-pub const VTABLE_RVA: usize = 0x2945c30;
+pub const VTABLE_RVA: usize = 0x295c410;
 /// CResourceExchange allocation size.
 pub const SIZE: usize = 0xf0;
 /// CResourceExchange assigned convoy count, i32.
@@ -38,7 +38,7 @@ pub const NO_TRADE_INFLUENCE: usize = 0xe8;
 /// CResourceExchange no-resources boolean, u8.
 pub const NO_RESOURCES: usize = 0xe9;
 /// Resource-exchange constructor.
-pub const CONSTRUCTOR_RVA: usize = 0xc96c20;
+pub const CONSTRUCTOR_RVA: usize = 0xca6370;
 
 /// Full reference-object handle containing both type and ID words.
 pub const REFERENCE: usize = 0x08;

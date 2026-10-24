@@ -601,6 +601,33 @@ impl<'a> Formatter<'_, '_, 'a> {
                     scopes,
                 )
             }
+            "is_deployed" => self
+                .scoped(
+                    if trigger_boolean(item).map_err(|why| format!("trigger is_deployed: {why}"))?
+                        != inverted
+                    {
+                        b"TRIGGER_IS_DEPLOYED"
+                    } else {
+                        b"TRIGGER_IS_NOT_DEPLOYED"
+                    },
+                    &[],
+                    scopes,
+                )
+                .map_err(|why| format!("trigger is_deployed: {why}")),
+            "is_fighting_in_strategic_region" => {
+                let region = installed_content_core::crt::scan_i32(operand)
+                    .stored()
+                    .ok_or("trigger is_fighting_in_strategic_region: the operand does not assign a region ID; the retained value is not reproduced")?
+                    .to_string();
+                self.localised(
+                    if inverted {
+                        b"TRIGGER_NOT_FIGHTING_IN_STRATEGIC_REGION"
+                    } else {
+                        b"TRIGGER_FIGHTING_IN_STRATEGIC_REGION"
+                    },
+                    &[("REGION", Argument::Text(&region))],
+                )
+            }
             "is_fighting_in_terrain" => {
                 // Localise the terrain's stored identifier.
                 let terrain = self.text.content().environment()?.terrain()?;

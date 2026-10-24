@@ -839,7 +839,12 @@ pub(crate) fn patches() -> Vec<Patch> {
             land_wipe::LIFECYCLE_SENTINEL,
         ),
     ] {
-        add("land_events", name, rva, PATCH, &sentinel);
+        let len = if rva == land_wipe::LIFECYCLE_RVA {
+            8
+        } else {
+            PATCH
+        };
+        add("land_events", name, rva, len, &sentinel);
     }
     for ((name, rva), sentinel) in land_events::DISPATCH_LEADER_CALL_NAMES
         .into_iter()

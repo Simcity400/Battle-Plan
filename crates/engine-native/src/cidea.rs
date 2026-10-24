@@ -3,9 +3,9 @@
 //! token offset.
 
 /// Idea primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_a9b0;
+pub const VTABLE_RVA: usize = 0x0298_15e0;
 /// Idea secondary vtable at `SECONDARY_BASE` in the complete object.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0296_aa00;
+pub const SECONDARY_VTABLE_RVA: usize = 0x0298_1630;
 /// Idea secondary-subobject displacement from primary.
 pub const SECONDARY_BASE: usize = 0x10;
 /// CIdea token std::string.

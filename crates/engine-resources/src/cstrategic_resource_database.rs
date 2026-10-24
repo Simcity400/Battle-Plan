@@ -5,7 +5,7 @@
 use crate::{Memory, cpdx_array::Array, cstrategic_resource, read};
 
 /// CStrategicResourceDatabase global pointer.
-pub const SINGLETON_RVA: usize = 0x3316cb8;
+pub const SINGLETON_RVA: usize = 0x332f088;
 /// CStrategicResourceDatabase item pointer array.
 pub const ITEMS: usize = 0x28;
 /// CStrategicResourceDatabase item-pointer stride.
@@ -21,7 +21,7 @@ pub const OIL: usize = 0x60;
 /// Fuel descriptor pointer.
 pub const FUEL: usize = 0x68;
 /// Database constructor initializing item zero with the null object.
-pub const CONSTRUCTOR_RVA: usize = 0xab29f0;
+pub const CONSTRUCTOR_RVA: usize = 0xac1ab0;
 
 /// Item and key arrays load together. Validate descriptor/key correspondence
 /// without resolving the separate dynamically mutable lexer table.

@@ -18,7 +18,7 @@ const HOLDER_OWNER: usize = 0x20;
 const HOLDER_EQUIPMENT: usize = 0x28;
 const HOLDER_REQUIREMENTS: usize = 0x68;
 const HOLDER_ORDER: usize = 0x90;
-const REQUIRED_POOL_VTABLE: u64 = 0x0277_39d0;
+const REQUIRED_POOL_VTABLE: u64 = 0x0278_9c30;
 const TEMPLATE: u64 = (1 << 32) | 52;
 
 struct World(Vec<u8>);

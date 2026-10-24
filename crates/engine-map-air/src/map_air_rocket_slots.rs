@@ -12,7 +12,7 @@ use crate::{
 /// Signed building-template weight; the first positive weight qualifies.
 const MISSILE_SLOT_WEIGHT: usize = 0x310;
 /// Building-template primary vtable.
-const BUILDING_TEMPLATE_VTABLE_RVA: usize = 0x027c_dd90;
+const BUILDING_TEMPLATE_VTABLE_RVA: usize = 0x027e_4260;
 /// First contribution array, with separate signed flagged and unflagged maxima.
 const PRIMARY_CONTRIBUTIONS: usize = 0x10;
 /// Second contribution array, adding unflagged levels.

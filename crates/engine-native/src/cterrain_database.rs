@@ -2,11 +2,11 @@
 //! Graphics records and simulation terrain types occupy different arrays.
 
 /// CTerrainDatabase singleton pointer.
-pub const SINGLETON_RVA: usize = 0x0331_6cd8;
+pub const SINGLETON_RVA: usize = 0x0332_f0a8;
 /// CTerrainDatabase CTerrainGraphics pointer array.
 pub const GRAPHICS: usize = 0x70;
 /// Terrain database constructor; initializes separate graphics and simulation null records.
-pub const CONSTRUCT_RVA: usize = 0x00ac_6860;
+pub const CONSTRUCT_RVA: usize = 0x00ad_5920;
 /// Terrain database pointer array, its null object first: terrain-or-ocean lookup and the terrain
 /// predicate pass `TYPES` with name lookup to hashed-name lookup, which returns `array[index + 1]`.
 pub const TYPES: usize = 0x40;

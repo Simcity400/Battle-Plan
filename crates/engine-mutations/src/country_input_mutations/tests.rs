@@ -861,7 +861,7 @@ fn a_write_marks_the_partners_reading_its_listeners() {
 fn research_progress_marks_its_technology_country() {
     let (site, receiver, tables) = &MUTATIONS[RESEARCH_PROGRESS];
     assert_eq!(site.name, "research_progress");
-    assert_eq!(site.rva, 0xec_0500);
+    assert_eq!(site.rva, 0xed_5690);
     assert_eq!(*receiver, Receiver::Technology);
     assert_eq!(*tables, Tables::TECHNOLOGY);
     assert_eq!(

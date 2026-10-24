@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// CWorldThreat primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_fb08;
+pub const VTABLE_RVA: usize = 0x0297_6738;
 /// Stored signed i64 total, after clamping and scalar conversion.
 pub const TOTAL: usize = 0x08;
 /// CWorldThreat CThreatSource pointer array.
@@ -28,7 +28,7 @@ pub const AGGREGATE_STRIDE: usize = 0x08;
 /// CWorldThreat source-pointer stride.
 pub const SOURCE_STRIDE: usize = 0x08;
 /// CWorldThreat total update.
-pub const UPDATE_TOTAL_RVA: usize = 0x00ee_fc20;
+pub const UPDATE_TOTAL_RVA: usize = 0x00f0_4db0;
 /// World-tension clamp ceiling.
 pub const CLAMP_CEILING: i64 = 10_000_000;
 /// World-tension scalar divisor.

@@ -330,6 +330,7 @@ fn shared_value_reader_uses_own_keys_and_popularity_effect_fallback() {
         ("add_popularity", "popularity"),
         ("release_autonomy", "freedom_level"),
         ("set_autonomy", "freedom_level"),
+        ("set_autonomy", "keep_subjects"),
         ("send_equipment_fraction", "value"),
     ] {
         let text = format!(

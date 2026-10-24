@@ -1469,3 +1469,30 @@ fn failed_scientist_daily_acquisition_keeps_its_own_read_boundary() {
         }
     }
 }
+
+#[test]
+fn split_path_memos_refuse_the_untagged_recording_without_reusing_old_rows() {
+    struct Unreadable;
+    impl Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let (_, mut captured) = small();
+    captured.raid_paths.rows[0] = raid_path_memo::Row {
+        source: 7,
+        target: 9,
+        distance: 500_000,
+        ok: 1,
+    };
+    captured.raid_paths.outcome = Outcome::Rows { len: 1 };
+    captured.capture(&Unreadable, 0, 0x1000, 80, true);
+    let reason = "RaidPathDistances unavailable: separate land/naval memos require dispatcher-aware recorded keys";
+    assert_eq!(captured.outcomes()[12], Outcome::Unavailable { reason });
+    assert_eq!(
+        captured.tables()[12],
+        TableView::Unavailable {
+            reason: reason.into()
+        }
+    );
+}

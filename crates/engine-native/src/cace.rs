@@ -6,7 +6,7 @@
 use crate::{Memory, ccountry, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome};
 
 /// Primary ace vtable.
-pub const VTABLE_RVA: usize = 0x027c_7dd0;
+pub const VTABLE_RVA: usize = 0x027d_e2a0;
 /// Full reference containing u32 type and id; construction initializes both words.
 pub const REFERENCE: usize = 0x08;
 /// Instance id, u32.

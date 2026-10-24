@@ -471,7 +471,7 @@ fn ocean_terrain<const TERMINAL: bool>(
 ) -> Result<usize, &'static str> {
     // Capture the key from the pinned module instead of assuming English
     // content.
-    let key: [u8; 5] = field(memory, base, 0x0296_2540)?;
+    let key: [u8; 5] = field(memory, base, 0x0297_9170)?;
     let root = ptr(memory, base, crate::cterrain_database::SINGLETON_RVA)?;
     let types = array(memory, root, 0x40, 8)?;
     let mut found = None;
@@ -940,8 +940,8 @@ fn globals_kept(
         return emit(features(flags, eligibility), None);
     }
     let weights = [
-        field(memory, base, 0x0331_bea0)?,
-        field(memory, base, 0x0331_bf40)?,
+        field(memory, base, 0x0333_4880)?,
+        field(memory, base, 0x0333_4920)?,
     ];
     emit(defines(weights), None)?;
     let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
@@ -1012,8 +1012,8 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     };
     let selected = token_text(selector)?;
     let generators = [
-        ptr(memory, base, 0x0337_2490)?,
-        ptr(memory, base, 0x0337_2488)?,
+        ptr(memory, base, 0x0338_b3f0)?,
+        ptr(memory, base, 0x0338_b3e8)?,
     ];
     let mut prefixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
     let mut suffixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
@@ -1029,7 +1029,7 @@ pub(crate) fn doctrine_keys<const TERMINAL: bool>(
             "naval doctrine suffix invalid",
         )?;
     }
-    let head = ptr(memory, base, 0x0306_ebd8)?;
+    let head = ptr(memory, base, 0x0308_6bd8)?;
     let mut node = ptr(memory, head, 8)?;
     let mut previous = head;
     let mut result = [0; 2];
@@ -1246,7 +1246,7 @@ pub fn visit_sources<const TERMINAL: bool>(
         }
         leader
     };
-    let mut leader = ptr(memory, side, 0x110)?;
+    let mut leader = ptr(memory, side, 0x130)?;
     if leader == 0 {
         leader = default_leader;
     }
@@ -1302,7 +1302,7 @@ pub fn visit_sources<const TERMINAL: bool>(
     visit_modifier(emit, 0, add(country.pointer, 0x5a8)?)?;
     let pride = field::<u64>(memory, country.pointer, 0x250)?;
     if pride == field::<u64>(memory, ship, 8)? {
-        let root = ptr(memory, base, 0x0331_7cc8)?;
+        let root = ptr(memory, base, 0x0333_0098)?;
         visit_modifier(emit, 1, ptr(memory, root, 0xb0)?)?;
     }
     visit_modifier(emit, 2, add(ship, 0x740)?)?;

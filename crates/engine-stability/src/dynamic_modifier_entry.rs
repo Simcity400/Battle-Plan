@@ -9,7 +9,7 @@ use crate::{Memory, cpdx_array::Array, read, read_slice};
 /// Timed modifier entry stride.
 pub const STRIDE: usize = 0x40;
 /// Timed modifier entry vtable.
-pub const VTABLE_RVA: usize = 0x027b_fd98;
+pub const VTABLE_RVA: usize = 0x027d_6268;
 /// Timed modifier scope-country reference u32.
 pub const SCOPE_COUNTRY: usize = 0x08;
 /// Timed modifier scope-state i32.
@@ -30,7 +30,7 @@ pub const VALUES_COUNT: usize = 0x34;
 pub const VALUE_STRIDE: usize = 8;
 
 /// Timed entry construction/layout.
-pub const CONSTRUCT_RVA: usize = 0x0054_5ca0;
+pub const CONSTRUCT_RVA: usize = 0x0055_27e0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {

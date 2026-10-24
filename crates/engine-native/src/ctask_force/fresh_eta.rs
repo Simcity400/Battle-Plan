@@ -1161,7 +1161,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         // Loaded underway-replenishment range bonus.
         let address = self
             .base
-            .checked_add(0x0331_bfc8)
+            .checked_add(0x0333_49b0)
             .ok_or("fresh task-force define address overflow")?;
         let define =
             read::<i64>(self.memory, address).ok_or("fresh task-force define unreadable")?;
@@ -1455,7 +1455,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             let base = stats.and_then(|stats| self.stat(stats, 0x1a8));
             let fuel = self.fuel(task);
             let speed = terms[0].and_then(|value| {
-                self.deficit(fuel, 0x0331_bd80)
+                self.deficit(fuel, 0x0333_4710)
                     .map(|deficit| value.wrapping_add(deficit))
             });
             (
@@ -1542,13 +1542,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
         // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
-            self.deficit(fuel, 0x0331_bd80)
+            self.deficit(fuel, 0x0333_4710)
                 .map(|deficit| value.wrapping_add(deficit))
         });
         let speed_modifier = self.modifier_guard.and(observed_speed_modifier);
         let modified_range = range_base.and_then(|base| {
             let additive = terms[1]?;
-            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x0331_bdf8)?);
+            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x0333_47d0)?);
             let underway = self.underway(task, roster?, country_values)?;
             Ok(base
                 .wrapping_add(additive)

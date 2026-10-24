@@ -121,7 +121,7 @@ impl Memory for Fixture {
             output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
             return true;
         }
-        if address == 0x0331_b5b4 && output.len() == 4 {
+        if address == 0x0333_3dc8 && output.len() == 4 {
             output.copy_from_slice(&self.fallback.to_le_bytes());
             return true;
         }

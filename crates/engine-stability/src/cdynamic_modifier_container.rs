@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// CDynamicModifierContainer vtable.
-pub const VTABLE_RVA: usize = 0x027b_fde8;
+pub const VTABLE_RVA: usize = 0x027d_62b8;
 /// CDynamicModifierContainer owner CCountry pointer.
 pub const COUNTRY: usize = 0x08;
 /// CDynamicModifierContainer owner state id i32.
@@ -25,9 +25,9 @@ pub const ENTRIES_CAPACITY: usize = 0x30;
 pub const ENTRIES_COUNT: usize = 0x34;
 
 /// Timed-modifier add/value/duration entry.
-pub const ADD_RVA: usize = 0x0054_ab70;
+pub const ADD_RVA: usize = 0x0055_76b0;
 /// Timed-modifier daily decrement and zero-removal entry.
-pub const DAILY_UPDATE_RVA: usize = 0x0054_beb0;
+pub const DAILY_UPDATE_RVA: usize = 0x0055_89f0;
 /// Exact timed-modifier daily-update entry bytes.
 pub const DAILY_UPDATE_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57,

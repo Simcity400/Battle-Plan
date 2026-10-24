@@ -17,7 +17,7 @@ pub const TO: usize = 0x82;
 /// A nonzero `BREAK` byte flushes and reverses the accumulated land portion.
 pub const BREAK: usize = 0x87;
 /// Static empty route returned when either map key is missing.
-pub const EMPTY_RVA: usize = 0x0332_4270;
+pub const EMPTY_RVA: usize = 0x0333_d200;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

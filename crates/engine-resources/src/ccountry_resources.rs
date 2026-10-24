@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Resource-state primary vtable.
-pub const VTABLE_RVA: usize = 0x2945cd0;
+pub const VTABLE_RVA: usize = 0x295c4b0;
 /// Owner raw country link, u32, used for exporter identity.
 pub const OWNER: usize = 0x20;
 /// Embedded produced CStrategicResourcePool requiring authentication.

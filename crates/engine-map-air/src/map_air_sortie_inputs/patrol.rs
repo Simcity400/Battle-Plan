@@ -9,7 +9,7 @@ const COMBAT_ATTACK: u32 = 0x6f;
 const COMBAT_DEFENCE: u32 = 0x70;
 
 /// Loaded dynamic mission spotting-factor array.
-pub const SPOTTING_FACTORS_RVA: usize = 0x0332_08d8;
+pub const SPOTTING_FACTORS_RVA: usize = 0x0333_9848;
 
 /// One worker pass's original header and independent per-kind observations.
 /// The fixed width is the simulation mask's bit width, not a content cap.

@@ -2,9 +2,9 @@
 //! storage with stride 0xd8.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x298_ab98;
+pub const VTABLE_RVA: usize = 0x29a_1aa8;
 /// Sub-network constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x11b_aa40;
+pub const CONSTRUCTOR_RVA: usize = 0x11c_faa0;
 
 /// Subnetwork byte stride.
 pub const STRIDE: usize = 0xd8;

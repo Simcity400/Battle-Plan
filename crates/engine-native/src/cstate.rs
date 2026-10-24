@@ -7,7 +7,7 @@ use crate::{
 };
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0292_06c0;
+pub const VTABLE_RVA: usize = 0x0293_6cc0;
 /// State ID, u32, copied from the template and used as its roster slot.
 pub const ID: usize = 0x58;
 
@@ -100,13 +100,13 @@ const MANPOWER_SPAN: usize = POPULATION + 4 - MANPOWER_AVAILABLE;
 /// replace it, and the save writes its definition's name as `state_category`.
 pub const CATEGORY: usize = 0x898;
 /// State category definition vtable.
-pub const CATEGORY_VTABLE_RVA: usize = 0x029a_39c0;
+pub const CATEGORY_VTABLE_RVA: usize = 0x029b_a8d0;
 /// The category definition's lexer token id, u32, beside its vtable.
 pub const CATEGORY_TOKEN: usize = 0x08;
 /// State constructor establishing template and ID.
-pub const CONSTRUCTOR_RVA: usize = 0x009c_2cc0;
+pub const CONSTRUCTOR_RVA: usize = 0x009c_fb10;
 /// Owner setter updating the raw country reference before ownership notifications.
-pub const SET_OWNER_RVA: usize = 0x009d_1710;
+pub const SET_OWNER_RVA: usize = 0x009d_e560;
 /// Sorted conflict-tree head storing border combats. Predicates inspect
 /// side countries and intersect tree values.
 pub const BORDER_CONFLICT_TREE: usize = 0x8a0;
@@ -482,7 +482,7 @@ fn movement_infrastructure_shared(
         if maximum < 1 {
             maximum = movement_field::<i32>(memory, definition, 0x2b8)?;
             if maximum < 1 {
-                maximum = movement_field::<i32>(memory, base, 0x0331_b5b4)?;
+                maximum = movement_field::<i32>(memory, base, 0x0333_3dc8)?;
             }
         }
         (definition, maximum, Lookup::Gathered(fields))
@@ -561,7 +561,7 @@ fn movement_infrastructure_shared(
     }
     let per_level = match shared {
         Some(inputs) => inputs.per_level,
-        None => movement_field::<i64>(memory, base, 0x0331_aac0)?,
+        None => movement_field::<i64>(memory, base, 0x0333_31b0)?,
     };
     // A failed state read never installs a partial set of shared operands.
     *shared = Some(InfrastructureInputs {
@@ -791,12 +791,12 @@ pub fn read_continents_selected(
     let database = (|| {
         // State database singleton and constructor layout.
         let database = base
-            .checked_add(0x0331_6ca0)
+            .checked_add(0x0332_f070)
             .and_then(|address| read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())?;
         if database == 0
             || read::<u64>(memory, database)
-                != base.checked_add(0x0292_cf10).map(|address| address as u64)
+                != base.checked_add(0x0294_3550).map(|address| address as u64)
         {
             return None;
         }
@@ -1302,10 +1302,10 @@ pub fn globals(memory: &impl Memory, base: usize) -> Option<Globals> {
         memory,
         field(building_database, database::TEMPLATES)?,
     )?);
-    put(&read::<[u8; 8]>(memory, field(base, 0x0331_aac0)?)?);
-    put(&read::<[u8; 4]>(memory, field(base, 0x0331_b5b4)?)?);
+    put(&read::<[u8; 8]>(memory, field(base, 0x0333_31b0)?)?);
+    put(&read::<[u8; 4]>(memory, field(base, 0x0333_3dc8)?)?);
     // The state database singleton, as read_continents reads it.
-    let state_database = field(base, 0x0331_6ca0)
+    let state_database = field(base, 0x0332_f070)
         .and_then(|address| read::<u64>(memory, address))
         .unwrap_or(0);
     put(&state_database.to_le_bytes());

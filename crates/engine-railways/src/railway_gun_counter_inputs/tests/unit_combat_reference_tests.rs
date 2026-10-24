@@ -28,7 +28,7 @@ fn full_reference_fixture() -> EtaFixture {
         (
             NAVAL,
             crate::cnaval_combat::VTABLE_RVA,
-            0x029c_6ff0,
+            0x029d_dbe0,
             NAVAL_REFERENCE,
         ),
     ] {

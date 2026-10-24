@@ -13,7 +13,7 @@ pub const NO_RESOURCE_ID: u32 = u32::MAX;
 /// Amount scale for signed source integers.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// Entry constructor storing the full qword amount and definition u32 ID.
-pub const CONSTRUCTOR_RVA: usize = 0x00bb_b9b0;
+pub const CONSTRUCTOR_RVA: usize = 0x00bc_aed0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

@@ -10,11 +10,11 @@ use crate::{
 };
 
 /// Intel-network vtable.
-pub const VTABLE_RVA: usize = 0x298_ab48;
+pub const VTABLE_RVA: usize = 0x29a_1a58;
 /// Target country id, read as i32.
 pub const TARGET: usize = 0x08;
 /// Constructor initializing the vtable and embedded objects.
-pub const CONSTRUCTOR_RVA: usize = 0x11b_a760;
+pub const CONSTRUCTOR_RVA: usize = 0x11c_f7c0;
 /// Embedded local network.
 pub const LOCAL_NETWORK: usize = 0x10;
 /// Subnetwork array data.
@@ -41,7 +41,7 @@ pub const CORE_STRENGTH_SUM: usize = 0xd8;
 pub const MAX_STATE_STRENGTH: usize = 0xe0;
 /// Network serializer.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x011c_1be0;
+pub const SAVE_RVA: usize = 0x011d_6c40;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

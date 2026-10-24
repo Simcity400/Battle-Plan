@@ -792,17 +792,23 @@ impl Hooks {
         let game = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|p| usize::try_from(p).ok())
             .ok_or("intel source bootstrap game state unreadable")?;
-        let roots = engine_native::cpdx_array::Array::read(
-            memory,
-            game + engine_native::cgame_state::COUNTRIES,
-            8,
-        )
-        .ok_or("intel source bootstrap country header invalid")?;
+        // A collector attached before any load sizes for nothing; captures grow the lane.
+        let countries = if game == 0 {
+            0
+        } else {
+            engine_native::cpdx_array::Array::read(
+                memory,
+                game + engine_native::cgame_state::COUNTRIES,
+                8,
+            )
+            .ok_or("intel source bootstrap country header invalid")?
+            .count as usize
+        };
         STORE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .prepare(
-                (roots.count as usize)
+                countries
                     .checked_mul(sites::SITES.len())
                     .ok_or("intel source lane demand overflow")?,
             )?;

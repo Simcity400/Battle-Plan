@@ -5,12 +5,12 @@
 
 /// Active application-idler pointer. In-game activation fills both roots;
 /// frontend activation fills only this root.
-pub const SINGLETON_A_RVA: usize = 0x0331_72e0;
+pub const SINGLETON_A_RVA: usize = 0x0332_f698;
 /// In-game idler primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_2510;
+pub const VTABLE_RVA: usize = 0x0296_8ff0;
 
 /// CInGameIdler update.
-pub const UPDATE_RVA: usize = 0x00db_f240;
+pub const UPDATE_RVA: usize = 0x00dd_3a50;
 /// CInGameIdler map delegate pointer.
 pub const MAP_DELEGATE: usize = 0x530;
 /// The map delegate's CGraphicalMap pointer.
@@ -20,4 +20,4 @@ pub const PAUSED: usize = 0x6c1;
 /// Pause-kind byte, separate from paused state.
 pub const PAUSE_KIND: usize = 0x6c2;
 /// Load/setup function also writes paused state.
-pub const LOAD_SETUP_RVA: usize = 0x00dc_5310;
+pub const LOAD_SETUP_RVA: usize = 0x00dd_9b20;

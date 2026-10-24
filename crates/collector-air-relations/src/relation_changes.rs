@@ -205,7 +205,8 @@ unsafe extern "system" fn rebuild(diplomacy: usize) {
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     timing.original(|| unsafe { original(diplomacy) })
 }
-unsafe extern "system" fn reset(diplomacy: usize, retain: u8, rebuild: u8, keep: usize) {
+// The second argument points at the reset's options; forward it whole.
+unsafe extern "system" fn reset(diplomacy: usize, options: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RelationChanges);
     let _notification = mutation(diplomacy, 1);
     // The reset clears the exile host other countries' war flags read.
@@ -220,9 +221,9 @@ unsafe extern "system" fn reset(diplomacy: usize, retain: u8, rebuild: u8, keep:
         diplomacy,
         diplomacy,
     );
-    let original: unsafe extern "system" fn(usize, u8, u8, usize) =
+    let original: unsafe extern "system" fn(usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[1].load(Ordering::Acquire)) };
-    timing.original(|| unsafe { original(diplomacy, retain, rebuild, keep) })
+    timing.original(|| unsafe { original(diplomacy, options) })
 }
 unsafe extern "system" fn add(country: usize, tag: usize) {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::RelationChanges);

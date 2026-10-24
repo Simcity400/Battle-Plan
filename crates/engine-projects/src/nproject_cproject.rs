@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Project primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_c270;
+pub const VTABLE_RVA: usize = 0x0298_2ea0;
 /// Project reference-type discriminator.
 pub const REFERENCE_TYPE: u32 = 86;
 /// Contiguous project-pool stride.
@@ -45,10 +45,10 @@ pub const VARIABLES: usize = 0x138;
 /// Nullable authored prototype reward awaiting a choice.
 pub const PENDING_REWARD: usize = 0x190;
 pub const REWARD_TOKEN: usize = 0x08;
-pub const REWARD_VTABLE_RVA: usize = 0x2705138;
+pub const REWARD_VTABLE_RVA: usize = 0x271b158;
 const DEFINITION_DATA: usize = 0x20;
 const TEMPLATE_DATA: usize = 0x18;
-const TEMPLATE_VTABLE_RVA: usize = 0x292_a158;
+const TEMPLATE_VTABLE_RVA: usize = 0x294_0798;
 const TEMPLATE_REWARDS: usize = 0x358;
 
 /// The pending object's occurrence in this project's retained template. The

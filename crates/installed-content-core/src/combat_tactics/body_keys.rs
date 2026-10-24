@@ -38,13 +38,13 @@ impl Shaper<'_> {
             (0x37F7, Some(b"categories" | b"slots")) if field.opens() => Shape::CheckedList {
                 stores_value: false,
             },
-            (0x3BE4, Some(b"building")) => self.building(field, false, 0x140472210),
+            (0x3BE4, Some(b"building")) => self.building(field, false, 0x140473BD0),
             // Type fields reject an opening value.
             (0x39E7 | 0x3A2B, Some(b"type")) if field.opens() => Shape::Skip,
             // Invalid comparison operators are rejected.
             (0x3E81 | 0x3F14, Some(b"compare")) if !comparison(field) => Shape::Skip,
-            (0x37DC, Some(b"province")) => Shape::Object(Node::KeyReader(0x140471B20)),
-            (0x37DC, Some(b"building")) => self.building(field, true, 0x140471900),
+            (0x37DC, Some(b"province")) => Shape::Object(Node::KeyReader(0x1404734E0)),
+            (0x37DC, Some(b"building")) => self.building(field, true, 0x1404732C0),
             (0x37DC, Some(b"level"))
                 if !matches!(
                     field.operator,
@@ -54,7 +54,7 @@ impl Shaper<'_> {
                 Shape::Skip
             }
             // License conditions contain an equipment variant reference.
-            (0x37B9, Some(b"equipment")) => Shape::Object(Node::KeyReader(0x141411210)),
+            (0x37B9, Some(b"equipment")) => Shape::Object(Node::KeyReader(0x1414284F0)),
             (0x2828 | 0x2938, Some(b"path")) => Shape::RawList,
             (0x2828 | 0x2938, Some(b"controller_priority")) => Shape::Object(Node::Mtth),
             (0x4C9D, Some(b"input")) | (0x31C7, Some(b"collection")) => Self::collection(field),
@@ -74,25 +74,25 @@ impl Shaper<'_> {
         match address {
             // Variable triggers select an expression for an opening value,
             // except for var/tooltip; unknown names remain scoped variables.
-            0x14043B2C0 if !matches!(key, Some(b"tooltip" | b"var")) && field.opens() => {
+            0x14043CC80 if !matches!(key, Some(b"tooltip" | b"var")) && field.opens() => {
                 Shape::Expression
             }
-            0x14043B2C0 | 0x140437640 | 0x140437F90 | 0x14043AE40 | 0x140440460
-            | 0x1404723E0 | 0x1404386A0 | 0x1403B04D0 | 0x140438210
+            0x14043CC80 | 0x140439000 | 0x140439950 | 0x14043C800 | 0x140441E20
+            | 0x140473DA0 | 0x14043A060 | 0x1403B0BE0 | 0x140439BD0
             // These own loops return for unknown keys without skipping.
-            | 0x1404377F0 | 0x140438100 | 0x14043A8A0 | 0x140480E00
-            | 0x140458240 => Shape::One,
-            0x140437400 | 0x1404401E0 if key == Some(b"compare") && !comparison(field) => {
+            | 0x1404391B0 | 0x140439AC0 | 0x14043C260 | 0x140482B30
+            | 0x140459C00 => Shape::One,
+            0x140438DC0 | 0x140441BA0 if key == Some(b"compare") && !comparison(field) => {
                 Shape::Skip
             }
-            0x140437400 | 0x1404401E0 => Shape::One,
-            0x1403B38F0 if key == Some(b"var_list") => Shape::List,
-            0x1403B38F0 => Shape::One,
-            0x1403B34F0 if key == Some(b"text") => Shape::RawText,
-            0x1403B34F0 => Shape::One,
+            0x140438DC0 | 0x140441BA0 => Shape::One,
+            0x1403B4000 if key == Some(b"var_list") => Shape::List,
+            0x1403B4000 => Shape::One,
+            0x1403B3C00 if key == Some(b"text") => Shape::RawText,
+            0x1403B3C00 => Shape::One,
             // Province-building filters and equipment variant references are
             // embedded objects, not registered trigger classes.
-            0x140471B20
+            0x1404734E0
                 if matches!(
                     key,
                     Some(
@@ -107,7 +107,7 @@ impl Shaper<'_> {
             {
                 Shape::One
             }
-            0x141411210
+            0x1414284F0
                 if matches!(
                     key,
                     Some(
@@ -122,14 +122,14 @@ impl Shaper<'_> {
             {
                 Shape::One
             }
-            0x140471B20 | 0x141411210 => Shape::Skip,
+            0x1404734E0 | 0x1414284F0 => Shape::Skip,
             // The three authored collection fields.
-            0x140A0FC90 if key == Some(b"name") => Shape::ObjectIfOpen(Node::BoundLocalization),
-            0x140A0FC90 if key == Some(b"operators") && field.opens() => {
+            0x140A1E8E0 if key == Some(b"name") => Shape::ObjectIfOpen(Node::BoundLocalization),
+            0x140A1E8E0 if key == Some(b"operators") && field.opens() => {
                 Shape::Statements(Node::CollectionOperator)
             }
-            0x140A0FC90 if key == Some(b"input") => Shape::One,
-            0x140A0FC90 => Shape::Skip,
+            0x140A1E8E0 if key == Some(b"input") => Shape::One,
+            0x140A1E8E0 => Shape::Skip,
             _ => Self::refuse_reader(address, field.key.c_str()),
         }
     }
@@ -161,7 +161,7 @@ impl Shaper<'_> {
         // An opening value reads collection fields; any other value reads
         // one token. Post-read checks do not skip.
         if field.opens() {
-            Shape::Object(Node::KeyReader(0x140A0FC90))
+            Shape::Object(Node::KeyReader(0x140A1E8E0))
         } else {
             Shape::One
         }

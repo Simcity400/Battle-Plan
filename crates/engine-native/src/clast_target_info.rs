@@ -2,7 +2,7 @@
 //! member count without retaining target identity.
 use crate::{Memory, cnaval_combatant::field};
 /// Last-target information primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_a138;
+pub const VTABLE_RVA: usize = 0x02a2_0e98;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
     pub present: u8,

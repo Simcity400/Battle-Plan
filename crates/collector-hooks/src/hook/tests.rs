@@ -510,3 +510,101 @@ fn a_busy_tap_names_only_its_site_and_clears_after_retry() {
         Ok(true)
     );
 }
+
+#[test]
+fn push_frame_trampoline_unwinds_every_instruction_boundary_and_restores_its_span() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        RtlLookupFunctionEntry, RtlVirtualUnwind,
+    };
+    #[repr(align(16))]
+    struct Aligned(CONTEXT);
+    let _guard = FAMILY_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let code = TestCode::new();
+    let mut bytes = [0x90; 32];
+    bytes[..11].copy_from_slice(&[
+        0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x02,
+    ]);
+    bytes[11..19].copy_from_slice(&[0x48, 0x83, 0xc4, 0x58, 0x41, 0x5f, 0x5b, 0xc3]);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), code.0.cast(), bytes.len());
+    }
+    let sentinel = bytes[..16].try_into().unwrap();
+    let site = code.0 as usize;
+    let mut hook =
+        unsafe { Hook::new_push_frame(site, callback as *const () as usize, sentinel) }.unwrap();
+    let trampoline = hook.trampoline();
+    let mut stack = [0_u64; 32];
+    let native_rsp = unsafe { stack.as_mut_ptr().add(24) } as usize;
+    unsafe {
+        ptr::write(native_rsp as *mut u64, 0x1234);
+        ptr::write((native_rsp - 8) as *mut u64, 0x3333);
+        ptr::write((native_rsp - 16) as *mut u64, 0xffff);
+    }
+    for (offset, allocated) in [(0, 0), (2, 8), (4, 16), (8, 104), (18, 104)] {
+        let mut context = Aligned(CONTEXT {
+            Rip: (trampoline + offset) as u64,
+            Rsp: (native_rsp - allocated) as u64,
+            Rbx: if offset >= 2 { 0xdead } else { 0x3333 },
+            R15: if offset >= 4 { 0xbeef } else { 0xffff },
+            ..Default::default()
+        });
+        let mut base = 0;
+        let entry = unsafe { RtlLookupFunctionEntry(context.0.Rip, &mut base, ptr::null_mut()) };
+        assert!(!entry.is_null());
+        let mut data = ptr::null_mut();
+        let mut frame = 0;
+        unsafe {
+            RtlVirtualUnwind(
+                0,
+                base,
+                context.0.Rip,
+                entry,
+                &mut context.0,
+                &mut data,
+                &mut frame,
+                ptr::null_mut(),
+            );
+        }
+        assert_eq!(
+            (context.0.Rip, context.0.Rsp, context.0.Rbx, context.0.R15),
+            (0x1234, native_rsp as u64 + 8, 0x3333, 0xffff),
+            "offset {offset}"
+        );
+    }
+    let function: unsafe extern "system" fn(usize, *const u64) -> u64 =
+        unsafe { std::mem::transmute(trampoline) };
+    assert_eq!(unsafe { function(0, &73) }, 73);
+    assert!(hook.set_enabled(true).unwrap());
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts((site + 5) as *const u8, 3) },
+        [0x90; 3]
+    );
+    assert!(hook.set_enabled(false).unwrap());
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
+        sentinel
+    );
+    drop(hook);
+    let mut base = 0;
+    assert!(
+        unsafe { RtlLookupFunctionEntry(trampoline as u64, &mut base, ptr::null_mut()) }.is_null()
+    );
+}
+
+#[test]
+fn push_frame_refuses_unknown_instructions_before_allocating_or_reading_the_site() {
+    for (offset, replacement) in [(0, 0x41), (3, 0x56), (7, 0x80), (7, 0x57), (10, 0x01)] {
+        let mut bytes = [0x90; 16];
+        bytes[..11].copy_from_slice(&[
+            0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec, 0x58, 0x48, 0x8b, 0x02,
+        ]);
+        bytes[offset] = replacement;
+        let result = unsafe { Hook::new_push_frame(1, 2, bytes) };
+        assert_eq!(
+            result.err().as_deref(),
+            Some("hook push-frame prologue unsupported")
+        );
+    }
+}

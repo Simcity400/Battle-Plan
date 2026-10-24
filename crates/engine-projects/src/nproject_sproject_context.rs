@@ -3,7 +3,7 @@
 //! must never be read as zero.
 
 /// Project-context primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_c1d0;
+pub const VTABLE_RVA: usize = 0x0298_2e00;
 /// Context signed i32 province.
 pub const PROVINCE: usize = 0x08;
 /// Context signed i32 progress.
@@ -23,7 +23,7 @@ pub const STATE_REFERENCE: usize = 0x28;
 /// State-presence u8 flag.
 pub const STATE_PRESENT: usize = 0x2c;
 /// Context constructor clearing presence bytes without initializing absent payloads.
-pub const CONSTRUCT_RVA: usize = 0x01a2_4980;
+pub const CONSTRUCT_RVA: usize = 0x01a3_8140;
 
 use crate::{Memory, read};
 

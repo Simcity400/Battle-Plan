@@ -291,7 +291,7 @@ impl Controls {
             if fallback > 0 {
                 return Ok(fallback);
             }
-            eta_read(memory, base, 0x0331_b5b4)
+            eta_read(memory, base, 0x0333_3dc8)
         })
     }
 }

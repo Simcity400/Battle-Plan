@@ -96,22 +96,22 @@ impl Fixture {
         for (category, key) in (700_u32..707).enumerate() {
             globals.insert(BONUS_KEYS_RVA + category * 0x28, key.to_le_bytes().to_vec());
         }
-        for (rva, value) in [0x0331_dcec, 0x0331_dd6c, 0x0331_de00, 0x0331_de9c]
+        for (rva, value) in [0x0333_69c0, 0x0333_6a58, 0x0333_6ad8, 0x0333_6b90]
             .into_iter()
             .zip([-7_i32, 12, 34, 56])
         {
             globals.insert(rva, value.to_le_bytes().to_vec());
         }
-        globals.insert(0x0331_f158, (-450_i64).to_le_bytes().to_vec());
+        globals.insert(0x0333_8068, (-450_i64).to_le_bytes().to_vec());
         globals.insert(
             crate::dlc_feature_state::MASK_RVA,
             0_u32.to_le_bytes().to_vec(),
         );
         for (vtable, predicate) in [
-            (cmilitary_production_line::VTABLE_RVA, 0x0011_cd10_u64),
-            (cnaval_production_line::VTABLE_RVA, 0x0011_cd10),
-            (crailway_gun_production_line::VTABLE_RVA, 0x0011_cd10),
-            (cship_refit_production_line::VTABLE_RVA, 0x0018_02a0),
+            (cmilitary_production_line::VTABLE_RVA, 0x0011_d220_u64),
+            (cnaval_production_line::VTABLE_RVA, 0x0011_d220),
+            (crailway_gun_production_line::VTABLE_RVA, 0x0011_d220),
+            (cship_refit_production_line::VTABLE_RVA, 0x0018_07b0),
         ] {
             globals.insert(vtable + 0xd8, predicate.to_le_bytes().to_vec());
         }

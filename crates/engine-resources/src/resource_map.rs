@@ -53,7 +53,7 @@ fn effective(
 }
 
 /// The live bad-efficiency threshold define, i64 fixed5.
-pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x331_9500;
+pub const BAD_EFFICIENCY_THRESHOLD_RVA: usize = 0x333_1990;
 
 /// A convoy client's handle (u32 type, u32 id) and its two efficiency factors.
 pub const CLIENT_HANDLE_TYPE: usize = 0x08;
@@ -68,7 +68,7 @@ pub const CLIENT_EFFICIENCY_B: usize = 0x50;
 pub const CLIENT_TYPE: u32 = 4713;
 
 /// Resource-origin client: the embedded route.
-pub const ORIGIN_VTABLE_RVA: usize = 0x294_5b90;
+pub const ORIGIN_VTABLE_RVA: usize = 0x295_c370;
 pub const ORIGIN_ROUTE: usize = 0x350;
 pub const ORIGIN_STATE: usize = 0x80;
 /// The origin's efficiency product, which the resource icon reads.
@@ -86,7 +86,7 @@ pub const EXCHANGE_VTABLE_RVA: usize = cresource_exchange::VTABLE_RVA;
 /// A country's delivery routes, one per canonical importer slot.
 pub const DELIVERY_ROUTES: usize = 0x788;
 /// Lend-lease client: its route pointer and receiver.
-pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a0_9df8;
+pub const LEND_LEASE_VTABLE_RVA: usize = 0x2a2_0b58;
 pub const LEND_LEASE_ROUTE: usize = 0xc0;
 pub const LEND_LEASE_RECEIVER: usize = 0xb8;
 pub const LEND_LEASE_GIVEN: usize = 0x758;
@@ -100,14 +100,14 @@ const MARKET_BUYERS: usize = 0x48;
 const MARKET_COUNTRY_STRIDE: usize = 0x18;
 /// Market-contract client, embedded in the contract: its route pointer.
 pub const CONTRACT_CLIENT: usize = 0xf0;
-pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x295_4bd0;
+pub const CONTRACT_CLIENT_VTABLE_RVA: usize = 0x296_b6b0;
 pub const CONTRACT_CLIENT_ROUTE: usize = 0xc8;
 pub const CONTRACT_SELLER: usize = 0x58;
 #[cfg(test)]
 pub const CONTRACT_BUYER: usize = 0x5c;
 pub const MARKET_OWNED_CONTRACTS: usize = 0;
 /// Supply-transfer client: the embedded route.
-pub const SUPPLY_VTABLE_RVA: usize = 0x298_bab0;
+pub const SUPPLY_VTABLE_RVA: usize = 0x29a_29c0;
 pub const SUPPLY_ROUTE: usize = 0xa0;
 pub const SUPPLY_COUNTRY_SYSTEMS: usize = 0x108;
 pub const SUPPLY_TRANSFERS: usize = 0xd0;
@@ -115,7 +115,7 @@ pub const SUPPLY_TRANSFER_STRIDE: usize = 40;
 pub const SUPPLY_TRANSFER_CLIENT: usize = 0x20;
 
 /// Route object.
-pub const ROUTE_VTABLE_RVA: usize = 0x294_5b40;
+pub const ROUTE_VTABLE_RVA: usize = 0x295_c320;
 pub const ROUTE_KIND: usize = 0x08;
 pub const ROUTE_FROM: usize = 0x10;
 pub const ROUTE_TO: usize = 0x18;

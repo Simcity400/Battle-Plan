@@ -15,7 +15,7 @@
 use crate::{Memory, ccharacter::Literal, cpdx_array::Array, cpdx_lexer, read, read_slice};
 
 /// Modifier-definition table data-pointer global.
-pub const TABLE_RVA: usize = 0x0331_69c0;
+pub const TABLE_RVA: usize = 0x0332_ed90;
 /// Modifier-definition header: data pointer, signed i32 capacity and signed i32 count.
 pub const HEADER_LEN: usize = 16;
 /// Modifier-definition metadata row stride.
@@ -41,13 +41,13 @@ pub const CLAMP_MAXIMUM: u32 = 1 << 4;
 /// Modifier-definition 32-bit feature selector; dynamic keys use zero.
 pub const FEATURE_SELECTOR: usize = 0x68;
 /// Modifier-eligibility callback-pointer global.
-pub const ELIGIBILITY_CALLBACK_RVA: usize = 0x0331_7cd0;
+pub const ELIGIBILITY_CALLBACK_RVA: usize = 0x0333_00a0;
 /// Authenticated callback supplying the u32 feature-flags word.
-pub const ELIGIBILITY_FLAGS_GETTER_RVA: usize = 0x001a_e190;
+pub const ELIGIBILITY_FLAGS_GETTER_RVA: usize = 0x001a_e6a0;
 /// Country preferred-tactic weighting-factor global, signed i64 fixed5.
-pub const COUNTRY_PREFERRED_TACTIC_FACTOR_RVA: usize = 0x0331_d370;
+pub const COUNTRY_PREFERRED_TACTIC_FACTOR_RVA: usize = 0x0333_5ee0;
 /// Trade-feature flags u32 global.
-pub const TRADE_FEATURE_FLAGS_RVA: usize = 0x0331_6e78;
+pub const TRADE_FEATURE_FLAGS_RVA: usize = 0x0332_f248;
 
 /// Passive metadata evaluation for a present accumulator key. No category
 /// field participates. The selected callback may be null (feature disabled) or

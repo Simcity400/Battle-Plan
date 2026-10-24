@@ -898,12 +898,12 @@ impl Renderer<'_, '_, '_> {
                     return Ok(true);
                 }
                 pending.push(self.effect_children(item));
-                if class.vtable == 0x1427BE590 {
+                if class.vtable == 0x1427D4A60 {
                     // also visits all attached alternatives.
                     for branch in branches {
                         pending.push(self.effect_children(branch));
                     }
-                } else if class.vtable == 0x1429A0260 {
+                } else if class.vtable == 0x1429B7170 {
                     // visits each embedded member
                     // group, without evaluating weights or modifier triggers.
                     for member in installed_content_core::effect_keys::random_list_members(item)? {

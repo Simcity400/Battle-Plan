@@ -5,11 +5,11 @@ use crate::{
 };
 
 pub const DIVISION_HISTORY: usize = 0x638;
-pub const HISTORY_VTABLE_RVA: usize = 0x29aac78;
-pub const STORE_VTABLE_RVA: usize = 0x29aac28;
-pub const ENTRY_VTABLE_RVA: usize = 0x29aafd8;
-pub const MEDAL_VTABLE_RVA: usize = 0x29aabd8;
-pub const NULL_MEDAL_VTABLE_RVA: usize = 0x292efc0;
+pub const HISTORY_VTABLE_RVA: usize = 0x29c1868;
+pub const STORE_VTABLE_RVA: usize = 0x29c1818;
+pub const ENTRY_VTABLE_RVA: usize = 0x29c1bc8;
+pub const MEDAL_VTABLE_RVA: usize = 0x29c17c8;
+pub const NULL_MEDAL_VTABLE_RVA: usize = 0x2945600;
 pub const UNIT_BACKLINK: usize = 8;
 pub const MEDAL_STORE: usize = 0x20;
 pub const HISTORY_ENTRIES: usize = 0x28;
@@ -249,7 +249,7 @@ pub fn entry(memory: &impl Memory, base: usize, address: usize) -> Result<Entry,
 
 /// Embedded active officer holder; both XP mutators name this receiver.
 pub const OFFICER: usize = 0x4f8;
-const OFFICER_VTABLE_RVA: usize = 0x29416f8;
+const OFFICER_VTABLE_RVA: usize = 0x2957ed8;
 const OFFICER_EXPERIENCE: usize = 0x88;
 /// The history panel's saved cumulative casualty counter. The native label
 /// uses HISTORY_KILL_COUNT_TEXT even though damage increments casualties.

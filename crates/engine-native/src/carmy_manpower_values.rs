@@ -4,7 +4,7 @@
 //! choices, independent of the stored representation.
 
 /// Embedded manpower-values vtable.
-pub const VTABLE_RVA: usize = 0x2943900;
+pub const VTABLE_RVA: usize = 0x295a0e0;
 /// Data pointer for eight-byte entries.
 pub const DATA: usize = 0x08;
 /// Capacity word; negative headers are refused.

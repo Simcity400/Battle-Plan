@@ -240,7 +240,7 @@ fn actual_new_merge_transient_and_skipped_sources() {
     boundary(clock(11, 1));
     unsafe {
         assert_eq!(
-            constructor(world.combat(), world.base() + 0xba845d),
+            constructor(world.combat(), world.base() + 0xbb76ad),
             world.combat()
         );
         assert_eq!(fill(world.result(), world.combat()), 0xabc);
@@ -248,11 +248,11 @@ fn actual_new_merge_transient_and_skipped_sources() {
     world.transient();
     world.result[cnaval_combat_results::HANDLE / 8] += 1 << 32;
     unsafe {
-        constructor(world.combat(), world.base() + 0xba917c);
+        constructor(world.combat(), world.base() + 0xbb83cc);
         fill(world.result(), world.combat());
     }
     unsafe {
-        constructor(world.combat(), world.base() + 0xba917c);
+        constructor(world.combat(), world.base() + 0xbb83cc);
         merge(world.result(), world.combat());
     }
     assert_eq!(drain(&mut output).unwrap(), 3);
@@ -269,7 +269,7 @@ fn actual_new_merge_transient_and_skipped_sources() {
     // Eligibility/previously-emitted exits reach neither CALL.
     // Construction alone cannot publish a result, including a skipped strike.
     unsafe {
-        constructor(world.combat(), world.base() + 0xba917c);
+        constructor(world.combat(), world.base() + 0xbb83cc);
     }
     assert_eq!(drain(&mut output).unwrap(), 0);
     boundary(clock(12, 1));
@@ -378,7 +378,7 @@ fn loaded_constructor_bypasses_storage_and_unknown_runs_before_refusal() {
     {
         let _held = store().lock().unwrap();
         assert_eq!(
-            unsafe { constructor(world.combat(), world.base() + 0xbaaed9) },
+            unsafe { constructor(world.combat(), world.base() + 0xbba129) },
             world.combat()
         );
     }
@@ -526,7 +526,7 @@ fn callback_thread_counters_exclude_loaded_and_unobserved_calls() {
     let unknown = UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed);
     ENABLED.store(false, Ordering::SeqCst);
     std::thread::spawn(|| unsafe {
-        constructor(0x1234, 0xbaaed9);
+        constructor(0x1234, 0xbba129);
         constructor(0x1234, 0);
     })
     .join()
@@ -534,7 +534,7 @@ fn callback_thread_counters_exclude_loaded_and_unobserved_calls() {
     ENABLED.store(true, Ordering::SeqCst);
     POISONED.store(true, Ordering::SeqCst);
     std::thread::spawn(|| unsafe {
-        constructor(0x1234, 0xbaaed9);
+        constructor(0x1234, 0xbba129);
         constructor(0x1234, 0);
     })
     .join()
@@ -544,7 +544,7 @@ fn callback_thread_counters_exclude_loaded_and_unobserved_calls() {
     assert_eq!(UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed), unknown + 2);
     POISONED.store(false, Ordering::SeqCst);
     std::thread::spawn(|| unsafe {
-        constructor(0x1234, 0xbaaed9);
+        constructor(0x1234, 0xbba129);
         assert_eq!(THREAD_MISMATCHES.load(Ordering::Relaxed), 0);
         constructor(0x1234, 0);
     })
@@ -604,7 +604,7 @@ fn birth_overflow_grows_from_the_complete_attempted_burst() {
     let reserved = store().lock().unwrap().births.capacity();
     BIRTH_CAPACITY.store(reserved, Ordering::Release);
     for pointer in 1..=reserved + 1 {
-        unsafe { constructor(pointer, world.base() + 0xba845d) };
+        unsafe { constructor(pointer, world.base() + 0xbb76ad) };
     }
     assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
     presize(3);
@@ -622,7 +622,7 @@ fn birth_overflow_grows_from_the_complete_attempted_burst() {
     world.hour(14);
     assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), reserved + 1);
     for pointer in 1..=reserved + 1 {
-        unsafe { constructor(pointer, world.base() + 0xba845d) };
+        unsafe { constructor(pointer, world.base() + 0xbb76ad) };
     }
     assert_eq!(store().lock().unwrap().births.len(), reserved + 1);
     assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
@@ -870,7 +870,7 @@ fn constructor_shim_return_pc_and_callback_unwind_metadata() {
     let _observation = Observation::new();
     // Classify this real return PC as the native load factory, which records
     // no birth and requires no memory operands. A lost RDX poisons observation.
-    let base = naval_constructor_test_return as *const () as usize - 0xbaaed9;
+    let base = naval_constructor_test_return as *const () as usize - 0xbba129;
     setup(1, base);
     assert_eq!(unsafe { naval_constructor_test_caller(0x1234) }, 0x1234);
     assert!(!POISONED.load(Ordering::SeqCst));

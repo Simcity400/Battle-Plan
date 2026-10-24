@@ -5,7 +5,7 @@
 //! ability argument shares this layout; no separate effect-scope layout is established.
 
 /// CEventScope primary vtable.
-pub const VTABLE_RVA: usize = 0x027b_df18;
+pub const VTABLE_RVA: usize = 0x027d_43e8;
 /// CEventScope FROM scope pointer.
 pub const FROM: usize = 0x20;
 /// CEventScope ROOT binding. An address is never a recorded scope ID.
@@ -29,9 +29,9 @@ pub const SIZE: usize = 0xb0;
 /// CEventScope country value meaning no country.
 pub const NO_COUNTRY: u32 = 0;
 /// Scope country setter.
-pub const SET_COUNTRY_RVA: usize = 0x0052_dd00;
+pub const SET_COUNTRY_RVA: usize = 0x0053_a610;
 /// Scope equality used in pending-event lookup.
-pub const EQUALS_RVA: usize = 0x0052_bcc0;
+pub const EQUALS_RVA: usize = 0x0053_85d0;
 
 /// Packed object references, in native field order: character, operation,
 /// ace, unit, industrial organisation, purchase contract, raid, project,

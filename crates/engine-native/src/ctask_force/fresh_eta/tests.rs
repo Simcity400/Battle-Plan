@@ -520,13 +520,13 @@ impl<M: Memory> Reader<'_, M> {
         // OUT_OF_FUEL_SPEED_FACTOR / OUT_OF_FUEL_RANGE_FACTOR; read only on the
         // deficit branch.
         let observed_speed_modifier = terms[0].and_then(|value| {
-            self.deficit(fuel, 0x0331_bd80)
+            self.deficit(fuel, 0x0333_4710)
                 .map(|deficit| value.wrapping_add(deficit))
         });
         let speed_modifier = self.modifier_guard.and(observed_speed_modifier);
         let modified_range = range_base.and_then(|base| {
             let additive = terms[1]?;
-            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x0331_bdf8)?);
+            let factor = terms[2]?.wrapping_add(self.deficit(fuel, 0x0333_47d0)?);
             let underway = self.underway(task, roster?, country_values)?;
             Ok(base
                 .wrapping_add(additive)
@@ -864,11 +864,11 @@ fn fuel_uses_native_full_default_skips_and_independent_deficit_defines() {
     );
     assert_eq!(memory.calls(TASK + mission::FUEL), 0);
 
-    memory.fault = Some((0x0331_bd80, 8));
+    memory.fault = Some((0x0333_4710, 8));
     memory.i64(TASK + ctask_force::CURRENT_FUEL_USAGE, 100_000);
     memory.i64(TASK + mission::FUEL, 50_000);
-    memory.i64(0x0331_bd80, -50_000);
-    memory.i64(0x0331_bdf8, -200_000);
+    memory.i64(0x0333_4710, -50_000);
+    memory.i64(0x0333_47d0, -200_000);
     let row = verified_reader(&memory).capture(TASK, 2).0;
     assert!(row.speed_modifier.is_err());
     assert_eq!(row.modified_range, Ok(100_000));
@@ -1215,7 +1215,7 @@ fn reached_underway_uses_signed_convoy_ratio_and_positive_expeditionary_alias() 
     memory.u32(TASK + cunit::EXPEDITIONARY_OWNER, 2);
     memory.u32(TASK + mission::REPLENISHMENT, (-1_i32) as u32);
     memory.u32(TASK + mission::REPLENISHMENT + 4, 2);
-    memory.i64(0x0331_bfc8, 100_000);
+    memory.i64(0x0333_49b0, 100_000);
     let row = verified_reader(&memory).capture(TASK, 9).0;
     assert_eq!(row.modified_range, Ok(250_000));
     assert_eq!(memory.calls(COUNTRY + ccountry::MODIFIER_ACCUMULATOR), 1);

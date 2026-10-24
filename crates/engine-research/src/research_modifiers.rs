@@ -90,7 +90,7 @@ pub struct Row {
 }
 
 /// Minimum research speed, licence factor, sharing clamp and ahead-of-time factor.
-const DEFINES: [usize; 4] = [0x0331_a998, 0x0331_a670, 0x0331_a5d0, 0x0331_a4b0];
+const DEFINES: [usize; 4] = [0x0333_3070, 0x0333_2cf0, 0x0333_2c58, 0x0333_2b00];
 #[derive(Clone, Copy)]
 pub struct Context {
     minimum: i64,

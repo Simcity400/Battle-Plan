@@ -6,11 +6,11 @@ use crate::{
 };
 
 /// Building-production-line primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_4d28;
+pub const VTABLE_RVA: usize = 0x0297_b958;
 
 /// Railway-gun repair-line vtable. It has no construction table, so skip
 /// it while retaining the surrounding queue ordinals.
-pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: usize = 0x0296_54d0;
+pub const RAILWAY_GUN_REPAIR_VTABLE_RVA: usize = 0x0297_c100;
 
 /// Reference-object type value.
 pub const REFERENCE_TYPE_ID: u32 = 59;

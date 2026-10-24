@@ -4,7 +4,7 @@
 //! Capacity is not a count and specialization population has no fixed cap.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0296_7e88;
+pub const VTABLE_RVA: usize = 0x0297_eab8;
 /// Trait-token vector data.
 pub const TRAIT_DATA: usize = 0x30;
 /// Trait-vector capacity, u32, separate from live count.
@@ -16,19 +16,19 @@ pub const SKILLS: usize = 0x110;
 /// Specialization-vector signed count used by copying.
 pub const SKILL_COUNT: usize = 0x11c;
 /// Scientist-trait primary vtable.
-pub const TRAIT_VTABLE_RVA: usize = 0x0270_5460;
+pub const TRAIT_VTABLE_RVA: usize = 0x0271_b480;
 /// Trait lexer token, serialized as its token string and used as database key.
 pub const TRAIT_TOKEN: usize = 0x08;
 /// Nullable retained scientist-template pointer controlling visible predicates.
 pub const VISIBILITY_TEMPLATE: usize = 0x128;
 /// Retained role-template and its embedded visible conjunction identities.
-pub const TEMPLATE_VTABLE_RVA: usize = 0x0274_fba0;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x0276_5da0;
 pub const TEMPLATE_VISIBLE: usize = 0x60;
-pub const VISIBLE_VTABLE_RVA: usize = 0x0270_24c0;
+pub const VISIBLE_VTABLE_RVA: usize = 0x0271_84e0;
 const VISIBLE_CHILDREN: usize = 0x08;
 const VISIBLE_SOURCE: usize = 0x2c;
 const VISIBLE_HAS_SOURCE: usize = 0x34;
-const SOURCE_FILES_RVA: usize = 0x035c_b160;
+const SOURCE_FILES_RVA: usize = 0x035e_40c0;
 
 /// Only a nonempty retained conjunction demands a filename. The source belongs
 /// to this role, including roles installed by effects, not the character's template.

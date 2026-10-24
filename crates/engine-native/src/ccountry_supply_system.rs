@@ -12,9 +12,9 @@ use crate::{
 /// CCountrySupplySystem allocation size.
 pub const SIZE: usize = 0x290;
 /// CCountrySupplySystem primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_bbf8;
+pub const VTABLE_RVA: usize = 0x029a_2b08;
 /// CCountrySupplySystem secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0298_bc48;
+pub const SECONDARY_VTABLE_RVA: usize = 0x029a_2b58;
 /// CCountrySupplySystem secondary-base displacement.
 pub const SECONDARY_BASE: usize = 0x08;
 /// CCountrySupplySystem owning CSupplySystem pointer.

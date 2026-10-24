@@ -189,3 +189,12 @@ fn combat_wipe_stale_identities_are_not_unsupported_classes() {
         );
     }
 }
+
+#[test]
+fn casualty_country_does_not_read_the_later_leader_on_action_country_selection() {
+    let mut memory = fixture();
+    memory.put(0x8000 + 0x630, &[1]);
+    memory.qword(0x4000 + 0x88, 0xdead_beef);
+    memory.dword(0x4000 + 0x90, 1);
+    assert_eq!(words(&memory, 0x3000).unwrap()[4], 0x8000_0007);
+}

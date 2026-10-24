@@ -28,7 +28,7 @@ impl Combat for Side {
             "frontage_full" | "has_reserves" => {
                 Some(Eval::from_bool(!trigger_boolean(item).unwrap()))
             }
-            "has_tactic" => Some(Eval::True),
+            "has_tactic" | "is_fighting_in_strategic_region" => Some(Eval::True),
             "phase" | "skill_advantage" | "hardness" | "has_artillery_ratio" => Some(Eval::True),
             "skill" => Some(Eval::from_bool(super::super::compare(
                 300_000,
@@ -229,4 +229,34 @@ fn refused_conditional_taints_later_temp_read_but_keeps_pure_siblings() {
         "{result}"
     );
     assert!(result.contains("session is uncertain"), "{result}");
+}
+
+#[test]
+fn new_assignment_trigger_descriptions_use_native_arguments_and_inversion() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let localisation = concat!(
+        " TRIGGER_FIGHTING_IN_STRATEGIC_REGION:0 \"Region $REGION$\"\n",
+        " TRIGGER_NOT_FIGHTING_IN_STRATEGIC_REGION:0 \"Not region $REGION$\"\n",
+        " TRIGGER_IS_DEPLOYED:0 \"Deployed\"\n",
+        " TRIGGER_IS_NOT_DEPLOYED:0 \"Not deployed\"\n",
+    );
+    assert_eq!(
+        run(
+            "is_fighting_in_strategic_region=0x25 NOT={is_fighting_in_strategic_region=\"045\"} is_deployed=yes is_deployed=no NOT={is_deployed=yes} is_deployed=YES",
+            "",
+            "",
+            localisation,
+        ).unwrap(),
+        "[yes]Region 37\n[no]Not region 37\n[no]Deployed\n[no]Not deployed\n[yes]Not deployed\n[no]Not deployed\n"
+    );
+    for source in [
+        "is_fighting_in_strategic_region=unknown",
+        "is_fighting_in_strategic_region=\"\"",
+        "is_deployed=THIS",
+    ] {
+        let why = run(source, "", "", localisation).unwrap_err();
+        assert!(why.contains(source.split('=').next().unwrap()), "{why}");
+        assert!(why.contains("not reproduced"), "{why}");
+    }
 }

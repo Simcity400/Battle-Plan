@@ -1,15 +1,15 @@
 //! CCharacterManager owns both serialized character vectors. Its name index is a lossy cache.
 
 /// Character-manager vtable.
-pub const VTABLE_RVA: usize = 0x027c_f860;
+pub const VTABLE_RVA: usize = 0x027e_5d30;
 /// Serialized historical character-pointer array.
 pub const HISTORICAL_CHARACTERS: usize = 0x10;
 /// Serialized dynamic character-pointer array.
 pub const DYNAMIC_CHARACTERS: usize = 0x28;
 /// Constructor installing the empty-index sentinel.
-pub const CONSTRUCTOR_RVA: usize = 0x006a_7fe0;
+pub const CONSTRUCTOR_RVA: usize = 0x006b_4b20;
 /// Clear operation restoring the empty-index sentinel.
-pub const CLEAR_RVA: usize = 0x006a_d070;
+pub const CLEAR_RVA: usize = 0x006b_9bb0;
 
 use crate::{Memory, ccharacter, cgame_state, cpdx_array::Array, read, read_slice};
 

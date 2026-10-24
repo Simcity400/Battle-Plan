@@ -3,7 +3,7 @@
 use crate::{Memory, cpdx_array::Array, read};
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029a_b8c8;
+pub const VTABLE_RVA: usize = 0x029c_24b8;
 /// Raw winner country reference used when applying state ownership.
 pub const COUNTRY: usize = 8;
 /// Ordered signed state IDs, appended and then consumed during settlement.

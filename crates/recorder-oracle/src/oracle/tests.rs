@@ -4363,6 +4363,77 @@ fn relation_links_match_the_saved_military_access_relations() {
     assert_eq!(report.compared_tables["RelationLinks"], 2);
 }
 
+/// An offered air-access relation sets its second country's slot toward the first.
+#[test]
+fn relation_links_match_the_saved_air_access_offer() {
+    let (frame, mut save, _, _) = relation_fixture();
+    let names: TokenNames<'static> = [
+        (
+            engine_native::cattache_relation::TYPE,
+            b"attache".as_slice(),
+        ),
+        (
+            engine_native::cair_base_access_relation::TYPE,
+            b"air_base_access",
+        ),
+        (
+            engine_native::coffer_air_base_access_relation::TYPE,
+            b"offer_air_base_access",
+        ),
+        (
+            engine_native::cmilitary_access_relation::TYPE,
+            b"military_access",
+        ),
+        (
+            engine_native::coffer_military_access_relation::TYPE,
+            b"offer_military_access",
+        ),
+        (
+            engine_native::cdocking_rights_relation::TYPE,
+            b"docking_rights",
+        ),
+        (
+            engine_native::coffer_docking_rights_relation::TYPE,
+            b"offer_docking_rights",
+        ),
+    ]
+    .into_iter()
+    .collect();
+    saved_relation(
+        &mut save,
+        b"D01",
+        b"SOV",
+        None,
+        &[(b"offer_air_base_access", 0)],
+    );
+    let run = |links: Vec<(u32, u32)>| {
+        let mut frame = frame.clone();
+        *frame.tables[TableId::RelationLinks.index()] =
+            TableView::Complete(TableRows::RelationLinks(
+                links
+                    .into_iter()
+                    .map(
+                        |(country, target_index)| replay_data::rows::RelationLinkRow {
+                            country,
+                            target_index,
+                            links: replay_data::rows::RelationLinkRow::AIR_BASE_ACCESS,
+                            transport_subject: replay_data::rows::Recorded::NotRecorded,
+                        },
+                    )
+                    .collect(),
+            ));
+        let context = country_context(&frame).unwrap();
+        let mut report = Report::default();
+        visibility::compare_links(&frame, &save, &context, &names, &mut report).unwrap();
+        report
+    };
+    // D01 is reference 201 at slot 8, SOV reference 301 at slot 9.
+    let report = run(vec![(301, 8)]);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["RelationLinks"], 1);
+    assert_eq!(run(vec![(201, 9)]).differences.len(), 2);
+}
+
 /// Signed-positive navy access modes compare with the saved pairs;
 /// high-bit bytes are omitted and remain explicit save limitations.
 #[test]

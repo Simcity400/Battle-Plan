@@ -14,7 +14,7 @@ type GroupOrdinals = HashMap<usize, Option<u32>>;
 type GroupSet = HashSet<usize>;
 
 /// CNavalCombat vtable.
-pub const VTABLE_RVA: usize = 0x029c_6f18;
+pub const VTABLE_RVA: usize = 0x029d_db08;
 /// Observed combat reference type comes from the runtime registry; it is not an admission filter.
 #[cfg(any(test, feature = "test-support"))]
 pub const OBSERVED_REFERENCE_TYPE: u32 = 4713;
@@ -536,7 +536,7 @@ fn read_planes(
         base,
         game_state,
         combat,
-        roots[side] + 0xe0,
+        roots[side] + 0x100,
         PlaneOwner::Side(&taken),
         2,
         0,

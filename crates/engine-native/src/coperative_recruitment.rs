@@ -1,7 +1,7 @@
 //! Recruitment fields relative to the inline subobject rather than agency.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029c_2400;
+pub const VTABLE_RVA: usize = 0x029d_8ff0;
 /// COperativeRecruitment allocation/subobject size.
 pub const SIZE: usize = 0x58;
 /// COperativeRecruitment owning CCountry pointer.
@@ -13,4 +13,4 @@ pub const RECRUITABLE_OPERATIVES: usize = 0x28;
 /// Not-to-spy-master operative pointer-vector data.
 pub const NOT_TO_SPY_MASTER: usize = 0x40;
 /// Recruitment constructor, receiving the agency recruitment subobject.
-pub const CONSTRUCTOR_RVA: usize = 0x0156_6e10;
+pub const CONSTRUCTOR_RVA: usize = 0x0157_9120;

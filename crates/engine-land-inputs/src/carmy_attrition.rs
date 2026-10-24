@@ -30,19 +30,19 @@ pub const KEYS: [u32; 10] = [
 ];
 
 /// Unit-upkeep attrition define.
-pub const UNIT_UPKEEP_ATTRITION_RVA: usize = 0x0331_c5d8;
+pub const UNIT_UPKEEP_ATTRITION_RVA: usize = 0x0333_4fe0;
 /// Multiplier for out-of-supply attrition.
-pub const OUT_OF_SUPPLY_ATTRITION_RVA: usize = 0x0331_9430;
+pub const OUT_OF_SUPPLY_ATTRITION_RVA: usize = 0x0333_18b8;
 /// Supply threshold, clamped by loading to zero through ONE.
-pub const SUPPLY_THRESHOLD_RVA: usize = 0x0331_9cd8;
+pub const SUPPLY_THRESHOLD_RVA: usize = 0x0333_22c0;
 /// Signed divisor for stored out-of-supply days.
-pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: usize = 0x0331_9394;
+pub const MAX_OUT_OF_SUPPLY_DAYS_RVA: usize = 0x0333_1818;
 /// Signed hours divisor for remaining grace.
-pub const SUPPLY_GRACE_RVA: usize = 0x0331_91c0;
+pub const SUPPLY_GRACE_RVA: usize = 0x0333_1604;
 /// Exercise-branch attrition define.
-pub const TRAINING_ATTRITION_RVA: usize = 0x0331_cd38;
+pub const TRAINING_ATTRITION_RVA: usize = 0x0333_5820;
 /// Border-war attrition factor.
-pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x0331_a118;
+pub const BORDER_WAR_ATTRITION_FACTOR_RVA: usize = 0x0333_2700;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Terrain {

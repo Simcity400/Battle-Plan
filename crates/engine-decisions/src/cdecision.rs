@@ -8,7 +8,7 @@ use crate::{Memory, msvc_string, read};
 /// CDecision MSVC string token.
 pub const TOKEN: usize = 0x120;
 /// CDecision primary vtable.
-pub const VTABLE_RVA: usize = 0x027d_4f00;
+pub const VTABLE_RVA: usize = 0x027e_b3d0;
 /// Native fixed_random_seed content byte.
 pub const FIXED_RANDOM_SEED: usize = 0x962;
 /// Activation selects the timed targeted container when this byte is nonzero.
@@ -67,25 +67,25 @@ pub(crate) fn token(
 }
 
 /// Authored-decision cancel-effect entry; observes invocation only.
-pub const CANCEL_EFFECT_RVA: usize = 0x0071_b350;
+pub const CANCEL_EFFECT_RVA: usize = 0x0072_7f80;
 /// Authored-decision removal-effect entry; observes invocation only.
-pub const REMOVE_EFFECT_RVA: usize = 0x0071_b590;
+pub const REMOVE_EFFECT_RVA: usize = 0x0072_81c0;
 /// Three ordinary terminal-effect entry prefixes.
 pub const TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0, 0x00,
 ];
 /// Authored targeted-decision cancel-effect entry.
-pub const TARGETED_CANCEL_EFFECT_RVA: usize = 0x0071_b7d0;
+pub const TARGETED_CANCEL_EFFECT_RVA: usize = 0x0072_8400;
 /// Authored targeted-decision removal-effect entry.
-pub const TARGETED_REMOVE_EFFECT_RVA: usize = 0x0071_be10;
+pub const TARGETED_REMOVE_EFFECT_RVA: usize = 0x0072_8a40;
 /// Targeted cancel/removal entry prefixes.
 pub const TARGETED_TERMINAL_EFFECT_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
 ];
 /// Targeted decision's execute-effect entry.
-pub const TARGETED_EXECUTE_EFFECT_RVA: usize = 0x0071_baf0;
+pub const TARGETED_EXECUTE_EFFECT_RVA: usize = 0x0072_8720;
 /// The ordinary timed-mission success caller of execution.
-pub const MISSION_COMPLETION_RETURN_RVA: usize = 0x0072_a5e9;
+pub const MISSION_COMPLETION_RETURN_RVA: usize = 0x0073_7219;
 
 /// Event-feed-owned decision entries. Targeted timeout is forwarded by the
 /// politics owner and therefore has no second patch here.

@@ -72,10 +72,10 @@ impl Receiver {
     }
 }
 
-const CREATE_COUNTRY_CONTAINER_RVA: usize = 0xc3_c2b0;
-const REGISTER_POOL_RVA: usize = 0xc3_c860;
-const ERASE_POOL_RVA: usize = 0xc5_4220;
-const DESTROY_POOL_RVA: usize = 0xf4_5860;
+const CREATE_COUNTRY_CONTAINER_RVA: usize = 0xc4_b9f0;
+const REGISTER_POOL_RVA: usize = 0xc4_bfa0;
+const ERASE_POOL_RVA: usize = 0xc6_3960;
+const DESTROY_POOL_RVA: usize = 0xf5_a9e0;
 
 /// Every site with its receiver; each takes at most four integer or pointer
 /// arguments and returns RAX unchanged from its original.
@@ -96,7 +96,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "remove_country_access",
-            rva: 0xc5_3be0,
+            rva: 0xc6_3320,
             sentinel: [
                 0x40, 0x53, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x83, 0x3a, 0x00, 0x48, 0x8b,
                 0xda, 0x48,
@@ -132,7 +132,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "add_wing",
-            rva: 0xf4_60f0,
+            rva: 0xf5_b270,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x54, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x20, 0x48,
@@ -144,7 +144,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "remove_wing",
-            rva: 0xf5_18c0,
+            rva: 0xf6_6a40,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x48,
@@ -157,7 +157,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "destroy_all_wings",
-            rva: 0xf4_8a20,
+            rva: 0xf5_dba0,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x68, 0x10, 0x48, 0x89, 0x70,
                 0x18, 0x48,
@@ -169,7 +169,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "split_wing",
-            rva: 0xf5_2360,
+            rva: 0xf6_74e0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24,
                 0x18, 0x55,
@@ -193,7 +193,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 10] = [
     (
         MutationSite {
             name: "rebind_pool_definition",
-            rva: 0xf5_1020,
+            rva: 0xf6_61a0,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x49, 0x40, 0x48,
                 0x81, 0xc1,

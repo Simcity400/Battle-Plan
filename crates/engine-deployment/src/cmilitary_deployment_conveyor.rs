@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// CMilitaryDeploymentConveyor primary vtable.
-pub const VTABLE_RVA: usize = 0x29a9e18;
+pub const VTABLE_RVA: usize = 0x295e100;
 /// CMilitaryDeploymentConveyor reference kind.
 pub const REFERENCE_TYPE: u32 = 64;
 /// CMilitaryDeploymentConveyor reference type word, u32.
@@ -42,7 +42,7 @@ pub const CLOSED: usize = 0x94;
 /// Capture retains the raw positive word and reports None otherwise.
 pub const GATED_COUNTRY: usize = 0x98;
 /// Deployment-conveyor constructor.
-pub const CONSTRUCT_RVA: usize = 0x0141_fb20;
+pub const CONSTRUCT_RVA: usize = 0x00ce_6ea0;
 
 /// One queue entry. `name` indexes the caller's arena; empty names are valid.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

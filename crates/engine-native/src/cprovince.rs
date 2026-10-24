@@ -645,7 +645,7 @@ const DIRECT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DIRECT_FIELDS, DIRECT_ROW_BYTES).expect("valid record layout");
 
 /// Province primary vtable.
-pub const VTABLE_RVA: usize = 0x0295_af68;
+pub const VTABLE_RVA: usize = 0x0297_1b18;
 /// Province ID authenticated against its roster slot.
 pub const ID: usize = 0xa4;
 /// Owning-state pointer.
@@ -683,7 +683,7 @@ pub const BORDER_CONFLICT_NONZERO_QWORD: usize = 0xb0;
 pub const OWNER_AREA: usize = 0xd8;
 /// Full orders-group handle for a border-war side, resolved and compared
 /// with the army's owning group.
-pub const BORDER_WAR_SIDE_GROUP: usize = 0x4c8;
+pub const BORDER_WAR_SIDE_GROUP: usize = 0x4e8;
 
 /// Active building vector summed for movement fort penalty.
 pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS;

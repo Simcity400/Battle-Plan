@@ -43,8 +43,13 @@ pub struct TapSafety {
     pub stub: Range<usize>,
 }
 
+const PUSH_FRAME_CODE: usize = 32;
+const PUSH_FRAME_UNWIND: usize = 64;
+const PUSH_FRAME_TABLE: usize = 80;
+
 pub struct Hook {
     relocation: ManuallyDrop<RawDetour>,
+    push_frame: bool,
     relay: *mut c_void,
     site: usize,
     original: [u8; 16],
@@ -103,8 +108,7 @@ impl Hook {
             if site.checked_add(sentinel_len).is_none() {
                 return Err("hook sentinel address overflow".into());
             }
-            // A relay in rel32 range lets retour relocate exactly the same five-byte
-            // prologue that we patch. The known candidates have no hot-patch prefix.
+            // A nearby relay lets retour relocate whole instructions covering the rel32 jump.
             let aligned = site & !0xffff;
             let mut relay = ptr::null_mut();
             for distance in (0x10000..0x7000_0000_usize).step_by(0x10000) {
@@ -168,6 +172,7 @@ impl Hook {
                 patch[1..5].copy_from_slice(&relative.to_le_bytes());
                 Ok(Self {
                     relocation: ManuallyDrop::new(relocation),
+                    push_frame: false,
                     relay,
                     site,
                     original,
@@ -192,6 +197,89 @@ impl Hook {
         })
     }
 
+    /// Relocate PUSH RBX; PUSH R15; SUB RSP,imm8 with partial-prologue unwind records.
+    ///
+    /// # Safety
+    /// Authenticate the full sentinel and exclude incoming branches and return PCs
+    /// inside the eight-byte prologue. The following instruction must reload RAX
+    /// from [RDX]. The callback must tail-jump to the trampoline
+    /// with the native entry stack and registers restored; quiesce before dropping.
+    pub unsafe fn new_push_frame(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+    ) -> Result<Self, String> {
+        installation::construct(site, || {
+            if original[..7] != [0x40, 0x53, 0x41, 0x57, 0x48, 0x83, 0xec]
+                || original[8..11] != [0x48, 0x8b, 0x02]
+                || !(8..=120).contains(&original[7])
+                || original[7] % 8 != 0
+            {
+                return Err("hook push-frame prologue unsupported".into());
+            }
+            let mut hook = unsafe { Self::new(site, callback, original) }?;
+            let code = hook.relay.cast::<u8>();
+            let mut previous = 0;
+            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_READWRITE, &mut previous) } == 0 {
+                return Err(io::Error::last_os_error().to_string());
+            }
+            let mut continuation = [0_u8; 20];
+            continuation[..8].copy_from_slice(&original[..8]);
+            continuation[8..10].copy_from_slice(&[0x48, 0xb8]);
+            continuation[10..18].copy_from_slice(&((site + 8) as u64).to_le_bytes());
+            // An unprefixed register JMP is not a Win64 epilogue; the resumed load kills RAX.
+            continuation[18..].copy_from_slice(&[0xff, 0xe0]);
+            let unwind = [
+                1,
+                8,
+                3,
+                0,
+                8,
+                ((original[7] / 8 - 1) << 4) | 2,
+                4,
+                0xf0,
+                2,
+                0x30,
+                0,
+                0,
+            ];
+            let entry = IMAGE_RUNTIME_FUNCTION_ENTRY {
+                BeginAddress: PUSH_FRAME_CODE as u32,
+                EndAddress: (PUSH_FRAME_CODE + continuation.len()) as u32,
+                Anonymous: IMAGE_RUNTIME_FUNCTION_ENTRY_0 {
+                    UnwindInfoAddress: PUSH_FRAME_UNWIND as u32,
+                },
+            };
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    continuation.as_ptr(),
+                    code.add(PUSH_FRAME_CODE),
+                    continuation.len(),
+                );
+                ptr::copy_nonoverlapping(
+                    unwind.as_ptr(),
+                    code.add(PUSH_FRAME_UNWIND),
+                    unwind.len(),
+                );
+                ptr::write(code.add(PUSH_FRAME_TABLE).cast(), entry);
+            }
+            if unsafe { VirtualProtect(hook.relay, 4096, PAGE_EXECUTE_READ, &mut previous) } == 0
+                || unsafe { FlushInstructionCache(GetCurrentProcess(), hook.relay, 4096) } == 0
+            {
+                return Err(io::Error::last_os_error().to_string());
+            }
+            if !unsafe {
+                RtlAddFunctionTable(code.add(PUSH_FRAME_TABLE).cast(), 1, hook.relay as u64)
+            } {
+                return Err("hook push-frame unwind registration failed".into());
+            }
+            hook.push_frame = true;
+            hook.patch[5..8].fill(0x90);
+            hook.patch_len = 8;
+            Ok(hook)
+        })
+    }
+
     /// Whether the last tracked publication reached this site or tap while busy.
     pub fn publication_busy(&self) -> bool {
         self.publication_busy.load(Ordering::Relaxed)
@@ -212,7 +300,11 @@ impl Hook {
     }
 
     pub fn trampoline(&self) -> usize {
-        self.relocation.trampoline() as *const () as usize
+        if self.push_frame {
+            self.relay as usize + PUSH_FRAME_CODE
+        } else {
+            self.relocation.trampoline() as *const () as usize
+        }
     }
 
     /// Replace one verified five-byte CALL with a CALL to the relay. The callback invokes the
@@ -707,6 +799,13 @@ impl Drop for Hook {
         if self.is_enabled() {
             // Retain the relay AND relocation on failed publication. Runtime
             // restores and drains callbacks before dropping an owned family.
+            return;
+        }
+        if self.push_frame
+            && !unsafe {
+                RtlDeleteFunctionTable(self.relay.cast::<u8>().add(PUSH_FRAME_TABLE).cast())
+            }
+        {
             return;
         }
         unsafe {

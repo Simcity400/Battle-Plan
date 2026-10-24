@@ -1,7 +1,7 @@
 //! Army-leader extension of unit-leader state. Skills retain signed i32 values.
 
 /// Army-leader primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_f538;
+pub const VTABLE_RVA: usize = 0x0295_5ca8;
 /// Attack skill, i32.
 pub const ATTACK: usize = 0xf58;
 /// Captured byte; when set, serialization retains captor and location.

@@ -19,7 +19,7 @@ pub const CONTRIBUTION: usize = 0x78;
 pub const CONTRIBUTION_GAIN: usize = 0x80;
 pub const PREVIOUS_WAR_SCORE: usize = 0xb0;
 pub const COMPLETED_GOALS: usize = 0xb8;
-pub const UPGRADE_VTABLE_RVA: usize = 0x0270_3c48;
+pub const UPGRADE_VTABLE_RVA: usize = 0x0271_9c68;
 
 /// A selected member upgrade, keyed by the group's native identity. The save
 /// orders these identities before emitting the selected definition tokens.
@@ -260,7 +260,7 @@ mod tests;
 /// Loaded projection coefficients are immutable for the authenticated content
 /// lifetime. They are read once on first demanded derivation, in the worker.
 pub const PROJECTION_FACTORS: [usize; 7] = [
-    0x331aef0, 0x331b000, 0x331b0e0, 0x331b3a8, 0x331b488, 0x331b1c0, 0x331b2d8,
+    0x3333660, 0x3333778, 0x3333880, 0x3333b80, 0x3333c78, 0x3333960, 0x3333a88,
 ];
 pub fn projection_factors(memory: &impl Memory, base: usize) -> Result<[i64; 7], &'static str> {
     let mut values = [0; 7];

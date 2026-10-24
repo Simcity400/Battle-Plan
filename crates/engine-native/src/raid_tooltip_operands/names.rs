@@ -336,7 +336,7 @@ fn member(
         _ => return Ok(()), // Consumer names unsupported member types.
     };
     if group != 0 {
-        context::authenticate(m, base, group, 0x0291_f568)?;
+        context::authenticate(m, base, group, 0x0293_5b68)?;
         string(m, group + 8, group_kind, sink).map_err(NameReadError::reason)?; // Stored raw key.
     }
     Ok(())

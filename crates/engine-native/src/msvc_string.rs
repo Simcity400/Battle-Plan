@@ -15,7 +15,7 @@ pub const STRIDE: usize = 32;
 /// MSVC string pointer-union alignment.
 pub const ALIGNMENT: usize = 8;
 /// String constructor used for callback filenames.
-pub const CONSTRUCT_BYTES_CANDIDATE_RVA: usize = 0x0011_d460;
+pub const CONSTRUCT_BYTES_CANDIDATE_RVA: usize = 0x0011_d970;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Text<const N: usize> {

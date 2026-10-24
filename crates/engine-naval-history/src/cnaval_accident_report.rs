@@ -3,13 +3,13 @@
 use crate::{Memory, cpdx_array::Array, cstrategic_region, read, walk::Buffer};
 
 /// Primary report identity.
-pub const VTABLE_RVA: usize = 0x0294_75e8;
+pub const VTABLE_RVA: usize = 0x0295_ddc8;
 /// Strategic navy's report-pointer vector.
 pub const REPORTS: usize = 0xe0;
 /// Strategic navy's mine-report pointer vector.
 pub const MINE_REPORTS: usize = 0xf8;
 /// Mine report primary identity.
-pub const MINE_VTABLE_RVA: usize = 0x0294_7638;
+pub const MINE_VTABLE_RVA: usize = 0x0295_de18;
 /// Raw country reference responsible for the mine.
 pub const MINE_OWNER: usize = 0x48;
 /// Report's strategic-region pointer.
@@ -27,18 +27,18 @@ pub const OWNER: usize = 0x2c;
 /// Native expiry date's raw hour.
 pub const EXPIRE_HOUR: usize = 0x38;
 /// Report creation/update, regional clear and daily expiry writer sites.
-pub const RECORD_ACCIDENT_RVA: usize = 0x00e9_5c80;
+pub const RECORD_ACCIDENT_RVA: usize = 0x00ea_ae10;
 /// Regional accident-clear writer.
-pub const CLEAR_ACCIDENTS_RVA: usize = 0x00e8_d2a0;
+pub const CLEAR_ACCIDENTS_RVA: usize = 0x00ea_2430;
 /// Daily expiry writer shared by both report families.
-pub const EXPIRE_REPORTS_RVA: usize = 0x00e8_e7b0;
+pub const EXPIRE_REPORTS_RVA: usize = 0x00ea_3940;
 /// Mine incident creation and damage accumulation writer.
-pub const RECORD_MINE_INCIDENT_RVA: usize = 0x00e9_5d70;
+pub const RECORD_MINE_INCIDENT_RVA: usize = 0x00ea_af00;
 /// Verified entry fingerprints for the complete report writer family.
 pub const WRITERS: [(usize, u64); 4] = [
     (RECORD_ACCIDENT_RVA, 0x670a_924e_c0d9_c20a),
     (CLEAR_ACCIDENTS_RVA, 0xfe6c_f199_3e3e_5e06),
-    (EXPIRE_REPORTS_RVA, 0xf309_03cb_ea1b_0605),
+    (EXPIRE_REPORTS_RVA, 0x8bd6_b360_f3c3_0fef),
     (RECORD_MINE_INCIDENT_RVA, 0xcf0f_977d_6d16_ed55),
 ];
 

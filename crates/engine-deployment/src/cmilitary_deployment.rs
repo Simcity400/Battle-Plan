@@ -18,9 +18,9 @@ use crate::{
 };
 
 /// CMilitaryDeployment primary vtable.
-pub const VTABLE_RVA: usize = 0x29a9d38;
+pub const VTABLE_RVA: usize = 0x295e020;
 /// CMilitaryDeployment secondary vtable.
-pub const SECONDARY_VTABLE_RVA: usize = 0x29a9d70;
+pub const SECONDARY_VTABLE_RVA: usize = 0x295e058;
 /// CMilitaryDeployment secondary vptr offset.
 pub const SECONDARY_VTABLE: usize = 0x18;
 /// Distributable priority, signed i32, initially one; save omits one.
@@ -47,7 +47,7 @@ pub const HALTING_REASON_PRESENT: usize = 0xc4;
 /// CMilitaryDeployment native training denominator.
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 /// Deployment constructor.
-pub const CONSTRUCT_RVA: usize = 0x0141_fa60;
+pub const CONSTRUCT_RVA: usize = 0x00ce_6de0;
 
 /// The manpower container's stored side. `Have` is the first container, `Need` the second.
 pub const SIDE_HAVE: u8 = 0;

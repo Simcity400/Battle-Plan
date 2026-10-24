@@ -3,7 +3,7 @@ use super::*;
 
 /// The movement-speed virtual getter and its supported implementation.
 pub const SPEED_GETTER_SLOT: usize = 0xd8;
-pub const SPEED_GETTER_RVA: usize = 0x00c7_2ee0;
+pub const SPEED_GETTER_RVA: usize = 0x00c8_2620;
 
 /// Calls the game's getter for this mover's actual first edge. This module is
 /// absent unless the diagnostic feature is enabled; ordinary readers never call

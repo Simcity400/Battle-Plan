@@ -131,7 +131,7 @@ pub const DYNAMIC_CONSTANT: usize = 0xf8;
 pub const DYNAMIC_VALUE_ROWS: usize = 0x1b8;
 pub const DYNAMIC_VALUE_ROW_STRIDE: usize = 0xd8;
 /// Static-modifier database holding the bound static slots.
-pub const STATIC_DATABASE_RVA: usize = 0x0331_7cc8;
+pub const STATIC_DATABASE_RVA: usize = 0x0333_0098;
 /// Static-modifier script name stored as an MSVC string and hashed for lookup.
 pub const STATIC_NAME: usize = 0x1a8;
 /// Diplomacy word tested by mode-1 war predicates on the counterpart;
@@ -149,18 +149,18 @@ const RING_SATURATION: i64 = 0x53e2_d620_fb40;
 /// Define globals in `CountryStabilityInputRow` field order. Loaded values
 /// use fixed5 except interception war-support scale, which uses Q15.
 pub const DEFINE_RVAS: [usize; DEFINES] = [
-    0x0331_8b60, // BASE_STABILITY_WAR_FACTOR
-    0x0331_8c08, // BASE_STABILITY_PARTY_POPULARITY_FACTOR
-    0x0331_a7e8, // MIN_STABILITY
-    0x0331_a750, // MAX_STABILITY
-    0x0331_8f10, // WAR_SUPPORT_OFFNSIVE_WAR
-    0x0331_8f98, // WAR_SUPPORT_DEFENSIVE_WAR
-    0x0331_9020, // WAR_SUPPORT_TENSION_IMPACT
-    0x0331_a918, // MIN_WAR_SUPPORT
-    0x0331_a880, // MAX_WAR_SUPPORT
-    0x0331_c360, // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
-    0x0331_c410, // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
-    0x0331_c788, // BASE_MAX_COMMAND_POWER
+    0x0333_0f30, // BASE_STABILITY_WAR_FACTOR
+    0x0333_0fc8, // BASE_STABILITY_PARTY_POPULARITY_FACTOR
+    0x0333_2e98, // MIN_STABILITY
+    0x0333_2df8, // MAX_STABILITY
+    0x0333_1310, // WAR_SUPPORT_OFFNSIVE_WAR
+    0x0333_13b8, // WAR_SUPPORT_DEFENSIVE_WAR
+    0x0333_1438, // WAR_SUPPORT_TENSION_IMPACT
+    0x0333_2fe8, // MIN_WAR_SUPPORT
+    0x0333_2f38, // MAX_WAR_SUPPORT
+    0x0333_4d08, // INTERCEPTION_WAR_SUPPORT_SCALE, Q15
+    0x0333_4de0, // INTERCEPTION_BOMBING_WAR_SUPPORT_IMPACT
+    0x0333_51e0, // BASE_MAX_COMMAND_POWER
 ];
 pub const DEFINES: usize = 12;
 

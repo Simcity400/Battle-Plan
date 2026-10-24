@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// CEquipmentUpgradesInstance primary vtable.
-pub const VTABLE_RVA: usize = 0x027a_b628;
+pub const VTABLE_RVA: usize = 0x027c_1af8;
 /// CEquipmentUpgradesInstance entry vector data.
 pub const ENTRIES: usize = 0x08;
 

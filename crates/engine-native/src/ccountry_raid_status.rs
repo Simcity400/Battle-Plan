@@ -3,7 +3,7 @@
 //! nonpositive handles as absent.
 
 /// Raid-status vtable.
-pub const VTABLE_RVA: usize = 0x029b_6198;
+pub const VTABLE_RVA: usize = 0x029c_cd88;
 /// Inline raid-status array stride.
 pub const STRIDE: usize = 0xb0;
 /// Country handle, i32, serialized only when positive.
@@ -20,7 +20,7 @@ pub const TARGET_COOLDOWN_STRIDE: usize = 0x40;
 /// Country-eligible raid-type cache.
 pub const ELIGIBLE_TYPES: usize = 0x68;
 /// Target-cooldown vtable.
-pub const COOLDOWN_VTABLE_RVA: usize = 0x029b_6148;
+pub const COOLDOWN_VTABLE_RVA: usize = 0x029c_cd38;
 /// Cooldown entry: raid type pointer.
 pub const COOLDOWN_TYPE: usize = 0x08;
 /// Cooldown entry: target scope, as `raid_location_scope_layout`.
@@ -28,7 +28,7 @@ pub const COOLDOWN_SCOPE: usize = 0x10;
 /// Stored cooldown days used by serialization and denial tooltip.
 pub const COOLDOWN_DAYS: usize = 0x38;
 /// Raid-status constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x014d_6dc0;
+pub const CONSTRUCTOR_RVA: usize = 0x014e_90d0;
 
 /// Pointer stride of the instance, used-type and eligible-type arrays.
 pub const POINTER_STRIDE: usize = 8;

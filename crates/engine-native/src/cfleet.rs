@@ -10,7 +10,7 @@ use crate::{
 };
 
 /// CFleet primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_bf28;
+pub const VTABLE_RVA: usize = 0x0296_2a18;
 /// CFleet reference handle {u32 type, u32 id}.
 pub const HANDLE: usize = 0x08;
 /// CFleet reference type.

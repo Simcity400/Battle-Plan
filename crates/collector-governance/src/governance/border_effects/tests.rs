@@ -150,14 +150,14 @@ impl Fixture {
         self.word(cell + bucket::TYPE, handle as usize);
         self.word(cell + bucket::OBJECT, EVENT);
         // Event and option identities, followed by the immediate effect.
-        self.word(EVENT, IMAGE + 0x0298_2fb8);
+        self.word(EVENT, IMAGE + 0x0299_9be8);
         self.word(EVENT + 8, handle as usize);
-        self.word(EVENT + 0x118, IMAGE + 0x0298_2f18);
-        self.word(EVENT + 0x238, IMAGE + 0x027b_e4c0);
+        self.word(EVENT + 0x118, IMAGE + 0x0299_9b48);
+        self.word(EVENT + 0x238, IMAGE + 0x027d_4990);
         self.array(EVENT + 0x240, 0x18900, 1);
         self.word(0x18900, 0x18a00);
         // Targeted-decision removal effect with the requested name.
-        self.word(0x18a00, IMAGE + 0x0275_e4c0);
+        self.word(0x18a00, IMAGE + 0x0277_46c0);
         self.text(0x18a00 + 0x58, b"needed");
     }
 

@@ -425,8 +425,8 @@ fn faction_phase_and_advisor_sites_are_registered_and_shared_resource_helpers_ar
             .any(|name| name.contains("extraction_call") || *name == "rebuild_advisor_slots")
     );
     // These are the generic pool helpers, not faction-specific simulation stores.
-    const SHARED_POOL_CLEAR: usize = 0xbbd630;
-    const SHARED_POOL_ADD_ASSIGN: usize = 0xbbc010;
+    const SHARED_POOL_CLEAR: usize = 0xbccb50;
+    const SHARED_POOL_ADD_ASSIGN: usize = 0xbcb530;
     for rva in [SHARED_POOL_CLEAR, SHARED_POOL_ADD_ASSIGN] {
         assert!(
             !engine_mutations::faction_companion_mutations::MUTATIONS

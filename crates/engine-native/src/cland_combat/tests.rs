@@ -345,10 +345,10 @@ fn details_leaf_batches_match_scalar_values_every_fault_and_changed_read() {
                     i64::MAX as u64,
                 );
                 fixture.u64(side + cland_combatant::BORDER_TERRAIN_FACTOR, u64::MAX);
-                fixture.u32(side + 0x4a0, if side == ATTACK { 4 } else { 7 });
-                fixture.u64(side + 0x4a8, 0x8a00);
-                fixture.u64(side + 0x4e0 + 24, 15);
+                fixture.u32(side + 0x4c0, if side == ATTACK { 4 } else { 7 });
+                fixture.u64(side + 0x4c8, 0x8a00);
                 fixture.u64(side + 0x500 + 24, 15);
+                fixture.u64(side + 0x520 + 24, 15);
                 fixture.u64(0x8a00, (BASE + crate::cstate::VTABLE_RVA) as u64);
                 fixture.u32(0x8a00 + crate::cstate::ID, 19);
             }
@@ -1434,8 +1434,8 @@ fn detail_demand_counts_combat_participant_and_arena_occurrences() {
             count as u32,
         );
         let combat = fixture.0[COMBAT - STATE..COMBAT - STATE + 0xe0].to_vec();
-        let attacker = fixture.0[ATTACK - STATE..ATTACK - STATE + 0x1b0].to_vec();
-        let defender = fixture.0[DEFEND - STATE..DEFEND - STATE + 0x1b0].to_vec();
+        let attacker = fixture.0[ATTACK - STATE..ATTACK - STATE + 0x1d0].to_vec();
+        let defender = fixture.0[DEFEND - STATE..DEFEND - STATE + 0x1d0].to_vec();
         for index in 0..count {
             let pointer = LARGE_COMBATS + index * COMBAT_STRIDE;
             let attack = pointer + 0x100;
@@ -1729,7 +1729,7 @@ fn tactic_context_records_a_side_whose_country_set_emptied() {
     struct Defines<'a>(DetailMemory<'a>);
     impl Memory for Defines<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-            if [0x0331_d370, 0x0331_d3f0, 0x0331_d478].contains(&(address.wrapping_sub(BASE)))
+            if [0x0333_5ee0, 0x0333_5f68, 0x0333_6000].contains(&(address.wrapping_sub(BASE)))
                 && destination.len() == 8
             {
                 destination.copy_from_slice(&50_000_i64.to_le_bytes());
@@ -2118,14 +2118,14 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
     );
     for (side, country, state) in [(ATTACK, -7_i32, 19), (DEFEND, 11, 21)] {
         fixture.u64(side, (BASE + cland_border_war_combatant::VTABLE_RVA) as u64);
-        fixture.u32(side + 0x4a0, country as u32);
+        fixture.u32(side + 0x4c0, country as u32);
         let pointer = 0x10300 + if side == ATTACK { 0 } else { 0x100 };
-        fixture.u64(side + 0x4a8, pointer as u64);
+        fixture.u64(side + 0x4c8, pointer as u64);
         fixture.u64(pointer, (BASE + crate::cstate::VTABLE_RVA) as u64);
         fixture.u32(pointer + crate::cstate::ID, state);
         for (offset, id) in [
-            (0x4e0, b"event.1".as_slice()),
-            (0x500, b"event.2".as_slice()),
+            (0x500, b"event.1".as_slice()),
+            (0x520, b"event.2".as_slice()),
         ] {
             let start = side + offset - STATE;
             fixture.0[start..start + 32].fill(0);
@@ -2159,7 +2159,7 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
     assert_eq!(border.sides[1].state, 21);
     assert_eq!(&arenas.text[border.sides[0].win_event.range()], b"event.1");
     for side in [ATTACK, DEFEND] {
-        for offset in [0x4e0, 0x500] {
+        for offset in [0x500, 0x520] {
             let start = side + offset - STATE;
             fixture.0[start..start + 32].fill(0);
             fixture.u64(side + offset + 24, 15);
@@ -2189,7 +2189,7 @@ fn border_marker_inputs_keep_stored_country_state_event_bytes_and_inactive_skip(
             .text,
         counts.text - 4 * b"event.1".len()
     );
-    fixture.u64(ATTACK + 0x4a8, 1);
+    fixture.u64(ATTACK + 0x4c8, 1);
     assert!(
         read_details(
             &fixture.memory(),

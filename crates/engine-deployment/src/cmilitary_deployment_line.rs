@@ -6,7 +6,7 @@
 use crate::{Memory, cmilitary_deployment, cname_group_member, cpdx_array::Array, read};
 
 /// CMilitaryDeploymentLine primary vtable.
-pub const VTABLE_RVA: usize = 0x29a9dc0;
+pub const VTABLE_RVA: usize = 0x295e0a8;
 /// CMilitaryDeploymentLine reference kind.
 pub const REFERENCE_TYPE: u32 = 63;
 /// CMilitaryDeploymentLine reference type word, u32; the shared CReferenceObject qword.

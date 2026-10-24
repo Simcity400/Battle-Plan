@@ -15,7 +15,7 @@ const REGION_COVERAGE: usize = 0x50;
 const REASSIGNMENT_PENALTY: usize = 0xc0;
 const REACHED: u32 = 16;
 /// `map_air_sortie_inputs`'s console override vector.
-const EFFICIENCY_OVERRIDES_RVA: usize = 0x0331_7208;
+const EFFICIENCY_OVERRIDES_RVA: usize = 0x0332_f5d8;
 
 #[test]
 fn held_patrol_night_reads_each_demanded_region_once_and_reuses_manager() {

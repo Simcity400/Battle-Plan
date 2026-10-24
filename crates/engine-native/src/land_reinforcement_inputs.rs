@@ -135,9 +135,9 @@ fn supply_scalars(
             (army, 0x40),
             (army, 0x58),
             (army, 0x498),
-            (base, 0x0331_91c0),
-            (base, 0x0331_9394),
-            (base, 0x0331_94e0),
+            (base, 0x0333_1604),
+            (base, 0x0333_1818),
+            (base, 0x0333_1968),
         ],
         &mut std::array::from_fn(|index| {
             &mut fields.next().unwrap()[..if (4..7).contains(&index) { 4 } else { 8 }]
@@ -426,10 +426,10 @@ fn infrastructure(
     if row.scalar_values[20] < 1 {
         row.scalar_values[21] = i64::from(field::<i32>(memory, definition, 0x2b8)?);
         if row.scalar_values[21] < 1 {
-            row.scalar_values[22] = i64::from(field::<i32>(memory, base, 0x0331_b5b4)?);
+            row.scalar_values[22] = i64::from(field::<i32>(memory, base, 0x0333_3dc8)?);
         }
     }
-    row.scalar_values[23] = field(memory, base, 0x0331_aac0)?;
+    row.scalar_values[23] = field(memory, base, 0x0333_31b0)?;
     row.flags[10] = field(
         memory,
         definition,
@@ -791,10 +791,10 @@ fn air(
     if row.scalar_values[14] > 0 {
         row.scalar_values[15] = values[2];
         row.scalar_values[16] = field(memory, stats, 0x220)?;
-        row.scalar_values[17] = sources.field(memory, base, 0x0331_ddd8, UNREADABLE)?;
+        row.scalar_values[17] = sources.field(memory, base, 0x0333_6aa8, UNREADABLE)?;
         if row.scalar_values[16] != 0 {
-            row.scalar_values[18] = sources.field(memory, base, 0x0331_de18, UNREADABLE)?;
-            row.scalar_values[19] = sources.field(memory, base, 0x0331_dd98, UNREADABLE)?;
+            row.scalar_values[18] = sources.field(memory, base, 0x0333_6af0, UNREADABLE)?;
+            row.scalar_values[19] = sources.field(memory, base, 0x0333_6a78, UNREADABLE)?;
         }
     }
     Ok(())
@@ -978,7 +978,7 @@ fn transport_context(
     let countries = ccountry::Reader::new(memory, base, game)?;
     let owner = countries.resolve(owner_raw)?;
     if row.ids[5] & (1 << 4) != 0 {
-        let definitions = sources.field::<u64>(memory, base, 0x0331_7cc8, UNREADABLE)? as usize;
+        let definitions = sources.field::<u64>(memory, base, 0x0333_0098, UNREADABLE)? as usize;
         if definitions == 0 {
             return Err("reinforcement transport static modifier set null");
         }
@@ -1044,10 +1044,10 @@ fn transport_context(
                 return Err(reason);
             }
             for (index, rva) in [
-                (25, 0x0331_e100),
-                (26, 0x0331_d5b0),
-                (27, 0x0331_d620),
-                (28, 0x0331_e550),
+                (25, 0x0333_6ed0),
+                (26, 0x0333_6168),
+                (27, 0x0333_61e0),
+                (28, 0x0333_7368),
             ] {
                 row.scalar_values[index] = sources.field(memory, base, rva, UNREADABLE)?;
             }
@@ -1370,9 +1370,9 @@ pub fn capture_context_buffer(
                     memory,
                     base,
                     if row.scalar_values[10] > 0 {
-                        0x0331_9618
+                        0x0333_1ac8
                     } else {
-                        0x0331_9568
+                        0x0333_1a10
                     },
                     UNREADABLE,
                 )?;
@@ -1380,9 +1380,9 @@ pub fn capture_context_buffer(
         }
     }
     if row.flags[0] != 0 {
-        row.scalar_values[11] = sources.field(memory, base, 0x0331_9758, UNREADABLE)?;
+        row.scalar_values[11] = sources.field(memory, base, 0x0333_1c28, UNREADABLE)?;
     } else if row.flags[1] != 0 {
-        row.scalar_values[12] = sources.field(memory, base, 0x0331_9808, UNREADABLE)?;
+        row.scalar_values[12] = sources.field(memory, base, 0x0333_1cd8, UNREADABLE)?;
     }
     let infrastructure_state = if next == 0 {
         actual_state

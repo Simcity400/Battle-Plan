@@ -466,7 +466,7 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
     memory.put(0x5000 + cbuilding_template::SCOPE, &5_i32.to_le_bytes());
     // A disabled lookup keeps the healthy level at zero.
     memory.put(0x5000 + cbuilding_template::LOOKUP_ENABLED_CANDIDATE, &[0]);
-    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+    memory.put(0x0333_31b0, &(-10_000_i64).to_le_bytes());
     let census = Outcome::Rows { len: 1 };
     let mut rows = [Row {
         id: 1,
@@ -478,18 +478,18 @@ fn movement_infrastructure_is_read_per_state_over_the_census() {
     );
     assert_eq!(rows[0].movement_infrastructure, -50_000);
     // A later hourly pass acquires both changed globals and new faults.
-    memory.put(0x0331_aac0, &(-12_000_i64).to_le_bytes());
+    memory.put(0x0333_31b0, &(-12_000_i64).to_le_bytes());
     assert_eq!(
         read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
         census
     );
     assert_eq!(rows[0].movement_infrastructure, -60_000);
-    memory.0.remove(&0x0331_aac0);
+    memory.0.remove(&0x0333_31b0);
     assert!(matches!(
         read_movement_infrastructure(&memory, 0, 0, census, &mut rows),
         Outcome::Unavailable { .. }
     ));
-    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+    memory.put(0x0333_31b0, &(-10_000_i64).to_le_bytes());
 
     // An unreadable census, an absent slot and a broken state each deny the
     // term rather than recording a plausible zero.
@@ -555,7 +555,7 @@ fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
     memory.put(indices + 8, &1_u32.to_le_bytes());
     memory.put(indices + 12, &1_u32.to_le_bytes());
     memory.put(0x7000, &cbuilding_status::NO_BUILDING_INDEX.to_le_bytes());
-    memory.put(0x0331_aac0, &(-10_000_i64).to_le_bytes());
+    memory.put(0x0333_31b0, &(-10_000_i64).to_le_bytes());
     let cold = [
         (first, 8),
         (cbuilding_database::SINGLETON_RVA, 8),
@@ -566,7 +566,7 @@ fn infrastructure_globals_keep_cold_faults_and_lazy_ordinal_acquisition() {
             first + BUILDING_STATUS + cbuilding_status::BUILDING_INDEX_COUNT,
             4,
         ),
-        (0x0331_aac0, 8),
+        (0x0333_31b0, 8),
     ];
     for fault in 0..cold.len() {
         let traced = Traced {
@@ -1098,7 +1098,7 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
 
 #[test]
 fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
-    const DATABASE_GLOBAL: usize = 0x0331_6ca0;
+    const DATABASE_GLOBAL: usize = 0x0332_f070;
     struct ContinentMemory<'a>(&'a [u8]);
     impl Memory for ContinentMemory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -1121,7 +1121,7 @@ fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
     let (game, database, state_array, continents, state, template, null, continent) = (
         0x1000, 0x2000, 0x3000, 0x3100, 0x4000, 0x5000, 0x6000, 0x6100,
     );
-    put(database, &0x0292_cf10_u64.to_le_bytes());
+    put(database, &0x0294_3550_u64.to_le_bytes());
     for (at, array, count) in [
         (game + cgame_state::STATES, state_array, 2_u32),
         (database + 0x58, continents, 2_u32),

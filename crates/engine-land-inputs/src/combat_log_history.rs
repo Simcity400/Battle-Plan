@@ -10,8 +10,8 @@ pub const ENEMY_KIND: u8 = 5;
 pub const MANPOWER: usize = 0x98;
 pub const TEMPLATES: usize = 0xb0;
 pub const REFERENCES: usize = 0xc8;
-pub const MANPOWER_VTABLE_RVA: usize = 0x0294_6dd8;
-pub const TEMPLATE_VTABLE_RVA: usize = 0x0294_7058;
+pub const MANPOWER_VTABLE_RVA: usize = 0x0295_d5b8;
+pub const TEMPLATE_VTABLE_RVA: usize = 0x0295_d838;
 pub const MANPOWER_SIZE: usize = 0x38;
 pub const TEMPLATE_SIZE: usize = 0x38;
 pub const TEMPLATE_REFERENCE: usize = 0x08;
@@ -217,12 +217,12 @@ pub fn read_group(
 /// Shared settled battle-pool operands. A pool index is reusable; it is not
 /// the live combat reference. Callers ask only for indices a native reference
 /// append/release or the initial retained group history reaches.
-pub const BATTLE_POOL_RVA: usize = 0x0332_3c00;
-pub const BATTLE_COUNTS_RVA: usize = 0x0332_3c18;
-pub const BATTLE_USED_RVA: usize = 0x0332_3c30;
+pub const BATTLE_POOL_RVA: usize = 0x0333_cb70;
+pub const BATTLE_COUNTS_RVA: usize = 0x0333_cb88;
+pub const BATTLE_USED_RVA: usize = 0x0333_cba0;
 pub const BATTLE_SIZE: usize = 0x448;
-pub const BATTLE_VTABLE_RVA: usize = 0x0294_6fb8;
-pub const SIDE_VTABLE_RVA: usize = 0x0294_6e78;
+pub const BATTLE_VTABLE_RVA: usize = 0x0295_d798;
+pub const SIDE_VTABLE_RVA: usize = 0x0295_d658;
 pub const SIDE_SIZE: usize = 0x210;
 pub const BATTLE_ATTACKER: usize = 0x08;
 pub const BATTLE_DEFENDER: usize = 0x218;
@@ -431,7 +431,7 @@ impl BattlePool {
     }
 }
 
-pub const MODIFIER_HOURS_VTABLE_RVA: usize = 0x0294_6e28;
+pub const MODIFIER_HOURS_VTABLE_RVA: usize = 0x0295_d608;
 
 #[cfg(test)]
 mod tests {

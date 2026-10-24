@@ -3,10 +3,10 @@ use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 use std::{collections::BTreeSet, io};
 
 const PROPERTY_IDENTITIES_DIGEST: &str =
-    "2492da4e9219b8a0e32be6dd6c593312438df62b8577ac145bbf509cf4d278bd";
+    "8b6907fb2efa4cec3a26e3ebaaaa9702a78980192d2cde544c310556fbfd524c";
 const ORDINARY_PROPERTY_NAMES_DIGEST: &str =
     "b64e8347b571c6652372fb1dc02e71dccf271278f98534c5674946956f1573a3";
-const CALLBACK_INITIALIZER_RVA: u32 = 0x0007_83c0;
+const CALLBACK_INITIALIZER_RVA: u32 = 0x0007_8650;
 const PROPERTY_ROW_WIDTH: u32 = 16;
 const CALLBACK_VALUE_READER: u32 = 16;
 const CALLBACK_INPUT_READER: u32 = 24;
@@ -55,27 +55,27 @@ struct Registry {
 const REGISTRIES: [Registry; 4] = [
     Registry {
         scope: NumericScope::Country,
-        lookup_rva: 0x01a7_d880,
-        initializer_rva: 0x0007_f970,
-        handler_rva: 0x01a7_b350,
+        lookup_rva: 0x01a9_0be0,
+        initializer_rva: 0x0007_fe80,
+        handler_rva: 0x01a8_e6b0,
     },
     Registry {
         scope: NumericScope::State,
-        lookup_rva: 0x01a8_5570,
-        initializer_rva: 0x0008_00e0,
-        handler_rva: 0x01a8_52d0,
+        lookup_rva: 0x01a9_88d0,
+        initializer_rva: 0x0008_05f0,
+        handler_rva: 0x01a9_8630,
     },
     Registry {
         scope: NumericScope::UnitLeader,
-        lookup_rva: 0x01a8_7cd0,
-        initializer_rva: 0x0008_0170,
-        handler_rva: 0x01a8_72b0,
+        lookup_rva: 0x01a9_b030,
+        initializer_rva: 0x0008_0680,
+        handler_rva: 0x01a9_a610,
     },
     Registry {
         scope: NumericScope::Character,
-        lookup_rva: 0x01a7_32a0,
-        initializer_rva: 0x0007_f830,
-        handler_rva: 0x01a7_2900,
+        lookup_rva: 0x01a8_6600,
+        initializer_rva: 0x0007_fd40,
+        handler_rva: 0x01a8_5c60,
     },
 ];
 

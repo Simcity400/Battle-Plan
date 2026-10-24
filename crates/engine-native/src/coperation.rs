@@ -3,7 +3,7 @@
 use crate::{Memory, read};
 
 /// Primary vtable at subobject offset zero.
-pub const VTABLE_RVA: usize = 0x0292_8c98;
+pub const VTABLE_RVA: usize = 0x0293_f2d8;
 /// Embedded preparation mean-time-to-happen object.
 pub const PREPARATION_TIME: usize = 0x10;
 /// Lexer token resolved before constructing an operation instance.

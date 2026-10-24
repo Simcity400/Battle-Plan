@@ -4,9 +4,9 @@
 use crate::{Memory, ccountry, cpdx_array::Array, cwar_goal, read, walk::Outcome};
 
 /// CDiplomacyStatus primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_b1f8;
+pub const VTABLE_RVA: usize = 0x0296_1ce8;
 /// CDiplomacyStatus constructor.
-pub const CONSTRUCTOR_RVA: usize = 0x00d1_e540;
+pub const CONSTRUCTOR_RVA: usize = 0x00d3_2d80;
 /// CDiplomacyStatus CRelationStatus pointer matrix, indexed by resolved country ordinal.
 pub const RELATIONS: usize = 0x08;
 /// Relation-matrix signed-i32 capacity in its array header.

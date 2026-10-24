@@ -73,7 +73,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "ensure_local_subunit",
-            rva: 0xcf_9ad0,
+            rva: 0xd0_e200,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x6c, 0x24, 0x20, 0x56, 0x57, 0x41, 0x56,
                 0x48, 0x83,
@@ -86,7 +86,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "rebuild_local_subunit",
-            rva: 0x100_5f00,
+            rva: 0x101_b1b0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -98,7 +98,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "clear_local_subunits",
-            rva: 0xcf_a660,
+            rva: 0xd0_ed90,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x48,
@@ -110,7 +110,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "initialize_default_subunits",
-            rva: 0xcf_f560,
+            rva: 0xd1_3c80,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -124,7 +124,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "find_or_create_subunit_definition",
-            rva: 0xab_4070,
+            rva: 0xac_3130,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55,
                 0x41, 0x56,
@@ -136,7 +136,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 6] = [
     (
         MutationSite {
             name: "reload_equipment_content",
-            rva: 0x17_60a0,
+            rva: 0x17_65b0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,

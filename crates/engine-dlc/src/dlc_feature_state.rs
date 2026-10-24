@@ -3,7 +3,7 @@
 //! This module describes predicates without calling the game.
 
 /// Runtime DLC mask, u32.
-pub const MASK_RVA: usize = 0x0331_6e78;
+pub const MASK_RVA: usize = 0x0332_f248;
 /// Feature ID required by equipment-loss bookkeeping.
 #[cfg(test)]
 pub const EQUIPMENT_LOSSES_FEATURE: u32 = 3;

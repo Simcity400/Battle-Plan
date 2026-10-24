@@ -95,9 +95,9 @@ impl World {
             world.u64(side, (IMAGE + cnaval_combatant::VTABLE_RVA) as u64);
             world.u64(side + cnaval_combatant::COMBAT, BODY as u64);
             let sentinel = if side == ATTACKING { 0xa680 } else { 0xa6a0 };
-            world.u64(side + 0x290, sentinel as u64);
+            world.u64(side + 0x2b0, sentinel as u64);
             world.u64(sentinel, sentinel as u64);
-            // Capacity differs from count, exercising the corrected D0/D4 header.
+            // Capacity differs from count, exercising the corrected F0/F4 header.
             world.array(side + cnaval_combatant::GROUPS, roots, 2, 1);
             world.u64(roots, group as u64);
             world.u64(side + cnaval_combatant::POSITIONING, i64::MIN as u64);
@@ -164,7 +164,7 @@ fn detail_world() -> World {
     let mut world = World::new();
     world.u64(BODY + 0x28, ATTACKING as u64);
     world.u64(BODY + 0x30, DEFENDING as u64);
-    world.0[ATTACKING + 0xb8 - GS] = 1;
+    world.0[ATTACKING + 0xd8 - GS] = 1;
     for member in [MEMBER_A, MEMBER_D] {
         world.u64(member + cfex_member::SHIP_HANDLE, 0);
         for offset in [0x48, 0x68, 0x88, 0xa8] {
@@ -194,7 +194,7 @@ fn unreadable_custom_sea_grid_does_not_withhold_live_combat_details() {
     );
     world.u32(REGION + crate::cstrategic_region::ID, 94);
     world.u64(REGION + 0x30, TEMPLATE as u64);
-    world.u64(TEMPLATE, (IMAGE + 0x029c_5260) as u64);
+    world.u64(TEMPLATE, (IMAGE + 0x029d_be50) as u64);
     world.u32(TEMPLATE + 0x140, 1);
     world.u32(TEMPLATE + 0x144, 1);
     let (capture, row, _, _, _) = walk_whole(&world, 0);
@@ -704,7 +704,7 @@ fn side_external_planes_keep_their_first_group_owner() {
     world.u64(PLANE + 0x88 + crate::msvc_string::CAPACITY, 15);
     world.u64(0xa880, PLANE as u64);
     world.array(GROUP_A + 0x58, 0xa880, 1, 1);
-    world.array(ATTACKING + 0xe0, 0xa880, 1, 1);
+    world.array(ATTACKING + 0x100, 0xa880, 1, 1);
     let mut planes = vec![crate::cfex_air::Row::default(); 4];
     let run = |world: &World, planes: &mut [crate::cfex_air::Row]| {
         let mut rows = [DetailsRow::default(); 1];

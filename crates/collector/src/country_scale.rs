@@ -424,8 +424,13 @@ pub fn observe_raid_arenas(
         .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, 8))
         .map(|array| array.count as usize)
         .ok_or("raid region sizing header unreadable or invalid");
-    let path_rows = engine_raid_inputs::raid_path_memo::required_rows(memory, base, state)
-        .ok_or("raid path sizing header unreadable or invalid");
+    let path_rows = {
+        use engine_raid_inputs::raid_path_memo::{Dispatcher, required_rows};
+        required_rows(memory, base, state, Dispatcher::Land)
+            .zip(required_rows(memory, base, state, Dispatcher::Naval))
+            .map(|(land, naval)| land.max(naval))
+            .ok_or("raid path sizing header unreadable or invalid")
+    };
     let counteroperatives =
         engine_raid_inputs::raid_intel_inputs::required_operatives(memory, base, state);
     Ok(Some(RaidArenas {

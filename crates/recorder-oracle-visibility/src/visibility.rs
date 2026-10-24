@@ -54,9 +54,8 @@ pub fn compare(
 }
 
 /// The attache relation sets the second country's status toward the first.
-/// Air-base access and its offer set the first country's status toward the
-/// second. Military access and docking rights set the first country's status
-/// toward the second, while their offers set the second's toward the first.
+/// Air-base access, military access and docking rights set the first country's
+/// status toward the second, while their offers set the second's toward the first.
 /// Removing a link clears its status, so
 /// each saved relation of those types is one set slot. A relation is saved
 /// under both endpoints; the slot is counted once. The co-belligerent byte
@@ -79,10 +78,8 @@ pub fn compare_links(
         })
     };
     let attache = spelling(cattache_relation::TYPE)?;
-    let air = [
-        spelling(cair_base_access_relation::TYPE)?,
-        spelling(coffer_air_base_access_relation::TYPE)?,
-    ];
+    let air = spelling(cair_base_access_relation::TYPE)?;
+    let offered_air = spelling(coffer_air_base_access_relation::TYPE)?;
     let access = spelling(cmilitary_access_relation::TYPE)?;
     let offered_access = spelling(coffer_military_access_relation::TYPE)?;
     let docking = spelling(cdocking_rights_relation::TYPE)?;
@@ -94,8 +91,10 @@ pub fn compare_links(
         let reverse = (relation.second.as_slice(), relation.first.as_slice());
         let (key, bit) = if kind == attache {
             (reverse, RelationLinkRow::ATTACHE)
-        } else if air.contains(&kind) {
+        } else if kind == air {
             (forward, RelationLinkRow::AIR_BASE_ACCESS)
+        } else if kind == offered_air {
+            (reverse, RelationLinkRow::AIR_BASE_ACCESS)
         } else if kind == access {
             (forward, RelationLinkRow::MILITARY_ACCESS)
         } else if kind == offered_access {

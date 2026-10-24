@@ -1,7 +1,7 @@
 //! Puppet-country peace-action layout for the supported executable.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x029b_c530;
+pub const VTABLE_RVA: usize = 0x029d_3120;
 /// Raw country reference read and serialized by the peace action.
 pub const PUPPET: usize = 0x50;
 /// Opaque eight bytes initialized and cloned by the action. Meaning remains

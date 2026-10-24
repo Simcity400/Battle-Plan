@@ -103,7 +103,7 @@ pub const ORDINARY_ROUTE_COUNT: usize = 0x20c;
 /// Movement-priority enum; independent of arrival time.
 pub const MOVEMENT_PRIORITY: usize = 0x248;
 /// Embark movement denominator, used in place of neighbor distance.
-pub const EMBARK_MOVEMENT_DISTANCE_RVA: usize = 0x0331_d600;
+pub const EMBARK_MOVEMENT_DISTANCE_RVA: usize = 0x0333_61b8;
 /// CUnit alternate-route u32 province-id vector.
 pub const ALTERNATE_ROUTE_DATA: usize = 0x220;
 /// Retreat byte used by action selection.
@@ -136,7 +136,7 @@ pub const COMBAT_MODIFIER_DATA: usize = 0x170;
 pub const ATTACK_ACCUMULATOR: usize = 0x188;
 
 /// CUnit destructor.
-pub const DESTRUCTOR_RVA: usize = 0x00be_99a0;
+pub const DESTRUCTOR_RVA: usize = 0x00bf_8ed0;
 
 /// Simulation operands for map routes and stack kinds, independent of the map entity.
 /// The caller first authenticates the unit's class and roster. Routes are copied
@@ -552,7 +552,7 @@ fn map_combat_identity(
             COMBAT_BORDER_WAR,
         ),
         // Authenticate the naval combat's secondary reference-object vtable.
-        crate::cnaval_combat::VTABLE_RVA => (0x029c_6ff0, COMBAT_NAVAL),
+        crate::cnaval_combat::VTABLE_RVA => (0x029d_dbe0, COMBAT_NAVAL),
         _ => return Err("map combat class unsupported"),
     };
     if base

@@ -24,11 +24,11 @@ use crate::{
 /// Saved-global target array in game state.
 pub const REGISTRY: usize = 0x6c0;
 /// Reverse interned-name vector.
-pub const NAMES_RVA: usize = 0x0332_45a0;
+pub const NAMES_RVA: usize = 0x0333_d530;
 /// Saved-target record stride; its final u16 ends it.
 pub const STRIDE: usize = 0x70;
 /// Saved-target record vtable.
-pub const VTABLE_RVA: usize = 0x0270_b250;
+pub const VTABLE_RVA: usize = 0x0272_1270;
 /// Fallback target receiver used only outside an initialized game, gated by `cgame_state::PLAYER_INPUT_ELIGIBLE`.
 pub const IN_GAME: usize = 0xa39;
 /// Stored reference fields in validity-bit order.

@@ -25,9 +25,9 @@ pub use cached_name::{cached_name, cached_name_demand};
 pub mod port_mission;
 
 /// Primary vtable at displacement zero.
-pub const VTABLE_RVA: usize = 0x0294_c480;
+pub const VTABLE_RVA: usize = 0x0296_2f70;
 /// Secondary vtable at `SECONDARY_BASE`.
-pub const SECONDARY_VTABLE_RVA: usize = 0x0294_c660;
+pub const SECONDARY_VTABLE_RVA: usize = 0x0296_3150;
 /// Supply-consumer/reference-object secondary base.
 pub const SECONDARY_BASE: usize = 0x10;
 /// Default reference type assigned through fleet-ID minting.
@@ -57,9 +57,9 @@ pub const REPAIR_TARGET: usize = 0x4c0;
 /// Current fuel usage, i64, read from fleet-vector task forces.
 pub const CURRENT_FUEL_USAGE: usize = 0x500;
 /// Constructor installing all task-force interface identities.
-pub const CONSTRUCTOR_RVA: usize = 0x00d4_eaf0;
+pub const CONSTRUCTOR_RVA: usize = 0x00d6_3320;
 /// Destructor restoring the same interface identities.
-pub const DESTRUCTOR_RVA: usize = 0x00d4_edf0;
+pub const DESTRUCTOR_RVA: usize = 0x00d6_3620;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

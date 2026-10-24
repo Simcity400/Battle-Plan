@@ -10,7 +10,7 @@ pub const COUNTRY: usize = 0x10;
 pub const DAMAGE: usize = 0x18;
 
 /// Received-damage entry primary vtable.
-pub const VTABLE_RVA: usize = 0x02a0_a1d8;
+pub const VTABLE_RVA: usize = 0x02a2_0f38;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

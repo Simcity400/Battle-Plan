@@ -4,7 +4,7 @@
 //! original finalization, which flushes pending losses before side deletion.
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0294_6f68;
+pub const VTABLE_RVA: usize = 0x0295_d748;
 /// CStatsObserver cached leader-tally array.
 pub const LEADERS: usize = 0x20;
 /// CStatsObserver leader-tally u32 count.

@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Primary vtable.
-pub const VTABLE_RVA: usize = 0x0293_f790;
+pub const VTABLE_RVA: usize = 0x0295_5f00;
 /// COperativeLeader two-u32 identity (`IDENTITY`).
 pub const IDENTITY: usize = 0x08;
 /// Identity type dword validated against the admitted operative type.
@@ -88,10 +88,10 @@ pub const MISSION_ASSIGNMENT: u32 = 3;
 /// operation reference and restores assignment 3.
 pub const OPERATION_ASSIGNMENT: u32 = 4;
 /// Owner setter used by agency admission on accepted and pooled paths.
-pub const SET_OWNER_RVA: usize = 0x00c1_5f80;
+pub const SET_OWNER_RVA: usize = 0x00c2_54e0;
 /// Operative element serializer.
 #[cfg(test)]
-pub const SAVE_RVA: usize = 0x00c1_8ff0;
+pub const SAVE_RVA: usize = 0x00c2_8550;
 /// Embedded codename member. Serialization retains naming operands while
 /// display reads its generated cache; acquire operands independently.
 pub const CODENAME: usize = 0xfd0;
@@ -854,7 +854,7 @@ mod tests {
             0,
         );
         for rva in operative_action_implementation::VTABLE_RVAS {
-            put(&mut bytes, rva + 0x50, 0x01a1_dd30_u64.to_le_bytes());
+            put(&mut bytes, rva + 0x50, 0x01a3_14f0_u64.to_le_bytes());
         }
         put(
             &mut bytes,

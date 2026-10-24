@@ -5,7 +5,7 @@
 //! not prove a unique script event. The exact namespace-record class is unknown.
 
 /// Namespace row array pointer.
-pub const TABLE_RVA: usize = 0x0331_6f98;
+pub const TABLE_RVA: usize = 0x0332_f368;
 /// Namespace record stride.
 pub const STRIDE: usize = 0x28;
 /// Namespace MSVC name string.

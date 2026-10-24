@@ -42,7 +42,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // home slot occupies the five patched bytes.
     MutationSite {
         name: "party_names",
-        rva: 0x119_0ea0,
+        rva: 0x11a_5c00,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
             0x20, 0x48,
@@ -52,7 +52,7 @@ pub const MUTATIONS: [MutationSite; 2] = [
     // RDX's home slot occupies the five patched bytes.
     MutationSite {
         name: "construct_party",
-        rva: 0x118_e330,
+        rva: 0x11a_3090,
         sentinel: [
             0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24,
             0x08, 0x57,

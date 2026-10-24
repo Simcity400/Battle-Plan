@@ -94,7 +94,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "province_controller",
-            rva: 0xe6_b8a0,
+            rva: 0xe8_01a0,
             sentinel: [
                 0x44, 0x88, 0x4c, 0x24, 0x20, 0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24,
                 0x10, 0x55,
@@ -106,10 +106,10 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "victory_points",
-            rva: 0xe6_c7f0,
+            rva: 0xe8_10f0,
             sentinel: [
                 0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x89, 0x51, 0x38, 0x48, 0x8b, 0xd9, 0x80, 0x3d,
-                0xef, 0xc3,
+                0x4f, 0x0a,
             ],
         },
         Receiver::Province,
@@ -118,7 +118,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "read_province",
-            rva: 0xe6_ae20,
+            rva: 0xe7_f720,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec,
                 0x40, 0x48,
@@ -130,7 +130,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "insert_border_conflict",
-            rva: 0x9c_4440,
+            rva: 0x9d_1290,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -145,7 +145,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "erase_border_conflict",
-            rva: 0x9d_02f0,
+            rva: 0x9d_d140,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24,
                 0x18, 0x57,
@@ -160,7 +160,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "rebuild_owner_areas",
-            rva: 0xce_1650,
+            rva: 0xcf_5d80,
             sentinel: [
                 0x40, 0x53, 0x55, 0x57, 0x41, 0x56, 0x48, 0x83, 0xec, 0x58, 0x4c, 0x89, 0x6c, 0x24,
                 0x40, 0xe8,
@@ -173,7 +173,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "initialize_provinces",
-            rva: 0x9d_1f20,
+            rva: 0x9d_ed70,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
                 0x41, 0x57,
@@ -185,7 +185,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_owner",
-            rva: 0x9d_1710,
+            rva: 0x9d_e560,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x89, 0x54, 0x24, 0x10,
                 0x55, 0x57,
@@ -200,7 +200,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_controller",
-            rva: 0x9d_0bf0,
+            rva: 0x9d_da40,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x89, 0x50, 0x10, 0x55, 0x56, 0x57, 0x41,
                 0x54, 0x41,
@@ -216,7 +216,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "reset_state",
-            rva: 0x9c_9da0,
+            rva: 0x9d_6bf0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
                 0x20, 0x57,
@@ -230,7 +230,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "read_state",
-            rva: 0x9c_efb0,
+            rva: 0x9d_be00,
             sentinel: [
                 0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48, 0x89, 0x78,
                 0x20, 0x55,
@@ -244,7 +244,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "state_name_effect",
-            rva: 0x31_0b50,
+            rva: 0x31_11c0,
             sentinel: [
                 0x4c, 0x8b, 0xdc, 0x49, 0x89, 0x5b, 0x08, 0x49, 0x89, 0x6b, 0x18, 0x49, 0x89, 0x73,
                 0x20, 0x57,
@@ -255,7 +255,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "recount_controller_groups",
-            rva: 0x009d_28c0,
+            rva: 0x009d_f710,
             sentinel: [
                 0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
                 0x56, 0x41,
@@ -269,7 +269,7 @@ pub const MUTATIONS: [(MutationSite, Receiver); 14] = [
     (
         MutationSite {
             name: "refresh_cached_victory_point",
-            rva: 0x009d_2660,
+            rva: 0x009d_f4b0,
             sentinel: [
                 0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x7c, 0x24, 0x10, 0x8b, 0x79, 0x24, 0x33,
                 0xd2, 0xbb,

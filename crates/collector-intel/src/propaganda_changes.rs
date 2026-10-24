@@ -662,11 +662,16 @@ impl Hooks {
         let state = read::<u64>(memory, base + engine_native::cgame_state::SINGLETON_RVA)
             .and_then(|state| usize::try_from(state).ok())
             .ok_or("propaganda bootstrap game state unreadable")?;
-        let manager = state
-            .checked_add(engine_native::cgame_state::STRATEGIC_OPERATIVE_MANAGER)
-            .and_then(|at| read::<u64>(memory, at))
-            .and_then(|pointer| usize::try_from(pointer).ok())
-            .ok_or("propaganda bootstrap manager unreadable")?;
+        // A collector attached before any load sizes for nothing; captures grow the lane.
+        let manager = if state == 0 {
+            0
+        } else {
+            state
+                .checked_add(engine_native::cgame_state::STRATEGIC_OPERATIVE_MANAGER)
+                .and_then(|at| read::<u64>(memory, at))
+                .and_then(|pointer| usize::try_from(pointer).ok())
+                .ok_or("propaganda bootstrap manager unreadable")?
+        };
         let count = if manager == 0 {
             0
         } else {

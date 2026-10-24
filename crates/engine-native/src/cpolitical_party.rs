@@ -4,7 +4,7 @@
 use crate::{Memory, cideology_group, read};
 
 /// Political-party primary vtable.
-pub const VTABLE_RVA: usize = 0x0298_77e0;
+pub const VTABLE_RVA: usize = 0x0299_e410;
 /// Ideology-group ID, u32, copied from the group identity.
 pub const ID: usize = 0x08;
 /// CPoliticalParty CIdeologyGroup pointer.

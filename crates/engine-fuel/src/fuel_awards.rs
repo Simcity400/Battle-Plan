@@ -10,7 +10,7 @@ use crate::{
 /// Before the normal pending-gain increment, after refresh and incoming LL.
 /// The overwritten MOV+ADD is eight bytes, with no incoming interior branch.
 pub const BEGIN: (usize, [u8; 16]) = (
-    0x010e_2643,
+    0x010f_73a3,
     [
         0x48, 0x8b, 0x5e, 0x18, 0x48, 0x03, 0x5e, 0x20, 0x4c, 0x39, 0x6e, 0x38, 0x7d, 0x14, 0x48,
         0x8b,
@@ -19,7 +19,7 @@ pub const BEGIN: (usize, [u8; 16]) = (
 /// All awards and Q15 consumer debits have settled, before pending/ring clear.
 /// Post-update eight-byte load span before the original clear continuation.
 pub const END: (usize, [u8; 16]) = (
-    0x010e_3453,
+    0x010f_81b3,
     [
         0x48, 0x8b, 0x4b, 0x48, 0x48, 0x8b, 0x41, 0x40, 0x48, 0x01, 0x83, 0xa8, 0, 0, 0, 0x48,
     ],
@@ -29,31 +29,31 @@ pub const END: (usize, [u8; 16]) = (
 /// body; each five-byte return point remains in its original entry.
 pub const LAND: [(usize, [u8; 16]); 5] = [
     (
-        0x010d_e1ad,
+        0x010f_2f0d,
         [
             0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
         ],
     ),
     (
-        0x010d_e1f2,
+        0x010f_2f52,
         [
             0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
         ],
     ),
     (
-        0x010d_e237,
+        0x010f_2f97,
         [
             0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x49, 0x81, 0xf9, 0xa0, 0x86, 1,
         ],
     ),
     (
-        0x010d_e27d,
+        0x010f_2fdd,
         [
             0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x48, 0x83, 0xed, 1, 0x0f, 0x85,
         ],
     ),
     (
-        0x010d_e2ea,
+        0x010f_304a,
         [
             0x48, 1, 0x90, 0x20, 6, 0, 0, 0x49, 1, 0x13, 0x48, 0x83, 0xef, 1, 0x75, 0xb2,
         ],
@@ -62,7 +62,7 @@ pub const LAND: [(usize, [u8; 16]); 5] = [
 /// Complete receipt addition, preserving the original return. RCX task force,
 /// RDX signed fixed5 receipt. This leaf has no unwind entry or handler.
 pub const NAVAL: (usize, [u8; 16]) = (
-    0x00d4_ff10,
+    0x00d6_4740,
     [
         0x48, 1, 0x91, 0xf8, 4, 0, 0, 0xc3, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
     ],
@@ -71,7 +71,7 @@ pub const NAVAL: (usize, [u8; 16]) = (
 /// ends before register restoration; the five-byte return point remains inside the handler-free
 /// body.
 pub const AIR: (usize, [u8; 16]) = (
-    0x00c3_c401,
+    0x00c4_bb41,
     [
         0x48, 0x89, 0x9a, 0xf0, 0, 0, 0, 0x48, 0x8b, 0x5c, 0x24, 0x30, 0x48, 0x83, 0xc4, 0x20,
     ],
@@ -81,7 +81,7 @@ pub const AIR: (usize, [u8; 16]) = (
 /// follows the handler-free prologue and contains no interior branch or return address. The
 /// five-byte return point shares its unwind state.
 pub const RESET: (usize, [u8; 16]) = (
-    0x010d_dc69,
+    0x010f_29c9,
     [
         0x48, 0x89, 0x46, 0x30, 0x48, 0x89, 0x6e, 0x38, 0x48, 0x89, 0x6e, 0x40, 0x89, 0x6e, 0x54,
         0x8b,

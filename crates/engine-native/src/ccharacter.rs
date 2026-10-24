@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Character vtable.
-pub const VTABLE_RVA: usize = 0x0296_7e30;
+pub const VTABLE_RVA: usize = 0x0297_ea60;
 /// Reference type value, u32.
 pub const REFERENCE_TYPE: u32 = 73;
 /// Reference-type field, u32, in the primary object header.
