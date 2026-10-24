@@ -21,8 +21,11 @@ use std::{
 };
 use uuid::Uuid;
 use windows_sys::Win32::{
-    Foundation::{ERROR_SHARING_VIOLATION, GENERIC_WRITE},
-    Storage::FileSystem::{DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE},
+    Foundation::{ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE},
+    Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    },
 };
 
 const MANIFEST: &str = "manifest";
@@ -70,7 +73,9 @@ impl std::error::Error for WriterBusy {}
 
 pub fn is_writer_busy(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::WouldBlock
-        && error.get_ref().is_some_and(|inner| inner.is::<WriterBusy>())
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<WriterBusy>())
 }
 /// The manifest is a small root naming each section's runs of entries in
 /// append-only entry logs, with the section names in a names file. Manifests
@@ -91,6 +96,7 @@ const MAX_RUNS: usize = 32;
 const NEW_LOG: u64 = 0;
 /// Bytes a pack writer buffers before writing them to its file.
 const PACK_BUFFER: u64 = 1 << 20;
+const COMMIT_SCRATCH: usize = 8192;
 const SHARING: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 /// How long a key's content stamps, once found current, stand for its commits.
 /// A content stack holds thousands of files, so checking them all at every
@@ -1188,18 +1194,22 @@ impl Listing {
         })?;
         into.write_all(&(head.len() as u64).to_le_bytes())?;
         into.write_all(&head)?;
+        let mut scratch = [0; COMMIT_SCRATCH];
         for (index, section) in self.0.header.sections.iter().enumerate() {
             match &self.0.entries {
                 Entries::Flat { file, offsets } => {
-                    let mut bytes = vec![0; to_usize(section.count * ENTRY_BYTES)?];
-                    if read_at(file, &mut bytes, offsets[index])? != bytes.len() {
-                        return Err(invalid("truncated prepared listing"));
-                    }
-                    into.write_all(&bytes)?;
+                    copy_entries(
+                        file,
+                        offsets[index],
+                        section.count * ENTRY_BYTES,
+                        into,
+                        &mut scratch,
+                    )?;
                 }
                 Entries::Logs(_) => {
                     for run in &self.0.runs[index] {
-                        into.write_all(&self.0.run_entries(run)?)?;
+                        let file = self.0.log(run.log)?;
+                        copy_entries(&file, run.offset, run.bytes(), into, &mut scratch)?;
                     }
                 }
             }
@@ -1625,22 +1635,35 @@ impl Catalog {
         RangeId::decode(&bytes).map(Some)
     }
 
-    /// Every entry of one run, in range order.
-    fn run_entries(&self, run: &Run) -> io::Result<Vec<u8>> {
-        let log = self.log(run.log)?;
-        let length = log.metadata()?.len();
-        if run
-            .offset
-            .checked_add(run.bytes())
-            .is_none_or(|end| end > length)
-        {
-            return Err(invalid("truncated prepared entry log"));
+    fn visit_run(
+        &self,
+        run: &Run,
+        scratch: &mut [u8],
+        mut visit: impl FnMut(u64, RangeId) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let file = self.log(run.log)?;
+        let page_bytes = scratch.len() / ENTRY_BYTES as usize * ENTRY_BYTES as usize;
+        if page_bytes == 0 {
+            return Err(invalid("prepared entry scratch is too small"));
         }
-        let mut bytes = vec![0; to_usize(run.bytes())?];
-        if read_at(&log, &mut bytes, run.offset)? != bytes.len() {
-            return Err(invalid("truncated prepared entry log"));
+        let mut at = 0;
+        while at < run.bytes() {
+            let bytes = to_usize((run.bytes() - at).min(page_bytes as u64))?;
+            if read_at(&file, &mut scratch[..bytes], run.offset + at)? != bytes {
+                return Err(invalid("truncated prepared entry log"));
+            }
+            for (index, entry) in scratch[..bytes]
+                .chunks_exact(ENTRY_BYTES as usize)
+                .enumerate()
+            {
+                visit(
+                    run.first + at / ENTRY_BYTES + index as u64,
+                    RangeId::decode(entry)?,
+                )?;
+            }
+            at += bytes as u64;
         }
-        Ok(bytes)
+        Ok(())
     }
 
     fn log(&self, id: u64) -> io::Result<Arc<File>> {
@@ -1784,6 +1807,45 @@ impl Pack {
         }
     }
 
+    fn append_with_scratch(
+        &mut self,
+        data: &mut impl Read,
+        scratch: &mut [u8],
+    ) -> io::Result<RangeId> {
+        if scratch.is_empty() {
+            return Err(invalid("empty prepared write scratch"));
+        }
+        self.flush()?;
+        self.buffer = Vec::new();
+        let offset = self.flushed;
+        let result = (|| {
+            loop {
+                let count = match data.read(scratch) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => result?,
+                };
+                if count == 0 {
+                    return Ok(RangeId {
+                        pack: self.id,
+                        offset,
+                        len: self.flushed - offset,
+                    });
+                }
+                let end = self
+                    .flushed
+                    .checked_add(count as u64)
+                    .ok_or_else(|| invalid("prepared pack overflow"))?;
+                self.extent = self.extent.max(end);
+                write_all_at(&self.file, &scratch[..count], self.flushed)?;
+                self.flushed = end;
+            }
+        })();
+        if result.is_err() {
+            self.flushed = offset;
+        }
+        result
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
@@ -1836,7 +1898,7 @@ struct Mover<'a> {
 }
 
 impl Mover<'_> {
-    fn place(&mut self, id: RangeId) -> io::Result<RangeId> {
+    fn place(&mut self, id: RangeId, scratch: &mut [u8]) -> io::Result<RangeId> {
         if id.len == 0 {
             return Ok(RangeId::EMPTY);
         }
@@ -1858,7 +1920,7 @@ impl Mover<'_> {
             Some(into) => into,
             into => into.insert(Pack::create(self.directory)?),
         };
-        let moved = into.append(&mut Range::new(file, id))?;
+        let moved = into.append_with_scratch(&mut Range::new(file, id), scratch)?;
         if moved.len != id.len {
             return Err(invalid("truncated prepared range"));
         }
@@ -1983,6 +2045,8 @@ enum Operation {
         range: u64,
         slot: Slot,
     },
+    /// Immutable read dependencies streamed to a delete-on-close file.
+    ReadJournal(ReadJournal),
     /// The fork wrote range `id` at `range` over `old` (`Missing` appends).
     Write {
         section: SectionRef,
@@ -1992,6 +2056,121 @@ enum Operation {
         bytes: u64,
         replaced: u64,
     },
+}
+
+#[derive(Clone, Debug)]
+struct ReadJournal {
+    file: Arc<File>,
+    len: u64,
+    count: u64,
+}
+
+impl ReadJournal {
+    fn create(directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+            .share_mode(SHARING)
+            .custom_flags(FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE)
+            .open(directory.join(format!("reads_{}.tmp", Uuid::new_v4().simple())))?;
+        Ok(Self {
+            file: Arc::new(file),
+            len: 0,
+            count: 0,
+        })
+    }
+
+    fn append(
+        &mut self,
+        section: &str,
+        range: u64,
+        slot: Slot,
+        id: Option<RangeId>,
+    ) -> io::Result<()> {
+        let mut bytes = Vec::with_capacity(section.len() + 42);
+        bytes.extend_from_slice(&(section.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(section.as_bytes());
+        bytes.extend_from_slice(&range.to_le_bytes());
+        bytes.push(match slot {
+            Slot::Missing => 0,
+            Slot::Published => 1,
+            Slot::Staged(_) => 2,
+        });
+        bytes.push(u8::from(id.is_some()));
+        if let Some(id) = id {
+            bytes.extend_from_slice(&id.encode());
+        }
+        let mut remaining = bytes.as_slice();
+        while !remaining.is_empty() {
+            let written = self.file.seek_write(remaining, self.len)?;
+            if written == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            self.len += written as u64;
+            remaining = &remaining[written..];
+        }
+        self.count += 1;
+        Ok(())
+    }
+
+    fn validate(&self, writer: &Writer, detached: bool) -> io::Result<()> {
+        let mut input = io::BufReader::new(Range::new(
+            Arc::clone(&self.file),
+            RangeId {
+                pack: 0,
+                offset: 0,
+                len: self.len,
+            },
+        ));
+        for _ in 0..self.count {
+            let mut word = [0; 8];
+            input.read_exact(&mut word)?;
+            let mut section = vec![0; to_usize(u64::from_le_bytes(word))?];
+            input.read_exact(&mut section)?;
+            let section = std::str::from_utf8(&section)
+                .map_err(|_| invalid("invalid read journal section"))?;
+            input.read_exact(&mut word)?;
+            let range = u64::from_le_bytes(word);
+            let mut kind = [0];
+            input.read_exact(&mut kind)?;
+            let mut present = [0];
+            input.read_exact(&mut present)?;
+            let id = match present[0] {
+                0 => None,
+                1 => {
+                    let mut bytes = [0; ENTRY_BYTES as usize];
+                    input.read_exact(&mut bytes)?;
+                    Some(RangeId::decode(&bytes)?)
+                }
+                _ => return Err(invalid("invalid read journal identity")),
+            };
+            let expected = match kind[0] {
+                0 => Slot::Missing,
+                1 => Slot::Published,
+                2 => Slot::Staged(
+                    id.ok_or_else(|| invalid("read journal lost its staged identity"))?,
+                ),
+                _ => return Err(invalid("invalid read journal slot")),
+            };
+            let index = writer.position(section);
+            let current = index.map_or(Slot::Missing, |index| writer.sections[index].slot(range));
+            let matches = if detached {
+                let current = match index {
+                    Some(index) => writer.slot_id(index, range, current)?,
+                    None => None,
+                };
+                current == id
+            } else {
+                current == expected
+            };
+            if !matches {
+                return Err(overlap(section));
+            }
+        }
+        Ok(())
+    }
 }
 
 struct Fork {
@@ -2281,7 +2460,7 @@ impl Writer {
 
     fn identify(&self, operation: &mut Operation) -> io::Result<()> {
         let (section, range, slot) = match operation {
-            Operation::Create(_) => return Ok(()),
+            Operation::Create(_) | Operation::ReadJournal(_) => return Ok(()),
             Operation::Read {
                 section,
                 range,
@@ -2333,7 +2512,7 @@ impl Writer {
             .cloned()
             .map(|mut operation| {
                 let section = match &mut operation {
-                    Operation::Create(_) => return operation,
+                    Operation::Create(_) | Operation::ReadJournal(_) => return operation,
                     Operation::Read { section, .. } | Operation::Write { section, .. } => section,
                 };
                 if let SectionRef::Parent(index) = section {
@@ -2483,6 +2662,7 @@ impl Writer {
                     self.sections.push(PendingSection::new(&name));
                     undo.push(Undo::Created);
                 }
+                Operation::ReadJournal(journal) => journal.validate(self, detached)?,
                 Operation::Read {
                     section,
                     range,
@@ -2622,13 +2802,68 @@ impl Writer {
         let Some(id) = self.range_id(section, range)? else {
             return Ok(None);
         };
+        self.open_range(id).map(Some)
+    }
+
+    /// Spools immutable read dependencies to disk; adoption still checks every read.
+    pub fn read_at_spooled(&mut self, section: &str, range: u64) -> io::Result<Option<Range>> {
+        let index = self.position(section);
+        let slot = index.map_or(Slot::Missing, |index| self.sections[index].slot(range));
+        let id = match index {
+            Some(index) => self.slot_id(index, range, slot)?,
+            None => None,
+        };
+        if let Some(fork) = &mut self.fork {
+            let appendable = matches!(fork.open.last(), Some(Operation::ReadJournal(journal))
+                if Arc::strong_count(&journal.file) == 1);
+            if !appendable {
+                fork.open.push(Operation::ReadJournal(ReadJournal::create(
+                    &self.directory,
+                )?));
+            }
+            let Some(Operation::ReadJournal(journal)) = fork.open.last_mut() else {
+                unreachable!()
+            };
+            if let Err(error) = journal.append(section, range, slot, id) {
+                self.incomplete = true;
+                return Err(error);
+            }
+        }
+        id.map(|id| self.open_range(id)).transpose()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn read_dependency_counts(&self) -> (usize, u64) {
+        let mut retained = 0;
+        let mut spooled = 0;
+        if let Some(fork) = &self.fork {
+            for operation in fork
+                .batches
+                .iter()
+                .flat_map(|batch| &batch.operations)
+                .chain(&fork.open)
+            {
+                match operation {
+                    Operation::Read { .. } => retained += 1,
+                    Operation::ReadJournal(journal) => {
+                        retained += 1;
+                        spooled += journal.count;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (retained, spooled)
+    }
+
+    fn open_range(&mut self, id: RangeId) -> io::Result<Range> {
         if let Some(pack) = self.pack.as_mut().filter(|pack| pack.id == id.pack) {
-            return pack.reader(id).map(Some);
+            return pack.reader(id);
         }
         if let Some(shared) = self.packs.get(&id.pack) {
-            return Ok(Some(Range::new(Arc::clone(&shared.file), id)));
+            return Ok(Range::new(Arc::clone(&shared.file), id));
         }
-        id.open(&self.directory).map(Some)
+        id.open(&self.directory)
     }
 
     pub fn ensure_section(&mut self, section: &str) -> io::Result<()> {
@@ -2713,15 +2948,73 @@ impl Writer {
         Ok(range)
     }
 
+    /// Streams using only caller-owned scratch, releasing this pack's buffered capacity.
+    pub fn write_with_scratch(
+        &mut self,
+        section: &str,
+        mut data: impl Read,
+        scratch: &mut [u8],
+    ) -> io::Result<u64> {
+        if scratch.is_empty() {
+            return Err(invalid("empty prepared write scratch"));
+        }
+        self.ensure_section(section)?;
+        let index = self.position(section).unwrap();
+        let range = self.sections[index].count()?;
+        let pack = match &mut self.pack {
+            Some(pack) => pack,
+            pack => pack.insert(Pack::create_pinned(&self.directory, self.pins.as_deref())?),
+        };
+        let id = pack.append_with_scratch(&mut data, scratch)?;
+        let id = if id.len == 0 { RangeId::EMPTY } else { id };
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(id.len)
+            .ok_or_else(|| invalid("prepared byte count overflow"))?;
+        self.sections[index].added.push(id);
+        self.record(|writer| Operation::Write {
+            section: writer.reference(Some(index), section),
+            range,
+            id,
+            old: Slot::Missing,
+            bytes: id.len,
+            replaced: 0,
+        });
+        Ok(range)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn resident_metadata(&self) -> (usize, usize, usize, usize) {
+        let runs = self
+            .base
+            .as_ref()
+            .map_or(0, |base| base.runs.iter().map(Vec::len).sum());
+        let files = self
+            .base
+            .as_ref()
+            .map_or(0, |base| base.packs.len() + base.logs.len());
+        (
+            self.sections.len(),
+            runs,
+            files,
+            self.pack.as_ref().map_or(0, |pack| pack.buffer.capacity()),
+        )
+    }
+
     /// Publish and reopen under the same exclusive lock. Detached staging
     /// writers keep duplicate handles, so reopening must not acquire a new lock.
     pub fn commit_continue(self) -> io::Result<Writer> {
+        self.commit_continue_with_scratch(&mut [0; COMMIT_SCRATCH])
+    }
+
+    /// Publishes and reopens using caller-admitted scratch, at least 72 bytes.
+    pub fn commit_continue_with_scratch(self, scratch: &mut [u8]) -> io::Result<Writer> {
         let lock = self._lock.try_clone()?;
         let key = self.key.clone();
         let store = Store {
             directory: self.directory.clone(),
         };
-        self.commit()?;
+        self.commit_with_scratch(scratch)?;
         if !key.recording_current()? {
             return Err(invalid("sources changed before preparation resumed"));
         }
@@ -2737,7 +3030,18 @@ impl Writer {
     /// emptied into one new pack. A post-rename flush error can leave the
     /// complete new root visible. A fork publishes only through its parent's
     /// [`Writer::adopt`].
-    pub fn commit(mut self) -> io::Result<()> {
+    pub fn commit(self) -> io::Result<()> {
+        self.commit_with_scratch(&mut [0; COMMIT_SCRATCH])
+    }
+
+    /// Publishes with caller-admitted scratch, at least 72 bytes; no historical entry buffer.
+    pub fn commit_with_scratch(mut self, scratch: &mut [u8]) -> io::Result<()> {
+        if scratch.len() < 3 * ENTRY_BYTES as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "prepared commit scratch is too small",
+            ));
+        }
         if self.fork.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -2830,55 +3134,45 @@ impl Writer {
         let base = base.as_deref();
         let base_sections = base.map_or(0, |base| base.header.sections.len());
         // This commit's entries, in the order its runs list them.
-        let mut log = Vec::new();
+        let split = scratch.len() / 3 / ENTRY_BYTES as usize * ENTRY_BYTES as usize;
+        let (buffer, scratch) = scratch.split_at_mut(split);
+        let mut log = EntryLog::new(&self.directory, buffer);
         let mut section_runs = Vec::with_capacity(self.sections.len());
         for (index, section) in self.sections.iter().enumerate() {
             let mut runs = match base {
                 Some(base) if index < base_sections => base.runs[index].clone(),
                 _ => Vec::new(),
             };
-            let mut changes = section.replaced.clone();
-            if scan {
-                // Published ranges in the packs being emptied move too.
-                for run in &runs {
-                    let entries = base
-                        .ok_or_else(|| invalid("missing prefix"))?
-                        .run_entries(run)?;
-                    for (at, entry) in entries.chunks_exact(ENTRY_BYTES as usize).enumerate() {
-                        let range = run.first + at as u64;
-                        let id = RangeId::decode(entry)?;
-                        if id.len != 0
-                            && mover.compact.contains(&id.pack)
-                            && !section.replaced.contains_key(&range)
-                        {
-                            changes.insert(range, id);
-                        }
+            let relocated = if scan {
+                relocate_runs(&runs, section, base, &mut mover, &mut log, scratch)?
+            } else {
+                None
+            };
+            if let Some(run) = relocated {
+                runs = vec![run];
+            } else {
+                let mut spans: Vec<Run> = Vec::new();
+                for (&range, &id) in &section.replaced {
+                    let placed = mover.place(id, scratch)?;
+                    match spans.last_mut() {
+                        Some(run) if run.end() == range => run.count += 1,
+                        _ => spans.push(Run {
+                            first: range,
+                            count: 1,
+                            log: NEW_LOG,
+                            offset: log.len,
+                        }),
                     }
+                    log.append(&placed.encode())?;
                 }
-            }
-            // Changed ranges, a run for each consecutive span, laid over the
-            // runs they replace in one ordered pass.
-            let mut spans: Vec<Run> = Vec::new();
-            for (&range, &id) in &changes {
-                let placed = mover.place(id)?;
-                match spans.last_mut() {
-                    Some(run) if run.end() == range => run.count += 1,
-                    _ => spans.push(Run {
-                        first: range,
-                        count: 1,
-                        log: NEW_LOG,
-                        offset: log.len() as u64,
-                    }),
+                if !spans.is_empty() {
+                    runs = lay_over(&runs, &spans, base, &mut log, scratch)?;
                 }
-                log.extend_from_slice(&placed.encode());
-            }
-            if !spans.is_empty() {
-                runs = lay_over(&runs, &spans, base, &mut log)?;
             }
             if !section.added.is_empty() {
-                let offset = log.len() as u64;
+                let offset = log.len;
                 for &id in &section.added {
-                    log.extend_from_slice(&mover.place(id)?.encode());
+                    log.append(&mover.place(id, scratch)?.encode())?;
                 }
                 runs.push(Run {
                     first: section.old_count,
@@ -2895,9 +3189,9 @@ impl Writer {
                 && before.count <= last.count
             {
                 runs.truncate(runs.len() - 2);
-                let offset = log.len() as u64;
-                copy_run(&before, base, &mut log)?;
-                copy_run(&last, base, &mut log)?;
+                let offset = log.len;
+                log.copy_run(&before, base, scratch)?;
+                log.copy_run(&last, base, scratch)?;
                 runs.push(Run {
                     first: before.first,
                     count: before.count + last.count,
@@ -2906,9 +3200,9 @@ impl Writer {
                 });
             }
             if runs.len() > MAX_RUNS {
-                let offset = log.len() as u64;
+                let offset = log.len;
                 for run in &runs {
-                    copy_run(run, base, &mut log)?;
+                    log.copy_run(run, base, scratch)?;
                 }
                 runs = vec![Run {
                     first: 0,
@@ -2938,22 +3232,11 @@ impl Writer {
             .collect();
         for run in section_runs.iter_mut().flatten() {
             if emptied.contains(&run.log) {
-                let offset = log.len() as u64;
-                copy_run(run, base, &mut log)?;
+                let offset = log.len;
+                log.copy_run(run, base, scratch)?;
                 (run.log, run.offset) = (NEW_LOG, offset);
             }
         }
-        // Runs merged within this commit left their first copies behind:
-        // the log holds each listed run once, in section order.
-        let mut packed = Vec::with_capacity(log.len());
-        for run in section_runs.iter_mut().flatten() {
-            if run.log == NEW_LOG {
-                let start = to_usize(run.offset)?;
-                run.offset = packed.len() as u64;
-                packed.extend_from_slice(&log[start..start + to_usize(run.bytes())?]);
-            }
-        }
-        let log = packed;
         let mut logs: Vec<PackRecord> = base_logs
             .iter()
             .filter(|record| !emptied.contains(&record.id))
@@ -2974,24 +3257,25 @@ impl Writer {
             .map(|shared| Arc::clone(&shared.file))
             .collect();
         let mut written = 0;
-        if !log.is_empty() {
+        if log.len != 0 {
             let (id, file) = create_named(&self.directory, log_name)?;
-            write_all_at(&file, &log, 0)?;
             let mut live = 0;
             for run in section_runs.iter_mut().flatten() {
                 if run.log == NEW_LOG {
-                    run.log = id;
+                    log.copy_into(run, &file, live, scratch)?;
+                    (run.log, run.offset) = (id, live);
                     live += run.bytes();
                 }
             }
             logs.push(PackRecord {
                 id,
                 live,
-                size: log.len() as u64,
+                size: live,
             });
             durable.push(Arc::new(file));
-            written += log.len();
+            written += to_usize(live)?;
         }
+        drop(log);
         logs.sort_by_key(|record| record.id);
         let (mut names, mut names_bytes) = base.map_or((0, 0), |base| base.names);
         if self.sections.len() > base_sections {
@@ -3247,112 +3531,88 @@ fn create_named(directory: &Path, name: fn(u64) -> String) -> io::Result<(u64, F
 /// A section's runs once `spans` (this commit's, sorted and disjoint, within
 /// the published ranges) are laid over its `runs`, in one ordered pass that
 /// visits each run and span once. Past [`MAX_RUNS`] pieces the section is
-/// rewritten as one run of this commit's log in the same pass, reading each
-/// published run's entries once.
+/// rewritten as one run of this commit's log through bounded pages.
 fn lay_over(
     runs: &[Run],
     spans: &[Run],
     base: Option<&Catalog>,
-    log: &mut Vec<u8>,
+    log: &mut EntryLog<'_>,
+    scratch: &mut [u8],
 ) -> io::Result<Vec<Run>> {
     let mut layout = Overlaid {
-        runs,
         base,
         log,
+        scratch,
         pieces: Vec::new(),
         rewrite: None,
-        loaded: None,
     };
     let mut next = 0;
     let mut covered = 0;
-    for (index, run) in runs.iter().enumerate() {
+    for run in runs {
         let mut at = run.first.max(covered);
         while at < run.end() {
             if let Some(span) = spans.get(next)
                 && span.first <= at
             {
-                layout.push(*span, None)?;
+                layout.push(*span)?;
                 (at, covered, next) = (span.end(), span.end(), next + 1);
                 continue;
             }
             let stop = spans
                 .get(next)
                 .map_or(run.end(), |span| span.first.min(run.end()));
-            layout.push(
-                Run {
-                    first: at,
-                    count: stop - at,
-                    log: run.log,
-                    offset: run.offset + (at - run.first) * ENTRY_BYTES,
-                },
-                Some(index),
-            )?;
+            layout.push(Run {
+                first: at,
+                count: stop - at,
+                log: run.log,
+                offset: run.offset + (at - run.first) * ENTRY_BYTES,
+            })?;
             (at, covered) = (stop, stop);
         }
     }
     for span in &spans[next..] {
-        layout.push(*span, None)?;
+        layout.push(*span)?;
     }
     Ok(match layout.rewrite {
         Some(run) => vec![run],
-        None => layout.pieces.into_iter().map(|(piece, _)| piece).collect(),
+        None => layout.pieces,
     })
 }
 
 /// The pieces [`lay_over`] lists, or the one run it rewrites them into.
-struct Overlaid<'a> {
-    runs: &'a [Run],
+struct Overlaid<'a, 'd> {
     base: Option<&'a Catalog>,
-    log: &'a mut Vec<u8>,
-    /// Each piece, and the published run it is part of.
-    pieces: Vec<(Run, Option<usize>)>,
+    log: &'a mut EntryLog<'d>,
+    scratch: &'a mut [u8],
+    pieces: Vec<Run>,
     rewrite: Option<Run>,
-    /// The published run whose entries were read last, and those entries.
-    loaded: Option<(usize, Vec<u8>)>,
 }
 
-impl Overlaid<'_> {
-    fn push(&mut self, piece: Run, source: Option<usize>) -> io::Result<()> {
+impl Overlaid<'_, '_> {
+    fn push(&mut self, piece: Run) -> io::Result<()> {
         #[cfg(test)]
         tests::RUN_VISITS.set(tests::RUN_VISITS.get() + 1);
         if self.rewrite.is_none() {
-            self.pieces.push((piece, source));
+            self.pieces.push(piece);
             if self.pieces.len() <= MAX_RUNS {
                 return Ok(());
             }
             self.rewrite = Some(Run {
-                first: self.pieces[0].0.first,
+                first: self.pieces[0].first,
                 count: 0,
                 log: NEW_LOG,
-                offset: self.log.len() as u64,
+                offset: self.log.len,
             });
-            for (piece, source) in std::mem::take(&mut self.pieces) {
-                self.copy(piece, source)?;
+            for piece in std::mem::take(&mut self.pieces) {
+                self.copy(piece)?;
             }
             return Ok(());
         }
-        self.copy(piece, source)
+        self.copy(piece)
     }
 
-    /// Appends a piece's entries to the run being rewritten.
-    fn copy(&mut self, piece: Run, source: Option<usize>) -> io::Result<()> {
-        match source {
-            None => copy_run(&piece, None, self.log)?,
-            Some(index) => {
-                if self
-                    .loaded
-                    .as_ref()
-                    .is_none_or(|(loaded, _)| *loaded != index)
-                {
-                    let base = self.base.ok_or_else(|| invalid("missing prefix"))?;
-                    self.loaded = Some((index, base.run_entries(&self.runs[index])?));
-                }
-                let (_, entries) = self.loaded.as_ref().expect("loaded run");
-                let start = to_usize(piece.offset - self.runs[index].offset)?;
-                self.log
-                    .extend_from_slice(&entries[start..start + to_usize(piece.bytes())?]);
-            }
-        }
+    fn copy(&mut self, piece: Run) -> io::Result<()> {
+        self.log.copy_run(&piece, self.base, self.scratch)?;
         if let Some(rewrite) = &mut self.rewrite {
             rewrite.count += piece.count;
         }
@@ -3360,17 +3620,225 @@ impl Overlaid<'_> {
     }
 }
 
-/// Appends a run's entries to this commit's log: from the log itself for a
-/// run of this commit, otherwise from the published log that holds them.
-fn copy_run(run: &Run, base: Option<&Catalog>, log: &mut Vec<u8>) -> io::Result<()> {
-    if run.log == NEW_LOG {
-        let start = to_usize(run.offset)?;
-        log.extend_from_within(start..start + to_usize(run.bytes())?);
-    } else {
-        let base = base.ok_or_else(|| invalid("missing prefix"))?;
-        log.extend_from_slice(&base.run_entries(run)?);
+// Intermediate merged runs stay on temporary disk until the packed log is durable.
+struct EntryLog<'a> {
+    directory: &'a Path,
+    file: Option<File>,
+    len: u64,
+    buffer: &'a mut [u8],
+    buffered: usize,
+}
+
+impl<'a> EntryLog<'a> {
+    fn new(directory: &'a Path, buffer: &'a mut [u8]) -> Self {
+        Self {
+            directory,
+            file: None,
+            len: 0,
+            buffer,
+            buffered: 0,
+        }
+    }
+
+    fn open(&mut self) -> io::Result<()> {
+        if self.file.is_none() {
+            self.file = Some(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+                    .share_mode(SHARING)
+                    .custom_flags(FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE)
+                    .open(
+                        self.directory
+                            .join(format!("entries_{}.tmp", Uuid::new_v4().simple())),
+                    )?,
+            );
+            #[cfg(test)]
+            tests::CREATED.set(tests::CREATED.get() + 1);
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.buffered != 0 {
+            self.open()?;
+            write_all_at(
+                self.file.as_ref().unwrap(),
+                &self.buffer[..self.buffered],
+                self.len - self.buffered as u64,
+            )?;
+            self.buffered = 0;
+        }
+        Ok(())
+    }
+
+    fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+        self.len
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| invalid("prepared entry log overflow"))?;
+        while !bytes.is_empty() {
+            if self.buffered == self.buffer.len() {
+                self.flush()?;
+            }
+            let count = bytes.len().min(self.buffer.len() - self.buffered);
+            self.buffer[self.buffered..self.buffered + count].copy_from_slice(&bytes[..count]);
+            self.buffered += count;
+            self.len += count as u64;
+            bytes = &bytes[count..];
+        }
+        Ok(())
+    }
+
+    fn copy_run(
+        &mut self,
+        run: &Run,
+        base: Option<&Catalog>,
+        scratch: &mut [u8],
+    ) -> io::Result<()> {
+        self.flush()?;
+        self.open()?;
+        let offset = self.len;
+        let end = offset
+            .checked_add(run.bytes())
+            .ok_or_else(|| invalid("prepared entry log overflow"))?;
+        if run.log == NEW_LOG {
+            if run
+                .offset
+                .checked_add(run.bytes())
+                .is_none_or(|end| end > offset)
+            {
+                return Err(invalid("invalid uncommitted prepared entry run"));
+            }
+            let file = self.file.as_ref().unwrap();
+            copy_entries(
+                file,
+                run.offset,
+                run.bytes(),
+                &mut EntrySink { file, offset },
+                scratch,
+            )?;
+        } else {
+            let file = base
+                .ok_or_else(|| invalid("missing prefix"))?
+                .log(run.log)?;
+            let into = self.file.as_ref().unwrap();
+            copy_entries(
+                &file,
+                run.offset,
+                run.bytes(),
+                &mut EntrySink { file: into, offset },
+                scratch,
+            )?;
+        }
+        self.len = end;
+        Ok(())
+    }
+
+    fn copy_into(
+        &mut self,
+        run: &Run,
+        into: &File,
+        offset: u64,
+        scratch: &mut [u8],
+    ) -> io::Result<()> {
+        self.flush()?;
+        if run
+            .offset
+            .checked_add(run.bytes())
+            .is_none_or(|end| end > self.len)
+        {
+            return Err(invalid("invalid uncommitted prepared entry run"));
+        }
+        copy_entries(
+            self.file
+                .as_ref()
+                .ok_or_else(|| invalid("missing prepared entry log"))?,
+            run.offset,
+            run.bytes(),
+            &mut EntrySink { file: into, offset },
+            scratch,
+        )
+    }
+}
+
+struct EntrySink<'a> {
+    file: &'a File,
+    offset: u64,
+}
+impl Write for EntrySink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        write_all_at(self.file, bytes, self.offset)?;
+        self.offset += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn copy_entries(
+    file: &File,
+    mut offset: u64,
+    mut bytes: u64,
+    into: &mut impl Write,
+    scratch: &mut [u8],
+) -> io::Result<()> {
+    if scratch.is_empty() {
+        return Err(invalid("empty prepared entry scratch"));
+    }
+    while bytes != 0 {
+        let count = to_usize(bytes.min(scratch.len() as u64))?;
+        if read_at(file, &mut scratch[..count], offset)? != count {
+            return Err(invalid("truncated prepared entry log"));
+        }
+        into.write_all(&scratch[..count])?;
+        offset += count as u64;
+        bytes -= count as u64;
     }
     Ok(())
+}
+
+fn relocate_runs(
+    runs: &[Run],
+    section: &PendingSection,
+    base: Option<&Catalog>,
+    mover: &mut Mover<'_>,
+    log: &mut EntryLog<'_>,
+    scratch: &mut [u8],
+) -> io::Result<Option<Run>> {
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let base = base.ok_or_else(|| invalid("missing prefix"))?;
+    let mut moving = false;
+    for run in runs {
+        base.visit_run(run, scratch, |range, id| {
+            moving |= id.len != 0
+                && mover.compact.contains(&id.pack)
+                && !section.replaced.contains_key(&range);
+            Ok(())
+        })?;
+    }
+    if !moving {
+        return Ok(None);
+    }
+    let offset = log.len;
+    let split = scratch.len() / 2 / ENTRY_BYTES as usize * ENTRY_BYTES as usize;
+    let (entries, payload) = scratch.split_at_mut(split);
+    for run in runs {
+        base.visit_run(run, entries, |range, id| {
+            let id = section.replaced.get(&range).copied().unwrap_or(id);
+            log.append(&mover.place(id, payload)?.encode())
+        })?;
+    }
+    Ok(Some(Run {
+        first: 0,
+        count: section.old_count,
+        log: NEW_LOG,
+        offset,
+    }))
 }
 
 fn overlap(section: &str) -> io::Error {

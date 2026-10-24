@@ -91,7 +91,8 @@ fn a_commit_creates_and_flushes_one_pack_per_writer_whatever_its_range_count() {
     // the entry log, the names file and the root's temporary; the parent's
     // pack, the log and the names are flushed, and the root before and after
     // its rename. The first commit also publishes the source stamps.
-    assert_eq!(counts, [(3 + 3 + 1, 2 + 3 + 2 + 2), (3 + 3, 2 + 3 + 2)]);
+    // Each commit also creates one delete-on-close entry spool.
+    assert_eq!(counts, [(3 + 4 + 1, 2 + 3 + 2 + 2), (3 + 4, 2 + 3 + 2)]);
     drop(fixture.store.extend(&key).unwrap());
     let names = fixture.names();
     // lock, manifest, stamps, names, one entry log, three packs
@@ -920,7 +921,10 @@ fn successful_commit_clears_rejection_and_allows_saved_binding_refresh() {
     let saved = fixture.store.saved_key().unwrap().unwrap();
     assert!(shared.binding.lock().unwrap().take().is_some());
     shared.refresh_saved_binding(&saved);
-    assert_eq!(*shared.binding.lock().unwrap(), *saved.binding.lock().unwrap());
+    assert_eq!(
+        *shared.binding.lock().unwrap(),
+        *saved.binding.lock().unwrap()
+    );
     assert!(fixture.store.is_reusable(&shared).unwrap());
 }
 
@@ -1412,8 +1416,8 @@ fn packs_under_half_live_are_emptied_at_commit_without_changing_held_readers() {
     // The writer's pack, the pack the listed bytes moved into, the entry log
     // and the root's temporary; only the new pack, the log and the root are
     // flushed. Dead bytes passed a quarter of the listed, so the published
-    // pack was emptied too.
-    assert_eq!((CREATED.get(), SYNCS.get()), (4, 2 + 2));
+    // pack was emptied too; one temporary entry spool is deleted on close.
+    assert_eq!((CREATED.get(), SYNCS.get()), (5, 2 + 2));
     let expected: Vec<_> = (0..10)
         .map(|range| match range {
             0 => page(0, 11),
@@ -1884,10 +1888,10 @@ fn producers_adopted_into_one_commit_publish_what_their_own_commits_publish() {
         syncs += SYNCS.get();
     }
     let expected = published(&alone, &key);
-    // Each commit creates its entry log and the root's temporary, flushing
+    // Each commit creates its entry spool, log and root temporary, flushing
     // the log, the names it appends and the root before and after its
     // rename; each producer flushed its own pack as it handed it over.
-    assert_eq!((created, syncs), (3 * 2, 3 * 4));
+    assert_eq!((created, syncs), (3 * 3, 3 * 4));
 
     // Together: the producers write at once on threads of their own and are
     // adopted, in another order than they ran alone, into one commit.
@@ -1913,7 +1917,7 @@ fn producers_adopted_into_one_commit_publish_what_their_own_commits_publish() {
     SYNCS.set(0);
     writer.commit().unwrap();
     // One root, one entry log and one flush set for every producer.
-    assert_eq!((CREATED.get(), SYNCS.get()), (2, 4));
+    assert_eq!((CREATED.get(), SYNCS.get()), (3, 4));
     let actual = published(&together, &key);
     assert_eq!(by_name(&actual), by_name(&expected));
     // Range numbering is each section's own; only where sections new to the
@@ -2818,4 +2822,278 @@ fn empty_sections_publish_without_placeholder_ranges_and_preserve_fork_adoption(
         fixture.store.range_count(&key, "index/empty").unwrap(),
         Some(0)
     );
+}
+
+#[test]
+fn spooled_read_dependencies_keep_one_handle_and_preserve_order_through_nested_stages() {
+    let fixture = Fixture::new();
+    let key = forked_prefix(&fixture);
+    let mut writer = fixture.store.extend(&key).unwrap();
+    let mut stage = writer.stage().unwrap();
+    let mut fork = stage.fork().unwrap();
+    for _ in 0..4096 {
+        assert_eq!(
+            bytes(fork.read_at_spooled("old", 0).unwrap().unwrap()),
+            b"old 0"
+        );
+    }
+    assert_eq!(fork.read_dependency_counts(), (1, 4096));
+    fork.write_at("old", 0, b"new".as_slice()).unwrap();
+    assert_eq!(
+        bytes(fork.read_at_spooled("old", 0).unwrap().unwrap()),
+        b"new"
+    );
+    assert_eq!(fork.read_dependency_counts(), (2, 4097));
+    stage.adopt_all(fork.into_staged().unwrap()).unwrap();
+    assert_eq!(stage.read_dependency_counts(), (2, 4097));
+    writer = writer.commit_continue().unwrap();
+    writer.adopt_all(stage.into_staged().unwrap()).unwrap();
+    writer.commit().unwrap();
+    assert_eq!(
+        bytes(fixture.store.read(&key, "old", 0).unwrap().unwrap()),
+        b"new"
+    );
+    assert!(
+        !fs::read_dir(&fixture.store.directory)
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("reads_"))
+    );
+}
+
+#[test]
+fn spooled_dependencies_reject_changed_present_and_missing_ranges_atomically() {
+    for detached in [false, true] {
+        for (section, range) in [("old", 0), ("old", 2), ("absent", 0)] {
+            let fixture = Fixture::new();
+            let key = forked_prefix(&fixture);
+            let mut writer = fixture.store.extend(&key).unwrap();
+            let mut fork = if detached {
+                writer.stage().unwrap()
+            } else {
+                writer.fork().unwrap()
+            };
+            fork.write("before-read", b"roll back".as_slice()).unwrap();
+            fork.end_batch();
+            fork.read_at_spooled(section, range).unwrap();
+            writer
+                .write_at(section, range, b"changed".as_slice())
+                .unwrap();
+            if detached {
+                writer = writer.commit_continue().unwrap();
+            }
+            let before = (writer.bytes_written(), writer.payload_bytes_change());
+            assert!(writer.adopt_all(fork.into_staged().unwrap()).is_err());
+            assert_eq!(
+                (writer.bytes_written(), writer.payload_bytes_change()),
+                before
+            );
+            assert!(writer.read_at("before-read", 0).unwrap().is_none());
+            writer.commit().unwrap();
+        }
+    }
+}
+
+#[test]
+fn spooled_empty_reads_keep_ordinary_slot_checks_and_detached_identity_checks() {
+    for detached in [false, true] {
+        let fixture = Fixture::new();
+        let key = fixture.key();
+        let mut writer = fixture.store.replace(key.clone()).unwrap();
+        writer.write("empty", b"".as_slice()).unwrap();
+        writer.commit().unwrap();
+        let mut writer = fixture.store.extend(&key).unwrap();
+        let mut fork = if detached {
+            writer.stage().unwrap()
+        } else {
+            writer.fork().unwrap()
+        };
+        assert!(
+            fork.read_at_spooled("empty", 0)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        writer.write_at("empty", 0, b"".as_slice()).unwrap();
+        assert_eq!(
+            writer.adopt_all(fork.into_staged().unwrap()).is_ok(),
+            detached
+        );
+        writer.commit().unwrap();
+    }
+}
+
+#[test]
+fn caller_scratch_writes_release_pack_capacity_and_preserve_failure_and_adoption() {
+    struct Broken(bool);
+    impl Read for Broken {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.0 {
+                return Err(io::Error::other("synthetic write failure"));
+            }
+            self.0 = true;
+            bytes[0] = b'x';
+            Ok(1)
+        }
+    }
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("records", b"buffered".as_slice()).unwrap();
+    assert!(writer.resident_metadata().3 > 0);
+    let mut scratch = [0; 31];
+    assert_eq!(
+        writer
+            .write_with_scratch("records", b"direct".as_slice(), &mut scratch)
+            .unwrap(),
+        1
+    );
+    assert_eq!(writer.resident_metadata().3, 0);
+    assert!(
+        writer
+            .write_with_scratch("records", Broken(false), &mut scratch)
+            .is_err()
+    );
+    assert_eq!(
+        writer
+            .write_with_scratch("records", b"after".as_slice(), &mut scratch)
+            .unwrap(),
+        2
+    );
+    assert!(
+        writer
+            .write_with_scratch("records", b"never".as_slice(), &mut [])
+            .is_err()
+    );
+    let mut stage = writer.stage().unwrap();
+    assert_eq!(
+        stage
+            .write_with_scratch("records", b"staged".as_slice(), &mut scratch)
+            .unwrap(),
+        3
+    );
+    writer.adopt_all(stage.into_staged().unwrap()).unwrap();
+    writer.commit().unwrap();
+    for (at, expected) in ["buffered", "direct", "after", "staged"].iter().enumerate() {
+        assert_eq!(
+            bytes(
+                fixture
+                    .store
+                    .read(&key, "records", at as u64)
+                    .unwrap()
+                    .unwrap()
+            ),
+            expected.as_bytes()
+        );
+    }
+}
+
+#[test]
+fn streamed_compaction_with_minimal_scratch_keeps_ranges_and_flat_snapshots() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut scratch = [0; 73];
+    let mut expected: Vec<Vec<u8>> = (0..129u64).map(|n| n.to_le_bytes().to_vec()).collect();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for value in &expected {
+        writer
+            .write_with_scratch("pages", value.as_slice(), &mut scratch)
+            .unwrap();
+    }
+    writer = writer
+        .commit_continue_with_scratch(&mut scratch[..72])
+        .unwrap();
+    for revision in 1..=6u64 {
+        for range in (0..expected.len()).step_by(3) {
+            let value = (revision * 1000 + range as u64).to_le_bytes().to_vec();
+            writer
+                .write_at("pages", range as u64, value.as_slice())
+                .unwrap();
+            expected[range] = value;
+        }
+        for ordinal in 0..65u64 {
+            let value = if ordinal % 7 == 0 {
+                Vec::new()
+            } else {
+                (revision * 100 + ordinal).to_le_bytes().to_vec()
+            };
+            writer
+                .write_with_scratch("pages", value.as_slice(), &mut scratch)
+                .unwrap();
+            expected.push(value);
+        }
+        writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
+        for (range, value) in expected.iter().enumerate() {
+            assert_eq!(
+                bytes(writer.read_at("pages", range as u64).unwrap().unwrap()),
+                *value
+            );
+        }
+        assert!(fixture.names().iter().all(|name| !name.ends_with(".tmp")));
+        assert!(
+            fixture
+                .store
+                .catalog()
+                .unwrap()
+                .unwrap()
+                .logs
+                .iter()
+                .all(|log| log.live == log.size)
+        );
+    }
+    drop(writer);
+    let listing = Listing::open(&fixture.store.directory.join(MANIFEST))
+        .unwrap()
+        .unwrap();
+    let path = fixture.root.join("flat-listing");
+    listing
+        .write_snapshot(&mut File::create(&path).unwrap())
+        .unwrap();
+    let flat = Listing::open(&path).unwrap().unwrap();
+    let copy_path = fixture.root.join("flat-copy");
+    flat.write_snapshot(&mut File::create(&copy_path).unwrap())
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), fs::read(&copy_path).unwrap());
+    for range in 0..expected.len() as u64 {
+        assert_eq!(
+            flat.range(0, range).unwrap(),
+            listing.range(0, range).unwrap()
+        );
+    }
+}
+
+#[test]
+fn truncated_entry_compaction_leaves_the_previous_root_and_no_temporary_spool() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for _ in 0..16 {
+        writer.write("pages", io::empty()).unwrap();
+    }
+    writer.commit().unwrap();
+    let root = fs::read(fixture.store.directory.join(MANIFEST)).unwrap();
+    let catalog = fixture.store.catalog().unwrap().unwrap();
+    let log = catalog.logs[0];
+    OpenOptions::new()
+        .write(true)
+        .open(fixture.store.directory.join(log_name(log.id)))
+        .unwrap()
+        .set_len(log.size - 1)
+        .unwrap();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    for _ in 0..16 {
+        writer.write("pages", io::empty()).unwrap();
+    }
+    assert_eq!(
+        writer.commit_with_scratch(&mut [0; 73]).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        fs::read(fixture.store.directory.join(MANIFEST)).unwrap(),
+        root
+    );
+    assert!(fixture.names().iter().all(|name| !name.ends_with(".tmp")));
 }

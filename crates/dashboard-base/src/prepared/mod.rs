@@ -4,6 +4,7 @@
 //! a prepared prefix. The dashboard's pipeline writes them; products read them.
 
 pub mod coverage;
+pub mod facts;
 pub mod frame_changes;
 pub mod group_sum;
 pub mod kept;
