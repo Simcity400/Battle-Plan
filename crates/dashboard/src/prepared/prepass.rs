@@ -1058,6 +1058,7 @@ fn retire_pool(shared: &PoolShared, lane: usize) {
 fn work_pool(replay: &Replay, alive: PoolAlive, knobs: &Knobs) {
     let shared = &alive.0;
     while let Some(task) = shared.claim() {
+        let _cpu_block = ::replay_frame::cpu::block(Some(task.block));
         let supplies_walk = shared
             .lock()
             .walk
@@ -1495,6 +1496,7 @@ fn extract_block_measured(
     stop: &AtomicBool,
     knobs: &Knobs,
 ) -> Measured {
+    let _cpu_block = ::replay_frame::cpu::block(replay.block_position(index));
     let readings: Vec<Reading<'_>> = families.iter().copied().map(Reading::of).collect();
     extract_bound(replay, index, &readings, stop, knobs, None)
 }
@@ -1541,6 +1543,7 @@ fn extract_bound(
         .iter()
         .zip(&fields)
         .map(|(family, fields)| {
+            let _cpu = ::replay_frame::cpu::scope("extract", Some(family.family.name));
             let started = ::replay_frame::cpu::thread_cycles();
             let mut extract = family.start(format);
             ::replay_frame::cpu::note("extract-start", family.family.name, started);
@@ -1704,6 +1707,7 @@ fn extract_bound(
                 .zip(own)
                 .zip(families)
                 .map(|((running, own), family)| {
+                    let _cpu = ::replay_frame::cpu::scope("extract", Some(family.family.name));
                     // A family whose own read refused the block observes it
                     // hour by hour, as it would have.
                     let extract = running.extract.filter(|_| own);

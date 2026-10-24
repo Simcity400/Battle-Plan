@@ -2203,6 +2203,7 @@ macro_rules! time_family {
     }};
 }
 
+pub mod cost;
 pub mod external;
 mod flush;
 pub(crate) mod independent;
@@ -2276,6 +2277,7 @@ pub fn run_measured(
 }
 
 /// Measurement-only prefix stop and durable per-commit evidence callback.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn run_measured_through(
     source: &Source,
@@ -3176,6 +3178,7 @@ fn run_planned(
             let block_started = start_timing(&family_timings);
             check_cancel(cancelled)?;
             let block = stream.cursor().next_block;
+            let _cpu_block = ::replay_frame::cpu::block(Some(block));
             section_consumer.at(block);
             walk_pace.at(block, replay.index.len());
             if block == replay.index.len() && !metadata_dirty {

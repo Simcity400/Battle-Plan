@@ -2743,6 +2743,7 @@ fn parallel_tables<T: Sync, R: Send>(
     let on_worker = parallel.on_worker;
     // Measurement only: the workers' CPU is the caller's family's.
     let cpu_family = crate::cpu::family();
+    let cpu_block = crate::cpu::current_block();
     let worker_panic = std::thread::scope(|scope| {
         let mut handles = engine_allocation::vec(workers)?;
         for _ in 0..workers {
@@ -2756,6 +2757,7 @@ fn parallel_tables<T: Sync, R: Send>(
                         priority.enter(job_priority::Level::Normal);
                         on_worker();
                         let _cpu = crate::cpu::scope("decode", cpu_family);
+                        let _cpu_block = crate::cpu::block(cpu_block);
                         take();
                     })
                     .ok()

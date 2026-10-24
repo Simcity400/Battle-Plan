@@ -2159,6 +2159,7 @@ fn reads_after_many_commits_of_appends_and_replacements_return_every_write() {
     listing.write_snapshot(&mut file).unwrap();
     drop(file);
     let copy = Listing::open(&snapshot).unwrap().unwrap();
+    assert_eq!(copy.source_key(&fixture.store.directory).unwrap(), fixture.key());
     assert!(copy.sections().eq(listing.sections()));
     for (index, (_, count)) in listing.sections().enumerate() {
         for range in 0..count {

@@ -30,6 +30,10 @@ use windows_sys::Win32::{
 
 const MANIFEST: &str = "manifest";
 
+pub fn durable_writes_enabled() -> bool {
+    !skip_sync()
+}
+
 /// The folder holding every local store.
 pub fn local_root() -> io::Result<PathBuf> {
     let root =
@@ -1163,6 +1167,13 @@ impl Seek for Range {
 pub struct Listing(Catalog);
 
 impl Listing {
+    pub fn source_key(&self, directory: &Path) -> io::Result<SourceKey> {
+        serde_json::from_reader(io::BufReader::new(read_file(
+            &directory.join(source_name(self.0.header.source)),
+        )?))
+        .map_err(io::Error::other)
+    }
+
     /// Opens a manifest, whose names file and entry logs are its siblings,
     /// or a snapshot, which holds its entries itself.
     pub fn open(manifest: &Path) -> io::Result<Option<Self>> {
@@ -1190,6 +1201,7 @@ impl Listing {
         let head = serde_json::to_vec(&FlatHead {
             version: VERSION,
             flat: true,
+            source: self.0.header.source,
             sections: self.0.header.sections.clone(),
         })?;
         into.write_all(&(head.len() as u64).to_le_bytes())?;
@@ -1251,6 +1263,7 @@ struct Head {
 struct FlatHead {
     version: u32,
     flat: bool,
+    source: Uuid,
     sections: Vec<Section>,
 }
 
@@ -1594,7 +1607,7 @@ impl Catalog {
             directory,
             runs: head.sections.iter().map(|_| Vec::new()).collect(),
             header: Header {
-                source: Uuid::nil(),
+                source: head.source,
                 sections: head.sections,
             },
             names: (0, 0),

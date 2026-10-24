@@ -945,6 +945,20 @@ fn registry() -> &'static [&'static dyn Own] {
     REGISTRY
 }
 
+pub(super) fn cost_tables(phase: &Phase<'_>) -> Vec<TableId> {
+    let mut tables = Vec::new();
+    for own in registry() {
+        tables.extend_from_slice(own.family().tables);
+        tables.extend_from_slice(own.shared_tables(phase));
+        if let Some(bound) = own.bound(phase) {
+            tables.extend(bound.tables);
+        }
+    }
+    tables.sort_unstable_by_key(|table| table.index());
+    tables.dedup();
+    tables
+}
+
 /// The families prepared on their own, in name order (the checkpoint's).
 pub(super) fn names() -> Vec<&'static str> {
     let mut names: Vec<_> = registry().iter().map(|own| own.family().name).collect();
@@ -1996,6 +2010,7 @@ fn prepare_family(
     let mut pages = HeldPages::default();
     let mut touched = BTreeSet::new();
     for block in progress.next_block..replay.index.len() {
+        let _cpu_block = ::replay_frame::cpu::block(Some(block));
         section_consumer.at(block);
         check_cancel(phase.cancelled)?;
         if paced {
@@ -2355,6 +2370,8 @@ fn lead<'m, 's>(
     phase: &Phase<'_>,
     workers: &mut Timings,
 ) -> MutexGuard<'m, Commits<'s>> {
+    let _block = ::replay_frame::cpu::block(None);
+    let _cpu = ::replay_frame::cpu::scope("shared commit", Some("shared commit"));
     // Declared before the guard, so a panic releases the lock first.
     let mut leading = Leading { group, armed: true };
     let mut guard = guard;

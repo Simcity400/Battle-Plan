@@ -22,6 +22,9 @@ use std::{
 use crate::{frame::TABLE_COUNT, rows::TableId};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static BLOCKS: AtomicBool = AtomicBool::new(false);
+type BlockLabel = (Option<usize>, &'static str, &'static str, &'static str);
+static BLOCK_TOTALS: Mutex<Option<HashMap<BlockLabel, [u64; 2]>>> = Mutex::new(None);
 static TSC_HZ: OnceLock<f64> = OnceLock::new();
 static REGISTRY: Mutex<Vec<Arc<Mutex<ThreadAcc>>>> = Mutex::new(Vec::new());
 static EXITED: Mutex<Option<Exited>> = Mutex::new(None);
@@ -76,6 +79,120 @@ pub fn enable() {
     TSC_HZ.get_or_init(calibrate);
     replay_data::measurement::enable();
     ENABLED.store(true, Ordering::Release);
+}
+
+pub fn enable_blocks() {
+    enable();
+    BLOCKS.store(true, Ordering::Release);
+}
+
+#[must_use]
+pub struct BlockScope(Option<Option<usize>>);
+
+impl Drop for BlockScope {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0 {
+            with_local(|acc| {
+                acc.charge(current_cycles());
+                acc.block = previous;
+            });
+        }
+    }
+}
+
+pub fn block(ordinal: Option<usize>) -> BlockScope {
+    if !BLOCKS.load(Ordering::Relaxed) {
+        return BlockScope(None);
+    }
+    BlockScope(with_local(|acc| {
+        acc.charge(current_cycles());
+        std::mem::replace(&mut acc.block, ordinal)
+    }))
+}
+
+pub fn current_block() -> Option<usize> {
+    if !BLOCKS.load(Ordering::Relaxed) {
+        return None;
+    }
+    with_local(|acc| acc.block).flatten()
+}
+
+pub fn process_cpu_ns() -> Option<u64> {
+    process_ns()
+}
+
+fn owner(stack: &[Label]) -> &'static str {
+    stack
+        .iter()
+        .rev()
+        .find(|label| !label.1.contains(':'))
+        .map_or("-", |label| label.1)
+}
+
+fn phase(stack: &[Label]) -> &'static str {
+    stack
+        .iter()
+        .rev()
+        .find_map(|label| match label.0 {
+            "inflate" => Some("inflate"),
+            "decode" | "decode_wire" | "decode_keyframe" | "decode_shadow" => Some("column decode"),
+            "reconstruct" => Some("apply"),
+            "anchors" => Some("anchors"),
+            "extract" => Some("extract"),
+            "fold observe" | "observe" => Some("fold observe"),
+            "fold" | "fold driver" | "fold facts" => Some("fold driver"),
+            "commit" | "fold block flush" | "fold publish" | "fold flush" | "fold save"
+            | "fold continuation" => Some("publication"),
+            _ => None,
+        })
+        .unwrap_or("shared")
+}
+
+fn block_label(block: Option<usize>, stack: &[Label]) -> Option<BlockLabel> {
+    let category = stack.last()?.0;
+    if stack.iter().any(|label| label.0 == "shared commit") {
+        Some((None, category, "shared commit", "shared commit"))
+    } else {
+        Some((block, category, owner(stack), phase(stack)))
+    }
+}
+
+pub fn block_snapshot() -> Value {
+    let mut totals = BLOCK_TOTALS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .unwrap_or_default();
+    let registry = REGISTRY
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    for acc in registry {
+        let acc = acc.lock().unwrap_or_else(PoisonError::into_inner);
+        for (label, value) in &acc.blocks {
+            let into = totals.entry(*label).or_default();
+            into[0] += value[0];
+            into[1] += value[1];
+        }
+        if let Some(label) = block_label(acc.block, &acc.stack) {
+            totals.entry(label).or_default()[0] += acc
+                .handle
+                .cycles()
+                .unwrap_or(acc.last)
+                .saturating_sub(acc.last);
+        }
+    }
+    let hz = *TSC_HZ.get_or_init(calibrate);
+    let mut rows: Vec<_> = totals.into_iter().collect();
+    rows.sort_unstable_by_key(|(key, _)| *key);
+    json!(
+        rows.into_iter()
+            .map(|((block, category, family, phase), value)| json!({
+                "block":block, "category":category, "family":family, "phase":phase,
+                "ns": (value[0] as f64 / hz * 1e9).round() as u64, "calls":value[1]
+            }))
+            .collect::<Vec<_>>()
+    )
 }
 
 /// The recording's hours, so reconstructed table-hours can be told first
@@ -530,6 +647,8 @@ struct ThreadAcc {
     reader_stack: Vec<Label>,
     last: u64,
     totals: HashMap<Label, [u64; 2]>,
+    block: Option<usize>,
+    blocks: HashMap<BlockLabel, [u64; 2]>,
     /// Reconstruct cycles and counts: first, repeated, untracked.
     tables: Vec<[u64; 6]>,
     reader_phases: HashMap<Label, [u64; 2]>,
@@ -541,6 +660,11 @@ impl ThreadAcc {
         self.last = now;
         if let Some(top) = self.stack.last() {
             self.totals.entry(*top).or_default()[0] += spent;
+            if BLOCKS.load(Ordering::Relaxed) {
+                self.blocks
+                    .entry(block_label(self.block, &self.stack).unwrap())
+                    .or_default()[0] += spent;
+            }
         }
         if let Some(label) = self.reader_stack.last() {
             self.reader_phases.entry(*label).or_default()[0] += spent;
@@ -556,6 +680,11 @@ impl ThreadAcc {
         let label = (category, family);
         self.totals.entry(label).or_default()[1] += 1;
         self.stack.push(label);
+        if BLOCKS.load(Ordering::Relaxed) {
+            self.blocks
+                .entry(block_label(self.block, &self.stack).unwrap())
+                .or_default()[1] += 1;
+        }
     }
 
     fn push_reader(&mut self, phase: &'static str, table: &'static str) {
@@ -586,6 +715,15 @@ impl Drop for Local {
         let mut acc = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let now = current_cycles();
         acc.charge(now);
+        if !acc.blocks.is_empty() {
+            let mut blocks = BLOCK_TOTALS.lock().unwrap_or_else(PoisonError::into_inner);
+            let blocks = blocks.get_or_insert_with(HashMap::new);
+            for (label, value) in acc.blocks.drain() {
+                let into = blocks.entry(label).or_default();
+                into[0] += value[0];
+                into[1] += value[1];
+            }
+        }
         let mut exited = EXITED.lock().unwrap_or_else(PoisonError::into_inner);
         let exited = exited.get_or_insert_with(|| Exited {
             tables: vec![[0; 6]; TABLE_COUNT],
@@ -655,6 +793,8 @@ fn register() -> Local {
         // From the thread's start: its time before this is its base label's.
         last: 0,
         totals,
+        block: None,
+        blocks: HashMap::new(),
         tables: vec![[0; 6]; TABLE_COUNT],
         reader_phases: HashMap::new(),
     }));
@@ -828,6 +968,8 @@ mod reader_tests {
             reader_stack: Vec::new(),
             last: 0,
             totals: HashMap::new(),
+            block: None,
+            blocks: HashMap::new(),
             tables: Vec::new(),
             reader_phases: HashMap::new(),
         };
@@ -870,4 +1012,71 @@ pub fn capture_reader_calls<T>(
     let _restore = Restore(READER_CALLS.replace(Some(HashMap::new())));
     let result = work();
     (result, READER_CALLS.take().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn group_publication_attribution_is_independent_of_leader_and_block() {
+        for (leader, block) in [("family-a", Some(3)), ("family-b", Some(8))] {
+            let mut stack = vec![("fold", leader), ("commit", leader)];
+            let mut totals = HashMap::<BlockLabel, u64>::new();
+            *totals
+                .entry(block_label(block, &stack).unwrap())
+                .or_default() += 11;
+            stack.push(("fold save", leader));
+            assert_eq!(
+                block_label(block, &stack),
+                Some((block, "fold save", leader, "publication"))
+            );
+            *totals
+                .entry(block_label(block, &stack).unwrap())
+                .or_default() += 17;
+            stack.pop();
+            stack.push(("shared commit", "shared commit"));
+            assert_eq!(
+                block_label(block, &stack),
+                Some((None, "shared commit", "shared commit", "shared commit"))
+            );
+            *totals
+                .entry(block_label(block, &stack).unwrap())
+                .or_default() += 29;
+            stack.push(("commit", leader));
+            assert_eq!(
+                block_label(block, &stack),
+                Some((None, "commit", "shared commit", "shared commit"))
+            );
+            *totals
+                .entry(block_label(block, &stack).unwrap())
+                .or_default() += 31;
+            stack.pop();
+            stack.pop();
+            assert_eq!(
+                block_label(block, &stack),
+                Some((block, "commit", leader, "publication"))
+            );
+            *totals
+                .entry(block_label(block, &stack).unwrap())
+                .or_default() += 13;
+            assert_eq!(totals.values().sum::<u64>(), 101);
+            assert_eq!(
+                totals
+                    .iter()
+                    .filter(|(label, _)| label.2 == "shared commit")
+                    .map(|(_, cpu)| *cpu)
+                    .sum::<u64>(),
+                60
+            );
+            assert_eq!(
+                totals
+                    .iter()
+                    .filter(|(label, _)| label.2 == leader)
+                    .map(|(_, cpu)| *cpu)
+                    .sum::<u64>(),
+                41
+            );
+        }
+    }
 }

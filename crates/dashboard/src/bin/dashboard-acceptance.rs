@@ -34,8 +34,6 @@ use std::{
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[path = "dashboard-acceptance/preparation_measurement.rs"]
-mod preparation_measurement;
 #[path = "dashboard-acceptance/readiness_probe.rs"]
 mod readiness_probe;
 
@@ -77,10 +75,6 @@ struct Options {
     repetitions: usize,
     allow_unverified: bool,
     prepare_only: bool,
-    preparation_measure: Option<bool>,
-    measure_seconds: u64,
-    through_hours: Vec<u64>,
-    resume: bool,
     progressive: Option<String>,
     prefix_blocks: usize,
     measurements: Option<PathBuf>,
@@ -101,10 +95,6 @@ fn options() -> io::Result<Options> {
     let mut repetitions = 20;
     let mut allow_unverified = false;
     let mut prepare_only = false;
-    let mut preparation_measure = None;
-    let mut measure_seconds = 120;
-    let mut through_hours = Vec::new();
-    let mut resume = false;
     let mut progressive = None;
     let mut prefix_blocks = 13;
     let mut measurements = None;
@@ -119,10 +109,6 @@ fn options() -> io::Result<Options> {
         }
         if arg == "--readiness-cold-content" {
             readiness_cold_content = true;
-            continue;
-        }
-        if arg == "--resume" {
-            resume = true;
             continue;
         }
         if arg == "--allow-unverified" {
@@ -165,38 +151,6 @@ fn options() -> io::Result<Options> {
             Some("--game-dir") => game = Some(PathBuf::from(value)),
             Some("--user-dir") => user = Some(PathBuf::from(value)),
             Some("--requests") => requests = Some(PathBuf::from(value)),
-            Some("--preparation-measure") => {
-                preparation_measure = Some(match value.to_str() {
-                    Some("serial") => true,
-                    Some("parallel") => false,
-                    _ => {
-                        return Err(invalid(
-                            "Preparation measurement must be serial or parallel",
-                        ));
-                    }
-                });
-            }
-            Some("--measure-seconds") => {
-                measure_seconds = value
-                    .to_str()
-                    .and_then(|value| value.parse().ok())
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| invalid("Measurement seconds must be positive"))?;
-            }
-            Some("--through-hours") => {
-                for hour in value
-                    .to_str()
-                    .ok_or_else(|| invalid("Invalid through-hours"))?
-                    .split(',')
-                {
-                    through_hours.push(
-                        hour.parse::<u64>()
-                            .ok()
-                            .filter(|v| *v > 0)
-                            .ok_or_else(|| invalid("Through-hours must be positive integers"))?,
-                    );
-                }
-            }
             Some("--repetitions") => {
                 repetitions = value
                     .to_str()
@@ -212,11 +166,6 @@ fn options() -> io::Result<Options> {
             }
         }
     }
-    if (resume || !through_hours.is_empty()) && preparation_measure.is_none() {
-        return Err(invalid(
-            "Resume and through-hours require preparation measurement mode",
-        ));
-    }
     Ok(Options {
         recording: recording.ok_or_else(|| invalid("Supply --recording"))?,
         prefix,
@@ -227,10 +176,6 @@ fn options() -> io::Result<Options> {
         repetitions,
         allow_unverified,
         prepare_only,
-        preparation_measure,
-        measure_seconds,
-        through_hours,
-        resume,
         progressive,
         prefix_blocks,
         measurements,
@@ -2143,9 +2088,6 @@ fn run(options: Options) -> io::Result<bool> {
     }
     let mut evidence = Evidence::new(path.clone())?;
     evidence.phase("setup")?;
-    if options.preparation_measure.is_some() {
-        println!("PHASE phase=setup");
-    }
     let context = LoadContext {
         content: match (options.game, options.user) {
             (Some(game_dir), Some(user_dir)) => Some(ContentOptions {
@@ -2166,120 +2108,6 @@ fn run(options: Options) -> io::Result<bool> {
         engine_executable::executable_tables::initialize(&content.options.game_dir)?;
     }
     let canonical_recording = fs::canonicalize(options.recording)?;
-    if let Some(serial) = options.preparation_measure {
-        if options.prefix.is_some() {
-            return Err(invalid(
-                "Preparation measurement uses one recording; --prefix is unavailable in this mode",
-            ));
-        }
-        let content = context.content.as_ref().ok_or_else(|| {
-            invalid(
-                "Preparation measurement requires the real game and user folders for all observers",
-            )
-        })?;
-        evidence.phase("source-open")?;
-        println!("PHASE phase=source-open");
-        let source = open(&canonical_recording)?;
-        evidence.phase("real-preparation-measurement")?;
-        println!("PHASE phase=preparation");
-        let preflight_started = Instant::now();
-        let mut measurement_evidence = preparation_measurement::BlockEvidence::open(
-            &path,
-            &source,
-            Some(content),
-            serial,
-            options.resume,
-            &options.through_hours,
-        )?;
-        let preflight = preflight_started.elapsed();
-        measurement_evidence.preflight = preflight;
-        let (accepted, mut timings) = prepared::pipeline::run_measured_through(
-            &source,
-            Some(content),
-            &AtomicBool::new(false),
-            serial,
-            Duration::from_secs(options.measure_seconds).saturating_sub(preflight),
-            options.through_hours.iter().copied().max(),
-            |block| measurement_evidence.commit(block),
-            |accepted| {
-                println!(
-                    "PROGRESS published_blocks={} new_blocks={}",
-                    accepted.next_block, accepted.new_blocks
-                )
-            },
-        )?;
-        // Prefix validation opens the existing input binding. Include that work
-        // rather than silently warming setup caches outside measured wall time.
-        timings.wall += preflight;
-        timings.families.as_mut().expect("measured table").insert(
-            "measurement.preflight",
-            dashboard_base::prepared::timing::FamilyTimings {
-                observe: preflight,
-                flush: Duration::ZERO,
-                calls: 1,
-            },
-        );
-        let target_already_measured =
-            options
-                .through_hours
-                .iter()
-                .copied()
-                .max()
-                .is_some_and(|target| {
-                    measurement_evidence
-                        .blocks
-                        .last()
-                        .and_then(|row| row["cumulativeGameHours"].as_u64())
-                        .is_some_and(|hours| hours >= target)
-                });
-        if (timings.hours == 0 || accepted.new_blocks == 0) && !target_already_measured {
-            return Err(invalid(
-                "Measurement prepared no new hours; use a fresh isolated evidence/cache directory",
-            ));
-        }
-        let mode = if serial { "serial" } else { "parallel" };
-        let hours_per_second = timings.hours as f64 / timings.wall.as_secs_f64();
-        let family_timings = timings
-            .families
-            .as_ref()
-            .map(|families| preparation_measurement::family_rows(families, timings.wall))
-            .unwrap_or_default();
-        let report = json!({
-            "recording": canonical_recording, "mode": mode, "allocator": "mimalloc",
-            "allProductionObservers": true, "parityPerformed": false,
-            "gameHours": timings.hours, "elapsedSeconds": timings.wall.as_secs_f64(),
-            "gameHoursPerSecond": hours_per_second, "publishedBlocks": accepted.next_block,
-            "observeSeconds": timings.observe.as_secs_f64(),
-            "observationCriticalPathSeconds": timings.observe.as_secs_f64(),
-            "workerObserveSeconds": timings.worker_observe.as_secs_f64(),
-            "workerLanes": timings.worker_lanes,
-            "serialDecodeSeconds": if serial { Some(timings.decode.as_secs_f64()) } else { None },
-            "familyTimings": family_timings,
-            "blocks": measurement_evidence.blocks,
-            "resumed": options.resume,
-            "runId": measurement_evidence.run_id,
-            "throughHours": options.through_hours,
-            "throughTargetsReached": target_already_measured,
-            "residualSeconds": timings.residual.as_secs_f64(),
-            "familyTimingScope": "Sorted by observe plus flush duration. Coordinator scopes are exclusive; worker scopes overlap them and each other. WorkerObserveSeconds is the worker-row sum, so elapsed accounting is sum(familyTimings) minus workerObserveSeconds plus residualSeconds. observationCriticalPathSeconds is actual frame wall time including dispatch and joining; frame.overhead includes wait/dispatch. Family percentages and their sum can exceed 100 in parallel mode. Source opening and executable-table initialization are outside preparation. Preflight is included; evidence output is timed separately. Stream acquisition is consumer time outside frame/progress scopes. No subtraction-based parallel decode claim.",
-            "sections": accepted.sections,
-            "scope": "Actual pipeline and manifest commits; source opening and executable-table setup excluded from timing. Serial decode is stream wall time minus observer/map acceptance and progress-output time. Publication and setup within the pipeline are included in total wall time but excluded from that split. Pipelined observation overlaps reconstruction; no subtraction-based pipeline decode claim."
-        });
-        serde_json::to_writer_pretty(
-            File::create(path.join("preparation-measurement.json"))?,
-            &report,
-        )?;
-        println!("PHASE phase=complete");
-        println!(
-            "RESULT mode={mode} allocator=mimalloc game_hours={} blocks={} elapsed_seconds={:.6} game_hours_per_second={hours_per_second:.3} observe_seconds={:.6} serial_decode_seconds={:?}",
-            timings.hours,
-            accepted.next_block,
-            timings.wall.as_secs_f64(),
-            timings.observe.as_secs_f64(),
-            serial.then_some(timings.decode.as_secs_f64())
-        );
-        return Ok(true);
-    }
     let mut growth = Value::Null;
     let recording = if let Some(prefix_path) = options.prefix {
         let staging = path.join("append-source.battleplan");

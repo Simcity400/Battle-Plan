@@ -1187,17 +1187,7 @@ fn scan_blocks_cached(
     scan_blocks_mode(source, replay, blocks, tag, icons, holder, cancelled, true)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scan_blocks_mode(
-    source: Option<&Source>,
-    replay: &Replay,
-    blocks: &[&BlockIndex],
-    tag: &str,
-    icons: Option<&IconContent>,
-    holder: Option<(u32, u32)>,
-    cancelled: &AtomicBool,
-    compact: bool,
-) -> io::Result<ScannedLines> {
+pub fn scan_tables(icons: bool) -> Vec<TableId> {
     // The variant catalogue's tables include the countries and tokens read here too.
     let mut selected = vec![
         TableId::Campaign,
@@ -1212,7 +1202,7 @@ fn scan_blocks_mode(
         TableId::ModifierDefinitions,
     ];
     selected.extend(VariantCatalogue::TABLES);
-    if icons.is_some() {
+    if icons {
         // The icon rule's country operands.
         selected.extend([
             TableId::PoliticalParties,
@@ -1222,6 +1212,21 @@ fn scan_blocks_mode(
             TableId::States,
         ]);
     }
+    selected
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_blocks_mode(
+    source: Option<&Source>,
+    replay: &Replay,
+    blocks: &[&BlockIndex],
+    tag: &str,
+    icons: Option<&IconContent>,
+    holder: Option<(u32, u32)>,
+    cancelled: &AtomicBool,
+    compact: bool,
+) -> io::Result<ScannedLines> {
+    let selected = scan_tables(icons.is_some());
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Production request cancelled");
     let mut result = ScannedLines::default();
     let recorded_modifier_language = recorded_language(replay);
@@ -1286,6 +1291,8 @@ fn scan_blocks_mode(
     });
     let tables: Vec<_> = selected.iter().map(|table| *table as u16).collect();
     let extract = |block: &BlockIndex| {
+        let _cpu_block = replay_frame::cpu::block(replay.block_position(block));
+        let _cpu = replay_frame::cpu::scope("extract", Some("production lines"));
         if let Some(position) = replay.block_position(block) {
             consumer.reading(position);
         }
@@ -1323,6 +1330,8 @@ fn scan_blocks_mode(
         &extract,
         |blocks| {
             for (block, extracted) in blocks {
+                let _cpu_block = replay_frame::cpu::block(replay.block_position(block));
+                let _cpu = replay_frame::cpu::scope("fold driver", Some("production lines"));
                 if let Some(position) = replay.block_position(block) {
                     consumer.at(position);
                 }

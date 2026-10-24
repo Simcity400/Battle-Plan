@@ -4280,6 +4280,7 @@ fn anchored_keyframe_with(
     check: &mut Check<'_>,
 ) -> io::Result<Resolved> {
     let _table = replay_data::measurement::table(table);
+    let _cpu = crate::cpu::scope("anchors", None);
     let version = format.version();
     let change: &LastChange = &HISTORY[table.index()];
     let decode = |plain: &[u8], keyframe: bool| -> io::Result<TableUpdate> {

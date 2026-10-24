@@ -9806,6 +9806,7 @@ dependencies = [
  "test-unify",
  "uuid",
  "windows-sys 0.61.2",
+ "zstd",
 ]
 
 [[package]]

@@ -376,6 +376,7 @@ impl Inner {
     /// when no family wants the block any more, and what it decoded is
     /// released unkept.
     fn read(&self, block: usize) -> Ended {
+        let _cpu_block = ::replay_frame::cpu::block(Some(block));
         let _cpu = ::replay_frame::cpu::scope("decode", Some("shared read"));
         let started = Instant::now();
         let index = &self.replay.index[block];
