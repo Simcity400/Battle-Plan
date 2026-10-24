@@ -875,3 +875,46 @@ fn world_tension_retains_every_event_beyond_the_former_count_ceiling() {
     let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.events.len(), sources.len());
 }
+
+#[test]
+fn unflushed_tension_checkpoint_keeps_pending_runs_and_source_events() {
+    use super::Scan;
+    use dashboard_base::prepared::series::tests::{Fixture, assert_payloads_equal};
+    let run = |resume: bool| {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let format = replay_data::format::FormatVersion::CURRENT;
+        let mut state = Scan::default();
+        let mut snapshots = Vec::new();
+        for hours in [100..106, 106..112] {
+            for hour in hours {
+                let input = tension_frame(
+                    hour,
+                    true,
+                    100 + i64::from(hour),
+                    &[(9, 10_000 + i64::from(hour))],
+                    &[(
+                        31,
+                        90,
+                        b"Synthetic mod cause",
+                        9_000,
+                        10_000 + i64::from(hour),
+                    )],
+                );
+                state.prepare(format, &input).unwrap();
+                if resume && matches!(hour, 101 | 104 | 108) {
+                    assert!(state.buffered_bytes() > 0);
+                    state = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+                }
+            }
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            snapshots.push(fixture.payloads());
+        }
+        snapshots
+    };
+    for (actual, expected) in run(true).iter().zip(run(false).iter()) {
+        assert_payloads_equal(actual, expected, "unflushed world-tension resume");
+    }
+}

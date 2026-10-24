@@ -1,6 +1,6 @@
 //! Reuse the compact JSON of unchanged series keys in a continuation. The
 //! complete continuation still passes through its ordinary compressor.
-use super::{Accumulator, KeyState, Partial};
+use super::{Accumulator, Batch, KeyState, Partial};
 use serde::{
     Serialize, Serializer,
     ser::{Error, SerializeMap},
@@ -106,12 +106,16 @@ impl Serialize for Accumulator {
             frontier: Option<i32>,
             previous: Option<i32>,
             active: &'a BTreeSet<u64>,
+            // Empty batches keep dual-purpose public catalogues byte-identical.
+            #[serde(skip_serializing_if = "Batch::is_empty")]
+            batch: &'a Batch,
         }
         Saved {
             states: States(&self.states, &self.active, &self.saved),
             frontier: self.frontier,
             previous: self.previous,
             active: &self.active,
+            batch: &self.batch,
         }
         .serialize(serializer)
     }

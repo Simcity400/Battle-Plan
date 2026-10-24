@@ -1365,6 +1365,42 @@ mod tests {
     }
 
     #[test]
+    fn unflushed_party_checkpoint_keeps_popularity_and_presentation_event_references() {
+        use dashboard_base::prepared::series::tests::assert_payloads_equal;
+        let run = |resume: bool| {
+            let fixture = Fixture::new();
+            let flag = AtomicBool::new(false);
+            let mut state = Prepared::default();
+            let mut snapshots = Vec::new();
+            for hours in [100..106, 106..112] {
+                for hour in hours {
+                    let ruling = if hour % 3 == 0 {
+                        "democratic"
+                    } else {
+                        "fascism"
+                    };
+                    let input =
+                        party_frame(hour, 4_000_001 + i64::from(hour), 3_500_002, ruling, 10);
+                    state.observe(&input).unwrap();
+                    if resume && matches!(hour, 101 | 104 | 108) {
+                        assert!(state.bytes() > 0);
+                        let bytes = state.saved_bytes().unwrap();
+                        state = Prepared::read(bytes.as_slice()).unwrap();
+                    }
+                }
+                let mut writer = fixture.writer();
+                state.flush(&mut writer, 1, &flag).unwrap();
+                writer.commit().unwrap();
+                snapshots.push(fixture.payloads());
+            }
+            snapshots
+        };
+        for (actual, expected) in run(true).iter().zip(run(false).iter()) {
+            assert_payloads_equal(actual, expected, "unflushed party-history resume");
+        }
+    }
+
+    #[test]
     fn prepared_party_fractional_summary_keeps_values_without_an_integer_event_hour() {
         let frames = vec![
             party_frame(100, 4_000_001, 3_500_002, "fascism", 10),

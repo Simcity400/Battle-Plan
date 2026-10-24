@@ -373,13 +373,13 @@ impl TryFrom<SavedKeyState> for KeyState {
         })
     }
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 struct Rows {
     runs: Vec<Run>,
     events: Vec<(i32, Vec<u8>)>,
     state: KeyState,
 }
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Batch {
     first: Option<i32>,
     last: i32,
@@ -397,7 +397,7 @@ pub struct Accumulator {
     frontier: Option<i32>,
     previous: Option<i32>,
     active: BTreeSet<u64>,
-    #[serde(skip)]
+    #[serde(default)]
     batch: Batch,
     /// The series number this accumulator's calls are recorded under, while
     /// a block's extract records them ([`with_recording`]).
@@ -496,7 +496,7 @@ impl Accumulator {
         Ok(())
     }
     /// Materialize held values only through accepted hours. Explicit spans and
-    /// events never become held values. Checkpoints flush before serializing.
+    /// events never become held values.
     pub fn seal(&mut self) {
         let _cpu = ::replay_frame::cpu::scope("series seal", None);
         let Some(frontier) = self.frontier else {
@@ -1305,6 +1305,9 @@ struct Encoding<'a> {
 }
 
 impl Batch {
+    fn is_empty(&self) -> bool {
+        self.first.is_none() && self.last == 0 && self.keys.is_empty() && self.bytes == 0
+    }
     pub fn through(&mut self, hour: i32) {
         self.first.get_or_insert(hour);
         self.last = hour;

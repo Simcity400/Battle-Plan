@@ -264,3 +264,37 @@ fn intel_shared_driver_cipher_one_row_ignores_ten_times_closed_pairs() {
     assert_eq!(scaled[0].row_visits, 1);
     assert_eq!(scaled[0].emitted, 1);
 }
+
+#[test]
+fn unflushed_cipher_checkpoint_continues_without_losing_or_repeating_observations() {
+    use dashboard_base::prepared::series::tests::assert_payloads_equal;
+    let run = |resume: bool| {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut state = Accumulator::default();
+        let mut oracle = Scan::default();
+        let mut snapshots = Vec::new();
+        for hours in [100..148, 148..196] {
+            for hour in hours {
+                let amount = 9_007_199_254_740_993 + i64::from((hour - 100) / 24) * 100_000;
+                let input = frame(hour, 2, amount, 1);
+                oracle.frame(&input, Ok(DEFINES)).unwrap();
+                state.observe_with_defines(&input, Ok(DEFINES)).unwrap();
+                if resume && matches!(hour, 112 | 135 | 160 | 183) {
+                    assert!(state.buffered_bytes() > 0);
+                    let bytes = series::compress(&serde_json::to_vec(&state).unwrap(), 3).unwrap();
+                    state = Accumulator::read(bytes.as_slice()).unwrap();
+                }
+            }
+            let mut writer = fixture.writer();
+            state.flush(&mut writer, 1, &flag).unwrap();
+            writer.commit().unwrap();
+            assert_reply(&fixture, &oracle);
+            snapshots.push(fixture.payloads());
+        }
+        snapshots
+    };
+    for (actual, expected) in run(true).iter().zip(run(false).iter()) {
+        assert_payloads_equal(actual, expected, "unflushed decryption resume");
+    }
+}

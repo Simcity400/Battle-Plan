@@ -2807,3 +2807,169 @@ fn pushed_run_groups_keep_ordinary_payloads_counters_and_continuation() {
         }
     }
 }
+
+#[test]
+fn unflushed_checkpoints_keep_runs_interned_events_references_and_raw_bytes() {
+    #[derive(Default, Serialize, Deserialize)]
+    struct Family {
+        values: Accumulator,
+        presentations: BTreeMap<String, u64>,
+    }
+    impl Family {
+        fn observe(&mut self, hour: i32) {
+            self.values.advance(hour).unwrap();
+            let name = match hour % 5 {
+                0 | 1 => "synthetic alpha",
+                2 => "synthetic beta | opaque",
+                _ => "synthetic gamma",
+            };
+            let presentation = if let Some(&ordinal) = self.presentations.get(name) {
+                ordinal
+            } else {
+                let ordinal = self.values.state(10).map_or(0, |state| state.events);
+                self.values.event(10, hour, &json!({"name": name})).unwrap();
+                self.presentations.insert(name.into(), ordinal);
+                ordinal
+            };
+            self.values.observe_boundary(
+                1,
+                hour,
+                (hour % 7 != 0).then_some(9_007_199_254_740_993 + i128::from(hour % 3)),
+                hour == 100,
+                hour % 4 == 0,
+            );
+            self.values
+                .observe(2, hour, Some(i128::from(presentation)), false);
+            self.values
+                .event(20, hour, &json!({"presentation": presentation}))
+                .unwrap();
+            if hour == 101 {
+                self.values
+                    .event(
+                        20,
+                        hour,
+                        &json!({"presentation": presentation, "duplicate": true}),
+                    )
+                    .unwrap();
+            }
+            self.values
+                .event_raw(
+                    30,
+                    hour,
+                    format!(" {{ \"hour\" : {hour} }} \n").into_bytes(),
+                )
+                .unwrap();
+            self.values
+                .event_raw(31, hour, vec![0, 255, hour as u8, 128])
+                .unwrap();
+        }
+    }
+    let run = |resume: bool| {
+        let fixture = Fixture::new();
+        let flag = AtomicBool::new(false);
+        let mut family = Family::default();
+        let mut snapshots = Vec::new();
+        for hours in [100..=105, 106..=120, 123..=125] {
+            for hour in hours {
+                family.observe(hour);
+                if resume && matches!(hour, 101 | 104 | 109 | 118 | 124) {
+                    let saved = serde_json::to_vec(&family).unwrap();
+                    let restored: Family = serde_json::from_slice(&saved).unwrap();
+                    assert_eq!(restored.values.bytes(), family.values.bytes());
+                    assert!(restored.values.bytes() > 0);
+                    assert_eq!(serde_json::to_vec(&restored).unwrap(), saved);
+                    family = restored;
+                }
+            }
+            let mut writer = fixture.writer();
+            family
+                .values
+                .flush(&mut writer, "pending", 5, &flag)
+                .unwrap();
+            writer.commit().unwrap();
+            snapshots.push(fixture.payloads());
+        }
+        let mut reader =
+            Reader::new(&fixture.store, &fixture.key, "pending".into(), &flag).unwrap();
+        assert_eq!(
+            reader.events(&[10], 100, 125, 0, 100).unwrap().rows.len(),
+            3
+        );
+        let observations = reader.events(&[20], 100, 125, 0, 100).unwrap();
+        assert_eq!(observations.total, 25);
+        for row in observations.rows {
+            let ordinal = row.row["presentation"].as_u64().unwrap();
+            assert!(reader.event_at(10, ordinal).unwrap().row["name"].is_string());
+        }
+        for (ordinal, hour) in (100..=120).chain(123..=125).enumerate() {
+            assert_eq!(
+                reader.event_raw(30, ordinal as u64).unwrap(),
+                (hour, format!(" {{ \"hour\" : {hour} }} \n").into_bytes())
+            );
+            assert_eq!(
+                reader.event_raw(31, ordinal as u64).unwrap(),
+                (hour, vec![0, 255, hour as u8, 128])
+            );
+        }
+        if resume {
+            let saved = serde_json::to_vec(&family).unwrap();
+            let mut restored: Family = serde_json::from_slice(&saved).unwrap();
+            let mut writer = fixture.writer();
+            restored
+                .values
+                .flush(&mut writer, "pending", 5, &flag)
+                .unwrap();
+            writer.commit().unwrap();
+            assert_payloads_equal(
+                &fixture.payloads(),
+                snapshots.last().unwrap(),
+                "empty restored batch publishes nothing",
+            );
+        }
+        snapshots
+    };
+    let expected = run(false);
+    let actual = run(true);
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_payloads_equal(actual, expected, "unflushed accumulator resume");
+    }
+}
+
+#[test]
+fn empty_batches_keep_public_state_bytes_and_bounds_only_batches_resume() {
+    let mut uninterrupted = Accumulator::default();
+    assert_eq!(
+        serde_json::to_vec(&uninterrupted).unwrap(),
+        br#"{"states":{},"frontier":null,"previous":null,"active":[]}"#
+    );
+    uninterrupted.advance(40).unwrap();
+    uninterrupted.advance(41).unwrap();
+    assert_eq!(uninterrupted.bytes(), 0);
+    let saved = serde_json::to_vec(&uninterrupted).unwrap();
+    let mut restored: Accumulator = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(serde_json::to_vec(&restored).unwrap(), saved);
+    let batch: Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(batch["batch"]["first"], 40);
+    assert_eq!(batch["batch"]["last"], 41);
+    let expected = Fixture::new();
+    let actual = Fixture::new();
+    for (state, fixture) in [(&mut uninterrupted, &expected), (&mut restored, &actual)] {
+        let mut writer = fixture.writer();
+        state
+            .flush(&mut writer, "bounds", 0, &AtomicBool::new(false))
+            .unwrap();
+        writer.commit().unwrap();
+        assert!(
+            serde_json::to_value(&*state)
+                .unwrap()
+                .get("batch")
+                .is_none()
+        );
+    }
+    assert!(!expected.payloads().is_empty());
+    assert_payloads_equal(
+        &actual.payloads(),
+        &expected.payloads(),
+        "bounds-only checkpoint",
+    );
+}
