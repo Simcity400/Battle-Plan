@@ -46,7 +46,7 @@ mod independent_superiority;
 mod independent_tension;
 mod independent_wars;
 mod independent_windowed;
-mod newest_windows;
+mod forward_windows;
 mod parallel_flush;
 mod prepass_parity;
 mod production_scans;
@@ -2070,8 +2070,6 @@ fn one_branch_batches_many_replay_blocks_into_shared_measure_files() {
     let source = fixture.source("1");
     let flag = AtomicBool::new(false);
     let mut commits = Vec::new();
-    // Inspect the walk's publication boundaries directly: status callbacks
-    // also report independently committed newest windows.
     // The hourly walk reports its position as it reads; how many blocks one
     // read covers depends on how fast the walk runs, so only its end is fixed.
     let mut walked = std::collections::BTreeSet::new();

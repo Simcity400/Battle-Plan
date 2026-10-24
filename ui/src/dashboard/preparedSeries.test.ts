@@ -343,9 +343,6 @@ const familyStatus = (request: object, families: Record<string, Record<string, {
 test('mounted replies publish improved presentation without waiting for a longer forward prefix', async () => {
   const at = (lastHour: number, complete = false) => ({ firstHour: 0, lastHour, complete });
   const cases = [
-    ...(['land', 'naval'] as const).map(kind => ({ product: `${kind}-battles-manifest` as const, gate: ['walk', `newest.${kind}`],
-      before: { exact: null, pending: [{ firstHour: 10, lastHour: 99 }] },
-      after: { exact: 90, pending: [{ firstHour: 10, lastHour: 89 }] } })),
     { product: 'series-state' as const, gate: ['balances'], before: { exact: null }, after: { exact: 90 } },
     { product: 'series-state' as const, gate: ['balances'], before: { pending: [{ firstHour: 10, lastHour: 99 }] },
       after: { pending: [{ firstHour: 10, lastHour: 39 }, { firstHour: 50, lastHour: 99 }] } },
@@ -368,7 +365,7 @@ test('mounted replies publish improved presentation without waiting for a longer
       preparationStatus: async (request: object) => {
         assert.ok(++statuses <= 3);
         return { ...familyStatus(request, Object.fromEntries(gate.map(name => [name,
-          { '1': at(gate.includes('walk') ? 99 : statuses * 30, statuses === 3 || name.startsWith('newest.')) }]))),
+          { '1': at(statuses * 30, statuses === 3) }]))),
           coverage: { '1': at(statuses === 3 ? 99 : statuses === 2 ? 19 : 9, statuses === 3) } };
       },
     } as unknown as DashboardClient;

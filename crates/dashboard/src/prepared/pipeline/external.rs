@@ -1173,14 +1173,7 @@ mod tests {
         macro_rules! same { ($($field:ident),+ $(,)?) => { $(
             assert_eq!(serde_json::to_vec(&after.$field).unwrap(), serde_json::to_vec(&before.$field).unwrap());
         )+ }; }
-        same!(
-            cursor,
-            map,
-            refused,
-            newest,
-            display_error,
-            display_failures
-        );
+        same!(cursor, map, refused, display_error, display_failures);
         for (name, progress) in &before.independent {
             if name != AirStatisticsObserver::NAME {
                 assert_eq!(after.independent[name], *progress);

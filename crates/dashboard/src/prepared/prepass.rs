@@ -17,8 +17,7 @@
 //! those outcomes from [`Pool`], alongside the families prepared on their own.
 //! One set of workers reads each block for every family whose next block it is
 //! and within reach, from each publisher's own first block. The walk's extracts
-//! share one measured downstream chain in the longest-first order and stay
-//! parked until first-view jobs release it.
+//! share one measured downstream chain in the longest-first order.
 
 use super::frame_changes::{FrameChangeTracker, FrameChanges};
 use super::pace::WalkPace;
@@ -802,8 +801,7 @@ impl Pool {
         Self::start_with_walk(replay, lanes, workers, knobs, depot, None)
     }
 
-    /// Register the walk before any worker can claim work. Its extracts stay
-    /// bound until the first-view gate releases it.
+    /// Register the walk before any worker can claim work.
     pub(crate) fn start_with_walk(
         replay: Arc<Replay>,
         mut lanes: Vec<(&'static Family, usize, bool)>,

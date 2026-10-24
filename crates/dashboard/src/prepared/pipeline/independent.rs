@@ -44,7 +44,7 @@
 //! recording and its own bytes alone, never from wall time or from what other
 //! families committed meanwhile.
 //!
-//! Work beside the families ([`Beside`], the newest battle windows) runs on
+//! Work beside the families ([`Beside`], production scans) runs on
 //! threads of its own while they prepare and publishes each batch, as soon as
 //! it has one, through the same group commits: a batch with no progress of
 //! its own, in sections no family writes, so no family's pages, ranges or
@@ -86,8 +86,6 @@ pub(super) type Timings = Option<BTreeMap<&'static str, FamilyTimings>>;
 /// time in its timings.
 pub(super) struct Beside<'a> {
     pub name: &'static str,
-    /// Publish its first view (or finish without one) before the walk competes.
-    pub first_view: bool,
     #[allow(clippy::type_complexity)]
     pub run: Box<dyn FnOnce(&mut Publish<'_>, &mut Timings) -> io::Result<()> + Send + 'a>,
 }
@@ -96,7 +94,6 @@ pub(super) struct Beside<'a> {
 pub(super) struct Publish<'p> {
     #[allow(clippy::type_complexity)]
     commit: &'p mut dyn FnMut(
-        Option<&'static str>,
         Publication,
         &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
     ) -> io::Result<()>,
@@ -108,29 +105,11 @@ impl Publish<'_> {
         &mut self,
         write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
     ) -> io::Result<()> {
-        (self.commit)(None, Publication::Beside, write)
-    }
-    /// Publish the proven window and its refresh gate in the same commit.
-    pub(super) fn window(
-        &mut self,
-        family: &'static str,
-        branch: u64,
-        window: Coverage,
-        write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
-    ) -> io::Result<()> {
-        (self.commit)(
-            Some(family),
-            Publication::Newest {
-                branch,
-                coverage: window,
-            },
-            write,
-        )
+        (self.commit)(Publication::Beside, write)
     }
     /// Register newly queued scans in the canonical group metadata before reading them.
     pub(super) fn requested(&mut self, wanted: &[(u64, String)]) -> io::Result<()> {
         (self.commit)(
-            None,
             Publication::ProductionRequested(wanted.to_vec()),
             &mut |_| Ok(()),
         )
@@ -1149,10 +1128,6 @@ struct Commits<'s> {
     /// Families preparing at once that have not finished.
     running: usize,
     grouping: Grouping,
-    /// Initial newest-view publications take precedence over the walk.
-    startup: BTreeSet<usize>,
-    #[cfg(test)]
-    newest_first: bool,
     #[cfg(test)]
     on_publish: OnPublish,
     /// Store commits holding a family's batch, and the family commits they
@@ -1164,7 +1139,6 @@ struct Commits<'s> {
 enum Publication {
     Family(Progress),
     Walk(Box<Checkpoint>),
-    Newest { branch: u64, coverage: Coverage },
     Beside,
     BesideFinished,
     ProductionRequested(Vec<(u64, String)>),
@@ -1304,24 +1278,8 @@ impl Drop for Leading<'_, '_> {
     }
 }
 
-/// A newest-view job that finished without a publication no longer holds up
-/// the walk. A successful first commit releases it earlier.
-struct Startup<'m, 's>(&'m Group<'s>, usize);
-
-impl Drop for Startup<'_, '_> {
-    fn drop(&mut self) {
-        ready(self.0, self.1);
-    }
-}
-
-fn ready(group: &Group<'_>, lane: usize) {
-    lock(group).startup.remove(&lane);
-    group.changed.notify_all();
-}
-
 /// The hourly walk stages a batch without holding up family publications.
 /// Once ready, its fork and checkpoint join the next group commit.
-/// The independent newest views publish before its first batch.
 pub(super) struct Walk<'m, 's> {
     group: &'m Group<'s>,
     phase: &'m Phase<'m>,
@@ -1340,7 +1298,7 @@ impl Walk<'_, '_> {
             if guard.lost {
                 return Err(lost_to(self.phase));
             }
-            if guard.startup.is_empty() && guard.admits() {
+            if guard.admits() {
                 return guard.writer.as_mut().ok_or_else(lost)?.stage();
             }
             let next = accepted_now(&guard, self.phase);
@@ -1356,7 +1314,7 @@ impl Walk<'_, '_> {
         }
     }
 
-    /// Release the walk's registered lanes only after its first-view gate.
+    /// The walk's registered pre-pass lanes.
     pub(super) fn prepass(&self) -> Option<prepass::PrePass> {
         self.pool.and_then(Pool::walk)
     }
@@ -1635,14 +1593,6 @@ pub(super) fn prepare(
             // One after another, only the family preparing now runs.
             running: if at_once { families } else { families.min(1) },
             grouping: grouping(),
-            startup: beside
-                .iter()
-                .enumerate()
-                .filter(|(_, job)| job.first_view)
-                .map(|(at, _)| families + at)
-                .collect(),
-            #[cfg(test)]
-            newest_first: TEST_NEWEST_FIRST.with(std::cell::Cell::get),
             #[cfg(test)]
             on_publish: TEST_ON_PUBLISH.with(|hook| hook.borrow().clone()),
             published: (0, 0),
@@ -1673,24 +1623,20 @@ pub(super) fn prepare(
             let context = context.clone();
             let name = job.name;
             let priority = JobPriority::current();
-            let startup = Startup(commits, families + at);
             besides.push(
                 crate::prepared::runner::worker_thread(format!("preparation of {name}"))
                     .spawn_scoped(scope, move || {
-                        let _startup = startup;
                         priority.enter(Level::Normal);
                         #[cfg(test)]
                         let _installed = context.install();
-                        let _cpu = ::replay_frame::cpu::scope("newest", Some(name));
+                        let _cpu = ::replay_frame::cpu::scope("beside", Some(name));
                         let result = {
-                            let mut publish = |member: Option<&'static str>,
-                                               publication: Publication,
+                            let mut publish = |publication: Publication,
                                                write: &mut dyn FnMut(
                                 &mut store::Writer,
                             )
                                 -> io::Result<()>| {
                                 let _cpu = ::replay_frame::cpu::scope("commit", None);
-                                let name = member.unwrap_or(name);
                                 let next = commit(
                                     commits,
                                     phase,
@@ -2384,7 +2330,6 @@ fn queued<'m, 's>(
     forked: Forked<'m, 's>,
     queued: Queued,
 ) -> io::Result<Accepted> {
-    let lane = queued.lane;
     let (mut guard, ticket) = forked.finish(Some(queued));
     if !guard.leading {
         guard.leading = true;
@@ -2392,16 +2337,6 @@ fn queued<'m, 's>(
     }
     loop {
         if let Some(outcome) = guard.outcomes.remove(&ticket) {
-            if outcome.is_ok() {
-                #[cfg(test)]
-                let newest_first = guard.newest_first;
-                #[cfg(not(test))]
-                let newest_first = false;
-                if !newest_first {
-                    guard.startup.remove(&lane);
-                }
-                group.changed.notify_all();
-            }
             return outcome;
         }
         if !guard.leading {
@@ -2506,16 +2441,7 @@ fn publish<'m, 's>(
             Publication::Walk(state) => {
                 let mut state = (**state).clone();
                 state.independent = std::mem::take(&mut commits.state.independent);
-                state.newest = std::mem::take(&mut commits.state.newest);
                 *commits.state = state;
-            }
-            Publication::Newest { branch, coverage } => {
-                commits
-                    .state
-                    .newest
-                    .entry((*name).to_owned())
-                    .or_default()
-                    .insert(branch.to_string(), coverage.clone());
             }
             Publication::Beside => {}
             Publication::BesideFinished => finished.push(*name),
@@ -2887,7 +2813,6 @@ thread_local! {
     static TEST_FAMILIES: std::cell::Cell<Option<&'static [&'static dyn Own]>> =
         const { std::cell::Cell::new(None) };
     static TEST_ONE_AFTER_ANOTHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static TEST_NEWEST_FIRST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_ON_PUBLISH: std::cell::RefCell<OnPublish> = const { std::cell::RefCell::new(None) };
 }
 
@@ -3059,13 +2984,6 @@ pub(super) fn with_test_families<T>(families: &[&'static dyn Own], run: impl FnO
 #[cfg(test)]
 pub(super) fn with_test_one_after_another<T>(run: impl FnOnce() -> T) -> T {
     crate::prepared::with_test_cell(&TEST_ONE_AFTER_ANOTHER, true, run)
-}
-
-/// Complete every newest-view side job before admitting the walk. Fixtures
-/// needing all branches' pages and diagnostics choose this order explicitly.
-#[cfg(test)]
-pub(super) fn with_test_newest_first<T>(run: impl FnOnce() -> T) -> T {
-    crate::prepared::with_test_cell(&TEST_NEWEST_FIRST, true, run)
 }
 
 /// Observe actual accepted family publications, on the group leader's thread.

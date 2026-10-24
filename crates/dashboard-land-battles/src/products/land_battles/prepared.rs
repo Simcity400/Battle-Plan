@@ -228,7 +228,7 @@ impl Census {
     }
 }
 
-/// Committed log pages remain useful while a newest-window proof is pending.
+/// Committed log pages remain useful while later windows are pending.
 pub fn prefix_query(
     source: &Source,
     product: &str,

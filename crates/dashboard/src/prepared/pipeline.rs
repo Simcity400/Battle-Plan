@@ -840,9 +840,6 @@ struct Checkpoint {
     /// progress. Preparation of other families starts over when these differ.
     #[serde(default)]
     independent: BTreeMap<String, independent::Progress>,
-    /// Refresh extents published atomically with proven newest windows.
-    #[serde(default)]
-    newest: BTreeMap<String, BTreeMap<String, Coverage>>,
     /// Active payload bytes excluding this checkpoint's own file.
     bytes: u64,
 }
@@ -1256,23 +1253,7 @@ fn family_coverages(
     replay: &Replay,
     last_blocks: &BTreeMap<u64, usize>,
 ) -> BTreeMap<String, BTreeMap<String, Coverage>> {
-    let mut families =
-        independent::coverages(&state.independent, replay, &state.map.ranges, last_blocks);
-    for (name, windows) in &state.newest {
-        let current = windows
-            .iter()
-            .filter(|(branch, window)| {
-                branch
-                    .parse::<u64>()
-                    .ok()
-                    .and_then(|branch| state.map.ranges.get(&branch))
-                    .is_some_and(|&(_, last)| window.last_hour == last)
-            })
-            .map(|(branch, window)| (branch.clone(), window.clone()))
-            .collect();
-        families.insert(name.clone(), current);
-    }
-    families
+    independent::coverages(&state.independent, replay, &state.map.ranges, last_blocks)
 }
 /// A branch's published coverage page, carrying its family refusals so a
 /// query reads both from one small page. The reply's coverage stays unchanged.
@@ -1420,9 +1401,6 @@ pub(crate) fn gate(product: &str) -> Vec<&'static str> {
         (None, Some(family)) => vec![family],
         (None, None) => vec![super::coverage::WALK],
     };
-    if let Some(window) = newest::gate(product) {
-        entries.push(window);
-    }
     entries.sort_unstable();
     entries.dedup();
     entries
@@ -1669,7 +1647,6 @@ fn zero_checkpoint(replay: &Replay, content: Option<&ContentOptions>) -> io::Res
             .iter()
             .map(|&name| (name.to_owned(), independent::Progress::default()))
             .collect(),
-        newest: BTreeMap::new(),
         bytes: 0,
     })
 }
@@ -2230,12 +2207,10 @@ pub mod external;
 mod flush;
 pub(crate) mod independent;
 mod lanes;
-mod newest;
 mod production_scans;
 mod side;
 /// Measurement only: the hourly walk's part of the state census.
 mod state_census;
-pub(crate) use newest::gate as newest_gate;
 
 /// One completed manifest commit, emitted before any next block is admitted.
 pub struct MeasuredBlock {
@@ -3082,17 +3057,7 @@ fn run_planned(
             return Ok(None);
         }
     }
-    // What each family's newest windows did, reported in status rows of
-    // their own with every accepted commit while preparation runs.
-    let reports = newest::Reports::default();
-    let mut accepted = |next: &Accepted| {
-        if reports.is_empty() {
-            return accepted(next);
-        }
-        let mut next = next.clone();
-        reports.annotate(&mut next.sections);
-        accepted(&next)
-    };
+    let mut accepted = accepted;
     // The walk and the families publish through the same writer. Their
     // checkpoints merge only accepted progress, and keep their sections disjoint.
     state.map = map.progress().clone();
@@ -3113,8 +3078,7 @@ fn run_planned(
         walk_pace: &walk_pace,
     };
     let mut side = side::load(&store, &key, saved.as_ref())?.unwrap_or_default();
-    let mut beside = newest::jobs(&phase, &state, &saved, &reports, &side.pending)?;
-    beside.extend(production_scans::jobs(&phase, &side.production)?);
+    let beside = production_scans::jobs(&phase, &side.production)?;
     side.pending = beside.iter().map(|job| job.name.to_owned()).collect();
     side.production.extend(production_scans::wanted(source));
     side::write(&mut writer, &side)?;
@@ -3191,7 +3155,6 @@ fn run_planned(
         let section_consumer =
             replay.section_reader(stream.cursor().next_block, selected(), "walk");
         let mut writer = walk.open(accepted)?;
-        // First views publish before this walk and its pre-pass compete for CPU.
         let prepass = prepass::enabled().then(|| {
             walk.prepass().unwrap_or_else(|| {
                 #[allow(unused_mut)]

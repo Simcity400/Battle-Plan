@@ -5,7 +5,7 @@ use replay_data::{
 };
 use replay_frame::frame::TableView;
 
-mod newest;
+mod forward;
 mod speed;
 
 fn frame(hour: i32, countries: u32, combats: u32) -> DecodedFrame {

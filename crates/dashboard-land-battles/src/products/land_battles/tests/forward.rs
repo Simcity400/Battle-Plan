@@ -1,29 +1,19 @@
-//! The newest window prepared first, from the last block and a proven
-//! look-back, publishes the page and manifest forward preparation publishes.
 use super::*;
-use crate::products::land_battles::{newest as first, prepared as forward_query};
-use dashboard_base::prepared::{
-    frame_changes::FrameChangeTracker,
-    newest::{Outcome, Unproven},
-    series::tests::Fixture,
-};
-use replay_data::{
-    rows::LandCombatResultsRow, rows::LandEventCoverageRow, rows::LandResultSide,
-    rows::LandSideLosses, rows::LexicalTokenRow, rows::VariantDefinitionRow,
+use crate::products::land_battles::prepared as forward_query;
+use dashboard_base::prepared::{frame_changes::FrameChangeTracker, series::tests::Fixture};
+use replay_data::rows::{
+    LandCombatResultsRow, LandEventCoverageRow, LandResultSide, LandSideLosses, LexicalTokenRow,
+    VariantDefinitionRow,
 };
 use serde_json::{Value, json};
-use std::{io::Read, ops::RangeInclusive};
+use std::ops::RangeInclusive;
 
-/// One land combat present at an hour.
 #[derive(Clone, Copy)]
 struct Combat {
     id: u64,
     province: u32,
-    /// The hour its native duration counter read zero.
     zero: i32,
     attackers: u64,
-    /// Attacker manpower lost so far, when the hour's progress names the
-    /// combat.
     lost: Option<i32>,
 }
 
@@ -38,9 +28,6 @@ impl Combat {
         }
     }
 }
-
-/// An hour of `branch` whose land combats are `present`. Combat 3's defender
-/// names country reference 99, which no link resolves.
 fn hour_frame(branch: u64, hour: i32, mut present: Vec<Combat>) -> DecodedFrame {
     present.sort_unstable_by_key(|combat| combat.id);
     let mut sample = frame(hour, 8, 0);
@@ -94,8 +81,6 @@ fn hour_frame(branch: u64, hour: i32, mut present: Vec<Combat>) -> DecodedFrame 
     );
     sample
 }
-
-/// One block of `branch`: an hour frame for each hour of `hours`.
 fn block(
     branch: u64,
     hours: RangeInclusive<i32>,
@@ -105,9 +90,6 @@ fn block(
         .map(|hour| hour_frame(branch, hour, present(hour)))
         .collect()
 }
-
-/// A finalizer result for `combat` read at `hour`, ending it at `end` and
-/// covering the hours after `from`.
 fn add_result(sample: &mut DecodedFrame, combat: u64, end: i32, from: i32) {
     *sample.tables[TableId::LandCombatResults.index()] =
         TableView::Complete(TableRows::LandCombatResults(vec![LandCombatResultsRow {
@@ -135,8 +117,6 @@ fn add_result(sample: &mut DecodedFrame, combat: u64, end: i32, from: i32) {
             ..Default::default()
         }]));
 }
-
-/// A recording of `blocks`, each one replay block of its frames' branch.
 fn recording(blocks: Vec<Vec<DecodedFrame>>) -> Source {
     let count = blocks.len();
     let mut replay: Option<Replay> = None;
@@ -166,20 +146,16 @@ fn recording(blocks: Vec<Vec<DecodedFrame>>) -> Source {
     );
     Source::from_replay(
         dashboard_base::SourceKey {
-            source_id: "newest-land".into(),
+            source_id: "forward-land".into(),
             revision: "1".into(),
         },
-        "newest-land.battleplan".into(),
+        "forward-land.battleplan".into(),
         Arc::new(replay),
         &AtomicBool::new(false),
     )
     .unwrap()
 }
-
-/// Forward preparation of a branch's land battles as the hourly walk runs
-/// it: every block in order, each hour observed with the change facts of a
-/// continuing tracker, published and committed after each block.
-fn forward(source: &Source, branch: u64, fixture: &Fixture) {
+fn forward(source: &Source, branch: u64, fixture: &Fixture) -> Census {
     let flag = AtomicBool::new(false);
     let replay = source.replay_ref();
     let context = LoadContext { content: None };
@@ -209,84 +185,59 @@ fn forward(source: &Source, branch: u64, fixture: &Fixture) {
             .unwrap();
         writer.commit().unwrap();
     }
+    census
 }
 
-/// A range's stored bytes.
-fn bytes(fixture: &Fixture, section: &str, ordinal: u64) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    fixture
-        .store
-        .read(&fixture.key, section, ordinal)
-        .unwrap()
-        .unwrap_or_else(|| panic!("{section} {ordinal} is published"))
-        .read_to_end(&mut bytes)
-        .unwrap();
-    bytes
-}
-
-/// Prepares and publishes the branch's newest window alone, checks its page
-/// bytes, manifest and window reply against full forward preparation's, and
-/// returns its newest window reply and the blocks it read.
-fn assert_newest_equals_forward(source: &Source, branch: u64) -> (Value, usize) {
+fn assert_forward(source: &Source, branch: u64) -> (Value, Value) {
     let flag = AtomicBool::new(false);
-    let forwarded = Fixture::new();
-    forward(source, branch, &forwarded);
-    let newest = Fixture::new();
-    let prepared = first::prepare(source, branch, &LoadContext { content: None }, &flag)
-        .unwrap()
-        .expect("a proven newest window");
-    let mut writer = newest.writer();
-    prepared.write(&mut writer).unwrap();
-    writer.commit().unwrap();
-    let last = super::super::windows(source.replay_ref(), branch).len() - 1;
+    let fixture = Fixture::new();
+    forward(source, branch, &fixture);
+    let context = LoadContext { content: None };
+    let branch_id = branch.to_string();
+    let manifest_params = LandBattlesManifestParams {
+        branch_id: branch_id.clone(),
+    };
+    let manifest = forward_query::query(
+        source,
+        "land-battles-manifest",
+        serde_json::to_value(&manifest_params).unwrap(),
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap();
     assert_eq!(
-        bytes(&newest, &format!("land-battles-newest-{branch}"), 0),
-        bytes(&forwarded, &format!("land-battles-{branch}"), last as u64),
-        "branch {branch}: the newest page is forward preparation's, byte for byte"
+        manifest,
+        serde_json::to_value(
+            LandBattlesManifest::load(source, &manifest_params, &context, &flag).unwrap()
+        )
+        .unwrap()
     );
-    let id = branch.to_string();
-    let mut window = Value::Null;
-    for (product, params) in [
-        ("land-battles-manifest", json!({ "branchId": id })),
-        ("land-battles", json!({ "branchId": id, "window": last })),
-    ] {
-        let expected = forward_query::query(
+    let mut last = Value::Null;
+    for window in 0..super::super::windows(source.replay_ref(), branch).len() {
+        let params = LandBattlesParams {
+            branch_id: branch_id.clone(),
+            window,
+        };
+        last = forward_query::query(
             source,
-            product,
-            params.clone(),
-            &forwarded.store,
-            &forwarded.key,
+            "land-battles",
+            serde_json::to_value(&params).unwrap(),
+            &fixture.store,
+            &fixture.key,
             &flag,
         )
         .unwrap();
-        let actual =
-            first::query(source, product, branch, &params, &newest.store, &newest.key).unwrap();
         assert_eq!(
-            actual.as_ref(),
-            Some(&expected),
-            "branch {branch}: {product}"
-        );
-        window = expected;
-    }
-    // Only the newest window answers from it.
-    if last > 0 {
-        assert_eq!(
-            first::query(
-                source,
-                "land-battles",
-                branch,
-                &json!({ "branchId": id, "window": last - 1 }),
-                &newest.store,
-                &newest.key,
-            )
-            .unwrap(),
-            None
+            last,
+            serde_json::to_value(LandBattles::load(source, &params, &context, &flag).unwrap())
+                .unwrap(),
+            "branch {branch}, window {window}"
         );
     }
-    (window, prepared.blocks_read)
+    (manifest, last)
 }
 
-/// The row of the battle `id` in a window reply.
 fn row<'a>(window: &'a Value, id: &str) -> &'a Value {
     window["rows"]
         .as_array()
@@ -296,11 +247,6 @@ fn row<'a>(window: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("{id} is in the window"))
 }
 
-/// Branch 1: a battle from just after a recorded gap to the end, one starting
-/// in the last block, one whose participants are unresolved, one ending at
-/// the last block's first hour with its result read after it, and an early
-/// battle around an unread hour. Branch 2: two blocks, a battle open across
-/// their boundary, whose look-back would start at the branch's first block.
 fn page_and_manifest_recording() -> Source {
     let first_branch = |hour: i32| {
         let mut present = Vec::new();
@@ -368,16 +314,10 @@ fn page_and_manifest_recording() -> Source {
     recording(blocks)
 }
 
-/// The page and manifest of [`page_and_manifest_recording`]'s first branch
-/// are forward preparation's; its second branch's window is left to forward
-/// preparation.
 #[test]
-fn newest_window_page_and_manifest_equal_forward_preparation() {
+fn forward_windows_keep_battles_results_losses_and_participant_refusals() {
     let source = page_and_manifest_recording();
-    let (window, read) = assert_newest_equals_forward(&source, 1);
-    // The blocks from the gap on: the long battle is open since the block
-    // after it, so no later block is a start.
-    assert_eq!(read, 5);
+    let (_, window) = assert_forward(&source, 1);
     let long = row(&window, "1:1:112");
     assert_eq!(long["start"], json!({ "hour": 112, "bound": "by" }));
     assert_eq!(long["counterBase"], 0);
@@ -398,83 +338,10 @@ fn newest_window_page_and_manifest_equal_forward_preparation() {
             .any(|reason| reason == "Participant country reference 99 unresolved")
     );
 
-    let (newest, report) = first::prepare_reported(
-        &source,
-        2,
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert!(
-        newest.is_none(),
-        "from the branch's first block the look-back would be its walk: the window is left to forward preparation"
-    );
-    assert_eq!(
-        report.outcome,
-        Outcome::BranchStart(Some(Unproven {
-            check: "the window's first hour",
-            hour: 203
-        }))
-    );
-    assert!(report.tried.is_empty(), "no look-back is tried");
-    let (_, report) = first::prepare_reported(
-        &source,
-        1,
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(report.outcome, Outcome::Proven);
-    let tried: Vec<_> = report
-        .tried
-        .iter()
-        .map(|tried| (tried.from, tried.blocks, tried.unproven.clone()))
-        .collect();
-    assert_eq!(
-        tried,
-        vec![(2, 5, None)],
-        "one look-back, from the block after the gap"
-    );
-    assert_eq!(
-        report.earlier, 4,
-        "the blocks from the one before the last back to the start"
-    );
+    let (_, second) = assert_forward(&source, 2);
+    assert_eq!(row(&second, "2:7:201")["start"]["hour"], 201);
 }
 
-/// `quiet` quiet blocks, then a battle from the second hour of the next one
-/// through the end, three blocks later.
-fn counted_recording(quiet: i32) -> Source {
-    let started = 100 + 4 * quiet + 1;
-    let present = move |hour: i32| {
-        if hour >= started {
-            vec![Combat::new(1, started)]
-        } else {
-            Vec::new()
-        }
-    };
-    let blocks = (0..quiet + 4)
-        .map(|at| block(1, 100 + 4 * at..=103 + 4 * at, &present))
-        .collect();
-    recording(blocks)
-}
-
-/// The newest window reads its last block and a look-back reaching the open
-/// battle's first hour, however many blocks precede it.
-#[test]
-fn newest_window_reads_only_the_last_block_and_its_proven_look_back() {
-    for quiet in [2, 12] {
-        // The four blocks from the battle's first.
-        assert_eq!(
-            assert_newest_equals_forward(&counted_recording(quiet), 1).1,
-            4,
-            "{quiet} quiet blocks"
-        );
-    }
-}
-
-/// `earlier` blocks of no battle, then hours 100 to 107 in two blocks and,
-/// after a recorded gap, 112 to 115: a battle from 101 to 105, and a result
-/// read in the last block closing it, its coverage from hour 105.
 fn results_close_recording(earlier: &[RangeInclusive<i32>]) -> Source {
     let present = |hour: i32| {
         if (101..=105).contains(&hour) {
@@ -499,23 +366,14 @@ fn results_close_recording(earlier: &[RangeInclusive<i32>]) -> Source {
     recording(blocks)
 }
 
-/// The last block follows a recorded gap, so a look-back of it alone sees
-/// every battle forward preparation still holds open; but a result read in it
-/// closes a battle that ended before the gap. Its coverage moves the
-/// look-back before the gap, and the battle's presence before its first
-/// hour, short of the branch's first block.
 #[test]
-fn newest_window_reaches_the_battles_its_results_close() {
-    let source = results_close_recording(&[88..=91, 92..=95, 96..=99]);
-    let (window, read) = assert_newest_equals_forward(&source, 1);
-    // From the block of the battle's first hour.
-    assert_eq!(read, 3);
-    assert_eq!(row(&window, "1:6:101")["result"]["hour"], 106);
+fn forward_results_close_battles_before_a_recorded_gap() {
+    for earlier in [vec![], vec![88..=91, 92..=95, 96..=99]] {
+        let (_, window) = assert_forward(&results_close_recording(&earlier), 1);
+        assert_eq!(row(&window, "1:6:101")["result"]["hour"], 106);
+    }
 }
 
-/// `unrecorded` blocks that do not record the variant table, then hours 100
-/// to 115 in four blocks, each with a complete variant table naming no
-/// variant: a battle from hour 113 whose loss reads name variant 7.
 fn equipment_names_recording(unrecorded: &[RangeInclusive<i32>]) -> Source {
     let present = |hour: i32| {
         if hour >= 113 {
@@ -548,19 +406,25 @@ fn equipment_names_recording(unrecorded: &[RangeInclusive<i32>]) -> Source {
     recording(blocks)
 }
 
-/// A loss read in the newest window naming a variant whose naming the
-/// look-back neither read nor forgot moves the look-back back until it is
-/// proven: here to hours whose variant table was not complete, where forward
-/// preparation forgets every name too.
 #[test]
-fn newest_window_proves_the_equipment_names_its_loss_reads_use() {
-    let source = equipment_names_recording(&[88..=91, 92..=95, 96..=99]);
-    let (_, read) = assert_newest_equals_forward(&source, 1);
-    // From the last block not recording the variant table.
-    assert_eq!(read, 5);
+fn forward_loss_reads_keep_unknown_equipment_names() {
+    for earlier in [vec![], vec![88..=91, 92..=95, 96..=99]] {
+        let source = equipment_names_recording(&earlier);
+        let (_, window) = assert_forward(&source, 1);
+        let loss = &row(&window, "1:1:113")["losses"][0];
+        assert!(loss.is_object());
+        let fixture = Fixture::new();
+        let census = forward(&source, 1, &fixture);
+        assert!(
+            census
+                .designs
+                .values
+                .iter()
+                .any(|design| design.variant == "7" && design.name.is_none())
+        );
+    }
 }
 
-/// Blocks of `hours` whose battle census is not recorded.
 fn unavailable_recording(hours: &[RangeInclusive<i32>]) -> Source {
     let blocks: Vec<Vec<DecodedFrame>> = hours
         .iter()
@@ -574,38 +438,18 @@ fn unavailable_recording(hours: &[RangeInclusive<i32>]) -> Source {
     recording(blocks)
 }
 
-/// Without an available hour in the look-back, availability is not proven and
-/// nothing is published.
 #[test]
-fn newest_window_publishes_nothing_without_proven_availability() {
-    let source = unavailable_recording(&[98..=99, 100..=101, 102..=103]);
-    let (newest, report) = first::prepare_reported(
-        &source,
-        1,
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert!(newest.is_none());
-    assert_eq!(report.outcome, Outcome::Unavailable);
-    assert_eq!(
-        report
-            .tried
-            .iter()
-            .map(|tried| (tried.from, tried.unproven.is_none()))
-            .collect::<Vec<_>>(),
-        vec![(1, true)],
-        "the look-back is proven but holds no available hour"
-    );
+fn forward_manifest_keeps_missing_battle_capture_unavailable() {
+    let (manifest, window) =
+        assert_forward(&unavailable_recording(&[98..=99, 100..=101, 102..=103]), 1);
+    assert_eq!(manifest["available"], false);
+    assert_eq!(manifest["unavailable"], "Not in this recording");
+    assert_eq!(window["observed"], json!([]));
 }
 
-/// Three blocks, the first a whole day whose daily variant read refuses a
-/// naming operand; the last two hold complete, empty combat and variant
-/// tables.
 fn diagnostics_recording() -> Source {
     let quiet = |_: i32| -> Vec<Combat> { Vec::new() };
-    // The first block is a whole day, so the variant table's daily read
-    // lands in it; none lands in the last two.
+    // Only the first block holds a daily variant read.
     let mut blocks: Vec<_> = [100..=123, 124..=127, 128..=131]
         .into_iter()
         .map(|hours| block(1, hours, &quiet))
@@ -635,15 +479,10 @@ fn diagnostics_recording() -> Source {
     recording(blocks)
 }
 
-/// An early block's variant read refuses a naming operand. The look-back
-/// over the last two blocks proves the window without reaching that read;
-/// the window's reply still carries forward preparation's diagnostics, which
-/// every variant read on the branch decides.
 #[test]
-fn newest_window_diagnostics_cover_every_variant_read_on_the_branch() {
+fn forward_diagnostics_keep_early_variant_read_refusals() {
     let source = diagnostics_recording();
-    let (window, read) = assert_newest_equals_forward(&source, 1);
-    assert_eq!(read, 2, "the look-back over the last two blocks is proven");
+    let (_, window) = assert_forward(&source, 1);
     assert!(
         window["contentWarnings"]
             .as_array()
@@ -653,97 +492,14 @@ fn newest_window_diagnostics_cover_every_variant_read_on_the_branch() {
             .any(|warning| warning.contains("equipment display name is not UTF-8")),
         "forward preparation reports the early read's refusal: {window}"
     );
-    let prepared = first::prepare(
-        &source,
-        1,
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-    .expect("a proven newest window");
-    assert_eq!(
-        prepared.naming_blocks, 1,
-        "the diagnostics read the block before the look-back's by its changes"
-    );
 }
 
-/// One read of the blocks' changes decides the look-back's first block: on
-/// every newest-window fixture, the block from which the retried look-backs
-/// were first proven (each moving back to the block its failure named, then
-/// at least doubling), the branch's first block included, where the window
-/// is now left to forward preparation.
 #[test]
-fn newest_window_single_pass_start_is_the_retried_look_backs_final_start() {
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    let cases: Vec<(&str, Source, u64, usize)> = vec![
-        ("page, branch 1", page_and_manifest_recording(), 1, 2),
-        ("page, branch 2", page_and_manifest_recording(), 2, 0),
-        ("two quiet blocks", counted_recording(2), 1, 2),
-        ("twelve quiet blocks", counted_recording(12), 1, 12),
-        ("a result's battle", results_close_recording(&[]), 1, 0),
-        ("an unread variant", equipment_names_recording(&[]), 1, 0),
-        (
-            "unavailable",
-            unavailable_recording(&[100..=101, 102..=103]),
-            1,
-            0,
-        ),
-        ("diagnostics", diagnostics_recording(), 1, 1),
-    ];
-    for (name, source, branch, expected) in &cases {
-        let retried = first::retried_start(source, *branch, &context, &flag).unwrap();
-        assert_eq!(retried, *expected, "{name}: the retried look-backs' start");
-        assert_eq!(
-            first::single_pass_start(source, *branch, &flag).unwrap(),
-            retried,
-            "{name}"
-        );
-    }
-}
-
-/// A look-back whose proof the blocks' changes move to the branch's first
-/// block is not tried: the window is left to forward preparation, with the
-/// check failing at the block after it.
-#[test]
-fn newest_window_look_back_stops_at_the_branch_start() {
-    let flag = AtomicBool::new(false);
-    let context = LoadContext { content: None };
-    for (source, check, hour) in [
-        (
-            results_close_recording(&[]),
-            "a battle open at the look-back's first hour",
-            103,
-        ),
-        (
-            equipment_names_recording(&[]),
-            "an unread variant's naming",
-            103,
-        ),
-    ] {
-        let (newest, report) = first::prepare_reported(&source, 1, &context, &flag).unwrap();
-        assert!(newest.is_none(), "{check}");
-        assert_eq!(
-            report.outcome,
-            Outcome::BranchStart(Some(Unproven { check, hour })),
-            "{check}"
-        );
-        assert!(report.tried.is_empty(), "{check}: no look-back is tried");
-    }
-}
-
-/// The earlier blocks' variant reads on parallel workers, each block on a
-/// catalogue of its own joined in block order, hold the versions, operands,
-/// variant warnings and naming outcome of reading them in order on one
-/// catalogue.
-#[test]
-fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
+fn forward_variant_reads_keep_changed_operands_and_refusals() {
     use dashboard_base::products::equipment::VariantCatalogue;
     use std::collections::BTreeSet;
     let quiet = |_: i32| -> Vec<Combat> { Vec::new() };
-    // Whole days, so each block holds a daily read of the variant table: the
-    // second renames variant 7, the third keeps its name, and the fourth
-    // gives it one that is not UTF-8.
+    // Each block must hold a daily variant read.
     let names: [&[u8]; 4] = [b"First", b"Second", b"Second", &[0xff]];
     let blocks: Vec<_> = (0..4)
         .map(|day| {
@@ -772,9 +528,6 @@ fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
         })
         .collect();
     let source = recording(blocks);
-    let replay = source.replay_ref();
-    let positions: Vec<usize> = (0..replay.index.len()).collect();
-    let flag = AtomicBool::new(false);
     // Every variant's operands read, whatever hour first read them.
     let operands = |variants: &VariantCatalogue| -> BTreeSet<(u64, String)> {
         variants
@@ -789,7 +542,29 @@ fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
             })
             .collect()
     };
-    let in_order = first::variant_reads_in_order(replay, &positions, &flag).unwrap();
+    let fixture = Fixture::new();
+    let census = forward(&source, 1, &fixture);
+    let in_order = census.variants;
+    assert_eq!(
+        in_order
+            .versions
+            .iter()
+            .map(|(&id, versions)| {
+                (
+                    id,
+                    versions
+                        .iter()
+                        .map(|version| version.raw.as_ref().map(|raw| raw.display_name.as_str()))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            (7, vec![Some("First"), Some("Second"), Some("")]),
+            (8, vec![Some("Constant")]),
+        ],
+        "the repeated Second read and unchanged variant 8 add no versions"
+    );
     assert_eq!(
         operands(&in_order).len(),
         4,
@@ -803,33 +578,10 @@ fn newest_window_variant_reads_in_parallel_hold_those_read_in_order() {
         "{:?}",
         in_order.warnings()
     );
-    for workers in [1, 3] {
-        let parallel = first::variant_reads(replay, &positions, workers, &flag).unwrap();
-        assert_eq!(
-            operands(&parallel),
-            operands(&in_order),
-            "{workers} workers"
-        );
-        assert_eq!(
-            parallel.warnings(),
-            in_order.warnings(),
-            "{workers} workers"
-        );
-        let count = |variants: &VariantCatalogue| -> usize {
-            variants.versions.values().map(Vec::len).sum()
-        };
-        assert_eq!(
-            count(&parallel),
-            count(&in_order),
-            "{workers} workers: a block's first read adds no version the in-order catalogue does not"
-        );
-    }
 }
 
-/// A refusing name found only in an earlier block withholds the diagnostics,
-/// while the proven window stays queryable with its exact page bytes.
 #[test]
-fn newest_window_survives_a_variant_naming_refusal_in_its_diagnostics() {
+fn forward_pages_survive_an_unused_refusing_variant_name() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
     let (_, folder) = dashboard_text::catalogue::tests::folder_catalogue(&[(
@@ -870,53 +622,47 @@ fn newest_window_survives_a_variant_naming_refusal_in_its_diagnostics() {
     let flag = AtomicBool::new(false);
     let source = Source::from_replay(
         dashboard_base::SourceKey {
-            source_id: "newest-refusing-name".into(),
+            source_id: "forward-refusing-name".into(),
             revision: "1".into(),
         },
-        "newest-refusing-name.battleplan".into(),
+        "forward-refusing-name.battleplan".into(),
         Arc::new(replay),
         &flag,
     )
     .unwrap();
-    let (proven, mut report) = first::prove_reported(&source, 1, &context, &flag).unwrap();
-    let proven = proven.expect("a proven window");
-    assert_eq!(report.outcome, Outcome::Proven);
-    assert_eq!(report.tried.len(), 1, "one change-selected look-back");
-    assert_eq!(report.naming, 0, "the proof reads no earlier diagnostics");
-    let newest = Fixture::new();
-    let mut writer = newest.writer();
-    proven.write(&mut writer).unwrap();
-    writer.commit().unwrap();
-    let params = json!({ "branchId": "1", "window": 2 });
-    let query = || {
-        first::query(
-            &source,
-            "land-battles",
-            1,
-            &params,
-            &newest.store,
-            &newest.key,
-        )
-        .unwrap()
-        .expect("the proven window stays available")
-    };
-    let before = query();
-    assert_eq!(before["warningsComplete"], false);
-    assert!(
-        proven
-            .diagnose_reported(source.replay_ref(), 1, &flag, &mut report)
-            .unwrap()
-            .is_none(),
-        "the earlier variant's refusing name withholds the diagnostics"
-    );
-    assert_eq!(report.outcome, Outcome::NamingRefuses);
-    assert_eq!(report.naming, 1, "the earlier block supplies diagnostics");
-    assert_eq!(report.tried.len(), 1, "diagnostics repeat no proof");
-    assert_eq!(query(), before);
-    let forwarded = Fixture::new();
-    forward(&source, 1, &forwarded);
-    assert_eq!(
-        bytes(&newest, "land-battles-newest-1", 0),
-        bytes(&forwarded, "land-battles-1", 2)
-    );
+    let fixture = Fixture::new();
+    let mut census = Census::new(source.replay_ref().format);
+    let mut tracker = FrameChangeTracker::new();
+    for (ordinal, index) in source.replay_ref().index.iter().enumerate() {
+        source
+            .replay_ref()
+            .read_block_alone(
+                index,
+                &CENSUS_TABLES,
+                |_, frame| {
+                    census.configure(&source, &context);
+                    let changes = tracker.observe(frame, source.replay_ref().format);
+                    census.observe_prepared(frame, &changes)
+                },
+                || Ok(()),
+            )
+            .unwrap();
+        let mut writer = fixture.writer();
+        census
+            .publish_block(&mut writer, source.replay_ref(), 1, ordinal, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    let window = forward_query::query(
+        &source,
+        "land-battles",
+        json!({"branchId":"1", "window":2}),
+        &fixture.store,
+        &fixture.key,
+        &flag,
+    )
+    .unwrap();
+    assert_eq!(window["rows"], json!([]));
+    assert_eq!(window["observed"], json!([[128, 131]]));
+    assert!(census.refusals == dashboard_base::catalogue::OwnRefusals::default());
 }

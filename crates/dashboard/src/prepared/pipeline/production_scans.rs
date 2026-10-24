@@ -131,7 +131,6 @@ pub(super) fn jobs<'a>(
     let stall = TEST_STALL.with(|stall| stall.borrow().clone());
     Ok(vec![independent::Beside {
         name: "production lines",
-        first_view: false,
         run: Box::new(
             move |publish: &mut independent::Publish<'_>, _timings: &mut independent::Timings| {
                 #[cfg(test)]

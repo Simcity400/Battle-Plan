@@ -316,8 +316,7 @@ coverage. A null reply is pending. Each request may name its first view's class 
 `a` exact at the hour, `b` sampled and marked approximate, `c` the newest window with a proven
 look-back, `d` the prepared prefix. A ready reply follows that refresh cadence until it is
 exact (or unavailable). JSON lines report preparation progress (each status row's state,
-counts and text, including the newest battle windows' per-branch earlier-block reads,
-look-backs, failed checks and outcomes), each request's first-view (`firstViewMs`), exact (`exactMs`) and query times, each widget's first-view and exact times and
+counts and text), each request's first-view (`firstViewMs`), exact (`exactMs`) and query times, each widget's first-view and exact times and
 gating request, the map, and the overall time, until every widget is exact or
 `--readiness-limit` seconds (default 1200) pass, or stopped preparation's final asks have drained.
 The map worker is joined before reporting the summary; its successful first frame records both

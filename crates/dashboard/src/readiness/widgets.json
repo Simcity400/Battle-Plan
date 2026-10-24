@@ -525,14 +525,14 @@
       "kind": "land-battles",
       "requests": [
         {"product": "land-battles-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "land-battles", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "land-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:last"}}
       ]
     },
     {
       "kind": "naval-battles",
       "requests": [
         {"product": "naval-battles-manifest", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch"}},
-        {"product": "naval-battles", "route": "prepared", "firstView": "c", "params": {"branchId": "$branch", "window": "$window:0:last"}}
+        {"product": "naval-battles", "route": "prepared", "firstView": "d", "params": {"branchId": "$branch", "window": "$window:0:last"}}
       ]
     },
     {

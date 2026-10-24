@@ -431,3 +431,25 @@ fn experience_templates_send_native_holder_keys_from_the_groups_reply() {
         }
     }
 }
+
+#[test]
+fn battle_first_views_use_forward_prefixes_and_keep_the_tail_pending() {
+    let widgets = widgets(WIDGETS).unwrap();
+    for kind in ["land-battles", "naval-battles"] {
+        let widget = widgets.iter().find(|widget| widget.kind == kind).unwrap();
+        assert!(
+            widget
+                .requests
+                .iter()
+                .all(|request| request.first_view == Some(FirstView::Prefix))
+        );
+        let params = serde_json::json!({"branchId":"1", "window":3});
+        let data = serde_json::json!({"coverage":{"firstHour":100,"lastHour":123,"complete":false},
+            "pending":[{"firstHour":124,"lastHour":199}],"rows":[],"observed":[]});
+        assert_eq!(classify(kind, &params, &data, false), Outcome::Prefix);
+        assert_eq!(
+            classify(kind, &params, &Value::Null, false),
+            Outcome::Pending
+        );
+    }
+}

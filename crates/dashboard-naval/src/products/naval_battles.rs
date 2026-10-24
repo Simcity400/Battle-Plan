@@ -35,7 +35,6 @@ use {
 };
 
 mod details;
-pub mod newest;
 pub mod prepared;
 pub use details::NavalBattleDetails;
 
@@ -1375,8 +1374,6 @@ const RESULT_TABLES: [TableId; 4] = [
     TableId::NavalResultCountries,
     TableId::NavalCombatResultDetails,
 ];
-/// The tables the battle census reads, which the newest window's look-back
-/// reads.
 const CENSUS_TABLES: [TableId; 11] = [
     TableId::Campaign,
     TableId::Countries,

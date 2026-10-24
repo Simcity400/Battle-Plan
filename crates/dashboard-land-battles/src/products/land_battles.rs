@@ -58,7 +58,6 @@ use {
 };
 
 mod losses;
-pub mod newest;
 pub mod prepared;
 mod terrain;
 pub use terrain::LandBattleTerrains;
@@ -540,10 +539,6 @@ pub struct Census {
     live_sides: HashMap<u64, LiveSide>,
     #[serde(skip)]
     live_sides_read: bool,
-    /// What a newest-window look-back notes for its proof; none in forward
-    /// preparation.
-    #[serde(skip)]
-    newest: Option<newest::Check>,
     #[cfg(test)]
     #[serde(skip)]
     work: dashboard_base::prepared::observer_tests::Work,
@@ -749,12 +744,6 @@ impl Census {
         // In particular, a restored carry can precede this supplying frame.
         self.available |= frame_available(self.format, frame);
         self.variants.observe(self.format, frame);
-        // An hour whose variant table is not complete forgets every name.
-        if let Some(check) = &mut self.newest
-            && frame.complete::<tables::VariantDefinitions>().is_err()
-        {
-            check.forgot = true;
-        }
         let update = self.links.update(frame);
         let labels = update.is_ok();
         let links_changed = labels != self.labels_known || matches!(update, Ok(true));

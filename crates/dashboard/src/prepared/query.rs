@@ -643,26 +643,6 @@ fn query_data(
                 true,
                 cancelled,
             )? {
-                // The manifest and the newest window answer from the newest
-                // window published before forward preparation.
-                if let Some(mut data) = crate::products::land_battles::newest::query(
-                    source,
-                    product,
-                    branch,
-                    &request.params,
-                    &store,
-                    &key,
-                )? {
-                    let mut prefix = super::prefix::read_or_empty(
-                        source, content, product, branch, None, cancelled,
-                    )?;
-                    if let Some(window) = source.block_windows(branch).last() {
-                        prefix.answered(std::slice::from_ref(window));
-                        data["exact"] = Value::from(window.first_hour);
-                    }
-                    prefix.mark(&mut data)?;
-                    return Ok(data);
-                }
                 return Ok(crate::products::land_battles::prepared::prefix_query(
                     source,
                     product,
@@ -704,26 +684,6 @@ fn query_data(
                 true,
                 cancelled,
             )? {
-                // The manifest and the newest window answer from the newest
-                // window published before forward preparation.
-                if let Some(mut data) = crate::products::naval_battles::newest::query(
-                    source,
-                    product,
-                    branch,
-                    &request.params,
-                    &store,
-                    &key,
-                )? {
-                    let mut prefix = super::prefix::read_or_empty(
-                        source, content, product, branch, None, cancelled,
-                    )?;
-                    if let Some(window) = source.block_windows(branch).last() {
-                        prefix.answered(std::slice::from_ref(window));
-                        data["exact"] = Value::from(window.first_hour);
-                    }
-                    prefix.mark(&mut data)?;
-                    return Ok(data);
-                }
                 return Ok(crate::products::naval_battles::prepared::prefix_query(
                     source,
                     product,
@@ -2905,11 +2865,7 @@ pub fn query(
         if short.is_empty() {
             super::pipeline::gate(name)
         } else {
-            let mut gates = short;
-            if let Some(window) = super::pipeline::newest_gate(name) {
-                gates.insert(window);
-            }
-            gates.into_iter().collect()
+            short.into_iter().collect()
         }
     });
     append_stack_warnings(source, &request.product, name, &mut data);
