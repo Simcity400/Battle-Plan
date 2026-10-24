@@ -271,8 +271,11 @@ fn only_a_current_recording_opened_to_be_added_to_is_saved_in_place() {
     assert!(reopened.slot.is_none());
     assert_eq!(reopened.index.len(), current.index.len());
     assert_eq!(
-        reopened.read_block(&reopened.index[0]).unwrap(),
-        current.read_block(&current.index[0]).unwrap()
+        reopened
+            .read_block(&reopened.index[0])
+            .unwrap_err()
+            .to_string(),
+        "grouped block in a format 122 recording"
     );
     let before = older.bytes();
     assert!(save_in_place(&older.0, &next).is_err());

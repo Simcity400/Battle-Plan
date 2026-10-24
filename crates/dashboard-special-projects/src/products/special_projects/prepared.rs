@@ -266,6 +266,8 @@ pub struct Prepared {
     content: Option<Content>,
     #[serde(skip)]
     content_ready: bool,
+    #[serde(skip)]
+    catalogue_pending: bool,
     last_hour: Option<i32>,
     next_completion: Option<i32>,
     /// The content refusals this family's own reads produced and the lazy
@@ -440,6 +442,7 @@ impl Prepared {
             return Ok(());
         }
         self.replay = Some(source.replay());
+        self.catalogue_pending = true;
         self.metadata.content_error = None;
         // Built from the recording's own catalogue alone, so bound to the recorded content: it
         // serves preparation and requests showing visual mods alike. Its load credits no note:
@@ -619,6 +622,7 @@ impl Prepared {
         };
         dashboard_text::metadata::check_cancel(cancelled)?;
         self.values.advance(frame.hour)?;
+        self.catalogue_pending = true;
         let previous_hour = self.last_hour.replace(frame.hour);
         let gap = previous_hour.and_then(|hour| hour.checked_add(1)) != Some(frame.hour);
         // Read evidence changes independently of row allocations and country facts.
@@ -1555,7 +1559,18 @@ impl Prepared {
     pub fn buffered_bytes(&self) -> usize {
         self.values
             .bytes()
-            .saturating_add(self.completions.buffered_bytes())
+            .saturating_add(self.completions.buffered_bytes(
+                self.content.as_ref(),
+                self.metadata.content_error.as_deref(),
+            ))
+            .saturating_add(if self.catalogue_pending {
+                let mut own = self.refusals.clone();
+                catalogue::own_refusals(&mut own, || {
+                    series::catalogue_bytes(&self.keys, &self.publication_metadata())
+                })
+            } else {
+                0
+            })
     }
     fn refresh_names(
         &mut self,
@@ -1740,7 +1755,23 @@ impl Prepared {
             cancelled,
         )?;
         self.values.flush(writer, &section(branch), 0, cancelled)?;
-        self.metadata.progress = self
+        self.metadata = self.publication_metadata();
+        series::write_catalogue(
+            writer,
+            "special-projects",
+            branch,
+            &self.keys,
+            &self.metadata,
+        )?;
+        self.metadata.progress.clear();
+        self.metadata.scoped_warnings.clear();
+        self.catalogue_pending = false;
+        Ok(())
+    }
+
+    fn publication_metadata(&self) -> Metadata {
+        let mut metadata = self.metadata.clone();
+        metadata.progress = self
             .countries
             .iter()
             .map(|(tag, country)| {
@@ -1754,19 +1785,19 @@ impl Prepared {
             })
             .collect();
         if let Some(content) = &self.content {
-            self.metadata.definitions_empty = content.definitions.projects.is_empty();
-            self.metadata.warnings = content.definitions.warnings.clone();
-            self.metadata
+            metadata.definitions_empty = content.definitions.projects.is_empty();
+            metadata.warnings = content.definitions.warnings.clone();
+            metadata
                 .warnings
                 .extend(content.catalogue.verification.iter().cloned());
-            self.metadata
+            metadata
                 .warnings
                 .extend(content.catalogue.warnings.iter().cloned());
-            self.metadata
+            metadata
                 .warnings
                 .extend(content.catalogue.reader_warning_lines());
         }
-        self.metadata.scoped_warnings = self
+        metadata.scoped_warnings = self
             .keys
             .keys()
             .filter_map(|tag| {
@@ -1774,16 +1805,7 @@ impl Prepared {
                 (!warnings.is_empty()).then(|| (tag.clone(), warnings))
             })
             .collect();
-        series::write_catalogue(
-            writer,
-            "special-projects",
-            branch,
-            &self.keys,
-            &self.metadata,
-        )?;
-        self.metadata.progress.clear();
-        self.metadata.scoped_warnings.clear();
-        Ok(())
+        metadata
     }
 }
 

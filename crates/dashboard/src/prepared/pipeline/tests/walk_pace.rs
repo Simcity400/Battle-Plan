@@ -403,18 +403,12 @@ fn a_five_thousand_country_recording_has_the_serial_payloads_and_named_readers()
 }
 
 const PENDING_UNDER_COUNTED: &[&str] = &[
-    // AirMissionsObserver omits hourly refusal keys from Scan::buffered_bytes.
-    "air-missions",
-    // AirStatisticsObserver omits hourly refusal keys from Scan::buffered_bytes.
-    "air-statistics",
     // Flush seals the uncharged hours run and publishes private group diagnostics.
     "air_superiority",
     // The catalogue advances scan.last without project records.
     "construction",
     // Flush seals unchanged identity and unresolved runs outside the batch charge.
     "diplomacy_state",
-    // DoctrineMasteryObserver refusal counters are outside Scan::buffered_bytes.
-    "doctrine-mastery",
     // Flush seals carried read-version runs outside pending loss rows.
     "equipment_losses",
     // FeedBranch::pending omits the private HistoryScan its flush writes.
@@ -427,34 +421,20 @@ const PENDING_UNDER_COUNTED: &[&str] = &[
     "groups",
     // IdentitiesBranch::pending is zero while flush writes the sealed HistoryScan.
     "identities",
-    // Refused summaries advance the uncharged Scan catalogue frontier.
-    "intel-network-coverage",
     // Flush emits closed observation spans outside pending leader runs.
     "leaders",
-    // MinefieldsObserver refusal counters are outside Scan::buffered_bytes.
-    "minefields",
-    // NavalSupremacyObserver refusal counters are outside Scan::buffered_bytes.
-    "naval-supremacy",
     // Quiet unknown-force mixes and unread diagnostics escape the batch charge.
     "navy",
-    // Refused manpower reads advance the uncharged Scan catalogue frontier.
-    "occupation-reserve",
-    // Flush seals the uncharged unavailable run and publishes the catalogue frontier.
-    "parties",
     // Flush replaces uncharged snapshots and missing-input/gap continuation records.
     "peace",
     // Flush seals constant accepted/census runs outside the batch charge.
     "politics_ledger",
     // Flush publishes an open endpoint and its TimeEntry outside the spent/held charge.
     "production",
-    // Unavailable weather advances the uncharged Scan catalogue frontier.
-    "regional-weather",
     // A rename adds catalogue keys and parts without numeric repair rates.
     "repairs",
     // Choices::advance moves catalogue bounds without value or choice rows.
     "stockpile",
-    // The catalogue counts incomplete hours outside pending subject events.
-    "subjects",
     // The whole-scan catalogue advances without available tension values.
     "tension",
     // Territory::bytes omits the private HistoryScan its flush writes.

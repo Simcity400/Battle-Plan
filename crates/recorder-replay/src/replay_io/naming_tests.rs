@@ -556,22 +556,50 @@ impl Fixture {
         )
         .unwrap();
         assert!(staged.errors.is_empty(), "{:?}", staged.errors);
+        write_session_end(
+            &session,
+            &self.output,
+            "waiting.json",
+            &json!({"waiting": [{"campaign": CAMPAIGN}]}),
+        )
+        .unwrap();
         session
     }
 }
 
 #[test]
 fn checkpointed_spools_keep_the_full_prediction_after_reading_resumes_or_restarts() {
+    use crate::test_support::RELOAD;
     for auto_save in [false, true] {
         for first_year in [1936, 1942] {
             let fixture = Fixture::new("checkpointed-spool-name");
-            let session = fixture.start(
-                "running",
-                &fixture.output,
-                &session_records(7, 9, &[(hour(first_year), "democratic", 2)]),
-            );
+            let mut first = session_records(7, 9, &[(hour(first_year), "democratic", 2)]);
+            first.pop();
+            let session = fixture.start("running", &fixture.output, &first);
             let campaign = session.join(CAMPAIGN);
-            let later = session_records(7, 12, &[(hour(1939), "fascism", 1)]);
+            let mut later = session_records(7, 12, &[(hour(1939), "fascism", 1)]);
+            for record in &mut later {
+                match record {
+                    Record::BranchStart(branch) => {
+                        branch.reason = replay_frame::branches::BranchReason::LoadSignal;
+                    }
+                    Record::Frame(frame) => {
+                        let TableUpdate::Snapshot(TableRows::Clock(rows)) =
+                            &mut frame.tables[TableId::Clock.index()]
+                        else {
+                            unreachable!()
+                        };
+                        rows[0].play_session_started_at = RELOAD;
+                    }
+                    Record::Control(ControlRecord::ClockWitness {
+                        qpc, load_signal, ..
+                    }) => {
+                        *qpc += 100;
+                        *load_signal = Some(RELOAD);
+                    }
+                    _ => {}
+                }
+            }
             fs::write(
                 campaign.join("spool.0001.h4s"),
                 later
@@ -765,10 +793,19 @@ fn unavailable_or_ambiguous_naming_inputs_never_predict_a_name() {
         TableId::ReservedCountryNaming,
     ] {
         for partial in [false, true] {
-            let mut records = session_records(7, 9, &[(hour(1936), "democratic", 1)]);
-            let Record::Frame(frame) = &mut records[2] else {
+            let hours = if partial {
+                vec![
+                    (hour(1936), "democratic", 1),
+                    (hour(1936) + 1, "democratic", 1),
+                ]
+            } else {
+                vec![(hour(1936), "democratic", 1)]
+            };
+            let mut records = session_records(7, 9, &hours);
+            let Record::Frame(frame) = &mut records[if partial { 4 } else { 2 }] else {
                 unreachable!()
             };
+            frame.keyframe = !partial;
             frame.tables[table.index()] = if partial {
                 let TableUpdate::Snapshot(rows) = &frame.tables[table.index()] else {
                     unreachable!()

@@ -74,6 +74,22 @@ impl Replay {
         &self,
         mut visit: impl FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.visit_bytes(false, &mut visit)
+    }
+
+    /// Held bytes with the mutable commit slot zeroed for append-prefix witnesses.
+    pub fn visit_append_identity_bytes(
+        &self,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.visit_bytes(true, &mut visit)
+    }
+
+    fn visit_bytes(
+        &self,
+        stable_slot: bool,
+        visit: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
         let length = if self.file.is_some() {
             self.held_length
         } else {
@@ -89,7 +105,11 @@ impl Replay {
                 let start = (slot as u64).max(offset);
                 let end = ((slot + commit::SLOT_SIZE) as u64).min(offset + count as u64);
                 if start < end {
-                    let saved = self.revision.slot();
+                    let saved = if stable_slot {
+                        [0; commit::SLOT_SIZE]
+                    } else {
+                        self.revision.slot()
+                    };
                     buffer[(start - offset) as usize..(end - offset) as usize].copy_from_slice(
                         &saved[(start - slot as u64) as usize..(end - slot as u64) as usize],
                     );

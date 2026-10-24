@@ -2852,3 +2852,48 @@ fn equal_project_read_markers_carry_without_numeric_publication() {
         101
     );
 }
+
+#[test]
+fn pending_counts_project_and_completion_catalogues_after_each_publication() {
+    use dashboard_base::prepared::pages::framing;
+
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let mut frames = Vec::new();
+    for hour in 100..108 {
+        let mut frame = frame(hour, true, 2);
+        if hour >= 104 {
+            frame.tables[TableId::Projects.index()] = TableView::Unavailable {
+                reason: "synthetic project refusal".into(),
+            }
+            .into();
+        }
+        frames.push(frame);
+    }
+    let source = source(&frames);
+    let accepted = decoded(&source);
+    let mut prepared = Prepared::new(source.replay_ref(), 1);
+    let fixture = Fixture::new();
+    assert_eq!(prepared.buffered_bytes(), 0);
+    for batch in accepted.chunks(2) {
+        for frame in batch {
+            prepared.observe(&source, &context, frame, &flag).unwrap();
+        }
+        let held = prepared.buffered_bytes();
+        assert!(held >= series::catalogue_bytes(&prepared.keys, &prepared.publication_metadata()));
+        let mut writer = fixture.writer();
+        let before = (writer.payload_bytes_change(), framing::bytes());
+        prepared.flush(&mut writer, 1, &flag).unwrap();
+        let records =
+            writer.payload_bytes_change() - before.0 - i128::from(framing::bytes() - before.1);
+        assert!(
+            records <= 8 * held as i128,
+            "{held} held for {records} records"
+        );
+        assert_eq!(prepared.buffered_bytes(), 0);
+        writer.commit().unwrap();
+        prepared = serde_json::from_slice(&serde_json::to_vec(&prepared).unwrap()).unwrap();
+        assert_eq!(prepared.buffered_bytes(), 0);
+        prepared.restore_views(batch.last().unwrap());
+    }
+}

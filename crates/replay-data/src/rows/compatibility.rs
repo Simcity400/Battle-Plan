@@ -4703,10 +4703,14 @@ mod tests {
                 PANEL_SUPPRESSION_FORMAT,
                 CAPTURE_MODE_FORMAT,
                 DIVISION_MODEL_INPUTS_FORMAT,
+                CHECKPOINT_FORMAT,
+                CHUNKED_FORMAT,
             ],
-            [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122],
+            [
+                111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124
+            ],
         );
-        assert_eq!(FORMAT_VERSION, DIVISION_MODEL_INPUTS_FORMAT);
+        assert_eq!(FORMAT_VERSION, CHUNKED_FORMAT);
     }
 
     #[test]

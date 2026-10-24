@@ -10,30 +10,37 @@ pub fn with_block_frames(replay: &Replay, frames: &[Frame]) -> io::Result<Replay
     if replay.index.len() != 1 {
         return Err(super::invalid("fixture requires a one-block recording"));
     }
-    let first = frames
-        .first()
-        .ok_or_else(|| super::invalid("fixture requires at least one frame"))?;
+    with_independent_block_frames(replay, &[frames])
+}
+
+/// Rewrite synthetic blocks without cross-block anchors, keeping their current framing.
+pub fn with_independent_block_frames(replay: &Replay, blocks: &[&[Frame]]) -> io::Result<Replay> {
     let cores = super::pack::Cores::new(1);
-    let mut block = super::grouped::BlockWriter::new(first)?;
-    let mut anchors = super::grouped::Anchors::default();
-    let mut decoder = FrameDecoder::new();
-    for frame in frames {
-        let decoded = decoder.advance(frame)?;
-        let mut payload = Vec::new();
-        let sizes = frame.encode_with_sizes(&mut payload)?;
-        block.push(
-            frame,
-            decoded,
-            &payload,
-            &sizes,
-            &mut anchors,
-            super::MAX_BLOCK_RAW_BYTES,
-            &cores,
-        )?;
-    }
     let mut bytes = replay.bytes[..replay.header_end].to_vec();
     let mut index = Vec::new();
-    super::append_blocks(&mut bytes, &mut index, &[block.compress(&cores)?])?;
+    for frames in blocks {
+        let first = frames
+            .first()
+            .ok_or_else(|| super::invalid("fixture requires at least one frame"))?;
+        let mut block = super::grouped::BlockWriter::new(first)?;
+        let mut anchors = super::grouped::Anchors::default();
+        let mut decoder = FrameDecoder::new();
+        for frame in *frames {
+            let decoded = decoder.advance(frame)?;
+            let mut payload = Vec::new();
+            let sizes = frame.encode_with_sizes(&mut payload)?;
+            block.push(
+                frame,
+                decoded,
+                &payload,
+                &sizes,
+                &mut anchors,
+                super::MAX_BLOCK_RAW_BYTES,
+                &cores,
+            )?;
+        }
+        super::append_blocks(&mut bytes, &mut index, &[block.compress(&cores)?])?;
+    }
     super::finish_file(
         &mut bytes,
         &replay.sessions,

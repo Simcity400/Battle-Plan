@@ -104,6 +104,7 @@ pub fn schema_digest() -> [u8; 32] {
     digest.update(CONTRACT);
     digest.update(product_codec::schema_digest::<Manifest>());
     digest.update(CURSOR_CONTRACT);
+    digest.update(b"append-witness/zero-commit-slot/v1");
     digest.update(product_codec::schema_digest::<BoundCursor>());
     digest.update(product_codec::schema_digest::<binding::Binding>());
     digest.update(witness::WITNESS_CONTRACT);

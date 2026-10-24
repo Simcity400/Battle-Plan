@@ -212,6 +212,8 @@ pub struct Scan<O> {
     /// How many of those differ from their value then.
     #[serde(skip)]
     differing: usize,
+    #[serde(skip)]
+    catalogue_pending: bool,
 }
 
 impl<O: Observer> Scan<O> {
@@ -282,6 +284,7 @@ impl<O: Observer> Scan<O> {
     ) -> io::Result<()> {
         let hour = frame.hour;
         self.batch.advance(hour)?;
+        self.catalogue_pending = true;
         let read = changes.slot_read[O::READ.index()];
         if self.open && self.continues_to(hour) && !O::changed(changes) {
             self.hold(hour, read);
@@ -298,6 +301,7 @@ impl<O: Observer> Scan<O> {
         read: bool,
     ) -> io::Result<()> {
         self.batch.advance(frame.hour)?;
+        self.catalogue_pending = true;
         self.observe_frame(format, frame, read)
     }
 
@@ -503,6 +507,7 @@ impl<O: Observer> Scan<O> {
     }
 
     fn hold(&mut self, hour: i32, read: bool) {
+        self.catalogue_pending = true;
         self.last_hour = Some(hour);
         if !self.open {
             return;
@@ -517,17 +522,23 @@ impl<O: Observer> Scan<O> {
     /// A block that gave no hour ends the observation: the next hour starts
     /// a new one.
     pub fn unreadable_block(&mut self) {
+        self.catalogue_pending |= self.open || self.refused_read.is_some();
         self.open = false;
         self.refused_read = None;
     }
 
-    /// What its next flush publishes and releases: accumulated events, new names and values off their publication.
+    /// Pending series records and the catalogue text their next flush can publish.
     pub fn buffered_bytes(&self) -> usize {
         self.batch
             .bytes()
             .saturating_add(self.named)
             .saturating_add(self.differing.saturating_mul(CHANGE_BYTES))
             .saturating_add(self.observer.unpublished())
+            .saturating_add(if self.catalogue_pending {
+                dashboard_base::prepared::series::catalogue_bytes(&BTreeMap::new(), self)
+            } else {
+                0
+            })
     }
 
     /// What it retains across flushes, which bounds the catalogue text a flush publishes.
@@ -568,6 +579,7 @@ impl<O: Observer> Scan<O> {
         self.dirty.clear();
         self.differing = 0;
         self.observer.published();
+        self.catalogue_pending = false;
         Ok(())
     }
 }

@@ -1448,7 +1448,8 @@ fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     assert_eq!(shared.free.capacity(), BUFFERS);
     assert_eq!(shared.ready.capacity(), BUFFERS);
     assert_eq!(shared.free.len(), BUFFERS);
-    let mut bytes = unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
+    let mut bytes = size_of::<AtomicU64>() + 2 * size_of::<usize>();
+    bytes += unsafe { (&*shared.roster.get()).as_ref().unwrap() }.allocated_bytes();
     bytes += unsafe { &*shared.country_cache.get() }.allocated_bytes();
     // One CountryIntel buffer and one held RaidAirScores table for the pool.
     bytes += shared.country_intel.allocated_bytes();

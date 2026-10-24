@@ -119,32 +119,30 @@ fn initial_catalogue_discards_countries_and_player_when_block_verification_fails
 #[test]
 fn catalogue_campaign_failure_becomes_a_gap_and_tries_the_next_block() {
     let next_hour = 100 + replay_frame::KEYFRAME_INTERVAL as i32;
-    // Interleaved blocks, so the next block does not anchor to the replaced one.
-    let recording = interleaved(
-        Replay::from_records(
-            CAMPAIGN.into(),
-            &[records(
-                1,
-                vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
-            )],
-        )
-        .unwrap(),
-    );
+    let recording = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![source(1, 100, Some(1)), source(1, next_hour, Some(2))],
+        )],
+    )
+    .unwrap();
     assert_eq!(recording.index.len(), 2);
-    let block = &recording.index[0];
-    let mut frame = recording.read_block(block).unwrap().remove(0);
-    frame.tables[TableId::Campaign.index()] =
+    let mut blocks = recording
+        .index
+        .iter()
+        .map(|block| recording.read_block(block).unwrap())
+        .collect::<Vec<_>>();
+    blocks[0][0].tables[TableId::Campaign.index()] =
         TableUpdate::Snapshot(TableRows::Campaign(vec![replay_data::rows::CampaignRow {
             id: b"different synthetic campaign".to_vec(),
         }]));
-    let mut payload = Vec::new();
-    frame.encode(&mut payload).unwrap();
-    let mut raw = 1_u32.to_le_bytes().to_vec();
-    raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    raw.extend(payload);
-    let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
     let replay = Arc::new(
-        Replay::open(replace_block(&recording, 0, &compressed, raw.len() as u64)).unwrap(),
+        replay::container::test_work::with_independent_block_frames(
+            &recording,
+            &blocks.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+        )
+        .unwrap(),
     );
     let metadata = super::read(
         &replay,
@@ -540,9 +538,23 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
     )
     .unwrap();
     assert_eq!(metadata.format, 94);
-    assert_eq!(metadata.countries.len(), 1);
-    assert_eq!(metadata.countries[0].tag, "GER");
-    let expected = TableId::ALL
+    let mut input = replay_data::codec::Decoder::new(&payload);
+    let wire = replay_frame::frame::Frame::decode_version(&mut input, None, format).unwrap();
+    input.finish().unwrap();
+    let decoded = FrameDecoder::new().apply(&wire).unwrap();
+    assert_eq!(
+        decoded.complete::<tables::Countries>().unwrap()[0].tag,
+        b"GER"
+    );
+    assert!(metadata.countries.is_empty());
+    assert_eq!(metadata.branches[0].gaps.len(), 1);
+    let warning = metadata.branches[0].gaps[0].reason.clone();
+    assert!(
+        warning.contains("unsupported replay block magic"),
+        "{warning}"
+    );
+    assert_eq!(metadata.damaged.as_ref().unwrap().parts, 1);
+    let mut expected = TableId::ALL
         .into_iter()
         .flat_map(|table| {
             format
@@ -553,6 +565,7 @@ fn metadata_compatibility_opens_format94_and_surfaces_every_named_gap() {
         .chain(format.nested_field_gaps())
         .collect::<Vec<_>>();
     assert_eq!(replay.compatibility_gaps(), expected);
+    expected.push(warning);
     assert_eq!(metadata.warnings, expected);
     for table in [
         TableId::CountryAppearance,
@@ -1282,38 +1295,6 @@ fn repair_trailer_crc(bytes: &mut [u8]) {
     bytes[footer + 20..].copy_from_slice(&crc.to_le_bytes());
 }
 
-/// The same recording with every block stored interleaved: one zstd frame of
-/// length-prefixed plain frames, which no other block anchors to.
-fn interleaved(recording: Replay) -> Replay {
-    let blocks: Vec<Vec<u8>> = recording
-        .index
-        .iter()
-        .map(|block| {
-            let frames = recording.read_block(block).unwrap();
-            let mut raw = (frames.len() as u32).to_le_bytes().to_vec();
-            for frame in frames {
-                let mut payload = Vec::new();
-                frame.encode(&mut payload).unwrap();
-                raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-                raw.extend(payload);
-            }
-            raw
-        })
-        .collect();
-    let mut replay = recording;
-    for (position, raw) in blocks.iter().enumerate() {
-        let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
-        replay = Replay::open(replace_block(
-            &replay,
-            position,
-            &compressed,
-            raw.len() as u64,
-        ))
-        .unwrap();
-    }
-    replay
-}
-
 fn replace_last_block(replay: &Replay, compressed: &[u8], raw_length: u64) -> Vec<u8> {
     replace_block(replay, replay.index.len() - 1, compressed, raw_length)
 }
@@ -1354,22 +1335,8 @@ fn malformed_table_after_the_catalogue_is_found_by_playback_not_by_opening() {
     .unwrap();
     let mut frames = recording.read_block(&recording.index[0]).unwrap();
     frames[1].tables[TableId::Countries.index()] = TableUpdate::Unchanged { baseline: 99 };
-    let mut raw = (frames.len() as u32).to_le_bytes().to_vec();
-    for frame in frames {
-        let mut payload = Vec::new();
-        frame.encode(&mut payload).unwrap();
-        raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        raw.extend(payload);
-    }
-    let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
-    let replay = Arc::new(
-        Replay::open(replace_last_block(
-            &recording,
-            &compressed,
-            raw.len() as u64,
-        ))
-        .unwrap(),
-    );
+    let replay =
+        Arc::new(replay::container::test_work::with_block_frames(&recording, &frames).unwrap());
     let metadata = super::read(
         &replay,
         Path::new("table.battleplan"),

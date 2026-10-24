@@ -2000,29 +2000,33 @@ fn recovered_frame_wins_over_uncertain_flush_gap_and_parent_claim_survives_damag
 
 #[test]
 fn a_flushed_gap_retried_after_close_failure_is_kept_once_across_segments_and_appends() {
-    let gap = Gap {
-        branch: 1,
-        first_hour: 2,
-        last_hour: 2,
-        reason: "spool write failed".into(),
-    };
-    let mut first = records(1, &[1]);
-    first.push(Record::Gap(gap.clone()));
-    let mut retried = vec![
-        Record::SessionStart(session(1)),
-        Record::BranchStart(branch(1, 1)),
-        Record::Gap(gap.clone()),
-    ];
-    let mut encoder = FrameEncoder::new();
-    retried.push(Record::Frame(encoder.encode(source(1, 3), true).unwrap()));
-    let combined =
-        Replay::from_records(CAMPAIGN.into(), &[first.clone(), retried.clone()]).unwrap();
-    assert_eq!(combined.gaps, [gap.clone()]);
-    assert_eq!(combined.recorded_hours(1).unwrap(), [1, 3]);
-    let saved = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
-    let appended = saved.append(&[retried]).unwrap();
-    assert_eq!(appended.gaps, [gap]);
-    assert_eq!(appended.recorded_hours(1).unwrap(), [1, 3]);
+    for workers in [1, 2] {
+        let previous = PACK_WORKERS.replace(Some(workers));
+        let gap = Gap {
+            branch: 1,
+            first_hour: 2,
+            last_hour: 2,
+            reason: "spool write failed".into(),
+        };
+        let mut first = records(1, &[1]);
+        first.push(Record::Gap(gap.clone()));
+        let mut retried = vec![
+            Record::SessionStart(session(1)),
+            Record::BranchStart(branch(1, 1)),
+            Record::Gap(gap.clone()),
+        ];
+        let mut encoder = FrameEncoder::new();
+        retried.push(Record::Frame(encoder.encode(source(1, 3), true).unwrap()));
+        let combined =
+            Replay::from_records(CAMPAIGN.into(), &[first.clone(), retried.clone()]).unwrap();
+        assert_eq!(combined.gaps, [gap.clone()]);
+        assert_eq!(combined.recorded_hours(1).unwrap(), [1, 3]);
+        let saved = Replay::from_records(CAMPAIGN.into(), &[first]).unwrap();
+        let appended = saved.append(&[retried]).unwrap();
+        assert_eq!(appended.gaps, [gap]);
+        assert_eq!(appended.recorded_hours(1).unwrap(), [1, 3]);
+        PACK_WORKERS.set(previous);
+    }
 }
 
 #[test]
@@ -2658,11 +2662,16 @@ fn a_skipped_first_index_entry_preserves_later_blocks() {
 fn a_withheld_index_entry_never_lends_its_place_to_an_anchor() {
     let healthy = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 721, 1441])]).unwrap();
     assert_eq!(healthy.index.len(), 3);
-    // Some table of the last block anchors its keyframe to the middle block.
-    assert!(TableId::ALL.into_iter().any(|table| {
-        grouped::keyframe_chain(&healthy, 2, table)
-            .is_ok_and(|chain| chain.get(1).is_some_and(|&(at, _)| at == 1))
-    }));
+    let table = TableId::ALL
+        .into_iter()
+        .find(|&table| {
+            grouped::keyframe_chain(&healthy, 2, table)
+                .is_ok_and(|chain| chain.get(1).is_some_and(|&(at, _)| at == 1))
+        })
+        .expect("the last block has a keyframe anchored to the middle block");
+    healthy
+        .read_keyframe_selected(&healthy.index[2], &[table])
+        .unwrap();
     let mut index = healthy.index.clone();
     index[1].raw_length = 3;
     let recovered = Replay::open(rebuild(
@@ -2679,13 +2688,20 @@ fn a_withheld_index_entry_never_lends_its_place_to_an_anchor() {
         recovered.read_block(&recovered.index[0]).unwrap(),
         healthy.read_block(&healthy.index[0]).unwrap()
     );
-    // Counting back from the last block reaches the withheld block, not the first.
+    assert_eq!(recovered.ordinals, [0, 2]);
+    // Candidate admission rejects another table before reaching the withheld anchor.
     let error = recovered.read_block(&recovered.index[1]).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("keyframe anchor names no earlier block"),
-        "{error}"
+    assert_eq!(
+        error.to_string(),
+        "keyframe anchor is not the latest snapshot or latest keyframe"
+    );
+    // Counting back for this table reaches the withheld block, not the first.
+    let error = recovered
+        .read_keyframe_selected(&recovered.index[1], &[table])
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "keyframe anchor names no earlier block of its file"
     );
 }
 

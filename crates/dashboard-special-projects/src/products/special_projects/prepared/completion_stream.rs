@@ -308,7 +308,11 @@ impl Stream {
         }
     }
 
-    pub(super) fn buffered_bytes(&self) -> usize {
+    pub(super) fn buffered_bytes(
+        &self,
+        content: Option<&Content>,
+        content_error: Option<&str>,
+    ) -> usize {
         self.values
             .bytes()
             .saturating_add(
@@ -330,6 +334,33 @@ impl Stream {
                     })
                     .sum::<usize>(),
             )
+            .saturating_add(if self.first_hour.is_some() {
+                #[derive(Serialize)]
+                struct Publication<'a> {
+                    late: &'a series::LateIndex,
+                    available: bool,
+                    warnings: &'a [String],
+                    content_error: Option<&'a str>,
+                    refusal_keys: &'a BTreeMap<String, u64>,
+                }
+                let warnings = content.map(|content| {
+                    let mut warnings = content.definitions.warnings.clone();
+                    warnings.extend(content.catalogue.verification.iter().cloned());
+                    warnings
+                });
+                series::catalogue_bytes(
+                    &BTreeMap::from([("completions".into(), KEY)]),
+                    &Publication {
+                        late: &self.metadata.late,
+                        available: self.metadata.available,
+                        warnings: warnings.as_deref().unwrap_or(&self.metadata.warnings),
+                        content_error,
+                        refusal_keys: &self.metadata.refusal_keys,
+                    },
+                )
+            } else {
+                0
+            })
     }
 
     fn extend_reference(values: &mut Accumulator, key: u64, through: i32) -> io::Result<()> {

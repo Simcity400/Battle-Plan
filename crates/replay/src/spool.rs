@@ -1097,19 +1097,27 @@ struct Accepted {
     valid_bytes: usize,
     format: Option<FormatVersion>,
     state: SegmentState,
+    session_context_only: bool,
 }
 
 impl Accepted {
     fn accept(&mut self, record: &RecordRef<'_>, placed: Placed) -> io::Result<()> {
         self.state.accept_view(record)?;
+        self.session_context_only = (self.session_context_only
+            || matches!(record, RecordRef::SessionStart(_)))
+            && record.frame().is_none();
         self.format = Some(placed.format);
         self.valid_bytes = placed.end;
         Ok(())
     }
 
     fn finished(&self) -> io::Result<()> {
-        // A failure-only segment closes with explicit loss, never a fabricated keyframe.
-        if self.state.needs_keyframe && !self.state.partial && !self.state.gap_before_keyframe {
+        // A frameless checkpoint tail needs its own session context; bare branches still need frames or loss.
+        if self.state.needs_keyframe
+            && !self.state.partial
+            && !self.state.gap_before_keyframe
+            && !self.session_context_only
+        {
             return Err(invalid("segment ended before initial keyframe"));
         }
         Ok(())

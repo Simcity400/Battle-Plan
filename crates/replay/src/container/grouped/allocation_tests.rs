@@ -206,6 +206,7 @@ fn anchor_seed_allocation_failures_propagate_at_every_checked_growth() {
         "fixture must allocate the last block and seed its tables"
     );
     for ordinal in 1..=attempts {
+        let held = Replay::open_path(&file.0).unwrap();
         let (result, _) = checked(Some(ordinal), || Anchors::seed(&held));
         match result {
             Err(error) => assert_eq!(
@@ -223,6 +224,7 @@ fn anchor_seed_allocation_failures_propagate_at_every_checked_growth() {
     let mut damaged = resident.bytes().to_vec();
     damaged[resident.index.last().unwrap().offset as usize + 4] ^= 1;
     std::fs::write(&file.0, damaged).unwrap();
+    let held = Replay::open_path(&file.0).unwrap();
     let (result, attempts) = checked(None, || Anchors::seed(&held));
     let empty = result.unwrap();
     assert!(
@@ -237,6 +239,7 @@ fn anchor_seed_allocation_failures_propagate_at_every_checked_growth() {
         "fixture must reach a checked damage diagnostic"
     );
     for ordinal in 1..=attempts {
+        let held = Replay::open_path(&file.0).unwrap();
         let (result, _) = checked(Some(ordinal), || Anchors::seed(&held));
         match result {
             Err(error) => assert_eq!(

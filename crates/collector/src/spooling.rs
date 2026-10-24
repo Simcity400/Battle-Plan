@@ -1626,6 +1626,14 @@ impl<B: SegmentBackend> Campaign<B> {
         &mut self,
         storage: Option<crate::spool_writer::ReceiptStorage>,
     ) -> io::Result<()> {
+        if !self.spool.is_open()
+            && self
+                .pending
+                .last()
+                .is_none_or(|pending| pending.gaps.is_empty())
+        {
+            return Ok(());
+        }
         self.queue_close(storage).map(|_| ())
     }
 
@@ -2850,8 +2858,10 @@ impl Processor {
 
     pub(crate) fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
         self.poll_writer()?;
-        if let Some(clock) = captured.clock.as_ref() {
-            let id = campaign_name(clock.campaign_id.as_bytes())?;
+        // Invalid identities take the accounted unknown-loss path below.
+        if let Some(clock) = captured.clock.as_ref()
+            && let Ok(id) = campaign_name(clock.campaign_id.as_bytes())
+        {
             let boundary = self
                 .flight
                 .as_ref()
@@ -5724,8 +5734,14 @@ mod tests {
         replay_io::finalize_session(&folder, &once).unwrap();
         let saved = |folder: &Path| {
             let recording = replay::recording_files::recording_of(folder, ID).unwrap();
-            fs::read(recording.unwrap()).unwrap()
+            replay::container::Replay::open(fs::read(recording.unwrap()).unwrap())
+                .unwrap()
+                .reencoded(|_, _, _| Ok(()))
+                .unwrap()
+                .bytes()
+                .to_vec()
         };
+        // Checkpoints retain earlier trailers, so compare their complete canonical recordings.
         assert_eq!(saved(&target), saved(&once));
         let replay = replay::container::Replay::open(saved(&target)).unwrap();
         assert_eq!(
@@ -5857,6 +5873,7 @@ mod tests {
             start.capture_mode = mode;
             let mut processor =
                 Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
+            crate::map_events::interval::begin(0, 0).unwrap();
             kit::capture(mode, fixture, refuse, |frame, trace, roles| {
                 let hour = frame.clock.as_ref().unwrap().hour;
                 if mode == CaptureMode::Map {
@@ -6113,11 +6130,20 @@ mod tests {
             .unwrap();
         assert!(!campaign.spool.is_open());
         assert!(!campaign.pending.is_empty());
-        let detach_error = processor.detach().unwrap_err();
+        let loss = LostObservation {
+            campaign_id: owned_text(ID),
+            first_hour: 12,
+            last_hour: 12,
+            count: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            processor.lost(&loss).unwrap_err().to_string(),
+            "queue loss witness has inconsistent hours and count"
+        );
+        processor.detach().unwrap();
 
-        // Persist the terminal status after both original errors are gone.
-        let detach_detail = detach_error.to_string();
-        drop(detach_error);
+        // Gap-only detach preserves the original refusal without inventing a sample.
         let mut bytes = Vec::new();
         crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
         let status_path = directory.join("status.json");
@@ -6130,10 +6156,6 @@ mod tests {
         assert_eq!(sample["frame_write_succeeded"], true);
         assert_eq!(sample["subsequent_io_error"], expected);
         assert_eq!(sample["usable_with_recorded_frame"], false);
-        assert_eq!(
-            detach_detail,
-            "spool unavailable at detach; pending gaps need another observed keyframe"
-        );
 
         // Preflight and loss handling must retain static reasons with capture
         // hooks installed too, and must restore callback behaviour on return.
@@ -7791,8 +7813,33 @@ mod tests {
         publish(&mut campaign, 10, 1).unwrap();
         store.borrow_mut().fail_frame_flush = true;
         assert!(publish(&mut campaign, 11, 1).is_err());
-        assert!(campaign.detach(0).is_err());
-        assert_eq!(store.borrow().segments.len(), 1);
+        campaign.detach(0).unwrap();
+        let store = store.borrow();
+        assert_eq!(store.segments.len(), 2);
+        let records: Vec<_> = store
+            .segments
+            .values()
+            .flat_map(|bytes| recover_prefix(bytes).records)
+            .collect();
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(|record| match record {
+                    Record::Frame(frame) => Some(frame.hour),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [10, 11]
+        );
+        assert!(matches!(
+            records.last(),
+            Some(Record::Gap(gap)) if gap.first_hour == 11 && gap.last_hour == 11
+        ));
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record, Record::Control(ControlRecord::Detach { .. })))
+        );
     }
 
     #[test]

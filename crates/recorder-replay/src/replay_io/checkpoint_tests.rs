@@ -833,6 +833,9 @@ fn a_discard_from_the_waiting_list_drops_checkpointed_hours_with_the_unsaved_rec
     assert!(segment_paths(&campaign).unwrap().is_empty());
     assert!(!campaign.join(CHECKPOINT_FILE).exists());
     assert_eq!(unsaved(&fixture.session, Fixture::name()).unwrap(), None);
+    assert!(!campaign.join(SAVED_FILE).exists());
+    discard_unsaved(&fixture.session, Fixture::name()).unwrap();
+    assert_eq!(unsaved(&fixture.session, Fixture::name()).unwrap(), None);
 }
 
 #[test]
@@ -1201,14 +1204,28 @@ fn a_stale_campaign_copy_is_replaced_under_the_naming_lock_not_left_per_process(
     assert!(!staged.exists());
 }
 
+fn join_load_segments(first: &Path, second: &Path) -> Vec<u8> {
+    let mut bytes = fs::read(first).unwrap();
+    let recovered = replay::spool::recover_prefix(&fs::read(second).unwrap());
+    assert!(recovered.damage.is_none());
+    bytes.extend(
+        recovered
+            .records
+            .iter()
+            .filter(|record| !matches!(record, Record::SessionStart(_)))
+            .flat_map(|record| replay::spool::encode_record(record).unwrap()),
+    );
+    assert!(replay::spool::recover_prefix(&bytes).damage.is_none());
+    bytes
+}
+
 #[test]
 fn a_segment_with_both_admitted_and_left_out_hours_stays_while_other_segments_are_trimmed() {
     let fixture = Fixture::new("checkpoint-mixed-coverage");
     let campaign = fixture.campaign(&fixture.session);
     let omitted = write_load_segment(&campaign, 0, 9, 2..=4, 19);
     let admitted = write_load_segment(&campaign, 1, 10, 5..=6, 21);
-    let mut mixed = fs::read(&omitted).unwrap();
-    mixed.extend(fs::read(&admitted).unwrap());
+    let mixed = join_load_segments(&omitted, &admitted);
     fs::write(&omitted, &mixed).unwrap();
     write_load_segment(&campaign, 1, 11, 7..=8, 23);
     write_load_segment(&campaign, 2, 12, 9..=10, 25);
@@ -1345,8 +1362,7 @@ fn a_later_load_decision_saves_only_new_branches_of_a_retained_mixed_segment() {
         let campaign = fixture.campaign(&fixture.session);
         let mixed = write_load_segment(&campaign, 0, 9, 2..=4, 19);
         let second = write_load_segment(&campaign, 1, 10, 5..=6, 21);
-        let mut bytes = fs::read(&mixed).unwrap();
-        bytes.extend(fs::read(&second).unwrap());
+        let bytes = join_load_segments(&mixed, &second);
         fs::write(&mixed, &bytes).unwrap();
         write_load_segment(&campaign, 1, 11, 7..=8, 23);
         write_load_segment(&campaign, 2, 12, 9..=10, 25);

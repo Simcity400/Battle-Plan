@@ -3406,6 +3406,7 @@ fn save_continued(
 /// each campaign that could not be staged, with why: its loads are left out, since a capture of it
 /// would continue a history without those hours, and the others record.
 fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>, String> {
+    fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
     let mut refused = BTreeMap::new();
     let _lock = finalization_lock(target)?;
     for session in session_folders(root) {
@@ -4709,9 +4710,10 @@ mod tests {
             fs::create_dir_all(session.join("bin")).unwrap();
             write_json(
                 &session.join("bin/collector.json"),
-                &json!({"session_start": start_bytes}),
+                &json!({"session_id": start.id, "session_start": start_bytes}),
             )
             .unwrap();
+            create_failure_witness(&session, start.id, start.process_start_time).unwrap();
             write_campaign_spool(&session, &records);
             let unsaved = replay_io::unsaved(&session, name).unwrap();
             replay_io::save_campaign(
@@ -5081,6 +5083,7 @@ mod tests {
         let target = directory.join("target");
         let name = std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap();
         let earlier = ended_waiting(&directory, "1-1", name, 9, 2..=4, FIRST_LOAD);
+        assert!(!target.exists());
         assert!(stage_waiting(&directory, &target).unwrap().is_empty());
         let session = directory.join("sessions/1-2");
         write_load_segment(&session.join(name), 0, 10, 5..=6, RELOAD);

@@ -2371,35 +2371,62 @@ impl Directory {
         index: &BlockIndex,
         mut bytes: Cow<'a, [u8]>,
     ) -> io::Result<Self> {
+        if !replay.is_file_backed() {
+            return Self::parse(&replay.block_bytes(index)?, index);
+        }
         let length = super::to_usize(index.length)?;
         let mut input = Decoder::new(&bytes);
         let (_, _, _, count) = Self::counts(&mut input, index)?;
-        let prefix_end = bytes.len() - input.remaining();
+        let mut position = bytes.len() - input.remaining();
         let slots = chunked::slots(index)?;
-        let entry_bytes = slots
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(3))
-            .and_then(|n| n.checked_mul(MAX_VARINT_BYTES))
-            .and_then(|n| n.checked_mul(count))
-            .and_then(|n| n.checked_add(prefix_end))
-            .ok_or_else(|| invalid_static("chunk index length overflow"))?;
-        let end = entry_bytes.min(length);
-        if end > bytes.len() {
-            if replay.is_file_backed() {
-                let bytes = bytes.to_mut();
-                let start = bytes.len();
-                engine_allocation::reserve(bytes, end - start)?;
-                bytes.resize(end, 0);
-                let offset = index
-                    .offset
-                    .checked_add(start as u64)
-                    .ok_or_else(|| invalid_static("block offset overflow"))?;
-                replay.read_at(offset, &mut bytes[start..])?;
-            } else {
-                bytes = replay.block_range(index, 0, end)?;
+        let bytes = bytes.to_mut();
+        for _ in 0..count {
+            let id = Self::read_varint(replay, index, bytes, &mut position)?;
+            Self::read_varint(replay, index, bytes, &mut position)?;
+            Self::read_varint(replay, index, bytes, &mut position)?;
+            if id >= 3 && id % 2 == 1 {
+                if slots > length.saturating_sub(position) / 2 {
+                    return Err(invalid_static("invalid grouped chunk index extent"));
+                }
+                for _ in 0..slots {
+                    Self::read_varint(replay, index, bytes, &mut position)?;
+                    Self::read_varint(replay, index, bytes, &mut position)?;
+                }
             }
         }
-        Self::parse_extent(&bytes, length, index)
+        Self::parse_extent(bytes, length, index)
+    }
+
+    fn read_varint(
+        replay: &Replay,
+        index: &BlockIndex,
+        bytes: &mut Vec<u8>,
+        position: &mut usize,
+    ) -> io::Result<usize> {
+        let start = *position;
+        for _ in 0..MAX_VARINT_BYTES {
+            if *position == bytes.len() {
+                let remaining = super::to_usize(index.length)?.saturating_sub(bytes.len());
+                if remaining == 0 {
+                    return Err(invalid_static("truncated grouped directory"));
+                }
+                let more = remaining.min(4096);
+                engine_allocation::reserve(bytes, more)?;
+                let offset = index
+                    .offset
+                    .checked_add(bytes.len() as u64)
+                    .ok_or_else(|| invalid_static("block offset overflow"))?;
+                let end = bytes.len() + more;
+                bytes.resize(end, 0);
+                replay.read_at(offset, &mut bytes[end - more..])?;
+            }
+            let byte = bytes[*position];
+            *position += 1;
+            if byte & 0x80 == 0 {
+                return varint_usize(&mut Decoder::new(&bytes[start..*position]));
+            }
+        }
+        Err(invalid_static("varint exceeds u128"))
     }
 
     fn counts(

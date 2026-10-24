@@ -943,6 +943,10 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
     if store.epoch != epoch || epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
+    if let Err(StageFailure::Refused(reason)) = staged {
+        store.batch.failure = Some(reason);
+        return;
+    }
     // Any intervening observer, including an uninterested source, keeps the serial path's order.
     if STAGING_REVISION.load(Ordering::Relaxed) != revision.wrapping_add(1)
         || scratch.log.overflowed
@@ -1009,12 +1013,22 @@ fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, pub
         store.batch.failure = Some(reason);
     }
 }
+#[derive(Clone, Copy, Debug)]
+enum StageFailure {
+    Retry,
+    Refused(&'static str),
+}
+impl From<&'static str> for StageFailure {
+    fn from(_: &'static str) -> Self {
+        Self::Retry
+    }
+}
 fn stage_private(
     scratch: &mut storage::Scratch,
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-) -> Result<(u64, [u8; 3], i32), &'static str> {
+) -> Result<(u64, [u8; 3], i32), StageFailure> {
     let identity = native::identity(memory, base, pointer)?;
     let state = base
         .checked_add(engine_native::cgame_state::SINGLETON_RVA)
@@ -1033,10 +1047,13 @@ fn stage_private(
         .and_then(|at| engine_native::read::<u64>(memory, at))
         .ok_or("variant change parent unreadable")?;
     let claim = if parent != 0 {
-        let claim = writers::enter(parent as usize, None, writers::Footprint::Identity)
-            .ok_or("variant parent snapshot has a competing writer")?;
+        let claim = writers::enter(parent as usize, None, writers::Footprint::Identity).ok_or(
+            StageFailure::Refused("variant parent snapshot has a competing writer"),
+        )?;
         if !claim.admitted() {
-            return Err("variant parent snapshot has a competing writer");
+            return Err(StageFailure::Refused(
+                "variant parent snapshot has a competing writer",
+            ));
         }
         Some(claim)
     } else {
@@ -1050,7 +1067,9 @@ fn stage_private(
         Some(&mut scratch.interests),
     );
     if claim.is_some_and(writers::Flight::finish) {
-        return Err("variant parent snapshot has a competing writer");
+        return Err(StageFailure::Refused(
+            "variant parent snapshot has a competing writer",
+        ));
     }
     result?;
     Ok((identity, flags, hour))

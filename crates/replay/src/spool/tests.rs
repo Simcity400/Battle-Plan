@@ -5,6 +5,31 @@ use crate::{
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+fn session() -> Record {
+    use crate::identity::{Identity, Verification};
+    Record::SessionStart(SessionStart {
+        id: 3,
+        process_id: 12,
+        process_start_time: 34,
+        qpc_frequency: 10_000_000,
+        sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+        capture_mode: crate::identity::CaptureMode::Full,
+        identity: Identity {
+            game_version: "test".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: Vec::new(),
+            mods: Vec::new(),
+            coverage_policy: 1,
+            language: "l_english".into(),
+            recorder_version: "test".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Unchecked,
+        },
+    })
+}
+
 fn branch() -> Record {
     Record::BranchStart(BranchStart {
         id: 7,
@@ -1217,33 +1242,10 @@ fn gap_only_context_requires_explicit_loss_and_never_replaces_a_keyframe() {
 
 #[test]
 fn two_loads_during_disk_outage_preserve_fresh_and_resumed_branch_gaps() {
-    use crate::{
-        container::{Replay, SeekResult},
-        identity::{Identity, Verification},
-    };
+    use crate::container::{Replay, SeekResult};
 
     for resumed in [false, true] {
-        let session = Record::SessionStart(SessionStart {
-            id: 3,
-            process_id: 12,
-            process_start_time: 34,
-            qpc_frequency: 10_000_000,
-            sample_boundary: crate::identity::SampleBoundary::EndOfHour,
-            capture_mode: crate::identity::CaptureMode::Full,
-            identity: Identity {
-                game_version: "test".into(),
-                exe_hash: [1; 32],
-                exe_size: 1,
-                vanilla_hash: [2; 32],
-                dlc: Vec::new(),
-                mods: Vec::new(),
-                coverage_policy: 1,
-                language: "l_english".into(),
-                recorder_version: "test".into(),
-                collector_hash: [3; 32],
-                verification: Verification::Unchecked,
-            },
-        });
+        let session = session();
         let start = |id, first_hour, reason| {
             Record::BranchStart(BranchStart {
                 id,
@@ -1859,5 +1861,144 @@ fn a_closed_context_only_failure_segment_keeps_explicit_gaps_without_a_fake_keyf
         recover_prefix(&encode_record(&branch()).unwrap())
             .damage
             .is_some()
+    );
+}
+
+fn context_tail() -> [Record; 4] {
+    [
+        session(),
+        branch(),
+        Record::Control(ControlRecord::ClockWitness {
+            session: 3,
+            qpc: 100,
+            hour: 10,
+            load_signal: Some(19),
+        }),
+        Record::Control(ControlRecord::ClockWitness {
+            session: 3,
+            qpc: 200,
+            hour: 11,
+            load_signal: Some(19),
+        }),
+    ]
+}
+
+#[test]
+fn complete_session_context_tails_recover_without_fabricating_a_keyframe() {
+    let records = context_tail();
+    let encoded: Vec<_> = records
+        .iter()
+        .map(|record| encode_record(record).unwrap())
+        .collect();
+    for count in 1..=records.len() {
+        let bytes = encoded[..count].concat();
+        for threads in [1, 4] {
+            let recovered = recover_records(
+                io::Cursor::new(&bytes),
+                bytes.len(),
+                |record, _| record,
+                |_| Ok(()),
+                true,
+                threads,
+            )
+            .unwrap();
+            assert_eq!(recovered.records, records[..count]);
+            assert_eq!(recovered.valid_bytes, bytes.len());
+            assert!(recovered.damage.is_none(), "{:?}", recovered.damage);
+        }
+        let mut reader = RecordReader::new(io::Cursor::new(&bytes), bytes.len());
+        for record in &records[..count] {
+            assert_eq!(reader.next_record().unwrap().as_ref(), Some(record));
+        }
+        assert_eq!(reader.next_record().unwrap(), None);
+        let mut tail = Tail::default();
+        tail.grow(&mut io::Cursor::new(&bytes), bytes.len(), |record, _| {
+            record
+        })
+        .unwrap();
+        let recovered = tail
+            .finish(
+                &mut io::Cursor::new(&bytes),
+                bytes.len(),
+                |record, _| record,
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.records, records[..count]);
+        assert_eq!(recovered.valid_bytes, bytes.len());
+        assert!(recovered.damage.is_none());
+    }
+}
+
+#[test]
+fn session_context_tails_keep_torn_envelopes_and_missing_keyframes_damaged() {
+    let records = context_tail();
+    let encoded: Vec<_> = records
+        .iter()
+        .map(|record| encode_record(record).unwrap())
+        .collect();
+    let bytes = encoded.concat();
+    let ends: Vec<_> = encoded
+        .iter()
+        .scan(0, |end, record| {
+            *end += record.len();
+            Some(*end)
+        })
+        .collect();
+    for cut in 0..=bytes.len() {
+        let recovered = recover_prefix(&bytes[..cut]);
+        let count = ends.iter().filter(|&&end| end <= cut).count();
+        let valid_bytes = count.checked_sub(1).map_or(0, |at| ends[at]);
+        assert_eq!(recovered.records, records[..count], "cut {cut}");
+        assert_eq!(recovered.valid_bytes, valid_bytes, "cut {cut}");
+        let torn = cut != 0 && !ends.contains(&cut);
+        assert_eq!(recovered.damage.is_some(), torn, "cut {cut}");
+        if torn {
+            let detail = if cut - valid_bytes < RECORD_HEADER_BYTES {
+                "truncated record header"
+            } else {
+                "truncated record payload"
+            };
+            assert_eq!(
+                recovered.damage.unwrap(),
+                format!("segment byte {valid_bytes}: {detail}")
+            );
+        }
+    }
+    let end = ends[1];
+    let mut corrupt = bytes.clone();
+    corrupt[end + RECORD_HEADER_BYTES] ^= 1;
+    assert_eq!(
+        recover_prefix(&corrupt).damage.unwrap(),
+        format!("segment byte {end}: record CRC mismatch")
+    );
+    let mut torn_frame = bytes.clone();
+    let encoded_frame = encode_record(&Record::Frame(frame(10, true))).unwrap();
+    torn_frame.extend_from_slice(&encoded_frame[..encoded_frame.len() - 1]);
+    assert_eq!(
+        recover_prefix(&torn_frame).damage.unwrap(),
+        format!("segment byte {}: truncated record payload", bytes.len())
+    );
+    let mut dependent = bytes.clone();
+    dependent.extend(encode_record(&Record::Frame(frame(10, false))).unwrap());
+    assert_eq!(
+        recover_prefix(&dependent).damage.unwrap(),
+        format!(
+            "segment byte {}: branch or segment does not start with a keyframe",
+            bytes.len()
+        )
+    );
+    let mut frame_bearing = bytes;
+    frame_bearing.extend(encoded_frame);
+    let Record::BranchStart(mut next) = branch() else {
+        unreachable!()
+    };
+    next.id = 8;
+    next.reason = BranchReason::LoadSignal;
+    frame_bearing.extend(encode_record(&Record::BranchStart(next)).unwrap());
+    assert_eq!(
+        recover_prefix(&frame_bearing).damage.as_deref(),
+        Some("segment ended before initial keyframe")
     );
 }

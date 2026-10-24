@@ -1081,7 +1081,7 @@ mod artwork_tests {
         assert!(reason.contains("GFX_mod_missing; group"));
         let mut reply = FactionDetailReply::default();
         let goal: FactionGoalDefinition = serde_json::from_value(serde_json::json!({
-            "progress":[], "sections":[], "conditions":[], "rewards":[], "flags":[],
+            "progress":[], "sections":[], "bands":[], "conditions":[], "rewards":[], "flags":[],
             "token":"mod_goal", "name":"Still known", "description":null, "icon":null,
             "category":null, "categoryName":null, "reason":reason,
         }))

@@ -270,12 +270,7 @@ fn failed_write_gaps_all_queued_hours_once_and_restarts_with_a_keyframe() {
         .unwrap();
     let branch = campaign.tracker.current_branch().unwrap();
     assert_eq!(campaign.tracker.recorded_hours(branch).unwrap(), [10]);
-    assert!(
-        campaign
-            .encoder
-            .comparison_baseline::<tables::Clock>(branch, 14, false)
-            .is_some()
-    );
+    assert_eq!(campaign.encoder.committed::<tables::Clock>().unwrap().0, 13);
     release.0.release();
     processor.drain_writer().unwrap();
     assert!(processor.flush().is_err());
@@ -342,6 +337,7 @@ fn postcommit_sync_failure_does_not_gap_the_committed_frame() {
             .all(|pending| pending.gaps.is_empty())
     }));
     processor.frame(&campaign_frame(ID, 7, 11)).unwrap();
+    assert_eq!(processor.stats.errors, 1);
     processor.detach().unwrap();
     let replay = replay(&store);
     assert!(replay.gaps.is_empty());
@@ -665,6 +661,7 @@ fn conversion_failure_after_a_load_cannot_hide_an_earlier_failed_campaign_range(
         admit(&mut processor, ID, 7, 12);
         release.0.release();
         processor.drain_writer().unwrap();
+        assert!(processor.flush().is_err());
         for (load, hour) in [(8, 20), (9, 30)] {
             let captured = campaign_frame(ID, load, hour);
             let prepared = processor.prepare_frame(&captured).unwrap();
@@ -724,6 +721,7 @@ fn a_write_failure_after_preparing_the_next_branch_restores_context_in_observati
     release.0.release();
     processor.writer.drain().unwrap();
     assert!(processor.write_prepared(prepared).is_err());
+    assert!(processor.flush().is_err());
     let campaign = processor.campaigns.get_mut(id).unwrap();
     let previous = campaign.tracker.branches().next().unwrap().id;
     assert_eq!(

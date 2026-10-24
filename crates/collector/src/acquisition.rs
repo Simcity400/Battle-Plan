@@ -3097,6 +3097,8 @@ mod tests {
                 (shared_offset + size_of::<Shared<J, R>>()).next_multiple_of(arc_alignment),
                 pool.shared.cells.len() * size_of::<Cell<J, R>>(),
                 pool.shared.words.len() * size_of::<AtomicU64>(),
+                pool.shared.diagnostic_slots.len()
+                    * size_of::<crate::acquisition_diagnostics::Slot>(),
                 state.slots.capacity() * size_of::<Slot>(),
                 state.ready.capacity() * size_of::<usize>(),
                 pool.shared.thread_ids.capacity() * size_of::<AtomicU32>(),
@@ -4496,6 +4498,7 @@ mod worker_join_tests {
                 })
                 .unwrap(),
             );
+            pool.reserve_worker_slots(2).unwrap();
             binding.set(Arc::downgrade(&pool)).unwrap();
             let mut parent = Some(0);
             let ticket = unsafe { pool.submit_with_priority(&mut parent, 0, true, true) }.unwrap();

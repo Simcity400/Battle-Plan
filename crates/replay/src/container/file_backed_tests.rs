@@ -626,6 +626,44 @@ fn held_byte_visit_has_a_captured_length_and_propagates_cancellation() {
 }
 
 #[test]
+fn append_identity_bytes_ignore_only_the_commit_slot_and_keep_the_held_revision() {
+    let first = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let fixture = Fixture::new(first.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let appended = first.append(&[records(2, &[8, 9])]).unwrap();
+    std::fs::write(&fixture.0, appended.bytes()).unwrap();
+    let witness = |replay: &Replay| {
+        let mut bytes = Vec::new();
+        replay
+            .visit_append_identity_bytes(|chunk| {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            })
+            .unwrap();
+        let mut expected = replay.bytes().to_vec();
+        if !replay.is_file_backed() {
+            let slot = replay.slot.unwrap();
+            expected[slot..slot + super::commit::SLOT_SIZE].fill(0);
+            assert_eq!(bytes, expected);
+        }
+        bytes
+    };
+    let original = witness(&first);
+    assert_eq!(witness(&held), original);
+    let next = witness(&appended);
+    let prefix = first.index.last().unwrap();
+    let prefix = (prefix.offset + prefix.length) as usize;
+    assert_eq!(original[..prefix], next[..prefix]);
+    assert_ne!(original, next);
+    assert_eq!(
+        held.visit_append_identity_bytes(|_| Err(io::ErrorKind::Interrupted.into()))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+}
+
+#[test]
 fn held_chunk_api_reads_only_the_requested_frame_and_matches_resident_slices() {
     let hours: Vec<_> = (1..=400).collect();
     let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();

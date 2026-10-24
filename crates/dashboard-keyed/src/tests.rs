@@ -399,3 +399,57 @@ fn hours_given_as_changes_publish_exactly_as_whole_hours() {
         "restored changes",
     );
 }
+
+#[test]
+fn pending_includes_catalogue_changes_across_quiet_refused_and_restored_hours() {
+    use dashboard_base::prepared::{pages::framing, series};
+    use std::collections::BTreeMap;
+
+    let fixture = series::tests::Fixture::new();
+    let flag = AtomicBool::new(false);
+    let mut scan = Scan::<Mines>::default();
+    assert_eq!(scan.buffered_bytes(), 0);
+    for step in 0..5 {
+        match step {
+            0 => scan
+                .prepare(
+                    FormatVersion::CURRENT,
+                    &frame(100, Some(&[(11, 3, 5)])),
+                    true,
+                )
+                .unwrap(),
+            1 => scan.advance_quiet(101, false).unwrap(),
+            2 => scan.unreadable_block(),
+            3 => scan
+                .prepare(FormatVersion::CURRENT, &frame(102, None), true)
+                .unwrap(),
+            4 => {
+                let frame = frame(103, None);
+                let mut changes =
+                    dashboard_base::prepared::frame_changes::FrameChangeTracker::new();
+                scan.prepare_changed(
+                    FormatVersion::CURRENT,
+                    &frame,
+                    &changes.observe(&frame, FormatVersion::CURRENT),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let held = scan.buffered_bytes();
+        assert!(held >= series::catalogue_bytes(&BTreeMap::new(), &scan));
+        let mut writer = fixture.writer();
+        let before = (writer.payload_bytes_change(), framing::bytes());
+        scan.flush(&mut writer, 1, &flag).unwrap();
+        let records =
+            writer.payload_bytes_change() - before.0 - i128::from(framing::bytes() - before.1);
+        assert!(
+            records <= 8 * held as i128,
+            "step {step}: {held} held for {records} records"
+        );
+        assert_eq!(scan.buffered_bytes(), 0);
+        writer.commit().unwrap();
+        scan = serde_json::from_slice(&serde_json::to_vec(&scan).unwrap()).unwrap();
+        assert_eq!(scan.buffered_bytes(), 0);
+    }
+}

@@ -200,7 +200,7 @@ pub(super) fn witness(
     let mut old = Sha256::new();
     let mut offset = 0;
     check()?;
-    replay.visit_held_bytes(|bytes| {
+    replay.visit_append_identity_bytes(|bytes| {
         check()?;
         full.update(bytes);
         let count = prefix.saturating_sub(offset).min(bytes.len() as u64) as usize;
