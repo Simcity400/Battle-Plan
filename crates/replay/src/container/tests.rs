@@ -474,7 +474,7 @@ fn a_map_recording_stores_no_section_for_a_table_it_leaves_out() {
         }
     }
     assert!(map.bytes().len() < full.bytes().len());
-    for replay in [&reopened, &interleaved_copy(&reopened)] {
+    for replay in [&reopened] {
         for hour in hours {
             let (SeekResult::Frame(map), SeekResult::Frame(full)) =
                 (replay.seek(1, hour).unwrap(), full.seek(1, hour).unwrap())
@@ -538,18 +538,17 @@ fn a_recording_file_holds_one_capture_mode() {
     history.tracker_for(&next).unwrap();
 }
 
-/// The same recording with every block rewritten in the interleaved layout.
-pub(super) fn interleaved_copy(replay: &Replay) -> Replay {
+/// Current grouped blocks written with fresh anchor state for each block.
+fn independent_copy(replay: &Replay) -> Replay {
     let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-    let mut blocks = Vec::new();
-    for block in &replay.index {
-        let frames = replay.read_block(block).unwrap();
-        let mut raw = RawBlock::new(&frames[0]);
-        for frame in &frames {
-            raw.push(frame).unwrap();
-        }
-        blocks.push(raw.compress().unwrap());
-    }
+    let blocks: Vec<_> = replay
+        .index
+        .iter()
+        .map(|index| {
+            let frames = replay.read_block(index).unwrap();
+            grouped_tests::written_block(&frames, grouped::Layout::Chosen)
+        })
+        .collect();
     let mut index = Vec::new();
     append_blocks(&mut prefix, &mut index, &blocks).unwrap();
     Replay::open(rebuild(replay, prefix, &index)).unwrap()
@@ -766,19 +765,13 @@ fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
     let mut payload = Vec::new();
     let sizes = first.encode_with_sizes(&mut payload).unwrap();
     // Grouped blocks bound each table's plain updates and the plain frame
-    // headers (count, length and header of each frame); interleaved blocks
-    // bound their whole plain frames.
+    // headers (count, length and header of each frame).
     let block = grouped::BlockWriter::new(first).unwrap();
     let header = payload.len() - sizes.iter().sum::<usize>() + 8;
     let exact = header.max(*sizes.iter().max().unwrap());
     assert!(!block.fits(payload.len(), &sizes, exact - 1));
     assert!(block.fits(payload.len(), &sizes, exact));
     assert!(!block.fits(usize::MAX, &sizes, MAX_BLOCK_RAW_BYTES));
-    let mut legacy = RawBlock::new(first);
-    let whole = payload.len() + 8;
-    assert!(!legacy.fits(payload.len(), whole - 1));
-    legacy.push_payload(first, &payload, whole).unwrap();
-    assert!(!legacy.fits(usize::MAX, MAX_BLOCK_RAW_BYTES));
     assert!(
         Replay::from_record_slices(
             CAMPAIGN.into(),
@@ -1261,10 +1254,8 @@ fn seek_rejects_an_intermediate_campaign_change_even_when_target_is_valid() {
         }]));
 
     // The malformed identity is inside a structurally valid compressed block.
-    let mut raw = RawBlock::new(&frames[0]);
     let mut sequential = FrameDecoder::new();
     for frame in &frames {
-        raw.push(frame).unwrap();
         let decoded = sequential.apply(frame).unwrap();
         assert_eq!(
             validate_campaign(&decoded, CAMPAIGN).is_err(),
@@ -1273,7 +1264,15 @@ fn seek_rejects_an_intermediate_campaign_change_even_when_target_is_valid() {
     }
     let mut prefix = replay.bytes[..replay.header_end].to_vec();
     let mut index = Vec::new();
-    append_blocks(&mut prefix, &mut index, &[raw.compress().unwrap()]).unwrap();
+    append_blocks(
+        &mut prefix,
+        &mut index,
+        &[grouped_tests::written_block(
+            &frames,
+            grouped::Layout::Chosen,
+        )],
+    )
+    .unwrap();
     let malformed = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
     assert!(matches!(
         malformed.seek(1, 1).unwrap(),
@@ -1367,13 +1366,7 @@ fn unsupported_versions_are_refused_before_decoding_frames() {
 #[test]
 fn corrupt_block_does_not_hide_an_unrelated_block() {
     let grouped = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 721])]).unwrap();
-    // An interleaved block's checksum, and a grouped block's later entries,
-    // which no other block's keyframes anchor to.
-    let interleaved = interleaved_copy(&grouped);
-    let first = &interleaved.index[0];
-    let mut checksum = interleaved.bytes().to_vec();
-    checksum[(first.offset + first.length - 1) as usize] ^= 0x40;
-    for bytes in [checksum, damage_later_entries(&grouped, 0)] {
+    for bytes in [damage_later_entries(&grouped, 0)] {
         let damaged = Replay::open(bytes).unwrap();
         assert!(
             matches!(damaged.seek(1, 1).unwrap(), SeekResult::Gap { reason, .. } if reason.contains("unreadable block"))
@@ -1449,8 +1442,10 @@ fn parallel_decode_workers_keep_the_callers_job_before_setup() {
                 started.fetch_add(1, Ordering::Relaxed);
             };
             let items: Vec<u32> = (0..128).collect();
-            let result = parallel_map(
+            let order: Vec<usize> = (0..items.len()).collect();
+            let result = parallel_tables(
                 &items,
+                &order,
                 &Parallel {
                     workers: 4,
                     on_worker: &setup,
@@ -1468,20 +1463,21 @@ fn parallel_decode_workers_keep_the_callers_job_before_setup() {
 }
 
 #[test]
-fn parallel_map_keeps_input_order() {
+fn parallel_tables_keep_input_order() {
     let parallel = Parallel {
         workers: 8,
         on_worker: &|| {},
     };
     let items: Vec<u32> = (0..5_000).collect();
-    let out = parallel_map(&items, &parallel, |item| u64::from(*item) * 7).unwrap();
+    let order: Vec<usize> = (0..items.len()).rev().collect();
+    let out = parallel_tables(&items, &order, &parallel, |item| u64::from(*item) * 7).unwrap();
     assert!(
         out.iter()
             .enumerate()
             .all(|(at, value)| *value == at as u64 * 7)
     );
     assert!(
-        parallel_map(&[] as &[u32], &parallel, |item| *item)
+        parallel_tables(&[] as &[u32], &[], &parallel, |item| *item)
             .unwrap()
             .is_empty()
     );
@@ -1788,113 +1784,101 @@ fn parallel_tables_take_a_refused_workers_share_on_the_calling_thread() {
     assert_eq!(REFUSED_WORKERS.get(), 0);
 }
 
-#[test]
-fn parallel_payloads_report_the_first_bad_frame_in_position_order() {
-    let hours: Vec<i32> = (1..=64).collect();
-    let mut encoder = FrameEncoder::new();
-    let mut payloads: Vec<Vec<u8>> = hours
-        .iter()
-        .map(|hour| {
-            let mut bytes = Vec::new();
-            encoder
-                .encode(source(1, *hour), false)
-                .unwrap()
-                .encode(&mut bytes)
-                .unwrap();
-            bytes
-        })
-        .collect();
-    // Two damaged frames, the later one first in any thread's run.
-    payloads[40].truncate(3);
-    payloads[9].push(0);
-    let slices: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
-    let sequential = decode_payloads(&slices, None, FormatVersion::CURRENT).unwrap();
-    let parallel = decode_payloads(
-        &slices,
-        Some(&Parallel {
-            workers: 4,
-            on_worker: &|| {},
-        }),
-        FormatVersion::CURRENT,
-    )
-    .unwrap();
-    let first_error = |results: &[io::Result<Frame>]| {
-        results
-            .iter()
-            .position(Result::is_err)
-            .map(|at| (at, results[at].as_ref().unwrap_err().to_string()))
-    };
-    assert_eq!(first_error(&parallel), first_error(&sequential));
-    assert_eq!(first_error(&parallel).map(|(at, _)| at), Some(9));
-}
-
-/// The interleaved raw bytes of a block: its frame count, then each frame
-/// prefixed by its length, as older recordings store them.
-fn interleaved_raw(frames: &[Frame]) -> Vec<u8> {
-    let mut block = RawBlock::new(&frames[0]);
-    for frame in frames {
-        block.push(frame).unwrap();
+/// Keep dense elapsed-hour chunk metadata when altering the directory.
+fn edited_directory(replay: &Replay, position: usize, edit: impl FnOnce(&mut Vec<u8>)) -> Replay {
+    let index = &replay.index[position];
+    let block = replay.block_bytes(index).unwrap();
+    let mut input = Decoder::new(&block[8..]);
+    input.varint().unwrap();
+    let count = usize::try_from(input.varint().unwrap()).unwrap();
+    let span = i64::from(index.last_hour) - i64::from(index.first_hour);
+    let slots = usize::try_from(span).unwrap().div_ceil(LATER_CHUNK_HOURS);
+    for _ in 0..count {
+        let id = usize::try_from(input.varint().unwrap()).unwrap();
+        input.varint().unwrap();
+        input.varint().unwrap();
+        if id >= 3 && id % 2 == 1 {
+            for _ in 0..slots {
+                input.varint().unwrap();
+                input.varint().unwrap();
+            }
+        }
     }
-    let mut raw = block.count.to_le_bytes().to_vec();
-    raw.extend_from_slice(&block.frames);
-    raw
+    let end = block.len() - input.remaining();
+    let mut directory = block[8..end].to_vec();
+    edit(&mut directory);
+    let mut bytes = block[..4].to_vec();
+    bytes.extend_from_slice(&crc32fast::hash(&directory).to_le_bytes());
+    bytes.extend_from_slice(&directory);
+    bytes.extend_from_slice(&block[end..]);
+    let mut replacement = index.clone();
+    replacement.length = bytes.len() as u64;
+    replaced_block(replay, position, replacement, &bytes)
 }
 
-/// The first block replaced by an interleaved block of its frames whose raw
-/// bytes are then rewritten by `edit`.
-fn edited_block(replay: &Replay, edit: impl FnOnce(&mut Vec<u8>)) -> Replay {
-    let block = &replay.index[0];
-    let mut raw = interleaved_raw(&replay.read_block(block).unwrap());
+fn edited_header(replay: &Replay, edit: impl FnOnce(&mut Vec<u8>)) -> Replay {
+    let (_, mut raw) = grouped::stored_section(replay, 0, Section::Header).unwrap();
     edit(&mut raw);
-    let recompressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
+    replaced_section(replay, 0, Section::Header, raw)
+}
+
+fn replaced_section(replay: &Replay, position: usize, section: Section, raw: Vec<u8>) -> Replay {
+    let id = match section {
+        Section::Header => 0,
+        Section::Diagnostics => 1,
+        Section::Keyframe(table) => 2 + 2 * table.index(),
+        Section::Later(table) => 3 + 2 * table.index(),
+    };
+    let (replacement, bytes) =
+        grouped::replace_sections(replay, &replay.index[position], &[(id, raw)]).unwrap();
+    replaced_block(replay, position, replacement, &bytes)
+}
+
+fn replaced_block(
+    replay: &Replay,
+    position: usize,
+    replacement: BlockIndex,
+    bytes: &[u8],
+) -> Replay {
     let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-    let mut index = replay.index.clone();
-    index[0].offset = prefix.len() as u64;
-    index[0].length = recompressed.len() as u64;
-    index[0].raw_length = raw.len() as u64;
-    prefix.extend_from_slice(&recompressed);
+    let mut index = Vec::new();
+    for (at, old) in replay.index.iter().enumerate() {
+        let mut entry = if at == position {
+            replacement.clone()
+        } else {
+            old.clone()
+        };
+        entry.offset = prefix.len() as u64;
+        if at == position {
+            prefix.extend_from_slice(bytes);
+        } else {
+            prefix.extend_from_slice(&replay.block_bytes(old).unwrap());
+        }
+        index.push(entry);
+    }
     Replay::open(rebuild(replay, prefix, &index)).unwrap()
 }
 
 #[test]
-fn a_broken_payload_boundary_is_the_same_error_read_in_parallel() {
+fn a_broken_grouped_header_is_the_same_error_read_in_parallel() {
     let hours: Vec<i32> = (1..=64).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
-    let parallel = Parallel {
-        workers: 4,
-        on_worker: &|| {},
-    };
-    let both = |replay: &Replay| {
-        let sequential = replay.read_block(&replay.index[0]).map(|_| ());
-        let parallel = replay
-            .read_block_parallel(&replay.index[0], &parallel)
-            .map(|_| ());
-        (
-            sequential.map_err(|error| error.to_string()),
-            parallel.map_err(|error| error.to_string()),
+    let damaged = edited_header(&replay, |raw| {
+        raw.pop().unwrap();
+    });
+    let index = &damaged.index[0];
+    let sequential = damaged.read_block(index).unwrap_err();
+    let parallel = damaged
+        .read_block_parallel(
+            index,
+            &Parallel {
+                workers: 4,
+                on_worker: &|| {},
+            },
         )
-    };
-    // One more frame counted than the block holds: the boundary read runs
-    // off the end after 64 good frames.
-    let overcounted = edited_block(&replay, |raw| {
-        let count = u32::from_le_bytes(raw[..4].try_into().unwrap()) + 1;
-        raw[..4].copy_from_slice(&count.to_le_bytes());
-    });
-    let (sequential, parallel_read) = both(&overcounted);
-    assert!(sequential.is_err());
-    assert_eq!(sequential, parallel_read);
-    // A payload length past the end of the block, in the middle of it.
-    let overlong = edited_block(&replay, |raw| {
-        let mut at = 4;
-        for _ in 0..40 {
-            let length = u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) as usize;
-            at += 4 + length;
-        }
-        raw[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    });
-    let (sequential, parallel_read) = both(&overlong);
-    assert!(sequential.is_err());
-    assert_eq!(sequential, parallel_read);
+        .unwrap_err();
+    assert_eq!(sequential.kind(), parallel.kind());
+    assert_eq!(sequential.to_string(), parallel.to_string());
 }
 
 #[test]
@@ -1902,17 +1886,11 @@ fn a_seek_that_stops_early_still_refuses_a_block_broken_after_its_hour() {
     let hours: Vec<i32> = (1..=64).collect();
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
     let unreadable = |replay: &Replay, hour| matches!(replay.seek(1, hour).unwrap(), SeekResult::Gap { reason, .. } if reason.contains("unreadable block"));
-    // One more frame counted than the block holds: the frame at hour 1 decodes, but
-    // the block as a whole does not, so no hour of it is trusted.
-    let overcounted = edited_block(&replay, |raw| {
-        let count = u32::from_le_bytes(raw[..4].try_into().unwrap()) + 1;
-        raw[..4].copy_from_slice(&count.to_le_bytes());
+    let damaged = edited_header(&replay, |raw| {
+        raw.pop().unwrap();
     });
-    assert!(unreadable(&overcounted, 1));
-    assert!(
-        unreadable(&overcounted, 1),
-        "a refused block is never marked verified"
-    );
+    assert!(unreadable(&damaged, 1));
+    assert!(unreadable(&damaged, 1));
     // Blocks whose frames end before the hour range the index claims: the
     // early hours decode, the block's end check fails, even after a whole read.
     let mut index = replay.index.clone();
@@ -2490,49 +2468,43 @@ fn recorded_gap_and_table_diagnostics_are_not_shortened() {
 }
 
 #[test]
-fn format97_replay_opens_seeks_and_decodes_selected_and_parallel_blocks() {
-    let hours = (1..=64).collect::<Vec<_>>();
-    let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
-    let legacy = edited_block(&current, |raw| {
-        raw.clear();
-        raw.extend_from_slice(&64_u32.to_le_bytes());
-        for hour in 1..=64 {
-            let frame = replay_frame::test_support::empty_frame97(hour, hour == 1);
-            raw.extend_from_slice(&(frame.len() as u32).to_le_bytes());
-            raw.extend(frame);
-        }
-    });
-    let legacy = Replay::open(relabelled(legacy.bytes(), 97).unwrap()).unwrap();
-    assert_eq!(legacy.format.version(), 97);
-    assert!(
-        legacy
-            .append(&[])
-            .err()
-            .unwrap()
-            .to_string()
-            .contains(&format!("Replay append requires format {FORMAT_VERSION}"))
-    );
-    let frames = legacy.read_block(&legacy.index[0]).unwrap();
-    assert_eq!(frames.len(), 64);
-    assert_eq!(
-        legacy
-            .read_block_parallel(
-                &legacy.index[0],
-                &Parallel {
-                    workers: 4,
-                    on_worker: &|| {},
-                },
-            )
-            .unwrap(),
-        frames
-    );
-    let selected = legacy
-        .read_block_selected(&legacy.index[0], &[TableId::AvailableAdvisors])
+fn interleaved_blocks_are_refused_instead_of_decoded_or_reencoded() {
+    let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
+    let mut raw = 1_u32.to_le_bytes().to_vec();
+    let mut payload = Vec::new();
+    current.read_block(&current.index[0]).unwrap()[0]
+        .encode(&mut payload)
         .unwrap();
+    put_bytes(&mut raw, &payload).unwrap();
+    let bytes = zstd::encode_all(raw.as_slice(), 3).unwrap();
+    let mut index = current.index.clone();
+    index[0].length = bytes.len() as u64;
+    index[0].raw_length = raw.len() as u64;
+    let mut prefix = current.bytes()[..current.header_end].to_vec();
+    prefix.extend_from_slice(&bytes);
+    let legacy = Replay::open(rebuild(&current, prefix, &index)).unwrap();
+    let index = &legacy.index[0];
+    let parallel = Parallel {
+        workers: 4,
+        on_worker: &|| {},
+    };
+    assert!(legacy.read_block(index).is_err());
+    assert!(legacy.read_block_parallel(index, &parallel).is_err());
     assert!(
-        matches!(&selected[0].tables[TableId::AvailableAdvisors.index()], TableUpdate::Unavailable { reason } if reason.contains("not recorded"))
+        legacy
+            .read_block_selected(index, &[TableId::Clock])
+            .is_err()
     );
-    assert!(matches!(legacy.seek(1, 64).unwrap(), SeekResult::Frame(frame) if frame.hour == 64));
+    assert!(
+        legacy
+            .visit_block(index, None, |_| panic!("legacy frame escaped"))
+            .is_err()
+    );
+    assert!(legacy.block_sections(index).is_err());
+    assert!(legacy.block_columns(index).is_err());
+    assert!(legacy.block_levels(index, &[3]).is_err());
+    assert!(matches!(legacy.seek(1, 1).unwrap(), SeekResult::Gap { .. }));
+    assert!(legacy.reencoded(|_, _, _| Ok(())).is_err());
 }
 #[path = "compatibility_tests.rs"]
 mod compatibility_tests;
@@ -2659,9 +2631,8 @@ fn readable_trailers_warn_for_checksum_and_trailing_bytes_and_preserve_partial_s
 
 #[test]
 fn a_skipped_first_index_entry_preserves_later_blocks() {
-    // Interleaved blocks stand alone; grouped ones may anchor to the skipped
-    // block (a_withheld_index_entry_never_lends_its_place_to_an_anchor).
-    let healthy = interleaved_copy(
+    // Each block is written without anchors to the skipped block.
+    let healthy = independent_copy(
         &Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 721, 1441])]).unwrap(),
     );
     let mut index = healthy.index.clone();
@@ -2995,9 +2966,8 @@ fn invalid_length_prefixed_trailer_records_are_skipped_and_framing_stays_strict(
 
 #[test]
 fn noncontiguous_branches_and_sessions_warn_without_losing_valid_blocks() {
-    // Reordered blocks: interleaved ones, since grouped keyframes count back
-    // through the file's blocks to their anchors.
-    let replay = interleaved_copy(
+    // Each reordered block has its own anchor state.
+    let replay = independent_copy(
         &Replay::from_records(
             CAMPAIGN.into(),
             &[

@@ -5929,13 +5929,11 @@ pub fn inspect(path: &Path) -> Result<()> {
     >::new();
     let mut owner_refusals = std::collections::BTreeMap::<BranchId, (u64, u64)>::new();
     for index in &replay.index {
-        let layout = match replay
+        let sections = replay
             .block_sections(index)
             .map_err(|error| failure(path, error))?
-        {
-            Some(sections) => format!("grouped sections={}", sections.len()),
-            None => "interleaved".into(),
-        };
+            .ok_or_else(|| failure(path, std::io::Error::other("missing grouped sections")))?;
+        let layout = format!("grouped sections={}", sections.len());
         println!(
             "block branch={} hours={}..={} offset={} compressed_bytes={} raw_bytes={} layout={layout}",
             index.branch,

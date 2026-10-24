@@ -81,44 +81,23 @@ fn with_extra_control(replay: &Replay) -> (BlockIndex, Vec<u8>) {
     let directory = Directory::parse(&bytes, original).unwrap();
     let target = later_section(TableId::Clock);
     assert!(directory.sections[target].is_some());
-    let mut sections = Vec::new();
-    for (id, section) in directory.sections.iter().enumerate() {
-        let Some((offset, length, raw_length)) = section else {
-            continue;
-        };
-        if id == target {
-            let raw = directory.raw(&bytes, id).unwrap().unwrap();
-            let reader = ColumnReader::open(&raw, TableId::Clock.field_count()).unwrap();
-            let mut columns = Columns::new(TableId::Clock.field_count());
-            for (out, mut input) in columns.0.iter_mut().zip(reader.0) {
-                out.extend_from_slice(input.take(input.remaining()).unwrap());
-            }
-            columns.0[CONTROL].push(255);
-            let raw = columns.raw();
-            sections.push((id, raw.len(), compress(&raw).unwrap()));
-        } else {
-            sections.push((id, *raw_length, bytes[*offset..*offset + *length].to_vec()));
-        }
+    let raw = directory.raw(&bytes, target).unwrap().unwrap();
+    let reader = ColumnReader::stored(
+        &raw,
+        TableId::Clock.field_count(),
+        TableId::Clock,
+        replay.format.version(),
+    )
+    .unwrap();
+    let mut columns = Columns::new(TableId::Clock.field_count());
+    for (out, mut input) in columns.0.iter_mut().zip(reader.0) {
+        out.extend_from_slice(input.take(input.remaining()).unwrap());
     }
-    let mut header = Vec::new();
-    put_varint(&mut header, directory.frames as u128);
-    put_varint(&mut header, sections.len() as u128);
-    for (id, raw, stored) in &sections {
-        put_varint(&mut header, *id as u128);
-        put_varint(&mut header, *raw as u128);
-        put_varint(&mut header, stored.len() as u128);
+    if let Some(marks) = reader.1 {
+        columns.marks(TableId::Clock, marks).unwrap();
     }
-    let mut bytes = directory.layout.magic().to_vec();
-    bytes.extend_from_slice(&crc32fast::hash(&header).to_le_bytes());
-    bytes.extend_from_slice(&header);
-    let raw_length = sections.iter().map(|(_, raw, _)| *raw as u64).sum();
-    for (_, _, stored) in sections {
-        bytes.extend_from_slice(&stored);
-    }
-    let mut index = original.clone();
-    index.length = bytes.len() as u64;
-    index.raw_length = raw_length;
-    (index, bytes)
+    columns.0[CONTROL].push(255);
+    replace_sections(replay, original, &[(target, columns.raw())]).unwrap()
 }
 
 #[test]

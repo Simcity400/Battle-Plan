@@ -444,6 +444,7 @@ fn selected_and_unselected_admission_preserve_absence_and_layout_gap_checks() {
                     frames: 1,
                     layout: Layout::Chosen,
                     sections: vec![None; SECTIONS],
+                    chunks: vec![Vec::new(); SECTIONS],
                 };
                 for selection in [None, Some(&[][..]), Some(std::slice::from_ref(&table))] {
                     let (result, counts) =

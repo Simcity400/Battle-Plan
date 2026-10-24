@@ -1,5 +1,5 @@
 //! Rate prediction for the numeric fields of ramped blocks
-//! ([`super::Layout::Ramped`]).
+//! ([`super::Layout::Chosen`]).
 //!
 //! A drifting value stored at a display step ([`crate::display`]) moves by a
 //! fractional number of steps an hour: a division regaining 0.13

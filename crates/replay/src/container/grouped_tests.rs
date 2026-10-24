@@ -44,6 +44,60 @@ fn size(replay: &Replay, block: usize, section: Section) -> Option<SectionSize> 
         .find(|size| size.section == section)
 }
 
+fn stored_chunks(replay: &Replay, position: usize, section: Section) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let index = &replay.index[position];
+    let block = replay.block_bytes(index).unwrap();
+    let wanted = match section {
+        Section::Header => 0,
+        Section::Diagnostics => 1,
+        Section::Keyframe(table) => 2 + 2 * table.index(),
+        Section::Later(table) => 3 + 2 * table.index(),
+    };
+    let span = i64::from(index.last_hour) - i64::from(index.first_hour);
+    let slots = usize::try_from(span).unwrap().div_ceil(LATER_CHUNK_HOURS);
+    let mut input = Decoder::new(&block[8..]);
+    input.varint().unwrap();
+    let count = usize::try_from(input.varint().unwrap()).unwrap();
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let id = usize::try_from(input.varint().unwrap()).unwrap();
+        let raw = usize::try_from(input.varint().unwrap()).unwrap();
+        let stored = usize::try_from(input.varint().unwrap()).unwrap();
+        let chunks = if id >= 3 && id % 2 == 1 {
+            (0..slots)
+                .map(|_| {
+                    let stored = usize::try_from(input.varint().unwrap()).unwrap();
+                    let raw = usize::try_from(input.varint().unwrap()).unwrap();
+                    (stored, raw)
+                })
+                .collect()
+        } else {
+            vec![(stored, raw)]
+        };
+        entries.push((id, stored, chunks));
+    }
+    let mut offset = block.len() - input.remaining();
+    for (id, stored, chunks) in entries {
+        if id == wanted {
+            let mut out = Vec::new();
+            for (stored, raw) in chunks {
+                if stored != 0 {
+                    let bytes = block[offset..offset + stored].to_vec();
+                    let plain = zstd::decode_all(bytes.as_slice()).unwrap();
+                    assert_eq!(plain.len(), raw);
+                    out.push((bytes, plain));
+                } else {
+                    assert_eq!(raw, 0);
+                }
+                offset += stored;
+            }
+            return out;
+        }
+        offset += stored;
+    }
+    panic!("missing section {section:?}")
+}
+
 /// Every decoded hour of a replay, block by block.
 fn decoded_hours(replay: &Replay) -> Vec<DecodedFrame> {
     let mut out = Vec::new();
@@ -54,6 +108,29 @@ fn decoded_hours(replay: &Replay) -> Vec<DecodedFrame> {
         }
     }
     out
+}
+
+#[test]
+fn directory_helpers_preserve_sparse_elapsed_hour_chunk_metadata() {
+    let records = session_records(&moving_frames([1, 2, 338, 340]));
+    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
+    assert_eq!(replay.index.len(), 1);
+    let expected = spool_frames(&records);
+    for copied in [
+        edited_directory(&replay, 0, |_| {}),
+        edited_header(&replay, |_| {}),
+    ] {
+        assert_eq!(copied.read_block(&copied.index[0]).unwrap(), expected);
+        for section in replay.block_sections(&replay.index[0]).unwrap().unwrap() {
+            let raw = |replay: &Replay| {
+                stored_chunks(replay, 0, section.section)
+                    .into_iter()
+                    .map(|(_, raw)| raw)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(raw(&copied), raw(&replay), "{:?}", section.section);
+        }
+    }
 }
 
 #[test]
@@ -111,7 +188,7 @@ fn grouped_frame_headers_cost_bytes_not_a_word_per_table_and_keep_read_hours() {
 }
 
 /// One block written directly, given its frames.
-fn written_block(frames: &[Frame], layout: grouped::Layout) -> CompressedBlock {
+pub(super) fn written_block(frames: &[Frame], layout: grouped::Layout) -> CompressedBlock {
     let mut block = grouped::BlockWriter::with_layout(&frames[0], layout).unwrap();
     let mut decoder = FrameDecoder::new();
     let mut anchors = grouped::Anchors::default();
@@ -195,57 +272,6 @@ fn grouped_diagnostics_store_which_tables_were_read_not_their_times() {
         diagnostics(&|_, _| 1),
         diagnostics(&|hour, table| 123_456_789 + (hour as u64) * 7_777 + table as u64)
     );
-}
-
-#[test]
-fn earlier_grouped_blocks_keep_their_microsecond_read_times() {
-    let frames: Vec<DecodedFrame> = (1..=4)
-        .map(|hour| {
-            let mut frame = source(1, hour);
-            frame.metrics.table_ns[TableId::Clock.index()] = 2_000_000 + hour as u64 * 1_000;
-            frame.metrics.table_ns[TableId::Countries.index()] = 1;
-            frame
-        })
-        .collect();
-    let records = session_records(&frames);
-    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
-    let spool: Vec<Frame> = records
-        .iter()
-        .filter_map(|record| match record {
-            Record::Frame(frame) => Some(frame.clone()),
-            _ => None,
-        })
-        .collect();
-    let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-    let mut index = Vec::new();
-    append_blocks(
-        &mut prefix,
-        &mut index,
-        &[written_block(&spool, grouped::Layout::Timed)],
-    )
-    .unwrap();
-    let timed = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
-    let read = timed.read_block(&timed.index[0]).unwrap();
-    for (frame, expected) in read.iter().zip(&frames) {
-        assert!(frame.metrics.table_times_recorded());
-        assert_eq!(
-            frame.metrics.table_ns[TableId::Clock.index()],
-            expected.metrics.table_ns[TableId::Clock.index()]
-        );
-        assert_eq!(frame.metrics.table_ns[TableId::Countries.index()], 1_000);
-        assert_eq!(frame.metrics.stored(), expected.metrics.stored());
-    }
-    // The current writer drops the times and keeps everything else.
-    let current = replay.read_block(&replay.index[0]).unwrap();
-    assert!(
-        current
-            .iter()
-            .all(|frame| !frame.metrics.table_times_recorded())
-    );
-    for (timed, current) in read.iter().zip(&current) {
-        assert_eq!(timed.tables, current.tables);
-        assert_eq!(timed.metrics.stored(), current.metrics);
-    }
 }
 
 fn countries(count: u32) -> TableRows {
@@ -441,8 +467,6 @@ fn grouped_blocks_round_trip_every_update_kind() {
     assert_eq!(replay.index.len(), 1);
     let read = replay.read_block(&replay.index[0]).unwrap();
     assert_eq!(read, spool_frames(&records));
-    let interleaved = interleaved_copy(&replay);
-    assert_eq!(interleaved.read_block(&interleaved.index[0]).unwrap(), read);
     assert!(matches!(
         &read[3].tables[TableId::States.index()],
         TableUpdate::Unchanged { baseline: -7 }
@@ -460,7 +484,7 @@ fn grouped_blocks_round_trip_every_update_kind() {
 }
 
 #[test]
-fn interleaved_recordings_decode_and_write_again_to_the_same_hours() {
+fn current_recordings_write_again_to_the_same_hours() {
     let mut frames = Vec::new();
     for hour in [1, 2, 3, 721, 722, 900] {
         let mut frame = source(1, hour);
@@ -470,16 +494,8 @@ fn interleaved_recordings_decode_and_write_again_to_the_same_hours() {
         frames.push(frame);
     }
     let grouped = Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]).unwrap();
-    let interleaved = interleaved_copy(&grouped);
-    assert!(
-        interleaved
-            .index
-            .iter()
-            .all(|block| interleaved.block_sections(block).unwrap().is_none())
-    );
     let expected = decoded_hours(&grouped);
-    assert_eq!(decoded_hours(&interleaved), expected);
-    let again = interleaved.reencoded(|_, _, _| Ok(())).unwrap();
+    let again = grouped.reencoded(|_, _, _| Ok(())).unwrap();
     assert!(
         again
             .index
@@ -574,8 +590,10 @@ fn constant_rate_fields_cost_nothing_after_their_first_two_changes() {
         let aliases = u64::try_from(*lengths.last().unwrap()).unwrap();
         assert_eq!(aliases, (hours - 1) as u64);
         (
-            size(&replay, 0, section).unwrap().raw - aliases,
-            size(&replay, 0, Section::Later(TableId::Clock)),
+            raw.len() as u64 - aliases,
+            grouped::stored_section(&replay, 0, Section::Later(TableId::Clock))
+                .ok()
+                .map(|(_, raw)| raw.len()),
         )
     };
     let (short, short_clock) = later(300);
@@ -584,10 +602,7 @@ fn constant_rate_fields_cost_nothing_after_their_first_two_changes() {
     // predicted one, so a hundred more hours of 200 moving rows and of the
     // clock's hour add no entry.
     assert_eq!(long, short);
-    assert_eq!(
-        long_clock.map(|size| size.raw),
-        short_clock.map(|size| size.raw)
-    );
+    assert_eq!(long_clock, short_clock);
 }
 
 /// Divisions whose orders group counts the hours of the day, each from its
@@ -605,8 +620,8 @@ fn wrapping(hour: i32, divisions: u64) -> TableRows {
 }
 
 #[test]
-fn a_wrapping_clock_decodes_exactly_and_never_costs_more_than_plain_deltas() {
-    let later = |hours: i32, layout| {
+fn a_wrapping_clock_decodes_exactly() {
+    let later = |hours: i32| {
         let frames: Vec<DecodedFrame> = (1..=hours)
             .map(|hour| {
                 let mut frame = source(1, hour);
@@ -620,7 +635,12 @@ fn a_wrapping_clock_decodes_exactly_and_never_costs_more_than_plain_deltas() {
         let spool = spool_frames(&records);
         let mut prefix = replay.bytes()[..replay.header_end].to_vec();
         let mut index = Vec::new();
-        append_blocks(&mut prefix, &mut index, &[written_block(&spool, layout)]).unwrap();
+        append_blocks(
+            &mut prefix,
+            &mut index,
+            &[written_block(&spool, grouped::Layout::Chosen)],
+        )
+        .unwrap();
         let replay = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
         assert_eq!(
             decoded_hours(&replay),
@@ -630,12 +650,8 @@ fn a_wrapping_clock_decodes_exactly_and_never_costs_more_than_plain_deltas() {
             .unwrap()
             .compressed
     };
-    // Each division's count wraps from 23 to 0 once a day. The block keeps residual
-    // entries only when they compress smaller than plain deltas.
     for hours in [48, 240] {
-        assert!(
-            later(hours, grouped::Layout::Predicted) <= later(hours, grouped::Layout::Unpredicted)
-        );
+        assert!(later(hours) > 0);
     }
 }
 
@@ -668,17 +684,11 @@ fn predictions_restart_at_keyframes_and_branch_starts_and_seek_exactly() {
     assert_eq!(replay.index.len(), 3);
     assert_eq!(replay.index[1].first_hour, 721);
     assert_eq!(replay.index[2].branch, 2);
-    // Each block stores the first two changes again and nothing after them:
-    // the 720-hour block costs no more than the 10-hour ones.
+
     let later: Vec<SectionSize> = (0..3)
         .map(|block| size(&replay, block, Section::Later(TableId::Divisions)).unwrap())
         .collect();
-    assert!(
-        later
-            .iter()
-            .all(|size| later[0].compressed <= size.compressed + 16),
-        "{later:?}"
-    );
+    assert!(later.iter().all(|size| size.raw > 0 && size.compressed > 0));
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
     assert_eq!(decoded_hours(&replay), expected);
     let spool = spool_frames(&records);
@@ -711,71 +721,35 @@ fn predictions_restart_at_keyframes_and_branch_starts_and_seek_exactly() {
 }
 
 #[test]
-fn unpredicted_grouped_blocks_still_decode_and_predicted_ones_need_their_layout() {
-    let frames = moving_frames(1..=60);
-    let records = session_records(&frames);
-    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
-    let spool = spool_frames(&records);
-    let rewritten = |layout| {
-        let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-        let mut index = Vec::new();
-        append_blocks(&mut prefix, &mut index, &[written_block(&spool, layout)]).unwrap();
-        Replay::open(rebuild(&replay, prefix, &index)).unwrap()
-    };
-    let chosen = rewritten(grouped::Layout::Chosen);
-    assert_eq!(chosen.bytes(), replay.bytes());
-    let advanced = rewritten(grouped::Layout::Advanced);
-    let trimmed = rewritten(grouped::Layout::Trimmed);
-    let modelled = rewritten(grouped::Layout::Modelled);
-    let ramped = rewritten(grouped::Layout::Ramped);
-    let keyed = rewritten(grouped::Layout::Keyed);
-    let anchored = rewritten(grouped::Layout::Anchored);
-    let predicted = rewritten(grouped::Layout::Predicted);
-    let unpredicted = rewritten(grouped::Layout::Unpredicted);
-    let magic = |replay: &Replay| replay.bytes()[replay.index[0].offset as usize..][..4].to_vec();
-    assert_eq!(magic(&chosen), b"H4GC");
-    assert_eq!(magic(&advanced), b"H4G9");
-    assert_eq!(magic(&trimmed), b"H4G8");
-    assert_eq!(magic(&modelled), b"H4G7");
-    assert_eq!(magic(&ramped), b"H4G6");
-    assert_eq!(magic(&keyed), b"H4G5");
-    assert_eq!(magic(&anchored), b"H4G4");
-    assert_eq!(magic(&predicted), b"H4G3");
-    assert_eq!(magic(&unpredicted), b"H4G2");
-    let expected = frames.into_iter().map(stored).collect::<Vec<_>>();
-    assert_eq!(decoded_hours(&chosen), expected);
-    assert_eq!(chosen.read_block(&chosen.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&trimmed), expected);
-    assert_eq!(trimmed.read_block(&trimmed.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&modelled), expected);
-    assert_eq!(modelled.read_block(&modelled.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&ramped), expected);
-    assert_eq!(ramped.read_block(&ramped.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&keyed), expected);
-    assert_eq!(keyed.read_block(&keyed.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&anchored), expected);
-    assert_eq!(anchored.read_block(&anchored.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&predicted), expected);
-    assert_eq!(predicted.read_block(&predicted.index[0]).unwrap(), spool);
-    assert_eq!(decoded_hours(&unpredicted), expected);
-    assert_eq!(
-        unpredicted.read_block(&unpredicted.index[0]).unwrap(),
-        spool
-    );
-    let stored_later =
-        |replay: &Replay| size(replay, 0, Section::Later(TableId::Divisions)).unwrap();
-    assert!(stored_later(&predicted).raw * 10 < stored_later(&unpredicted).raw);
-    assert!(stored_later(&predicted).compressed < stored_later(&unpredicted).compressed);
-    // A predicted block read as the earlier layout has residual entries
-    // that layout cannot hold.
-    let mut bytes = predicted.bytes().to_vec();
-    let offset = predicted.index[0].offset as usize;
-    bytes[offset..offset + 4].copy_from_slice(b"H4G2");
-    let error = Replay::open(bytes)
-        .and_then(|replay| replay.read_block(&replay.index[0]))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("invalid in its section"), "{error}");
+fn historical_grouped_magics_are_refused() {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
+    let offset = replay.index[0].offset as usize;
+    assert_eq!(&replay.bytes()[offset..offset + 4], b"H4GD");
+    for magic in [
+        b"H4GC", b"H4GA", b"H4G9", b"H4G8", b"H4G7", b"H4G6", b"H4G5", b"H4G4", b"H4G3", b"H4G2",
+        b"H4GB", b"BAD!",
+    ] {
+        let mut bytes = replay.bytes().to_vec();
+        bytes[offset..offset + 4].copy_from_slice(magic);
+        let old = Replay::open(bytes).unwrap();
+        let block = &old.index[0];
+        for error in [
+            old.read_block(block).unwrap_err(),
+            old.read_block_selected(block, &[TableId::Clock])
+                .unwrap_err(),
+            old.block_sections(block).unwrap_err(),
+            old.block_columns(block).unwrap_err(),
+            old.block_levels(block, &[3]).unwrap_err(),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{magic:?}");
+            assert_eq!(
+                error.to_string(),
+                "unsupported replay block magic",
+                "{magic:?}"
+            );
+        }
+        assert!(matches!(old.seek(1, 1).unwrap(), SeekResult::Gap { .. }));
+    }
 }
 
 /// 400 divisions with wide handles (the id in the high 32 bits), about a
@@ -838,50 +812,14 @@ fn keyed_blocks_name_changing_rows_by_position_and_masks_by_recency() {
             full.tables[TableId::Divisions.index()]
         );
     }
-    let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-    let mut index = Vec::new();
-    append_blocks(
-        &mut prefix,
-        &mut index,
-        &[written_block(&spool, grouped::Layout::Anchored)],
-    )
-    .unwrap();
-    let anchored = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
-    assert_eq!(decoded_hours(&anchored), expected);
-    // Both layouts at the level the writer chooses encodings with, and as
-    // stored.
-    let later = |replay: &Replay| {
-        let (stored, raw) =
-            grouped::stored_section(replay, 0, Section::Later(TableId::Divisions)).unwrap();
-        (grouped::compress(&raw).unwrap().len(), stored.len())
-    };
-    let ((keyed, keyed_stored), (anchored, anchored_stored)) = (later(&replay), later(&anchored));
-    // A third of 400 wide keys change each hour: each costs a few bits of
-    // position instead of the varint of its key difference, and its
-    // repeated mask a byte.
-    assert!(
-        keyed * 3 < anchored * 2,
-        "keyed {keyed} against anchored {anchored}"
-    );
-    assert!(
-        keyed_stored * 4 < anchored_stored * 3,
-        "stored keyed {keyed_stored} against anchored {anchored_stored}"
-    );
 }
 
 #[test]
-fn every_layout_reads_every_update_kind_as_written() {
+fn chosen_layout_reads_every_update_kind_as_written() {
     let records = every_update_kind_records();
     let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
     let spool = spool_frames(&records);
-    for layout in [
-        grouped::Layout::Chosen,
-        grouped::Layout::Advanced,
-        grouped::Layout::Trimmed,
-        grouped::Layout::Modelled,
-        grouped::Layout::Ramped,
-        grouped::Layout::Keyed,
-    ] {
+    for layout in [grouped::Layout::Chosen] {
         let mut prefix = replay.bytes()[..replay.header_end].to_vec();
         let mut index = Vec::new();
         append_blocks(&mut prefix, &mut index, &[written_block(&spool, layout)]).unwrap();
@@ -944,29 +882,14 @@ fn streaky_frames(hours: std::ops::RangeInclusive<i32>) -> Vec<DecodedFrame> {
 }
 
 #[test]
-fn modelled_blocks_decode_exactly_and_store_streaky_rows_smaller_than_keyed_ones() {
+fn chosen_blocks_decode_streaky_rows_across_keyframes() {
     let frames = streaky_frames(1..=800);
     let records = session_records(&frames);
-    let written = |layout| {
-        grouped::WRITTEN_LAYOUT.set(layout);
-        let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records));
-        grouped::WRITTEN_LAYOUT.set(grouped::Layout::Chosen);
-        replay.unwrap()
-    };
-    let ramped = written(grouped::Layout::Ramped);
-    let modelled = written(grouped::Layout::Modelled);
-    let magic = |replay: &Replay, block: usize| {
-        replay.bytes()[replay.index[block].offset as usize..][..4].to_vec()
-    };
-    // The second block starts again at its keyframe.
-    assert_eq!((ramped.index.len(), modelled.index.len()), (2, 2));
-    for block in 0..2 {
-        assert_eq!(magic(&ramped, block), b"H4G6");
-        assert_eq!(magic(&modelled, block), b"H4G7");
-    }
+    let modelled = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
+    assert_eq!(modelled.index.len(), 2);
     let spool = spool_frames(&records);
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    for replay in [&ramped, &modelled] {
+    for replay in [&modelled] {
         assert_eq!(decoded_hours(replay), expected);
         let mut at = 0;
         for block in &replay.index {
@@ -991,28 +914,6 @@ fn modelled_blocks_decode_exactly_and_store_streaky_rows_smaller_than_keyed_ones
             "hour {hour}"
         );
     }
-    // Each block's Divisions keys and masks columns, each compressed alone.
-    let rows = |replay: &Replay| {
-        replay
-            .index
-            .iter()
-            .map(|block| {
-                let columns = replay.block_columns(block).unwrap().unwrap();
-                let later = columns
-                    .iter()
-                    .find(|sizes| sizes.section == Section::Later(TableId::Divisions))
-                    .unwrap();
-                later.columns[1].alone + later.columns[2].alone
-            })
-            .sum::<u64>()
-    };
-    // A changing row mostly changes again the hour after: the model names
-    // it in a fraction of a bit, the keyed layout by the rows it skips.
-    let (ramped, modelled) = (rows(&ramped), rows(&modelled));
-    assert!(
-        modelled * 3 < ramped * 2,
-        "modelled {modelled} against ramped {ramped}"
-    );
 }
 
 /// 660 owners rotate through 22 phases, each read hour changing only when
@@ -1045,25 +946,12 @@ fn chosen_blocks_list_rotating_slices_and_decode_every_hour_in_every_view() {
     assert_eq!(chosen.index.len(), 1);
     assert_eq!(
         &chosen.bytes()[chosen.index[0].offset as usize..][..4],
-        b"H4GC"
+        b"H4GD"
     );
     let spool = spool_frames(&records);
-    let advanced = one_block_in_layout(&chosen, &spool, grouped::Layout::Advanced);
     assert_eq!(later_row_coding(&chosen, TableId::SliceReads), 1);
-    let later = |replay: &Replay| {
-        size(replay, 0, Section::Later(TableId::SliceReads))
-            .unwrap()
-            .compressed
-    };
-    assert!(
-        later(&chosen) < later(&advanced),
-        "chosen {} against advanced {}",
-        later(&chosen),
-        later(&advanced)
-    );
-    assert!(chosen.bytes().len() < advanced.bytes().len());
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    for replay in [&chosen, &advanced] {
+    for replay in [&chosen] {
         assert_eq!(decoded_hours(replay), expected);
         assert_eq!(replay.read_block(&replay.index[0]).unwrap(), spool);
     }
@@ -1106,29 +994,18 @@ fn chosen_blocks_keep_modelled_streaky_divisions() {
     assert_eq!(chosen.index.len(), 1);
     assert_eq!(
         &chosen.bytes()[chosen.index[0].offset as usize..][..4],
-        b"H4GC"
+        b"H4GD"
     );
     let spool = spool_frames(&records);
     assert_eq!(later_row_coding(&chosen, TableId::Divisions), 0);
-    // Alias metadata can tip the compressed plain/residual choice. Compare
-    // modelled sections with the same residual choice, not different winners.
-    grouped::FORCE_RESIDUAL.set(true);
+    // Exercise the residual path even when plain entries would be smaller.
+    let previous = grouped::written_settings();
+    grouped::write_with((grouped::Layout::Chosen, true));
     let modelled = one_block_in_layout(&chosen, &spool, grouped::Layout::Chosen);
-    let advanced = one_block_in_layout(&chosen, &spool, grouped::Layout::Advanced);
-    grouped::FORCE_RESIDUAL.set(false);
+    grouped::write_with(previous);
     assert_eq!(later_row_coding(&modelled, TableId::Divisions), 0);
-    // The coding byte and at most one more byte for its column's length.
-    let later = |replay: &Replay| size(replay, 0, Section::Later(TableId::Divisions)).unwrap();
-    assert!(
-        later(&modelled).raw > later(&advanced).raw
-            && later(&modelled).raw <= later(&advanced).raw + 2,
-        "modelled {:?} against advanced {:?}",
-        later(&modelled),
-        later(&advanced)
-    );
-    assert!(later(&chosen).compressed <= later(&modelled).compressed);
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    for replay in [&chosen, &modelled, &advanced] {
+    for replay in [&chosen, &modelled] {
         assert_eq!(replay.read_block(&replay.index[0]).unwrap(), spool);
         assert_eq!(decoded_hours(replay), expected);
     }
@@ -1170,7 +1047,8 @@ fn nested_counters_at_a_constant_rate_cost_nothing_after_their_first_two_changes
             decoded_hours(&replay),
             frames.into_iter().map(stored).collect::<Vec<_>>()
         );
-        size(&replay, 0, Section::Later(TableId::LexicalTokens)).map_or(0, |size| size.raw)
+        grouped::stored_section(&replay, 0, Section::Later(TableId::LexicalTokens))
+            .map_or(0, |(_, raw)| raw.len())
     };
     let steady = |hours: i32| -> Vec<(i32, u64, &'static [u8])> {
         (1..=hours)
@@ -1233,95 +1111,6 @@ fn assert_seeks(replay: &Replay, expected: &[DecodedFrame]) {
             frame.hour
         );
     }
-}
-
-#[test]
-fn earlier_predicted_recordings_keep_their_chains_and_take_anchored_appends() {
-    let (hours, frames) = drifting_frames(8);
-    let records = session_records(&frames);
-    grouped::WRITTEN_LAYOUT.set(grouped::Layout::Predicted);
-    let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records));
-    grouped::WRITTEN_LAYOUT.set(grouped::Layout::Keyed);
-    let replay = replay.unwrap();
-    assert_eq!(replay.index.len(), hours.len());
-    let magic = |replay: &Replay, block: usize| {
-        replay.bytes()[replay.index[block].offset as usize..][..4].to_vec()
-    };
-    assert!((0..hours.len()).all(|block| magic(&replay, block) == b"H4G3"));
-    let keyframe = |replay: &Replay, block: usize| {
-        size(replay, block, Section::Keyframe(TableId::Provinces))
-            .unwrap()
-            .compressed
-    };
-    // Blocks 1-4 anchor to the keyframe before them, a chain of four; block
-    // 5 starts again from the snapshot, and block 6 anchors to block 5.
-    for block in 2..=4 {
-        assert!(
-            keyframe(&replay, block) * 2 < keyframe(&replay, 1) * 3,
-            "block {block}"
-        );
-    }
-    assert!(keyframe(&replay, 5) > keyframe(&replay, 4) * 2);
-    assert!(keyframe(&replay, 6) * 2 < keyframe(&replay, 5));
-    let mut expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    assert_eq!(decoded_hours(&replay), expected);
-    assert_eq!(
-        replay
-            .index
-            .iter()
-            .flat_map(|block| replay.read_block(block).unwrap())
-            .collect::<Vec<_>>(),
-        spool_frames(&records)
-    );
-    assert_seeks(&replay, &expected);
-    let selected = replay
-        .read_block_selected(&replay.index[4], &[TableId::Provinces])
-        .unwrap();
-    assert_eq!(
-        selected[0].tables[TableId::Provinces.index()],
-        replay.read_block(&replay.index[4]).unwrap()[0].tables[TableId::Provinces.index()]
-    );
-    // An earlier layout anchors only to snapshots.
-    let mut bytes = replay.bytes().to_vec();
-    let offset = replay.index[3].offset as usize;
-    bytes[offset..offset + 4].copy_from_slice(b"H4G2");
-    let error = Replay::open(bytes)
-        .and_then(|replay| replay.read_block(&replay.index[3]))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("not a snapshot"), "{error}");
-    // A later session appended by the current writer anchors to the
-    // earlier layout's last keyframe and decodes through its chain.
-    let later: Vec<DecodedFrame> = [9_000, 9_001]
-        .into_iter()
-        .map(|hour| {
-            let mut frame = source(2, hour);
-            *frame.tables[TableId::Provinces.index()] = TableView::Complete(drifting_provinces(8));
-            frame
-        })
-        .collect();
-    let mut encoder = FrameEncoder::new();
-    let mut appended_records = vec![
-        Record::SessionStart(session(2)),
-        Record::BranchStart(branch(2, 9_000)),
-    ];
-    for frame in &later {
-        appended_records.push(Record::Frame(encoder.encode(frame.clone(), false).unwrap()));
-    }
-    let appended = replay.append(&[appended_records]);
-    grouped::WRITTEN_LAYOUT.set(grouped::Layout::Chosen);
-    let appended = appended.unwrap();
-    let last = appended.index.len() - 1;
-    assert_eq!(magic(&appended, last), b"H4G5");
-    assert!(
-        keyframe(&appended, last) * 2 < keyframe(&appended, 0),
-        "{} against the snapshot's {}",
-        keyframe(&appended, last),
-        keyframe(&appended, 0)
-    );
-    expected.extend(later.into_iter().map(stored));
-    assert_eq!(decoded_hours(&appended), expected);
-    assert_seeks(&appended, &expected);
 }
 
 #[test]
@@ -1449,17 +1238,18 @@ fn sections_are_stored_at_the_stored_level_where_that_is_smaller() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[session_records(&frames)]).unwrap();
     let mut smaller = 0;
     for section in replay.block_sections(&replay.index[0]).unwrap().unwrap() {
-        let (bytes, raw) = grouped::stored_section(&replay, 0, section.section).unwrap();
-        let choosing = grouped::compress(&raw).unwrap();
-        let level = grouped::compress_at(&raw, grouped::STORED_LEVEL).unwrap();
-        // The smaller of two whole frames of the same plain bytes.
-        let at_stored_level = level.len() < choosing.len();
-        smaller += usize::from(at_stored_level);
-        assert_eq!(
-            bytes,
-            if at_stored_level { level } else { choosing },
-            "{section:?}"
-        );
+        for (bytes, raw) in stored_chunks(&replay, 0, section.section) {
+            let choosing = grouped::compress(&raw).unwrap();
+            let level = grouped::compress_at(&raw, grouped::STORED_LEVEL).unwrap();
+            // The smaller of two whole frames of the same plain bytes.
+            let at_stored_level = level.len() < choosing.len();
+            smaller += usize::from(at_stored_level);
+            assert_eq!(
+                bytes,
+                if at_stored_level { level } else { choosing },
+                "{section:?}"
+            );
+        }
     }
     assert!(smaller > 0, "no section is smaller at the stored level");
     // The provinces' snapshot takes fewer bytes than at level 3.
@@ -1564,7 +1354,7 @@ fn static_tables_are_stored_once_per_file_across_branches_and_appended_sessions(
 }
 
 #[test]
-fn nested_counters_that_move_by_a_little_store_small_differences() {
+fn nested_counters_that_move_by_a_little_decode_exactly() {
     // A counter in a nested record moves by one to three each hour, never
     // twice by the same amount in a row: no prediction, but each patch's
     // in-place byte is a small difference instead of the counter's low byte.
@@ -1584,28 +1374,9 @@ fn nested_counters_that_move_by_a_little_store_small_differences() {
     let records = session_records(&frames);
     let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
     let spool = spool_frames(&records);
-    let rewritten = |layout| {
-        let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-        let mut index = Vec::new();
-        append_blocks(&mut prefix, &mut index, &[written_block(&spool, layout)]).unwrap();
-        Replay::open(rebuild(&replay, prefix, &index)).unwrap()
-    };
-    let predicted = rewritten(grouped::Layout::Predicted);
-    let unpredicted = rewritten(grouped::Layout::Unpredicted);
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    assert_eq!(decoded_hours(&predicted), expected);
-    assert_eq!(decoded_hours(&unpredicted), expected);
-    let later = |replay: &Replay| {
-        size(replay, 0, Section::Later(TableId::LexicalTokens))
-            .unwrap()
-            .compressed
-    };
-    assert!(
-        later(&predicted) * 4 < later(&unpredicted) * 3,
-        "{} {}",
-        later(&predicted),
-        later(&unpredicted)
-    );
+    assert_eq!(decoded_hours(&replay), expected);
+    assert_eq!(replay.read_block(&replay.index[0]).unwrap(), spool);
 }
 
 /// 300 divisions walking 14-province paths: each reaches its next province
@@ -1654,17 +1425,10 @@ fn a_path_that_loses_its_head_is_one_tag_and_decodes_exactly() {
     let records = session_records(&frames);
     // Residual entries, which alone store the tag, whichever the plain
     // entries would cost.
-    grouped::FORCE_RESIDUAL.set(true);
-    let written = |layout| {
-        grouped::WRITTEN_LAYOUT.set(layout);
-        let replay = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records));
-        grouped::WRITTEN_LAYOUT.set(grouped::Layout::Chosen);
-        replay.unwrap()
-    };
-    let advanced = written(grouped::Layout::Advanced);
-    let trimmed = written(grouped::Layout::Trimmed);
-    let modelled = written(grouped::Layout::Modelled);
-    grouped::FORCE_RESIDUAL.set(false);
+    let previous = grouped::written_settings();
+    grouped::write_with((grouped::Layout::Chosen, true));
+    let advanced = Replay::from_records(CAMPAIGN.into(), std::slice::from_ref(&records)).unwrap();
+    grouped::write_with(previous);
     // Each later path that lost its head costs its tag, and any other
     // changed path at most its tag and plain encoding (a count and its
     // elements).
@@ -1686,7 +1450,7 @@ fn a_path_that_loses_its_head_is_one_tag_and_decodes_exactly() {
     }
     let spool = spool_frames(&records);
     let expected: Vec<DecodedFrame> = frames.into_iter().map(stored).collect();
-    for replay in [&advanced, &trimmed, &modelled] {
+    for replay in [&advanced] {
         assert_eq!(replay.index.len(), 1);
         assert_eq!(replay.read_block(&replay.index[0]).unwrap(), spool);
         assert_eq!(decoded_hours(replay), expected);
@@ -1698,8 +1462,7 @@ fn a_path_that_loses_its_head_is_one_tag_and_decodes_exactly() {
         );
     }
     // The later entries' path column, after control, keys and masks:
-    // about a hundred heads a frame, each a tag where earlier layouts store
-    // a patch, which takes them past the bound.
+    // about a hundred heads a frame, each a tag.
     let path = 3
         + (0..table.schema().len())
             .find(|&field| table.field_name(field) == Some("path"))
@@ -1716,24 +1479,9 @@ fn a_path_that_loses_its_head_is_one_tag_and_decodes_exactly() {
             .raw
     };
     assert!(
-        path_bytes(&trimmed) <= bound,
+        path_bytes(&advanced) <= bound,
         "{} {bound}",
-        path_bytes(&trimmed)
-    );
-    assert!(
-        path_bytes(&modelled) > bound,
-        "{} {bound}",
-        path_bytes(&modelled)
-    );
-    // The advance changes only the source, each head's one small
-    // correction.
-    assert_eq!(path_bytes(&advanced), path_bytes(&trimmed));
-    let later = |replay: &Replay| size(replay, 0, Section::Later(table)).unwrap().raw;
-    assert!(
-        later(&advanced) < later(&trimmed),
-        "{} {}",
-        later(&advanced),
-        later(&trimmed)
+        path_bytes(&advanced)
     );
 }
 

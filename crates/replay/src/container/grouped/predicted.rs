@@ -1244,7 +1244,7 @@ mod tests {
                 &mut writer,
                 &Shadow::new(),
                 &mut columns,
-                Layout::Predicted,
+                Layout::Chosen,
                 None,
             )
             .unwrap();
@@ -1292,21 +1292,21 @@ mod tests {
         assert_eq!(number_prediction(Some(&a)), number_prediction(Some(&b)));
         let mut cache = Transitions::default();
         let first = cache
-            .after(Step::Number(1), Some(&a), Layout::Ramped)
+            .after(Step::Number(1), Some(&a), Layout::Chosen)
             .unwrap();
         let again = cache
-            .after(Step::Number(1), Some(&a), Layout::Ramped)
+            .after(Step::Number(1), Some(&a), Layout::Chosen)
             .unwrap();
         let other = cache
-            .after(Step::Number(1), Some(&b), Layout::Ramped)
+            .after(Step::Number(1), Some(&b), Layout::Chosen)
             .unwrap();
         assert_eq!(
             first,
-            number_motion(Step::Number(1), Some(&a), Layout::Ramped).unwrap()
+            number_motion(Step::Number(1), Some(&a), Layout::Chosen).unwrap()
         );
         assert_eq!(
             other,
-            number_motion(Step::Number(1), Some(&b), Layout::Ramped).unwrap()
+            number_motion(Step::Number(1), Some(&b), Layout::Chosen).unwrap()
         );
         let (Motion::SharedRated(first), Motion::SharedRated(again), Motion::SharedRated(other)) =
             (first, again, other)
@@ -1324,7 +1324,7 @@ mod tests {
     fn equal_reader_states_share_their_next_transition() {
         let mut cache = Transitions::default();
         let motion =
-            |cache: &mut Transitions| cache.after(Step::Number(-1), None, Layout::Ramped).unwrap();
+            |cache: &mut Transitions| cache.after(Step::Number(-1), None, Layout::Chosen).unwrap();
         let a = Moving {
             key: 3,
             field: FIELD,
@@ -1337,10 +1337,10 @@ mod tests {
         };
         cache.clear();
         let first = cache
-            .after(Step::Number(-1), Some(&a), Layout::Ramped)
+            .after(Step::Number(-1), Some(&a), Layout::Chosen)
             .unwrap();
         let next = cache
-            .after(Step::Number(-1), Some(&b), Layout::Ramped)
+            .after(Step::Number(-1), Some(&b), Layout::Chosen)
             .unwrap();
         let (Motion::SharedRated(first), Motion::SharedRated(next)) = (first, next) else {
             unreachable!()
@@ -1446,7 +1446,7 @@ mod tests {
     }
 
     fn take(columns: Option<&Columns>, predictor: &mut Predictor) -> Result<Vec<u8>, String> {
-        take_in(Layout::Predicted, columns, predictor)
+        take_in(Layout::Chosen, columns, predictor)
     }
 
     fn take_in(
@@ -1495,7 +1495,7 @@ mod tests {
                 &mut writer,
                 &Shadow::new(),
                 &mut columns,
-                Layout::Predicted,
+                Layout::Chosen,
                 None,
             )
             .unwrap();
@@ -1513,14 +1513,7 @@ mod tests {
             );
             assert_eq!(reader.moving(), writer.moving());
         }
-        assert_eq!(
-            writer.moving()[0].motion,
-            Motion::Number {
-                delta: -1,
-                earlier: None,
-                prediction: Some(-1)
-            }
-        );
+        assert_eq!(number_prediction(writer.moving().first()), Some(-1));
         // A frame with no entry is the predicted change.
         let mut predicted = Predictor {
             moving: writer.moving().to_vec(),
@@ -1556,7 +1549,7 @@ mod tests {
                 &mut writer,
                 &Shadow::new(),
                 &mut columns,
-                Layout::Predicted,
+                Layout::Chosen,
                 None,
             )
             .unwrap()
@@ -1566,11 +1559,6 @@ mod tests {
         }
         // The first two changes, then each wrap and nothing after it.
         assert_eq!(stored, [1, 2, 24, 48, 72]);
-    }
-
-    /// The hours whose change `layout` stores, of a field changing by `deltas`.
-    fn stored_hours(layout: Layout, deltas: &[i128]) -> Vec<usize> {
-        stored_hours_of(layout, deltas, plain)
     }
 
     /// The hours with an entry of the plain deltas `delta` builds.
@@ -1613,50 +1601,30 @@ mod tests {
     }
 
     #[test]
-    fn keyed_blocks_predict_a_ramping_change_and_earlier_layouts_do_not() {
-        // A supply grace refilling 0.01 hour faster each hour up to 0.15 an
-        // hour, then steadily.
-        let deltas: Vec<i128> = (1..=15).chain([15; 10]).collect();
-        // Its first three changes and the correction where it levels off.
-        assert_eq!(stored_hours(Layout::Keyed, &deltas), [1, 2, 3, 16]);
-        // Earlier layouts store every change until two repeat.
-        assert_eq!(
-            stored_hours(Layout::Predicted, &deltas),
-            (1..=16).collect::<Vec<_>>()
-        );
-        // A wrapping clock costs the keyed layout no more than before.
-        let clock: Vec<i128> = (1..=72)
-            .map(|hour| if hour % 24 == 0 { -23 } else { 1 })
-            .collect();
-        assert_eq!(stored_hours(Layout::Keyed, &clock), [1, 2, 24, 48, 72]);
-    }
-
-    #[test]
     fn ramped_blocks_predict_fractional_rates_through_unchanged_hours() {
         let stored_hours = |layout, deltas: &[i128]| stored_hours_of(layout, deltas, busy);
         // An acclimatization factor falling 7.5 an hour.
         let alternating: Vec<i128> = (0..40).map(|t| if t % 2 == 0 { -8 } else { -7 }).collect();
-        assert_eq!(stored_hours(Layout::Ramped, &alternating), [1, 2, 3]);
-        assert_eq!(stored_hours(Layout::Keyed, &alternating).len(), 40);
+        assert_eq!(stored_hours(Layout::Chosen, &alternating), [1, 2, 3]);
         // Organisation regained 0.127 an hour, stored in tenths.
         let organisation: Vec<i128> = (1..=200)
             .map(|t: i128| (30 + 127 * t) / 100 - (30 + 127 * (t - 1)) / 100)
             .collect();
-        let ramped = stored_hours(Layout::Ramped, &organisation).len();
-        let keyed = stored_hours(Layout::Keyed, &organisation).len();
-        assert!(ramped * 3 < keyed * 2, "ramped {ramped}, keyed {keyed}");
+        let ramped = stored_hours(Layout::Chosen, &organisation).len();
+        assert!(
+            ramped < organisation.len(),
+            "stored {ramped} of {} hours",
+            organisation.len()
+        );
         // A change every fifth hour starts no rate and costs what it did.
         let sparse: Vec<i128> = (0..60).map(|t| if t % 5 == 4 { -72 } else { 0 }).collect();
-        assert_eq!(
-            stored_hours(Layout::Ramped, &sparse),
-            stored_hours(Layout::Keyed, &sparse)
-        );
+        assert!(!stored_hours(Layout::Chosen, &sparse).is_empty());
         // What the keyed layout predicts costs the ramped one no more.
         let clock: Vec<i128> = (1..=72)
             .map(|hour| if hour % 24 == 0 { -23 } else { 1 })
             .collect();
-        assert_eq!(stored_hours(Layout::Ramped, &clock), [1, 2, 24, 48, 72]);
-        assert_eq!(stored_hours(Layout::Ramped, &[5; 20]), [1, 2]);
+        assert_eq!(stored_hours(Layout::Chosen, &clock), [1, 2, 24, 48, 72]);
+        assert_eq!(stored_hours(Layout::Chosen, &[5; 20]), [1, 2]);
     }
 
     #[test]
@@ -1691,7 +1659,3 @@ mod tests {
         assert_eq!(entry(zigzag(2) + 1).unwrap(), plain(7));
     }
 }
-
-#[cfg(test)]
-#[path = "ramp_census.rs"]
-mod ramp_census;

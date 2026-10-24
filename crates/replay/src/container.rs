@@ -40,7 +40,9 @@ pub use decoded_sections::{SectionCacheCensus, SectionConsumer};
 #[cfg(any(test, feature = "test-support"))]
 pub use decoded_sections::{SectionDecode, WireDecode, WireRoute};
 mod file_backed;
+mod section_chunks;
 mod stream;
+pub use section_chunks::{SectionChunk, SectionChunks};
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_work;
 mod watched;
@@ -51,7 +53,7 @@ pub use watched::{BlockWatch, Keep, Watched, Watching};
 // V1E branch 6 held 720 valid frames (~5.95 GB raw) between keyframes;
 // writers must close smaller independently decodable blocks before this bound.
 // A grouped block keeps each table's plain updates, its plain frame headers
-// and its stored sections within it; an interleaved block its plain frames.
+// and its stored sections within it.
 pub const MAX_BLOCK_RAW_BYTES: usize = replay_frame::envelope::MAX_RECORD_BYTES;
 
 type FrameObserver<'a> =
@@ -265,6 +267,7 @@ impl RecoveryNote {
 pub struct Replay {
     bytes: Vec<u8>,
     decoded_sections: decoded_sections::Cache,
+    anchor_candidates: grouped::CandidateCache,
     file: Option<File>,
     held_length: u64,
     /// The header version, validated before decoding any frames.
@@ -380,69 +383,6 @@ impl CampaignHistory {
             tracker.begin_session(session.id)?;
         }
         Ok(tracker)
-    }
-}
-
-/// The interleaved block layout older recordings use: one zstd frame of a
-/// frame count and length-prefixed plain frames. Writers emit grouped blocks;
-/// tests build interleaved ones to check the reading path.
-#[cfg(test)]
-struct RawBlock {
-    branch: BranchId,
-    first_hour: Hour,
-    last_hour: Hour,
-    frames: Vec<u8>,
-    count: u32,
-}
-
-#[cfg(test)]
-impl RawBlock {
-    fn new(frame: &Frame) -> Self {
-        Self {
-            branch: frame.branch,
-            first_hour: frame.hour,
-            last_hour: frame.hour,
-            frames: Vec::new(),
-            count: 0,
-        }
-    }
-    fn fits(&self, payload_bytes: usize, limit: usize) -> bool {
-        self.frames
-            .len()
-            .checked_add(payload_bytes)
-            .and_then(|size| size.checked_add(8))
-            .is_some_and(|size| size <= limit)
-    }
-    fn push_payload(&mut self, frame: &Frame, payload: &[u8], limit: usize) -> io::Result<()> {
-        if !self.fits(payload.len(), limit) {
-            return Err(invalid("single replay frame exceeds raw block size limit"));
-        }
-        put_bytes(&mut self.frames, payload)?;
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| invalid("too many frames"))?;
-        self.last_hour = frame.hour;
-        Ok(())
-    }
-    fn push(&mut self, frame: &Frame) -> io::Result<[usize; TABLE_COUNT]> {
-        let mut payload = Vec::new();
-        let sizes = frame.encode_with_sizes(&mut payload)?;
-        self.push_payload(frame, &payload, MAX_BLOCK_RAW_BYTES)?;
-        Ok(sizes)
-    }
-    fn compress(self) -> io::Result<CompressedBlock> {
-        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3)?;
-        encoder.include_checksum(true)?;
-        encoder.write_all(&self.count.to_le_bytes())?;
-        encoder.write_all(&self.frames)?;
-        Ok(CompressedBlock {
-            branch: self.branch,
-            first_hour: self.first_hour,
-            last_hour: self.last_hour,
-            raw_length: (self.frames.len() + 4) as u64,
-            bytes: encoder.finish()?,
-        })
     }
 }
 
@@ -1181,6 +1121,7 @@ impl Replay {
         Ok(Self {
             bytes: Vec::new(),
             decoded_sections: decoded_sections::Cache::default(),
+            anchor_candidates: grouped::CandidateCache::default(),
             file: None,
             held_length: 0,
             format,
@@ -1377,8 +1318,8 @@ impl Replay {
         self.read_block_inner(index, None)
     }
 
-    /// [`Replay::read_block`], decoding the frame payloads on `parallel`'s
-    /// worker threads once their boundaries are known. The same frames and the
+    /// [`Replay::read_block`], decoding table sections on `parallel`'s
+    /// worker threads. The same frames and the
     /// same first error; only a caller that owns the machine's spare cores asks
     /// for it (the viewer's playback read-ahead), never the collector.
     pub fn read_block_parallel(
@@ -1390,7 +1331,6 @@ impl Replay {
     }
 
     /// Preserve full wire validation but do not retain unrelated table payloads.
-    /// The block is streamed, so its raw bytes are never held whole.
     pub fn read_block_selected(
         &self,
         index: &BlockIndex,
@@ -1400,8 +1340,7 @@ impl Replay {
     }
 
     /// [`Replay::read_block_selected`], decoding a grouped block's tables on
-    /// `parallel`'s workers. The same frames and the same first error;
-    /// interleaved blocks keep their sequential payload streaming.
+    /// `parallel`'s workers. The same frames and the same first error.
     #[cfg(any(test, feature = "test-support"))]
     pub fn read_block_selected_parallel(
         &self,
@@ -1432,78 +1371,14 @@ impl Replay {
         index: &BlockIndex,
         parallel: Option<&Parallel<'_>>,
     ) -> io::Result<Vec<Frame>> {
-        if let Some(block) = self.grouped_block(index)? {
-            let frames =
-                check_block_frames(index, grouped::read(self, index, &block, None, parallel)?)?;
-            self.mark_verified(index);
-            return Ok(frames);
-        }
-        if self.file.is_some() {
-            let mut frames = Vec::new();
-            self.visit_file_block(index, None, &mut |frame| {
-                engine_allocation::reserve(&mut frames, 1)?;
-                frames.push(frame);
-                Ok(true)
-            })?;
-            return Ok(frames);
-        }
-        let mut inflated = self.inflate(index)?;
-        let mut raw = engine_allocation::vec(to_usize(index.raw_length)?)?;
-        inflated
-            .by_ref()
-            .take(index.raw_length)
-            .read_to_end(&mut raw)
-            .map_err(engine_allocation::allocation_error)?;
-        if raw.len() as u64 != index.raw_length || inflated.read(&mut [0])? != 0 {
-            return Err(invalid("block raw length mismatch"));
-        }
-        let mut decoder = Decoder::new(&raw);
-        let count = decoder.count(4)?;
-        if count == 0 {
-            return Err(invalid("empty block"));
-        }
-        validate_frame_count(index, count as u64)?;
-        // The payload boundaries first, then the payloads decoded (in parallel
-        // when asked), then every check in position order: the first error
-        // reported is the one a frame-by-frame reader would have met first.
-        let mut payloads = engine_allocation::vec(count)?;
-        let mut boundary_error = None;
-        for _ in 0..count {
-            let payload = decoder
-                .u32()
-                .and_then(|length| decoder.take(length as usize));
-            match payload {
-                Ok(payload) => payloads.push(payload),
-                Err(error) => {
-                    boundary_error = Some(error);
-                    break;
-                }
-            }
-        }
-        let decoded = decode_payloads(&payloads, parallel, self.format)?;
-        let mut frames = engine_allocation::vec(count)?;
-        let mut order = BlockOrder::new(index);
-        for frame in decoded {
-            let frame = frame?;
-            order.next(&frame)?;
-            frames.push(frame);
-        }
-        if let Some(error) = boundary_error {
-            return Err(error);
-        }
-        decoder.finish()?;
-        order.finish()?;
-        if let Some(position) = self.block_position(index) {
-            self.verified[position].store(true, Ordering::Release);
-        }
+        let block = self.grouped_block(index)?;
+        let frames =
+            check_block_frames(index, grouped::read(self, index, &block, None, parallel)?)?;
+        self.mark_verified(index);
         Ok(frames)
     }
 
-    /// Each frame of a block in order, inflated and decoded one at a time with only
-    /// `selected` tables kept, until `visit` returns false: one payload is held at a
-    /// time however large the block. Every read of a block not yet verified decodes
-    /// and checks all of it, as [`Replay::read_block`] does, even after `visit` stops:
-    /// only a block that has passed every check may be left partway through.
+    /// Each selected frame of an admitted block in order, until `visit` returns false.
     pub fn visit_block(
         &self,
         index: &BlockIndex,
@@ -1521,147 +1396,21 @@ impl Replay {
         // One copy of the block walk serves every visitor, rather than one each.
         visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
     ) -> io::Result<()> {
-        if let Some(block) = self.grouped_block(index)? {
-            let frames = check_block_frames(
-                index,
-                grouped::read(self, index, &block, selected, parallel)?,
-            )?;
-            for frame in frames {
-                if !visit(frame)? {
-                    break;
-                }
+        let block = self.grouped_block(index)?;
+        let frames = check_block_frames(
+            index,
+            grouped::read(self, index, &block, selected, parallel)?,
+        )?;
+        for frame in frames {
+            if !visit(frame)? {
+                break;
             }
-            // A grouped read inflates only the selected tables' sections; as for
-            // an interleaved block, a first read checks all of it, here every
-            // section's checksum, even after `visit` stops.
-            if selected.is_some() && !self.is_verified(index) {
-                grouped::verify(&block, index)?;
-            }
-            self.mark_verified(index);
-            return Ok(());
         }
-        if self.file.is_some() {
-            return self.visit_file_block(index, selected, visit);
+        if selected.is_some() && !self.is_verified(index) {
+            grouped::verify(&block, index)?;
         }
-        let mut raw = Inflated {
-            stream: self.inflate(index)?,
-            read: 0,
-        };
-        let result = self.visit_inflated(&mut raw, index, selected, visit);
-        // A whole read checks the length first, so a block of the wrong length says so.
-        result.map_err(|error| {
-            if engine_allocation::is_allocation_error(&error)
-                || error.kind() == io::ErrorKind::Interrupted
-            {
-                return error;
-            }
-            match io::copy(&mut raw.stream, &mut io::sink()) {
-                Err(inflate) => inflate,
-                Ok(rest) if raw.read + rest != index.raw_length => {
-                    invalid("block raw length mismatch")
-                }
-                Ok(_) => error,
-            }
-        })
-    }
-
-    fn visit_inflated(
-        &self,
-        raw: &mut Inflated<impl Read>,
-        index: &BlockIndex,
-        selected: Option<&[TableId]>,
-        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
-    ) -> io::Result<()> {
-        self.visit_inflated_frames(raw, index, selected, visit, self.is_verified(index))?;
         self.mark_verified(index);
         Ok(())
-    }
-
-    fn visit_inflated_frames(
-        &self,
-        raw: &mut Inflated<impl Read>,
-        index: &BlockIndex,
-        selected: Option<&[TableId]>,
-        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
-        verified: bool,
-    ) -> io::Result<()> {
-        let mut word = [0; 4];
-        raw.fill(&mut word)?;
-        let count = u64::from(u32::from_le_bytes(word));
-        let mut remaining = index.raw_length.saturating_sub(4);
-        if count > remaining / 4 {
-            return Err(invalid_static(
-                "collection length exceeds remaining payload",
-            ));
-        }
-        if count == 0 {
-            return Err(invalid("empty block"));
-        }
-        validate_frame_count(index, count)?;
-        let mut order = BlockOrder::new(index);
-        let mut payload = Vec::new();
-        let mut visiting = true;
-        for _ in 0..count {
-            raw.fill(&mut word)?;
-            let length = u64::from(u32::from_le_bytes(word));
-            remaining = remaining
-                .checked_sub(4 + length)
-                .ok_or_else(|| invalid_static("truncated field"))?;
-            let length = to_usize(length)?;
-            let additional = length.saturating_sub(payload.len());
-            engine_allocation::reserve(&mut payload, additional)?;
-            payload.resize(length, 0);
-            raw.fill(&mut payload)?;
-            let frame = decode_payload(&payload, selected, self.format)?;
-            order.next(&frame)?;
-            if visiting && !visit(frame)? {
-                if verified {
-                    return Ok(());
-                }
-                visiting = false;
-            }
-        }
-        if remaining != 0 {
-            return Err(invalid_static("trailing bytes"));
-        }
-        if raw.stream.read(&mut [0])? != 0 {
-            return Err(invalid("block raw length mismatch"));
-        }
-        order.finish()?;
-        Ok(())
-    }
-
-    /// The block's zstd stream, at most one byte past its recorded raw length.
-    fn inflate(&self, index: &BlockIndex) -> io::Result<impl Read + '_> {
-        if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
-            return Err(invalid("block exceeds raw size limit"));
-        }
-        let start = to_usize(index.offset)?;
-        let end = to_usize(
-            index
-                .offset
-                .checked_add(index.length)
-                .ok_or_else(|| invalid("block offset overflow"))?,
-        )?;
-        let compressed = self
-            .bytes
-            .get(start..end)
-            .ok_or_else(|| invalid("block outside replay"))?;
-        if compressed.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd]) {
-            return Err(invalid("block is not a zstd frame"));
-        }
-        let frame_size = zstd::zstd_safe::find_frame_compressed_size(compressed)
-            .map_err(|_| invalid("invalid zstd frame"))?;
-        if frame_size != compressed.len() {
-            return Err(invalid(
-                "block contains trailing or concatenated zstd frames",
-            ));
-        }
-        let mut decompressor = zstd::stream::read::Decoder::with_buffer(compressed)
-            .map_err(zstd_error)?
-            .single_frame();
-        decompressor.window_log_max(26).map_err(zstd_error)?;
-        Ok(CheckedInflation(decompressor.take(index.raw_length + 1)))
     }
 
     fn mark_verified(&self, index: &BlockIndex) {
@@ -1670,17 +1419,17 @@ impl Replay {
         }
     }
 
-    /// A grouped block's stored bytes; `None` for an interleaved block.
-    fn grouped_block(&self, index: &BlockIndex) -> io::Result<Option<Cow<'_, [u8]>>> {
+    /// A current grouped block's stored bytes; other layouts are refused.
+    fn grouped_block(&self, index: &BlockIndex) -> io::Result<Cow<'_, [u8]>> {
         let _cpu = crate::cpu::scope("decode", None);
         if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
             return Err(invalid("block exceeds raw size limit"));
         }
-        if self.file.is_some() && !self.held_grouped(index)? {
-            return Ok(None);
-        }
         let block = self.block_bytes(index)?;
-        Ok(grouped::is_grouped(&block).then_some(block))
+        if !grouped::is_grouped(&block) {
+            return Err(invalid("unsupported replay block magic"));
+        }
+        Ok(block)
     }
 
     /// A block's stored bytes.
@@ -1701,29 +1450,26 @@ impl Replay {
             .ok_or_else(|| invalid("block outside replay"))
     }
 
-    /// The compressed sections of a grouped block; `None` for an interleaved
-    /// block, whose single zstd frame has no sections.
+    /// The compressed sections of a current grouped block.
     pub fn block_sections(&self, index: &BlockIndex) -> io::Result<Option<Vec<SectionSize>>> {
         let block = self.block_bytes(index)?;
         if !grouped::is_grouped(&block) {
-            return Ok(None);
+            return Err(invalid("unsupported replay block magic"));
         }
         grouped::sections(&block, index).map(Some)
     }
 
-    /// The table sections of a grouped block split into their columns, each
-    /// also compressed alone; `None` for an interleaved block.
+    /// The table sections split into their columns, each also compressed alone.
     pub fn block_columns(&self, index: &BlockIndex) -> io::Result<Option<Vec<ColumnSizes>>> {
         let block = self.block_bytes(index)?;
         if !grouped::is_grouped(&block) {
-            return Ok(None);
+            return Err(invalid("unsupported replay block magic"));
         }
         grouped::section_columns(&block, index).map(Some)
     }
 
     /// Every section of a grouped block with its plain bytes compressed again
-    /// at each of `levels` (zstd, windows within what readers accept);
-    /// `None` for an interleaved block.
+    /// at each of `levels` (zstd, windows within what readers accept).
     pub fn block_levels(
         &self,
         index: &BlockIndex,
@@ -1731,7 +1477,7 @@ impl Replay {
     ) -> io::Result<Option<Vec<SectionLevels>>> {
         let block = self.block_bytes(index)?;
         if !grouped::is_grouped(&block) {
-            return Ok(None);
+            return Err(invalid("unsupported replay block magic"));
         }
         grouped::section_levels(&block, index, levels).map(Some)
     }
@@ -2904,51 +2650,6 @@ pub struct Parallel<'a> {
 /// Frames a worker takes at least, so a small block is not split at all.
 const PARALLEL_FRAMES: usize = 32;
 
-/// Each payload's frame, in payload order.
-fn decode_payloads(
-    payloads: &[&[u8]],
-    parallel: Option<&Parallel<'_>>,
-    format: FormatVersion,
-) -> io::Result<Vec<io::Result<Frame>>> {
-    let decode = |payload: &&[u8]| decode_payload(payload, None, format);
-    match parallel {
-        Some(parallel) => parallel_map(payloads, parallel, decode),
-        None => engine_allocation::collect_vec(payloads.iter().map(decode)),
-    }
-}
-
-fn decode_payload(
-    payload: &[u8],
-    selected: Option<&[crate::rows::TableId]>,
-    format: FormatVersion,
-) -> io::Result<Frame> {
-    let _cpu = crate::cpu::scope("decode", None);
-    let mut decoder = Decoder::new(payload);
-    let frame = Frame::decode_version(&mut decoder, selected, format)?;
-    decoder.finish()?;
-    Ok(frame)
-}
-
-/// A block's inflated stream and how much of it has been read.
-struct Inflated<R> {
-    stream: R,
-    read: u64,
-}
-
-impl<R: Read> Inflated<R> {
-    /// A stream ending early is a block shorter than its index says.
-    fn fill(&mut self, bytes: &mut [u8]) -> io::Result<()> {
-        self.stream
-            .read_exact(bytes)
-            .map_err(|error| match error.kind() {
-                io::ErrorKind::UnexpectedEof => invalid("block raw length mismatch"),
-                _ => error,
-            })?;
-        self.read += bytes.len() as u64;
-        Ok(())
-    }
-}
-
 /// The order a block's frames keep: its branch, a keyframe first and only first,
 /// and rising hours from the index's first hour to its last.
 struct BlockOrder<'a> {
@@ -2970,26 +2671,11 @@ fn zstd_error(error: io::Error) -> io::Error {
         invalid(error.to_string())
     }
 }
-struct CheckedInflation<R>(R);
-impl<R: Read> Read for CheckedInflation<R> {
-    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        self.0.read(output).map_err(zstd_error)
-    }
-}
-
 fn recording_damage(error: &io::Error) -> bool {
     matches!(
         error.kind(),
         io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
     )
-}
-
-fn validate_frame_count(index: &BlockIndex, count: u64) -> io::Result<()> {
-    let hours = i64::from(index.last_hour) - i64::from(index.first_hour) + 1;
-    if hours <= 0 || count > hours as u64 {
-        return Err(invalid("block frame count exceeds hour range"));
-    }
-    Ok(())
 }
 
 impl<'a> BlockOrder<'a> {
@@ -3023,53 +2709,6 @@ impl<'a> BlockOrder<'a> {
         }
         Ok(())
     }
-}
-
-/// `work` over `items` in order, on up to `parallel.workers` threads.
-fn parallel_map<T: Sync, R: Send>(
-    items: &[T],
-    parallel: &Parallel<'_>,
-    work: impl Fn(&T) -> R + Sync,
-) -> io::Result<Vec<R>> {
-    let workers = parallel
-        .workers
-        .min(items.len().div_ceil(PARALLEL_FRAMES))
-        .max(1);
-    if workers <= 1 {
-        return engine_allocation::collect_vec(items.iter().map(&work));
-    }
-    let run = items.len().div_ceil(workers);
-    let work = &work;
-    let on_worker = parallel.on_worker;
-    // Measurement only: the workers' CPU is the caller's family's.
-    let cpu_family = crate::cpu::family();
-    std::thread::scope(|scope| {
-        let mut handles = engine_allocation::vec(workers)?;
-        let mut out = engine_allocation::vec(items.len())?;
-        for chunk in items.chunks(run) {
-            let priority = job_priority::JobPriority::current();
-            let spawned = std::thread::Builder::new()
-                .name("replay parallel decode".into())
-                .spawn_scoped(scope, move || {
-                    priority.enter(job_priority::Level::Normal);
-                    on_worker();
-                    let _cpu = crate::cpu::scope("decode", cpu_family);
-                    engine_allocation::collect_vec(chunk.iter().map(work))
-                });
-            handles.push((chunk, spawned.ok()));
-        }
-        for (chunk, handle) in handles {
-            match handle {
-                Some(handle) => match handle.join() {
-                    Ok(results) => out.extend(results?),
-                    Err(panic) => std::panic::resume_unwind(panic),
-                },
-                // A worker the OS refused leaves its run to this thread.
-                None => out.extend(chunk.iter().map(work)),
-            }
-        }
-        Ok(out)
-    })
 }
 
 /// Take work in queue order but return results in registry order.
@@ -3181,7 +2820,9 @@ pub(crate) mod pack;
 mod units;
 pub use units::Ahead;
 pub mod patch;
-pub use grouped::{ColumnSize, ColumnSizes, STORED_LEVEL, Section, SectionLevels, SectionSize};
+pub use grouped::{
+    ColumnSize, ColumnSizes, LATER_CHUNK_HOURS, STORED_LEVEL, Section, SectionLevels, SectionSize,
+};
 #[cfg(test)]
 pub(crate) use pack::WORKERS as PACK_WORKERS;
 

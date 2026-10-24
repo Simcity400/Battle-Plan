@@ -643,3 +643,47 @@ fn rejected_preparation_never_replaces_the_recording_or_removes_its_torn_tail() 
         old.read_block(&old.index[0]).unwrap()
     );
 }
+
+#[test]
+fn chunked_appends_and_torn_tail_recovery_keep_the_last_committed_save() {
+    let hours: Vec<_> = (1..=200).collect();
+    let next_hours: Vec<_> = (721..=1000).collect();
+    let old = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+    let expected = old.append(&[records(2, &next_hours)]).unwrap();
+    assert!(expected.index.iter().any(|index| {
+        expected
+            .section_chunks(index, Section::Later(TableId::Clock))
+            .unwrap()
+            .len()
+            > 1
+    }));
+    let file = Scratch::new(old.bytes());
+    let saved = save_in_place(&file.0, &segment(7, records(2, &next_hours))).unwrap();
+    assert_eq!(file.bytes(), expected.bytes());
+    for index in &saved.index {
+        assert_eq!(
+            saved.read_block(index).unwrap(),
+            expected.read_block(index).unwrap()
+        );
+    }
+    let mut bytes = expected.bytes().to_vec();
+    let slot = old.slot.unwrap();
+    bytes[slot..slot + commit::SLOT_SIZE]
+        .copy_from_slice(&old.bytes()[slot..slot + commit::SLOT_SIZE]);
+    for end in [
+        old.bytes().len(),
+        old.bytes().len() + 1,
+        expected.revision().trailer as usize,
+        bytes.len() - 1,
+    ] {
+        let reopened = Replay::open(bytes[..end].to_vec()).unwrap();
+        assert_eq!(reopened.revision(), old.revision());
+        assert_eq!(reopened.index, old.index);
+        for index in &reopened.index {
+            assert_eq!(
+                reopened.read_block(index).unwrap(),
+                old.read_block(index).unwrap()
+            );
+        }
+    }
+}

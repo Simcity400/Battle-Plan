@@ -1,6 +1,6 @@
 //! `read_block_watched` against each watch's own read, hour by hour.
 
-use super::super::tests::{CAMPAIGN, interleaved_copy, records, source};
+use super::super::tests::{CAMPAIGN, records, source};
 use super::*;
 use crate::{
     frame::FrameEncoder,
@@ -284,9 +284,8 @@ fn together_releasing(
     logs
 }
 
-fn replays() -> (Replay, Replay, Replay, std::path::PathBuf) {
+fn replays() -> (Replay, Replay, std::path::PathBuf) {
     let memory = fixture();
-    let interleaved = interleaved_copy(&memory);
     let path = std::env::temp_dir().join(format!(
         "replay-watched-{}-{:?}.battleplan",
         std::process::id(),
@@ -294,24 +293,20 @@ fn replays() -> (Replay, Replay, Replay, std::path::PathBuf) {
     ));
     std::fs::write(&path, memory.bytes()).unwrap();
     let held = Replay::open_path(&path).unwrap();
-    (memory, interleaved, held, path)
+    (memory, held, path)
 }
 
 /// Every watch in one read is handed exactly what its own read hands it:
 /// frames, change lists, rebuilt tables, quiet spans with their metrics and
 /// sample hours, the recorded updates of its tables, and which visited hours
-/// share each table's allocation; in grouped, interleaved and file-backed
+/// share each table's allocation; in resident and file-backed
 /// blocks, with a gap, a truncated table, an unavailable table and the
 /// snapshot after it.
 #[test]
 fn watches_in_one_read_are_handed_what_their_own_reads_hand_them() {
-    let (memory, interleaved, held, path) = replays();
+    let (memory, held, path) = replays();
     let watchings = watchings();
-    for (label, replay) in [
-        ("memory", &memory),
-        ("interleaved", &interleaved),
-        ("held", &held),
-    ] {
+    for (label, replay) in [("memory", &memory), ("held", &held)] {
         assert_eq!(replay.index.len(), 2, "{label}");
         for (block, index) in replay.index.iter().enumerate() {
             // Every watch together, and each pair (so a watch shares the
@@ -430,8 +425,7 @@ fn a_failed_visit_stops_only_its_watch() {
 
 /// The keyframe check over every table refuses exactly the watches whose own
 /// read refuses the keyframe: one holding a dependent update of a table it
-/// reads, and in an interleaved block one holding a delta of a table it does
-/// not read; a grouped read refuses every watch when a table it decodes for
+/// reads; a read refuses every watch when a table it decodes for
 /// none of them does.
 #[test]
 fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
@@ -449,7 +443,7 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
         .unwrap()
         .remove(0);
     assert!(frame.keyframe);
-    for keyframe in [Keyframe::Grouped(false), Keyframe::Interleaved] {
+    for keyframe in [Keyframe::Grouped(false)] {
         assert!(!tables.refuses_keyframe(
             &clock,
             &crate::frame::RecordedFrame::from(frame.clone()),
@@ -467,7 +461,7 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
         Keyframe::Grouped(true)
     ));
     frame.tables[TableId::SunkShips.index()] = TableUpdate::Unchanged { baseline: 0 };
-    for keyframe in [Keyframe::Grouped(false), Keyframe::Interleaved] {
+    for keyframe in [Keyframe::Grouped(false)] {
         assert!(!tables.refuses_keyframe(
             &clock,
             &crate::frame::RecordedFrame::from(frame.clone()),
@@ -490,11 +484,6 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
         Keyframe::Grouped(false)
     ));
     assert!(tables.refuses_keyframe(
-        &clock,
-        &crate::frame::RecordedFrame::from(frame.clone()),
-        Keyframe::Interleaved
-    ));
-    assert!(tables.refuses_keyframe(
         &ships,
         &crate::frame::RecordedFrame::from(frame.clone()),
         Keyframe::Grouped(false)
@@ -505,17 +494,12 @@ fn a_dependent_keyframe_refuses_the_watches_whose_own_reads_refuse_it() {
 /// before any hour is reconstructed, every hour's recorded updates of the
 /// tables kept and the watches' tables as a selected read of them returns
 /// them, and its watches are still handed what their own reads hand them.
-/// An interleaved block's frames are not kept.
 #[test]
 fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads() {
-    let (memory, interleaved, held, path) = replays();
+    let (memory, held, path) = replays();
     let watchings = watchings();
     let extra = [TableId::Countries, TableId::Clock, TableId::CountryLinks];
-    for (label, replay) in [
-        ("memory", &memory),
-        ("interleaved", &interleaved),
-        ("held", &held),
-    ] {
+    for (label, replay) in [("memory", &memory), ("held", &held)] {
         for index in &replay.index {
             let mut logs: Vec<Log> = watchings.iter().map(|_| Log::default()).collect();
             let owns: Vec<Vec<TableId>> = watchings.iter().map(|&watching| own(watching)).collect();
@@ -558,13 +542,10 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                         || Ok(()),
                     )
                     .unwrap();
-                if !std::ptr::eq(replay, &interleaved) {
-                    let mut union: Vec<TableId> =
-                        owns.iter().flatten().copied().chain(extra).collect();
-                    union.sort_unstable();
-                    union.dedup();
-                    assert_eq!(decoded() - before, union.len(), "each section decoded once");
-                }
+                let mut union: Vec<TableId> = owns.iter().flatten().copied().chain(extra).collect();
+                union.sort_unstable();
+                union.dedup();
+                assert_eq!(decoded() - before, union.len(), "each section decoded once");
                 for watch in watches {
                     watch.finish().unwrap();
                 }
@@ -573,10 +554,6 @@ fn a_kept_block_holds_the_selected_reads_updates_and_its_watches_their_own_reads
                 let expected = alone(replay, index, watchings[at]);
                 assert_eq!(log.steps, expected.steps, "{label}: watch {at}");
                 assert_eq!(log.shared(), expected.shared(), "{label}: watch {at}");
-            }
-            if std::ptr::eq(replay, &interleaved) {
-                assert!(kept.is_none(), "{label}: an interleaved block is not kept");
-                continue;
             }
             assert!(
                 !visited_before_kept,
@@ -664,7 +641,7 @@ fn kept_only_tables_have_no_reconstructed_views() {
 }
 
 #[test]
-fn clock_hours_keep_no_change_only_division_updates_in_either_layout() {
+fn clock_hours_keep_no_change_only_division_updates() {
     let mut captured = records(1, &[1]);
     captured.pop();
     let mut encoder = FrameEncoder::new();
@@ -682,10 +659,9 @@ fn clock_hours_keep_no_change_only_division_updates_in_either_layout() {
         captured.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
     let grouped = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
-    let interleaved = interleaved_copy(&grouped);
     let clock_tables = own(Watching::Every(&[TableId::Clock]));
     let fields = [TableFields::named(TableId::Divisions, &["province"]).unwrap()];
-    for replay in [&grouped, &interleaved] {
+    for replay in [&grouped] {
         for index in &replay.index {
             let raw = replay
                 .read_block_selected(index, &[TableId::Clock, TableId::Divisions])

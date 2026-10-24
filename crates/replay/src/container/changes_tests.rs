@@ -1,6 +1,6 @@
 //! `read_block_changes` against `read_block_alone`, hour by hour.
 
-use super::super::tests::{CAMPAIGN, interleaved_copy, records, source};
+use super::super::tests::{CAMPAIGN, records, source};
 use super::*;
 use crate::{
     frame::{FrameEncoder, not_selected},
@@ -434,12 +434,11 @@ fn changed_hours_equal_blocks_read_alone_and_quiet_hours_keep_watched_fields() {
             "block {block}'s CountryLinks keyframe is anchored to an earlier block's"
         );
     }
-    let interleaved = interleaved_copy(&memory);
     let path =
         std::env::temp_dir().join(format!("replay-changes-{}.battleplan", std::process::id()));
     std::fs::write(&path, memory.bytes()).unwrap();
     let held = Replay::open_path(&path).unwrap();
-    for replay in [&memory, &interleaved, &held] {
+    for replay in [&memory, &held] {
         // Every block alone on its own thread, the last first.
         let mut visits: Vec<Vec<Vec<Hour>>> = std::thread::scope(|scope| {
             let reads: Vec<_> = replay
@@ -506,10 +505,7 @@ fn cancellation_visitor_errors_and_damage_stop_as_blocks_read_alone() {
         0b11000
     );
     // A damaged block refuses with the error reading it alone gives.
-    for mut damaged in [
-        replay.bytes().to_vec(),
-        interleaved_copy(&replay).bytes().to_vec(),
-    ] {
+    for mut damaged in [replay.bytes().to_vec()] {
         let tail = Replay::open(damaged.clone())
             .unwrap()
             .index

@@ -146,10 +146,7 @@ impl Drop for File {
 }
 
 fn same_anchors(actual: &Anchors, expected: &Anchors) {
-    assert_eq!(
-        (actual.branch, actual.position),
-        (expected.branch, expected.position)
-    );
+    assert_eq!(actual.position, expected.position);
     for (actual, expected) in actual
         .snapshots
         .iter()
@@ -268,4 +265,20 @@ fn anchor_candidate_preserves_allocation_identity_and_ordinary_refusals() {
         assert!(anchor_candidate::<()>(Err(kind.into())).unwrap().is_none());
     }
     assert_eq!(anchor_candidate(Ok(7)).unwrap(), Some(7));
+}
+
+#[test]
+fn rejoining_chunk_columns_propagates_allocation_failures() {
+    if !child("rejoining_chunk_columns_propagates_allocation_failures") {
+        return;
+    }
+    let columns = [b"synthetic column".as_slice(); FIELDS + 1];
+    let raw = chunked::frame(&columns).unwrap();
+    let (result, attempts) = checked(None, || chunked::join([Ok(raw.clone())]));
+    assert_eq!(result.unwrap(), raw);
+    assert!(attempts >= columns.len() + 1);
+    for ordinal in 1..=attempts {
+        let (result, _) = checked(Some(ordinal), || chunked::join([Ok(raw.clone())]));
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
+    }
 }

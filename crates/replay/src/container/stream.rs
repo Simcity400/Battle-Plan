@@ -185,31 +185,17 @@ impl ReplayStream {
                     }
                 };
                 check()?;
-                let grouped = if replay.is_file_backed() {
-                    replay.held_grouped(index)?
-                } else {
-                    replay.grouped_block(index)?.is_some()
+                // The observer synchronously waits for these reads.
+                let caller = job_priority::Caller::current();
+                let enter = move || caller.clone().enter();
+                let parallel = Parallel {
+                    workers: super::pack::workers(),
+                    on_worker: &enter,
                 };
-                let frames = if grouped {
-                    // The observer synchronously waits for these reads: its
-                    // decoder and table helpers run at the observer's job level.
-                    let caller = job_priority::Caller::current();
-                    let enter = move || caller.clone().enter();
-                    let parallel = Parallel {
-                        workers: super::pack::workers(),
-                        on_worker: &enter,
-                    };
-                    Some(replay.read_block_recorded_selected_parallel(index, tables, &parallel)?)
-                } else {
-                    // Admission verifies a malformed tail before observers see it.
-                    replay.visit_block(index, Some(tables), |_| {
-                        check()?;
-                        Ok(true)
-                    })?;
-                    None
-                };
+                let frames =
+                    replay.read_block_recorded_selected_parallel(index, tables, &parallel)?;
                 check()?;
-                let send = |frame: RecordedFrame| {
+                let send = |frame: RecordedFrame| -> io::Result<bool> {
                     check()?;
                     #[cfg(test)]
                     if let Some(hook) = &on_read {
@@ -220,13 +206,8 @@ impl ReplayStream {
                         .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
                     Ok(true)
                 };
-                match frames {
-                    Some(frames) => {
-                        for frame in frames {
-                            send(frame)?;
-                        }
-                    }
-                    None => replay.visit_block(index, Some(tables), |frame| send(frame.into()))?,
+                for frame in frames {
+                    send(frame)?;
                 }
                 Ok(())
             })?;
@@ -317,19 +298,6 @@ impl Replay {
         mut check: impl FnMut() -> io::Result<()>,
     ) -> io::Result<()> {
         check()?;
-        let grouped = if self.is_file_backed() {
-            self.held_grouped(index)?
-        } else {
-            self.grouped_block(index)?.is_some()
-        };
-        if !grouped {
-            return self.read_block_alone(
-                index,
-                tables,
-                |raw, frame| visit(Arc::new(raw.into()), frame),
-                check,
-            );
-        }
         let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
             engine_allocation::reserve(&mut selected, 1)?;
@@ -410,21 +378,6 @@ fn reconstruct_recorded_block(
     mut visit: impl FnMut(RecordedFrame, &DecodedFrame) -> io::Result<()>,
     mut check: impl FnMut() -> io::Result<()>,
 ) -> io::Result<FrameDecoder> {
-    let grouped = if replay.is_file_backed() {
-        replay.held_grouped(index)?
-    } else {
-        replay.grouped_block(index)?.is_some()
-    };
-    if !grouped {
-        return reconstruct_block(
-            replay,
-            index,
-            tables,
-            decoder,
-            |raw, frame| visit(raw.into(), frame),
-            check,
-        );
-    }
     let frames = replay.read_block_recorded_selected(index, tables)?;
     check()?;
     let mut decoder = decoder()?;
@@ -447,50 +400,25 @@ fn reconstruct_block(
     mut visit: impl FnMut(Frame, &DecodedFrame) -> io::Result<()>,
     mut check: impl FnMut() -> io::Result<()>,
 ) -> io::Result<FrameDecoder> {
-    // Grouped selected reads return only after the native reader's selected
-    // decoding and first-read section verification succeed. Keep those
-    // admitted frames for one reconstruction pass. Interleaved blocks keep
-    // their bounded payload streaming and admission pass.
-    let grouped = if replay.is_file_backed() {
-        replay.held_grouped(index)?
-    } else {
-        replay.grouped_block(index)?.is_some()
-    };
-    let frames = if grouped {
-        Some(replay.read_block_selected(index, tables)?)
-    } else {
-        replay.visit_block(index, Some(tables), |_| {
-            check()?;
-            Ok(true)
-        })?;
-        None
-    };
+    let frames = replay.read_block_selected(index, tables)?;
     check()?;
     let mut decoder = decoder()?;
-    let mut reconstruct = |frame: Frame| {
+    let mut reconstruct = |frame: Frame| -> io::Result<bool> {
         let decoded = decoder.advance(&frame)?;
         validate_campaign(decoded, &replay.campaign_id)?;
         visit(frame, decoded)?;
         Ok(true)
     };
-    match frames {
-        Some(frames) => {
-            for frame in frames {
-                check()?;
-                reconstruct(frame)?;
-            }
-        }
-        None => replay.visit_block(index, Some(tables), |frame| {
-            check()?;
-            reconstruct(frame)
-        })?,
+    for frame in frames {
+        check()?;
+        reconstruct(frame)?;
     }
     Ok(decoder)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{CAMPAIGN, interleaved_copy, records, source};
+    use super::super::tests::{CAMPAIGN, records, source};
     use super::*;
     use crate::{frame::FrameEncoder, rows::SunkShipsRow};
     use std::sync::mpsc;
@@ -588,14 +516,13 @@ mod tests {
     #[test]
     fn independent_blocks_equal_continuous_frames_checkpoints_and_samples() {
         let memory = recording();
-        let interleaved = interleaved_copy(&memory);
         let path = std::env::temp_dir().join(format!(
             "replay-independent-{}.battleplan",
             std::process::id()
         ));
         std::fs::write(&path, memory.bytes()).unwrap();
         let held = Replay::open_path(&path).unwrap();
-        for replay in [&memory, &interleaved, &held] {
+        for replay in [&memory, &held] {
             for tables in [
                 &TableId::ALL[..],
                 &[
@@ -662,12 +589,11 @@ mod tests {
             (memory.index[4].branch, memory.index[4].first_hour),
             (1, 1444)
         );
-        let interleaved = interleaved_copy(&memory);
         let path =
             std::env::temp_dir().join(format!("replay-alone-{}.battleplan", std::process::id()));
         std::fs::write(&path, memory.bytes()).unwrap();
         let held = Replay::open_path(&path).unwrap();
-        for replay in [&memory, &interleaved, &held] {
+        for replay in [&memory, &held] {
             for tables in [
                 &TableId::ALL[..],
                 &[TableId::Clock, TableId::WorldTension, TableId::SunkShips][..],
@@ -753,7 +679,6 @@ mod tests {
     fn a_wider_read_reconstructs_each_selection_within_it_as_its_own_read() {
         use crate::frame::{SharedView, TableUpdate};
         let memory = continued();
-        let interleaved = interleaved_copy(&memory);
         let path =
             std::env::temp_dir().join(format!("replay-wider-{}.battleplan", std::process::id()));
         std::fs::write(&path, memory.bytes()).unwrap();
@@ -769,7 +694,7 @@ mod tests {
             &[TableId::WorldTension, TableId::SunkShips],
             &wide,
         ];
-        for replay in [&memory, &interleaved, &held] {
+        for replay in [&memory, &held] {
             for tables in narrow {
                 for index in &replay.index {
                     let mut alone = Vec::new();
@@ -885,7 +810,7 @@ mod tests {
     #[test]
     fn reading_overlaps_observation_which_reconstructs_each_hour_after_the_last() {
         let parallel = std::thread::available_parallelism().map_or(1, usize::from) > 1;
-        for replay in [recording(), interleaved_copy(&recording())] {
+        for replay in [recording()] {
             let replay = Arc::new(replay);
             let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
             let mut serial = ReplayStream::new(&TableId::ALL).unwrap();

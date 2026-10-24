@@ -15,48 +15,17 @@ pub(crate) fn trailing_control(
     if directory.sections[target].is_none() {
         return Err(invalid("fixture needs a later table section"));
     }
-    let mut sections = Vec::new();
-    for (id, section) in directory.sections.iter().enumerate() {
-        let Some((offset, length, raw_length)) = section else {
-            continue;
-        };
-        if id == target {
-            let raw = directory.raw(&bytes, id)?.unwrap();
-            let reader =
-                ColumnReader::stored(&raw, table.field_count(), table, replay.format.version())?;
-            let mut columns = Columns::new(table.field_count());
-            for (out, mut input) in columns.0.iter_mut().zip(reader.0) {
-                out.extend_from_slice(input.take(input.remaining())?);
-            }
-            if let Some(marks) = reader.1 {
-                columns.marks(table, marks)?;
-            }
-            columns.0[CONTROL].push(255);
-            let raw = columns.raw();
-            sections.push((id, raw.len(), compress(&raw)?));
-        } else {
-            sections.push((id, *raw_length, bytes[*offset..*offset + *length].to_vec()));
-        }
+    let raw = directory.raw(&bytes, target)?.unwrap();
+    let reader = ColumnReader::stored(&raw, table.field_count(), table, replay.format.version())?;
+    let mut columns = Columns::new(table.field_count());
+    for (out, mut input) in columns.0.iter_mut().zip(reader.0) {
+        out.extend_from_slice(input.take(input.remaining())?);
     }
-    let mut header = Vec::new();
-    put_varint(&mut header, directory.frames as u128);
-    put_varint(&mut header, sections.len() as u128);
-    for (id, raw, stored) in &sections {
-        put_varint(&mut header, *id as u128);
-        put_varint(&mut header, *raw as u128);
-        put_varint(&mut header, stored.len() as u128);
+    if let Some(marks) = reader.1 {
+        columns.marks(table, marks)?;
     }
-    let mut bytes = directory.layout.magic().to_vec();
-    bytes.extend_from_slice(&crc32fast::hash(&header).to_le_bytes());
-    bytes.extend_from_slice(&header);
-    let raw_length = sections.iter().map(|(_, raw, _)| *raw as u64).sum();
-    for (_, _, stored) in sections {
-        bytes.extend_from_slice(&stored);
-    }
-    let mut index = original.clone();
-    index.length = bytes.len() as u64;
-    index.raw_length = raw_length;
-    Ok((index, bytes))
+    columns.0[CONTROL].push(255);
+    replace_sections(replay, original, &[(target, columns.raw())])
 }
 
 #[cfg(test)]

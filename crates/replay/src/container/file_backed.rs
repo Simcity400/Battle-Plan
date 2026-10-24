@@ -4,7 +4,6 @@ use super::*;
 
 #[cfg(test)]
 thread_local! {
-    static HELD_VISIT_PASSES: std::cell::RefCell<Option<Vec<bool>>> = const { std::cell::RefCell::new(None) };
     static HELD_READ_BYTES: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
@@ -14,14 +13,6 @@ pub(super) fn measure_held_reads<T>(read: impl FnOnce() -> T) -> (T, u64) {
     let result = read();
     let bytes = HELD_READ_BYTES.with(|bytes| bytes.replace(None).unwrap());
     (result, bytes)
-}
-
-#[cfg(test)]
-pub(super) fn measure_held_passes<T>(read: impl FnOnce() -> T) -> (T, Vec<bool>) {
-    HELD_VISIT_PASSES.with(|passes| *passes.borrow_mut() = Some(Vec::new()));
-    let result = read();
-    let passes = HELD_VISIT_PASSES.with(|passes| passes.borrow_mut().take().unwrap());
-    (result, passes)
 }
 
 struct PositionalReader<'a> {
@@ -166,15 +157,6 @@ impl Replay {
         Ok(bytes)
     }
 
-    pub(super) fn held_grouped(&self, index: &BlockIndex) -> io::Result<bool> {
-        if index.length < 4 {
-            return Ok(false);
-        }
-        let mut magic = [0; 4];
-        self.read_at(index.offset, &mut magic)?;
-        Ok(grouped::is_grouped(&magic))
-    }
-
     pub(super) fn block_range(
         &self,
         index: &BlockIndex,
@@ -234,116 +216,5 @@ impl Replay {
                 Ok(())
             }
         }
-    }
-
-    pub(super) fn visit_file_block(
-        &self,
-        index: &BlockIndex,
-        selected: Option<&[TableId]>,
-        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
-    ) -> io::Result<()> {
-        self.visit_file_block_with(index, selected, visit, &mut || Ok(()))
-    }
-
-    fn visit_file_block_with(
-        &self,
-        index: &BlockIndex,
-        selected: Option<&[TableId]>,
-        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
-        check: &mut dyn FnMut() -> io::Result<()>,
-    ) -> io::Result<()> {
-        check()?;
-        let file = self.file.as_ref().unwrap();
-        let position = self
-            .block_position(index)
-            .ok_or_else(|| invalid("block outside replay"))?;
-        // Admission checks all wire grammar and the checksum before any visitor receives a frame.
-        if !self.verified[position].load(Ordering::Acquire) {
-            self.visit_file_pass(
-                file,
-                index,
-                selected,
-                &mut |_| {
-                    check()?;
-                    Ok(true)
-                },
-                true,
-            )?;
-            self.verified[position].store(true, Ordering::Release);
-        }
-        self.visit_file_pass(
-            file,
-            index,
-            selected,
-            &mut |frame| {
-                check()?;
-                visit(frame)
-            },
-            false,
-        )
-    }
-
-    fn visit_file_pass(
-        &self,
-        file: &File,
-        index: &BlockIndex,
-        selected: Option<&[TableId]>,
-        visit: &mut dyn FnMut(Frame) -> io::Result<bool>,
-        validate: bool,
-    ) -> io::Result<()> {
-        #[cfg(test)]
-        HELD_VISIT_PASSES.with(|passes| {
-            if let Some(passes) = &mut *passes.borrow_mut() {
-                passes.push(validate);
-            }
-        });
-        if index.raw_length > MAX_BLOCK_RAW_BYTES as u64 {
-            return Err(invalid("block exceeds raw size limit"));
-        }
-        let mut magic = [0; 4];
-        PositionalReader {
-            file,
-            offset: index.offset,
-            remaining: magic.len() as u64,
-        }
-        .read_exact(&mut magic)?;
-        if magic != [0x28, 0xb5, 0x2f, 0xfd] {
-            return Err(invalid("block is not a zstd frame"));
-        }
-        let mut decoder = zstd::stream::read::Decoder::with_buffer(io::BufReader::with_capacity(
-            64 * 1024,
-            PositionalReader {
-                file,
-                offset: index.offset,
-                remaining: index.length,
-            },
-        ))
-        .map_err(zstd_error)?
-        .single_frame();
-        decoder.window_log_max(26).map_err(zstd_error)?;
-        let mut raw = Inflated {
-            stream: decoder.take(index.raw_length + 1),
-            read: 0,
-        };
-        // Only the completed grammar and trailing-frame checks may publish admission to other readers.
-        self.visit_inflated_frames(
-            &mut raw,
-            index,
-            selected,
-            visit,
-            !validate && self.is_verified(index),
-        )
-        .map_err(zstd_error)?;
-        if validate {
-            let buffered = raw.stream.into_inner().finish();
-            let unread = buffered.buffer().len() as u64 + buffered.into_inner().remaining;
-            if unread != 0 {
-                self.verified[self.block_position(index).unwrap()].store(false, Ordering::Release);
-                return Err(invalid(
-                    "block contains trailing or concatenated zstd frames",
-                ));
-            }
-        }
-        Ok(())
     }
 }

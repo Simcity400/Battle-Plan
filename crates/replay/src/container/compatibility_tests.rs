@@ -633,35 +633,23 @@ fn replace_legacy_snapshot(
     payload
 }
 
-fn legacy_replay(format: u16) -> Replay {
-    legacy_replay_with(
-        format,
-        &legacy_frame(FormatVersion::read(format).unwrap(), 1000, true),
-    )
+fn historical_frame(format: FormatVersion, selected: Option<&[TableId]>) -> Frame {
+    let payload = legacy_frame(format, 1000, true);
+    let mut input = Decoder::new(&payload);
+    let frame = Frame::decode_version(&mut input, selected, format).unwrap();
+    input.finish().unwrap();
+    frame
 }
 
-/// A file of `format` whose one block holds `payload`, hour 1000's frame.
-fn legacy_replay_with(format: u16, payload: &[u8]) -> Replay {
-    let mut records = records(1, &[1000]);
-    let Record::SessionStart(session) = &mut records[0] else {
-        unreachable!()
-    };
-    session.identity.coverage_policy = 3;
-    let current = Replay::from_records(CAMPAIGN.to_vec(), &[records]).unwrap();
-    let replay = edited_block(&current, |raw| {
-        raw.clear();
-        raw.extend_from_slice(&1_u32.to_le_bytes());
-        put_bytes(raw, payload).unwrap();
-    });
-    Replay::open(relabelled(replay.bytes(), format).unwrap()).unwrap()
+fn historical_snapshot(version: u16) -> (FormatVersion, DecodedFrame) {
+    let format = FormatVersion::read(version).unwrap();
+    let wire = historical_frame(format, None);
+    (format, FrameDecoder::new().apply(&wire).unwrap())
 }
 
 #[test]
-fn older_recording_opens_without_weather_display_boundary() {
-    let replay = legacy_replay(rows::compatibility::EFFECT_INPUTS_FORMAT);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing historical hour")
-    };
+fn older_rows_decode_without_weather_display_boundary() {
+    let (_, frame) = historical_snapshot(rows::compatibility::EFFECT_INPUTS_FORMAT);
     let weather = frame.complete::<rows::tables::WeatherProvinces>().unwrap();
     assert_eq!(weather.len(), 1);
     assert_eq!(weather[0].display, rows::Recorded::NotRecorded);
@@ -670,30 +658,17 @@ fn older_recording_opens_without_weather_display_boundary() {
 }
 
 #[test]
-fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
-    let replay = legacy_replay(94);
-    assert_eq!(replay.format.version(), 94);
-    assert_eq!(replay.identity.coverage_policy, 3);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing hour")
-    };
+fn compatibility_format94_frames_read_appended_tables_with_absent_fields() {
+    let (format, frame) = historical_snapshot(94);
+    assert_eq!(format.version(), 94);
     let countries = frame.complete::<rows::tables::Countries>().unwrap();
     assert_eq!(countries[0].tag, b"AAA");
     assert_eq!(
         frame.complete::<rows::tables::Clock>().unwrap()[0].hour,
         1000
     );
-    let expected_gaps = TableId::ALL
-        .into_iter()
-        .map(|table| {
-            usize::from(replay.format.table_refusal(table).is_some())
-                + replay.format.field_gaps(table).count()
-        })
-        .sum::<usize>()
-        + replay.format.nested_field_gaps().count();
-    assert_eq!(replay.compatibility_gaps().len(), expected_gaps);
     for table in TableId::ALL {
-        match replay.format.table_refusal(table) {
+        match format.table_refusal(table) {
             Some(reason) => assert_eq!(
                 *frame.tables[table.index()],
                 TableView::Unavailable { reason }
@@ -704,12 +679,10 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
             ),
         }
     }
-    let selected = replay
-        .read_block_selected(
-            &replay.index[0],
-            &[TableId::Clock, TableId::DivisionMovement],
-        )
-        .unwrap();
+    let selected = vec![historical_frame(
+        format,
+        Some(&[TableId::Clock, TableId::DivisionMovement]),
+    )];
     assert!(matches!(
         selected[0].tables[TableId::Clock.index()],
         TableUpdate::Snapshot(_)
@@ -739,14 +712,6 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
     assert_eq!(settings[0].law, b"synthetic_law");
     assert_eq!(settings[0].group_laws, rows::Recorded::NotRecorded);
     assert_eq!(settings[0].fallback_law, rows::Recorded::NotRecorded);
-    assert!(
-        replay
-            .append(&[])
-            .err()
-            .unwrap()
-            .to_string()
-            .contains(&format!("Replay append requires format {FORMAT_VERSION}"))
-    );
 }
 
 #[test]
@@ -847,10 +812,7 @@ fn compatibility_published_air_history_updates_preserve_prefixes_and_siblings() 
             }
         }
     }
-    let older = legacy_replay(version);
-    let SeekResult::Frame(frame) = older.seek(1, 1000).unwrap() else {
-        panic!("missing historical hour")
-    };
+    let (_, frame) = historical_snapshot(version);
     let [row] = frame
         .complete::<rows::tables::AirNavalPatrolHistories>()
         .unwrap()
@@ -864,10 +826,7 @@ fn compatibility_published_air_history_updates_preserve_prefixes_and_siblings() 
 #[test]
 fn compatibility_before_political_runtime_inputs_keeps_carrier_prefixes() {
     let before = crate::rows::compatibility::POLITICAL_FORMAT - 1;
-    let replay = legacy_replay(before);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing hour");
-    };
+    let (format, frame) = historical_snapshot(before);
     assert_eq!(
         frame.complete::<rows::tables::Clock>().unwrap()[0].hour,
         1000
@@ -887,8 +846,8 @@ fn compatibility_before_political_runtime_inputs_keeps_carrier_prefixes() {
             .carrier,
         rows::Recorded::NotRecorded
     );
-    assert_eq!(replay.format.fields(TableId::AirBases), 5);
-    assert_eq!(replay.format.fields(TableId::AirBaseRegistrations), 2);
+    assert_eq!(format.fields(TableId::AirBases), 5);
+    assert_eq!(format.fields(TableId::AirBaseRegistrations), 2);
 }
 
 #[test]
@@ -915,10 +874,7 @@ fn compatibility_garrison_old_prefix_retains_values_without_equipment() {
 #[test]
 fn historical_positive_equipment_removals_decode_with_absent_supplemental_columns() {
     for version in [91, 94, 96, 97, 98, 99] {
-        let replay = legacy_replay(version);
-        let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-            panic!("missing historical hour")
-        };
+        let (format, frame) = historical_snapshot(version);
         let amounts = frame
             .complete::<rows::tables::EquipmentDestruction>()
             .unwrap();
@@ -931,13 +887,7 @@ fn historical_positive_equipment_removals_decode_with_absent_supplemental_column
             amounts[0].cause,
             rows::EquipmentDestructionCause::LandCombat
         );
-        assert_eq!(
-            replay
-                .format
-                .field_gaps(TableId::EquipmentDestruction)
-                .count(),
-            2
-        );
+        assert_eq!(format.field_gaps(TableId::EquipmentDestruction).count(), 2);
         assert!(
             frame
                 .complete::<rows::tables::DivisionEquipmentDeletions>()
@@ -947,13 +897,14 @@ fn historical_positive_equipment_removals_decode_with_absent_supplemental_column
             let TableView::Unavailable { reason } = &*frame.tables[table.index()] else {
                 panic!("{table:?} was invented for format {version}")
             };
-            assert_eq!(reason, &replay.format.table_refusal(table).unwrap());
+            assert_eq!(reason, &format.table_refusal(table).unwrap());
             assert!(reason.contains("not recorded"));
         }
         assert!(frame.complete::<rows::tables::Clock>().is_ok());
-        let selected = replay
-            .read_block_selected(&replay.index[0], &[TableId::EquipmentDestruction])
-            .unwrap();
+        let selected = vec![historical_frame(
+            format,
+            Some(&[TableId::EquipmentDestruction]),
+        )];
         assert!(
             matches!(&selected[0].tables[TableId::EquipmentDestruction.index()], TableUpdate::Snapshot(rows) if rows.rows::<rows::tables::EquipmentDestruction>().unwrap()[0].amount_raw == 123_456)
         );
@@ -962,10 +913,7 @@ fn historical_positive_equipment_removals_decode_with_absent_supplemental_column
 
 #[test]
 fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing() {
-    let replay = legacy_replay(RECORDER_INPUTS_FORMAT);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing historical hour");
-    };
+    let (format, frame) = historical_snapshot(RECORDER_INPUTS_FORMAT);
     let tables = TableId::ALL
         .into_iter()
         .filter(|table| {
@@ -982,9 +930,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
                     .any(|field| field.introduced == RECORDER_INPUTS_FORMAT)
         })
         .collect::<Vec<_>>();
-    let selected = replay
-        .read_block_selected(&replay.index[0], &tables)
-        .unwrap();
+    let selected = vec![historical_frame(format, Some(&tables))];
     // OwnedWargoals, introduced with these tables, retired since: its
     // framing is consumed and every recording refuses it by name.
     assert_eq!(
@@ -1007,7 +953,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             rows::compatibility::DAILY_PROGRESS_FORMAT,
             RECORDER_INPUTS_FORMAT
         );
-        assert_eq!(replay.format.table_refusal(table).unwrap(), reason);
+        assert_eq!(format.table_refusal(table).unwrap(), reason);
         assert_eq!(
             *frame.tables[table.index()],
             TableView::Unavailable {
@@ -1024,14 +970,14 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             panic!("{table:?} selected read did not retain its named refusal")
         };
         assert_eq!(selected_reason, &reason, "{table:?}");
-        assert_eq!(*source_format, replay.format, "{table:?}");
+        assert_eq!(*source_format, format, "{table:?}");
         assert!(*recorded_bytes > 0, "{table:?}");
     }
     for table in tables {
         if changed_tables.contains(&table) {
             continue;
         }
-        let mut expected = legacy_rows(table, 1000, replay.format);
+        let mut expected = legacy_rows(table, 1000, format);
         // The fixture writes the historical prefix, not today's appended operands.
         match &mut expected {
             TableRows::DivisionStatus(rows) => {
@@ -1130,13 +1076,13 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             .last_change()
             .appended
             .iter()
-            .filter(|field| field.introduced > replay.format.version())
+            .filter(|field| field.introduced > format.version())
             .fold(0u64, |mask, field| mask | (1u64 << field.index));
         for row in expected.iter() {
             assert_eq!(row.not_recorded_fields(), missing_fields, "{table:?}");
         }
         assert_eq!(
-            replay.format.field_gaps(table).count(),
+            format.field_gaps(table).count(),
             missing_fields.count_ones() as usize,
             "{table:?}"
         );
@@ -1153,7 +1099,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
     }
     // Script history changed its whole layout; admission names the table
     // rather than claiming that its other nested fields still decode.
-    assert_eq!(replay.format.nested_field_gaps().count(), 0);
+    assert_eq!(format.nested_field_gaps().count(), 0);
     let event_refusal = format!(
         "EventFeedHistory not recorded at format 98 (introduced at format {})",
         crate::rows::compatibility::WIDGET_CAPTURE_FORMAT
@@ -1170,7 +1116,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         ))
     );
     assert_eq!(
-        replay.format.table_refusal(TableId::EventFeedHistory),
+        format.table_refusal(TableId::EventFeedHistory),
         Some(event_refusal.clone())
     );
     assert_eq!(
@@ -1179,9 +1125,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
             reason: event_refusal.clone()
         }
     );
-    let history = replay
-        .read_block_selected(&replay.index[0], &[TableId::EventFeedHistory])
-        .unwrap();
+    let history = vec![historical_frame(format, Some(&[TableId::EventFeedHistory]))];
     assert_eq!(
         history[0].tables[TableId::EventFeedHistory.index()],
         TableUpdate::Unavailable {
@@ -1189,17 +1133,6 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
         }
     );
     // Existing prefixes remain readable; additions are named field/table gaps.
-    assert_eq!(
-        replay.compatibility_gaps().len(),
-        TableId::ALL
-            .into_iter()
-            .map(|table| {
-                usize::from(replay.format.table_refusal(table).is_some())
-                    + replay.format.field_gaps(table).count()
-            })
-            .sum::<usize>()
-            + replay.format.nested_field_gaps().count()
-    );
     // OwnedWargoals, introduced with these tables, retired since: its
     // framing is consumed and every recording refuses it by name.
     assert_eq!(
@@ -1216,10 +1149,7 @@ fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing(
 #[test]
 fn compatibility_land_appends_preserve_old_progress_and_mark_casualties_absent() {
     for version in [91, 94, 96, 97, 98, 99] {
-        let replay = legacy_replay(version);
-        let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-            panic!("missing hour")
-        };
+        let (_, frame) = historical_snapshot(version);
         let [progress] = frame
             .complete::<rows::tables::LandCombatProgress>()
             .unwrap()
@@ -1744,10 +1674,7 @@ fn compatibility_format99_eta_rows_are_discarded_through_their_published_layout(
 
 #[test]
 fn compatibility_oracle_witnesses_keep_integrated_recordings_readable() {
-    let replay = legacy_replay(crate::rows::compatibility::POLITICAL_FORMAT - 1);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing historical hour");
-    };
+    let (_, frame) = historical_snapshot(crate::rows::compatibility::POLITICAL_FORMAT - 1);
     let construction = frame
         .complete::<rows::tables::ConstructionLineOutput>()
         .unwrap();
@@ -1766,11 +1693,19 @@ fn compatibility_every_appended_field_is_explicitly_not_recorded() {
     let history = TableId::VariantStats.last_change();
     assert_eq!(history.kind, rows::compatibility::ChangeKind::Layout);
     assert_eq!(history.appended[0].index, 10);
-    assert!(FormatVersion::CURRENT.table_refusal(TableId::VariantStats).is_none());
+    assert!(
+        FormatVersion::CURRENT
+            .table_refusal(TableId::VariantStats)
+            .is_none()
+    );
     // Every format just before an appended field, through real table admission.
     let versions: BTreeSet<u16> = std::iter::once(PROVEN_FROM)
         .chain(TableId::ALL.into_iter().flat_map(|table| {
-            table.last_change().appended.iter().map(|field| field.introduced - 1)
+            table
+                .last_change()
+                .appended
+                .iter()
+                .map(|field| field.introduced - 1)
         }))
         .filter(|version| *version >= PROVEN_FROM)
         .collect();
@@ -1801,9 +1736,17 @@ fn compatibility_every_appended_field_is_explicitly_not_recorded() {
                 .iter()
                 .fold(0, |mask, field| mask | (1 << field.index));
             for row in rows.iter() {
-                assert_eq!(row.not_recorded_fields(), expected, "{table:?} at {version}");
+                assert_eq!(
+                    row.not_recorded_fields(),
+                    expected,
+                    "{table:?} at {version}"
+                );
             }
-            assert_eq!(rows.field_gaps().count(), missing.len(), "{table:?} at {version}");
+            assert_eq!(
+                rows.field_gaps().count(),
+                missing.len(),
+                "{table:?} at {version}"
+            );
         }
         assert!(frame.table_encoded_sizes().is_ok(), "format {version}");
     }
@@ -1942,7 +1885,7 @@ fn compatibility_table_lifetimes_keep_the_old_frame_stream_readable() {
 
 #[test]
 fn compatibility_framing_change_refuses_the_whole_file_by_name() {
-    let replay = legacy_replay(94);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1000])]).unwrap();
     let mut bytes = replay.bytes().to_vec();
     bytes[4..6].copy_from_slice(&(PROVEN_FROM - 1).to_le_bytes());
     assert!(
@@ -2033,67 +1976,6 @@ fn compatibility_old_spool_is_readable_but_cannot_be_rewritten_or_mixed() {
 }
 
 #[test]
-#[ignore = "read-only local recordings; BATTLE_PLAN_COMPAT_RECORDINGS supplies paths"]
-fn compatibility_real_recordings() {
-    let paths = std::env::var("BATTLE_PLAN_COMPAT_RECORDINGS").or_else(|_| std::env::var("HOI4_COMPAT_RECORDINGS")).expect("semicolon-separated paths");
-    for path in paths.split(';') {
-        let replay = Replay::open(std::fs::read(path).unwrap()).unwrap();
-        println!(
-            "RECORDING {path} format={} policy={} blocks={} branches={}",
-            replay.format.version(),
-            replay.identity.coverage_policy,
-            replay.index.len(),
-            replay.branches.len()
-        );
-        for gap in replay.compatibility_gaps() {
-            println!("COMPAT_GAP {gap}");
-        }
-        let mut frames = 0;
-        let mut gaps = BTreeMap::<TableId, BTreeSet<String>>::new();
-        let mut fields = BTreeMap::<String, usize>::new();
-        for index in &replay.index {
-            let mut decoder = FrameDecoder::new();
-            for frame in replay.read_block(index).unwrap() {
-                let decoded = decoder.advance(&frame).unwrap();
-                frames += 1;
-                for table in TableId::ALL {
-                    match &*decoded.tables[table.index()] {
-                        TableView::Unavailable { reason } => {
-                            gaps.entry(table).or_default().insert(reason.clone());
-                        }
-                        TableView::NotRecorded { mode } => {
-                            gaps.entry(table)
-                                .or_default()
-                                .insert(format!("not recorded in a {mode} recording"));
-                        }
-                        TableView::Truncated { missing, .. } => {
-                            gaps.entry(table)
-                                .or_default()
-                                .insert(format!("{missing} missing rows"));
-                        }
-                        TableView::Complete(rows) => {
-                            for (field, count) in rows.field_gaps() {
-                                *fields.entry(format!("{table:?}.{field}")).or_default() += count;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        println!("FRAMES {frames}");
-        for (field, count) in fields {
-            println!("FIELD_GAP {field} {count} row samples not recorded");
-        }
-        for (table, reasons) in gaps {
-            println!(
-                "TABLE_GAP {table:?} {}",
-                reasons.into_iter().collect::<Vec<_>>().join(" | ")
-            );
-        }
-    }
-}
-
-#[test]
 fn command_name_suffixes_preserve_old_prefix_and_explicit_absence() {
     let format = FormatVersion::read(98).unwrap();
     let payload = legacy_frame(format, 1000, true);
@@ -2111,10 +1993,7 @@ fn command_name_suffixes_preserve_old_prefix_and_explicit_absence() {
 
 #[test]
 fn compatibility_previous_format_keeps_positive_destruction_and_refuses_only_new_air_ledgers() {
-    let replay = legacy_replay(rows::compatibility::AIR_LEDGER_FORMAT - 1);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing previous-format hour")
-    };
+    let (_, frame) = historical_snapshot(rows::compatibility::AIR_LEDGER_FORMAT - 1);
     assert_eq!(
         frame.complete::<rows::tables::Clock>().unwrap()[0].hour,
         1000
@@ -2144,11 +2023,8 @@ fn compatibility_previous_format_keeps_positive_destruction_and_refuses_only_new
 }
 
 #[test]
-fn compatibility_previous_format_opens_and_refuses_only_nuclear_strikes() {
-    let replay = legacy_replay(rows::compatibility::NUCLEAR_STRIKES_FORMAT - 1);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing previous-format hour")
-    };
+fn compatibility_previous_frames_refuse_only_nuclear_strikes() {
+    let (_, frame) = historical_snapshot(rows::compatibility::NUCLEAR_STRIKES_FORMAT - 1);
     assert_eq!(
         frame.complete::<rows::tables::Countries>().unwrap()[0].tag,
         b"AAA"
@@ -2161,10 +2037,7 @@ fn compatibility_previous_format_opens_and_refuses_only_nuclear_strikes() {
 
 #[test]
 fn compatibility_previous_format_keeps_whole_fuel_packs_and_refuses_only_their_parts() {
-    let replay = legacy_replay(rows::compatibility::FUEL_DEMAND_PARTS_FORMAT - 1);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing previous-format hour")
-    };
+    let (format, frame) = historical_snapshot(rows::compatibility::FUEL_DEMAND_PARTS_FORMAT - 1);
     let fuel = frame.complete::<rows::tables::CountryFuel>().unwrap();
     // The previous writer stored the pack's hour, which reads as a stamp.
     let rows::Recorded::Value(pack) = &fuel[0].demand else {
@@ -2177,16 +2050,11 @@ fn compatibility_previous_format_keeps_whole_fuel_packs_and_refuses_only_their_p
     };
     assert!(reason.contains("not recorded"), "{reason}");
     // Its packs keep their own lists.
-    assert_eq!(
-        rows::with_demand_parts(fuel, parts, replay.format).unwrap(),
-        fuel
-    );
+    assert_eq!(rows::with_demand_parts(fuel, parts, format).unwrap(), fuel);
     // A selected read of both tables, as the dashboard makes, refuses the
     // parts the same way.
     let selected = [TableId::CountryFuel, TableId::FuelDemandParts];
-    let frames = replay
-        .read_block_selected(&replay.index[0], &selected)
-        .unwrap();
+    let frames = vec![historical_frame(format, Some(&selected))];
     let mut decoder = FrameDecoder::for_tables(&selected);
     let decoded = decoder.advance(&frames[0]).unwrap();
     assert!(matches!(
@@ -2305,28 +2173,6 @@ fn compatibility_previous_format_keeps_modifier_sides_and_refuses_only_member_ro
         decoded.complete::<rows::tables::Clock>().unwrap()[0].hour,
         1000
     );
-    // The same frame in a previous-format file opens and seeks alike.
-    let replay = legacy_replay_with(format.version(), &payload);
-    let SeekResult::Frame(sought) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing previous-format hour")
-    };
-    assert_eq!(
-        sought
-            .complete::<rows::tables::LandCombatModifiers>()
-            .unwrap(),
-        expected(sides.clone().map(|side| side.2)).as_slice()
-    );
-    let TableView::Unavailable { reason } =
-        &*sought.tables[TableId::LandCombatDivisionModifiers.index()]
-    else {
-        panic!("a sought previous-format hour has no member rows")
-    };
-    assert!(reason.contains("not recorded"), "{reason}");
-    assert_eq!(
-        sought.complete::<rows::tables::Clock>().unwrap()[0].hour,
-        1000
-    );
-
     // A delta that moves the defender's border values in 62 and replaces
     // the attacker's member list in 63.
     update.clear();
@@ -2374,11 +2220,7 @@ fn compatibility_previous_format_keeps_modifier_sides_and_refuses_only_member_ro
 #[test]
 fn compatibility_stamped_packets_still_prove_freshness_in_their_own_recordings() {
     use crate::rows::{PACKET_HOUR_HOSTS, PacketHour, STAMPED_PACKET_FORMAT, packet_hours};
-    let format = FormatVersion::read(STAMPED_PACKET_FORMAT).unwrap();
-    let replay = legacy_replay(STAMPED_PACKET_FORMAT);
-    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
-        panic!("missing stamped hour");
-    };
+    let (format, frame) = historical_snapshot(STAMPED_PACKET_FORMAT);
     let mut stamped = 0;
     for table in PACKET_HOUR_HOSTS {
         assert!(format.table_refusal(table).is_none(), "{table:?}");

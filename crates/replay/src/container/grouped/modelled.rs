@@ -1468,8 +1468,41 @@ mod tests {
                 .is_err()
         );
     }
+    #[test]
+    fn encoder_hour_cuts_equal_range_decoder_cursors_including_lookahead() {
+        let mut encoder = Encoder::default();
+        let mut probabilities = [EVEN; 8];
+        let mut bytes = Vec::new();
+        let mut cuts = Vec::new();
+        let mut decisions = Vec::new();
+        let mut sequence = Sequence(17);
+        for hour in 0..720 {
+            let mut row = Vec::new();
+            for _ in 0..if hour % 7 == 0 { 0 } else { hour % 31 + 1 } {
+                let value = sequence.next();
+                let context = value as usize % 8;
+                let bit = value & 32 != 0;
+                encoder.bit(&mut probabilities[context], bit, &mut bytes);
+                row.push((context, bit));
+            }
+            cuts.push(bytes.len() + encoder.waiting());
+            decisions.push(row);
+        }
+        encoder.finish(&mut bytes);
+        let mut input = Decoder::new(&bytes);
+        let mut decoder = RangeDecoder::default();
+        let mut probabilities = [EVEN; 8];
+        for (row, cut) in decisions.iter().zip(cuts) {
+            for &(context, bit) in row {
+                assert_eq!(
+                    decoder
+                        .bit(&mut probabilities[context], &mut input)
+                        .unwrap(),
+                    bit
+                );
+            }
+            assert_eq!(bytes.len() - input.remaining(), cut);
+        }
+        input.finish().unwrap();
+    }
 }
-
-#[cfg(test)]
-#[path = "layout_census.rs"]
-mod layout_census;

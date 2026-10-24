@@ -1,50 +1,4 @@
-//! Grouped replay blocks.
-//!
-//! A grouped block holds one branch's consecutive frames as independently
-//! compressed sections: a header (frame hours and which tables have an entry
-//! in each frame), diagnostics (callback total, pool bytes, dropped-frame
-//! counter and which tables were read) and, for each table, its keyframe entry and its
-//! later entries. Table sections are split into columns (control, keys,
-//! masks, then one per field) so like values compress together, and a reader
-//! that needs few tables decompresses only theirs.
-//!
-//! Entries rearrange the plain table update wire ([`decode_update`]) without
-//! changing what it says: a baseline equal to the previous frame's hour is
-//! implied, an unchanged table with that baseline has no entry, counts are
-//! varints, and a changed byte field (string, list or nested record) may be a
-//! [`patch`] against the same field's previous plain encoding in this block.
-//! In a predicted block ([`MAGIC`], [`CHOSEN_MAGIC`], [`RAMPED_MAGIC`], [`KEYED_MAGIC`],
-//! [`ANCHORED_MAGIC`], [`PREDICTED_MAGIC`]) a delta against the previous
-//! frame may be a residual entry that stores only what did not move as
-//! [`predicted`], and a frame whose changes are all predicted has no entry.
-//! Its writer keeps, per table, residual or plain entries, and per byte
-//! field column, patches or patches whose in-place bytes are differences,
-//! whichever compresses smaller. In a keyed block ([`RAMPED_MAGIC`],
-//! [`KEYED_MAGIC`]) later deltas and residual entries name each row by how
-//! many of the table's rows at the frame before it skips, and store each
-//! mask by its place among the masks stored before it ([`keyed`]); a
-//! modelled block ([`MAGIC`]) stores those rows and masks as decisions of a
-//! context model instead, by which rows the entries before stored and with
-//! which masks ([`modelled`]). A chosen block ([`CHOSEN_MAGIC`]) keeps, per
-//! table's later section, model decisions or listed skips and mask places,
-//! whichever compresses smaller. Its masks column starts with 0 for modelled
-//! or 1 for listed; the control, deleted-key run and field columns agree.
-//! A ramped block ([`MAGIC`], [`CHOSEN_MAGIC`], [`RAMPED_MAGIC`])
-//! predicts each numeric field from the rate its last changes allow,
-//! unchanged hours included ([`ramp`]); a keyed one follows a steadily
-//! growing change.
-//!
-//! A keyframe entry may instead be a change against an earlier keyframe of
-//! the same table anywhere earlier in the file (its anchor), named by how
-//! many blocks back it is, so loaded branches and appended sessions start
-//! from what earlier ones stored: a table that does not change, a static one
-//! included, is stored once per file. The anchor is the table's latest
-//! snapshot, or its latest keyframe while the chain stays within
-//! [`chain_charge`], so a seek inflates at most twice a table's snapshot
-//! section and rebuilds its rows at most [`REBUILD_SHARE`] times however
-//! many blocks back the snapshot is. Earlier layouts anchor within their
-//! branch by hour: a predicted block through at most [`MAX_ANCHOR_DEPTH`]
-//! anchors, earlier ones only to snapshots.
+//! Grouped replay blocks with independently compressed, state-carrying later-hour chunks.
 
 use super::{
     BlockIndex, CompressedBlock, MAX_BLOCK_RAW_BYTES, Parallel, Replay,
@@ -78,6 +32,9 @@ mod allocation_tests;
 #[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
+mod chunk_tests;
+mod chunked;
+#[cfg(test)]
 #[path = "decoded_section_tests.rs"]
 mod decoded_section_tests;
 mod direct;
@@ -107,177 +64,57 @@ use std::sync::{Arc, OnceLock};
 use keyed::{KeyChanges, KeyReader, KeySet, KeyWriter, MaskList, RowCoding, RowRun};
 use modelled::Model;
 
-/// Grouped blocks whose later entries store row keys and masks as context
-/// model decisions ([`modelled`]), predict each numeric field from the rate
-/// its last changes allow ([`ramp`]), store a list field that is its patch
-/// base without its first element as one tag ([`DROP_FIRST`]) and store a
-/// row's advance against the head its list last dropped ([`advance_pair`]).
-pub(crate) const MAGIC: &[u8; 4] = b"H4G9";
-/// Grouped blocks whose later sections choose model decisions or listed
-/// skips and mask places, with the same predictions and patches as advanced
-/// blocks. The layout writers emit.
-pub(crate) const CHOSEN_MAGIC: &[u8; 4] = b"H4GC";
-/// Earlier format-102 trimmed blocks, which store [`DROP_FIRST`] but no
-/// advance. Read, never written.
-pub(crate) const TRIMMED_MAGIC: &[u8; 4] = b"H4G8";
-/// Earlier format-102 modelled blocks, without the [`DROP_FIRST`] tag. Read,
-/// never written.
-pub(crate) const MODELLED_MAGIC: &[u8; 4] = b"H4G7";
-/// Earlier format-102 ramped blocks, whose later entries store row keys and
-/// masks against the table's rows and masks before them ([`keyed`]). Read,
-/// never written.
-pub(crate) const RAMPED_MAGIC: &[u8; 4] = b"H4G6";
-/// Earlier format-102 keyed blocks, which predict a numeric field only from
-/// its last two or three changes, while it changes every hour. Read, never
-/// written.
-pub(crate) const KEYED_MAGIC: &[u8; 4] = b"H4G5";
-/// Earlier format-102 grouped blocks whose keyframes anchor to any earlier
-/// block of the file, with later entries' row keys stored as key
-/// differences, their masks as they are, and only constant changes
-/// predicted. Read, never written.
-pub(crate) const ANCHORED_MAGIC: &[u8; 4] = b"H4G4";
-/// Earlier format-102 predicted grouped blocks, whose keyframes anchor only
-/// within their branch through at most [`MAX_ANCHOR_DEPTH`] anchors. Read,
-/// never written.
-pub(crate) const PREDICTED_MAGIC: &[u8; 4] = b"H4G3";
-/// Earlier format-102 grouped blocks without field prediction. Read, never
-/// written.
-pub(crate) const UNPREDICTED_MAGIC: &[u8; 4] = b"H4G2";
-/// Earlier format-102 grouped blocks without field prediction, whose
-/// diagnostics also hold each read table's time in microseconds. Read, never
-/// written.
-pub(crate) const TIMED_MAGIC: &[u8; 4] = b"H4GB";
+pub(crate) const CHOSEN_MAGIC: &[u8; 4] = b"H4GD";
 
-/// The grouped layouts, from their first bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Layout {
-    Timed,
-    Unpredicted,
-    Predicted,
-    Anchored,
-    Keyed,
-    Ramped,
-    Modelled,
-    Trimmed,
-    Advanced,
     Chosen,
 }
 
 impl Layout {
     fn of(block: &[u8]) -> Option<Self> {
-        match block.get(..4)? {
-            magic if magic == CHOSEN_MAGIC => Some(Self::Chosen),
-            magic if magic == MAGIC => Some(Self::Advanced),
-            magic if magic == TRIMMED_MAGIC => Some(Self::Trimmed),
-            magic if magic == MODELLED_MAGIC => Some(Self::Modelled),
-            magic if magic == RAMPED_MAGIC => Some(Self::Ramped),
-            magic if magic == KEYED_MAGIC => Some(Self::Keyed),
-            magic if magic == ANCHORED_MAGIC => Some(Self::Anchored),
-            magic if magic == PREDICTED_MAGIC => Some(Self::Predicted),
-            magic if magic == UNPREDICTED_MAGIC => Some(Self::Unpredicted),
-            magic if magic == TIMED_MAGIC => Some(Self::Timed),
-            _ => None,
-        }
+        (block.get(..4)? == CHOSEN_MAGIC).then_some(Self::Chosen)
     }
     fn magic(self) -> &'static [u8; 4] {
-        match self {
-            Self::Timed => TIMED_MAGIC,
-            Self::Unpredicted => UNPREDICTED_MAGIC,
-            Self::Predicted => PREDICTED_MAGIC,
-            Self::Anchored => ANCHORED_MAGIC,
-            Self::Keyed => KEYED_MAGIC,
-            Self::Ramped => RAMPED_MAGIC,
-            Self::Modelled => MODELLED_MAGIC,
-            Self::Trimmed => TRIMMED_MAGIC,
-            Self::Advanced => MAGIC,
-            Self::Chosen => CHOSEN_MAGIC,
-        }
+        CHOSEN_MAGIC
     }
-    /// Residual entries and difference patches.
     fn predicts(self) -> bool {
-        matches!(
-            self,
-            Self::Predicted
-                | Self::Anchored
-                | Self::Keyed
-                | Self::Ramped
-                | Self::Modelled
-                | Self::Trimmed
-                | Self::Advanced
-                | Self::Chosen
-        )
+        true
     }
-    /// Keyframes anchor to any earlier block of the file, named by how many
-    /// blocks back it is, within [`chain_charge`].
     fn anchors_back(self) -> bool {
-        matches!(
-            self,
-            Self::Anchored
-                | Self::Keyed
-                | Self::Ramped
-                | Self::Modelled
-                | Self::Trimmed
-                | Self::Advanced
-                | Self::Chosen
-        )
+        true
     }
-    /// Later entries store row keys and masks against the rows and masks
-    /// before them ([`keyed`]).
     fn keyed(self) -> bool {
-        matches!(
-            self,
-            Self::Keyed
-                | Self::Ramped
-                | Self::Modelled
-                | Self::Trimmed
-                | Self::Advanced
-                | Self::Chosen
-        )
+        true
     }
-    /// Later deltas and residual entries can store their rows and masks as
-    /// context model decisions ([`modelled`]); chosen sections can list them.
     fn modelled(self) -> bool {
-        matches!(
-            self,
-            Self::Modelled | Self::Trimmed | Self::Advanced | Self::Chosen
-        )
+        true
     }
-    /// Each later section keeps model decisions or listed skips and mask
-    /// places, whichever compresses smaller.
     fn chooses_rows(self) -> bool {
-        self == Self::Chosen
+        true
     }
-    /// A numeric field that changed by a steadily changing amount is
-    /// predicted ([`predicted`]).
     fn accelerates(self) -> bool {
-        self == Self::Keyed
+        false
     }
-    /// A numeric field is predicted from the rate its last changes allow,
-    /// unchanged hours included ([`ramp`]).
     fn ramped(self) -> bool {
-        matches!(
-            self,
-            Self::Ramped | Self::Modelled | Self::Trimmed | Self::Advanced | Self::Chosen
-        )
+        true
     }
-    /// A list field that is its patch base without its first element is
-    /// stored as [`DROP_FIRST`].
     fn trims(self) -> bool {
-        matches!(self, Self::Trimmed | Self::Advanced | Self::Chosen)
+        true
     }
-    /// A numeric field of an [`advance_pair`] without a predicted change is
-    /// stored against the change that takes it to its list's head.
     fn advances(self) -> bool {
-        matches!(self, Self::Advanced | Self::Chosen)
+        true
     }
 }
+
+pub const LATER_CHUNK_HOURS: usize = 168;
 
 /// Whether a block's first bytes name a grouped layout.
 pub(crate) fn is_grouped(block: &[u8]) -> bool {
     Layout::of(block).is_some()
 }
 /// Recordings from this format on write grouped blocks.
-pub(crate) const GROUPED_FORMAT: u16 = 102;
+pub(crate) const GROUPED_FORMAT: u16 = 124;
 
 const HEADER: usize = 0;
 const DIAGNOSTICS: usize = 1;
@@ -600,16 +437,20 @@ impl Columns {
         Ok(())
     }
     /// Keep each byte field column's smaller form, compressed alone.
-    fn choose(&mut self) -> io::Result<()> {
-        for (column, differences) in self.0.iter_mut().zip(&mut self.1).skip(FIELDS) {
+    fn choose(&mut self) -> io::Result<Vec<usize>> {
+        let mut chosen = Vec::new();
+        for (at, (column, differences)) in
+            self.0.iter_mut().zip(&mut self.1).enumerate().skip(FIELDS)
+        {
             if let Some(differences) = differences.take()
                 && differences != *column
                 && compress(&differences)?.len() < compress(column)?.len()
             {
                 *column = differences;
+                chosen.push(at);
             }
         }
-        Ok(())
+        Ok(chosen)
     }
     fn marks(&mut self, table: TableId, marks: &[u8]) -> io::Result<()> {
         if super::aliases::private::stored(table, FormatVersion::CURRENT.version()) {
@@ -699,9 +540,6 @@ enum Mode {
     Plain,
     /// A later entry: baselines are told relative to the previous frame.
     Later { previous: Hour },
-    /// A keyframe change against the keyframe of the branch's block that
-    /// starts at the baseline hour, told as hours before `block`'s.
-    Anchor { block: Hour },
     /// A keyframe change against the keyframe of the block `blocks` before
     /// this one in the file, of any branch.
     Back { blocks: usize },
@@ -726,8 +564,8 @@ fn put_entry(
     // The changed rows' run, then the deleted keys'.
     let mut runs = 0;
     let entry = match (status, mode) {
-        (DELTA, Mode::Anchor { .. } | Mode::Back { .. }) => ANCHOR_DELTA,
-        (UNCHANGED, Mode::Anchor { .. } | Mode::Back { .. }) => ANCHOR_UNCHANGED,
+        (DELTA, Mode::Back { .. }) => ANCHOR_DELTA,
+        (UNCHANGED, Mode::Back { .. }) => ANCHOR_UNCHANGED,
         (DELTA | UNCHANGED, Mode::Plain) => {
             return Err(invalid_static(
                 "grouped keyframe entry depends on a baseline",
@@ -750,9 +588,6 @@ fn put_entry(
                 match mode {
                     Mode::Later { previous } => {
                         put_varint(control, zigzag(i128::from(previous) - i128::from(baseline)));
-                    }
-                    Mode::Anchor { block } => {
-                        put_varint(control, (i128::from(block) - i128::from(baseline)) as u128);
                     }
                     // The anchor's block, not its hour, names it.
                     Mode::Back { blocks } => put_varint(control, blocks as u128),
@@ -1009,9 +844,6 @@ impl Budget {
 /// The earlier keyframe an anchored keyframe entry changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AnchorRef {
-    /// Earlier layouts: the keyframe of the same branch's block starting at
-    /// this hour.
-    Hour(Hour),
     /// The keyframe of the block this many blocks earlier in the file.
     Back(usize),
 }
@@ -1075,17 +907,12 @@ fn take_head(
         if offset == 0 {
             return Err(invalid_static("keyframe anchor is not an earlier block"));
         }
-        if layout.anchors_back() {
-            // An anchored change means the rows it changes, whatever their
-            // hour; the plain baseline is not read.
+        {
+            // The plain baseline is not read for an anchored change.
             plain.extend_from_slice(&block.to_le_bytes());
             anchor = Some(AnchorRef::Back(usize::try_from(offset).map_err(|_| {
                 invalid_static("keyframe anchor is not an earlier block")
             })?));
-        } else {
-            let hour = hour_from(i128::from(block) - i128::try_from(offset).unwrap_or(i128::MAX))?;
-            plain.extend_from_slice(&hour.to_le_bytes());
-            anchor = Some(AnchorRef::Hour(hour));
         }
     }
     Ok(Head {
@@ -1241,8 +1068,6 @@ fn take_body(
 /// latest keyframe stored as a snapshot, and its latest keyframe. Earlier
 /// layouts keep them per branch.
 pub(crate) struct Anchors {
-    /// The branch earlier layouts anchor within.
-    branch: Option<BranchId>,
     /// The position in the file's block index of the next block.
     position: usize,
     snapshots: Vec<Option<Anchor>>,
@@ -1256,8 +1081,7 @@ struct Anchor {
     block: usize,
     rows: SharedView,
     shadow: Shadow,
-    /// Earlier layouts: anchors between this keyframe and its snapshot, 0
-    /// for a snapshot.
+    /// Anchors between this keyframe and its snapshot, 0 for a snapshot.
     depth: usize,
     /// The raw bytes of the snapshot it reaches (its own for a snapshot).
     root: usize,
@@ -1265,11 +1089,6 @@ struct Anchor {
     /// a snapshot.
     charge: usize,
 }
-
-/// A predicted block's keyframe reaches its snapshot through at most this
-/// many anchors, so a seek decodes at most this many other blocks'
-/// keyframe sections per table. Earlier layouts anchor only to snapshots.
-const MAX_ANCHOR_DEPTH: usize = 4;
 
 /// Each anchored keyframe a reader rebuilds a table's rows for counts this
 /// share of its snapshot's raw bytes besides its own ([`chain_charge`]).
@@ -1308,7 +1127,6 @@ impl Anchors {
     /// No candidates yet; the next block is at `position` in the file.
     pub(crate) fn at(position: usize) -> Self {
         Self {
-            branch: None,
             position,
             snapshots: (0..TABLE_COUNT).map(|_| None).collect(),
             latest: (0..TABLE_COUNT).map(|_| None).collect(),
@@ -1457,6 +1275,8 @@ fn seed_table(
 /// One way of writing a table's later entries, and which frames have one.
 struct Later {
     columns: Columns,
+    cuts: Vec<Vec<usize>>,
+    alternate_cuts: Vec<Vec<usize>>,
     entries: usize,
     /// By frame, the keyframe first.
     present: Vec<bool>,
@@ -1485,11 +1305,41 @@ impl Later {
         }
         Self {
             columns,
+            cuts: Vec::new(),
+            alternate_cuts: Vec::new(),
             entries: 0,
             present: vec![true],
             masks: MaskList::default(),
             model: layout.modelled().then(|| Model::new(fields)),
         }
+    }
+    fn checkpoint(&mut self, slot: usize) {
+        let mut cut: Vec<_> = self.columns.0.iter().map(Vec::len).collect();
+        // Encoder pending bytes plus its four-byte lookahead equal the decoder cursor.
+        cut[MASKS] += self.model.as_ref().map_or(0, Model::waiting);
+        let alternate: Vec<_> = self
+            .columns
+            .1
+            .iter()
+            .zip(&cut)
+            .map(|(column, &length)| column.as_ref().map_or(length, Vec::len))
+            .collect();
+        while self.cuts.len() <= slot {
+            self.cuts.push(
+                self.cuts
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| vec![0; cut.len()]),
+            );
+            self.alternate_cuts.push(
+                self.alternate_cuts
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| vec![0; cut.len()]),
+            );
+        }
+        self.cuts[slot] = cut;
+        self.alternate_cuts[slot] = alternate;
     }
     fn raw_bytes(&self) -> usize {
         let bytes = self
@@ -1498,7 +1348,8 @@ impl Later {
             .iter()
             .map(|column| column.len() + 5)
             .sum::<usize>()
-            + 5;
+            + 5
+            + self.cuts.len() * (5 * self.columns.0.len() + 5);
         let modelled = bytes + self.model.as_ref().map_or(0, Model::waiting);
         match (&self.columns.1[KEYS], &self.columns.1[MASKS]) {
             (Some(keys), Some(masks)) => modelled.max(
@@ -1519,7 +1370,11 @@ impl Later {
     /// at LEVEL before the table chooses residual or plain entries.
     fn compress(&mut self) -> io::Result<(usize, Option<Vec<u8>>)> {
         self.finish();
-        self.columns.choose()?;
+        for column in self.columns.choose()? {
+            for (cut, alternate) in self.cuts.iter_mut().zip(&self.alternate_cuts) {
+                cut[column] = alternate[column];
+            }
+        }
         let mut best = {
             let raw = self.columns.raw();
             (raw.len(), compress_later(&raw, self.entries)?)
@@ -1527,13 +1382,20 @@ impl Later {
         if let (Some(keys), Some(masks)) =
             (self.columns.1[KEYS].take(), self.columns.1[MASKS].take())
         {
-            self.columns.0[KEYS] = keys;
-            self.columns.0[MASKS] = masks;
+            let modelled_keys = std::mem::replace(&mut self.columns.0[KEYS], keys);
+            let modelled_masks = std::mem::replace(&mut self.columns.0[MASKS], masks);
             let raw = self.columns.raw();
             let compressed = compress_later(&raw, self.entries)?;
             // Modelled wins ties, independently of worker scheduling.
             if compressed.as_ref().map_or(0, Vec::len) < best.1.as_ref().map_or(0, Vec::len) {
                 best = (raw.len(), compressed);
+                for (cut, alternate) in self.cuts.iter_mut().zip(&self.alternate_cuts) {
+                    cut[KEYS] = alternate[KEYS];
+                    cut[MASKS] = alternate[MASKS];
+                }
+            } else {
+                self.columns.0[KEYS] = modelled_keys;
+                self.columns.0[MASKS] = modelled_masks;
             }
         }
         Ok(best)
@@ -1582,7 +1444,7 @@ pub(crate) struct BlockWriter {
     tables: Vec<TableWriter>,
     /// Each later frame's hours after the frame before it, less one.
     gaps: Vec<u128>,
-    /// Anchored; tests also write the earlier layouts.
+    /// The block's column encoding.
     layout: Layout,
     /// Tests keep every predicting table's residual entries, whichever is
     /// smaller ([`FORCE_RESIDUAL`]).
@@ -1689,8 +1551,7 @@ fn compress_later(raw: &[u8], entries: usize) -> io::Result<Option<Vec<u8>>> {
 
 #[cfg(test)]
 thread_local! {
-    /// The layout this thread's recordings are written in: tests write
-    /// earlier layouts' anchored recordings with it.
+    /// The layout this thread's recordings are written in.
     pub(crate) static WRITTEN_LAYOUT: std::cell::Cell<Layout> =
         const { std::cell::Cell::new(Layout::Chosen) };
     /// Whether this thread's blocks keep each predicting table's residual
@@ -1769,17 +1630,7 @@ fn put_keyframe(
     let mut anchored: Option<(usize, usize, usize)> = None;
     // The latest snapshot, or the latest keyframe while its chain
     // to a snapshot stays cheap to read.
-    let depth = match layout {
-        Layout::Anchored
-        | Layout::Keyed
-        | Layout::Ramped
-        | Layout::Modelled
-        | Layout::Trimmed
-        | Layout::Advanced
-        | Layout::Chosen => usize::MAX,
-        Layout::Predicted => MAX_ANCHOR_DEPTH,
-        Layout::Unpredicted | Layout::Timed => 1,
-    };
+    let depth = usize::MAX;
     let candidates = [
         snapshot.as_ref(),
         latest
@@ -1800,12 +1651,8 @@ fn put_keyframe(
                 change[0] = UNCHANGED;
                 change.extend_from_slice(&anchor.hour.to_le_bytes());
             }
-            let mode = if layout.anchors_back() {
-                Mode::Back {
-                    blocks: position - anchor.block,
-                }
-            } else {
-                Mode::Anchor { block: first_hour }
+            let mode = Mode::Back {
+                blocks: position - anchor.block,
             };
             let mut candidate = Columns::new(writer.fields);
             put_entry(
@@ -1882,7 +1729,7 @@ impl BlockWriter {
         Self::with_layout(frame, layout)
     }
 
-    /// A block in `layout`: only tests write the earlier ones.
+    /// A block in `layout`.
     pub(crate) fn with_layout(frame: &Frame, layout: Layout) -> io::Result<Self> {
         let format = FormatVersion::CURRENT.version();
         let mode = frame.capture_mode()?;
@@ -2041,15 +1888,9 @@ impl BlockWriter {
             ));
         }
         let layout = self.layout();
-        // Earlier layouts anchor only within a branch.
-        if keyframe && !layout.anchors_back() && anchors.branch != Some(self.branch) {
-            *anchors = Anchors {
-                branch: Some(self.branch),
-                ..Anchors::at(anchors.position)
-            };
-        }
         let format = FormatVersion::CURRENT.version();
         let previous = self.last_hour;
+        let first_hour = self.first_hour;
         let position = anchors.position;
         // Each table's plain update.
         let mut offset = payload.len() - sizes.iter().sum::<usize>();
@@ -2173,6 +2014,13 @@ impl BlockWriter {
                         later.entries += usize::from(marks.column(table, false) != [0]);
                     }
                 }
+                let slot = usize::try_from(i64::from(frame.hour) - i64::from(first_hour) - 1)
+                    .map_err(|_| invalid_static("later hour precedes its keyframe"))?
+                    / LATER_CHUNK_HOURS;
+                writer.plain.checkpoint(slot);
+                if let Some(later) = &mut writer.predicted {
+                    later.checkpoint(slot);
+                }
                 advance_shadow(table, format, plain, &mut writer.shadow)?;
                 if layout.keyed() {
                     writer.keys.advance(table, format, plain)?;
@@ -2207,17 +2055,6 @@ impl BlockWriter {
         // read times for the finalization summary.
         for (byte, old) in reads.iter().zip(&self.reads) {
             diagnostics.push(byte ^ old);
-        }
-        #[cfg(test)]
-        if self.layout == Layout::Timed {
-            for table in &self.present.tables {
-                let ns = metrics.table_ns[table.index()];
-                if ns != 0 {
-                    let micros =
-                        (ns / 1000 + u64::from(ns % 1000 >= 500)).clamp(1, u64::MAX / 1000);
-                    put_varint(diagnostics, u128::from(micros - 1));
-                }
-            }
         }
         self.reads = reads;
         self.pool = metrics.pool_bytes;
@@ -2336,7 +2173,9 @@ impl Compressing {
                 return Ok(None);
             }
             self.sections = self.sections()?;
-            self.unstored = (0..self.sections.len()).collect();
+            self.unstored = (0..self.sections.len())
+                .filter(|&at| !self.sections[at].2.is_empty())
+                .collect();
             self.unstored
                 .sort_by_key(|&at| std::cmp::Reverse(self.sections[at].2.len()));
         }
@@ -2409,8 +2248,9 @@ impl Compressing {
                 writer.keyframe_raw,
                 writer.keyframe,
             ));
-            if let Some((raw, Some(later))) = chosen.take() {
-                sections.push((later_section(writer.table), raw, later));
+            if let Some((_, Some(_))) = chosen.take() {
+                let later = writer.predicted.as_ref().unwrap_or(&writer.plain);
+                sections.extend(chunked::split(later_section(writer.table), later)?);
             }
         }
         Ok(sections)
@@ -2421,13 +2261,37 @@ impl Compressing {
         let sections = &self.sections;
         let mut directory = Vec::new();
         put_varint(&mut directory, u128::from(block.frames));
-        put_varint(&mut directory, sections.len() as u128);
+        let count = sections
+            .iter()
+            .enumerate()
+            .filter(|(at, section)| *at == 0 || sections[*at - 1].0 != section.0)
+            .count();
+        put_varint(&mut directory, count as u128);
         let mut raw_length = 0_usize;
-        for (id, raw, bytes) in sections {
-            put_varint(&mut directory, *id as u128);
-            put_varint(&mut directory, *raw as u128);
-            put_varint(&mut directory, bytes.len() as u128);
-            raw_length += raw;
+        let mut at = 0;
+        while at < sections.len() {
+            let id = sections[at].0;
+            let end = at
+                + sections[at..]
+                    .iter()
+                    .take_while(|section| section.0 == id)
+                    .count();
+            let group = &sections[at..end];
+            let raw: usize = group.iter().map(|section| section.1).sum();
+            let stored: usize = group.iter().map(|section| section.2.len()).sum();
+            put_varint(&mut directory, id as u128);
+            put_varint(&mut directory, raw as u128);
+            put_varint(&mut directory, stored as u128);
+            if id >= 3 && id % 2 == 1 {
+                for (_, raw, bytes) in group {
+                    put_varint(&mut directory, bytes.len() as u128);
+                    put_varint(&mut directory, *raw as u128);
+                }
+            }
+            raw_length = raw_length
+                .checked_add(raw)
+                .ok_or_else(|| invalid_static("block raw length overflow"))?;
+            at = end;
         }
         if raw_length > MAX_BLOCK_RAW_BYTES {
             return Err(invalid("grouped block exceeds raw size limit"));
@@ -2471,11 +2335,12 @@ pub struct SectionSize {
     pub compressed: u64,
 }
 
-struct Directory {
+pub(super) struct Directory {
     frames: usize,
     layout: Layout,
     /// By section id: offset in the block, compressed length, raw length.
     sections: Vec<Option<(usize, usize, usize)>>,
+    chunks: Vec<Vec<(usize, usize, usize)>>,
 }
 
 // The wire decoder admits unsigned u128 varints, at most 19 bytes each.
@@ -2486,7 +2351,7 @@ impl Directory {
         Self::parse_extent(block, block.len(), index)
     }
 
-    fn read(replay: &Replay, index: &BlockIndex) -> io::Result<Self> {
+    pub(super) fn read(replay: &Replay, index: &BlockIndex) -> io::Result<Self> {
         if !replay.is_file_backed() {
             return Self::parse(&replay.block_bytes(index)?, index);
         }
@@ -2510,7 +2375,15 @@ impl Directory {
         let mut input = Decoder::new(&bytes);
         let (_, _, _, count) = Self::counts(&mut input, index)?;
         let prefix_end = bytes.len() - input.remaining();
-        let end = (prefix_end + count * 3 * MAX_VARINT_BYTES).min(length);
+        let slots = chunked::slots(index)?;
+        let entry_bytes = slots
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(3))
+            .and_then(|n| n.checked_mul(MAX_VARINT_BYTES))
+            .and_then(|n| n.checked_mul(count))
+            .and_then(|n| n.checked_add(prefix_end))
+            .ok_or_else(|| invalid_static("chunk index length overflow"))?;
+        let end = entry_bytes.min(length);
         if end > bytes.len() {
             if replay.is_file_backed() {
                 let bytes = bytes.to_mut();
@@ -2560,6 +2433,7 @@ impl Directory {
         let (layout, crc, frames, count) = Self::counts(&mut input, index)?;
         let mut entries = Vec::with_capacity(count);
         let mut previous = None;
+        let slots = chunked::slots(index)?;
         for _ in 0..count {
             let id = varint_usize(&mut input)?;
             if id >= SECTIONS || previous.is_some_and(|previous| id <= previous) {
@@ -2573,7 +2447,34 @@ impl Directory {
             if length == 0 {
                 return Err(invalid_static("grouped section is empty"));
             }
-            entries.push((id, raw, length));
+            let mut chunks = Vec::new();
+            if id >= 3 && id % 2 == 1 {
+                if slots == 0 || slots > input.remaining() / 2 {
+                    return Err(invalid_static("invalid grouped chunk index extent"));
+                }
+                let (mut stored_total, mut raw_total) = (0_usize, 0_usize);
+                for _ in 0..slots {
+                    let stored = varint_usize(&mut input)?;
+                    let plain = varint_usize(&mut input)?;
+                    if (stored == 0) != (plain == 0) {
+                        return Err(invalid_static("empty chunk index entry has nonzero length"));
+                    }
+                    stored_total = stored_total
+                        .checked_add(stored)
+                        .ok_or_else(|| invalid_static("chunk index stored length overflow"))?;
+                    raw_total = raw_total
+                        .checked_add(plain)
+                        .ok_or_else(|| invalid_static("chunk index raw length overflow"))?;
+                    if raw_total > MAX_BLOCK_RAW_BYTES {
+                        return Err(invalid_static("chunk index exceeds raw size limit"));
+                    }
+                    chunks.push((stored, plain));
+                }
+                if (stored_total, raw_total) != (length, raw) {
+                    return Err(invalid_static("chunk index lengths disagree with section"));
+                }
+            }
+            entries.push((id, raw, length, chunks));
         }
         let end = bytes.len() - input.remaining();
         if crc32fast::hash(&bytes[8..end]) != crc {
@@ -2582,7 +2483,8 @@ impl Directory {
         let mut sections = vec![None; SECTIONS];
         let mut offset = end;
         let mut raw_total = 0_usize;
-        for (id, raw, length) in entries {
+        let mut chunks = vec![Vec::new(); SECTIONS];
+        for (id, raw, length, sizes) in entries {
             let next = offset
                 .checked_add(length)
                 .filter(|next| *next <= block_length)
@@ -2591,6 +2493,11 @@ impl Directory {
                 .checked_add(raw)
                 .ok_or_else(|| invalid_static("block raw length mismatch"))?;
             sections[id] = Some((offset, length, raw));
+            let mut chunk_offset = offset;
+            for (stored, plain) in sizes {
+                chunks[id].push((chunk_offset, stored, plain));
+                chunk_offset += stored;
+            }
             offset = next;
         }
         if offset != block_length {
@@ -2598,20 +2505,45 @@ impl Directory {
                 "grouped block has trailing or concatenated bytes",
             ));
         }
-        if raw_total as u64 != index.raw_length {
+        if raw_total > MAX_BLOCK_RAW_BYTES || raw_total as u64 != index.raw_length {
             return Err(invalid_static("block raw length mismatch"));
         }
         Ok(Self {
             frames,
             layout,
             sections,
+            chunks,
         })
+    }
+
+    pub(super) fn chunk_extents(&self, section: Section) -> Vec<(usize, usize, usize)> {
+        let id = match section {
+            Section::Header => HEADER,
+            Section::Diagnostics => DIAGNOSTICS,
+            Section::Keyframe(table) => keyframe_section(table),
+            Section::Later(table) => later_section(table),
+        };
+        if self.chunks[id].is_empty() {
+            self.sections[id].into_iter().collect()
+        } else {
+            self.chunks[id].clone()
+        }
     }
 
     fn raw(&self, block: &[u8], id: usize) -> io::Result<Option<Vec<u8>>> {
         let Some((offset, length, raw)) = self.sections[id] else {
             return Ok(None);
         };
+        if !self.chunks[id].is_empty() {
+            return chunked::join(self.chunks[id].iter().map(|&(offset, length, raw)| {
+                if length == 0 {
+                    Ok(Vec::new())
+                } else {
+                    Self::inflate(&block[offset..offset + length], raw)
+                }
+            }))
+            .map(Some);
+        }
         Self::inflate(&block[offset..offset + length], raw).map(Some)
     }
 
@@ -2624,13 +2556,45 @@ impl Directory {
         let Some((offset, length, raw)) = self.sections[id] else {
             return Ok(None);
         };
+        if !self.chunks[id].is_empty() {
+            return chunked::join(self.chunks[id].iter().map(|&(offset, length, raw)| {
+                if length == 0 {
+                    Ok(Vec::new())
+                } else {
+                    Self::inflate(&replay.block_range(index, offset, length)?, raw)
+                }
+            }))
+            .map(Some);
+        }
         Self::inflate(&replay.block_range(index, offset, length)?, raw).map(Some)
     }
 
     fn inflate(compressed: &[u8], raw: usize) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        Self::inflate_into(compressed, raw, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub(super) fn inflate_into(
+        compressed: &[u8],
+        raw: usize,
+        bytes: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        bytes.clear();
+        if raw > MAX_BLOCK_RAW_BYTES {
+            return Err(invalid_static("chunk exceeds raw size limit"));
+        }
         let _cpu = crate::cpu::scope("inflate", None);
         if compressed.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd]) {
             return Err(invalid_static("grouped section is not a zstd frame"));
+        }
+        if compressed
+            .get(4)
+            .is_none_or(|descriptor| descriptor & 0x04 == 0)
+        {
+            return Err(invalid_static(
+                "grouped section is missing its zstd checksum",
+            ));
         }
         let frame_size = zstd::zstd_safe::find_frame_compressed_size(compressed)
             .map_err(|_| invalid_static("invalid zstd frame"))?;
@@ -2639,20 +2603,19 @@ impl Directory {
                 "grouped section contains trailing or concatenated zstd frames",
             ));
         }
-        // Damage is invalid data, as for an interleaved block.
         let mut decompressor = zstd::stream::read::Decoder::with_buffer(compressed)
             .map_err(zstd_error)?
             .single_frame();
         decompressor.window_log_max(26).map_err(zstd_error)?;
-        let mut bytes = Vec::with_capacity(raw);
+        engine_allocation::reserve(bytes, raw)?;
         decompressor
             .take(raw as u64 + 1)
-            .read_to_end(&mut bytes)
+            .read_to_end(bytes)
             .map_err(zstd_error)?;
         if bytes.len() != raw {
             return Err(invalid_static("grouped section raw length mismatch"));
         }
-        Ok(bytes)
+        Ok(())
     }
 }
 
@@ -2709,31 +2672,31 @@ pub(crate) fn section_columns(block: &[u8], index: &BlockIndex) -> io::Result<Ve
         let Some((_, length, _)) = directory.sections[id] else {
             continue;
         };
-        let raw = directory
-            .raw(block, id)?
-            .ok_or_else(|| invalid_static("grouped section vanished"))?;
-        let mut input = Decoder::new(&raw);
-        let count = varint_usize(&mut input)?;
-        if !(FIELDS..=FIELDS + 64).contains(&count) {
-            return Err(invalid_static("grouped section has the wrong column count"));
+        let section = if id % 2 == 0 {
+            Section::Keyframe(TableId::ALL[(id - 2) / 2])
+        } else {
+            Section::Later(TableId::ALL[(id - 3) / 2])
+        };
+        let mut columns: Vec<ColumnSize> = Vec::new();
+        for (offset, stored, raw) in directory.chunk_extents(section) {
+            if stored == 0 {
+                continue;
+            }
+            let raw = Directory::inflate(&block[offset..offset + stored], raw)?;
+            let slices = chunked::columns(&raw)?;
+            if columns.is_empty() {
+                columns.resize(slices.len(), ColumnSize { raw: 0, alone: 0 });
+            }
+            if columns.len() != slices.len() {
+                return Err(invalid_static("chunk column counts disagree"));
+            }
+            for (size, column) in columns.iter_mut().zip(slices) {
+                size.raw += column.len() as u64;
+                if !column.is_empty() {
+                    size.alone += compress(column)?.len() as u64;
+                }
+            }
         }
-        let lengths = (0..count)
-            .map(|_| varint_usize(&mut input))
-            .collect::<io::Result<Vec<_>>>()?;
-        let mut columns = Vec::with_capacity(count);
-        for length in lengths {
-            let column = input.take(length)?;
-            let alone = if column.is_empty() {
-                0
-            } else {
-                compress(column)?.len() as u64
-            };
-            columns.push(ColumnSize {
-                raw: length as u64,
-                alone,
-            });
-        }
-        input.finish()?;
         let table = TableId::ALL[(id - 2) / 2];
         sections.push(ColumnSizes {
             section: if id % 2 == 0 {
@@ -2761,10 +2724,7 @@ pub(crate) fn section_levels(
     let sizes = sections(block, index)?;
     let mut out = Vec::with_capacity(sizes.len());
     let ids = (0..SECTIONS).filter(|&id| directory.sections[id].is_some());
-    for (id, size) in ids.zip(sizes) {
-        let raw = directory
-            .raw(block, id)?
-            .ok_or_else(|| invalid_static("grouped section vanished"))?;
+    for (_id, size) in ids.zip(sizes) {
         let mut section = SectionLevels {
             section: size.section,
             compressed: size.compressed,
@@ -2773,7 +2733,15 @@ pub(crate) fn section_levels(
         };
         for &level in levels {
             let started = std::time::Instant::now();
-            section.levels.push(compress_at(&raw, level)?.len() as u64);
+            let mut stored = 0_u64;
+            for (offset, length, raw) in directory.chunk_extents(size.section) {
+                if length == 0 {
+                    continue;
+                }
+                let raw = Directory::inflate(&block[offset..offset + length], raw)?;
+                stored += compress_at(&raw, level)?.len() as u64;
+            }
+            section.levels.push(stored);
             section.elapsed.push(started.elapsed());
         }
         out.push(section);
@@ -2874,15 +2842,9 @@ impl Replay {
         let diagnostics = directory
             .read_raw(self, index, DIAGNOSTICS)?
             .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
-        let metrics = read_diagnostics_prefix(
-            &diagnostics,
-            directory.frames,
-            &present,
-            directory.layout == Layout::Timed,
-            1,
-        )?
-        .pop()
-        .expect("one keyframe's metrics");
+        let metrics = read_diagnostics_prefix(&diagnostics, directory.frames, &present, 1)?
+            .pop()
+            .expect("one keyframe's metrics");
         let from = From {
             position: self.block_position(index),
             index,
@@ -2986,38 +2948,33 @@ impl Replay {
         check.run()?;
         let _consumer =
             self.section_block_reader(self.block_position(index).unwrap_or(0), None, "read");
-        if let Some(block) = self.grouped_block(index)? {
-            let frames = read_recorded_through_checked(
-                self,
-                index,
-                &block,
-                Some(tables),
-                parallel,
-                Some(through),
-                check,
-            )?;
-            let mut order = super::BlockOrder::new(index);
-            for frame in &frames {
-                check.run()?;
-                order.next(frame)?;
-            }
-            if frames
-                .last()
-                .is_some_and(|frame| frame.hour == index.last_hour)
-            {
-                order.finish()?;
-                if !self.is_verified(index) {
-                    verify_with(&block, index, check)?;
-                }
-                check.run()?;
-                self.mark_verified(index);
-            }
-            return Ok(frames);
+        let block = self.grouped_block(index)?;
+        let frames = read_recorded_through_checked(
+            self,
+            index,
+            &block,
+            Some(tables),
+            parallel,
+            Some(through),
+            check,
+        )?;
+        let mut order = super::BlockOrder::new(index);
+        for frame in &frames {
+            check.run()?;
+            order.next(frame)?;
         }
-        self.read_block_selected_through_checked(index, Some(tables), through, None, check)?
-            .into_iter()
-            .map(|frame| Ok(frame.into()))
-            .collect()
+        if frames
+            .last()
+            .is_some_and(|frame| frame.hour == index.last_hour)
+        {
+            order.finish()?;
+            if !self.is_verified(index) {
+                verify_with(&block, index, check)?;
+            }
+            check.run()?;
+            self.mark_verified(index);
+        }
+        Ok(frames)
     }
 
     /// Read selected tables through `through`, including an equal hour.
@@ -3026,9 +2983,8 @@ impl Replay {
     /// anchors, and the decoded prefix's ordinary wire grammar and budgets.
     /// Later frames' column bytes have not been decoded or grammar-verified;
     /// an early read does not mark the block verified. A whole-block read
-    /// retains ordinary full verification. Interleaved blocks use `visit_block`
-    /// and its ordinary verification and stopping rules. With `parallel`, a
-    /// grouped block's tables decode on the caller's workers, in table order.
+    /// retains ordinary full verification. With `parallel`, tables decode on
+    /// the caller's workers, in table order.
     pub fn read_block_selected_through(
         &self,
         index: &BlockIndex,
@@ -3071,52 +3027,39 @@ impl Replay {
         check: &mut Check<'_>,
     ) -> io::Result<Vec<Frame>> {
         check.run()?;
-        if let Some(block) = self.grouped_block(index)? {
-            let frames = read_recorded_through_checked(
-                self,
-                index,
-                &block,
-                tables,
-                parallel,
-                Some(through),
-                check,
-            )?;
-            let frames = frames
-                .into_iter()
-                .map(|frame| {
-                    check.run()?;
-                    frame.into_owned_frame()
-                })
-                .collect::<io::Result<Vec<_>>>()?;
-            let mut order = super::BlockOrder::new(index);
-            for frame in &frames {
+        let block = self.grouped_block(index)?;
+        let frames = read_recorded_through_checked(
+            self,
+            index,
+            &block,
+            tables,
+            parallel,
+            Some(through),
+            check,
+        )?;
+        let frames = frames
+            .into_iter()
+            .map(|frame| {
                 check.run()?;
-                order.next(frame)?;
-            }
-            if frames
-                .last()
-                .is_some_and(|frame| frame.hour == index.last_hour)
-            {
-                order.finish()?;
-                if tables.is_some() && !self.is_verified(index) {
-                    verify_with(&block, index, check)?;
-                }
-                check.run()?;
-                self.mark_verified(index);
-            }
-            return Ok(frames);
-        }
-        let mut frames = Vec::new();
-        self.visit_block(index, tables, |frame| {
+                frame.into_owned_frame()
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut order = super::BlockOrder::new(index);
+        for frame in &frames {
             check.run()?;
-            if frame.hour > through {
-                return Ok(false);
+            order.next(frame)?;
+        }
+        if frames
+            .last()
+            .is_some_and(|frame| frame.hour == index.last_hour)
+        {
+            order.finish()?;
+            if tables.is_some() && !self.is_verified(index) {
+                verify_with(&block, index, check)?;
             }
-            let keep_reading = frame.hour < through;
-            engine_allocation::reserve(&mut frames, 1)?;
-            frames.push(frame);
-            Ok(keep_reading)
-        })?;
+            check.run()?;
+            self.mark_verified(index);
+        }
         Ok(frames)
     }
 }
@@ -3247,8 +3190,7 @@ fn read_recorded_through_checked(
     let diagnostics = directory
         .raw(block, DIAGNOSTICS)?
         .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
-    let timed = directory.layout == Layout::Timed;
-    let metrics = read_diagnostics_prefix_with(&diagnostics, frames, &present, timed, keep, check)?;
+    let metrics = read_diagnostics_prefix_with(&diagnostics, frames, &present, keep, check)?;
     if keep == 0 {
         return Ok(Vec::new());
     }
@@ -3400,9 +3342,7 @@ fn read_selected_updates_inner(
     let diagnostics = directory
         .raw(block, DIAGNOSTICS)?
         .ok_or_else(|| invalid_static("grouped block has no diagnostics"))?;
-    let timed = directory.layout == Layout::Timed;
-    let metrics =
-        read_diagnostics_prefix_with(&diagnostics, frames, &present, timed, frames, check)?;
+    let metrics = read_diagnostics_prefix_with(&diagnostics, frames, &present, frames, check)?;
     let memo = engine_allocation::collect_vec(TableId::ALL.iter().map(|_| OnceLock::new()))?;
     let group = OnceLock::new();
     let context = Context {
@@ -3527,17 +3467,15 @@ fn read_diagnostics_prefix(
     raw: &[u8],
     frames: usize,
     present: &Present,
-    timed: bool,
     keep: usize,
 ) -> io::Result<Vec<Metrics>> {
-    read_diagnostics_prefix_with(raw, frames, present, timed, keep, &mut Check::disabled())
+    read_diagnostics_prefix_with(raw, frames, present, keep, &mut Check::disabled())
 }
 
 fn read_diagnostics_prefix_with(
     raw: &[u8],
     frames: usize,
     present: &Present,
-    timed: bool,
     keep: usize,
     check: &mut Check<'_>,
 ) -> io::Result<Vec<Metrics>> {
@@ -3563,19 +3501,10 @@ fn read_diagnostics_prefix_with(
             return Err(invalid_static("grouped read bits name an absent table"));
         }
         let mut table_ns = [0; TABLE_COUNT];
-        // Untimed layouts have no per-table values left to validate. Only
-        // materialize sample flags for the metrics the caller retains.
-        if frame < keep || timed {
+        if frame < keep {
             for (ordinal, table) in present.tables.iter().enumerate() {
-                if get(&reads, ordinal) && !timed {
+                if get(&reads, ordinal) {
                     table_ns[table.index()] = READ_TIME_NOT_RECORDED;
-                } else if get(&reads, ordinal) {
-                    let micros = u64::try_from(input.varint()?)
-                        .ok()
-                        .and_then(|micros| micros.checked_add(1))
-                        .filter(|micros| *micros <= u64::MAX / 1000)
-                        .ok_or_else(|| invalid_static("grouped table time outside its range"))?;
-                    table_ns[table.index()] = micros * 1000;
                 }
             }
         }
@@ -4161,13 +4090,148 @@ struct Resolved {
     charge: usize,
 }
 
+#[derive(Default)]
+struct CandidateHistory {
+    version: Option<u16>,
+    steps: Vec<CandidateStep>,
+}
+
+struct CandidateStep {
+    index: BlockIndex,
+    ordinal: usize,
+    snapshot: Option<usize>,
+    latest: Option<usize>,
+}
+
+pub(super) struct CandidateCache {
+    tables: [std::sync::Mutex<CandidateHistory>; TABLE_COUNT],
+}
+
+impl Default for CandidateCache {
+    fn default() -> Self {
+        Self {
+            tables: std::array::from_fn(|_| std::sync::Mutex::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+fn anchor_candidates(
+    replay: &Replay,
+    before: usize,
+    table: TableId,
+    fields: usize,
+    version: u16,
+) -> io::Result<(Option<usize>, Option<usize>)> {
+    anchor_candidates_with(
+        replay,
+        before,
+        table,
+        fields,
+        version,
+        &mut Check::disabled(),
+    )
+}
+
+fn anchor_candidates_with(
+    replay: &Replay,
+    before: usize,
+    table: TableId,
+    fields: usize,
+    version: u16,
+    check: &mut Check<'_>,
+) -> io::Result<(Option<usize>, Option<usize>)> {
+    let mut history = replay.anchor_candidates.tables[table.index()]
+        .lock()
+        .map_err(|_| io::Error::other("keyframe anchor candidate cache poisoned"))?;
+    if history.version != Some(version) {
+        history.steps.clear();
+        history.version = Some(version);
+    }
+    // Public index edits must not reuse candidate positions from a different prefix.
+    let shared = history.steps.len().min(before);
+    let prefix = history.steps[..shared]
+        .iter()
+        .enumerate()
+        .position(|(at, step)| {
+            replay.index.get(at) != Some(&step.index)
+                || replay.ordinals.get(at) != Some(&step.ordinal)
+        })
+        .unwrap_or(shared);
+    if prefix < shared {
+        history.steps.truncate(prefix);
+    }
+    while history.steps.len() < before {
+        check.run()?;
+        let at = history.steps.len();
+        let ordinal = replay.ordinals[at];
+        let previous = history.steps.last();
+        let (mut snapshot, mut latest) =
+            if previous.is_some_and(|step| step.ordinal.checked_add(1) == Some(ordinal)) {
+                let previous = previous.unwrap();
+                (previous.snapshot, previous.latest)
+            } else {
+                (None, None)
+            };
+        let index = &replay.index[at];
+        let head = (|| -> io::Result<Option<Head>> {
+            let directory = Directory::read(replay, index)?;
+            let Some(raw) = directory.read_raw(replay, index, keyframe_section(table))? else {
+                if keyframe_refusal(&directory, replay.format, replay.capture_mode, None, table)?
+                    .is_none()
+                {
+                    return Err(invalid(format!(
+                        "grouped block has no keyframe entry for {table:?}"
+                    )));
+                }
+                return Ok(None);
+            };
+            let mut input = ColumnReader::stored(&raw, fields, table, version)?;
+            take_head(
+                &mut input,
+                None,
+                index.first_hour,
+                &mut Vec::new(),
+                directory.layout,
+            )
+            .map(Some)
+        })();
+        match head {
+            Ok(Some(head)) if head.anchor.is_some() || head.status == SNAPSHOT => {
+                latest = Some(at);
+                if head.anchor.is_none() {
+                    snapshot = Some(at);
+                }
+            }
+            Ok(_) => {}
+            // Damage invalidates only candidates before it, not later known keyframes.
+            Err(error) if super::recording_damage(&error) => {
+                snapshot = None;
+                latest = None;
+            }
+            Err(error) => return Err(error),
+        }
+        engine_allocation::reserve(&mut history.steps, 1)?;
+        history.steps.push(CandidateStep {
+            index: index.clone(),
+            ordinal,
+            snapshot,
+            latest,
+        });
+    }
+    let Some(last) = before.checked_sub(1).and_then(|at| history.steps.get(at)) else {
+        return Ok((None, None));
+    };
+    if last.ordinal.checked_add(1) != replay.ordinals.get(before).copied() {
+        return Ok((None, None));
+    }
+    Ok((last.snapshot, last.latest))
+}
+
 /// The keyframe of `table` that `from`'s keyframe entry anchors to, an
 /// earlier block's, following its own anchors to their snapshot. An anchored
-/// block's chain may cross branches and earlier layouts, and with `own`, the
-/// raw bytes of the entry naming `anchor`, stays within [`chain_charge`] of
-/// its snapshot; an earlier layout's reaches its snapshot within its branch,
-/// through at most [`MAX_ANCHOR_DEPTH`] blocks from a predicted block and
-/// only a snapshot otherwise. `keep_root` also returns the snapshot's state.
+/// block's chain may cross branches and, with `own`, stays within
+/// [`chain_charge`] of its snapshot. `keep_root` also returns the snapshot's state.
 #[allow(clippy::too_many_arguments)]
 fn anchored_keyframe(
     replay: &Replay,
@@ -4216,23 +4280,13 @@ fn anchored_keyframe_with(
         input.finish()?;
         Ok(update)
     };
-    let depth = match from.layout {
-        Layout::Anchored
-        | Layout::Keyed
-        | Layout::Ramped
-        | Layout::Modelled
-        | Layout::Trimmed
-        | Layout::Advanced
-        | Layout::Chosen => usize::MAX,
-        Layout::Predicted => MAX_ANCHOR_DEPTH,
-        Layout::Unpredicted | Layout::Timed => 1,
-    };
+    let depth = usize::MAX;
     let bound = || invalid_static("keyframe anchor chain exceeds its size bound");
     // The chain's keyframe sections, newest first, ending at its snapshot,
     // and the raw bytes of its anchored entries with the naming entry's.
     let mut chain: Vec<Link> = Vec::new();
     let mut anchored = own;
-    let (mut position, mut index, mut anchor) = (from.position, from.index, anchor);
+    let (mut position, mut anchor) = (from.position, anchor);
     loop {
         check.run()?;
         if chain.len() == depth {
@@ -4246,16 +4300,17 @@ fn anchored_keyframe_with(
                 .and_then(|position| replay.ordinals[position].checked_sub(blocks))
                 .and_then(|ordinal| replay.ordinals.binary_search(&ordinal).ok())
                 .map(|at| (at, &replay.index[at])),
-            AnchorRef::Hour(hour) => replay
-                .index
-                .iter()
-                .enumerate()
-                .find(|(_, block)| block.branch == index.branch && block.first_hour == hour)
-                .filter(|(at, _)| {
-                    hour < index.first_hour && position.is_none_or(|position| *at < position)
-                }),
         }
         .ok_or_else(|| invalid_static("keyframe anchor names no earlier block of its file"))?;
+        let before = position
+            .ok_or_else(|| invalid_static("keyframe anchor has no indexed source block"))?;
+        let (snapshot, latest) =
+            anchor_candidates_with(replay, before, table, fields, version, check)?;
+        if Some(at) != snapshot && Some(at) != latest {
+            return Err(invalid_static(
+                "keyframe anchor is not the latest snapshot or latest keyframe",
+            ));
+        }
         let directory = Directory::read(replay, block_index)?;
         let raw = directory
             .read_raw(replay, block_index, keyframe_section(table))?
@@ -4284,7 +4339,7 @@ fn anchored_keyframe_with(
             position: at,
         });
         match head.anchor {
-            Some(next) => (position, index, anchor) = (Some(at), block_index, next),
+            Some(next) => (position, anchor) = (Some(at), next),
             None => break,
         }
     }
@@ -4349,6 +4404,15 @@ fn anchored_keyframe_with(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn replace_sections(
+    replay: &Replay,
+    original: &BlockIndex,
+    overrides: &[(usize, Vec<u8>)],
+) -> io::Result<(BlockIndex, Vec<u8>)> {
+    chunked::replace_sections(replay, original, overrides)
+}
+
 /// A section of the block at `position` as stored, and its raw bytes.
 #[cfg(test)]
 pub(crate) fn stored_section(
@@ -4406,11 +4470,6 @@ pub(crate) fn keyframe_chain(
                 .ordinals
                 .binary_search(&(replay.ordinals[at] - blocks))
                 .map_err(|_| invalid_static("no anchor block"))?,
-            Some(AnchorRef::Hour(hour)) => replay
-                .index
-                .iter()
-                .position(|block| block.branch == index.branch && block.first_hour == hour)
-                .ok_or_else(|| invalid_static("no anchor block"))?,
             None => return Ok(chain),
         };
     }
@@ -4441,117 +4500,6 @@ mod tests {
         assert!(error.contains("SliceReads"), "{error}");
         assert!(read(&[MODELLED_ROWS], Layout::Chosen).unwrap());
         assert!(!read(&[LISTED_ROWS], Layout::Chosen).unwrap());
-    }
-
-    #[test]
-    fn chosen_pairs_keep_listed_insertions_deletions_and_plain_entries_exact() {
-        use crate::rows::SliceReadRow;
-        let table = TableId::SliceReads;
-        let format = crate::FORMAT_VERSION;
-        let rows = |owners: &[u32], hour| {
-            TableRows::SliceReads(
-                owners
-                    .iter()
-                    .map(|&owner| SliceReadRow {
-                        table: TableId::ResearchTechnologies.index() as u32,
-                        owner,
-                        sample_hour: hour,
-                    })
-                    .collect(),
-            )
-        };
-        for residual in [false, true] {
-            let mut chosen = Later::new(table, 1, Layout::Chosen);
-            let mut advanced = Later::new(table, 1, Layout::Advanced);
-            let mut listed = Later::new(table, 1, Layout::Ramped);
-            let mut predictors =
-                std::array::from_fn::<_, 3, _>(|_| predicted::Predictor::default());
-            let mut keys = KeySet::default();
-            let mut previous = rows(&[1, 3, 5], 0);
-            let mut baseline = vec![SNAPSHOT];
-            baseline.extend_from_slice(&3_u32.to_le_bytes());
-            previous.encode_rows(&mut baseline).unwrap();
-            keys.advance(table, format, &baseline).unwrap();
-            // Both orderings of deleted keys and changed rows, and a later
-            // snapshot whose uncoded keys must also reach the listed pair.
-            for (hour, owners, snapshot) in [
-                (1_i32, &[1, 2, 5][..], false),
-                (2, &[7, 9][..], true),
-                (3, &[8, 9][..], false),
-            ] {
-                let next = rows(owners, hour);
-                let mut plain = vec![if snapshot { SNAPSHOT } else { DELTA }];
-                if snapshot {
-                    plain.extend_from_slice(&(owners.len() as u32).to_le_bytes());
-                    next.encode_rows(&mut plain).unwrap();
-                } else {
-                    plain.extend_from_slice(&(hour - 1).to_le_bytes());
-                    assert!(
-                        next.encode_changes(&previous, &mut plain, &mut Vec::new())
-                            .unwrap()
-                    );
-                }
-                for ((layout, later), predictor) in [
-                    (Layout::Chosen, &mut chosen),
-                    (Layout::Advanced, &mut advanced),
-                    (Layout::Ramped, &mut listed),
-                ]
-                .into_iter()
-                .zip(&mut predictors)
-                {
-                    let coding = Some(RowCoding {
-                        keys: &keys,
-                        masks: &mut later.masks,
-                        model: later.model.as_mut(),
-                        changes: None,
-                    });
-                    if residual && !snapshot {
-                        predicted::put_residual(
-                            table,
-                            format,
-                            1,
-                            &plain,
-                            predictor,
-                            &Shadow::new(),
-                            &mut later.columns,
-                            layout,
-                            coding,
-                        )
-                        .unwrap();
-                    } else {
-                        predictor.clear();
-                        put_entry(
-                            table,
-                            format,
-                            &plain,
-                            Mode::Later { previous: hour - 1 },
-                            &Shadow::new(),
-                            &mut later.columns,
-                            coding,
-                        )
-                        .unwrap();
-                    }
-                }
-                keys.advance(table, format, &plain).unwrap();
-                previous = next;
-            }
-            chosen.finish();
-            advanced.finish();
-            assert_eq!(chosen.columns.0[KEYS], advanced.columns.0[KEYS]);
-            assert_eq!(&chosen.columns.0[MASKS][1..], advanced.columns.0[MASKS]);
-            assert_eq!(
-                chosen.columns.1[KEYS].as_ref().unwrap(),
-                &listed.columns.0[KEYS]
-            );
-            assert_eq!(
-                &chosen.columns.1[MASKS].as_ref().unwrap()[1..],
-                listed.columns.0[MASKS]
-            );
-            for column in [CONTROL, FIELDS] {
-                assert_eq!(chosen.columns.0[column], advanced.columns.0[column]);
-                assert_eq!(chosen.columns.0[column], listed.columns.0[column]);
-            }
-        }
     }
 
     #[test]
@@ -4591,12 +4539,11 @@ mod tests {
         );
         let advance =
             |bases: &Shadow, layout, key, field| advance_change(table, layout, bases, key, field);
-        assert_eq!(advance(&bases, Layout::Advanced, 5, 0), Some(30));
-        assert_eq!(advance(&bases, Layout::Trimmed, 5, 0), None);
-        assert_eq!(advance(&bases, Layout::Advanced, 5, 1), None);
-        assert_eq!(advance(&bases, Layout::Advanced, 6, 0), None);
+        assert_eq!(advance(&bases, Layout::Chosen, 5, 0), Some(30));
+        assert_eq!(advance(&bases, Layout::Chosen, 5, 1), None);
+        assert_eq!(advance(&bases, Layout::Chosen, 6, 0), None);
         bases.get_mut(&5).unwrap().remove(&DROPPED);
-        assert_eq!(advance(&bases, Layout::Advanced, 5, 0), None);
+        assert_eq!(advance(&bases, Layout::Chosen, 5, 0), None);
     }
 
     #[test]
@@ -4631,12 +4578,11 @@ mod tests {
             .map(|_| values)
         };
         let base = list(&[7, 8, 9]);
-        assert_eq!(take(path, &base, Layout::Trimmed).unwrap(), list(&[8, 9]));
-        assert_eq!(take(path, &list(&[7]), Layout::Trimmed).unwrap(), list(&[]));
-        // An empty list has no head; earlier layouts and other kinds refuse it.
-        assert!(take(path, &list(&[]), Layout::Trimmed).is_err());
-        assert!(take(path, &base, Layout::Modelled).is_err());
-        assert!(take(source, &[0; 4], Layout::Trimmed).is_err());
+        assert_eq!(take(path, &base, Layout::Chosen).unwrap(), list(&[8, 9]));
+        assert_eq!(take(path, &list(&[7]), Layout::Chosen).unwrap(), list(&[]));
+        // An empty list has no head.
+        assert!(take(path, &list(&[]), Layout::Chosen).is_err());
+        assert!(take(source, &[0; 4], Layout::Chosen).is_err());
         // The budget counts the rebuilt field, the base less its head: a
         // U32List of three and a U64List of one fit exactly.
         let wings = TableId::ALL
@@ -4666,7 +4612,7 @@ mod tests {
                     &mut values,
                     0,
                     &budget,
-                    Layout::Trimmed,
+                    Layout::Chosen,
                 );
                 assert_eq!(taken.is_ok(), fits, "{table:?} at {limit}");
                 if fits {
@@ -4712,19 +4658,12 @@ mod tests {
             let mut input = ColumnReader::open(&raw, 1).unwrap();
             take_head(&mut input, previous, 10, &mut Vec::new(), layout).map(|head| head.anchor)
         };
-        let head = |entry, offset, previous| head_in(Layout::Anchored, entry, offset, previous);
-        // Earlier layouts name the anchor by its hour in the branch, this
-        // one by its block in the file.
-        assert_eq!(
-            head_in(Layout::Predicted, ANCHOR_UNCHANGED, Some(3), None).unwrap(),
-            Some(AnchorRef::Hour(7))
-        );
+        let head = |entry, offset, previous| head_in(Layout::Chosen, entry, offset, previous);
         assert_eq!(
             head(ANCHOR_UNCHANGED, Some(3), None).unwrap(),
             Some(AnchorRef::Back(3))
         );
         assert!(head(ANCHOR_UNCHANGED, Some(0), None).is_err());
-        assert!(head_in(Layout::Predicted, ANCHOR_UNCHANGED, Some(0), None).is_err());
         assert!(head(DELTA, Some(0), None).is_err());
         assert!(head(ANCHOR_DELTA, Some(1), Some(9)).is_err());
         assert!(head(8, None, Some(9)).is_err());
@@ -4756,7 +4695,7 @@ mod tests {
                 bases,
                 &mut plain,
                 &budget,
-                Layout::Unpredicted,
+                Layout::Chosen,
                 None,
             )
             .map(|()| plain)

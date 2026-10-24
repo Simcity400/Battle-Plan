@@ -68,6 +68,8 @@ pub const DIVISION_MODEL_INPUTS_FORMAT: u16 = 122;
 /// Recordings grow in place: the header names the last complete save, and each
 /// save's trailer adds to the one before it. Earlier recordings have neither.
 pub const CHECKPOINT_FORMAT: u16 = 123;
+/// Grouped replay blocks store later sections in dense 168-hour chunks.
+pub const CHUNKED_FORMAT: u16 = 124;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -1157,6 +1159,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             RecordKind::SessionStart => (24, "9ae9a5498c"),
             RecordKind::SpoolEnvelope => (33, "1b7474a555"),
             RecordKind::Frame => (91, "0e632a9b16"),
+            RecordKind::ReplayBlock => (CHUNKED_FORMAT, "chunked-grouped-blocks"),
             RecordKind::GapSummary => (1, "7185d6e386"),
             RecordKind::Partial => (92, "11b905d2b2"),
             RecordKind::NavalCommanderInputs => (RECORDER_INPUTS_FORMAT, "d53fa4e05c"),
@@ -1171,7 +1174,7 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             retired: None,
             format,
             commit,
-            kind: if matches!(kind, RecordKind::Partial) {
+            kind: if matches!(kind, RecordKind::Partial | RecordKind::ReplayBlock) {
                 ChangeKind::Layout
             } else {
                 ChangeKind::Unchanged

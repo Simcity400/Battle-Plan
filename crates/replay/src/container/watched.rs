@@ -148,9 +148,7 @@ impl Replay {
         self.read_block_watched_keeping(index, watches, None, check)
     }
 
-    /// [`Replay::read_block_watched`], keeping a grouped block's frames for
-    /// another reader ([`Keep`]); an interleaved block's are not kept, and
-    /// `keep` is not called.
+    /// [`Replay::read_block_watched`], keeping the block's frames for another reader ([`Keep`]).
     pub fn read_block_watched_keeping(
         &self,
         index: &BlockIndex,
@@ -162,76 +160,54 @@ impl Replay {
         let extra = keep.as_ref().map_or(&[][..], |keep| keep.tables);
         let mut reading =
             Reading::new(&self.campaign_id, index.branch, self.format, watches, extra)?;
-        if let Some(block) = self.grouped_block(index)? {
-            // Admission as `read_block_selected`: the selected tables
-            // decoded, then every section's checksum on a first read.
-            let read = super::grouped::read_selected_updates(
-                self,
-                index,
-                &block,
-                &reading.tables.tables,
-                &mut check,
-            )?;
-            if !self.is_verified(index) {
-                super::grouped::verify_with(
-                    &block,
-                    index,
-                    &mut super::check::Check::new(&mut check),
-                )?;
-            }
-            check()?;
-            self.mark_verified(index);
-            drop(block);
-            check()?;
-            let super::grouped::SelectedUpdates {
-                hours,
-                metrics,
-                updates,
-                dependent_keyframe,
-            } = read;
-            let keyframe = Keyframe::Grouped(dependent_keyframe);
-            if let Some(keep) = keep {
-                // Every hour's frame first, for the reader keeping them.
-                let frames = engine_allocation::collect_vec(
-                    hours.into_iter().zip(metrics).enumerate().map(
-                        |(position, (hour, metrics))| {
-                            reading
-                                .tables
-                                .take_frame(
-                                    index.branch,
-                                    hour,
-                                    position == 0,
-                                    metrics,
-                                    &updates,
-                                    position,
-                                )
-                                .map(Arc::new)
-                        },
-                    ),
-                )?
+        let block = self.grouped_block(index)?;
+        // Admission as `read_block_selected`: the selected tables
+        // decoded, then every section's checksum on a first read.
+        let read = super::grouped::read_selected_updates(
+            self,
+            index,
+            &block,
+            &reading.tables.tables,
+            &mut check,
+        )?;
+        if !self.is_verified(index) {
+            super::grouped::verify_with(&block, index, &mut super::check::Check::new(&mut check))?;
+        }
+        check()?;
+        self.mark_verified(index);
+        drop(block);
+        check()?;
+        let super::grouped::SelectedUpdates {
+            hours,
+            metrics,
+            updates,
+            dependent_keyframe,
+        } = read;
+        let keyframe = Keyframe::Grouped(dependent_keyframe);
+        if let Some(keep) = keep {
+            // Every hour's frame first, for the reader keeping them.
+            let frames =
+                engine_allocation::collect_vec(hours.into_iter().zip(metrics).enumerate().map(
+                    |(position, (hour, metrics))| {
+                        reading
+                            .tables
+                            .take_frame(
+                                index.branch,
+                                hour,
+                                position == 0,
+                                metrics,
+                                &updates,
+                                position,
+                            )
+                            .map(Arc::new)
+                    },
+                ))?
                 .into_iter()
                 .collect::<io::Result<Vec<_>>>()?;
-                drop(updates);
-                (keep.frames)(&frames);
-                for frame in frames {
-                    check()?;
-                    if !reading.hour(frame, keyframe)? {
-                        break;
-                    }
-                }
-                reading.flush();
-                return Ok(());
-            }
-            for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
+            drop(updates);
+            (keep.frames)(&frames);
+            for frame in frames {
                 check()?;
-                let frame = reading.tables.take_frame(
-                    index.branch,
-                    hour,
-                    position == 0,
-                    metrics,
-                    &updates,
-                    position,
-                )?;
                 if !reading.hour(frame, keyframe)? {
                     break;
                 }
@@ -239,18 +215,20 @@ impl Replay {
             reading.flush();
             return Ok(());
         }
-        // Interleaved blocks keep their bounded payload streaming: an
-        // admission pass, then reconstruction.
-        let tables = reading.tables.tables.clone();
-        self.visit_block(index, Some(&tables), |_| {
+        for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
             check()?;
-            Ok(true)
-        })?;
-        check()?;
-        self.visit_block(index, Some(&tables), |frame| {
-            check()?;
-            reading.hour(frame, Keyframe::Interleaved)
-        })?;
+            let frame = reading.tables.take_frame(
+                index.branch,
+                hour,
+                position == 0,
+                metrics,
+                &updates,
+                position,
+            )?;
+            if !reading.hour(frame, keyframe)? {
+                break;
+            }
+        }
         reading.flush();
         Ok(())
     }
@@ -297,70 +275,46 @@ impl Replay {
             chosen[table.index()] = true;
         }
         let read = BlockTables::new(&self.campaign_id, self.format, &chosen)?;
-        if let Some(block) = self.grouped_block(index)? {
-            let selected = if inner_checks {
-                super::grouped::read_selected_updates(self, index, &block, &read.tables, check)?
-            } else {
-                super::grouped::read_selected_updates_coarse(
-                    self,
-                    index,
-                    &block,
-                    &read.tables,
-                    check,
-                )?
-            };
-            if !self.is_verified(index) {
-                if inner_checks {
-                    super::grouped::verify_with(
-                        &block,
-                        index,
-                        &mut super::check::Check::new(check),
-                    )?;
-                } else {
-                    super::grouped::verify(&block, index)?;
-                }
-            }
+        let block = self.grouped_block(index)?;
+        let selected = if inner_checks {
+            super::grouped::read_selected_updates(self, index, &block, &read.tables, check)?
+        } else {
+            super::grouped::read_selected_updates_coarse(self, index, &block, &read.tables, check)?
+        };
+        if !self.is_verified(index) {
             if inner_checks {
-                check()?;
+                super::grouped::verify_with(&block, index, &mut super::check::Check::new(check))?;
+            } else {
+                super::grouped::verify(&block, index)?;
             }
-            self.mark_verified(index);
-            drop(block);
-            let super::grouped::SelectedUpdates {
-                hours,
-                metrics,
-                updates,
-                ..
-            } = selected;
-            let mut frames = Vec::new();
-            engine_allocation::reserve(&mut frames, hours.len())?;
-            for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
-                check()?;
-                frames.push(
-                    read.take_frame(
-                        index.branch,
-                        hour,
-                        position == 0,
-                        metrics,
-                        &updates,
-                        position,
-                    )?
-                    .into_recorded(),
-                );
-            }
-            return Ok(frames);
         }
-        let selected = read.tables.clone();
-        self.visit_block(index, Some(&selected), |_| {
+        if inner_checks {
             check()?;
-            Ok(true)
-        })?;
+        }
+        self.mark_verified(index);
+        drop(block);
+        let super::grouped::SelectedUpdates {
+            hours,
+            metrics,
+            updates,
+            ..
+        } = selected;
         let mut frames = Vec::new();
-        self.visit_block(index, Some(&selected), |frame| {
+        engine_allocation::reserve(&mut frames, hours.len())?;
+        for (position, (hour, metrics)) in hours.into_iter().zip(metrics).enumerate() {
             check()?;
-            engine_allocation::reserve(&mut frames, 1)?;
-            frames.push(Arc::new(frame.into()));
-            Ok(true)
-        })?;
+            frames.push(
+                read.take_frame(
+                    index.branch,
+                    hour,
+                    position == 0,
+                    metrics,
+                    &updates,
+                    position,
+                )?
+                .into_recorded(),
+            );
+        }
         Ok(frames)
     }
 }
@@ -371,8 +325,6 @@ enum Keyframe {
     /// A grouped block: whether a table the read decodes although none
     /// selected it holds a first update no keyframe may hold.
     Grouped(bool),
-    /// An interleaved block, whose frames hold every table's update.
-    Interleaved,
 }
 
 /// The decoded union's tables, those read by a watch advanced once per hour
@@ -460,24 +412,13 @@ impl<'r> BlockTables<'r> {
             match self.slots[table.index()] {
                 Some(position) if own.contains(&position) => !keyframe_update(update),
                 // Its own read does not select this table.
-                Some(_) => match keyframe {
-                    // A grouped read decodes an unselected table only when
-                    // the format no longer records it, and checks it.
-                    Keyframe::Grouped(_) => {
-                        let change = &HISTORY[table.index()];
-                        change.present(version)
-                            && change.table_gap(table, version).is_some()
-                            && !keyframe_update(update)
-                    }
-                    // An interleaved read refuses a delta of an unselected
-                    // table at a keyframe and holds every other unselected
-                    // update as unavailable.
-                    Keyframe::Interleaved => matches!(update, TableUpdate::Delta { .. }),
-                },
-                None => match keyframe {
-                    Keyframe::Grouped(_) => false,
-                    Keyframe::Interleaved => !keyframe_update(update),
-                },
+                Some(_) => {
+                    let change = &HISTORY[table.index()];
+                    change.present(version)
+                        && change.table_gap(table, version).is_some()
+                        && !keyframe_update(update)
+                }
+                None => false,
             }
         }) || matches!(keyframe, Keyframe::Grouped(true))
     }

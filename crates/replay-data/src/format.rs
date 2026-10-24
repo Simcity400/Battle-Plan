@@ -62,9 +62,9 @@ impl FormatVersion {
             )));
         }
         let format = Self(version);
+        // Block magic admits containers independently of row and spool versions.
         for kind in [
             RecordKind::ReplayHeader,
-            RecordKind::ReplayBlock,
             RecordKind::ReplayTrailer,
             RecordKind::ReplayFooter,
             RecordKind::Frame,
@@ -153,6 +153,23 @@ mod tests {
                 assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
             }
         }
+    }
+
+    #[test]
+    fn chunked_block_contract_does_not_retire_row_or_spool_contracts() {
+        let previous = FormatVersion::read(crate::rows::compatibility::CHECKPOINT_FORMAT).unwrap();
+        previous.require(RecordKind::Frame).unwrap();
+        previous.require(RecordKind::SpoolEnvelope).unwrap();
+        let error = previous.require(RecordKind::ReplayBlock).unwrap_err();
+        assert!(is_layout_refusal(&error));
+        assert!(
+            error
+                .to_string()
+                .contains("ReplayBlock layout changed at format 124")
+        );
+        FormatVersion::CURRENT
+            .require(RecordKind::ReplayBlock)
+            .unwrap();
     }
 
     #[test]
@@ -259,10 +276,7 @@ mod tests {
 
     #[test]
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
-        assert_eq!(
-            FORMAT_VERSION,
-            crate::rows::compatibility::CHECKPOINT_FORMAT
-        );
+        assert_eq!(FORMAT_VERSION, crate::rows::compatibility::CHUNKED_FORMAT);
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
                 assert!(FormatVersion::read(version).is_err());

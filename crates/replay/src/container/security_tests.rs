@@ -39,32 +39,22 @@ fn declared_lengths_do_not_abort_on_allocation_failure() {
                 assert_eq!(result.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
             }
             "whole" | "stream" | "growth" => {
-                let raw = if mode == "growth" {
-                    let mut raw = vec![0; 2 * 1024 * 1024];
-                    raw[..4].copy_from_slice(&1_u32.to_le_bytes());
-                    let length = raw.len() as u32 - 8;
-                    raw[4..8].copy_from_slice(&length.to_le_bytes());
-                    raw
-                } else if mode == "whole" {
-                    0_u32.to_le_bytes().to_vec()
-                } else {
-                    [
-                        1_u32.to_le_bytes(),
-                        (MAX_BLOCK_RAW_BYTES as u32 - 8).to_le_bytes(),
-                    ]
-                    .concat()
-                };
-                let compressed = zstd::encode_all(raw.as_slice(), 3).unwrap();
-                let mut prefix = replay.bytes()[..replay.header_end].to_vec();
-                let mut index = replay.index.clone();
-                index[0].length = compressed.len() as u64;
-                index[0].raw_length = if mode == "growth" {
-                    raw.len() as u64
-                } else {
-                    MAX_BLOCK_RAW_BYTES as u64
-                };
-                prefix.extend(compressed);
-                let hostile = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
+                let mut captured = records(1, &[1]);
+                if mode == "growth" {
+                    let Record::Frame(frame) = &mut captured[2] else {
+                        unreachable!()
+                    };
+                    frame.tables[TableId::Countries.index()] =
+                        TableUpdate::Snapshot(TableRows::Countries(vec![
+                            crate::rows::CountryRow {
+                                id: 1,
+                                canonical_slot: 1,
+                                tag: vec![b'x'; 2 * 1024 * 1024],
+                                ..Default::default()
+                            },
+                        ]));
+                }
+                let hostile = Replay::from_records(CAMPAIGN.into(), &[captured]).unwrap();
                 let result = with_allocations_denied(|| {
                     if mode == "whole" {
                         hostile.read_block(&hostile.index[0]).map(|_| ())
@@ -135,22 +125,20 @@ fn declared_lengths_do_not_abort_on_allocation_failure() {
 #[test]
 fn frame_count_and_hours_are_checked_before_payload_decoding() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-    let hostile = edited_block(&replay, |raw| {
-        raw.clear();
-        raw.extend_from_slice(&2_u32.to_le_bytes());
-        raw.extend_from_slice(&[0; 8]);
+    let hostile = edited_directory(&replay, 0, |directory| {
+        directory[0] = 2;
     });
     let block = &hostile.index[0];
     assert_eq!(
         hostile.read_block(block).unwrap_err().to_string(),
-        "block frame count exceeds hour range"
+        "grouped frame count disagrees with its hour range"
     );
     assert_eq!(
         hostile
             .visit_block(block, None, |_| Ok(true))
             .unwrap_err()
             .to_string(),
-        "block frame count exceeds hour range"
+        "grouped frame count disagrees with its hour range"
     );
     let mut order = BlockOrder::new(&replay.index[0]);
     let mut frame = replay.read_block(&replay.index[0]).unwrap().remove(0);
@@ -167,34 +155,17 @@ fn partial_reader_checks_actual_stream_length_before_trailer_allocation() {
 }
 
 #[test]
-fn cancelled_or_exhausted_visitors_keep_their_error_without_draining() {
+fn cancelled_or_exhausted_visitors_keep_their_error() {
     let grouped = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1])]).unwrap();
-    // A grouped block's directory refuses the wrong raw length before any
-    // frame is visited, so the streamed interleaved block is the case here.
-    let replay = interleaved_copy(&grouped);
-    // Copying read the grouped block whole, which verified it; reopen it.
-    let grouped = Replay::open(grouped.bytes().to_vec()).unwrap();
-    let mut index = replay.index.clone();
-    index[0].raw_length += 1;
-    let hostile = Replay::open(rebuild(
-        &replay,
-        replay.bytes()[..replay.trailer_start].to_vec(),
-        &index,
-    ))
-    .unwrap();
-    for kind in [io::ErrorKind::Interrupted, io::ErrorKind::OutOfMemory] {
-        let error = hostile
-            .visit_block(&hostile.index[0], None, |_| Err(io::Error::from(kind)))
-            .unwrap_err();
-        assert_eq!(error.kind(), kind);
-        assert!(!hostile.is_verified(&hostile.index[0]));
-        let error = grouped
-            .visit_block(&grouped.index[0], Some(&[TableId::Clock]), |_| {
-                Err(io::Error::from(kind))
-            })
-            .unwrap_err();
-        assert_eq!(error.kind(), kind);
-        assert!(!grouped.is_verified(&grouped.index[0]));
+    for selected in [None, Some(&[TableId::Clock][..])] {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::OutOfMemory] {
+            let replay = Replay::open(grouped.bytes().to_vec()).unwrap();
+            let error = replay
+                .visit_block(&replay.index[0], selected, |_| Err(io::Error::from(kind)))
+                .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert!(!replay.is_verified(&replay.index[0]));
+        }
     }
 }
 
@@ -268,8 +239,8 @@ fn selected_seek_keeps_cancellation_as_an_error_and_real_damage_as_a_gap() {
         })
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-    let broken = edited_block(&recording, |raw| {
-        raw[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let broken = edited_directory(&recording, 0, |directory| {
+        directory[0] = 0;
     });
     assert!(matches!(
         broken.seek_selected(1, 1, None).unwrap(),

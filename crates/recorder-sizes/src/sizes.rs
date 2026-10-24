@@ -169,7 +169,10 @@ fn finalization_lock(destination: &Path) -> Result<fs::File, String> {
 pub(crate) fn block_report(encoded: &Replay) -> io::Result<Value> {
     let mut sections = Vec::new();
     for block in &encoded.index {
-        for section in encoded.block_sections(block)?.into_iter().flatten() {
+        for section in encoded
+            .block_sections(block)?
+            .ok_or_else(|| io::Error::other("missing grouped sections"))?
+        {
             sections.push(json!({
                 "branch": block.branch,
                 "first_hour": block.first_hour,
@@ -807,7 +810,11 @@ mod tests {
         report["block_sections"] = block_report(&encoded).unwrap();
         let parsed: Value = serde_json::from_str(&report.to_string()).unwrap();
         let sections = parsed["block_sections"].as_array().unwrap();
-        assert!(sections.iter().all(|section| section["section"].is_string()));
+        assert!(
+            sections
+                .iter()
+                .all(|section| section["section"].is_string())
+        );
         let compressed: u64 = sections
             .iter()
             .map(|section| section["compressed"].as_u64().unwrap())

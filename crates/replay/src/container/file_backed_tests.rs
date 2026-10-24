@@ -92,6 +92,39 @@ fn held_grouped_selected_reads_and_seeks_match_resident_readers() {
 }
 
 #[test]
+fn held_readers_refuse_historical_block_magics_without_visiting() {
+    let memory = current_recording();
+    let offset = memory.index[0].offset as usize;
+    for magic in [*b"H4GC", *b"H4GB", [0x28, 0xb5, 0x2f, 0xfd]] {
+        let mut bytes = memory.bytes().to_vec();
+        bytes[offset..offset + 4].copy_from_slice(&magic);
+        let fixture = Fixture::new(&bytes);
+        let held = Replay::open_path(&fixture.0).unwrap();
+        let index = &held.index[0];
+        assert!(held.read_block(index).is_err());
+        assert!(held.read_block_selected(index, &[TableId::Clock]).is_err());
+        assert!(
+            held.visit_block(index, None, |_| panic!("legacy frame escaped"))
+                .is_err()
+        );
+        assert!(held.block_sections(index).is_err());
+        assert!(
+            held.read_block_kept(index, &[TableId::Clock], || Ok(()))
+                .is_err()
+        );
+        let mut watches = [BlockWatch::new(Watching::Every(&[TableId::Clock]), |_| {
+            panic!("legacy watch escaped")
+        })];
+        assert!(
+            held.read_block_watched(index, &mut watches, || Ok(()))
+                .is_err()
+        );
+        assert!(matches!(held.seek(1, 1).unwrap(), SeekResult::Gap { .. }));
+        assert!(!held.is_verified(index));
+    }
+}
+
+#[test]
 fn selected_seek_decodes_only_its_prefix_and_preserves_cancellation_errors() {
     let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
     let fixture = Fixture::new(memory.bytes());
@@ -388,29 +421,25 @@ fn malformed_grouped_admission_leaves_stream_at_previous_boundary() {
     assert!(stream.accumulator().is_none());
 }
 
-fn interleaved_recording() -> Replay {
-    let current = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap();
-    let replay = edited_block(&current, |_| {});
-    assert!(!grouped::is_grouped(
-        &replay.block_bytes(&replay.index[0]).unwrap()
-    ));
-    replay
+fn current_recording() -> Replay {
+    Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2, 3])]).unwrap()
 }
 
 #[test]
 fn positional_reads_finish_while_a_block_visitor_is_parked() {
     use std::sync::mpsc;
-    let memory = interleaved_recording();
+    let memory = current_recording();
     let fixture = Fixture::new(memory.bytes());
     let held = Replay::open_path(&fixture.0).unwrap();
     let index = &held.index[0];
     let expected = memory.block_bytes(&memory.index[0]).unwrap();
+    held.read_block(index).unwrap();
     std::thread::scope(|scope| {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let replay = &held;
         let visiting = scope.spawn(move || {
-            replay.visit_file_block(index, None, &mut |_| {
+            replay.visit_block(index, None, &mut |_| {
                 assert!(replay.is_verified(index));
                 entered_tx.send(()).unwrap();
                 release_rx.recv().unwrap();
@@ -433,48 +462,41 @@ fn positional_reads_finish_while_a_block_visitor_is_parked() {
 }
 
 #[test]
-fn held_visits_validate_once_before_the_first_callback() {
-    let memory = interleaved_recording();
+fn held_visits_validate_before_callbacks_and_keep_admission() {
+    let memory = current_recording();
     let fixture = Fixture::new(memory.bytes());
     let held = Replay::open_path(&fixture.0).unwrap();
     let index = &held.index[0];
     assert!(!held.is_verified(index));
-    for expected in [vec![true, false], vec![false]] {
+    for _ in 0..2 {
         let mut visited = 0;
-        let (result, passes) = file_backed::measure_held_passes(|| {
-            held.visit_file_block(index, None, &mut |frame| {
-                assert!(held.is_verified(index));
-                assert_eq!(frame.hour, 1);
-                visited += 1;
-                Ok(false)
-            })
-        });
-        result.unwrap();
+        held.visit_block(index, None, |frame| {
+            assert_eq!(frame.hour, 1);
+            visited += 1;
+            Ok(false)
+        })
+        .unwrap();
         assert_eq!(visited, 1);
-        assert_eq!(passes, expected);
+        assert!(held.is_verified(index));
     }
 }
 
 #[test]
 fn held_admission_refuses_a_later_bad_payload_before_any_callback() {
-    let memory = interleaved_recording();
-    let malformed = edited_block(&memory, |raw| {
-        raw.pop().unwrap();
-    });
-    let fixture = Fixture::new(malformed.bytes());
+    let memory = current_recording();
+    let fixture = Fixture::new(&damage_later_entries(&memory, 0));
     let held = Replay::open_path(&fixture.0).unwrap();
     let index = &held.index[0];
-    let (result, passes) = file_backed::measure_held_passes(|| {
-        held.visit_file_block(index, None, &mut |_| panic!("unadmitted frame escaped"))
-    });
-    assert_eq!(result.unwrap_err().to_string(), "truncated field");
-    assert_eq!(passes, [true]);
+    let error = held
+        .visit_block(index, None, |_| panic!("unadmitted frame escaped"))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(!held.is_verified(index));
 }
 
 #[test]
-fn held_admission_refuses_buffered_and_unread_concatenated_frames() {
-    let memory = interleaved_recording();
+fn held_admission_refuses_small_and_large_concatenated_frames() {
+    let memory = current_recording();
     let mut random = 1_u64;
     let noise: Vec<u8> = (0..96 * 1024)
         .map(|_| {
@@ -497,14 +519,14 @@ fn held_admission_refuses_buffered_and_unread_concatenated_frames() {
         let fixture = Fixture::new(&bytes);
         let held = Replay::open_path(&fixture.0).unwrap();
         let error = held
-            .visit_file_block(&held.index[0], None, &mut |_| {
+            .visit_block(&held.index[0], None, &mut |_| {
                 panic!("trailing frame escaped")
             })
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
             error.to_string(),
-            "block contains trailing or concatenated zstd frames"
+            "grouped block has trailing or concatenated bytes"
         );
         assert!(!held.is_verified(&held.index[0]));
     }
@@ -512,7 +534,7 @@ fn held_admission_refuses_buffered_and_unread_concatenated_frames() {
 
 #[test]
 fn short_held_reads_keep_read_exact_eof_errors() {
-    let memory = interleaved_recording();
+    let memory = current_recording();
     let fixture = Fixture::new(memory.bytes());
     let held = Replay::open_path(&fixture.0).unwrap();
     let index = &held.index[0];
@@ -529,7 +551,7 @@ fn short_held_reads_keep_read_exact_eof_errors() {
     let errors = [
         held.read_at(index.offset, &mut output).unwrap_err(),
         held.block_bytes(index).unwrap_err(),
-        held.visit_file_block(index, None, &mut |_| panic!("short block escaped"))
+        held.visit_block(index, None, &mut |_| panic!("short block escaped"))
             .unwrap_err(),
     ];
     for error in errors {
@@ -601,4 +623,34 @@ fn held_byte_visit_has_a_captured_length_and_propagates_cancellation() {
         .visit_held_bytes(|_| Err(io::Error::from(io::ErrorKind::Interrupted)))
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn held_chunk_api_reads_only_the_requested_frame_and_matches_resident_slices() {
+    let hours: Vec<_> = (1..=400).collect();
+    let memory = Replay::from_records(CAMPAIGN.into(), &[records(1, &hours)]).unwrap();
+    let fixture = Fixture::new(memory.bytes());
+    let held = Replay::open_path(&fixture.0).unwrap();
+    let index = &held.index[0];
+    let section = Section::Later(TableId::Clock);
+    let held_chunks = held.section_chunks(index, section).unwrap();
+    let memory_chunks = memory.section_chunks(&memory.index[0], section).unwrap();
+    assert_eq!(held_chunks.len(), 3);
+    let mut resident = Vec::new();
+    let mut buffer = Vec::new();
+    for (held, memory) in held_chunks.zip(memory_chunks) {
+        assert_eq!(
+            (held.first_hour, held.last_hour),
+            (memory.first_hour, memory.last_hour)
+        );
+        assert_eq!(
+            (held.stored_length, held.raw_length),
+            (memory.stored_length, memory.raw_length)
+        );
+        let (_, bytes) =
+            file_backed::measure_held_reads(|| held.inflate_into(&mut buffer).unwrap());
+        assert_eq!(bytes, held.stored_length);
+        memory.inflate_into(&mut resident).unwrap();
+        assert_eq!(buffer, resident);
+    }
 }
