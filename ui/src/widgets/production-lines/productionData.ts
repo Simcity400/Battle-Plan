@@ -208,11 +208,9 @@ export const withNote = (note: string | undefined, ...more: (string | undefined)
  * carried): outside, the lines are unknown, which is not "none". */
 export const linesKnown = (reply: ProductionLinesReply, hour: number) => runAt(reply.lineHours, hour) != null;
 
-/** Why a line's breakdown, pin and choice wait while the reply is a first view
- * (null once it is exact): its line keys count a handle's appearances from the
- * newest blocks only, so they can name another appearance than the exact history. */
+/** Whole-history breakdowns wait for the pending suffix, unlike detail windows. */
 export const firstViewLineReason = (reply: ProductionLinesReply): string | null =>
-  reply.approximate.length ? 'Available once the earlier production history is prepared.' : null;
+  reply.approximate.length ? 'Available once the production history is fully prepared.' : null;
 
 /** Whether hours `first` to `last` meet hours the reply does not answer exactly yet. */
 export const approximateWithin = (reply: ProductionLinesReply, first: number, last: number) =>
@@ -561,4 +559,10 @@ export function bandScale(reply: ProductionLinesReply): number {
   let most = 0;
   for (const line of reply.lines) for (const step of line.steps) most = Math.max(most, step.activeFactories);
   return most;
+}
+
+export function wantedDetailWindows(reply: ProductionLinesReply, lastHour: number, shownHour: number | null, hovered: number | null): number[] {
+  if (shownHour == null) return hovered == null ? [] : [hovered];
+  const window = windowOf(reply, shownHour);
+  return (window + 1) * reply.detailHours <= lastHour ? [window, window + 1] : [window];
 }

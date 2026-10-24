@@ -14,30 +14,7 @@
 //! a large country's lines too big for one reply. Full histories grow with the
 //! campaign; every reply is measured and refused past [`MAX_REPLY_BYTES`].
 //!
-//! The whole-branch scan reads every hour of the branch in order on one thread, so
-//! its cost grows with the recording. A `production-lines` request without `exact`
-//! answers a **first view**: the same scan over only the branch's newest blocks (at
-//! least [`FIRST_VIEW_HOURS`], at most [`FIRST_VIEW_BLOCKS`]), its `approximate`
-//! spans naming the hours it does not answer exactly (the branch from its start
-//! through the window's first read, where the lines it lists are taken as begun),
-//! or the whole branch where those blocks are all of it. A request with `exact`
-//! scans the whole branch, or answers from the held scan. Each reply is a function
-//! of its request alone, so replies kept between sessions stay true. Detail
-//! windows and breakdowns always read the whole scan.
-//!
-//! A read's world-wide work is done only where it changed. A variant read builds a
-//! definition's naming operands again only where its row, its modules or upgrades,
-//! or the countries' keys, links, appearance or lexical tokens changed
-//! ([`VariantCatalogue::observe_built`]); the variant definitions are stored only
-//! where the table changed; the hour's icon operands are built only at a read with
-//! variants to picture. Each block is read and decoded on a spare core
-//! (`extract_block`), and the fold takes its hours in order, holding a decoded
-//! frame only at the hours whose rows it reads. Each extracted hour computes
-//! its supplying-read flags together and carries the modifier-read decision
-//! into the fold. Consecutive non-read hours with the same holder and table
-//! availability form one carried span; open line endpoints advance once for
-//! that span. Country lookup follows immutable views and consecutive row deltas
-//! that preserve identity, checking every intervening hour.
+//! Preparation observes every recorded country; requests read its published pages.
 //!
 //! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
@@ -76,19 +53,15 @@
 //! sprite, else `GFX_<owner tag>_<script key>`, `GFX_<script key>`, or the game's
 //! `GFX_idea_unknown` (replay README, IndustrialOrganisations).
 
-#[cfg(test)]
-use super::equipment::VARIANT_BUILDS;
 use super::{
     CountryParams, LoadContext, Product,
-    equipment::{
-        self, EQUIPMENT_DECIMALS, Tags, Texts, VariantCatalogue, VariantHour, VariantReads,
-    },
+    equipment::{self, EQUIPMENT_DECIMALS, Tags, Texts, VariantCatalogue},
     equipment_icon::{Icon, IconChoice, IconContent, IconHour, icon_choice},
 };
 use crate::{
     Source,
     catalogue::{self, Catalogue},
-    metadata::{TaggedCountry, link_slot, slot_reads, tagged_country, validate_campaign},
+    metadata::{TaggedCountry, link_slot, slot_reads},
 };
 use replay::{container::BlockIndex, container::Replay};
 use replay_data::{
@@ -96,13 +69,12 @@ use replay_data::{
     rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableId,
     rows::VariantDefinitionRow, rows::tables,
 };
-use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::FrameSource, frame::SharedView,
-    frame::TableUpdate, frame::ViewIdentity,
-};
+#[cfg(test)]
+use replay_frame::frame::FrameDecoder;
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{
         Arc,
@@ -112,6 +84,12 @@ use std::{
 use ts_rs::TS;
 
 mod breakdown;
+mod input;
+mod pages;
+pub mod prepared;
+mod private;
+#[cfg(test)]
+mod reference;
 mod saved;
 pub use breakdown::{
     ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
@@ -119,19 +97,17 @@ pub use breakdown::{
 };
 pub use saved::{SavedLines, SavedModifierRun};
 
+pub const PREPARED_PRODUCTS: &[&str] = &[
+    "production-lines",
+    "production-line-detail",
+    "production-line-breakdown",
+];
+
 pub struct ProductionLines;
 pub struct ProductionLineDetail;
 
-const CACHED_COUNTRIES: usize = 8;
-
 /// The hours one detail reply covers: 30 days, so playback asks about once a month.
 pub const DETAIL_HOURS: i32 = 720;
-/// The hours a first view reads at least, when the newest blocks hold them: one
-/// detail window.
-pub const FIRST_VIEW_HOURS: i64 = DETAIL_HOURS as i64;
-/// The most blocks a first view reads, however few hours they hold; with blocks of
-/// at most one keyframe interval, its cost does not grow with the recording.
-pub const FIRST_VIEW_BLOCKS: usize = 4;
 /// Each reply's bound, inside the transport's.
 pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// Longest side of an equipment or organisation icon.
@@ -493,10 +469,7 @@ pub struct ProductionLinesReply {
     /// Hours whose lines made and ended there may be missing: a due read of the
     /// output, the only place such a line's rows are published, could not be read.
     pub unread_output: Vec<super::country_groups::HourSpan>,
-    /// Hours this reply does not answer exactly yet, ascending spans: a first view
-    /// read only the branch's newest blocks, so the history before them, through
-    /// the first read among them, is still being prepared. Empty when every hour is
-    /// answered; a request with `exact` answers them all.
+    /// Hours beyond the published prefix that are still being prepared.
     pub approximate: Vec<super::country_groups::HourSpan>,
     /// The hours one `production-line-detail` window covers.
     pub detail_hours: i32,
@@ -509,8 +482,7 @@ pub struct ProductionLinesReply {
 pub struct ProductionLinesParams {
     pub branch_id: String,
     pub tag: String,
-    /// Answer every hour exactly, scanning the whole branch when its scan is not
-    /// held, instead of a first view of its newest blocks.
+    /// Wait for the branch's complete prepared history.
     #[serde(default)]
     #[ts(optional)]
     pub exact: Option<bool>,
@@ -691,59 +663,6 @@ fn version<T: Clone + PartialEq>(versions: &mut Vec<T>, value: T, same: impl Fn(
     }
 }
 
-/// Observe only designs demanded by this country's active lines, on a design
-/// read/availability change or the first line census naming that design.
-fn observe_design(scanned: &mut ScannedLines, hour: &ScanHour, variant: u64) {
-    let row = hour.designs.as_ref().and_then(|view| match &**view {
-        replay_frame::frame::TableView::Complete(replay_data::rows::TableRows::VariantStats(
-            rows,
-        )) => rows
-            .binary_search_by_key(&variant, |row| row.variant)
-            .ok()
-            .map(|index| &rows[index]),
-        _ => None,
-    });
-    let read = DesignRead {
-        first_hour: hour.hour,
-        read_hour: row.and(hour.design_read_hour),
-        author: row.map(|row| row.organisation),
-        trait_count: row.map(|row| row.organisation_trait_count),
-        bonus_count: row.map(|row| row.organisation_bonuses.len() as u32),
-    };
-    version(scanned.designs.entry(variant).or_default(), read, |a, b| {
-        DesignRead {
-            first_hour: 0,
-            ..*a
-        } == DesignRead {
-            first_hour: 0,
-            ..*b
-        }
-    });
-    // A newly observed author need not have been assigned to any line at hour 8.
-    // Name it from the retained MIO observation without replacing its daily state.
-    if let Some(author) = read.author.filter(|&id| id != 0)
-        && !scanned.organisations.contains_key(&author)
-        && let Some(frame) = hour.frame.as_ref()
-        && let (Ok(rows), Ok(countries), Ok(links), Ok(lexical)) = (
-            frame.complete::<tables::IndustrialOrganisations>(),
-            frame.complete::<tables::Countries>(),
-            frame.complete::<tables::CountryLinks>(),
-            frame.complete::<tables::LexicalTokens>(),
-        )
-        && let Ok(index) = rows.binary_search_by_key(&author, |row| row.organisation)
-    {
-        let tags = Tags::new(
-            countries,
-            links,
-            frame.complete::<tables::CountryAppearance>().ok(),
-        );
-        scanned.organisations.insert(
-            author,
-            vec![raw_organisation(&rows[index], hour.hour, &tags, lexical)],
-        );
-    }
-}
-
 /// Overlay the design's independent versions only in the requested line detail.
 /// The underlying line runs and branch-wide factory steps keep their own cadence.
 fn append_design_runs(
@@ -786,13 +705,12 @@ fn append_design_runs(
 }
 
 /// A line open at the last read: where it is in `lines`.
+#[derive(Clone, Serialize, Deserialize)]
 struct Open {
     index: usize,
 }
 
-/// Scans one branch for one country's production lines, their output, and their
-/// variants' and organisations' naming operands; with `icons`, each produced
-/// variant's icon at each read.
+#[cfg(test)]
 pub fn scan(
     replay: &Replay,
     branch: u64,
@@ -802,7 +720,7 @@ pub fn scan(
 ) -> io::Result<ScannedLines> {
     scan_holder(replay, branch, tag, icons, None, cancelled)
 }
-
+#[cfg(test)]
 fn scan_holder(
     replay: &Replay,
     branch: u64,
@@ -811,8 +729,15 @@ fn scan_holder(
     holder: Option<(u32, u32)>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedLines> {
-    let blocks: Vec<&BlockIndex> = branch_blocks(replay, branch);
-    scan_blocks_of(replay, &blocks, tag, icons, holder, cancelled)
+    prepared::fixtures::scan(
+        replay,
+        &branch_blocks(replay, branch),
+        tag,
+        icons,
+        holder,
+        cancelled,
+        true,
+    )
 }
 
 /// A branch's blocks, in recorded order.
@@ -824,22 +749,6 @@ fn branch_blocks(replay: &Replay, branch: u64) -> Vec<&BlockIndex> {
         .collect()
 }
 
-/// How many of a branch's newest blocks (their hour spans, oldest first) a first
-/// view reads: the fewest holding [`FIRST_VIEW_HOURS`], never more than
-/// [`FIRST_VIEW_BLOCKS`].
-pub fn first_view_blocks(spans: &[(i32, i32)]) -> usize {
-    let mut hours = 0i64;
-    let mut count = 0;
-    for &(first, last) in spans.iter().rev() {
-        if count == FIRST_VIEW_BLOCKS || hours >= FIRST_VIEW_HOURS {
-            break;
-        }
-        hours += i64::from(last) - i64::from(first) + 1;
-        count += 1;
-    }
-    count
-}
-
 /// The recording's language as modifier runs name it: without its `l_` prefix.
 pub fn recorded_language(replay: &Replay) -> Arc<str> {
     replay
@@ -849,9 +758,6 @@ pub fn recorded_language(replay: &Replay) -> Arc<str> {
         .unwrap_or(&replay.identity.language)
         .into()
 }
-
-/// Blocks read and decoded ahead of the scan's fold, on spare cores.
-const EXTRACT_AHEAD: usize = 3;
 
 /// The country a scan reads, as one hour's countries and links name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -871,1076 +777,6 @@ impl Country {
             Self::Absent | Self::Unresolved => None,
         }
     }
-}
-
-/// The selected holder, with the country-key and link evidence from every hour.
-#[derive(Default)]
-struct CountryRead {
-    previous: Option<(u64, i32)>,
-    countries: Option<ViewIdentity>,
-    links: Option<ViewIdentity>,
-    length: Option<usize>,
-    country: Option<Country>,
-}
-
-impl CountryRead {
-    fn observe(
-        &mut self,
-        raw: &impl FrameSource,
-        decoded: &DecodedFrame,
-        tag: &str,
-        holder: Option<(u32, u32)>,
-    ) -> Option<Country> {
-        static FIELDS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-            crate::prepared::frame_changes::field_mask(
-                TableId::Countries,
-                &["canonical_slot", "tag"],
-            )
-        });
-        let countries = &decoded.tables[TableId::Countries.index()];
-        let links = &decoded.tables[TableId::CountryLinks.index()];
-        let length = decoded
-            .complete::<tables::Countries>()
-            .ok()
-            .map(|rows| rows.len());
-        let continuous = self.previous.is_some_and(|(branch, hour)| {
-            branch == decoded.branch && hour.checked_add(1) == Some(decoded.hour)
-        });
-        let same_keys = self
-            .countries
-            .as_ref()
-            .is_some_and(|held| held.is(countries))
-            || (continuous
-                && !raw.keyframe()
-                && length.is_some()
-                && length == self.length
-                && matches!(raw.update(TableId::Countries.index()),
-                    TableUpdate::Delta { changed, deleted, .. }
-                        if deleted.is_empty() && changed.iter().all(|row|
-                            row.recorded_fields >= TableId::Countries.schema().len()
-                                && row.mask & *FIELDS == 0)));
-        let same = continuous
-            && !raw.keyframe()
-            && same_keys
-            && self.links.as_ref().is_some_and(|held| held.is(links));
-        let country = if same {
-            self.country
-        } else {
-            select_country(decoded, tag, holder)
-        };
-        self.previous = Some((decoded.branch, decoded.hour));
-        self.countries = Some(countries.identity());
-        self.links = Some(links.identity());
-        self.length = length;
-        self.country = country;
-        country
-    }
-}
-
-fn select_country(
-    decoded: &DecodedFrame,
-    tag: &str,
-    holder: Option<(u32, u32)>,
-) -> Option<Country> {
-    let _phase = replay_frame::cpu::scope_phase("production-lines:country");
-    crate::prepared::prepass::note("production-lines.country_lookup");
-    decoded
-        .complete::<tables::Countries>()
-        .ok()
-        .zip(decoded.complete::<tables::CountryLinks>().ok())
-        .map(|(countries, links)| {
-            let selected_tag = match holder {
-                None => Some(tag),
-                Some((slot, id)) => countries
-                    .iter()
-                    .find(|country| country.canonical_slot == slot && country.id == id)
-                    .and_then(|country| std::str::from_utf8(&country.tag).ok()),
-            };
-            match selected_tag.map_or(TaggedCountry::Absent, |tag| {
-                tagged_country(countries, links, tag)
-            }) {
-                TaggedCountry::Absent => Country::Absent,
-                TaggedCountry::Unresolved => Country::Unresolved,
-                TaggedCountry::Found(country, slot) => Country::Found(slot, country.id),
-            }
-        })
-}
-
-/// What the scan reads of one hour, taken from its frame where the block is
-/// decoded: the fold needs the frame itself only where it reads rows.
-struct ScanHour {
-    hour: i32,
-    last_hour: i32,
-    /// None where the countries or their links are not complete.
-    country: Option<Country>,
-    /// At a due read of the output, whether this country's lines could be
-    /// read there.
-    output_due: Option<bool>,
-    /// What the variant catalogue reads of the hour.
-    variants: VariantHour,
-    /// The variant table was read, and is complete.
-    definitions_read: bool,
-    /// The lines' table is complete.
-    lines_complete: bool,
-    /// The lines' slot was read.
-    lines_read: bool,
-    output_complete: bool,
-    organisations_complete: bool,
-    /// Both modifier tables are complete.
-    modifiers_complete: bool,
-    modifiers_read: bool,
-    /// Frozen design observations follow VariantStats, including availability.
-    designs: Option<SharedView>,
-    design_read_hour: Option<i32>,
-    /// The frame, kept at a complete variant read, a read of the variant
-    /// table, and a read of this country's lines.
-    frame: Option<DecodedFrame>,
-}
-
-impl ScanHour {
-    fn carry(&self) -> bool {
-        self.frame.is_none()
-            && !self.lines_read
-            && self.output_due.is_none()
-            && self.variants == (VariantHour::Carried { complete: true })
-    }
-    fn extends(&self, next: &Self) -> bool {
-        self.carry()
-            && next.carry()
-            && self.last_hour.checked_add(1) == Some(next.hour)
-            && self.country == next.country
-            && self.lines_complete == next.lines_complete
-            && self.output_complete == next.output_complete
-            && self.organisations_complete == next.organisations_complete
-            && self.modifiers_complete == next.modifiers_complete
-            && self.design_read_hour == next.design_read_hour
-            && match (&self.designs, &next.designs) {
-                (Some(before), Some(now)) => SharedView::ptr_eq(before, now),
-                (None, None) => true,
-                _ => false,
-            }
-    }
-}
-
-/// One block's hours as the scan reads them, and the hour from which it could
-/// not be read (a frame that did not decode or names another campaign).
-struct Extracted {
-    hours: Vec<ScanHour>,
-    lost_from: Option<i32>,
-}
-
-/// The error of a fold that needs a frame its extract did not keep.
-fn frame_not_kept(hour: i32) -> io::Error {
-    io::Error::other(format!(
-        "production scan: hour {hour}'s frame was not kept for its read"
-    ))
-}
-
-/// One block read and decoded with `selected`, each hour taken as the fold
-/// reads it ([`ScanHour`]).
-fn extract_block(
-    replay: &Replay,
-    block: &BlockIndex,
-    selected: &[TableId],
-    tag: &str,
-    holder: Option<(u32, u32)>,
-    cancelled: &AtomicBool,
-    compact: bool,
-) -> io::Result<Extracted> {
-    let frames = replay.read_block_recorded_selected(block, selected)?;
-    let mut decoder = FrameDecoder::for_tables(selected);
-    let _phase = replay_frame::cpu::scope_phase("production-lines:extract");
-    let mut hours: Vec<ScanHour> = Vec::new();
-    let mut country = CountryRead::default();
-    let mut lost_from = None;
-    for frame in &frames {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancelled_error());
-        }
-        let Ok(decoded) = decoder.advance(frame) else {
-            lost_from = Some(frame.hour);
-            break;
-        };
-        if validate_campaign(decoded, replay).is_err() {
-            lost_from = Some(frame.hour);
-            break;
-        }
-        let selected = if compact {
-            country.observe(frame, decoded, tag, holder)
-        } else {
-            select_country(decoded, tag, holder)
-        };
-        let next = scan_hour_selected(replay.format, frame.hour, decoded, selected);
-        if compact
-            && let Some(previous) = hours.last_mut().filter(|previous| previous.extends(&next))
-        {
-            previous.last_hour = next.last_hour;
-        } else {
-            engine_allocation::reserve(&mut hours, 1)?;
-            hours.push(next);
-        }
-    }
-    Ok(Extracted { hours, lost_from })
-}
-
-/// What the scan reads of `decoded`, the frame of `hour`.
-#[cfg(test)]
-fn scan_hour(
-    format: replay_data::format::FormatVersion,
-    hour: i32,
-    decoded: &DecodedFrame,
-    tag: &str,
-    holder: Option<(u32, u32)>,
-) -> ScanHour {
-    scan_hour_selected(format, hour, decoded, select_country(decoded, tag, holder))
-}
-
-fn scan_hour_selected(
-    format: replay_data::format::FormatVersion,
-    hour: i32,
-    decoded: &DecodedFrame,
-    country: Option<Country>,
-) -> ScanHour {
-    let reads = slot_reads(format, &decoded.metrics, decoded.hour);
-    let read = |table: TableId| reads[table.index()];
-    let lines_complete = decoded.complete::<tables::ProductionLines>().is_ok();
-    let lines_read = read(TableId::ProductionLines);
-    let output_complete = decoded.complete::<tables::ProductionLineOutput>().is_ok();
-    let output_due = read(TableId::ProductionLineOutput).then_some(match country {
-        Some(Country::Absent) => true,
-        Some(Country::Found(..)) => lines_read && lines_complete && output_complete,
-        Some(Country::Unresolved) | None => false,
-    });
-    let variants = VariantCatalogue::hour_read(decoded, read(TableId::VariantDefinitions));
-    let definitions_read = (equipment::design_changed(decoded)
-        || read(TableId::VariantDefinitions))
-        && decoded.complete::<tables::VariantDefinitions>().is_ok();
-    let lines_of_country =
-        matches!(country, Some(Country::Found(..))) && lines_complete && lines_read;
-    let designs = decoded
-        .complete::<tables::VariantStats>()
-        .ok()
-        .map(|_| decoded.tables[TableId::VariantStats.index()].clone());
-    // The variant worker charges its modules/stats/upgrades read group to
-    // VariantModules. This producer-specific anchor supplies an uncharged stats
-    // read's date; never substitute the ProductionLines or current frame hour.
-    let design_read_hour = designs.as_ref().and_then(|view| {
-        view.sampled_at()
-            .or_else(|| decoded.tables[TableId::VariantModules.index()].sampled_at())
-    });
-    let keep = variants == VariantHour::Read
-        || definitions_read
-        || lines_of_country
-        || read(TableId::VariantStats)
-        || read(TableId::VariantModules);
-    ScanHour {
-        hour,
-        last_hour: hour,
-        country,
-        output_due,
-        variants,
-        definitions_read,
-        designs,
-        design_read_hour,
-        lines_complete,
-        lines_read,
-        output_complete,
-        organisations_complete: decoded
-            .complete::<tables::IndustrialOrganisations>()
-            .is_ok(),
-        modifiers_complete: decoded
-            .complete::<tables::CountryProductionModifiers>()
-            .is_ok()
-            && decoded
-                .complete::<tables::ProductionLineModifiers>()
-                .is_ok(),
-        modifiers_read: read(TableId::CountryProductionModifiers)
-            && read(TableId::ProductionLineModifiers),
-        frame: keep.then(|| decoded.clone()),
-    }
-}
-
-/// The scan of `blocks` (a branch's, in recorded order, or its newest ones): what
-/// it knows starts at their first block. Each block is read and decoded on a
-/// spare core ([`extract_block`]); the fold reads them in order.
-fn scan_blocks_of(
-    replay: &Replay,
-    blocks: &[&BlockIndex],
-    tag: &str,
-    icons: Option<&IconContent>,
-    holder: Option<(u32, u32)>,
-    cancelled: &AtomicBool,
-) -> io::Result<ScannedLines> {
-    scan_blocks_cached(None, replay, blocks, tag, icons, holder, cancelled)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scan_blocks_cached(
-    source: Option<&Source>,
-    replay: &Replay,
-    blocks: &[&BlockIndex],
-    tag: &str,
-    icons: Option<&IconContent>,
-    holder: Option<(u32, u32)>,
-    cancelled: &AtomicBool,
-) -> io::Result<ScannedLines> {
-    scan_blocks_mode(source, replay, blocks, tag, icons, holder, cancelled, true)
-}
-
-pub fn scan_tables(icons: bool) -> Vec<TableId> {
-    // The variant catalogue's tables include the countries and tokens read here too.
-    let mut selected = vec![
-        TableId::Campaign,
-        TableId::ProductionLines,
-        TableId::ProductionLineOutput,
-        TableId::IndustrialOrganisations,
-        TableId::IndustrialOrganisationDetails,
-        TableId::IndustrialOrganisationPolicies,
-        TableId::VariantStats,
-        TableId::CountryProductionModifiers,
-        TableId::ProductionLineModifiers,
-        TableId::ModifierDefinitions,
-    ];
-    selected.extend(VariantCatalogue::TABLES);
-    if icons {
-        // The icon rule's country operands.
-        selected.extend([
-            TableId::PoliticalParties,
-            TableId::Politics,
-            TableId::Factions,
-            TableId::FactionMembers,
-            TableId::States,
-        ]);
-    }
-    selected
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scan_blocks_mode(
-    source: Option<&Source>,
-    replay: &Replay,
-    blocks: &[&BlockIndex],
-    tag: &str,
-    icons: Option<&IconContent>,
-    holder: Option<(u32, u32)>,
-    cancelled: &AtomicBool,
-    compact: bool,
-) -> io::Result<ScannedLines> {
-    let selected = scan_tables(icons.is_some());
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Production request cancelled");
-    let mut result = ScannedLines::default();
-    let recorded_modifier_language = recorded_language(replay);
-    let mut last: Option<((u32, u32), i32)> = None;
-    let mut open: BTreeMap<u64, Open> = BTreeMap::new();
-    let mut carried = false;
-    // Lines open when the recording broke, kept until the next read of the same identity.
-    let mut broken: BTreeMap<u64, Open> = BTreeMap::new();
-    let mut last_read_identity: Option<(u32, u32)> = None;
-    let mut broken_identity: Option<(u32, u32)> = None;
-    let mut first_read = true;
-    let mut output_open = false;
-    let mut organisations_open = false;
-    // The census before this one, which bounds a line made and deleted between them.
-    let mut last_census: Option<i32> = None;
-    let mut appearances: BTreeMap<u64, u32> = BTreeMap::new();
-    // Each line's last appearance, for output published after it ended.
-    let mut latest: BTreeMap<u64, usize> = BTreeMap::new();
-    // The latest definition read of each variant, for its icon.
-    let mut definitions: BTreeMap<u64, VariantDefinitionRow> = BTreeMap::new();
-    // Produced variants whose icon was unknown for want of their definition: looked
-    // up again as soon as the catalogue knows them (a line made and deleted before a
-    // census can name a variant whose definition is read only later).
-    let mut pending: BTreeSet<u64> = BTreeSet::new();
-    // The last hour an output read was due, read or not.
-    let mut last_output_due: Option<i32> = None;
-    let mut last_modifier_country: Option<Arc<replay_data::rows::CountryProductionModifiersRow>> =
-        None;
-    // The variant table's view at the last read whose rows were stored.
-    let mut last_definitions: Option<SharedView> = None;
-    let mut variant_reads = VariantReads::default();
-    let mut last_designs: Option<SharedView> = None;
-    let mut last_design_read_hour = None;
-    #[cfg(any(test, feature = "test-support"))]
-    crate::blocks::SCANNED_BLOCKS.with_borrow_mut(|scanned| {
-        scanned.extend(blocks.iter().map(|block| block.offset));
-    });
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
-    // Only the newest-window overlap is retained. The whole scan still folds
-    // every hour from its own start; its earlier extracts never evict the first
-    // view's before it reaches them, or retain a recording's decoded history.
-    let branch = blocks
-        .first()
-        .map(|block| branch_blocks(replay, block.branch))
-        .unwrap_or_default();
-    let spans: Vec<_> = branch
-        .iter()
-        .map(|block| (block.first_hour, block.last_hour))
-        .collect();
-    let newest = first_view_blocks(&spans);
-    let first_newest = branch
-        .get(branch.len().saturating_sub(newest))
-        .map(|block| block.first_hour);
-    let cache = source.map(|source| {
-        crate::prepared::query::observations::scope(source, "production-lines-overlap", None)
-            .working_set(newest)
-    });
-    let tables: Vec<_> = selected.iter().map(|table| *table as u16).collect();
-    let extract = |block: &BlockIndex| {
-        let _cpu_block = replay_frame::cpu::block(replay.block_position(block));
-        let _cpu = replay_frame::cpu::scope("extract", Some("production lines"));
-        if let Some(position) = replay.block_position(block) {
-            consumer.reading(position);
-        }
-        let read = || extract_block(replay, block, &selected, tag, holder, cancelled, compact);
-        match cache
-            .as_ref()
-            .filter(|_| first_newest.is_some_and(|first| block.first_hour >= first))
-        {
-            Some(cache) => cache.get(
-                block,
-                &(tag, holder, &tables),
-                cancelled,
-                |extracted: &Extracted| {
-                    let mut bytes = crate::prepared::prepass::HeldBytes::default();
-                    bytes.add(
-                        std::mem::size_of::<Extracted>()
-                            + extracted.hours.capacity() * std::mem::size_of::<ScanHour>(),
-                    );
-                    for hour in &extracted.hours {
-                        if let Some(frame) = &hour.frame {
-                            bytes.frame(frame);
-                        }
-                    }
-                    bytes.total() as usize
-                },
-                read,
-            ),
-            None => read().map(Arc::new),
-        }
-    };
-    crate::blocks::scan_blocks_by(
-        blocks.to_vec(),
-        EXTRACT_AHEAD,
-        cancelled,
-        &extract,
-        |blocks| {
-            for (block, extracted) in blocks {
-                let _cpu_block = replay_frame::cpu::block(replay.block_position(block));
-                let _cpu = replay_frame::cpu::scope("fold driver", Some("production lines"));
-                if let Some(position) = replay.block_position(block) {
-                    consumer.at(position);
-                }
-                if cancelled.load(Ordering::Acquire) {
-                    return Err(cancel());
-                }
-                // Hours the recording holds but this scan cannot read: an output read may lie
-                // in them, so they are marked, never skipped silently.
-                let lost = |result: &mut ScannedLines, first: i32, last: i32| {
-                    result.unreadable_stretches += 1;
-                    mark_span(&mut result.unread_output, first.min(last), last);
-                };
-                let Ok(extracted) = extracted else {
-                    lost(&mut result, block.first_hour, block.last_hour);
-                    continue;
-                };
-                for scan_hour in &extracted.hours {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(cancel());
-                    }
-                    let hour = scan_hour.hour;
-                    let through = scan_hour.last_hour;
-                    let identity = scan_hour.country.and_then(Country::found);
-                    let continues = identity.is_some_and(|identity| {
-                        last.is_some_and(|(seen, at)| {
-                            seen == identity && at.checked_add(1) == Some(hour)
-                        })
-                    });
-                    last = identity.map(|identity| (identity, through));
-                    // A due output read this country's lines could not be read at (its tables,
-                    // its census or the output incomplete): lines made and ended since the one
-                    // before published their only rows here, so they may be missing. A country
-                    // that does not exist then has no lines to miss.
-                    if let Some(read) = scan_hour.output_due {
-                        if !read {
-                            result.unread_output_reads += 1;
-                            let first = last_output_due
-                                .and_then(|due| due.checked_add(1))
-                                .unwrap_or(hour);
-                            mark_span(&mut result.unread_output, first.min(hour), hour);
-                        }
-                        last_output_due = Some(hour);
-                    }
-                    let decoded = scan_hour.frame.as_ref();
-                    let lexical = decoded
-                        .and_then(|decoded| decoded.complete::<tables::LexicalTokens>().ok());
-                    // Variant names, shared with every equipment product (`VariantCatalogue`);
-                    // each variant's latest definition row, for its icon.
-                    // Its operands are built again only where an input changed.
-                    let mut kept = Ok(());
-                    result
-                        .variants
-                        .observe_hour(hour, scan_hour.variants, |all| match decoded {
-                            Some(decoded) => variant_reads.build(decoded, all),
-                            None => {
-                                kept = Err(frame_not_kept(hour));
-                                Vec::new()
-                            }
-                        });
-                    kept?;
-                    if through != hour {
-                        result.variants.advance(through);
-                    }
-                    if scan_hour.definitions_read
-                        && let Some(decoded) = decoded
-                        && let Ok(rows) = decoded.complete::<tables::VariantDefinitions>()
-                    {
-                        // Icons to look up again at this read: a used variant whose definition
-                        // changed (a new icon entry, creator or origin), and a pending one the
-                        // catalogue now knows.
-                        let mut refresh: BTreeSet<u64> = BTreeSet::new();
-                        // The allocation the read before held holds its rows, every one
-                        // already stored: none changed. Rows are stored only when new
-                        // or changed (each id once a read: the table's key).
-                        let view = &decoded.tables[TableId::VariantDefinitions.index()];
-                        if !last_definitions
-                            .as_ref()
-                            .is_some_and(|held| SharedView::ptr_eq(held, view))
-                        {
-                            for definition in rows {
-                                let changed = match definitions.get(&definition.id) {
-                                    Some(before) if before == definition => false,
-                                    before => {
-                                        let changed = before.is_some();
-                                        definitions.insert(definition.id, definition.clone());
-                                        changed
-                                    }
-                                };
-                                if changed && result.icons.contains_key(&definition.id) {
-                                    refresh.insert(definition.id);
-                                }
-                            }
-                            last_definitions = Some(view.clone());
-                        }
-                        refresh.extend(
-                            pending
-                                .iter()
-                                .copied()
-                                .filter(|id| definitions.contains_key(id)),
-                        );
-                        refresh.retain(|id| result.variants.current(*id).is_some());
-                        if let (Some(content), Some(lexical), false) =
-                            (icons, lexical, refresh.is_empty())
-                        {
-                            let state = IconHour::read(decoded, content);
-                            for id in refresh {
-                                pending.remove(&id);
-                                let definition = &definitions[&id];
-                                let icon = match &state {
-                                    Err(error) => IconChoice::unknown(error.to_string()),
-                                    Ok(state) => icon_choice(
-                                        content,
-                                        state,
-                                        definition,
-                                        &equipment::variant_token(definition, lexical),
-                                    ),
-                                };
-                                version(
-                                    result.icons.entry(id).or_default(),
-                                    (hour, icon),
-                                    |a, b| a.1 == b.1,
-                                );
-                            }
-                        }
-                    }
-                    if carried && (!continues || !scan_hour.lines_complete) {
-                        // The recording broke: what was carried is not known past here.
-                        broken = std::mem::take(&mut open);
-                        broken_identity = last_read_identity;
-                        carried = false;
-                        output_open = false;
-                        organisations_open = false;
-                    }
-                    let designs_changed = match (&last_designs, &scan_hour.designs) {
-                        (Some(before), Some(now)) => {
-                            !SharedView::ptr_eq(before, now)
-                                || last_design_read_hour != scan_hour.design_read_hour
-                        }
-                        (None, None) => false,
-                        _ => true,
-                    };
-                    last_designs = scan_hour.designs.clone();
-                    last_design_read_hour = scan_hour.design_read_hour;
-                    let (Some(identity), true) = (identity, scan_hour.lines_complete) else {
-                        continue;
-                    };
-                    let slot = identity.0;
-                    if carried && designs_changed {
-                        let demanded: BTreeSet<_> = open
-                            .values()
-                            .filter_map(|line| {
-                                result.lines[line.index].runs.last().map(|run| run.variant)
-                            })
-                            .collect();
-                        for variant in demanded {
-                            observe_design(&mut result, scan_hour, variant);
-                        }
-                    }
-                    if !scan_hour.lines_read {
-                        // Carried: the last read still holds, but only after a read of this identity.
-                        if carried {
-                            let _phase = replay_frame::cpu::scope_phase("production-lines:carry");
-                            mark_span(&mut result.line_hours, hour, through);
-                            // Output is carried only while its table stays readable: once a
-                            // tick went unobserved it is unavailable for the rest of the branch.
-                            output_open &= scan_hour.output_complete;
-                            organisations_open &= scan_hour.organisations_complete;
-                            if organisations_open {
-                                mark_span(&mut result.organisation_hours, hour, through);
-                            }
-                            let modifiers_carried = scan_hour.modifiers_complete;
-                            carry_lines(
-                                &mut result,
-                                &open,
-                                (hour, through),
-                                modifiers_carried,
-                                output_open,
-                            );
-                            if output_open {
-                                mark_span(&mut result.output_hours, hour, through);
-                            }
-                        }
-                        continue;
-                    }
-                    let decoded = decoded.ok_or_else(|| frame_not_kept(hour))?;
-                    let countries = decoded.complete::<tables::Countries>()?;
-                    let links = decoded.complete::<tables::CountryLinks>()?;
-                    let rows = decoded.complete::<tables::ProductionLines>()?;
-                    result.reads.push(hour);
-                    mark(&mut result.line_hours, hour);
-                    let previous_read = last_census;
-                    last_census = Some(hour);
-                    if broken_identity != Some(identity) {
-                        broken.clear();
-                    }
-                    last_read_identity = Some(identity);
-                    let mut still = BTreeMap::new();
-                    // A row whose producer link does not resolve is this country's when it is
-                    // one of its current lines (a native handle names one line object);
-                    // otherwise whose it is is not known. Either way it is counted.
-                    let ours = |country: u32, handle: u64| match link_slot(links, country) {
-                        Some(linked) => linked == slot,
-                        None => open.contains_key(&handle) || broken.contains_key(&handle),
-                    };
-                    result.unlinked_rows += rows
-                        .iter()
-                        .filter(|row| link_slot(links, row.country).is_none())
-                        .count();
-                    let mine: Vec<&ProductionLineRow> = rows
-                        .iter()
-                        .filter(|row| ours(row.country, row.handle))
-                        .collect();
-                    let naming_tags = Tags::new(
-                        countries,
-                        links,
-                        decoded.complete::<tables::CountryAppearance>().ok(),
-                    );
-                    let modifier_inputs = scan_hour
-                        .modifiers_read
-                        .then(|| {
-                            decoded
-                                .complete::<tables::CountryProductionModifiers>()
-                                .ok()
-                                .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
-                        })
-                        .flatten();
-                    let modifier_inputs = modifier_inputs.filter(|_| {
-                        match replay_derive::fixed_layout::validate_recording(
-                            decoded,
-                            replay_derive::fixed_layout::PRODUCTION_MODIFIERS,
-                        ) {
-                            Ok(()) => true,
-                            Err(reason) => {
-                                *result.modifier_layout_refusals.entry(reason).or_default() += 1;
-                                false
-                            }
-                        }
-                    });
-                    let naming_organisations =
-                        decoded.complete::<tables::IndustrialOrganisations>().ok();
-                    let modifier_country = modifier_inputs
-                        .and_then(|(countries, _)| {
-                            countries
-                                .binary_search_by_key(&identity.1, |country| country.country)
-                                .ok()
-                                .map(|index| &countries[index])
-                        })
-                        .map(|country| {
-                            if last_modifier_country.as_deref() != Some(country) {
-                                last_modifier_country = Some(Arc::new(country.clone()));
-                            }
-                            Arc::clone(
-                                last_modifier_country
-                                    .as_ref()
-                                    .expect("recorded modifier country"),
-                            )
-                        });
-                    for row in &mine {
-                        let Some(kind) = LineKind::of(row.kind) else {
-                            result.unknown_kinds += 1;
-                            continue;
-                        };
-                        let (index, starts_segment) = if let Some(line) = open.remove(&row.handle) {
-                            (line.index, false)
-                        } else if let Some(line) = broken.remove(&row.handle) {
-                            (line.index, true)
-                        } else {
-                            let appearance = appearances.entry(row.handle).or_default();
-                            *appearance += 1;
-                            result.lines.push(ScannedLine {
-                                key: format!("{}#{appearance}", row.handle),
-                                handle: row.handle,
-                                kind: Some(kind),
-                                runs: Vec::new(),
-                                output: Vec::new(),
-                                final_output: None,
-                                ended_by: None,
-                                before_recording: first_read,
-                                between_reads: None,
-                                variants: Vec::new(),
-                            });
-                            (result.lines.len() - 1, true)
-                        };
-                        latest.insert(row.handle, index);
-                        observe_design(&mut result, scan_hour, row.variant);
-                        let values = RawRun {
-                            first_hour: hour,
-                            last_hour: hour,
-                            starts_segment,
-                            variant: row.variant,
-                            mio: row.mio,
-                            active_factories: row.active_factories,
-                            requested_factories: row.requested_factories,
-                            max_factories: row.max_factories,
-                            cost_raw: row.cost_raw,
-                            speed_raw: row.speed_raw,
-                            efficiency_raw: row.efficiency_raw,
-                            priority: row.priority,
-                            amount: row.amount,
-                        };
-                        let line = &mut result.lines[index];
-                        if let Some((_, lines)) = modifier_inputs
-                            && let Some(country) = modifier_country
-                                .as_ref()
-                                .filter(|country| country.country == row.country)
-                            && let Ok(position) =
-                                lines.binary_search_by_key(&row.handle, |line| line.line)
-                        {
-                            let operands = &lines[position];
-                            if (
-                                operands.country,
-                                operands.variant,
-                                operands.organisation,
-                                operands.kind,
-                                operands.active_factories,
-                            ) == (
-                                row.country,
-                                row.variant,
-                                row.mio,
-                                row.kind,
-                                row.active_factories,
-                            ) {
-                                let catalogue = icons.and_then(|icons| icons.catalogue.as_deref());
-                                let organisation = naming_organisations.and_then(|rows| {
-                                    rows.binary_search_by_key(&row.mio, |organisation| {
-                                        organisation.organisation
-                                    })
-                                    .ok()
-                                    .map(|index| &rows[index])
-                                });
-                                let organisation_name = organisation.zip(lexical).and_then(
-                                    |(organisation, lexical)| {
-                                        let raw = raw_organisation(
-                                            organisation,
-                                            hour,
-                                            &naming_tags,
-                                            lexical,
-                                        );
-                                        organisation_name(
-                                            &raw,
-                                            catalogue.map(|catalogue| catalogue as &dyn Texts),
-                                        )
-                                    },
-                                );
-                                result.modifiers.entry(line.key.clone()).or_default().push(
-                                    breakdown::RawModifierRun {
-                                        first_hour: hour,
-                                        last_hour: hour,
-                                        country: Arc::clone(country),
-                                        line: operands.clone(),
-                                        run: values,
-                                        organisation: organisation_name,
-                                        localisation: catalogue
-                                            .map(|catalogue| Arc::clone(&catalogue.localisation)),
-                                        recorded_language: Arc::clone(&recorded_modifier_language),
-                                    },
-                                );
-                            }
-                        }
-                        match line.runs.last_mut() {
-                            Some(run)
-                                if !starts_segment
-                                    && run.last_hour.checked_add(1) == Some(hour)
-                                    && same_values(run, &values) =>
-                            {
-                                run.last_hour = hour
-                            }
-                            _ => {
-                                line.runs.push(values);
-                            }
-                        }
-                        still.insert(row.handle, Open { index });
-                    }
-                    // Lines this read no longer lists ended since the one before.
-                    for line in open.values().chain(broken.values()) {
-                        result.lines[line.index].ended_by = Some(hour);
-                    }
-                    broken.clear();
-                    open = still;
-                    carried = true;
-                    first_read = false;
-                    // The output counted up to this read, by line.
-                    output_open = false;
-                    let mut produced_between: BTreeSet<u64> = BTreeSet::new();
-                    if let Ok(output) = decoded.complete::<tables::ProductionLineOutput>() {
-                        output_open = true;
-                        mark(&mut result.output_hours, hour);
-                        // An output row whose producer link does not resolve is this country's
-                        // when it names one of its lines; its count is then not exact, since
-                        // whose it is rests on the handle alone.
-                        let mut by_line: BTreeMap<u64, Vec<(&ProductionLineOutputRow, bool)>> =
-                            BTreeMap::new();
-                        for row in output {
-                            let linked = link_slot(links, row.country);
-                            if linked.is_none() {
-                                result.unlinked_rows += 1;
-                            }
-                            let mine = match linked {
-                                Some(linked) => linked == slot,
-                                None => latest.contains_key(&row.line),
-                            };
-                            if !mine {
-                                continue;
-                            }
-                            by_line
-                                .entry(row.line)
-                                .or_default()
-                                .push((row, linked.is_some()));
-                            // A variant a line made only between two censuses is named and pictured too.
-                            produced_between.insert(row.variant);
-                        }
-                        for (handle, rows) in by_line {
-                            let index = match latest.get(&handle) {
-                                Some(&index) => index,
-                                // A line no census listed was made and deleted since the last
-                                // one: its final rows name its variant and producer, so it is
-                                // shown between the two censuses with what it made.
-                                None if rows.iter().all(|(row, _)| row.ended) => {
-                                    // Made after the census before only when one was complete and
-                                    // the line was observed since its creation; otherwise it ran
-                                    // before the observation began, from an unknown hour.
-                                    let whole_life =
-                                        rows.iter().all(|(row, _)| row.observed_since_creation);
-                                    let since = rows
-                                        .iter()
-                                        .map(|(row, _)| row.since_hour)
-                                        .min()
-                                        .unwrap_or(hour);
-                                    let (first_hour, before) = match previous_read {
-                                        Some(read) if whole_life => (read + 1, false),
-                                        _ => (since.min(hour), true),
-                                    };
-                                    let appearance = appearances.entry(handle).or_default();
-                                    *appearance += 1;
-                                    result.lines.push(ScannedLine {
-                                        key: format!("{handle}#{appearance}"),
-                                        handle,
-                                        kind: None,
-                                        runs: Vec::new(),
-                                        output: Vec::new(),
-                                        final_output: None,
-                                        ended_by: Some(hour),
-                                        before_recording: before,
-                                        between_reads: Some(super::country_groups::HourSpan {
-                                            first_hour,
-                                            last_hour: hour,
-                                        }),
-                                        variants: rows.iter().map(|(row, _)| row.variant).collect(),
-                                    });
-                                    let index = result.lines.len() - 1;
-                                    latest.insert(handle, index);
-                                    produced_between
-                                        .extend(rows.iter().map(|(row, _)| row.variant));
-                                    index
-                                }
-                                None => {
-                                    result.unlisted_output += 1;
-                                    continue;
-                                }
-                            };
-                            let run = output_of(&rows, hour);
-                            let line = &mut result.lines[index];
-                            if rows.iter().any(|(row, _)| row.ended) || !open.contains_key(&handle)
-                            {
-                                line.final_output = Some(run);
-                            } else {
-                                line.output.push(run);
-                            }
-                        }
-                    }
-                    // Organisations the lines name, and the produced variants' icons at this hour.
-                    organisations_open = false;
-                    if let (Ok(organisations), Some(lexical)) = (
-                        decoded.complete::<tables::IndustrialOrganisations>(),
-                        lexical,
-                    ) {
-                        organisations_open = true;
-                        mark(&mut result.organisation_hours, hour);
-                        let named: BTreeSet<u64> = mine
-                            .iter()
-                            .flat_map(|row| {
-                                let author = decoded
-                                    .complete::<tables::VariantStats>()
-                                    .ok()
-                                    .and_then(|stats| {
-                                        stats
-                                            .binary_search_by_key(&row.variant, |s| s.variant)
-                                            .ok()
-                                            .map(|index| stats[index].organisation)
-                                    });
-                                std::iter::once(row.mio).chain(author)
-                            })
-                            .filter(|mio| *mio != 0)
-                            .collect();
-                        for row in organisations
-                            .iter()
-                            .filter(|row| named.contains(&row.organisation))
-                        {
-                            version(
-                                result.organisations.entry(row.organisation).or_default(),
-                                {
-                                    let mut raw =
-                                        raw_organisation(row, hour, &naming_tags, lexical);
-                                    raw.state = decoded
-                                        .complete::<tables::IndustrialOrganisationDetails>()
-                                        .ok()
-                                        .and_then(|details| {
-                                            details
-                                                .binary_search_by_key(
-                                                    &row.organisation,
-                                                    |details| details.organisation,
-                                                )
-                                                .ok()
-                                                .map(|index| &details[index])
-                                                .filter(|details| details.country == row.country)
-                                        })
-                                        .map(|details| {
-                                            let mut state = organisation_state(
-                                                details,
-                                                decoded.tables
-                                                    [TableId::IndustrialOrganisationDetails
-                                                        .index()]
-                                                .sampled_at(),
-                                                lexical,
-                                            );
-                                            state.policy_name = decoded
-                                                .complete::<tables::IndustrialOrganisationPolicies>(
-                                                )
-                                                .ok()
-                                                .and_then(|rows| {
-                                                    rows.binary_search_by_key(
-                                                        &details.country,
-                                                        |policies| policies.country,
-                                                    )
-                                                    .ok()
-                                                    .map(|index| &rows[index])
-                                                })
-                                                .and_then(|policies| {
-                                                    policies.policies.iter().find(|policy| {
-                                                        policy.token == details.state.policy
-                                                    })
-                                                })
-                                                .map(|policy| text(&policy.name));
-                                            state
-                                        });
-                                    raw
-                                },
-                                |a, b| {
-                                    RawOrganisation {
-                                        first_hour: 0,
-                                        ..a.clone()
-                                    } == RawOrganisation {
-                                        first_hour: 0,
-                                        ..b.clone()
-                                    }
-                                },
-                            );
-                        }
-                    }
-                    let produced: BTreeSet<u64> = mine
-                        .iter()
-                        .map(|row| row.variant)
-                        .chain(produced_between)
-                        .collect();
-                    // The hour's country operands are built only for variants to picture.
-                    if let (Some(content), Some(lexical), false) =
-                        (icons, lexical, produced.is_empty())
-                    {
-                        let state = IconHour::read(decoded, content);
-                        for id in produced {
-                            let icon = match (&state, definitions.get(&id)) {
-                                (Err(error), _) => IconChoice::unknown(error.to_string()),
-                                (Ok(_), None) => {
-                                    pending.insert(id);
-                                    IconChoice::unknown(
-                                        "the variant's definition is not recorded yet".to_owned(),
-                                    )
-                                }
-                                // A definition carried from before a gap may have changed since.
-                                (Ok(_), Some(_)) if result.variants.current(id).is_none() => {
-                                    pending.insert(id);
-                                    IconChoice::unknown(
-                                        "the variant's definition is not recorded at this time"
-                                            .to_owned(),
-                                    )
-                                }
-                                (Ok(state), Some(definition)) => icon_choice(
-                                    content,
-                                    state,
-                                    definition,
-                                    &equipment::variant_token(definition, lexical),
-                                ),
-                            };
-                            version(result.icons.entry(id).or_default(), (hour, icon), |a, b| {
-                                a.1 == b.1
-                            });
-                        }
-                    }
-                }
-                // A frame that did not decode, or named another campaign, ends what
-                // the block could be read for.
-                if let Some(from) = extracted.lost_from {
-                    lost(&mut result, from, block.last_hour);
-                }
-            }
-            Ok(())
-        },
-    )?;
-    Ok(result)
 }
 
 /// Extend each open line through consecutive hours with equal availability.
@@ -2122,7 +958,6 @@ pub fn organisation_asset(shown: &Catalogue, raw: &RawOrganisation) -> Option<St
 fn declared_in(cat: &Catalogue) -> impl Fn(&str) -> bool + '_ {
     move |name| cat.sprites.contains(name) || cat.sprites.refusal(name).is_some()
 }
-
 
 /// The produced variants' names and icons by hour, merged from the variant catalogue
 /// (names, and where they are known) and the line reads (icons), each icon's key the one
@@ -2425,22 +1260,6 @@ pub fn check_content(
     Ok((findings, diagnostics))
 }
 
-/// A scan's identity: branch, original tag, native holder and icon content.
-/// The content is the `Arc` itself, kept alive by the entry, so it can never match
-/// other content that reuses its address.
-type ScanKey<T = IconContent> = (u64, String, Option<Arc<T>>, Option<(u32, u32)>);
-
-fn same_scan<T>(a: &ScanKey<T>, b: &ScanKey<T>) -> bool {
-    a.0 == b.0
-        && a.1 == b.1
-        && a.3 == b.3
-        && match (&a.2, &b.2) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        }
-}
-
 /// What an organisation's icon choice reads ([`organisation_icon`]): its stored sprite, its
 /// owner and its token.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2469,12 +1288,8 @@ type OrganisationPictures = (
     BTreeMap<OrganisationIcon, catalogue::Drawn<Result<Option<(String, String)>, String>>>,
 );
 
-
 #[derive(Default)]
 struct Cache {
-    entries: VecDeque<(ScanKey, Arc<ScannedLines>)>,
-    /// First views by the same key, with the hours each does not answer exactly.
-    first_views: VecDeque<(ScanKey, FirstView)>,
     icons: Option<Arc<IconContent>>,
     /// Organisation pictures of the catalogue they were drawn through: a request for another
     /// catalogue never reads them, and a draw finishing after the content changed is stored
@@ -2628,9 +1443,10 @@ fn scan_content(
     warnings: &mut Vec<String>,
 ) -> (Option<Arc<Catalogue>>, Option<Arc<IconContent>>) {
     let state = source.state::<Cache>();
-    let catalogue = match context.content().and_then(|content| {
-        catalogue::recorded_catalogue(source, content)
-    }) {
+    let catalogue = match context
+        .content()
+        .and_then(|content| catalogue::recorded_catalogue(source, content))
+    {
         Ok(catalogue) => {
             warnings.extend(catalogue.verification.iter().cloned());
             warnings.extend(catalogue.warnings.iter().cloned());
@@ -2678,6 +1494,10 @@ fn scan_content(
     (catalogue, icons)
 }
 
+pub fn preparation_icons(source: &Source, context: &LoadContext) -> Option<Arc<IconContent>> {
+    scan_content(source, context, &mut Vec::new()).1
+}
+
 /// A country's whole-branch scan as the application keeps it between sessions,
 /// with what it was read with: it is held again only where it is the scan a
 /// request would make.
@@ -2722,259 +1542,6 @@ fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
         .map(|block| (block.first_hour, block.last_hour, block.offset))
 }
 
-/// The country's whole-branch scan to keep between sessions: the one held, or
-/// read now with `context`'s content.
-pub fn saved_scan(
-    source: &Source,
-    branch: u64,
-    tag: &str,
-    context: &LoadContext,
-    cancelled: &AtomicBool,
-) -> io::Result<SavedScan> {
-    let params = CountryParams {
-        branch_id: branch.to_string(),
-        tag: tag.to_owned(),
-    };
-    let mut warnings = Vec::new();
-    let (_, icons) = scan_content(source, context, &mut warnings);
-    let (_, scanned) = scanned_lines(source, &params, None, context, cancelled, &mut warnings)?;
-    Ok(SavedScan {
-        branch,
-        tag: tag.to_owned(),
-        pictured: icons.is_some(),
-        visual: icons.as_ref().map(|icons| icons.visual_inputs().to_owned()),
-        executable: engine_executable::executable_tables::is_initialized(),
-        last_block: last_block(source.replay_ref(), branch),
-        scan: SavedLines::save(&scanned, cancelled)?,
-    })
-}
-
-/// Holds `saved` for the products to answer from, where it is the scan a request
-/// would make now: of the branch's current last block, with the same icon
-/// content and executable metadata. Whether a scan of its country is held.
-/// A saved scan that does not restore is not held: the products scan instead.
-pub fn hold_saved(source: &Source, context: &LoadContext, saved: SavedScan) -> bool {
-    let replay = source.replay();
-    if last_block(&replay, saved.branch) != saved.last_block
-        || engine_executable::executable_tables::is_initialized() != saved.executable
-    {
-        return false;
-    }
-    let mut warnings = Vec::new();
-    let (_, icons) = scan_content(source, context, &mut warnings);
-    if !pictures_hold(icons.as_deref(), &saved) {
-        return false;
-    }
-    let key: ScanKey = (saved.branch, saved.tag.clone(), icons.clone(), None);
-    let state = source.state::<Cache>();
-    if state
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .entries
-        .iter()
-        .any(|(cached, _)| same_scan(cached, &key))
-    {
-        return true;
-    }
-    // The scan's modifier runs name the catalogue its icon content was read with.
-    let localisation = icons
-        .as_ref()
-        .and_then(|icons| icons.catalogue.as_ref())
-        .map(|catalogue| Arc::clone(&catalogue.localisation));
-    let Ok(Some(scanned)) = saved.scan.restore(localisation, recorded_language(&replay)) else {
-        return false;
-    };
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    cache.entries.retain(|(cached, _)| !same_scan(cached, &key));
-    cache.entries.push_back((key, Arc::new(scanned)));
-    while cache.entries.len() > CACHED_COUNTRIES {
-        cache.entries.pop_front();
-    }
-    true
-}
-
-/// The scan of a branch's newest blocks a first view answers from, and the hours
-/// it does not answer exactly.
-#[derive(Clone)]
-struct FirstView {
-    scanned: Arc<ScannedLines>,
-    approximate: Vec<super::country_groups::HourSpan>,
-}
-
-/// Which scan a request answers from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum View {
-    /// The whole branch's.
-    Whole,
-    /// A first view of its newest blocks; the whole branch's where they are
-    /// all of it.
-    First,
-}
-
-/// Whole-branch scans a source read, for tests.
-#[cfg(test)]
-#[derive(Default)]
-struct WholeScans(usize);
-
-/// Whole-branch scans running, by key: a request for one waits for it rather
-/// than reading the branch again.
-#[derive(Default)]
-struct Running {
-    scans: Vec<ScanKey>,
-    done: Arc<std::sync::Condvar>,
-}
-
-/// How long a request waiting for another's scan sleeps between looks at its
-/// own cancellation.
-const WAIT: std::time::Duration = std::time::Duration::from_millis(200);
-
-/// Ends a running scan's claim, whether it finished or failed, and wakes the
-/// requests waiting for it.
-struct Claim<'a> {
-    running: &'a std::sync::Mutex<Running>,
-    key: ScanKey,
-}
-
-impl Drop for Claim<'_> {
-    fn drop(&mut self) {
-        let mut running = self
-            .running
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        running.scans.retain(|held| !same_scan(held, &self.key));
-        running.done.notify_all();
-    }
-}
-
-/// The whole-branch scan of `key`: the one held; else the one another request
-/// is reading, waited for; else the country's scan kept between sessions where
-/// it is current ([`hold_saved`]); else read now and held.
-fn whole_scan(
-    source: &Source,
-    context: &LoadContext,
-    replay: &Replay,
-    blocks: &[&BlockIndex],
-    key: &ScanKey,
-    icons: Option<&IconContent>,
-    cancelled: &AtomicBool,
-) -> io::Result<Arc<ScannedLines>> {
-    let state = source.state::<Cache>();
-    let held = || {
-        state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .entries
-            .iter()
-            .find(|(cached, _)| same_scan(cached, key))
-            .map(|(_, scanned)| Arc::clone(scanned))
-    };
-    let runs = source.state::<Running>();
-    let claim = {
-        let mut running = runs.lock().unwrap_or_else(|error| error.into_inner());
-        loop {
-            if let Some(scanned) = held() {
-                return Ok(scanned);
-            }
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancelled_error());
-            }
-            if !running.scans.iter().any(|held| same_scan(held, key)) {
-                running.scans.push(key.clone());
-                break Claim {
-                    running: &runs,
-                    key: key.clone(),
-                };
-            }
-            let done = Arc::clone(&running.done);
-            running = done
-                .wait_timeout(running, WAIT)
-                .unwrap_or_else(|error| error.into_inner())
-                .0;
-        }
-    };
-    let (branch, tag, _, holder) = key;
-    if holder.is_none()
-        && let Some(saved) = read_saved(source, context, *branch, tag)
-        && hold_saved(source, context, saved)
-        && let Some(scanned) = held()
-    {
-        return Ok(scanned);
-    }
-    #[cfg(test)]
-    {
-        source
-            .state::<WholeScans>()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .0 += 1;
-    }
-    let scanned = Arc::new(scan_blocks_cached(
-        Some(source),
-        replay,
-        blocks,
-        tag,
-        icons,
-        *holder,
-        cancelled,
-    )?);
-    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-    cache.entries.retain(|(cached, _)| !same_scan(cached, key));
-    cache.entries.push_back((key.clone(), Arc::clone(&scanned)));
-    while cache.entries.len() > CACHED_COUNTRIES {
-        cache.entries.pop_front();
-    }
-    drop(cache);
-    drop(claim);
-    if holder.is_none() {
-        let unkept = source.state::<Unkept>();
-        let mut unkept = unkept.lock().unwrap_or_else(|error| error.into_inner());
-        unkept.scans.insert((*branch, tag.clone()));
-    }
-    Ok(scanned)
-}
-
-/// Countries whose whole scan a request read this session and no preparation
-/// kept yet.
-#[derive(Default)]
-struct Unkept {
-    scans: BTreeSet<(u64, String)>,
-}
-
-/// The countries, by branch, whose whole scan was read this session and is not
-/// kept yet: the source's next preparation keeps them, from the scans held.
-pub fn read_whole(source: &Source) -> Vec<(u64, String)> {
-    source
-        .state::<Unkept>()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .scans
-        .iter()
-        .cloned()
-        .collect()
-}
-
-/// A preparation kept the country's scan, or it cannot be kept: it no longer
-/// waits.
-pub fn kept(source: &Source, branch: u64, tag: &str) {
-    source
-        .state::<Unkept>()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .scans
-        .remove(&(branch, tag.to_owned()));
-}
-
-/// Whether a whole scan was read that no preparation kept yet.
-#[cfg(any(test, feature = "test-support"))]
-pub fn has_unkept(source: &Source) -> bool {
-    !source
-        .state::<Unkept>()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .scans
-        .is_empty()
-}
-
 /// The store sections a country's kept scan is held under: its scan and its
 /// meta, by branch and tag (in hex, since a mod's tags may hold any character).
 fn saved_sections(branch: u64, tag: &str) -> (String, String) {
@@ -2995,7 +1562,7 @@ struct SavedMeta {
     visual: Option<String>,
 }
 
-/// Writes a country's scan to keep between sessions (with [`saved_scan`]).
+/// Writes the completed compatibility payload and its binding.
 pub fn write_saved<W: crate::prepared::pages::Pages + ?Sized>(
     writer: &mut W,
     saved: &SavedScan,
@@ -3042,146 +1609,87 @@ pub fn saved_current(
     ))
 }
 
-/// The country's scan kept between sessions for `context`'s content, where the
-/// store holds one for the branch's current last block. Read only: a request
-/// never writes. Any failure to read it is a miss.
-fn read_saved(source: &Source, context: &LoadContext, branch: u64, tag: &str) -> Option<SavedScan> {
-    let (store, key) = crate::prepared::files(source, context.content.as_ref()).ok()?;
-    if !saved_current(&store, &key, source, context, branch, tag).ok()? {
-        return None;
-    }
-    let (scan, _) = saved_sections(branch, tag);
-    let saved: SavedScan = crate::prepared::series::read_reply(&store, &key, &scan, 0).ok()??;
-    (saved.branch == branch && saved.tag == tag).then_some(saved)
-}
-
-/// The catalogue, the icon rule's content (loaded once per catalogue) and the
-/// country's scan (cached by branch, tag and icon content), shared by both products
-/// so a detail window reuses the scan its history was answered from.
 fn scanned_lines(
     source: &Source,
     params: &CountryParams,
-    holder: Option<(u32, u32)>,
+    holder: Option<prepared::NativeCountry>,
     context: &LoadContext,
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
 ) -> io::Result<(Option<Arc<Catalogue>>, Arc<ScannedLines>)> {
-    let (catalogue, scanned, _) = scanned_view(
-        source,
-        params,
-        holder,
-        context,
-        cancelled,
-        warnings,
-        View::Whole,
-    )?;
+    let (catalogue, scanned, approximate) =
+        scanned_view(source, params, holder, context, cancelled, warnings)?;
+    if let Some(span) = approximate.first() {
+        warnings.push(format!(
+            "Production history from hour {} is still being prepared; missing reads are unknown.",
+            span.first_hour
+        ));
+    }
     Ok((catalogue, scanned))
 }
 
-/// A scan for one view: its catalogue, its lines and the hours it does not answer exactly.
 type ScannedView = (
     Option<Arc<Catalogue>>,
     Arc<ScannedLines>,
     Vec<super::country_groups::HourSpan>,
 );
 
-/// As [`scanned_lines`], for `view`: with the hours the scan does not answer
-/// exactly (none for a whole scan).
-// Keep content availability, the shared scan and approximate-hour spans in one query result.
 fn scanned_view(
     source: &Source,
     params: &CountryParams,
-    holder: Option<(u32, u32)>,
+    holder: Option<prepared::NativeCountry>,
     context: &LoadContext,
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
-    view: View,
 ) -> io::Result<ScannedView> {
-    let state = source.state::<Cache>();
     let (catalogue, icons) = scan_content(source, context, warnings);
-    let key: ScanKey = (params.branch(), params.tag.clone(), icons.clone(), holder);
-    let (cached, first_view) = {
-        let cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        (
-            cache
-                .entries
-                .iter()
-                .find(|(cached, _)| same_scan(cached, &key))
-                .map(|(_, scanned)| Arc::clone(scanned)),
-            cache
-                .first_views
-                .iter()
-                .find(|(cached, _)| same_scan(cached, &key))
-                .map(|(_, view)| view.clone()),
-        )
-    };
-    // A reply is a function of its request: a first view is answered from the
-    // newest blocks even once the whole scan is held, so replies kept between
-    // sessions stay those of their request.
-    let (scanned, approximate) = match (view, cached, first_view) {
-        (View::First, _, Some(first)) => (first.scanned, first.approximate),
-        (View::Whole, Some(scanned), _) => (scanned, Vec::new()),
-        (view, cached, _) => {
-            let replay = source.replay();
-            let blocks = branch_blocks(&replay, params.branch());
-            let spans: Vec<(i32, i32)> = blocks
-                .iter()
-                .map(|block| (block.first_hour, block.last_hour))
-                .collect();
-            let newest = first_view_blocks(&spans);
-            if view == View::First && newest < blocks.len() {
-                let window = &blocks[blocks.len() - newest..];
-                let scanned = Arc::new(scan_blocks_cached(
-                    Some(source),
-                    &replay,
-                    window,
-                    &params.tag,
-                    icons.as_deref(),
-                    holder,
-                    cancelled,
-                )?);
-                // Before the window nothing is read; at its first read the lines
-                // listed are taken as begun there, their appearances counted from it.
-                let last_hour = scanned
-                    .reads
+    #[cfg(test)]
+    let reference = reference::selected(source, holder.as_ref());
+    #[cfg(not(test))]
+    let reference: Option<ScannedLines> = None;
+    let (scanned, coverage) = match reference {
+        Some(scanned) => (
+            scanned,
+            crate::prepared::coverage::Coverage {
+                schema: crate::prepared::coverage::SCHEMA,
+                first_hour: branch_blocks(source.replay_ref(), params.branch())
                     .first()
-                    .copied()
-                    .unwrap_or(spans[spans.len() - 1].1);
-                let approximate = vec![super::country_groups::HourSpan {
-                    first_hour: spans[0].0,
-                    last_hour,
-                }];
-                let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-                cache
-                    .first_views
-                    .retain(|(cached, _)| !same_scan(cached, &key));
-                cache.first_views.push_back((
-                    key,
-                    FirstView {
-                        scanned: Arc::clone(&scanned),
-                        approximate: approximate.clone(),
-                    },
-                ));
-                while cache.first_views.len() > CACHED_COUNTRIES {
-                    cache.first_views.pop_front();
-                }
-                (scanned, approximate)
-            } else if let Some(scanned) = cached {
-                // A branch the first view would read whole.
-                (scanned, Vec::new())
-            } else {
-                let scanned = whole_scan(
-                    source,
-                    context,
-                    &replay,
-                    &blocks,
-                    &key,
-                    icons.as_deref(),
-                    cancelled,
-                )?;
-                (scanned, Vec::new())
-            }
-        }
+                    .unwrap()
+                    .first_hour,
+                last_hour: branch_blocks(source.replay_ref(), params.branch())
+                    .last()
+                    .unwrap()
+                    .last_hour,
+                complete: true,
+            },
+        ),
+        None => prepared::query(
+            source,
+            context,
+            params.branch(),
+            &params.tag,
+            holder,
+            icons.as_deref(),
+            cancelled,
+        )?,
+    };
+    let approximate = if coverage.complete {
+        Vec::new()
+    } else {
+        let last = branch_blocks(source.replay_ref(), params.branch())
+            .last()
+            .map_or(coverage.last_hour, |block| block.last_hour);
+        coverage
+            .last_hour
+            .checked_add(1)
+            .filter(|first| *first <= last)
+            .map(|first_hour| {
+                vec![super::country_groups::HourSpan {
+                    first_hour,
+                    last_hour: last,
+                }]
+            })
+            .unwrap_or_default()
     };
     warnings.extend(
         scanned
@@ -3189,7 +1697,7 @@ fn scanned_view(
             .iter()
             .map(|(reason, count)| format!("{reason} ({count} supplying reads)")),
     );
-    Ok((catalogue, scanned, approximate))
+    Ok((catalogue, Arc::new(scanned), approximate))
 }
 
 impl Product for ProductionLines {
@@ -3225,10 +1733,6 @@ impl Product for ProductionLines {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let mut warnings = Vec::new();
-        let view = match params.exact {
-            Some(true) => View::Whole,
-            Some(false) | None => View::First,
-        };
         let (catalogue, scanned, approximate) = scanned_view(
             source,
             &params.country(),
@@ -3236,11 +1740,13 @@ impl Product for ProductionLines {
             context,
             cancelled,
             &mut warnings,
-            view,
         )?;
+        if params.exact == Some(true) && !approximate.is_empty() {
+            return Err(crate::invalid("Production lines are still being prepared"));
+        }
         if !approximate.is_empty() {
             warnings.push(format!(
-                "This first view reads only {}'s newest recorded production; its history before then is still being prepared. Until it is, lines listed at the view's first read are shown as begun before it, and a line's number counts its appearances from there.",
+                "{}'s production history after the published prefix is still being prepared.",
                 params.tag
             ));
         }
@@ -3265,7 +1771,9 @@ impl Product for ProductionLines {
                     admitted,
                     recorded,
                 )),
-                (Some(Err(error)), _) => Err(format!("Equipment pictures are unavailable: {error}")),
+                (Some(Err(error)), _) => {
+                    Err(format!("Equipment pictures are unavailable: {error}"))
+                }
                 _ => Err("Equipment icons need the game folders.".to_owned()),
             };
             variant_entries(

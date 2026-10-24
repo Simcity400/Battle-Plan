@@ -65,7 +65,7 @@ fn groups(countries: &[u32], complete: bool) -> Value {
 }
 
 #[test]
-fn production_lines_follows_its_first_view_with_the_widgets_exact_request() {
+fn production_lines_refreshes_one_prepared_request_until_its_prefix_is_complete() {
     with_probe(|probe| {
         let entry = readiness::widgets(readiness::WIDGETS)
             .unwrap()
@@ -75,24 +75,19 @@ fn production_lines_follows_its_first_view_with_the_widgets_exact_request() {
         let mut widget = widget(entry);
         widget.refresh(probe, &bindings()).unwrap();
         let first = request(&widget, 0);
+        assert_eq!(probe.tracked[first].route, Route::Prepared);
+        assert!(probe.tracked[first].params.get("exact").is_none());
         let data = json!({"approximate": [{"firstHour": 0, "lastHour": 15}]});
         answer(probe, first, data.clone());
         let first_view = settled(probe, &widget.slots).unwrap();
         assert!(exact(probe, &widget.slots).is_none());
-        let follow_up = probe.tracked[first]
-            .exact_request
-            .expect("whole history follow-up");
-        assert_eq!(probe.tracked[follow_up].route, Route::Product);
-        let mut expected = probe.tracked[first].params.clone();
-        expected["exact"] = json!(true);
-        assert_eq!(probe.tracked[follow_up].params, expected);
+        assert_eq!(probe.tracked.len(), 1);
         answer(probe, first, data);
-        assert_eq!(probe.tracked[first].exact_request, Some(follow_up));
-        assert_eq!(probe.tracked.len(), 2, "one shared follow-up");
-        answer(probe, follow_up, json!({"approximate": []}));
+        assert!(exact(probe, &widget.slots).is_none());
+        answer(probe, first, json!({"approximate": []}));
         assert_eq!(settled(probe, &widget.slots).unwrap(), first_view);
-        assert_eq!(exact(probe, &widget.slots).unwrap().1, Some(follow_up));
-        assert_eq!(probe.tracked.len(), 2, "an exact reply needs no follow-up");
+        assert_eq!(exact(probe, &widget.slots).unwrap().1, Some(first));
+        assert_eq!(probe.tracked.len(), 1);
     });
 }
 

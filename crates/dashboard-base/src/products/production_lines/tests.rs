@@ -16,58 +16,6 @@ use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 
 #[test]
-fn production_hour_batches_its_supplying_flags_and_matches_individual_lookups() {
-    let format = replay_data::format::FormatVersion::CURRENT;
-    for at in 0..48 {
-        let mut frame = production_frame(
-            FIRST + at,
-            at % 24 == 0,
-            true,
-            9001,
-            &[(5, 70, 8, 3276800)],
-            None,
-        );
-        // A peer read dates the entire cadence group, including off-slot reads.
-        frame.metrics.table_ns[TableId::ProductionLineModifiers.index()] = u64::from(at == 7);
-        if at == 13 {
-            *frame.tables[TableId::VariantChanges.index()] =
-                TableView::Complete(TableRows::VariantChanges(vec![
-                    replay_data::rows::VariantChangeRow {
-                        sequence: 1,
-                        hour: frame.hour,
-                        variant: 70,
-                        removed: true,
-                        ..Default::default()
-                    },
-                ]));
-        }
-        let before = crate::metadata::slot_read_batches();
-        let actual = scan_hour(format, frame.hour, &frame, "GER", None);
-        assert_eq!(crate::metadata::slot_read_batches() - before, 1);
-        let read = |table| crate::metadata::slot_read(format, &frame.metrics, table, frame.hour);
-        assert_eq!(actual.lines_read, read(TableId::ProductionLines));
-        assert_eq!(
-            actual.definitions_read,
-            (equipment::design_changed(&frame) || read(TableId::VariantDefinitions))
-                && frame.complete::<tables::VariantDefinitions>().is_ok()
-        );
-        assert_eq!(
-            actual.output_due.is_some(),
-            read(TableId::ProductionLineOutput)
-        );
-        assert_eq!(
-            actual.modifiers_read,
-            read(TableId::CountryProductionModifiers) && read(TableId::ProductionLineModifiers)
-        );
-        assert_eq!(actual.variants, VariantCatalogue::hour_of(format, &frame));
-        if at == 13 {
-            assert_eq!(actual.variants, VariantHour::Read);
-            assert!(actual.definitions_read);
-        }
-    }
-}
-
-#[test]
 fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps() {
     use replay_data::{rows::CountryRow, rows::ProductionLineRow};
     let frames = (FIRST..=FIRST + 50)
@@ -613,7 +561,7 @@ fn rows_naming_an_unlinked_producer_are_counted_and_never_exact() {
 #[test]
 fn an_unreadable_output_read_is_counted_and_its_hours_marked() {
     use crate::products::{
-        LoadContext, Product,
+        LoadContext,
         production_lines::{ProductionLines, ProductionLinesParams, scan},
     };
     let frame = |hour: i32| {
@@ -665,7 +613,7 @@ fn an_unreadable_output_read_is_counted_and_its_hours_marked() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let reply = ProductionLines::load(
+    let reply = prepared_load::<ProductionLines>(
         &source,
         &ProductionLinesParams {
             branch_id: "1".into(),
@@ -843,12 +791,10 @@ fn a_variant_defined_after_its_census_gets_its_icon_when_its_definition_arrives(
         ]
     );
     // The reply's entries give the art from 134.
-    let (entries, _, _) = crate::products::production_lines::variant_entries(
-        &scanned,
-        None,
-        true,
-        &mut |choice| answered(&content, choice),
-    );
+    let (entries, _, _) =
+        crate::products::production_lines::variant_entries(&scanned, None, true, &mut |choice| {
+            answered(&content, choice)
+        });
     let art: Vec<_> = entries
         .iter()
         .filter(|entry| entry.id == "71")
@@ -1146,9 +1092,9 @@ fn organisations_are_named_and_pictured_as_the_game_does() {
 }
 
 #[test]
-fn production_lines_reply_without_content_names_only_designs_and_answers_again_from_the_cache() {
+fn production_lines_without_content_name_only_designs_and_read_prepared_pages() {
     use crate::products::{
-        LoadContext, Product,
+        LoadContext,
         equipment::EQUIPMENT_DECIMALS,
         production_lines::{
             DETAIL_HOURS, ProductionDetailParams, ProductionLineDetail, ProductionLines,
@@ -1192,6 +1138,7 @@ fn production_lines_reply_without_content_names_only_designs_and_answers_again_f
         &AtomicBool::new(false),
     )
     .unwrap();
+    prepared::fixtures::prepare(&source, &LoadContext { content: None }).unwrap();
     let params = ProductionLinesParams {
         branch_id: "1".into(),
         tag: "GER".into(),
@@ -1544,12 +1491,10 @@ fn variants_are_known_only_where_their_table_is_read_and_carried() {
         [(FIRST, true), (FIRST + 24, false), (FIRST + 48, true)]
     );
     // The reply's entries say so, so a census at 128 does not carry the old name.
-    let (entries, _, _) = crate::products::production_lines::variant_entries(
-        &scanned,
-        None,
-        false,
-        &mut |_| Err("no choice is answered".into()),
-    );
+    let (entries, _, _) =
+        crate::products::production_lines::variant_entries(&scanned, None, false, &mut |_| {
+            Err("no choice is answered".into())
+        });
     assert_eq!(
         entries
             .iter()
@@ -1599,7 +1544,7 @@ fn organisations_are_known_only_where_their_table_is_read_and_carried() {
 #[test]
 fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
     use crate::products::{
-        LoadContext, Product,
+        LoadContext,
         production_lines::{ProductionLines, ProductionLinesParams},
     };
     // Line 5 shows variant 70 at both censuses but made some of variant 71 in between.
@@ -1640,7 +1585,7 @@ fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let reply = ProductionLines::load(
+    let reply = prepared_load::<ProductionLines>(
         &source,
         &ProductionLinesParams {
             branch_id: "1".into(),
@@ -1670,7 +1615,7 @@ fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
 #[test]
 fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
     use crate::products::{
-        LoadContext, Product,
+        LoadContext,
         production_lines::{ProductionLines, ProductionLinesParams, scan},
     };
     let frames = (FIRST..=FIRST + 24)
@@ -1730,7 +1675,7 @@ fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let reply = ProductionLines::load(
+    let reply = prepared_load::<ProductionLines>(
         &source,
         &ProductionLinesParams {
             branch_id: "1".into(),
@@ -1753,7 +1698,7 @@ fn unresolved_country_identity_marks_lost_between_census_output_and_warns() {
 #[test]
 fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
     use crate::products::{
-        LoadContext, Product,
+        LoadContext,
         equipment::Texts,
         production_lines::{
             ProductionLines, ProductionLinesParams, RawOrganisation, organisation_icon,
@@ -1834,7 +1779,7 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let reply = ProductionLines::load(
+    let reply = prepared_load::<ProductionLines>(
         &source,
         &ProductionLinesParams {
             branch_id: "1".into(),
@@ -1867,25 +1812,6 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
 /// A scan is found only by the content it was made with, the `Arc` itself: other
 /// content, even equal and allocated after the first is dropped by its caller,
 /// never matches, since the key keeps the first alive.
-#[test]
-fn scans_are_keyed_by_the_content_they_were_made_with() {
-    let first = Arc::new(1_u8);
-    let key: ScanKey<u8> = (1, "GER".into(), Some(Arc::clone(&first)), None);
-    drop(first);
-    let other = Arc::new(1_u8);
-    assert!(same_scan(&key, &key.clone()));
-    assert!(!same_scan(&key, &(1, "GER".into(), Some(other), None)));
-    assert!(!same_scan(&key, &(1, "GER".into(), None, None)));
-    assert!(!same_scan(&key, &(1, "ITA".into(), key.2.clone(), None)));
-    assert!(!same_scan(
-        &key,
-        &(1, "GER".into(), key.2.clone(), Some((7, 9001)))
-    ));
-    assert!(same_scan::<u8>(
-        &(1, "GER".into(), None, None),
-        &(1, "GER".into(), None, None)
-    ));
-}
 
 /// An organisation picture drawn through one catalogue is never served for another: a reply
 /// showing the mods' catalogue draws the mods' picture, and one showing the recording's again
@@ -1951,185 +1877,8 @@ fn organisation_icon_refuses_unread_token_after_independent_stored_candidate() {
     );
 }
 
-/// The blocks a load reads, as `scan_blocks` counts them on this thread.
-fn blocks_read<T>(load: impl FnOnce() -> T) -> (T, Vec<u64>) {
-    crate::blocks::SCANNED_BLOCKS.with_borrow_mut(Vec::clear);
-    let value = load();
-    (
-        value,
-        crate::blocks::SCANNED_BLOCKS.with_borrow(Clone::clone),
-    )
-}
-
-/// The widget's default request reads a fixed number of the branch's newest blocks
-/// however long the recording is, and says which hours it does not answer exactly.
-/// A request with `exact` reads every block once and answers what the whole scan
-/// answers. Each reply is its request's: held scans answer both again, reading nothing.
 #[test]
-fn a_first_view_reads_a_bounded_number_of_newest_blocks_whatever_the_recording_length() {
-    use crate::{
-        products::{
-            LoadContext, Product,
-            country_groups::HourSpan,
-            production_lines::{
-                FIRST_VIEW_BLOCKS, ProductionLines, ProductionLinesParams, line_history, scan,
-            },
-        },
-        test_fixtures::continuation_records,
-    };
-    let bound = FIRST_VIEW_BLOCKS as i32;
-    // Every hour is a read of Germany's lines; line 6 ends halfway.
-    let frame = |hour: i32, length: i32| {
-        let units = i64::from(hour - FIRST);
-        let (lines, output): (Vec<LineFixture>, Vec<OutputFixture>) = if hour - FIRST < length / 2 {
-            (
-                vec![(5, 70, 8, 0), (6, 71, 2, 0)],
-                vec![(5, 70, units, true, false), (6, 71, units, true, false)],
-            )
-        } else {
-            (vec![(5, 70, 8, 0)], vec![(5, 70, units, true, false)])
-        };
-        production_frame(hour, true, true, 9001, &lines, Some(&output))
-    };
-    for length in [2 * bound, 10 * bound] {
-        // Each appended segment starts a keyframe, so each hour is its own block.
-        let mut replay =
-            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST, length)])])
-                .unwrap();
-        for hour in FIRST + 1..FIRST + length {
-            replay = replay
-                .append(&[continuation_records(&replay, 1, vec![frame(hour, length)])])
-                .unwrap();
-        }
-        assert_eq!(replay.index.len(), length as usize);
-        let newest: Vec<u64> = replay.index[replay.index.len() - FIRST_VIEW_BLOCKS..]
-            .iter()
-            .map(|block| block.offset)
-            .collect();
-        let whole = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
-        let source = crate::Source::from_replay(
-            crate::SourceKey {
-                source_id: "production".into(),
-                revision: "1".into(),
-            },
-            "memory.battleplan".into(),
-            Arc::new(replay),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-        let load = |exact: Option<bool>| {
-            ProductionLines::load(
-                &source,
-                &ProductionLinesParams {
-                    branch_id: "1".into(),
-                    tag: "GER".into(),
-                    exact,
-                },
-                &LoadContext { content: None },
-                &AtomicBool::new(false),
-            )
-            .unwrap()
-        };
-        let (first, read) = blocks_read(|| load(None));
-        assert_eq!(read, newest, "a {length}-block recording");
-        let window = FIRST + length - bound;
-        assert_eq!(
-            first.approximate,
-            [HourSpan {
-                first_hour: FIRST,
-                last_hour: window
-            }]
-        );
-        assert_eq!(first.reads, (window..FIRST + length).collect::<Vec<_>>());
-        assert_eq!(
-            first
-                .lines
-                .iter()
-                .map(|line| (line.key.as_str(), line.before_recording, line.ended_by))
-                .collect::<Vec<_>>(),
-            [("5#1", true, None)]
-        );
-        assert!(
-            first
-                .warnings
-                .iter()
-                .any(|warning| warning.starts_with("This first view reads only GER's"))
-        );
-        // Another first view answers from the one held.
-        let (again, read) = blocks_read(|| load(None));
-        assert!(read.is_empty());
-        assert_eq!(
-            (again.approximate, again.lines),
-            (first.approximate.clone(), first.lines.clone())
-        );
-        let usage =
-            || crate::prepared::query::observations::usage(&source, "production-lines-overlap");
-        assert_eq!(usage().2, FIRST_VIEW_BLOCKS);
-        let (exact, read) = blocks_read(|| load(Some(true)));
-        assert_eq!(read.len(), length as usize);
-        let (bytes, budget, extracts) = usage();
-        assert!(bytes > 0 && bytes <= budget);
-        assert_eq!(
-            extracts, FIRST_VIEW_BLOCKS,
-            "the exact follow-up decoded its newest blocks again"
-        );
-        assert!(exact.approximate.is_empty());
-        assert_eq!(
-            exact.lines,
-            whole.lines.iter().map(line_history).collect::<Vec<_>>()
-        );
-        assert_eq!(exact.lines[1].ended_by, Some(FIRST + length / 2));
-        assert_eq!(
-            (&exact.reads, &exact.line_hours, &exact.output_hours),
-            (&whole.reads, &whole.line_hours, &whole.output_hours)
-        );
-        assert!(
-            !exact
-                .warnings
-                .iter()
-                .any(|warning| warning.starts_with("This first view"))
-        );
-        // A reply is its request's: the default request is still the first view
-        // once the whole scan is held, read from the one held; `exact` reads nothing.
-        let (again, read) = blocks_read(|| load(None));
-        assert!(read.is_empty());
-        assert_eq!(
-            (again.approximate, again.lines),
-            (first.approximate.clone(), first.lines.clone())
-        );
-        let (held, read) = blocks_read(|| load(Some(true)));
-        assert!(read.is_empty());
-        assert_eq!(held.lines, exact.lines);
-    }
-}
-
-/// A first view holds one detail window of the newest blocks, and never reads more
-/// blocks than its bound, whatever their size or number.
-#[test]
-fn a_first_view_holds_a_detail_window_of_newest_blocks_within_its_bound() {
-    let spans = |count: i32, hours: i32| {
-        (0..count)
-            .map(|block| (block * hours, block * hours + hours - 1))
-            .collect::<Vec<_>>()
-    };
-    // Fifty years in blocks of about 660 hours: the newest two hold a window.
-    assert_eq!(first_view_blocks(&spans(663, 660)), 2);
-    assert_eq!(first_view_blocks(&spans(6_630, 660)), 2);
-    assert_eq!(first_view_blocks(&spans(663, DETAIL_HOURS)), 1);
-    // Hour-long blocks (appended segments) stop at the bound.
-    assert_eq!(first_view_blocks(&spans(5_000, 1)), FIRST_VIEW_BLOCKS);
-    // A short branch is read whole.
-    assert_eq!(first_view_blocks(&spans(1, 30)), 1);
-    assert_eq!(first_view_blocks(&[]), 0);
-}
-
-/// A scan builds a variant read's operands again only for definitions whose inputs
-/// changed (their row, their modules, or the countries and tokens every name reads),
-/// and its catalogue holds exactly the versions a catalogue observing every hour
-/// records: across a changed module, a renamed variant, a country renamed, an
-/// incomplete read and a gap.
-#[test]
-fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
+fn variant_names_match_the_hourly_oracle_across_definition_context_and_gap_changes() {
     use crate::products::production_lines::scan;
     use replay_data::{rows::VariantModuleRow, rows::VariantUpgradeRow};
     let frame = |hour: i32| {
@@ -2196,15 +1945,8 @@ fn variant_reads_build_only_changed_definitions_and_name_as_every_read_does() {
             expected.observe(replay.format, decoder.advance(&frame).unwrap());
         }
     }
-    VARIANT_BUILDS.with(|builds| builds.set(0));
     let scanned = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
     assert_eq!(scanned.variants.versions, expected.versions);
-    // Both at the first read; 70 at its new module; 71 at its new name; both when
-    // a country is renamed, after the incomplete read and after the gap.
-    assert_eq!(
-        VARIANT_BUILDS.with(std::cell::Cell::get),
-        2 + 1 + 1 + 2 + 2 + 2
-    );
     let names: Vec<_> = expected.versions[&71]
         .iter()
         .map(|version| {
@@ -2352,6 +2094,35 @@ fn a_saved_scan_restores_the_scan_it_saved() {
         "a shared country row is kept once"
     );
     let bytes = serde_json::to_vec(&saved).unwrap();
+    let mut rows = pages::CountryRows::default();
+    let mut assembled = pages::Assembler::default();
+    for read in 0..2 {
+        let mut page = scanned.clone();
+        page.reads = vec![scanned.reads[read]];
+        for line in &mut page.lines {
+            line.runs = vec![line.runs[read]];
+        }
+        for runs in page.modifiers.values_mut() {
+            *runs = vec![runs[read].clone()];
+        }
+        for versions in page.icons.values_mut() {
+            *versions = vec![versions[read].clone()];
+        }
+        let encoded =
+            serde_json::to_vec(&rows.page(&page, &AtomicBool::new(false)).unwrap()).unwrap();
+        assembled
+            .push(
+                serde_json::from_slice(&encoded).unwrap(),
+                None,
+                Arc::from("english"),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        bytes,
+        serde_json::to_vec(&SavedLines::save(&assembled.result, &AtomicBool::new(false)).unwrap())
+            .unwrap()
+    );
     let parsed: SavedLines = serde_json::from_slice(&bytes).unwrap();
     let restored = parsed
         .clone()
@@ -2405,124 +2176,6 @@ fn a_saved_scan_restores_the_scan_it_saved() {
     let mut localised = parsed;
     localised.localised = true;
     assert!(localised.restore(None, Arc::from("english")).is_err());
-}
-
-/// A recording of `length` one-hour blocks, each a read of Germany's two lines.
-fn hourly_blocks(length: i32) -> Replay {
-    use crate::test_fixtures::continuation_records;
-    let frame = |hour: i32| {
-        let units = i64::from(hour - FIRST);
-        production_frame(
-            hour,
-            true,
-            true,
-            9001,
-            &[(5, 70, 8, 0), (6, 71, 2, 0)],
-            Some(&[(5, 70, units, true, false), (6, 71, units, true, false)]),
-        )
-    };
-    let mut replay =
-        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame(FIRST)])]).unwrap();
-    for hour in FIRST + 1..FIRST + length {
-        replay = replay
-            .append(&[continuation_records(&replay, 1, vec![frame(hour)])])
-            .unwrap();
-    }
-    replay
-}
-
-fn memory_source(replay: Replay) -> crate::Source {
-    crate::Source::from_replay(
-        crate::SourceKey {
-            source_id: "production".into(),
-            revision: "1".into(),
-        },
-        "memory.battleplan".into(),
-        Arc::new(replay),
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-}
-
-fn exact_lines(source: &crate::Source) -> ProductionLinesReply {
-    use crate::products::{LoadContext, Product, production_lines::ProductionLinesParams};
-    ProductionLines::load(
-        source,
-        &ProductionLinesParams {
-            branch_id: "1".into(),
-            tag: "GER".into(),
-            exact: Some(true),
-        },
-        &LoadContext { content: None },
-        &AtomicBool::new(false),
-    )
-    .unwrap()
-}
-
-/// Requests for one country's whole scan made together read the branch once: a
-/// request finding the scan being read waits for it.
-#[test]
-fn requests_for_a_scan_being_read_wait_for_it() {
-    let source = memory_source(hourly_blocks(40));
-    let start = std::sync::Barrier::new(3);
-    let replies: Vec<ProductionLinesReply> = std::thread::scope(|scope| {
-        let readers: Vec<_> = (0..3)
-            .map(|_| {
-                scope.spawn(|| {
-                    start.wait();
-                    exact_lines(&source)
-                })
-            })
-            .collect();
-        readers
-            .into_iter()
-            .map(|reader| reader.join().unwrap())
-            .collect()
-    });
-    assert_eq!(
-        source
-            .state::<WholeScans>()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .0,
-        1
-    );
-    assert!(replies.iter().all(|reply| reply.lines == replies[0].lines));
-}
-
-/// A country's scan kept between sessions is held again for a source of the same
-/// recording, which then answers exactly what its own scan would, reading no
-/// block; it is not held once the branch has another last block.
-#[test]
-fn a_kept_scan_answers_as_the_scan_it_kept_while_it_is_current() {
-    use crate::products::{
-        LoadContext,
-        production_lines::{hold_saved, saved_scan},
-    };
-    let context = LoadContext { content: None };
-    let first = memory_source(hourly_blocks(12));
-    let kept = saved_scan(&first, 1, "GER", &context, &AtomicBool::new(false)).unwrap();
-    let expected = exact_lines(&first);
-    assert_eq!(kept.last_block.map(|block| block.1), Some(FIRST + 11));
-    let again = memory_source(hourly_blocks(12));
-    assert!(hold_saved(&again, &context, kept.clone()));
-    let (reply, read) = blocks_read(|| exact_lines(&again));
-    assert!(read.is_empty(), "the kept scan answers without reading");
-    assert_eq!(reply.lines, expected.lines);
-    assert_eq!(reply.reads, expected.reads);
-    assert_eq!(
-        again
-            .state::<WholeScans>()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .0,
-        0
-    );
-    // A recording grown by a block is scanned again.
-    let grown = memory_source(hourly_blocks(13));
-    assert!(!hold_saved(&grown, &context, kept));
-    let (_, read) = blocks_read(|| exact_lines(&grown));
-    assert_eq!(read.len(), 13);
 }
 
 /// A kept scan's icon choices hold only while what they were made with holds outside the
@@ -2870,15 +2523,20 @@ fn design_detail_projects_only_observations_overlapping_the_requested_window() {
     );
 }
 
-fn country_lookup_reuse(count: u32) {
-    use crate::prepared::prepass::noted;
+#[test]
+fn production_inputs_follow_every_intervening_country_identity_edit() {
+    let count = 32;
     use crate::test_fixtures::{scale_frame, scale_tag};
     use replay_frame::frame::FrameEncoder;
     let mut encoder = FrameEncoder::default();
     let mut decoder = FrameDecoder::for_tables(&[TableId::Countries, TableId::CountryLinks]);
-    let mut selected = CountryRead::default();
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![scale_frame(1, 0, count)])],
+    )
+    .unwrap();
+    let mut world = input::World::default();
     let tag = String::from_utf8(scale_tag(count - 1)).unwrap();
-    let mut lookups = 0;
     for at in 0..24 {
         let mut frame = scale_frame(1, at + i32::from(at >= 20), count);
         if let TableView::Complete(TableRows::Countries(rows)) =
@@ -2904,28 +2562,35 @@ fn country_lookup_reuse(count: u32) {
         }
         let raw = encoder.encode(frame, at == 0 || at == 18).unwrap();
         let decoded = decoder.advance(&raw).unwrap();
-        let before = noted("production-lines.country_lookup");
-        let actual = selected.observe(&raw, decoded, &tag, None);
-        lookups += noted("production-lines.country_lookup") - before;
-        assert_eq!(
-            actual,
-            select_country(decoded, &tag, None),
-            "hour {}",
-            decoded.hour
-        );
+        let input = world
+            .extract(&replay, decoded, None, &BTreeSet::new())
+            .unwrap();
+        let actual = input
+            .countries
+            .as_ref()
+            .unwrap()
+            .get(&tag)
+            .copied()
+            .unwrap_or(Country::Absent);
+        let expected = if (4..7).contains(&at) {
+            Country::Absent
+        } else if (10..12).contains(&at) {
+            Country::Unresolved
+        } else {
+            Country::Found(
+                count - 1,
+                if at >= 14 {
+                    900_000
+                } else {
+                    100_000 + count - 1
+                },
+            )
+        };
+        assert_eq!(actual, expected, "hour {}", decoded.hour);
     }
-    assert!(
-        lookups <= 9,
-        "balance-only hours repeated {lookups} whole-country lookups"
-    );
 }
 
-#[test]
-fn production_country_lookup_reuses_keys_and_follows_every_intervening_identity_edit() {
-    country_lookup_reuse(32);
-}
-
-fn quiet_production_replay(lines: u64) -> Replay {
+pub(super) fn quiet_production_replay(lines: u64) -> Replay {
     use crate::test_fixtures::continuation_records;
     let frame = |at: i32| {
         let rows: Vec<_> = (0..lines).map(|line| (line + 5, 70, 8, 3276800)).collect();
@@ -2974,24 +2639,14 @@ fn quiet_production_replay(lines: u64) -> Replay {
 }
 
 #[test]
-fn quiet_production_spans_equal_hourly_scan_bytes_across_reads_gaps_refusals_and_append() {
-    use crate::prepared::prepass::noted;
+fn production_pages_equal_independent_hourly_v5_bytes_across_reads_gaps_refusals_and_append() {
     let replay = quiet_production_replay(32);
     let flag = AtomicBool::new(false);
     for holder in [None, Some((7, 9001))] {
         let blocks = branch_blocks(&replay, 1);
-        let before = noted("production-lines.carried_line");
-        let hourly =
-            scan_blocks_mode(None, &replay, &blocks, "GER", None, holder, &flag, false).unwrap();
-        let hourly_work = noted("production-lines.carried_line") - before;
-        let before = noted("production-lines.carried_line");
+        let hourly = reference::scan(&replay, &blocks, "GER", None, holder, &flag).unwrap();
         let actual =
-            scan_blocks_mode(None, &replay, &blocks, "GER", None, holder, &flag, true).unwrap();
-        let work = noted("production-lines.carried_line") - before;
-        assert!(
-            work * 3 < hourly_work,
-            "quiet spans repeated per-hour line work: {work}/{hourly_work}"
-        );
+            prepared::fixtures::scan(&replay, &blocks, "GER", None, holder, &flag, true).unwrap();
         let saved = |scan: &ScannedLines| {
             serde_json::to_vec(&SavedLines::save(scan, &flag).unwrap()).unwrap()
         };
@@ -3003,13 +2658,6 @@ fn quiet_production_spans_equal_hourly_scan_bytes_across_reads_gaps_refusals_and
                 detail_lines(&hourly, FIRST + window * 24, FIRST + window * 24 + 23)
             );
         }
-        // Newest-window folds retain their own origins, not the whole branch's.
-        let newest = &blocks[blocks.len() - 1..];
-        let first =
-            scan_blocks_mode(None, &replay, newest, "GER", None, holder, &flag, true).unwrap();
-        let reference =
-            scan_blocks_mode(None, &replay, newest, "GER", None, holder, &flag, false).unwrap();
-        assert_eq!(saved(&first), saved(&reference));
     }
     assert_eq!(
         scan(&replay, 1, "GER", None, &AtomicBool::new(true))
@@ -3041,11 +2689,19 @@ fn variant_icons_follow_the_selection_once_per_choice() {
     let machine = Machine::new("production_line_icons");
     machine.write("interface/equipment.gfx", sprites(None).as_bytes());
     machine.write("gfx/late.png", &png(RED));
-    machine.write_mod("early", "interface/equipment.gfx", sprites(Some("gfx/early.png")).as_bytes());
+    machine.write_mod(
+        "early",
+        "interface/equipment.gfx",
+        sprites(Some("gfx/early.png")).as_bytes(),
+    );
     machine.write_mod("early", "gfx/early.png", &png(BLUE));
     machine.write_mod("texture", "gfx/designs/custom.png", &png(GREEN));
     // The mod's declarations replace the recording's file: its early sprite does not load.
-    machine.write_mod("broken", "interface/equipment.gfx", sprites(Some("gfx/broken.png")).as_bytes());
+    machine.write_mod(
+        "broken",
+        "interface/equipment.gfx",
+        sprites(Some("gfx/broken.png")).as_bytes(),
+    );
     machine.write_mod("broken", "gfx/broken.png", b"not a png");
     let (source, mut options) = machine.open();
     let choice = IconChoice {
@@ -3063,8 +2719,11 @@ fn variant_icons_follow_the_selection_once_per_choice() {
         let mut state = state.lock().unwrap();
         let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
         let mut images = BTreeMap::new();
-        let (key, line) =
-            fallback_line(|| draw_variant_icon(drawn, &mut images, &choice).unwrap().unwrap());
+        let (key, line) = fallback_line(|| {
+            draw_variant_icon(drawn, &mut images, &choice)
+                .unwrap()
+                .unwrap()
+        });
         (first_pixel(images[&key].as_deref().unwrap()), line)
     };
     let renders = catalogue::presented;
@@ -3084,7 +2743,8 @@ fn variant_icons_follow_the_selection_once_per_choice() {
         let (pixel, line) = shown(&options);
         assert_eq!(pixel, RED, "the recording's own choice");
         assert!(
-            line.as_ref().is_some_and(|line| line.contains("production line icon")),
+            line.as_ref()
+                .is_some_and(|line| line.contains("production line icon")),
             "{line:?}"
         );
     }
@@ -3121,7 +2781,10 @@ fn reply_pictures_are_keyed_by_what_they_show() {
     let mut state = state.lock().unwrap();
     let drawn = catalogue::Redrawn::bind(&mut state.of(&admitted).0, &admitted, &recorded);
     let sprites = |names: &[&str]| IconChoice {
-        probes: names.iter().map(|name| Probe::Sprite((*name).into())).collect(),
+        probes: names
+            .iter()
+            .map(|name| Probe::Sprite((*name).into()))
+            .collect(),
         otherwise: Ok(()),
     };
     let mut images = BTreeMap::new();
@@ -3162,7 +2825,9 @@ fn reply_pictures_are_keyed_by_what_they_show() {
 /// is the shown choice, drawn as it is.
 #[test]
 fn an_organisation_icon_the_mod_cannot_draw_draws_the_recordings_own_choice() {
-    use crate::test_fixtures::visual_mods::{Machine, RED, fallback_line, first_pixel, png, select};
+    use crate::test_fixtures::visual_mods::{
+        Machine, RED, fallback_line, first_pixel, png, select,
+    };
     let machine = Machine::new("organisation_icon");
     machine.write(
         "interface/organisations.gfx",
@@ -3205,7 +2870,47 @@ fn an_organisation_icon_the_mod_cannot_draw_draws_the_recordings_own_choice() {
     assert_eq!(key, plain, "the recording's own picture, the same pixels");
     assert_eq!(colour, RED, "the recording's own choice");
     assert!(
-        line.as_ref().is_some_and(|line| line.contains("organisation tok icon")),
+        line.as_ref()
+            .is_some_and(|line| line.contains("organisation tok icon")),
         "{line:?}"
     );
+}
+
+fn prepared_load<P: crate::products::Product>(
+    source: &Source,
+    params: &P::Params,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<P::Reply> {
+    prepared::fixtures::prepare(source, context)?;
+    P::load(source, params, context, cancelled)
+}
+
+#[test]
+fn production_owned_input_batches_supplying_flags_once() {
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![production_frame(FIRST, true, true, 9001, &[], Some(&[]))],
+        )],
+    )
+    .unwrap();
+    let mut world = input::World::default();
+    for offset in 0..48 {
+        let frame = production_frame(FIRST + offset, offset % 24 == 0, true, 9001, &[], Some(&[]));
+        let before = crate::metadata::slot_read_batches();
+        let input = world
+            .extract(&replay, &frame, None, &BTreeSet::new())
+            .unwrap();
+        assert_eq!(crate::metadata::slot_read_batches() - before, 1);
+        let read =
+            |table| crate::metadata::slot_read(replay.format, &frame.metrics, table, frame.hour);
+        assert_eq!(input.lines_read, read(TableId::ProductionLines));
+        assert_eq!(input.output_read, read(TableId::ProductionLineOutput));
+        assert_eq!(
+            input.modifiers_read,
+            read(TableId::CountryProductionModifiers) && read(TableId::ProductionLineModifiers)
+        );
+    }
 }

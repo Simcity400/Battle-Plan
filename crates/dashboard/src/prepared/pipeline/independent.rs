@@ -100,19 +100,13 @@ pub(super) struct Publish<'p> {
 }
 
 impl Publish<'_> {
-    /// Stage a detached batch, then return its group publication's outcome.
-    pub(super) fn commit(
+    pub(super) fn production(
         &mut self,
+        branch: u64,
+        coverage: Coverage,
         write: &mut dyn FnMut(&mut store::Writer) -> io::Result<()>,
     ) -> io::Result<()> {
-        (self.commit)(Publication::Beside, write)
-    }
-    /// Register newly queued scans in the canonical group metadata before reading them.
-    pub(super) fn requested(&mut self, wanted: &[(u64, String)]) -> io::Result<()> {
-        (self.commit)(
-            Publication::ProductionRequested(wanted.to_vec()),
-            &mut |_| Ok(()),
-        )
+        (self.commit)(Publication::Production { branch, coverage }, write)
     }
 }
 
@@ -1004,6 +998,16 @@ pub(super) fn kept_as(section: &'static str) -> &'static str {
 /// The family prepared on its own whose coverage `product`'s queries wait
 /// for, and whose refusals they answer with.
 pub(super) fn gating(product: &str) -> Option<&'static str> {
+    if [
+        "production-lines",
+        "production-line-detail",
+        "production-line-breakdown",
+    ]
+    .contains(&product)
+    {
+        return Some("production-lines");
+    }
+
     registry()
         .iter()
         .find(|own| own.gates().contains(&product))
@@ -1153,9 +1157,8 @@ struct Commits<'s> {
 enum Publication {
     Family(Progress),
     Walk(Box<Checkpoint>),
-    Beside,
+    Production { branch: u64, coverage: Coverage },
     BesideFinished,
-    ProductionRequested(Vec<(u64, String)>),
 }
 
 /// One family's written batch, or one of work beside the families, queued
@@ -2446,7 +2449,6 @@ fn publish<'m, 's>(
 ) -> (MutexGuard<'m, Commits<'s>>, io::Result<()>) {
     let commits = &mut *guard;
     let mut finished = Vec::new();
-    let mut requested = Vec::new();
     for (name, publication) in members {
         match publication {
             Publication::Family(progress) => {
@@ -2458,18 +2460,23 @@ fn publish<'m, 's>(
             Publication::Walk(state) => {
                 let mut state = (**state).clone();
                 state.independent = std::mem::take(&mut commits.state.independent);
+                state.production = std::mem::take(&mut commits.state.production);
                 *commits.state = state;
             }
-            Publication::Beside => {}
+            Publication::Production { branch, coverage } => {
+                commits
+                    .state
+                    .production
+                    .insert(branch.to_string(), coverage.clone());
+            }
             Publication::BesideFinished => finished.push(*name),
-            Publication::ProductionRequested(scans) => requested.extend(scans.iter().cloned()),
         }
     }
     let Some(mut writer) = commits.writer.take() else {
         commits.lost = true;
         return (guard, Err(lost()));
     };
-    let written = super::side::update(&mut writer, &requested, &finished)
+    let written = super::side::update(&mut writer, &finished)
         .and_then(|()| {
             super::write_checkpoint_state(&mut writer, commits.state, phase.replay, *commits.bytes)
         })

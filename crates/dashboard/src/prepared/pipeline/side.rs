@@ -1,5 +1,4 @@
-//! Durable work beside the forward publishers. Pending jobs and requested
-//! production scans survive a new Source; job completion shares a group commit.
+//! Durable work beside the forward publishers.
 use crate::Source;
 use crate::products::{ContentOptions, LoadContext};
 use serde::{Deserialize, Serialize};
@@ -10,7 +9,6 @@ const SECTION: &str = "preparation-side-work-v1";
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Progress {
     pub pending: BTreeSet<String>,
-    pub production: BTreeSet<(u64, String)>,
 }
 
 pub(super) fn load(
@@ -39,14 +37,9 @@ pub(super) fn write(writer: &mut store::Writer, progress: &Progress) -> io::Resu
 }
 
 /// Merge side publications after adopting their forks, in the canonical writer.
-pub(super) fn update(
-    writer: &mut store::Writer,
-    requested: &[(u64, String)],
-    finished: &[&str],
-) -> io::Result<()> {
-    if !requested.is_empty() || !finished.is_empty() {
+pub(super) fn update(writer: &mut store::Writer, finished: &[&str]) -> io::Result<()> {
+    if !finished.is_empty() {
         let mut progress = staged(writer)?;
-        progress.production.extend(requested.iter().cloned());
         for job in finished {
             progress.pending.remove(*job);
         }
@@ -72,7 +65,6 @@ pub(super) fn complete(
             &LoadContext {
                 content: content.cloned(),
             },
-            &progress.production,
         )?
         .is_empty())
 }

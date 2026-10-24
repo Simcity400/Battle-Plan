@@ -3,7 +3,7 @@ import test from 'node:test';
 import { laneStops } from '../../charts/timeline/layout.ts';
 import { fitTooltip, tooltipText } from '../../charts/tooltip.ts';
 import type { LineDetail, LineHistory, LineRun, LineStep, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
-import { approximateWithin, bandScale, breakdownItems, breakdownTooltip, detailOf, emptyHistoryState, firstViewLineReason, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
+import { approximateWithin, wantedDetailWindows, bandScale, breakdownItems, breakdownTooltip, detailOf, emptyHistoryState, firstViewLineReason, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
   linesAt, linesKnown, modifierTooltip, organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalNote, totalText, validateDetailReply,
   unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote, productionLineLabel } from './productionData.ts';
 
@@ -569,4 +569,11 @@ test('design tooltips use their own supplying date and preserve unavailability',
   assert.equal(unavailable.rows.find(row => row.label === 'Design author')?.value, 'Not recorded');
   assert.ok(!unavailable.rows.some(row => row.label === 'Design recorded'));
   assert.throws(() => validateDetailReply({ ...reply, lines: [{ ...detail, runs: [{ ...observed, designReadHour: 122.5 }] }] }));
+});
+
+test('published detail windows are requested while a later suffix is pending', () => {
+  const prefix = { ...REPLY, detailHours: 720, approximate: [{ firstHour: 1441, lastHour: 5000 }] };
+  assert.deepEqual(wantedDetailWindows(prefix, 5000, 100, null), [0, 1]);
+  assert.deepEqual(wantedDetailWindows(prefix, 5000, null, 0), [0]);
+  assert.deepEqual(wantedDetailWindows(prefix, 5000, 1500, null), [2, 3], 'unpublished windows remain requests, not fabricated empty data');
 });

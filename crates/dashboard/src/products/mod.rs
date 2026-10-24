@@ -162,8 +162,18 @@ fn load_json<P: Product>(
         .map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     crate::metadata::check_cancel(cancelled).map_err(|error| error.to_string())?;
+    let prepared = production_lines::PREPARED_PRODUCTS
+        .contains(&P::KEY)
+        .then(|| crate::prepared::files(source, context.content.as_ref()))
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let _scope = prepared
+        .as_ref()
+        .map(|(store, key)| store.scope(key))
+        .transpose()
+        .map_err(|error| error.to_string())?;
     // Whole-recording replies persist between sessions; hover answers are quicker to compute.
-    let entry = (!P::INTERACTIVE)
+    let entry = (!P::INTERACTIVE && !production_lines::PREPARED_PRODUCTS.contains(&P::KEY))
         .then(|| reply_cache::Entry::new(source, P::KEY, P::CONTENT_DEPENDENT, &request, context))
         .flatten();
     let mut reply = bounded_json(
@@ -318,8 +328,8 @@ pub static PRODUCTS: &[Registered] = &[
     register_prepared::<decryption::Decryption>(),
     register::<production_lines::ProductionLines>(),
     register::<equipment::designs::detail::EquipmentDesignDetail>(),
-    register::<production_lines::ProductionLineDetail>(),
-    register::<production_lines::ProductionLineBreakdown>(),
+    register_prepared::<production_lines::ProductionLineDetail>(),
+    register_prepared::<production_lines::ProductionLineBreakdown>(),
     register_prepared::<equipment_stockpile::EquipmentStockpile>(),
     register::<equipment_stockpile::artwork::StockpileArtwork>(),
     register::<equipment_produced::EquipmentProduced>(),

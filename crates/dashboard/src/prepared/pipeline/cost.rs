@@ -46,7 +46,7 @@ pub fn union_tables(source: &Source, content: &ContentOptions) -> io::Result<Vec
         tables.extend_from_slice(family.tables);
     }
     tables.extend_from_slice(dashboard_base::prepared_map::selected_tables());
-    tables.extend(crate::products::production_lines::scan_tables(true));
+    tables.extend(crate::products::production_lines::prepared::Prepared::tables(true));
     tables.extend_from_slice(crate::triggers::RECORDED_TABLES);
     tables.extend_from_slice(&installed_content_country_names::country_names::TABLES);
     tables.extend([TableId::Clock, TableId::Campaign]);
@@ -331,23 +331,7 @@ pub fn run(options: &Options) -> io::Result<Value> {
                 "Preparation returned before every forward family and side job completed",
             ));
         }
-        let side = side::load(&store, &key, None)?
-            .ok_or_else(|| invalid("Missing side completion inventory"))?;
-        for (branch, tag) in &side.production {
-            if !crate::products::production_lines::saved_current(
-                &store,
-                &key,
-                &source,
-                &LoadContext {
-                    content: Some(options.content.clone()),
-                },
-                *branch,
-                tag,
-            )? {
-                return Err(invalid("Production line scan is missing after preparation"));
-            }
-        }
-        let completion = json!({"walk_next_block":accepted.next_block,"total_blocks":total,"sections":accepted.sections,"families":accepted.families,"side_production":side.production});
+        let completion = json!({"walk_next_block":accepted.next_block,"total_blocks":total,"sections":accepted.sections,"families":accepted.families});
         // Count actual input frames outside the family interval, without inferred gap lengths.
         (Vec::new(), Vec::new(), Vec::new(), completion, None)
     } else {

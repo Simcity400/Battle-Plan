@@ -1426,9 +1426,7 @@ fn cancelled_resubmitted_jobs_keep_the_history_and_prepared_lanes_bounded() {
         let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
         let hold = LoaderHold::new(&service, lane);
         let source = source();
-        let countries: Vec<_> = (0..24)
-            .map(|index| format!("synthetic-{index}"))
-            .collect();
+        let countries: Vec<_> = (0..24).map(|index| format!("synthetic-{index}")).collect();
         let params = serde_json::json!({"countries": countries, "hour": 1});
         let mut retained = Vec::new();
         for index in 0..CYCLES {
@@ -1816,21 +1814,7 @@ fn prepared_production_source() -> (
             .append(&[continuation_records(&replay, 1, vec![frame(hour)])])
             .unwrap();
     }
-    let folder = std::env::temp_dir().join(format!("production-kept-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&folder).unwrap();
-    let path = folder.join("campaign.battleplan");
-    std::fs::write(&path, replay.bytes()).unwrap();
-    let (sent, receive) = mpsc::channel();
-    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
-    // No automatic preparation: the one below is the source's only one.
-    service.set_preparation_suspended(true);
-    service.dispatch(DataCommand::Open {
-        id: "open".into(),
-        path: path.to_string_lossy().into_owned(),
-        revision: crate::protocol::replay_revision(&path).unwrap(),
-    });
-    let opened: SourceReply = serde_json::from_str(&reply_of(&receive, "open")).unwrap();
-    let source = service.source(&opened.id).unwrap();
+    let (service, receive, opened, source, path) = production_source(&replay);
     let before = service.preparation_revision();
     crate::prepared::start(
         &service.inner.preparation,
@@ -1846,6 +1830,33 @@ fn prepared_production_source() -> (
         progress_of(&source) == (false, crate::prepared::State::Ready)
             && service.preparation_revision() > before
     });
+    (service, receive, opened, source, path)
+}
+
+fn production_source(
+    replay: &Replay,
+) -> (
+    Arc<Service>,
+    mpsc::Receiver<DataEvent>,
+    SourceReply,
+    Arc<Source>,
+    PathBuf,
+) {
+    let folder = std::env::temp_dir().join(format!("production-kept-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.join("campaign.battleplan");
+    std::fs::write(&path, replay.bytes()).unwrap();
+    let (sent, receive) = mpsc::channel();
+    let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
+    // Tests publish only the preparation they explicitly request.
+    service.set_preparation_suspended(true);
+    service.dispatch(DataCommand::Open {
+        id: "open".into(),
+        path: path.to_string_lossy().into_owned(),
+        revision: crate::protocol::replay_revision(&path).unwrap(),
+    });
+    let opened: SourceReply = serde_json::from_str(&reply_of(&receive, "open")).unwrap();
+    let source = service.source(&opened.id).unwrap();
     (service, receive, opened, source, path)
 }
 
@@ -1893,12 +1904,9 @@ fn germany_kept(source: &Source) -> bool {
     .unwrap()
 }
 
-/// After the source's preparation is complete, a production line request that
-/// reads a country's scan whole queues no preparation and writes nothing: the
-/// scan waits for the source's next preparation in this session.
+/// A production request reads completed pages without registering or writing work.
 #[test]
 fn a_production_request_after_preparation_queues_no_preparation_and_writes_nothing() {
-    use crate::products::production_lines;
     let (service, receive, opened, source, _path) = prepared_production_source();
     let sections = sections_of(&source);
     let revision = service.preparation_revision();
@@ -1915,13 +1923,156 @@ fn a_production_request_after_preparation_queues_no_preparation_and_writes_nothi
         "no preparation refresh is queued"
     );
     assert!(
-        production_lines::has_unkept(&source),
-        "it waits for a preparation"
+        germany_kept(&source),
+        "preparation already published the country"
     );
-    assert!(!germany_kept(&source), "nothing is written");
     assert_eq!(progress_of(&source), (false, crate::prepared::State::Ready));
     assert_eq!(sections_of(&source), sections);
     assert_eq!(service.preparation_revision(), revision);
+    service.shutdown();
+}
+
+#[test]
+fn production_detail_and_breakdown_routes_keep_unprepared_history_pending() {
+    use crate::products::{
+        LoadContext, Product,
+        production_lines::{
+            self, ProductionBreakdownParams, ProductionDetailParams, ProductionLineBreakdown,
+            ProductionLineDetail,
+        },
+    };
+    use crate::test_fixtures::{
+        CAMPAIGN, PRODUCTION_HOUR as FIRST, continuation_records, production_frame, records,
+    };
+    use serde_json::{Value, json};
+    let frame = |hour| {
+        production_frame(
+            hour,
+            true,
+            true,
+            9001,
+            &[(5, 70, 8, 0)],
+            Some(&[(5, 70, i64::from(hour - FIRST), true, false)]),
+        )
+    };
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![frame(FIRST), frame(719)])],
+    )
+    .unwrap();
+    let second = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            vec![frame(720), frame(1439)],
+        )])
+        .unwrap();
+    let replay = second
+        .append(&[continuation_records(
+            &second,
+            1,
+            vec![frame(1440), frame(1441)],
+        )])
+        .unwrap();
+    assert_eq!(replay.index.len(), 3);
+    let (service, receive, opened, source, _path) = production_source(&replay);
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let (store, key) = crate::prepared::files(&source, None).unwrap();
+    let mut prepared =
+        production_lines::prepared::Prepared::new(source.replay_ref(), 1, ["GER".into()], None);
+    let detail = |window| json!({"branchId":"1", "tag":"GER", "window":window});
+    let breakdown = json!({"branchId":"1", "tag":"GER", "key":"5#1", "group":"output"});
+    let request = |product: &str, params: Value| ProductRequest {
+        source_id: opened.id.clone(),
+        revision: opened.revision.clone(),
+        product: product.into(),
+        params,
+    };
+    let query = |id: &str, product: &str, params: Value| -> Value {
+        service.dispatch(DataCommand::PreparedQuery {
+            id: id.into(),
+            refresh: false,
+            request: request(product, params),
+        });
+        serde_json::from_str(&reply_of(&receive, id)).unwrap()
+    };
+    let pending = |reply: Value| {
+        assert!(reply["data"].is_null(), "{reply}");
+        assert_eq!(reply["gate"], json!(["production-lines"]));
+    };
+    for (id, product, params) in [
+        ("direct-detail", "production-line-detail", detail(1)),
+        (
+            "direct-breakdown",
+            "production-line-breakdown",
+            breakdown.clone(),
+        ),
+    ] {
+        service.dispatch(DataCommand::Product {
+            id: id.into(),
+            request: request(product, params),
+        });
+        assert!(matches!(receive.recv_timeout(HANG_GUARD).unwrap(),
+            DataEvent::Error { id: received, message }
+            if received == id && message == format!("{product} is served by prepared queries")));
+    }
+    pending(query("cold-detail", "production-line-detail", detail(0)));
+    pending(query(
+        "cold-breakdown",
+        "production-line-breakdown",
+        breakdown.clone(),
+    ));
+    for (position, block) in source.replay_ref().index.iter().enumerate() {
+        let mut writer = if position == 0 {
+            store.replace(key.clone()).unwrap()
+        } else {
+            store.extend(&key).unwrap()
+        };
+        prepared
+            .advance_block(&mut writer, source.replay_ref(), position, None, &flag)
+            .unwrap();
+        prepared
+            .publish(&mut writer, source.replay_ref(), block, None, &flag)
+            .unwrap();
+        writer.commit().unwrap();
+        if position < 2 {
+            let covered = query("covered-detail", "production-line-detail", detail(position));
+            assert!(covered["data"].is_object(), "{covered}");
+            assert!(!covered["data"]["lines"].as_array().unwrap().is_empty());
+            pending(query(
+                "later-detail",
+                "production-line-detail",
+                detail(position + 1),
+            ));
+            pending(query(
+                "pending-breakdown",
+                "production-line-breakdown",
+                breakdown.clone(),
+            ));
+        }
+    }
+    for window in 0..=2 {
+        let actual = query("completed-detail", "production-line-detail", detail(window));
+        let params: ProductionDetailParams = serde_json::from_value(detail(window)).unwrap();
+        let mut expected = ProductionLineDetail::load(&source, &params, &context, &flag).unwrap();
+        source.append_stack_warnings(&mut expected.warnings);
+        source.append_presentation_warnings(&mut expected.warnings, None);
+        assert_eq!(actual["data"], serde_json::to_value(expected).unwrap());
+        assert!(actual.get("gate").is_none());
+    }
+    let actual = query(
+        "completed-breakdown",
+        "production-line-breakdown",
+        breakdown.clone(),
+    );
+    let params: ProductionBreakdownParams = serde_json::from_value(breakdown).unwrap();
+    let mut expected = ProductionLineBreakdown::load(&source, &params, &context, &flag).unwrap();
+    source.append_stack_warnings(&mut expected.warnings);
+    source.append_presentation_warnings(&mut expected.warnings, None);
+    assert_eq!(actual["data"], serde_json::to_value(expected).unwrap());
+    assert!(actual.get("gate").is_none());
+    assert!(production_lines::prepared::current(&store, &key, &source, &context, 1).unwrap());
     service.shutdown();
 }
 
@@ -3510,8 +3661,14 @@ fn a_rebind_paused_across_shutdown_leaves_the_source_unbound() {
         }
     }));
     assert!(service.inner.rebind(&source, &never).is_err());
-    assert!(closed.load(Ordering::Acquire), "shutdown ran during the rebind");
-    assert!(source.binding().is_none(), "the stale binding is not installed");
+    assert!(
+        closed.load(Ordering::Acquire),
+        "shutdown ran during the rebind"
+    );
+    assert!(
+        source.binding().is_none(),
+        "the stale binding is not installed"
+    );
     assert!(service.inner.rebind(&source, &never).is_err());
     assert!(source.binding().is_none());
 }

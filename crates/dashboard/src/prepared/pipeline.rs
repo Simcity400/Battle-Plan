@@ -185,7 +185,10 @@ pub fn sections(state: State, done: usize, total: Option<usize>) -> Vec<Section>
         ("fuel-branches", "Fuel by military branch"),
         ("market", "International market and lend-lease"),
         ("lend-lease-balance", "Lend-lease balances"),
-        ("production-catalogue", "Licences, industrial organisations and designs"),
+        (
+            "production-catalogue",
+            "Licences, industrial organisations and designs",
+        ),
         ("convoys", "Convoy and trade efficiency"),
         ("territory", "Territory and regions"),
         ("occupation", "Occupied states and occupation trends"),
@@ -840,6 +843,8 @@ struct Checkpoint {
     /// progress. Preparation of other families starts over when these differ.
     #[serde(default)]
     independent: BTreeMap<String, independent::Progress>,
+    #[serde(default)]
+    production: BTreeMap<String, Coverage>,
     /// Active payload bytes excluding this checkpoint's own file.
     bytes: u64,
 }
@@ -1253,7 +1258,26 @@ fn family_coverages(
     replay: &Replay,
     last_blocks: &BTreeMap<u64, usize>,
 ) -> BTreeMap<String, BTreeMap<String, Coverage>> {
-    independent::coverages(&state.independent, replay, &state.map.ranges, last_blocks)
+    let mut families =
+        independent::coverages(&state.independent, replay, &state.map.ranges, last_blocks);
+    families.insert(
+        "production-lines".into(),
+        state
+            .production
+            .iter()
+            .map(|(branch, coverage)| {
+                let mut coverage = coverage.clone();
+                coverage.complete &= branch
+                    .parse::<u64>()
+                    .ok()
+                    .and_then(|branch| last_blocks.get(&branch))
+                    .and_then(|position| replay.index.get(*position))
+                    .is_some_and(|block| block.last_hour == coverage.last_hour);
+                (branch.clone(), coverage)
+            })
+            .collect(),
+    );
+    families
 }
 /// A branch's published coverage page, carrying its family refusals so a
 /// query reads both from one small page. The reply's coverage stays unchanged.
@@ -1647,6 +1671,7 @@ fn zero_checkpoint(replay: &Replay, content: Option<&ContentOptions>) -> io::Res
             .iter()
             .map(|&name| (name.to_owned(), independent::Progress::default()))
             .collect(),
+        production: BTreeMap::new(),
         bytes: 0,
     })
 }
@@ -2049,7 +2074,9 @@ pub fn unprepared_blocks(
     let (store, key) = super::files(source, content)?;
     let saved = store.saved_key()?;
     if !saved.as_ref().is_some_and(|previous| {
-        previous == &key || previous.recording_size() < key.recording_size() || key.renames(previous)
+        previous == &key
+            || previous.recording_size() < key.recording_size()
+            || key.renames(previous)
     }) {
         return Ok(None);
     }
@@ -2481,7 +2508,9 @@ fn run_planned(
     )?;
     // Reuse compares unchanged input stamps and the recorded index/semantic metadata.
     let reuse = saved.as_ref().is_some_and(|previous| {
-        previous == &key || previous.recording_size() < key.recording_size() || key.renames(previous)
+        previous == &key
+            || previous.recording_size() < key.recording_size()
+            || key.renames(previous)
     });
     let planned_checkpoint = if reuse {
         time_family!(
@@ -2565,21 +2594,20 @@ fn run_planned(
                 .as_ref()
                 .and_then(|(state, _)| state.map.branches.get(&branch.id))
                 .and_then(|progress| {
-                    progress.last_hour.map(|hour| dashboard_base::map_export::Cursor {
-                        hour,
-                        block: progress.last_block.map(|block| block as u64),
-                    })
+                    progress
+                        .last_hour
+                        .map(|hour| dashboard_base::map_export::Cursor {
+                            hour,
+                            block: progress.last_block.map(|block| block as u64),
+                        })
                 });
             (branch.id, cursor)
         })
         .collect();
     let snow_bound = !snow_unstarted
-        && map_export.reusable(
-            &store,
-            &key,
-            snow_frontiers.iter().cloned(),
-            || snow_check(cancelled, "validate"),
-        )?;
+        && map_export.reusable(&store, &key, snow_frontiers.iter().cloned(), || {
+            snow_check(cancelled, "validate")
+        })?;
     let loaded = match loaded {
         Some(pair)
             if land_owners.is_some()
@@ -3080,9 +3108,8 @@ fn run_planned(
         walk_pace: &walk_pace,
     };
     let mut side = side::load(&store, &key, saved.as_ref())?.unwrap_or_default();
-    let beside = production_scans::jobs(&phase, &side.production)?;
+    let beside = production_scans::jobs(&phase)?;
     side.pending = beside.iter().map(|job| job.name.to_owned()).collect();
-    side.production.extend(production_scans::wanted(source));
     side::write(&mut writer, &side)?;
     if state.forward_complete(replay.index.len()) {
         // With no forward work left, make the roster durable even if cancellation

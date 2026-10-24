@@ -74,13 +74,13 @@ pub struct SavedLines {
     pub unread_output: Vec<HourSpan>,
 }
 
-fn encode(rows: TableRows) -> io::Result<Vec<u8>> {
+pub(super) fn encode(rows: TableRows) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     rows.encode_rows(&mut bytes)?;
     Ok(bytes)
 }
 
-fn decode(table: TableId, bytes: &[u8]) -> io::Result<TableRows> {
+pub(super) fn decode(table: TableId, bytes: &[u8]) -> io::Result<TableRows> {
     let mut input = replay_data::codec::Decoder::new(bytes);
     let rows = table.decode_rows(1, &mut input)?;
     input.finish()?;

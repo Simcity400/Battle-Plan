@@ -27,7 +27,37 @@ pub struct ReplayStream {
     on_read: Option<ReadHook>,
 }
 
+#[derive(Debug)]
+struct FrameFailure {
+    hour: i32,
+    error: io::Error,
+}
+
+impl std::fmt::Display for FrameFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for FrameFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+fn at_hour(hour: i32, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), FrameFailure { hour, error })
+}
+
 impl ReplayStream {
+    /// Reconstruction failures name the actual recorded hour, including after gaps.
+    pub fn failed_hour(error: &io::Error) -> Option<i32> {
+        error
+            .get_ref()?
+            .downcast_ref::<FrameFailure>()
+            .map(|failure| failure.hour)
+    }
+
     pub fn new(tables: &[TableId]) -> io::Result<Self> {
         let mut selected = engine_allocation::collect_vec(tables.iter().copied())?;
         if !selected.contains(&TableId::Campaign) {
@@ -303,16 +333,15 @@ impl Replay {
             engine_allocation::reserve(&mut selected, 1)?;
             selected.push(TableId::Campaign);
         }
-        let frames = self.read_block_recorded_selected(index, &selected)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
-            check()?;
-            let frame = Arc::new(frame);
-            let decoded = decoder.advance(&frame)?;
-            validate_campaign(decoded, &self.campaign_id)?;
-            visit(frame, decoded)?;
-        }
-        Ok(())
+        reconstruct_recorded_block(
+            self,
+            index,
+            &selected,
+            || Ok(FrameDecoder::for_tables(&selected)),
+            |raw, frame| visit(Arc::new(raw), frame),
+            check,
+        )
+        .map(|_| ())
     }
 
     /// [`Replay::read_block_alone`] of a block already read: `frames` are the
@@ -383,8 +412,11 @@ fn reconstruct_recorded_block(
     let mut decoder = decoder()?;
     for frame in frames {
         check()?;
-        let decoded = decoder.advance(&frame)?;
-        validate_campaign(decoded, &replay.campaign_id)?;
+        let decoded = decoder
+            .advance(&frame)
+            .map_err(|error| at_hour(frame.hour, error))?;
+        validate_campaign(decoded, &replay.campaign_id)
+            .map_err(|error| at_hour(frame.hour, error))?;
         visit(frame, decoded)?;
     }
     Ok(decoder)
@@ -404,8 +436,11 @@ fn reconstruct_block(
     check()?;
     let mut decoder = decoder()?;
     let mut reconstruct = |frame: Frame| -> io::Result<bool> {
-        let decoded = decoder.advance(&frame)?;
-        validate_campaign(decoded, &replay.campaign_id)?;
+        let decoded = decoder
+            .advance(&frame)
+            .map_err(|error| at_hour(frame.hour, error))?;
+        validate_campaign(decoded, &replay.campaign_id)
+            .map_err(|error| at_hour(frame.hour, error))?;
         visit(frame, decoded)?;
         Ok(true)
     };
@@ -423,6 +458,52 @@ mod tests {
     use crate::{frame::FrameEncoder, rows::SunkShipsRow};
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn a_reconstruction_failure_names_its_recorded_hour_after_a_gap() {
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 8])]).unwrap();
+        assert_eq!(replay.index.len(), 1);
+        let mut frames = replay.read_block(&replay.index[0]).unwrap();
+        frames[1].tables[TableId::Campaign.index()] =
+            crate::frame::TableUpdate::Snapshot(TableRows::Campaign(vec![
+                crate::rows::CampaignRow {
+                    id: b"different-campaign".to_vec(),
+                },
+            ]));
+        let malformed = super::super::test_work::with_block_frames(&replay, &frames).unwrap();
+        let mut stream = ReplayStream::new(&[TableId::Campaign]).unwrap();
+        let mut visited = Vec::new();
+        let error = stream
+            .next_block(&malformed, |frame| {
+                visited.push(frame.hour);
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(visited, vec![1]);
+        assert_eq!(ReplayStream::failed_hour(&error), Some(8));
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "frame campaign identity differs from replay header"
+        );
+        assert_eq!(stream.cursor().next_block, 0);
+        visited.clear();
+        let alone = malformed
+            .read_block_recorded_alone(
+                &malformed.index[0],
+                &[TableId::Campaign],
+                |_, frame| {
+                    visited.push(frame.hour);
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(visited, vec![1]);
+        assert_eq!(ReplayStream::failed_hour(&alone), Some(8));
+        assert_eq!(alone.kind(), error.kind());
+        assert_eq!(alone.to_string(), error.to_string());
+    }
 
     fn recording() -> Replay {
         let mut captured = records(1, &[1]);

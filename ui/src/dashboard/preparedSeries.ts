@@ -7,7 +7,7 @@ import { finalPreparedReply, preparationCoverage } from './preparedPrefix.ts';
 
 export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-next-change' | 'events-page' | 'events-clusters';
 
-const PREPARED_PRODUCTS = ['faction-state', 'land-battles', 'land-battles-manifest', 'land-battles-ranking', 'land-battle-course',
+const PREPARED_PRODUCTS = ['production-lines', 'production-line-detail', 'production-line-breakdown', 'faction-state', 'land-battles', 'land-battles-manifest', 'land-battles-ranking', 'land-battle-course',
   'naval-battles', 'naval-battles-manifest', 'naval-battles-ranking', 'naval-battle-details',
   'division-log', 'division-log-manifest', 'division-log-totals', 'ships-sunk', 'ships-sunk-manifest', 'ships-sunk-battle-titles', 'naval-losses', 'special-projects', 'event-feed', 'air-missions', 'air-statistics', 'doctrine-mastery', 'intel-network-coverage', 'occupation-reserve-manpower', 'regional-weather', 'naval-supremacy', 'minefields', 'naval-repairs', 'naval-refits', 'event-choices', 'decisions', 'fuel-branches', 'market-history', 'market-ledger', 'lend-lease-balance', 'production-catalogue', 'convoy-health', 'diplomacy-state', 'volunteers-expeditionaries', 'division-equipment-history'] as const;
 export type PreparedProduct = typeof PREPARED_PRODUCTS[number];

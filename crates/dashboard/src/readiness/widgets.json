@@ -124,7 +124,7 @@
     {
       "kind": "production-lines",
       "requests": [
-        {"product": "production-lines", "route": "product", "params": {"branchId": "$branch", "tag": "$tag"}}
+        {"product": "production-lines", "route": "prepared", "params": {"branchId": "$branch", "tag": "$tag"}}
       ]
     },
     {

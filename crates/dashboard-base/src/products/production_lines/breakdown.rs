@@ -847,27 +847,8 @@ impl Product for ProductionLineBreakdown {
         let (_, original) =
             scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
         let (scanned, selected_key) = if let Some(hour) = params.origin_hour {
-            let history = super::super::country_history::branch_histories(
-                source,
-                country.branch(),
-                false,
-                &[],
-                cancelled,
-            )?;
-            let identities = history
-                .countries
-                .get(&params.tag)
-                .ok_or_else(|| crate::invalid("The original production country is not recorded"))?;
-            let identity = identities
-                .identities
-                .iter()
-                .find(|identity| identity.first_hour <= hour && hour <= identity.last_hour)
-                .ok_or_else(|| {
-                    crate::invalid(
-                        "The original production country identity is unavailable at its choice",
-                    )
-                })?;
-            let holder = (identity.slot, identity.country_id);
+            let holder =
+                prepared::country_at(source, context, country.branch(), &params.tag, hour)?;
             let (_, selected) = scanned_lines(
                 source,
                 &country,

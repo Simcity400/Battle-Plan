@@ -1,6 +1,4 @@
-//! A production line scan a request read whole is kept by the source's next
-//! preparation, never by the request, and answers the next source of the
-//! recording exactly, reading none of it.
+//! All-country publication, cancellation and source reopening.
 use super::*;
 use crate::{
     products::{
@@ -36,7 +34,7 @@ fn recording() -> Replay {
 }
 
 #[test]
-fn a_scan_a_request_read_whole_is_kept_by_preparation_and_answers_the_next_open() {
+fn all_recorded_countries_are_prepared_before_requests_and_answer_the_next_open() {
     let replay = recording();
     let mut fixture = Fixture::new(&replay);
     let source = fixture.source("production-kept");
@@ -54,9 +52,11 @@ fn a_scan_a_request_read_whole_is_kept_by_preparation_and_answers_the_next_open(
         )
         .unwrap()
     };
-    let read = exact(&source);
+    let reference = fixture.source("production-reference");
+    production_lines::prepared::fixtures::prepare(&reference, &LoadContext { content: None })
+        .unwrap();
+    let read = exact(&reference);
     let (store, key) = crate::prepared::files(&source, None).unwrap();
-    assert!(production_lines::has_unkept(&source));
     assert!(
         !production_lines::saved_current(
             &store,
@@ -70,7 +70,6 @@ fn a_scan_a_request_read_whole_is_kept_by_preparation_and_answers_the_next_open(
         "the request keeps nothing"
     );
     run(&source, None, &flag, |_| {}).unwrap();
-    assert!(!production_lines::has_unkept(&source));
     assert!(
         production_lines::saved_current(
             &store,
@@ -92,14 +91,9 @@ fn a_scan_a_request_read_whole_is_kept_by_preparation_and_answers_the_next_open(
     );
     assert_eq!(reply.lines, read.lines);
     assert_eq!(reply.reads, read.reads);
-    assert!(
-        !production_lines::has_unkept(&again),
-        "a kept scan held is not kept again"
-    );
 }
 
-/// Forward completion must not hide unfinished scans, including non-player
-/// requests whose queue belonged to the previous Source.
+/// Forward completion must not hide unfinished all-country preparation.
 #[test]
 fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     use std::sync::{Condvar, Mutex};
@@ -122,9 +116,11 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
         )
         .unwrap()
     };
+    let reference = fixture.source("production-cancel-reference");
+    production_lines::prepared::fixtures::prepare(&reference, &context).unwrap();
     let expected: Vec<_> = ["GER", "ITA"]
         .into_iter()
-        .map(|tag| exact(&source, tag))
+        .map(|tag| exact(&reference, tag))
         .collect();
     let (store, key) = crate::prepared::files(&source, None).unwrap();
     let finished = Arc::new((Mutex::new(false), Condvar::new()));
@@ -169,10 +165,6 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
     }
     assert!(restore(&source, None, &flag).unwrap().is_none());
     let reopened = fixture.source("production-resumed");
-    assert!(
-        production_lines::read_whole(&reopened).is_empty(),
-        "new Source has no runtime requests"
-    );
     assert!(restore(&reopened, None, &flag).unwrap().is_none());
     let mut walked = Vec::new();
     run_checked(
@@ -205,4 +197,147 @@ fn cancelled_side_scans_resume_after_every_forward_publisher_finished() {
         crate::blocks::SCANNED_BLOCKS.with_borrow(Vec::is_empty),
         "kept pages answer the next open"
     );
+}
+
+#[test]
+fn new_branch_seed_tags_reschedule_completed_and_resumed_production_branches() {
+    use replay_data::rows::{CountryLinkRow, CountryRow};
+    let flag = AtomicBool::new(false);
+    let context = LoadContext { content: None };
+    let scans = |source: &Source| -> BTreeMap<_, _> {
+        super::family_lanes::payloads(source, None)
+            .into_iter()
+            .filter(|((section, _), _)| section.starts_with("production-lines-scan-"))
+            .collect()
+    };
+    for extend_old in [false, true] {
+        let prefix = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![production_frame(
+                    FIRST,
+                    true,
+                    true,
+                    9001,
+                    &[(5, 70, 8, 0)],
+                    Some(&[]),
+                )],
+            )],
+        )
+        .unwrap();
+        let mut fixture = Fixture::new(&prefix);
+        let first = fixture.source("seed-prefix");
+        run(&first, None, &flag, |_| {}).unwrap();
+        let (store, old_key) = crate::prepared::files(&first, None).unwrap();
+        assert!(
+            production_lines::prepared::current(&store, &old_key, &first, &context, 1).unwrap()
+        );
+        let accepted = production_lines::prepared::directory(&store, &old_key, 1)
+            .unwrap()
+            .unwrap();
+        let mut added = production_frame(FIRST + 2, true, true, 9001, &[(5, 70, 8, 0)], Some(&[]));
+        added.branch = 2;
+        let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *added.tables[TableId::Countries.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(CountryRow {
+            id: 10000,
+            canonical_slot: 8,
+            tag: b"NEW".to_vec(),
+            ..Default::default()
+        });
+        let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *added.tables[TableId::CountryLinks.index()]
+        else {
+            unreachable!()
+        };
+        rows.push(CountryLinkRow {
+            id: 10000,
+            canonical_slot: 8,
+        });
+        let mut grown = prefix.append(&[records(2, vec![added])]).unwrap();
+        if extend_old {
+            grown = grown
+                .append(&[continuation_records(
+                    &grown,
+                    1,
+                    vec![production_frame(
+                        FIRST + 1,
+                        true,
+                        true,
+                        9001,
+                        &[(5, 70, 8, 0)],
+                        Some(&[(5, 70, 1, true, false)]),
+                    )],
+                )])
+                .unwrap();
+        }
+        fixture.replace(&grown);
+        let reopened = fixture.source("seed-grown");
+        assert!(reopened.is_append_of(&first));
+        assert!(
+            reopened
+                .metadata()
+                .countries
+                .iter()
+                .any(|country| country.tag == "NEW")
+        );
+        assert!(
+            !production_lines::prepared::current(&store, &old_key, &reopened, &context, 1).unwrap()
+        );
+        assert!(
+            !production_lines::saved_current(&store, &old_key, &reopened, &context, 1, "NEW")
+                .unwrap()
+        );
+        assert!(
+            super::super::production_scans::missing(&reopened, &store, &old_key, &context)
+                .unwrap()
+                .contains(&1)
+        );
+        run(&reopened, None, &flag, |_| {}).unwrap();
+        let (_, key) = crate::prepared::files(&reopened, None).unwrap();
+        assert!(
+            super::super::production_scans::missing(&reopened, &store, &key, &context)
+                .unwrap()
+                .is_empty()
+        );
+        for branch in [1, 2] {
+            assert!(
+                production_lines::prepared::current(&store, &key, &reopened, &context, branch)
+                    .unwrap()
+            );
+            for tag in ["GER", "ITA", "NEW"] {
+                assert!(
+                    production_lines::saved_current(&store, &key, &reopened, &context, branch, tag)
+                        .unwrap()
+                );
+            }
+        }
+        if !extend_old {
+            let reconciled = production_lines::prepared::directory(&store, &key, 1)
+                .unwrap()
+                .unwrap();
+            assert_eq!(reconciled.pages, accepted.pages);
+            assert_eq!(reconciled.last_block, accepted.last_block);
+            assert_eq!(
+                serde_json::to_value(reconciled.coverage).unwrap(),
+                serde_json::to_value(accepted.coverage).unwrap()
+            );
+        }
+        let mut fresh = Fixture::new(&grown);
+        let full = fresh.source("seed-fresh");
+        run(&full, None, &flag, |_| {}).unwrap();
+        let expected = scans(&full);
+        assert_eq!(
+            expected.len(),
+            12,
+            "three countries, two branches, scan plus meta"
+        );
+        assert_eq!(scans(&reopened), expected, "extend_old={extend_old}");
+        run(&reopened, None, &flag, |_| {}).unwrap();
+        assert_eq!(scans(&reopened), expected);
+    }
 }

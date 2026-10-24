@@ -3527,8 +3527,7 @@ export type EquipmentIcon = { key: string,
 image: string | null, };
 export type ProductionLinesParams = { branchId: string, tag: string,
 /**
- * Answer every hour exactly, scanning the whole branch when its scan is not
- * held, instead of a first view of its newest blocks.
+ * Wait for the branch's complete prepared history.
  */
 exact?: boolean, };
 export type ProductionLinesReply = { branchId: string, tag: string, decimals: number,
@@ -3568,10 +3567,7 @@ organisationHours: Array<HourSpan>,
  */
 unreadOutput: Array<HourSpan>,
 /**
- * Hours this reply does not answer exactly yet, ascending spans: a first view
- * read only the branch's newest blocks, so the history before them, through
- * the first read among them, is still being prepared. Empty when every hour is
- * answered; a request with `exact` answers them all.
+ * Hours beyond the published prefix that are still being prepared.
  */
 approximate: Array<HourSpan>,
 /**

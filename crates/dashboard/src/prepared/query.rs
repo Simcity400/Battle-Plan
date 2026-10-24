@@ -160,6 +160,14 @@ fn cache_product(product: &str) -> Option<&'static str> {
 fn waits(data: &Value) -> bool {
     match data {
         Value::Null => true,
+        Value::Object(reply)
+            if reply
+                .get("approximate")
+                .and_then(Value::as_array)
+                .is_some_and(|spans| !spans.is_empty()) =>
+        {
+            true
+        }
         Value::Object(reply) => reply
             .get("preparedCoverage")
             .or_else(|| reply.get("coverage"))
@@ -465,6 +473,89 @@ fn query_data(
     let (store, key) = super::files(source, content)?;
     dashboard_base::prepared::query::observations::bind(source, &key);
     Ok(match request.product.as_str() {
+        "production-lines" | "production-line-detail" | "production-line-breakdown" => {
+            use crate::products::production_lines::{
+                ProductionBreakdownParams, ProductionDetailParams, ProductionLineBreakdown,
+                ProductionLineDetail, ProductionLines, ProductionLinesParams,
+            };
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let branch = request
+                .params
+                .get("branchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::invalid("Invalid production branch"))?;
+            let branch = self::branch(source, branch)?;
+            let through = if request.product == "production-line-detail" {
+                request
+                    .params
+                    .get("window")
+                    .and_then(Value::as_i64)
+                    .and_then(|window| window.checked_add(1))
+                    .and_then(|window| {
+                        window
+                            .checked_mul(i64::from(crate::products::production_lines::DETAIL_HOURS))
+                    })
+                    .and_then(|hour| i32::try_from(hour - 1).ok())
+            } else {
+                None
+            };
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                through,
+                request.product == "production-line-breakdown"
+                    || request.params.get("exact").and_then(Value::as_bool) == Some(true),
+                cancelled,
+            )? {
+                return Ok(Value::Null);
+            }
+            let complete = crate::products::production_lines::prepared::current(
+                &store, &key, source, &context, branch,
+            )?;
+            if !complete {
+                super::coverage::note_short("production-lines");
+                let directory =
+                    crate::products::production_lines::prepared::directory(&store, &key, branch)?;
+                if request.product == "production-line-breakdown"
+                    || request.params.get("exact").and_then(Value::as_bool) == Some(true)
+                    || directory.as_ref().is_none_or(|directory| {
+                        through.is_some_and(|hour| hour > directory.coverage.last_hour)
+                    })
+                {
+                    return Ok(Value::Null);
+                }
+            }
+            match request.product.as_str() {
+                "production-lines" => {
+                    let params: ProductionLinesParams =
+                        serde_json::from_value(request.params.clone())?;
+                    ProductionLines::validate(&params).map_err(crate::invalid)?;
+                    serde_json::to_value(ProductionLines::load(
+                        source, &params, &context, cancelled,
+                    )?)?
+                }
+                "production-line-detail" => {
+                    let params: ProductionDetailParams =
+                        serde_json::from_value(request.params.clone())?;
+                    ProductionLineDetail::validate(&params).map_err(crate::invalid)?;
+                    serde_json::to_value(ProductionLineDetail::load(
+                        source, &params, &context, cancelled,
+                    )?)?
+                }
+                _ => {
+                    let params: ProductionBreakdownParams =
+                        serde_json::from_value(request.params.clone())?;
+                    ProductionLineBreakdown::validate(&params).map_err(crate::invalid)?;
+                    serde_json::to_value(ProductionLineBreakdown::load(
+                        source, &params, &context, cancelled,
+                    )?)?
+                }
+            }
+        }
         "diplomacy-state" => {
             let params: crate::products::diplomacy_state::DiplomacyParams =
                 serde_json::from_value(request.params.clone())?;

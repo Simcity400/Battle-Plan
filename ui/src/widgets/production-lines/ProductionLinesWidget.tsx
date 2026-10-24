@@ -30,7 +30,7 @@ import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt } from '../../dashboard/reads';
 import type { ProductionLineDetailReply, ProductionLinesReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { bandScale, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
+import { bandScale, wantedDetailWindows, breakdownItems, breakdownTooltip, emptyHistoryState, firstViewLineReason, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalTooltip, gapTooltip, historyLanes, iconImage, lineTooltip, linesAt, linesKnown,
   organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, productionLineLabel, stepTooltip, totalText, unreadNote, variantAt, variantName, weeklyOutput, weeklyText, windowOf } from './productionData';
 import type { LineAt, LineOrder, TooltipForms } from './productionData';
 import { useLineDetail, useProductionLines, useLineBreakdown, useProductionCountry } from './useProductionLines';
@@ -72,12 +72,8 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   useEffect(() => setHovered(null), [track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const shownHour = playhead != null ? Math.floor(playhead) : null;
   const wanted = useMemo(() => {
-    // Detail windows read the whole history: none while a first view waits for it.
-    if (!data || !track || data.approximate.length) return NO_WINDOWS;
-    if (shownHour == null) return hovered == null ? NO_WINDOWS : [hovered];
-    const window = windowOf(data, shownHour);
-    // The next window too, while playback can reach it.
-    return (window + 1) * data.detailHours <= track.branch.lastHour ? [window, window + 1] : [window];
+    if (!data || !track) return NO_WINDOWS;
+    return wantedDetailWindows(data, track.branch.lastHour, shownHour, hovered);
   }, [data, track, shownHour, hovered]);
   const windows = useLineDetail(runtime, track, tag, wanted, active);
   // What an open organisation window could not draw.
@@ -340,7 +336,7 @@ function History({ data, tag, extent, showEnded, active, hoursPerSecond, onMenu,
     : <WidgetState kind="empty" message="No production lines recorded in this time." />;
   const description = `${dayLabel(until)}: ${lanes.map(lane => `${lane.identity?.label ?? lane.id}, ${lane.label}`).join('; ')}.`;
   return <div className="production-history">
-    {data.approximate.length > 0 && <p className="production-caption" role="status">Showing the newest recorded production; earlier history is still being prepared.</p>}
+    {data.approximate.length > 0 && <p className="production-caption" role="status">Showing the published production history; later history is still being prepared.</p>}
     <Timeline label={`Production lines of ${tag}`} extent={extent} playhead={null} lanes={lanes} showIcons={false} showNames={false} bandMax={most}
       unobserved={data.approximate}
       stickyAxis={false} fadePresentation truncateLabels={false} holderIconAlign="top"
