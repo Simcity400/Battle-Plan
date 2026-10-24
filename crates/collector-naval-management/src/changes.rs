@@ -95,6 +95,83 @@ pub fn base_demand(entries: usize) {
     BASES.offer(entries.saturating_mul(2));
 }
 
+static CENSUS_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Live watch demand, or `None` before a load has made its game state and navy manager.
+fn census(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<Option<(usize, usize)>, &'static str> {
+    if state == 0 {
+        return Ok(None);
+    }
+    let manager = state
+        .checked_add(engine_native::cgame_state::STRATEGIC_NAVY_MANAGER)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or("naval repair base map unreadable")?;
+    if manager == 0 {
+        return Ok(None);
+    }
+    let countries = engine_native::ccountry::Reader::new(memory, base, state)?.count() as usize;
+    let fleets = engine_native::creference_registry::entry_count(
+        memory,
+        base,
+        engine_native::cfleet::HANDLE_TYPE,
+    )?;
+    let ships = engine_native::creference_registry::entry_count(
+        memory,
+        base,
+        engine_native::cship::HANDLE_TYPE,
+    )?;
+    let refits = engine_native::creference_registry::entry_count(
+        memory,
+        base,
+        engine_native::cship_refit_production_line::REFERENCE_TYPE,
+    )?;
+    let receivers = countries
+        .checked_mul(3)
+        .and_then(|value| {
+            fleets
+                .checked_mul(4)
+                .and_then(|fleets| value.checked_add(fleets))
+        })
+        .and_then(|value| value.checked_add(ships))
+        .and_then(|value| value.checked_add(refits))
+        .and_then(|value| value.checked_mul(2))
+        .ok_or("naval repair watch demand overflow")?;
+    let buckets = manager
+        .checked_add(engine_native::rail_anchor_selector::MASK)
+        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .and_then(|mask| (mask as usize).checked_add(1))
+        .ok_or("naval repair base demand unreadable or overflow")?;
+    Ok(Some((receivers, buckets)))
+}
+
+fn offer_census(receivers: usize, buckets: usize) {
+    FORCES.offer(receivers);
+    base_demand(buckets);
+    CENSUS_PENDING.store(false, Ordering::Release);
+}
+
+/// Off the game thread: the first census for a collector attached before any load. A watch
+/// table installed later only grows at an invalidating boundary, so none is offered until then.
+pub fn presize(memory: &impl Memory, base: usize) {
+    if !CENSUS_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    let state = base
+        .checked_add(engine_native::cgame_state::SINGLETON_RVA)
+        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|value| usize::try_from(value).ok());
+    if let Some(state) = state
+        && let Ok(Some((receivers, buckets))) = census(memory, base, state)
+    {
+        offer_census(receivers, buckets);
+    }
+}
+
 pub fn register_force(pointer: usize) -> bool {
     let available = FORCES.sequence(pointer).is_some() && FORCES.sequence(pointer | 1).is_some();
     if !available {
@@ -210,7 +287,7 @@ impl Hooks {
     ) -> Result<Self, &'static str> {
         let mut taps = Vec::new();
         let mut methods = Vec::new();
-        let mut authenticated = state != 0;
+        let mut authenticated = true;
         for (index, (rva, sentinel)) in SITES
             .iter()
             .map(|site| (site.rva, site.sentinel))
@@ -229,46 +306,10 @@ impl Hooks {
         if !authenticated {
             return Ok(Self { taps, methods });
         }
-        let countries = engine_native::ccountry::Reader::new(memory, base, state)?.count() as usize;
-        let fleets = engine_native::creference_registry::entry_count(
-            memory,
-            base,
-            engine_native::cfleet::HANDLE_TYPE,
-        )?;
-        let ships = engine_native::creference_registry::entry_count(
-            memory,
-            base,
-            engine_native::cship::HANDLE_TYPE,
-        )?;
-        let refits = engine_native::creference_registry::entry_count(
-            memory,
-            base,
-            engine_native::cship_refit_production_line::REFERENCE_TYPE,
-        )?;
-        let receivers = countries
-            .checked_mul(3)
-            .and_then(|value| {
-                fleets
-                    .checked_mul(4)
-                    .and_then(|fleets| value.checked_add(fleets))
-            })
-            .and_then(|value| value.checked_add(ships))
-            .and_then(|value| value.checked_add(refits))
-            .and_then(|value| value.checked_mul(2))
-            .ok_or("naval repair watch demand overflow")?;
-        FORCES.offer(receivers);
-        let manager = state
-            .checked_add(engine_native::cgame_state::STRATEGIC_NAVY_MANAGER)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|value| *value != 0)
-            .ok_or("naval repair base map unavailable")?;
-        let buckets = manager
-            .checked_add(engine_native::rail_anchor_selector::MASK)
-            .and_then(|at| engine_native::read::<u32>(memory, at))
-            .and_then(|mask| (mask as usize).checked_add(1))
-            .ok_or("naval repair base demand unreadable or overflow")?;
-        base_demand(buckets);
+        match census(memory, base, state)? {
+            Some((receivers, buckets)) => offer_census(receivers, buckets),
+            None => CENSUS_PENDING.store(true, Ordering::Release),
+        }
         engine_allocation::reserve(&mut taps, SITES.len())
             .map_err(|_| "naval repair hook allocation failed")?;
         for (tag, site) in SITES.iter().enumerate() {
@@ -358,6 +399,7 @@ impl Hooks {
 }
 impl Drop for Hooks {
     fn drop(&mut self) {
+        CENSUS_PENDING.store(false, Ordering::Release);
         // The runtime's normal restoration and range drain precede dropping this owner.
         unsafe {
             FORCES.release();

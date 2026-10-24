@@ -5441,6 +5441,10 @@ fn sizing_pass(
         // on native writers. Keep their live census at one second, not on
         // the advisory worker-census backoff.
         crate::equipment_destruction::prepare(&live, base, registry.slots);
+        // A census during loading undercounts, and its table could not grow before the next load.
+        if crate::world_lifetime::token().is_some() {
+            collector_naval_management::changes::presize(&live, base);
+        }
         let destruction_capacity = crate::equipment_destruction::capacity();
         sizing.raise(shared, |capacities| {
             let destruction = &mut capacities.extended.equipment_destruction;
