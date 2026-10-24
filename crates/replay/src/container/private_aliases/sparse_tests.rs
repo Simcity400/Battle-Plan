@@ -194,7 +194,11 @@ fn province_candidates_equal_the_original_every_hour_across_occurrence_and_avail
                 },
                 _ => TableView::Complete(rows),
             };
-            (target, vec![province, absent(TableId::DivisionStatus)])
+            // An unavailable optional source forces fallback; empty rows preserve literal organisation.
+            (
+                target,
+                vec![province, source(TableRows::DivisionStatus(Vec::new()))],
+            )
         })
         .collect();
     every_hour(TableId::Divisions, samples);
