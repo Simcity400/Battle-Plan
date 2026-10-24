@@ -76,6 +76,26 @@ const AWAITED_SLOT_MASK: u64 = !AWAITED_SPIN;
 const fn word(generation: u64, phase: u64) -> u64 {
     generation << 3 | phase
 }
+fn record_outstanding_slot(
+    outstanding: &mut crate::acquisition_diagnostics::Outstanding,
+    index: usize,
+    word_before: u64,
+    value: &AtomicU64,
+    slot: &crate::acquisition_diagnostics::Slot,
+) {
+    if !matches!(word_before & PHASE_MASK, PENDING | RUNNING) {
+        return;
+    }
+    let accepted = slot.accepted();
+    let identity = slot.identity();
+    // Admission metadata acquires also make the preceding VACANT visible to this recheck.
+    if value.load(Ordering::Acquire) != word_before {
+        outstanding.changed_slots += 1;
+    } else if accepted {
+        outstanding.add(index, word_before >> 3, identity);
+    }
+}
+
 static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
 static BOOST_REFUSALS: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_REFUSALS: AtomicU64 = AtomicU64::new(0);
@@ -130,6 +150,7 @@ pub(crate) struct Timeline {
     pub finish_lock_ticks: u64,
     /// Checked heap growth attempts admitted inside this job's body.
     pub growths: u64,
+    pub caller: bool,
 }
 
 /// Diagnostic stages in raw QPC ticks. The publisher cannot stamp a wake's
@@ -151,11 +172,32 @@ pub(crate) struct Profile {
 
 /// Pool identity, 61-bit generation and a single-use collection CAS prevent
 /// foreign, stale or racing tickets from consuming another output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct Ticket {
     pool: u64,
     slot: usize,
     generation: u64,
+}
+
+impl Ticket {
+    pub(crate) fn diagnostic(pool: u64, slot: usize, generation: u64) -> Self {
+        Self {
+            pool,
+            slot,
+            generation,
+        }
+    }
+    pub(crate) fn generation(self) -> u64 {
+        self.generation
+    }
+    #[cfg(any(test, feature = "callback_profile"))]
+    pub(crate) fn pool(self) -> u64 {
+        self.pool
+    }
+    #[cfg(any(test, feature = "callback_profile"))]
+    pub(crate) fn slot(self) -> usize {
+        self.slot
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -486,6 +528,10 @@ struct Shared<J, R> {
     burst_peers: AtomicUsize,
     run: Box<Runner<J, R>>,
     on_completed: OnceLock<OnCompleted<J, R>>,
+    diagnostics: OnceLock<fn(&J) -> crate::acquisition_diagnostics::Identity>,
+    diagnostic_slots: Box<[crate::acquisition_diagnostics::Slot]>,
+    diagnostic_worker_growths: AtomicU64,
+    diagnostic_frequency: AtomicU64,
     thread_ids: Vec<AtomicU32>,
     cells: Box<[Cell<J, R>]>,
     words: Box<[AtomicU64]>,
@@ -550,6 +596,9 @@ impl<J, R> Shared<J, R> {
             {
                 (*completion).profile.published_qpc = published_qpc;
             }
+        }
+        if self.diagnostics.get().is_some() {
+            self.diagnostic_slots[index].publish(published_qpc);
         }
         self.words[index].store(word(generation, PUBLISHED), Ordering::SeqCst);
         // No cell access after this store, even if the slot is already reused.
@@ -664,9 +713,6 @@ impl<J, R> Shared<J, R> {
             }
         };
         let growths = engine_allocation::growths().saturating_sub(growths_before);
-        if caller {
-            crate::sampling::record_caller_growths(growths);
-        }
         #[cfg(feature = "callback_profile")]
         let runner_cycles_end = crate::callback_profile::thread_cycles();
         let runner_end_qpc = crate::sampling::qpc();
@@ -694,6 +740,7 @@ impl<J, R> Shared<J, R> {
             (*completion).timeline.body_begin_qpc = runner_begin_qpc;
             (*completion).timeline.body_end_qpc = runner_end_qpc;
             (*completion).timeline.growths = growths;
+            (*completion).timeline.caller = caller;
             #[cfg(feature = "callback_profile")]
             {
                 (*completion).profile.runner_begin_qpc = runner_begin_qpc;
@@ -761,6 +808,12 @@ impl<J, R> Shared<J, R> {
                 add(&self.counters.panicked, 1);
                 self.stop();
             }
+        }
+        if !caller && self.diagnostics.get().is_some() {
+            self.diagnostic_worker_growths.fetch_add(
+                engine_allocation::growths().saturating_sub(growths_before),
+                Ordering::Relaxed,
+            );
         }
         let active = self.active.fetch_sub(1, Ordering::SeqCst) - 1;
         if active < self.thread_ids.len() {
@@ -962,6 +1015,11 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         for _ in 0..capacity {
             words.push(AtomicU64::new(VACANT));
         }
+        let mut diagnostic_slots = Vec::new();
+        diagnostic_slots
+            .try_reserve_exact(capacity)
+            .map_err(|_| "acquisition diagnostics allocation failed")?;
+        diagnostic_slots.resize_with(capacity, Default::default);
         let mut threads = Vec::new();
         threads
             .try_reserve_exact(worker_count)
@@ -1020,6 +1078,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             burst_peers: AtomicUsize::new(0),
             run: Box::new(run),
             on_completed: OnceLock::new(),
+            diagnostics: OnceLock::new(),
+            diagnostic_slots: diagnostic_slots.into_boxed_slice(),
+            diagnostic_worker_growths: AtomicU64::new(0),
+            diagnostic_frequency: AtomicU64::new(1),
             thread_ids,
             cells: cells.into_boxed_slice(),
             words: words.into_boxed_slice(),
@@ -1061,6 +1123,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             let bytes = arc_layout.size()
                 + size_of_val(&*shared.cells)
                 + size_of_val(&*shared.words)
+                + size_of_val(&*shared.diagnostic_slots)
                 + state.slots.capacity() * size_of::<Slot>()
                 + state.ready.capacity() * size_of::<usize>()
                 + shared.thread_ids.capacity() * size_of::<AtomicU32>()
@@ -1206,6 +1269,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 .filter(|&class| class < self.shared.means.len());
             self.shared.body_begin[index].store(0, Ordering::Relaxed);
         }
+        if let Some(identity) = self.shared.diagnostics.get() {
+            // SAFETY: locked admission acquired this slot's VACANT release.
+            unsafe {
+                self.shared.diagnostic_slots[index]
+                    .admit(identity(request.as_ref().expect("checked request")), true);
+            }
+        }
         let completion = self.shared.cells[index].pointer();
         // SAFETY: locked admission acquired this word's VACANT release; the
         // preceding collector/unpark finished its read and owns the old job.
@@ -1293,6 +1363,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         slot.worker_only = worker_only;
         slot.queued_qpc = 0;
         slot.phase = Phase::Parked;
+        if let Some(identity) = self.shared.diagnostics.get() {
+            // SAFETY: locked parking acquired this slot's VACANT release.
+            unsafe {
+                self.shared.diagnostic_slots[index]
+                    .admit(identity(request.as_ref().expect("checked request")), false);
+            }
+        }
         // SAFETY: locked park acquired VACANT and exclusively owns the empty
         // cell. Parked has only an initialized job; no completion is exposed.
         unsafe {
@@ -1378,6 +1455,18 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             #[cfg(feature = "callback_profile")]
             std::ptr::addr_of_mut!((*cell).profile).write(Profile::default());
             std::ptr::write(out, Some(std::ptr::read(cell)));
+        }
+        if self.shared.diagnostics.get().is_some() {
+            // SAFETY: the queue mutex still exclusively owns this parked cell.
+            unsafe {
+                self.shared.diagnostic_slots[ticket.slot].collected(
+                    ticket,
+                    Timeline {
+                        caller: true,
+                        ..Default::default()
+                    },
+                );
+            }
         }
         slot.phase = Phase::Vacant;
         self.shared.words[ticket.slot].store(word(ticket.generation, VACANT), Ordering::Release);
@@ -1475,6 +1564,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 (*completion).profile.finish_lock_wait_ticks = lock_ticks;
             }
             std::ptr::write(out, Some(std::ptr::read(completion)));
+        }
+        if self.shared.diagnostics.get().is_some() {
+            // SAFETY: this collector owns COLLECTING until the following VACANT release.
+            unsafe {
+                self.shared.diagnostic_slots[ticket.slot]
+                    .collected(ticket, out.as_ref().unwrap().timeline);
+            }
         }
         value.store(word(ticket.generation, VACANT), Ordering::Release);
         self.shared.uncollected.fetch_sub(1, Ordering::Release);
@@ -1680,7 +1776,46 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     /// recheck: a publication either appears in that recheck or changes the
     /// sequence before the address wait. No queue mutex or payload is borrowed.
     pub(crate) fn wait_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
-        self.wait_ready_with_spin(JOIN_SPIN, &mut ready)
+        if self.shared.diagnostics.get().is_none() {
+            return self.wait_ready_with_spin(JOIN_SPIN, &mut ready);
+        }
+        if let Some(value) = ready() {
+            return value;
+        }
+        let begin = crate::sampling::qpc();
+        let mut outstanding = crate::acquisition_diagnostics::Outstanding::default();
+        outstanding.pool = self.shared.id;
+        for (index, value) in self.shared.words.iter().enumerate() {
+            record_outstanding_slot(
+                &mut outstanding,
+                index,
+                value.load(Ordering::Acquire),
+                value,
+                &self.shared.diagnostic_slots[index],
+            );
+        }
+        let mut probe = crate::acquisition_diagnostics::ProbeBudget::default();
+        let mut ending = None;
+        let mut ending_probe_exhausted = false;
+        let value = self.wait_ready_with_spin(JOIN_SPIN, || {
+            let (result, observed, exhausted) = probe.poll(&mut ready);
+            if result.is_some() {
+                ending = observed;
+                ending_probe_exhausted = exhausted;
+            }
+            result
+        });
+        let ticks = crate::sampling::qpc().saturating_sub(begin).max(0) as u64;
+        crate::sampling::record_readiness_wait(
+            crate::acquisition_diagnostics::ns(
+                ticks,
+                self.shared.diagnostic_frequency.load(Ordering::Relaxed),
+            ),
+            outstanding,
+            ending,
+            ending_probe_exhausted,
+        );
+        value
     }
 
     fn wait_ready_with_spin<T>(
@@ -1748,6 +1883,40 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         }
     }
 
+    pub(crate) fn set_diagnostics(
+        &self,
+        identity: fn(&J) -> crate::acquisition_diagnostics::Identity,
+    ) {
+        assert!(self.shared.words.len() <= crate::acquisition_jobs::MAX_JOBS);
+        let mut frequency = 0;
+        // SAFETY: a valid local output; queried once before admission.
+        assert!(
+            unsafe {
+                windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
+            } != 0
+                && frequency > 0
+        );
+        self.shared
+            .diagnostic_frequency
+            .store(frequency as u64, Ordering::Relaxed);
+        assert!(self.shared.diagnostics.set(identity).is_ok());
+    }
+
+    pub(crate) unsafe fn take_diagnostics(&self) -> crate::acquisition_diagnostics::Jobs {
+        assert_eq!(self.shared.active.load(Ordering::Acquire), 0);
+        assert_eq!(self.shared.uncollected.load(Ordering::Acquire), 0);
+        let mut jobs = crate::acquisition_diagnostics::Jobs::default();
+        for slot in &self.shared.diagnostic_slots {
+            // SAFETY: the caller drained and settled this batch before the next admission.
+            unsafe { slot.drain_into(&mut jobs) };
+        }
+        jobs.worker_growths = self
+            .shared
+            .diagnostic_worker_growths
+            .swap(0, Ordering::Relaxed);
+        jobs
+    }
+
     /// Inspect only a published, copyable report, without taking the request.
     /// The collection CAS excludes a racing collector while it is copied; no
     /// reference to the cell escapes. The sole pending collector may defer a
@@ -1774,15 +1943,42 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             let completion = self.shared.cells[ticket.slot].pointer();
             ((*completion).report, (*completion).timeline.published_qpc)
         };
+        self.observe_ready(ticket, report.1);
         value.store(word(ticket.generation, PUBLISHED), Ordering::SeqCst);
         Some(report)
     }
 
+    fn observe_ready(&self, ticket: Ticket, published_qpc: i64) {
+        if self.shared.diagnostics.get().is_some()
+            && crate::acquisition_diagnostics::probe_inspection()
+        {
+            crate::acquisition_diagnostics::observed(
+                self.shared.diagnostic_slots[ticket.slot].identity(),
+                ticket,
+                published_qpc,
+            );
+        }
+    }
+
     pub(crate) fn is_complete(&self, ticket: Ticket) -> bool {
-        ticket.pool == self.shared.id
+        let complete = ticket.pool == self.shared.id
             && self.shared.words.get(ticket.slot).is_some_and(|value| {
                 value.load(Ordering::SeqCst) == word(ticket.generation, PUBLISHED)
-            })
+            });
+        if complete
+            && self.shared.diagnostics.get().is_some()
+            && crate::acquisition_diagnostics::probe_inspection()
+        {
+            let slot = &self.shared.diagnostic_slots[ticket.slot];
+            let identity = slot.identity();
+            let published_qpc = slot.published_qpc();
+            if self.shared.words[ticket.slot].load(Ordering::Acquire)
+                == word(ticket.generation, PUBLISHED)
+            {
+                crate::acquisition_diagnostics::observed(identity, ticket, published_qpc);
+            }
+        }
+        complete
     }
     pub(crate) fn stopped(&self) -> bool {
         self.shared.lock().stop

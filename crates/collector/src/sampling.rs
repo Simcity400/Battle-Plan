@@ -337,6 +337,7 @@ pub(crate) struct HourCost {
     pub slowest_join: Option<SlowestJoin>,
     pub collect_stalls_over_1ms: u64,
     pub growths: u64,
+    pub diagnostics: crate::acquisition_diagnostics::Hour,
     pub first_since_attach: bool,
     pub continuous: bool,
     pub force_full: bool,
@@ -346,7 +347,8 @@ pub(crate) struct HourCost {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SlowestJoin {
-    pub role: usize,
+    pub role: Option<usize>,
+    pub readiness: bool,
     pub wait_ns: u64,
     pub collect_stall_ns: u64,
 }
@@ -355,17 +357,6 @@ pub(crate) struct SlowestJoin {
 struct HourJoins {
     slowest: Option<SlowestJoin>,
     collect_stalls_over_1ms: u64,
-    growths: u64,
-    /// Already included in the game thread's growth delta; subtract once.
-    caller_growths: u64,
-}
-
-impl HourJoins {
-    fn total_growths(&self, game_thread_growths: u64) -> u64 {
-        game_thread_growths
-            .saturating_sub(self.caller_growths)
-            .saturating_add(self.growths)
-    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -382,19 +373,20 @@ thread_local! {
 
 pub(crate) fn reset_hour_joins() {
     HOUR_JOINS.set(None);
+    crate::acquisition_diagnostics::reset();
 }
 
 pub(crate) fn record_hour_join(
     role: usize,
     wait_ns: u64,
     collect_stall_ns: u64,
-    growths: u64,
     #[cfg(feature = "callback_profile")] profile: crate::acquisition::Profile,
 ) {
     let mut tally = HOUR_JOINS.get().unwrap_or_default();
     if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
         tally.hour.slowest = Some(SlowestJoin {
-            role,
+            role: Some(role),
+            readiness: false,
             wait_ns,
             collect_stall_ns,
         });
@@ -403,19 +395,43 @@ pub(crate) fn record_hour_join(
             tally.profile = crate::callback_profile::JoinSample {
                 role: Some(role),
                 wall_ns: wait_ns,
+                readiness: false,
                 profile,
             };
         }
     }
     tally.hour.collect_stalls_over_1ms += u64::from(collect_stall_ns >= JoinCosts::STALL_NS[1]);
-    tally.hour.growths = tally.hour.growths.saturating_add(growths);
     HOUR_JOINS.set(Some(tally));
 }
 
-/// Executor work run by the joining game thread also appears in its own delta.
-pub(crate) fn record_caller_growths(growths: u64) {
+pub(crate) fn record_readiness_wait(
+    wait_ns: u64,
+    outstanding: crate::acquisition_diagnostics::Outstanding,
+    completion: Option<crate::acquisition_diagnostics::Completion>,
+    ending_probe_exhausted: bool,
+) {
+    let completion = completion.filter(|_| !ending_probe_exhausted);
+    crate::acquisition_diagnostics::update(|hour| {
+        hour.readiness(wait_ns, outstanding, completion, ending_probe_exhausted)
+    });
     let mut tally = HOUR_JOINS.get().unwrap_or_default();
-    tally.hour.caller_growths = tally.hour.caller_growths.saturating_add(growths);
+    if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
+        tally.hour.slowest = Some(SlowestJoin {
+            role: completion.map(|completion| completion.identity.role),
+            readiness: true,
+            wait_ns,
+            collect_stall_ns: 0,
+        });
+        #[cfg(feature = "callback_profile")]
+        {
+            tally.profile = crate::callback_profile::JoinSample {
+                role: completion.map(|completion| completion.identity.role),
+                wall_ns: wait_ns,
+                readiness: true,
+                ..Default::default()
+            };
+        }
+    }
     HOUR_JOINS.set(Some(tally));
 }
 
@@ -800,20 +816,24 @@ struct EarlyStepTimer<'a> {
     stats: &'a EarlyStepStats,
     begin: i64,
     wait: u64,
+    step: EarlyStep,
 }
 impl<'a> EarlyStepTimer<'a> {
-    fn new(shared: &'a Shared, stats: &'a EarlyStepStats) -> Self {
+    fn new(shared: &'a Shared, stats: &'a EarlyStepStats, step: EarlyStep) -> Self {
         Self {
             shared,
             stats,
             begin: qpc(),
+            step,
             wait: shared.acquisition_wait_ns.load(Ordering::Relaxed),
         }
     }
 }
 impl Drop for EarlyStepTimer<'_> {
     fn drop(&mut self) {
-        let ns = self.shared.ns(qpc() - self.begin).saturating_sub(
+        let wall_ns = self.shared.ns(qpc() - self.begin);
+        crate::acquisition_diagnostics::update(|hour| hour.step(self.step as usize, wall_ns));
+        let ns = wall_ns.saturating_sub(
             self.shared
                 .acquisition_wait_ns
                 .load(Ordering::Relaxed)
@@ -2340,6 +2360,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
             });
             sample.join = crate::callback_profile::take_join();
+            sample.diagnostics = crate::callback_profile::take_diagnostics();
             crate::callback_profile::record(sample);
         }
     }
@@ -4040,6 +4061,14 @@ unsafe fn acquire_with_memory(
                                 .is_some_and(|pending| pending_complete(batch, pending))
                         };
                     }
+                    macro_rules! ready_step {
+                        ($step:ident, $condition:expr) => {{
+                            crate::acquisition_diagnostics::probe_condition();
+                            if $condition {
+                                return Some(EarlyStep::$step);
+                            }
+                        }};
+                    }
                     let all = |first: &Option<PendingAcquisition>,
                                parts: &[Option<PendingAcquisition>]| {
                         ready!(first)
@@ -4051,142 +4080,124 @@ unsafe fn acquire_with_memory(
                     // Claim this ordered join when its first producer publishes,
                     // before unrelated handlers can defer the remaining parts.
                     // No consumer leaves before every part has joined.
-                    if ready!(input_pending) {
-                        return Some(EarlyStep::Inputs);
-                    }
-                    if presentation.ready(batch) {
-                        return Some(EarlyStep::Presentation);
-                    }
-                    if ready!(root_pending) {
-                        return Some(EarlyStep::Roots);
-                    }
-                    if ready!(divisions_pending) {
-                        return Some(EarlyStep::Divisions);
-                    }
-                    if ready!(army_icons_pending) {
-                        return Some(EarlyStep::ArmyIcons);
-                    }
-                    if order_joins
-                        .as_ref()
-                        .is_some_and(|(orders, parts)| orders_complete(batch, orders, parts))
-                    {
-                        return Some(EarlyStep::Orders);
-                    }
-                    if ready!(ship_models_pending) {
-                        return Some(EarlyStep::Ships);
-                    }
-                    if ready!(countries_pending) {
-                        return Some(EarlyStep::Countries);
-                    }
-                    if !characters_done
-                        && characters_pending[0]
+                    ready_step!(Inputs, ready!(input_pending));
+                    ready_step!(Presentation, presentation.ready(batch));
+                    ready_step!(Roots, ready!(root_pending));
+                    ready_step!(Divisions, ready!(divisions_pending));
+                    ready_step!(ArmyIcons, ready!(army_icons_pending));
+                    ready_step!(
+                        Orders,
+                        order_joins
                             .as_ref()
-                            .is_none_or(|pending| pending_complete(batch, pending))
-                    {
-                        return Some(EarlyStep::Characters);
-                    }
-                    if all(&air_pending, &air_part_pending) {
-                        return Some(EarlyStep::Wings);
-                    }
-                    if !verdicts_done
-                        && inputs_done
-                        && ships_done
-                        && countries_done
-                        && characters_done
-                        && wings_done
-                        && [
-                            radar_pending.as_ref(),
-                            projects_pending.as_ref(),
-                            Some(&economy_pending),
-                            world_pending.as_ref(),
-                            Some(&players_pending),
-                            air_stats_pending.as_ref(),
-                            supremacy_pending.as_ref(),
-                            sunk_pending.as_ref(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .all(|pending| pending_complete(batch, pending))
-                    {
-                        return Some(EarlyStep::Verdicts);
-                    }
-                    if stitch_pending
-                        .as_ref()
-                        .is_some_and(|pending| stitch_can_advance(batch, pending, false))
-                    {
-                        return Some(EarlyStep::Stitch);
-                    }
-                    if (wings_done && stitched_orders.is_some() && ready!(naval_pending))
-                        || stitch_failure.ready(
-                            batch,
-                            stitch_pending.as_ref(),
-                            naval_pending.as_ref(),
-                            wings_done,
-                        )
-                    {
-                        return Some(EarlyStep::Naval);
-                    }
-                    if verdicts_done
-                        && divisions_done
-                        && naval_done
-                        && !map_done
-                        && ready!(combat_pending)
-                    {
-                        return Some(EarlyStep::Map);
-                    }
-                    if ready!(child_fronts_pending) {
-                        return Some(EarlyStep::ChildFronts);
-                    }
-                    if map_done
-                        && !missions_done
-                        && ready!(air_missions_pending)
-                        && pending_complete(batch, &scores_rails_pending)
-                    {
-                        return Some(EarlyStep::Missions);
-                    }
-                    if !final_sources_done
-                        && verdicts_done
-                        && icons_done
-                        && !batch.stopped()
-                        && final_sources_published(
-                            batch,
-                            [
-                                intel_residual_pending.as_ref(),
-                                capitulation_pending.as_ref(),
-                                session_pending.as_ref(),
-                                relations_pending.as_ref(),
-                                variants_pending.as_ref().map(|(pending, _)| pending),
-                            ],
-                        )
-                        .is_some()
-                    {
-                        return Some(EarlyStep::FinalSources);
-                    }
-                    if late_pending.is_none()
-                        && map_done
-                        && child_done
-                        && icons_done
-                        && missions_done
-                    {
-                        return Some(EarlyStep::Late);
-                    }
-                    if final_inputs_pending.is_none()
-                        && final_inputs_ready(
-                            batch,
-                            late_pending.is_some(),
-                            [
-                                intel_residual_pending.as_ref(),
-                                capitulation_pending.as_ref(),
-                                session_pending.as_ref(),
-                                relations_pending.as_ref(),
-                                variants_pending.as_ref().map(|(pending, _)| pending),
+                            .is_some_and(|(orders, parts)| orders_complete(batch, orders, parts))
+                    );
+                    ready_step!(Ships, ready!(ship_models_pending));
+                    ready_step!(Countries, ready!(countries_pending));
+                    ready_step!(
+                        Characters,
+                        !characters_done
+                            && characters_pending[0]
+                                .as_ref()
+                                .is_none_or(|pending| pending_complete(batch, pending))
+                    );
+                    ready_step!(Wings, all(&air_pending, &air_part_pending));
+                    ready_step!(
+                        Verdicts,
+                        !verdicts_done
+                            && inputs_done
+                            && ships_done
+                            && countries_done
+                            && characters_done
+                            && wings_done
+                            && [
+                                radar_pending.as_ref(),
+                                projects_pending.as_ref(),
+                                Some(&economy_pending),
+                                world_pending.as_ref(),
+                                Some(&players_pending),
+                                air_stats_pending.as_ref(),
+                                supremacy_pending.as_ref(),
+                                sunk_pending.as_ref(),
                             ]
                             .into_iter()
-                            .chain(characters_pending[1..].iter().map(Option::as_ref)),
-                        )
-                    {
-                        return Some(EarlyStep::FinalInputs);
-                    }
+                            .flatten()
+                            .all(|pending| pending_complete(batch, pending))
+                    );
+                    ready_step!(
+                        Stitch,
+                        stitch_pending
+                            .as_ref()
+                            .is_some_and(|pending| stitch_can_advance(batch, pending, false))
+                    );
+                    ready_step!(
+                        Naval,
+                        (wings_done && stitched_orders.is_some() && ready!(naval_pending))
+                            || stitch_failure.ready(
+                                batch,
+                                stitch_pending.as_ref(),
+                                naval_pending.as_ref(),
+                                wings_done,
+                            )
+                    );
+                    ready_step!(
+                        Map,
+                        verdicts_done
+                            && divisions_done
+                            && naval_done
+                            && !map_done
+                            && ready!(combat_pending)
+                    );
+                    ready_step!(ChildFronts, ready!(child_fronts_pending));
+                    ready_step!(
+                        Missions,
+                        map_done
+                            && !missions_done
+                            && ready!(air_missions_pending)
+                            && pending_complete(batch, &scores_rails_pending)
+                    );
+                    ready_step!(
+                        FinalSources,
+                        !final_sources_done
+                            && verdicts_done
+                            && icons_done
+                            && !batch.stopped()
+                            && final_sources_published(
+                                batch,
+                                [
+                                    intel_residual_pending.as_ref(),
+                                    capitulation_pending.as_ref(),
+                                    session_pending.as_ref(),
+                                    relations_pending.as_ref(),
+                                    variants_pending.as_ref().map(|(pending, _)| pending),
+                                ],
+                            )
+                            .is_some()
+                    );
+                    ready_step!(
+                        Late,
+                        late_pending.is_none()
+                            && map_done
+                            && child_done
+                            && icons_done
+                            && missions_done
+                    );
+                    ready_step!(
+                        FinalInputs,
+                        final_inputs_pending.is_none()
+                            && final_inputs_ready(
+                                batch,
+                                late_pending.is_some(),
+                                [
+                                    intel_residual_pending.as_ref(),
+                                    capitulation_pending.as_ref(),
+                                    session_pending.as_ref(),
+                                    relations_pending.as_ref(),
+                                    variants_pending.as_ref().map(|(pending, _)| pending),
+                                ]
+                                .into_iter()
+                                .chain(characters_pending[1..].iter().map(Option::as_ref)),
+                            )
+                    );
                     None
                 });
                 shared
@@ -4195,6 +4206,7 @@ unsafe fn acquire_with_memory(
                 let _step = EarlyStepTimer::new(
                     shared,
                     &shared.presentation.early_steps[step as usize],
+                    step,
                 );
                 match step {
                     EarlyStep::Presentation => {
@@ -4444,7 +4456,14 @@ unsafe fn acquire_with_memory(
                                 let census = &mut input_request.payload.census;
                                 let result = match failure {
                                     Some(reason) => Err(reason),
-                                    None => census.absorb(&mut captured),
+                                    None => {
+                                        let begin = qpc();
+                                        let result = census.absorb(&mut captured);
+                                        crate::acquisition_diagnostics::update(|hour| {
+                                            hour.division_merge_ns += shared.ns(qpc() - begin)
+                                        });
+                                        result
+                                    }
                                 };
                                 if let Err(reason) = result {
                                     input_failure = Some(reason);
@@ -4853,7 +4872,11 @@ unsafe fn acquire_with_memory(
                             if air_failure.is_none() && air_request.payload.split {
                                 let begin = qpc();
                                 air_failure = air_request.payload.join_parts(active).err();
-                                air_wing_report.copy_ticks[0] += elapsed(begin);
+                                let ticks = elapsed(begin);
+                                air_wing_report.copy_ticks[0] += ticks;
+                                crate::acquisition_diagnostics::update(|hour| {
+                                    hour.wing_merge_ns += shared.ns(ticks as i64)
+                                });
                             }
                             if air_failure.is_none()
                                 && let Some(split) =
@@ -6701,6 +6724,11 @@ unsafe fn acquire_with_memory(
         // refresh payload. Each queue can hold the complete buffer pool,
         // so owning a buffer guarantees space for its index.
         // The frame's cost is this acquisition body's wall on the game thread.
+        let diagnostics = crate::acquisition_diagnostics::take(
+            engine_allocation::growths().saturating_sub(growths_before),
+        );
+        #[cfg(feature = "callback_profile")]
+        crate::callback_profile::retain_diagnostics(diagnostics);
         let game_elapsed = (qpc() - dispatched).max(1);
         let setup_ns = shared.ns(ts_setup - dispatched);
         let parallel_ns = shared.ns(ts_parallel - ts_setup);
@@ -6725,8 +6753,10 @@ unsafe fn acquire_with_memory(
                 segments_ns,
                 slowest_join: joins.slowest,
                 collect_stalls_over_1ms: joins.collect_stalls_over_1ms,
-                growths: joins
-                    .total_growths(engine_allocation::growths().saturating_sub(growths_before)),
+                growths: diagnostics
+                    .callback_growths
+                    .saturating_add(diagnostics.jobs.worker_growths),
+                diagnostics,
                 first_since_attach,
                 continuous,
                 force_full,
@@ -6992,7 +7022,6 @@ unsafe fn finish_acquisition_into(
                 result.request.role() as usize,
                 wait,
                 stall_ns,
-                result.timeline.growths,
                 #[cfg(feature = "callback_profile")]
                 result.profile,
             );
@@ -7166,12 +7195,12 @@ impl PresentationPending {
             let begin = qpc();
             let advance = batch.wait_ready(|batch| {
                 if self.ready(batch) {
-                    Some(true)
-                } else if pending.is_some_and(|pending| pending_complete(batch, pending)) {
-                    Some(false)
-                } else {
-                    None
+                    return Some(true);
                 }
+                crate::acquisition_diagnostics::probe_condition();
+                pending
+                    .is_some_and(|pending| pending_complete(batch, pending))
+                    .then_some(false)
             });
             shared
                 .acquisition_wait_ns
@@ -7179,7 +7208,11 @@ impl PresentationPending {
             if !advance {
                 break;
             }
-            let _advance = EarlyStepTimer::new(shared, &shared.presentation.wait_advance);
+            let _advance = EarlyStepTimer::new(
+                shared,
+                &shared.presentation.wait_advance,
+                EarlyStep::Presentation,
+            );
             // SAFETY: publication is proved above; the same boundary is held.
             unsafe { self.advance(shared, batch) };
         }
@@ -7757,7 +7790,7 @@ unsafe fn finish_rejected_inline(
         .unpark(ticket)
         .expect("parked inline acquisition request");
     // SAFETY: this request was rejected before acquiring any live state.
-    *out = Some(unsafe { batch.run_inline(request) });
+    *out = Some(unsafe { batch.run_inline(ticket, request) });
 }
 
 pub(crate) fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {
@@ -8065,6 +8098,40 @@ mod role_timeline_tests {
         );
     }
 
+    #[test]
+    fn readiness_waits_compete_with_joins_without_claiming_collection_stalls() {
+        reset_hour_joins();
+        record_hour_join(
+            1,
+            10,
+            4,
+            #[cfg(feature = "callback_profile")]
+            Default::default(),
+        );
+        let completion = crate::acquisition_diagnostics::Completion {
+            identity: crate::acquisition_diagnostics::Identity {
+                role: 2,
+                ..Default::default()
+            },
+            ticket: crate::acquisition::Ticket::diagnostic(1, 3, 4),
+        };
+        record_readiness_wait(100, Default::default(), Some(completion), false);
+        record_hour_join(
+            3,
+            100,
+            8,
+            #[cfg(feature = "callback_profile")]
+            Default::default(),
+        );
+        let join = take_hour_joins().slowest.unwrap();
+        assert_eq!(join.role, Some(2));
+        assert!(join.readiness);
+        assert_eq!(join.wait_ns, 100);
+        assert_eq!(join.collect_stall_ns, 0);
+        reset_hour_joins();
+        assert!(take_hour_joins().slowest.is_none());
+    }
+
     /// A job published before its join stalls from the join's begin to its
     /// collection; one published during it, from its publication. The first
     /// finish-lock wait and the worker's wait to publish add up apart, and a
@@ -8083,6 +8150,7 @@ mod role_timeline_tests {
                 collected_qpc: 5_000,
                 finish_lock_ticks: 2_900,
                 growths: 0,
+                caller: false,
             },
             2_000,
             ns,
@@ -8097,6 +8165,7 @@ mod role_timeline_tests {
                 collected_qpc: 6_510,
                 finish_lock_ticks: 1,
                 growths: 0,
+                caller: false,
             },
             6_000,
             ns,

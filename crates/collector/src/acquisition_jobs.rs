@@ -1402,6 +1402,48 @@ impl Job {
             job => job.role().worker_only(),
         }
     }
+    fn diagnostic_identity(&self) -> crate::acquisition_diagnostics::Identity {
+        let mut identity = crate::acquisition_diagnostics::Identity {
+            role: self.role() as usize,
+            ..Default::default()
+        };
+        identity.part = match self {
+            Self::Characters(request) => Some(request.payload.part),
+            Self::AirWing(request) => {
+                identity.partition = Some((request.payload.slots.start, request.payload.slots.end));
+                None
+            }
+            Self::SupplyTrains(request) => Some(request.part),
+            Self::CharacterPortraits(request) => Some(request.part),
+            Self::AirRelations(request) => Some(request.part),
+            Self::AirHistories(request) => Some(request.part),
+            Self::ShipModelDetails(request) => Some(request.part),
+            Self::ProductionModifierPart(request) => Some(request.part),
+            Self::OrdersPart(request) => Some(request.index),
+            Self::Orders(_) | Self::DivisionInputs(_) => Some(0),
+            Self::DivisionInputParts(request) => {
+                identity.partition = Some(request.slots);
+                request.presentation.as_ref().map(|(_, index)| *index)
+            }
+            Self::PresentationStatus(request) => request.stitch.as_ref().map(|(_, index)| *index),
+            Self::VariantPart(request) => Some(request.index),
+            _ => None,
+        };
+        match self {
+            Self::VariantPart(request) => {
+                identity.kind = match request.part {
+                    variant_workers::Work::Variant(_) => 1,
+                    variant_workers::Work::Context(_) => 2,
+                }
+            }
+            Self::EventFeedSeal(_) => identity.kind = 3,
+            Self::ProductionModifierPart(request) => {
+                identity.partition = Some((request.slots.start, request.slots.end))
+            }
+            _ => {}
+        }
+        identity
+    }
     pub(crate) fn role(&self) -> Role {
         match self {
             Self::Characters(request) => [
@@ -2593,6 +2635,7 @@ impl Pool {
     ) -> Self {
         let executor = acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
         executor.set_on_completed(presentation::completed);
+        executor.set_diagnostics(Job::diagnostic_identity);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
         let calibration = Arc::new(SharedCalibration::default());
@@ -2625,6 +2668,7 @@ impl Pool {
             },
         )?;
         executor.set_on_completed(presentation::completed);
+        executor.set_diagnostics(Job::diagnostic_identity);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
         let executor = Arc::new(executor);
         Ok(Self {
@@ -2695,9 +2739,16 @@ impl Pool {
     /// The admitted callback lease must remain valid throughout this call.
     // Keep the request, isolated read counts and completion in their own frame.
     #[inline(never)]
-    pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
+    pub(crate) unsafe fn run_inline(
+        &self,
+        ticket: Ticket,
+        mut request: Job,
+    ) -> Completion<Job, Report> {
         assert!(!request.worker_only(), "acquisition requires a worker");
         let role = request.role();
+        let identity = request.diagnostic_identity();
+        let begin = sampling::qpc();
+        let growths_before = engine_allocation::growths();
         let reads = crate::read_accounting::Capture::new();
         let report = catch_failure(|| {
             // SAFETY: the caller retains the callback's live-read lease.
@@ -2712,11 +2763,25 @@ impl Pool {
         if report.is_err() {
             counters.inline_panicked.fetch_add(1, Ordering::Relaxed);
         }
+        let timeline = acquisition::Timeline {
+            body_begin_qpc: begin,
+            body_end_qpc: sampling::qpc(),
+            growths: engine_allocation::growths().saturating_sub(growths_before),
+            caller: true,
+            ..Default::default()
+        };
+        crate::acquisition_diagnostics::update(|hour| {
+            hour.jobs.record(crate::acquisition_diagnostics::Job {
+                identity,
+                ticket,
+                timeline,
+            })
+        });
         Completion {
             request,
             report,
             table_reads,
-            timeline: Default::default(),
+            timeline,
             #[cfg(feature = "callback_profile")]
             profile: Default::default(),
         }
@@ -3013,9 +3078,13 @@ impl<'a> Batch<'a> {
     }
     /// # Safety
     /// Same live-read lease as submit; only a retained rejected job may run here.
-    pub(crate) unsafe fn run_inline(&self, request: Job) -> Completion<Job, Report> {
+    pub(crate) unsafe fn run_inline(
+        &self,
+        ticket: Ticket,
+        request: Job,
+    ) -> Completion<Job, Report> {
         // SAFETY: forwarded from this callback's lease.
-        unsafe { self.pool.run_inline(request) }
+        unsafe { self.pool.run_inline(ticket, request) }
     }
 }
 /// The callback's live-read barrier on every exit: the callback returns or
@@ -3060,6 +3129,9 @@ impl Drop for Batch<'_> {
         self.presentation_stitch.drain();
         self.pool.final_inputs.drain();
         self.pool.ship_details.drain();
+        // SAFETY: all tickets and detached publishers are drained before the next callback.
+        let jobs = unsafe { self.pool.executor.take_diagnostics() };
+        crate::acquisition_diagnostics::update(|hour| hour.jobs.merge(&jobs));
     }
 }
 

@@ -3,6 +3,7 @@ use std::sync::Weak;
 
 pub(crate) struct Request {
     pub base: usize,
+    pub index: usize,
     pub part: Work,
 }
 pub(crate) enum Work {
@@ -94,8 +95,12 @@ impl Dispatch {
         let mut parts = parts.into_iter();
         let local = parts.next();
         let mut failure = None;
-        for part in parts {
-            let mut request = Some(Job::VariantPart(Request { base, part }));
+        for (index, part) in parts.enumerate() {
+            let mut request = Some(Job::VariantPart(Request {
+                base,
+                index: index + 1,
+                part,
+            }));
             // SAFETY: the worker parent drains every child before returning its live lease.
             let submitted = unsafe {
                 executor.submit_with_priority(&mut request, Role::Variants.priority(), true, true)

@@ -1518,42 +1518,39 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
 
 #[test]
 fn hourly_join_tally_keeps_first_slowest_counts_stalls_and_resets() {
-    let record = |role, wait, stall, growths| {
+    let record = |role, wait, stall| {
         record_hour_join(
             role,
             wait,
             stall,
-            growths,
             #[cfg(feature = "callback_profile")]
             crate::acquisition::Profile::default(),
         )
     };
     reset_hour_joins();
     assert_eq!(take_hour_joins(), HourJoins::default());
-    record(0, 10, JoinCosts::STALL_NS[1] - 1, 2);
-    record(1, 9, JoinCosts::STALL_NS[1], 3);
-    record(2, 10, JoinCosts::STALL_NS[1] * 4, 5);
-    record_caller_growths(3);
+    record(0, 10, JoinCosts::STALL_NS[1] - 1);
+    record(1, 9, JoinCosts::STALL_NS[1]);
+    record(2, 10, JoinCosts::STALL_NS[1] * 4);
     let joins = take_hour_joins();
     assert_eq!(
         joins.slowest,
         Some(SlowestJoin {
-            role: 0,
+            role: Some(0),
+            readiness: false,
             wait_ns: 10,
             collect_stall_ns: JoinCosts::STALL_NS[1] - 1,
         })
     );
     assert_eq!(joins.collect_stalls_over_1ms, 2);
-    assert_eq!(joins.growths, 10);
-    assert_eq!(joins.total_growths(5), 12);
     assert_eq!(take_hour_joins(), HourJoins::default());
     #[cfg(feature = "callback_profile")]
     assert_eq!(take_profile_join().role, Some(0));
-    record(3, 11, 0, 1);
-    record(4, 12, 0, 0);
-    record(5, 12, 0, 0);
-    assert_eq!(take_hour_joins().slowest.unwrap().role, 4);
-    record(6, 13, JoinCosts::STALL_NS[1], 7);
+    record(3, 11, 0);
+    record(4, 12, 0);
+    record(5, 12, 0);
+    assert_eq!(take_hour_joins().slowest.unwrap().role, Some(4));
+    record(6, 13, JoinCosts::STALL_NS[1]);
     reset_hour_joins();
     assert_eq!(take_hour_joins(), HourJoins::default());
     #[cfg(feature = "callback_profile")]
@@ -3078,7 +3075,7 @@ fn early_step_timing_counts_continued_handlers_without_charging_join_waits() {
     for (index, step) in EarlyStep::ALL.into_iter().enumerate() {
         assert_eq!(step as usize, index);
         shared.acquisition_wait_ns.store(0, Ordering::Relaxed);
-        let _step = EarlyStepTimer::new(&shared, &shared.presentation.early_steps[index]);
+        let _step = EarlyStepTimer::new(&shared, &shared.presentation.early_steps[index], step);
         // Saturate away wall time without relying on the clock's resolution.
         shared.acquisition_wait_ns.store(u64::MAX, Ordering::Relaxed);
         if matches!(step, EarlyStep::FinalInputs) {

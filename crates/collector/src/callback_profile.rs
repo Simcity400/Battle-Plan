@@ -6,27 +6,30 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const LIMIT: usize = 1024;
 const THRESHOLD_NS: u64 = 10_000_000;
 const CALLBACK_SCALARS: usize = 14;
-const JOIN_SCALARS: usize = 14;
+const JOIN_SCALARS: usize = 15;
 const SCALARS: usize = CALLBACK_SCALARS + JOIN_SCALARS;
-const WIDTH: usize = SCALARS + sampling::SEGMENTS + acquisition_jobs::ROLE_COUNT;
+const BASE_WIDTH: usize = SCALARS + sampling::SEGMENTS + acquisition_jobs::ROLE_COUNT;
+const WIDTH: usize = BASE_WIDTH + crate::acquisition_diagnostics::FIELDS + 1;
 static SAMPLES: Samples<LIMIT> = Samples::new();
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct JoinSample {
     pub role: Option<usize>,
     pub wall_ns: u64,
+    pub readiness: bool,
     pub profile: acquisition::Profile,
 }
 
 /// Call on the game thread before starting this callback's acquisition.
 pub(crate) fn reset_join() {
     sampling::reset_hour_joins();
+    DIAGNOSTICS.with_borrow_mut(|slot| *slot = Default::default());
 }
 
 /// Keep the first largest join on this thread; ties retain the earlier join.
 #[cfg(test)]
 pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profile) {
-    sampling::record_hour_join(role, wall_ns, 0, 0, profile);
+    sampling::record_hour_join(role, wall_ns, 0, profile);
 }
 
 /// Returns this callback's slowest join and clears the thread-local slot.
@@ -51,6 +54,7 @@ impl JoinSample {
             u64::from(self.profile.runner_thread_cycles.is_some()),
             self.profile.runner_thread_cycles.unwrap_or(0),
             u64::from(self.profile.runner_thread_id),
+            u64::from(self.readiness),
         ]
     }
 
@@ -58,6 +62,7 @@ impl JoinSample {
         Self {
             role: (fields[0] != 0).then_some(fields[1] as usize),
             wall_ns: fields[2],
+            readiness: fields[14] != 0,
             profile: acquisition::Profile {
                 queued_qpc: fields[3] as i64,
                 claimed_qpc: fields[4] as i64,
@@ -81,17 +86,18 @@ impl JoinSample {
         crate::status::status!({
             "role": self.role,
             "role_label": label,
+            "kind": if self.readiness { "readiness" } else { "join" },
             "wall_ns": self.wall_ns,
-            "queued_qpc": self.profile.queued_qpc,
-            "claimed_qpc": self.profile.claimed_qpc,
-            "runner_begin_qpc": self.profile.runner_begin_qpc,
-            "runner_end_qpc": self.profile.runner_end_qpc,
-            "published_qpc": self.profile.published_qpc,
-            "collected_qpc": self.profile.collected_qpc,
-            "submit_lock_wait_ticks": self.profile.submit_lock_wait_ticks,
-            "finish_lock_wait_ticks": self.profile.finish_lock_wait_ticks,
-            "runner_thread_cycles": self.profile.runner_thread_cycles,
-            "runner_thread_id": self.profile.runner_thread_id,
+            "queued_qpc": (!self.readiness).then_some(self.profile.queued_qpc),
+            "claimed_qpc": (!self.readiness).then_some(self.profile.claimed_qpc),
+            "runner_begin_qpc": (!self.readiness).then_some(self.profile.runner_begin_qpc),
+            "runner_end_qpc": (!self.readiness).then_some(self.profile.runner_end_qpc),
+            "published_qpc": (!self.readiness).then_some(self.profile.published_qpc),
+            "collected_qpc": (!self.readiness).then_some(self.profile.collected_qpc),
+            "submit_lock_wait_ticks": (!self.readiness).then_some(self.profile.submit_lock_wait_ticks),
+            "finish_lock_wait_ticks": (!self.readiness).then_some(self.profile.finish_lock_wait_ticks),
+            "runner_thread_cycles": (!self.readiness).then_some(self.profile.runner_thread_cycles).flatten(),
+            "runner_thread_id": (!self.readiness).then_some(self.profile.runner_thread_id),
         })
     }
 }
@@ -116,6 +122,8 @@ pub(crate) struct Sample {
     pub join: JoinSample,
     pub segments_ns: [u64; sampling::SEGMENTS],
     pub join_wait_ns: [u64; acquisition_jobs::ROLE_COUNT],
+    pub diagnostics: crate::acquisition_diagnostics::Hour,
+    pub frequency: u64,
 }
 
 impl Default for Sample {
@@ -136,6 +144,8 @@ impl Default for Sample {
             join: JoinSample::default(),
             segments_ns: [0; sampling::SEGMENTS],
             join_wait_ns: [0; acquisition_jobs::ROLE_COUNT],
+            diagnostics: Default::default(),
+            frequency: 1,
         }
     }
 }
@@ -162,7 +172,9 @@ impl Sample {
         fields[CALLBACK_SCALARS..SCALARS].copy_from_slice(&self.join.fields());
         let joins = SCALARS + sampling::SEGMENTS;
         fields[SCALARS..joins].copy_from_slice(&self.segments_ns);
-        fields[joins..].copy_from_slice(&self.join_wait_ns);
+        fields[joins..BASE_WIDTH].copy_from_slice(&self.join_wait_ns);
+        fields[BASE_WIDTH..WIDTH - 1].copy_from_slice(&self.diagnostics.fields());
+        fields[WIDTH - 1] = self.frequency;
         fields
     }
 
@@ -183,7 +195,11 @@ impl Sample {
             phase_calls: fields[12],
             join: JoinSample::from_fields(fields[CALLBACK_SCALARS..SCALARS].try_into().unwrap()),
             segments_ns: fields[SCALARS..joins].try_into().unwrap(),
-            join_wait_ns: fields[joins..].try_into().unwrap(),
+            join_wait_ns: fields[joins..BASE_WIDTH].try_into().unwrap(),
+            diagnostics: crate::acquisition_diagnostics::Hour::from_fields(
+                fields[BASE_WIDTH..WIDTH - 1].try_into().unwrap(),
+            ),
+            frequency: fields[WIDTH - 1],
         }
     }
 
@@ -203,6 +219,7 @@ impl Sample {
             "dispatch_ns": self.dispatch_ns,
             "phase_calls": self.phase_calls,
             "join": self.join.json(),
+            "diagnostics": crate::acquisition_diagnostics::Status(self.diagnostics, self.frequency),
             "segments_ns": crate::status::sequence(self.segments_ns.into_iter()),
             "join_wait_ns": crate::status::sequence(self.join_wait_ns.into_iter()),
         })
@@ -252,6 +269,7 @@ impl Stamp {
         Sample {
             qpc_begin: self.qpc_begin,
             qpc_end,
+            frequency,
             wall_ns: (ticks * 1_000_000_000 / u128::from(frequency)).min(u128::from(u64::MAX))
                 as u64,
             thread_cycles: self
@@ -353,11 +371,21 @@ impl<const N: usize> Samples<N> {
             "dropped": qualifying.saturating_sub(N as u64),
             "segments_scope": sampling::SEGMENTS_SCOPE,
             "join_role_order": roles,
-            "join_scope": "Largest join wall_ns within each callback, first on ties. *_qpc fields are raw session QPC timestamps; *_wait_ticks are raw QPC durations, not nanoseconds. Divide tick differences by the session QPC frequency to obtain seconds. Zero lifecycle timestamps can mean unavailable stages, including rejected work. runner_thread_cycles is the runner thread's cycle delta; null means unavailable. Join lifecycle intervals overlap callback and phase intervals.",
+            "join_scope": "Largest join or readiness wall_ns within each callback, first on ties. Readiness has no individual join lifecycle (null fields). *_qpc fields are raw session QPC timestamps; *_wait_ticks are raw QPC durations, not nanoseconds. Divide tick differences by the session QPC frequency to obtain seconds. Zero lifecycle timestamps can mean unavailable stages, including rejected work. runner_thread_cycles is the runner thread's cycle delta; null means unavailable. Join lifecycle intervals overlap callback and phase intervals.",
             "scope": "First qualifying callback samples for this DLL attachment; no overwriting. Wall covers the instrumented game-thread acquisition interval before the trampoline, including reusable-buffer wait. Setup/parallel/residual are completed body counter deltas; dispatch, segments and joins overlap those phases and must not be added to them. Zero phase_calls can denote a failed or cancelled callback. Thread cycles exclude descheduled time and are not nanoseconds; null means unavailable. Samples are published atomically; live counters are not a simultaneous snapshot. Recording the sample occurs after its measured interval.",
             "samples": samples,
         })
     }
+}
+
+thread_local! {
+    static DIAGNOSTICS: std::cell::RefCell<crate::acquisition_diagnostics::Hour> = std::cell::RefCell::new(Default::default());
+}
+pub(crate) fn retain_diagnostics(hour: crate::acquisition_diagnostics::Hour) {
+    DIAGNOSTICS.with_borrow_mut(|slot| *slot = hour);
+}
+pub(crate) fn take_diagnostics() -> crate::acquisition_diagnostics::Hour {
+    DIAGNOSTICS.with_borrow_mut(std::mem::take)
 }
 
 pub(crate) fn record(sample: Sample) {
@@ -420,6 +448,7 @@ mod tests {
             join: JoinSample {
                 role: Some(2),
                 wall_ns: 1234,
+                readiness: false,
                 profile: acquisition::Profile {
                     queued_qpc: -1,
                     claimed_qpc: 2,
@@ -435,6 +464,8 @@ mod tests {
             },
             segments_ns: std::array::from_fn(|index| 100 + index as u64),
             join_wait_ns: std::array::from_fn(|index| 200 + index as u64),
+            diagnostics: Default::default(),
+            frequency: 10_000_000,
         };
         samples.slots[0].publish(sample);
         assert_eq!(

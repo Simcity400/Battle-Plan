@@ -1084,10 +1084,11 @@ function Invoke-Screen($attached, [string]$runDir) {
                     $statusSeries.WriteLine(([ordered]@{
                         elapsed_s = $entry.elapsed_s; hour = $entry.hour
                         callback_work = $status.callback_work; native_tick_work = $status.native_tick_work
+                        callback_tail = $status.callback_tail
                         callback_histogram = $status.callback_tail.histogram; slowest = $status.callback_tail.slowest
                         spool_bytes = $status.spool_bytes; pool_bytes = $status.pool_bytes
                         dropped_frames = $status.dropped_frames; write_errors = $status.write_errors
-                    } | ConvertTo-Json -Compress -Depth 8))
+                    } | ConvertTo-Json -Compress -Depth 16))
                     $statusSeries.Flush()
                 }
             }

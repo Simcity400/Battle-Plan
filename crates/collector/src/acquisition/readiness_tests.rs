@@ -3,6 +3,87 @@ use super::*;
 use std::sync::mpsc;
 
 #[test]
+fn outstanding_scan_rejects_replacement_identity_before_its_generation_is_published() {
+    use crate::{
+        acquisition_diagnostics::{Identity, Outstanding, Slot},
+        acquisition_jobs::Role,
+    };
+    for accepted in [false, true] {
+        let slot = Slot::default();
+        let old = Identity {
+            role: Role::Variants as usize,
+            part: Some(1),
+            kind: 1,
+            ..Default::default()
+        };
+        let replacement = Identity {
+            role: Role::GatedProjects as usize,
+            part: Some(2),
+            ..Default::default()
+        };
+        // SAFETY: this synthetic slot has no concurrent owners.
+        unsafe {
+            slot.admit(old, true);
+        }
+        let value = AtomicU64::new(word(7, RUNNING));
+        let word_before = value.load(Ordering::Acquire);
+        slot.publish(100);
+        value.store(word(7, PUBLISHED), Ordering::Release);
+        value.store(word(7, COLLECTING), Ordering::Release);
+        // SAFETY: this test owns the synthetic COLLECTING cell.
+        unsafe {
+            slot.collected(Ticket::diagnostic(1, 0, 7), Timeline::default());
+        }
+        value.store(word(7, VACANT), Ordering::Release);
+        // SAFETY: this test owns VACANT; new metadata precedes the next PENDING release.
+        unsafe {
+            slot.admit(replacement, accepted);
+        }
+        assert_eq!(slot.identity(), replacement);
+        assert_eq!(value.load(Ordering::Acquire) >> 3, word_before >> 3);
+        let mut outstanding = Outstanding {
+            pool: 1,
+            ..Default::default()
+        };
+        crate::test_support::with_allocations_denied(|| {
+            record_outstanding_slot(&mut outstanding, 0, word_before, &value, &slot);
+        });
+        assert_eq!(outstanding.changed_slots, 1);
+        assert_eq!(outstanding.generations[0], 0);
+        assert_eq!(outstanding.identities[0], 0);
+        value.store(word(8, PENDING), Ordering::Release);
+        record_outstanding_slot(&mut outstanding, 0, word_before, &value, &slot);
+        assert_eq!(outstanding.changed_slots, 2);
+        assert_eq!(outstanding.generations[0], 0);
+        record_outstanding_slot(&mut outstanding, 0, word(8, PENDING), &value, &slot);
+        assert_eq!(outstanding.changed_slots, 2);
+        assert_eq!(outstanding.generations[0], if accepted { 8 } else { 0 });
+    }
+}
+
+#[test]
+fn outstanding_scan_rejects_phase_changes_and_keeps_only_stable_accepted_slots() {
+    use crate::acquisition_diagnostics::{Identity, Outstanding, Slot};
+    let slot = Slot::default();
+    // SAFETY: this synthetic slot is exclusively owned here.
+    unsafe {
+        slot.admit(Identity::default(), true);
+    }
+    for phase in [PENDING, RUNNING] {
+        for after in [VACANT, PENDING, RUNNING, PUBLISHED, COLLECTING] {
+            let value = AtomicU64::new(word(7, after));
+            let mut outstanding = Outstanding::default();
+            record_outstanding_slot(&mut outstanding, 0, word(7, phase), &value, &slot);
+            assert_eq!(outstanding.changed_slots, u64::from(after != phase));
+            assert_eq!(
+                outstanding.generations[0],
+                if after == phase { 7 } else { 0 }
+            );
+        }
+    }
+}
+
+#[test]
 fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
     crate::allocation::set_context(crate::allocation::Context {
         branch: Some(17),

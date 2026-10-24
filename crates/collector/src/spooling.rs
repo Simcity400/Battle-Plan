@@ -5162,12 +5162,14 @@ mod tests {
                 residual_ns: ns - ns / 4 - ns / 2,
                 segments_ns: [index as u64; crate::sampling::SEGMENTS],
                 slowest_join: (index == 17).then_some(crate::sampling::SlowestJoin {
-                    role: 1,
+                    role: Some(1),
+                    readiness: false,
                     wait_ns: 300,
                     collect_stall_ns: 250,
                 }),
                 collect_stalls_over_1ms: index as u64,
                 growths: index as u64 + 1,
+                diagnostics: Default::default(),
                 first_since_attach: index == 17,
                 continuous: index != 17,
                 force_full: index == 17,
@@ -5185,12 +5187,13 @@ mod tests {
             json!([0, 2, 4, 8, 16, 32, 64, 128, 256])
         );
         assert_eq!(tail["histogram"], json!([2, 2, 4, 2, 2, 2, 2, 2, 3]));
-        assert_eq!(tail["capacity"], 16);
+        assert_eq!(tail["capacity"], 64);
         assert_eq!(tail["qpc_frequency"], processor.session.qpc_frequency);
         assert_eq!(status["callback_work"]["calls"], samples.len());
         let slowest = tail["slowest"].as_array().unwrap();
-        // The third 4 ms hour arrived at capacity and cannot displace an equal one.
-        let indices = [17, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 19];
+        let indices = [
+            17, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 19, 20, 3, 2, 1, 0,
+        ];
         assert_eq!(
             slowest
                 .iter()
@@ -5210,9 +5213,11 @@ mod tests {
                 "segments_ns": vec![17; crate::sampling::SEGMENTS],
                 "slowest_join": {
                     "role": format!("{:?}", crate::acquisition_jobs::ROLES[1]),
-                    "wait_ns": 300, "collect_stall_ns": 250,
+                    "kind": "join", "wait_ns": 300, "collect_stall_ns": 250,
                 },
                 "collect_stalls_over_1ms": 17, "growths": 18,
+                "dominant_segment": 0,
+                "diagnostics": serde_json::to_value(crate::acquisition_diagnostics::Hour::default().status(processor.session.qpc_frequency)).unwrap(),
                 "first_since_attach": true, "continuous": false,
                 "force_full": true, "recovery": true, "refresh": true,
             }),

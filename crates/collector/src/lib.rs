@@ -27,6 +27,7 @@ static TEST_ALLOCATOR: crate::test_support::FailingAllocator =
 
 mod acquisition;
 mod acquisition_countries;
+mod acquisition_diagnostics;
 mod acquisition_factions;
 mod acquisition_gather;
 mod acquisition_jobs;

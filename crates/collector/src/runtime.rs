@@ -3071,6 +3071,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                     "parallel_join_mean_ns": phase_mean(shared.phase_join_ns.load(Ordering::Relaxed)),
                     "segments_mean_ns": sequence(segments.into_iter()),
                     "segments_scope": sampling::SEGMENTS_SCOPE,
+                    "per_hour_attribution": "callback_tail.slowest[].diagnostics retains readiness waits, all-job top eight, thread growth split, inclusive EarlyStep maximum and inline census merges for the 64 slowest recorded hours since attach; callback_tail.dominant_segment_counts covers every recorded hour",
                     "join_wait_by_role_mean_ns": join_wait_by_role,
                     "role_timeline": role_timeline,
                     "role_timeline_scope": "per pool role, its collected jobs (jobs, cumulative) and the mean offset in ns from their acquisition body's entry of when each was queued (a held first-burst job is queued at its submission: its release only wakes idle workers, and a worker already running may claim it before), when a pool participant began and ended its body (over the jobs that ran on one), and when the game thread began and ended its join. A join that begins after the body ended waits only on collection; one that begins before it waits on the unfinished body. joins_waiting_over_250us, _1ms and _4ms count the role's joins whose wait reached each threshold, so a mean wait from a few long hours shows apart from a steady one",
